@@ -531,26 +531,9 @@ Full API documentation: [docs/API.md](docs/API.md)
 6. Push to the branch: `git push origin feature/amazing-feature`
 7. Open a Pull Request
 
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🆘 Support
 
 - **Issues**: Report bugs and feature requests on [GitHub Issues](https://github.com/your-org/nasiko/issues)
 - **Discussions**: Join the community on [GitHub Discussions](https://github.com/your-org/nasiko/discussions)
 - **Documentation**: Comprehensive guides in the [docs/](docs/) directory
-
-## 🌟 Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=your-org/nasiko&type=Date)](https://star-history.com/#your-org/nasiko&Date)
-
----
-
-<div align="center">
-
-**Built with ❤️ by the Nasiko Team**
-
-[🌐 Website](https://nasiko.ai) • [📧 Email](mailto:hello@nasiko.ai) • [🐦 Twitter](https://twitter.com/nasikoai)
-
-</div>
