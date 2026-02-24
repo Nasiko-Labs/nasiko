@@ -2,14 +2,19 @@
 import json
 import os
 import random
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any
 
 import numpy as np
 from tqdm import tqdm
+import faiss
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain.schema import Document
+from langchain_community.vectorstores.faiss import InMemoryDocstore
 
 
 from router.src.core.routing_engine import RoutingEngine
@@ -17,18 +22,25 @@ from router.src.config import settings
 
 
 AGENT_CARDS_DIR = "router/data/agent_cards"
+# AGENT_CARDS_DIR = "router/data/maf_agent_cards"
 QUERIES_RESPONSES_DIR = "router/data/query_response_pairs"
 REGISTRIES_FILE = "router/data/registries.json"
-TEST_CASES_FILE = "router/data/test_cases.json"
+# REGISTRIES_FILE = "router/data/maf_registries.json"
+# TEST_CASES_FILE = "router/data/test_cases.json"
+TEST_CASES_FILE = "router/data/test_cases_long.json"
+# TEST_CASES_FILE = "router/data/mt_test_cases.json"
 EMBEDDINGS_FILE = "router/data/agent_card_embeddings.npy"
+# EMBEDDINGS_FILE = "router/data/mt_agent_card_embeddings.npy"
 SAMPLED_REGISTRIES_FILE = "router/data/sampled_registries.json"
+# SAMPLED_REGISTRIES_FILE = "router/data/mt_sampled_registries.json"
 PROCESSED_CASES_FILE = "router/data/processed_cases.json"
 RESULTS_DIR = "router/results"
 FAILURES_DIR = "router/results/failures"
 RESULTS_FILE = "router/results/results.txt"
+SHORTLISTS_FILE = "router/results/shortlists.txt"
 
 # Fixed seed for reproducibility
-RANDOM_SEED = 42
+RANDOM_SEED = 65
 
 # Size ranges for registry selection
 # SIZE_RANGES = [
@@ -46,8 +58,8 @@ RANDOM_SEED = 42
 
 SIZE_RANGES = [
     # ("71-105", lambda s: 71 <= s <= 105),
-    ("36-70", lambda s: 36 <= s <= 70),
-    ("2-35", lambda s: 2 <= s <= 35),
+    ("20-70", lambda s: 36 <= s <= 70),
+    # ("2-35", lambda s: 2 <= s <= 35),
 ]
 
 
@@ -191,6 +203,10 @@ def select_registries_by_size_ranges(
 
     for range_name, range_filter in SIZE_RANGES:
         # Find all registries in this size range
+        # indices_in_range = [
+        #     i for i, reg in enumerate(registries) if range_filter(reg["size"])
+        # ]
+
         indices_in_range = [
             i for i, reg in enumerate(registries) if range_filter(reg["size"])
         ]
@@ -346,7 +362,7 @@ def save_processed_cases(processed_cases: Dict[str, Any]):
         json.dump(processed_cases, f, indent=2)
 
 
-def test_router_quality(embedding_file=EMBEDDINGS_FILE, resume=True):
+def semantic_search_exps(embedding_file=EMBEDDINGS_FILE):
     # Load registries.
     registries = load_registries()
 
@@ -355,7 +371,7 @@ def test_router_quality(embedding_file=EMBEDDINGS_FILE, resume=True):
 
     # Select 10% of registries for each size range.
     selected_registry_indices = select_registries_by_size_ranges(
-        registries, sample_fraction=0.1
+        registries, sample_fraction=0.05
     )
 
     # Save selected registries to file for reproducibility
@@ -369,8 +385,13 @@ def test_router_quality(embedding_file=EMBEDDINGS_FILE, resume=True):
 
     # If embeddings file does not exist, compute embeddings for all cards.
     if not Path(EMBEDDINGS_FILE).exists():
+        # TODO: Change embeddings model to that used in semantic search.
         agent_cards_embeddings = compute_agent_card_embeddings(
-            agent_cards, OpenAIEmbeddings()
+            agent_cards,
+            OpenAIEmbeddings(
+                model=settings.RERANKING_EMBEDDING_MODEL,
+                openai_api_key=settings.OPENAI_API_KEY,
+            ),
         )
         np.save(EMBEDDINGS_FILE, agent_cards_embeddings)
 
@@ -382,60 +403,34 @@ def test_router_quality(embedding_file=EMBEDDINGS_FILE, resume=True):
     )
 
     # Create embeddings model for vectorstore
-    embeddings_model = OpenAIEmbeddings()
+    embeddings_model = OpenAIEmbeddings(
+        model=settings.RERANKING_EMBEDDING_MODEL,
+        openai_api_key=settings.OPENAI_API_KEY,
+    )
 
     # Create output directories
     Path(RESULTS_DIR).mkdir(parents=True, exist_ok=True)
-    Path(FAILURES_DIR).mkdir(parents=True, exist_ok=True)
 
-    # Load processed cases for resume functionality
-    processed_cases = (
-        load_processed_cases()
-        if resume
-        else {"last_completed_registry_idx": -1, "completed_registry_indices": []}
-    )
-    completed_registry_indices = set(
-        processed_cases.get("completed_registry_indices", [])
-    )
-
-    # Filter out already processed registries if resuming
-    registries_to_process = [
-        idx
-        for idx in selected_registry_indices
-        if idx not in completed_registry_indices
-    ]
-
-    if resume and len(registries_to_process) < len(selected_registry_indices):
-        print(
-            f"Resuming: skipping {len(selected_registry_indices) - len(registries_to_process)} already processed registries"
-        )
-
-    # Initialize tracking variables
+    # Initialize tracking variables for shortlist statistics
     total_turns = 0
     failed_turns = 0
-    total_convs = 0
-    failed_convs = 0
-
-    # Track by size range
-    stats_by_size_range = {
-        range_name: {
-            "total_turns": 0,
-            "failed_turns": 0,
-            "total_convs": 0,
-            "failed_convs": 0,
-        }
-        for range_name, _ in SIZE_RANGES
-    }
-
-    # Track failures by turn index
-    turn_idx_stats = {}  # turn_idx -> {"total": count, "failed": count}
+    failed_not_in_first_list = 0
+    failed_not_in_second_list = 0
+    failed_in_first_not_in_second = 0
 
     # Initialize routing engine
     router = RoutingEngine()
 
+    # Open shortlists file for writing
+    shortlists_file = open(SHORTLISTS_FILE, "w", encoding="utf-8")
+    shortlists_file.write("=" * 80 + "\n")
+    shortlists_file.write("SHORTLISTS FOR ALL TURNS\n")
+    shortlists_file.write("=" * 80 + "\n\n")
+
     # Process each registry
-    for registry_idx in tqdm(registries_to_process, desc="Processing registries"):
+    for registry_idx in tqdm(selected_registry_indices, desc="Processing registries"):
         registry = registries[registry_idx]
+        # registry_size = registry["size"]
         registry_size = registry["size"]
         size_range = get_size_range_for_registry(registry_size)
 
@@ -450,82 +445,92 @@ def test_router_quality(embedding_file=EMBEDDINGS_FILE, resume=True):
         # Get test cases for this registry
         registry_test_cases = get_test_cases_for_registry(test_cases, registry_idx)
 
-        # Process each test case (conversation)
-        for test_case in registry_test_cases:
-            conversation_history = []
-            conv_failed = False
-            failed_turns_in_conv = []
+        # Write registry header to shortlists file
+        shortlists_file.write("-" * 80 + "\n")
+        shortlists_file.write(
+            f"REGISTRY {registry_idx} (size: {registry_size}, range: {size_range})\n"
+        )
+        shortlists_file.write("-" * 80 + "\n\n")
 
-            total_convs += 1
-            stats_by_size_range[size_range]["total_convs"] += 1
+        # Process each test case (conversation)
+        for test_case_idx, test_case in enumerate(registry_test_cases):
+            print(f"Processing test case {test_case_idx} for registry {registry_idx}.")
+            conversation_history = []
+            turn_times = []  # Track time for each turn
+
+            shortlists_file.write(f"  Test Case {test_case_idx}:\n")
 
             for turn_idx, query in enumerate(test_case["queries"]):
+                print(f"  Turn {turn_idx}: {query}.")
                 turn_data = load_turn_data(query, registry)
-
-                # Track turn index stats
-                if turn_idx not in turn_idx_stats:
-                    turn_idx_stats[turn_idx] = {"total": 0, "failed": 0}
-                turn_idx_stats[turn_idx]["total"] += 1
-
+                correct_agent = turn_data["agent_name"]
                 total_turns += 1
-                stats_by_size_range[size_range]["total_turns"] += 1
 
                 # Call the router
                 try:
+                    turn_start_time = time.time()
+                    message = turn_data["Human Message"]
                     (
                         first_shortlist,
-                        similarity_score,
+                        similarity_scores,
                         second_shortlist,
                         router_output,
                     ) = router.route_query(
-                        message=turn_data["Human Message"],
+                        message=message,
                         conversation_history=conversation_history,
                         agent_cards=registry_agent_cards,
                         vectorstore=vectorstore,
                     )
+                    turn_elapsed_time = time.time() - turn_start_time
+                    turn_times.append(turn_elapsed_time)
 
                     selected_agent = router_output.agent_name
-                    correct_agent = turn_data["agent_name"]
+                    turn_failed = selected_agent != correct_agent
 
-                    # Check if router selected correct agent
-                    if selected_agent != correct_agent:
-                        failed_turns += 1
-                        stats_by_size_range[size_range]["failed_turns"] += 1
-                        turn_idx_stats[turn_idx]["failed"] += 1
-                        conv_failed = True
-
-                        failed_turns_in_conv.append(
-                            {
-                                "turn_idx": turn_idx,
-                                "correct_agent": correct_agent,
-                                "router_selected_agent": selected_agent,
-                                "first_shortlist": first_shortlist,
-                                "similarity_score": similarity_score,
-                                "second_shortlist": second_shortlist,
-                                "human_message": turn_data["Human Message"],
-                                "conversation_history": conversation_history.copy(),
-                            }
+                    # Write shortlists to file
+                    shortlists_file.write(f"    Turn {turn_idx}:\n")
+                    shortlists_file.write(f"      User Message: {message}\n")
+                    shortlists_file.write(f"      Correct Agent: {correct_agent}\n")
+                    shortlists_file.write(f"      First Shortlist: {first_shortlist}\n")
+                    shortlists_file.write(
+                        f"      Similarity Scores: {similarity_scores}\n"
+                    )
+                    shortlists_file.write(
+                        f"      Second Shortlist: {second_shortlist}\n"
+                    )
+                    shortlists_file.flush()
+                    if turn_failed:
+                        shortlists_file.write(
+                            f"      STATUS: FAILED (selected: {selected_agent})\n"
                         )
+                    else:
+                        shortlists_file.write(f"      STATUS: PASSED\n")
+                    shortlists_file.write("\n")
+
+                    # Track shortlist statistics for failed turns
+                    if turn_failed:
+                        failed_turns += 1
+                        in_first = correct_agent in first_shortlist
+                        in_second = correct_agent in second_shortlist
+
+                        if not in_first:
+                            failed_not_in_first_list += 1
+                        if not in_second:
+                            failed_not_in_second_list += 1
+                        if in_first and not in_second:
+                            failed_in_first_not_in_second += 1
 
                 except Exception as e:
                     print(
                         f"Error routing turn {turn_idx} in registry {registry_idx}: {e}"
                     )
                     failed_turns += 1
-                    stats_by_size_range[size_range]["failed_turns"] += 1
-                    turn_idx_stats[turn_idx]["failed"] += 1
-                    conv_failed = True
 
-                    failed_turns_in_conv.append(
-                        {
-                            "turn_idx": turn_idx,
-                            "correct_agent": turn_data["agent_name"],
-                            "router_selected_agent": None,
-                            "error": str(e),
-                            "human_message": turn_data["Human Message"],
-                            "conversation_history": conversation_history.copy(),
-                        }
-                    )
+                    # Write error to shortlists file
+                    shortlists_file.write(f"    Turn {turn_idx}:\n")
+                    shortlists_file.write(f"      Correct Agent: {correct_agent}\n")
+                    shortlists_file.write(f"      STATUS: FAILED (error: {e})\n")
+                    shortlists_file.write("\n")
 
                 # Append turn to conversation history
                 conversation_history.append(
@@ -535,246 +540,75 @@ def test_router_quality(embedding_file=EMBEDDINGS_FILE, resume=True):
                     {"role": "Assistant", "content": turn_data["AI Message"]}
                 )
 
-            # If conversation had any failures, log to failure file
-            if conv_failed:
-                failed_convs += 1
-                stats_by_size_range[size_range]["failed_convs"] += 1
-
-                # Rebuild all turns data for logging
-                all_turns_data = []
-                for i, query in enumerate(test_case["queries"]):
-                    td = load_turn_data(query, registry)
-                    all_turns_data.append(
-                        {
-                            "turn_idx": i,
-                            "human_message": td["Human Message"],
-                            "ai_message": td["AI Message"],
-                            "agent_name": td["agent_name"],
-                        }
-                    )
-
-                failure_data = {
-                    "registry_idx": registry_idx,
-                    "registry_size": registry_size,
-                    "size_range": size_range,
-                    "all_turns": all_turns_data,
-                    "failed_turns": failed_turns_in_conv,
-                }
-
-                # Save failure to file
-                failure_filename = f"failure_reg{registry_idx}_conv{total_convs}.json"
-                failure_path = Path(FAILURES_DIR) / failure_filename
-                with open(failure_path, "w", encoding="utf-8") as f:
-                    json.dump(failure_data, f, indent=2)
-
-        # Update processed cases after each registry is complete
-        completed_registry_indices.add(registry_idx)
-        processed_cases["completed_registry_indices"] = list(completed_registry_indices)
-        processed_cases["last_completed_registry_idx"] = registry_idx
-        save_processed_cases(processed_cases)
-
-    # Write results file
-    with open(RESULTS_FILE, "w", encoding="utf-8") as f:
-        f.write("=" * 60 + "\n")
-        f.write("ROUTER QUALITY TEST RESULTS\n")
-        f.write("=" * 60 + "\n\n")
-
-        # Overall stats
-        f.write("OVERALL STATISTICS\n")
-        f.write("-" * 40 + "\n")
-        f.write(f"Turn accuracy: {total_turns - failed_turns}/{total_turns}")
-        if total_turns > 0:
-            f.write(f" ({(total_turns - failed_turns) / total_turns * 100:.2f}%)\n")
-        else:
-            f.write("\n")
-        f.write(f"Conversation accuracy: {total_convs - failed_convs}/{total_convs}")
-        if total_convs > 0:
-            f.write(f" ({(total_convs - failed_convs) / total_convs * 100:.2f}%)\n")
-        else:
-            f.write("\n")
-        f.write("\n")
-
-        # Stats by size range
-        f.write("STATISTICS BY SIZE RANGE\n")
-        f.write("-" * 40 + "\n")
-        for range_name, _ in SIZE_RANGES:
-            stats = stats_by_size_range[range_name]
-            if stats["total_turns"] > 0:
-                turn_acc = (
-                    (stats["total_turns"] - stats["failed_turns"])
-                    / stats["total_turns"]
-                    * 100
+            # Write average time per turn for this conversation
+            if turn_times:
+                avg_time_per_turn = sum(turn_times) / len(turn_times)
+                shortlists_file.write(
+                    f"    Average time per turn: {avg_time_per_turn:.3f}s\n"
                 )
-                conv_acc = (
-                    (stats["total_convs"] - stats["failed_convs"])
-                    / stats["total_convs"]
-                    * 100
-                    if stats["total_convs"] > 0
-                    else 0
-                )
-                f.write(f"\n{range_name}:\n")
-                f.write(
-                    f"  Turn accuracy: {stats['total_turns'] - stats['failed_turns']}/{stats['total_turns']} ({turn_acc:.2f}%)\n"
-                )
-                f.write(
-                    f"  Conv accuracy: {stats['total_convs'] - stats['failed_convs']}/{stats['total_convs']} ({conv_acc:.2f}%)\n"
-                )
-        f.write("\n")
+            shortlists_file.write("\n")
 
-        # Stats by turn index
-        f.write("STATISTICS BY TURN INDEX\n")
-        f.write("-" * 40 + "\n")
-        for turn_idx in sorted(turn_idx_stats.keys()):
-            stats = turn_idx_stats[turn_idx]
-            if stats["total"] > 0:
-                acc = (stats["total"] - stats["failed"]) / stats["total"] * 100
-                f.write(
-                    f"Turn {turn_idx}: {stats['total'] - stats['failed']}/{stats['total']} ({acc:.2f}%)\n"
-                )
+        shortlists_file.write("\n")
 
-    print(f"\nResults written to {RESULTS_FILE}")
-    print(f"Failures written to {FAILURES_DIR}/")
+    # Close shortlists file
+    shortlists_file.close()
 
-    # Print summary to console
+    # Print shortlist statistics
+    print(f"\nShortlists written to {SHORTLISTS_FILE}")
     print("\n" + "=" * 60)
-    print("SUMMARY")
+    print("SHORTLIST STATISTICS FOR FAILED TURNS")
     print("=" * 60)
-    print(f"Turn accuracy: {total_turns - failed_turns}/{total_turns}", end="")
-    if total_turns > 0:
-        print(f" ({(total_turns - failed_turns) / total_turns * 100:.2f}%)")
+    if failed_turns > 0:
+        print(
+            f"Total failed turns: {failed_turns} / {total_turns} ({failed_turns / total_turns * 100:.2f}%)"
+        )
+        print(
+            f"Failed turns where correct agent NOT in first shortlist: {failed_not_in_first_list}/{failed_turns} ({failed_not_in_first_list / failed_turns * 100:.2f}%)"
+        )
+        print(
+            f"Failed turns where correct agent NOT in second shortlist: {failed_not_in_second_list}/{failed_turns} ({failed_not_in_second_list / failed_turns * 100:.2f}%)"
+        )
+        print(
+            f"Failed turns where correct agent in first but NOT in second shortlist: {failed_in_first_not_in_second}/{failed_turns} ({failed_in_first_not_in_second / failed_turns * 100:.2f}%)"
+        )
     else:
-        print()
-    print(f"Conversation accuracy: {total_convs - failed_convs}/{total_convs}", end="")
-    if total_convs > 0:
-        print(f" ({(total_convs - failed_convs) / total_convs * 100:.2f}%)")
-    else:
-        print()
+        print("No failed turns.")
+
+    # Write shortlist statistics to timestamped file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_filename = f"semantic_search_results_{timestamp}.txt"
+    results_filepath = Path(RESULTS_DIR) / results_filename
+    with open(results_filepath, "w", encoding="utf-8") as f:
+        f.write("=" * 60 + "\n")
+        f.write("SHORTLIST STATISTICS FOR FAILED TURNS\n")
+        f.write("=" * 60 + "\n")
+        f.write(f"Total turns: {total_turns}\n")
+        f.write(
+            f"Failed turns: {failed_turns}/{total_turns} ({failed_turns / total_turns * 100:.2f}%)\n"
+        )
+        if failed_turns > 0:
+            f.write(
+                f"Failed turns where correct agent NOT in first shortlist: {failed_not_in_first_list}/{failed_turns} ({failed_not_in_first_list / failed_turns * 100:.2f}%)\n"
+            )
+            f.write(
+                f"Failed turns where correct agent NOT in second shortlist: {failed_not_in_second_list}/{failed_turns} ({failed_not_in_second_list / failed_turns * 100:.2f}%)\n"
+            )
+            f.write(
+                f"Failed turns where correct agent in first but NOT in second shortlist: {failed_in_first_not_in_second}/{failed_turns} ({failed_in_first_not_in_second / failed_turns * 100:.2f}%)\n"
+            )
+    print(f"\nShortlist statistics written to {results_filepath}")
 
     return {
         "total_turns": total_turns,
         "failed_turns": failed_turns,
-        "total_convs": total_convs,
-        "failed_convs": failed_convs,
-        "stats_by_size_range": stats_by_size_range,
-        "turn_idx_stats": turn_idx_stats,
+        "failed_not_in_first_list": failed_not_in_first_list,
+        "failed_not_in_second_list": failed_not_in_second_list,
+        "failed_in_first_not_in_second": failed_in_first_not_in_second,
     }
 
 
-# def test_routing(total_queries=5):
-#     # Load agent queries
-#     agent_cards = load_agent_cards()
-#     embeddings = OpenAIEmbeddings()
-#     agent_names = [agent["name"] for agent in agent_cards]
-#     agent_cards_embeddings = embeddings.embed_documents(
-#         [agent_card["description"] for agent_card in agent_cards]
-#     )
-#     # Create dict with keys as agent_ids and values as embeddings
-#     name_embedding_dict = dict(zip(agent_names, agent_cards_embeddings))
-#     num_agents = len(agent_cards)
-
-#     # Load queries
-#     queries = load_queries_and_responses()
-#     assert len(agent_cards) == len(queries)
-
-#     results = []
-#     correct_count = 0
-#     not_shortlisted_count = 0
-#     total_time = 0
-
-#     # Wrap your loop with tqdm
-#     for i in tqdm(range(total_queries), desc="Routing requests"):
-#         # pick one correct agent
-#         correct_agent_idx = random.randint(0, num_agents - 1)
-#         correct_agent = agent_cards[correct_agent_idx]
-#         correct_agent_name = correct_agent["name"]
-
-#         query = random.choice(queries[correct_agent_idx]["queries"])
-
-#         # pick 9 random distractor agents
-#         distractors = random.sample(
-#             [a for a in agent_cards if a["name"] != correct_agent_name],
-#             19,
-#         )
-
-#         # form 20 agent cards
-#         test_agent_cards = [correct_agent] + [d for d in distractors]
-#         truncated_agent_cards = truncate_agent_cards(test_agent_cards)
-#         random.shuffle(truncated_agent_cards)
-
-#         docs = []
-#         vecs = []
-#         for agent_card in truncated_agent_cards:
-#             agent_name = agent_card["name"]
-#             docs.append(
-#                 Document(
-#                     page_content=agent_card["description"],
-#                     metadata={"name": agent_name},
-#                 )
-#             )
-#             vecs.append(name_embedding_dict[agent_name])
-
-#         vectorstore = build_faiss_from_precomputed(docs, vecs, embeddings)
-
-#         start = time.time()
-#         shortlisted_agents, router_output = router(
-#             query, truncated_agent_cards, vectorstore
-#         )
-#         elapsed = time.time() - start
-#         total_time += elapsed
-
-#         if isinstance(router_output, RouterOutput):
-#             agent_name = router_output.agent_name
-#         elif isinstance(router_output, dict):
-#             agent_name = router_output.get("agent_name")
-#         else:
-#             print(f"Error parsing router output: {e}")
-
-#         if agent_name == correct_agent_name:
-#             correct_count += 1
-#             print(f"Accuracy so far: {correct_count}/{i+1}")
-#         else:
-#             if agent_name not in shortlisted_agents:
-#                 not_shortlisted_count += 1
-#                 print(
-#                     f"Not shortlisted so far: {not_shortlisted_count}/{i+1 - correct_count}"
-#                 )
-#             print(f"   Query: {query}")
-#             print(f"   Correct agent: {correct_agent_name}")
-#             print(f"   Router selected agent: {agent_name}")
-#             print(f"   Shortlisted agents: {shortlisted_agents}")
-
-#         result = {
-#             "query": query,
-#             "correct_agent_name": correct_agent_name,
-#             "routed_agent_name": agent_name,
-#             "shortlisted_agents": shortlisted_agents,
-#             "correct": agent_name == correct_agent_name,
-#             "time_taken": elapsed,
-#         }
-#         results.append(result)
-
-#         # save results to file
-#         Path("router/results").mkdir(exist_ok=True)
-#         with open("router/results/routing_results.json", "w") as f:
-#             json.dump(results, f, indent=2)
-
-#     avg_time = total_time / len([r for r in results if r["time_taken"]])
-#     print(f"Saved results to router/results/routing_results.json")
-#     print(f"Average response time: {avg_time:.3f}s")
-
-#     accuracy = correct_count / total_queries * 100 if total_queries else 0
-#     vec_search_failure = (
-#         not_shortlisted_count / (total_queries - correct_count) * 100
-#         if (total_queries - correct_count)
-#         else 0
-#     )
-#     print(f"Correctly routed: {correct_count}/{total_queries} ({accuracy:.2f}%)")
-#     print(
-#         f"Not shortlisted: {not_shortlisted_count}/{total_queries - correct_count} ({vec_search_failure:.2f}%)"
-#     )
-
-
 if __name__ == "__main__":
+    # test_routing(total_queries=100)
     # agent_cards = load_agent_cards()
     # embeddings = OpenAIEmbeddings(
     #     model=settings.RERANKING_EMBEDDING_MODEL,
@@ -785,5 +619,6 @@ if __name__ == "__main__":
     # print("Saving agent card embeddings to agent_card_embeddings.npy")
     # np.save(EMBEDDINGS_FILE, vectors)
     # vectors = []
-    # print(f"Vectors = {vectors}")
-    test_router_quality(resume=False)
+    # vectors = np.load(EMBEDDINGS_FILE)
+    # print(f"Loaded {len(vectors)} many vectors from {EMBEDDINGS_FILE}")
+    semantic_search_exps()

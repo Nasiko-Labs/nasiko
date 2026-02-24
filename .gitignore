@@ -1,4 +1,7 @@
 
+# Environment files
+.env
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -149,3 +152,12 @@ cython_debug/
 
 # Ignore local .env files
 .env.*
+!.env.example
+!*env.example
+.nasiko-local.env
+
+# macOS files
+.DS_Store
+
+# Sensitive credentials
+superuser_credentials.json

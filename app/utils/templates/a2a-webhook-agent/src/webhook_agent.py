@@ -15,7 +15,7 @@ class WebhookAgent:
     Handles all webhook communication and response processing
     """
     
-    def __init__(self, webhook_url: str, webhook_timeout: int = 30):
+    def __init__(self, webhook_url: str, webhook_timeout: int = 120):
         self.webhook_url = webhook_url
         self.webhook_timeout = webhook_timeout
         logger.info(f"WebhookAgent initialized with URL: {webhook_url}")
@@ -177,7 +177,7 @@ def create_agent():
     import os
     
     webhook_url = os.getenv('WEBHOOK_URL')
-    webhook_timeout = int(os.getenv('WEBHOOK_TIMEOUT', '30'))
+    webhook_timeout = int(os.getenv('WEBHOOK_TIMEOUT', '120'))
     
     if not webhook_url:
         raise ValueError('WEBHOOK_URL environment variable is required')

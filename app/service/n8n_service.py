@@ -315,12 +315,15 @@ class N8nService:
             workflow_name = workflow_data.get("name", "Untitled Workflow")
             agent_name = workflow_name
             
-            # Generate agent_id from workflow name (lowercase with hyphens) + workflow id + part of user id
+            # Generate short agent_id to avoid pod naming issues (max 63 chars for k8s)
+            # Use first 20 chars of workflow name + workflow id (first 8 chars) + user id (first 8 chars)
             workflow_name_normalized = workflow_name.lower().replace(" ", "-").replace("_", "-")
             # Remove any non-alphanumeric characters except hyphens
             import re
             workflow_name_normalized = re.sub(r'[^a-z0-9\-]', '', workflow_name_normalized)
-            agent_id = f"{workflow_name_normalized}-{request.workflow_id}-{user_id[:8]}".lower()
+            # Truncate workflow name to 20 chars max
+            workflow_name_short = workflow_name_normalized[:20].rstrip('-')
+            agent_id = f"{workflow_name_short}-{request.workflow_id[:8]}-{user_id[:8]}".lower()
             
             # Check if agent already exists in registry
             existing_agent = await repo.get_registry_by_name(agent_name)
@@ -481,7 +484,7 @@ class N8nService:
     container_name: {container_name}
     environment:
       - WEBHOOK_URL={webhook_url}
-      - WEBHOOK_TIMEOUT=30
+      - WEBHOOK_TIMEOUT=60
       - USER_ID={user_id}
     stdin_open: true
     ports:

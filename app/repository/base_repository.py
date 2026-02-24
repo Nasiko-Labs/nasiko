@@ -17,34 +17,20 @@ class BaseRepository(ABC):
         self._encryption_key = self._get_or_create_encryption_key()
     
     def _get_or_create_encryption_key(self):
-        """Get or create encryption key for sensitive data"""
-        # Try to get key from environment first
-        env_key = os.getenv("ENCRYPTION_KEY")
-        if env_key:
-            try:
-                return base64.urlsafe_b64decode(env_key.encode())
-            except Exception as e:
-                self.logger.warning(f"Invalid encryption key in environment: {e}")
+        """Get encryption key for sensitive data from USER_CREDENTIALS_ENCRYPTION_KEY environment variable only"""
+        # Only get key from USER_CREDENTIALS_ENCRYPTION_KEY environment variable
+        env_key = os.getenv("USER_CREDENTIALS_ENCRYPTION_KEY")
+        if not env_key:
+            error_msg = "USER_CREDENTIALS_ENCRYPTION_KEY environment variable is required but not found"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
         
-        # Try to read from file
-        key_file = ".encryption_key"
         try:
-            if os.path.exists(key_file):
-                with open(key_file, "rb") as f:
-                    return f.read()
+            return base64.urlsafe_b64decode(env_key.encode())
         except Exception as e:
-            self.logger.warning(f"Could not read encryption key file: {e}")
-        
-        # Generate new key
-        key = cryptography.fernet.Fernet.generate_key()
-        try:
-            with open(key_file, "wb") as f:
-                f.write(key)
-            self.logger.info("Generated new encryption key")
-        except Exception as e:
-            self.logger.warning(f"Could not save encryption key: {e}")
-        
-        return key
+            error_msg = f"Invalid encryption key in USER_CREDENTIALS_ENCRYPTION_KEY environment variable: {e}"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
     
     def _encrypt_data(self, data: str) -> str:
         """Encrypt sensitive data"""

@@ -113,7 +113,7 @@ services:
       OPENAI_API_KEY: ""
       OPENROUTER_API_KEY: ""
     volumes:
-      - ./router:/app/router  # Add this line
+      - ./router:/app/router  
     ports:
       - "8081:8000"   # Router API port
     networks:

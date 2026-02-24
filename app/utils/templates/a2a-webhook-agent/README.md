@@ -19,13 +19,13 @@ This agent acts as a bridge between the A2A protocol and webhook-based services.
 ### Environment Variables
 
 - `WEBHOOK_URL` (required): The webhook URL to forward messages to
-- `WEBHOOK_TIMEOUT` (optional): Timeout for webhook calls in seconds (default: 30)
+- `WEBHOOK_TIMEOUT` (optional): Timeout for webhook calls in seconds (default: 120)
 
 ### Example Configuration
 
 ```bash
 export WEBHOOK_URL="http://localhost:5678/webhook/53c136fe-3e77-4709-a143-fe82746dd8b6/chat"
-export WEBHOOK_TIMEOUT="30"
+export WEBHOOK_TIMEOUT="120"
 ```
 
 ## Usage

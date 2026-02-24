@@ -7,7 +7,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Optional, List, cast
 
 import typer
 from rich.console import Console
@@ -342,7 +342,7 @@ def local_status() -> None:
 
 @local_app.command(name="logs")
 def local_logs(
-    service: Annotated[list[str] | None, typer.Argument(help="Service name (omit to see all)")] = None,
+    service: Annotated[Optional[List[str]], typer.Argument(help="Service name (omit to see all)")] = None,
     follow: Annotated[bool, typer.Option("-f", "--follow", help="Follow logs")] = False,
     lines: Annotated[int, typer.Option("-n", "--lines", help="Number of lines to show")] = 100,
 ) -> None:
@@ -368,7 +368,7 @@ def local_logs(
 @local_app.command(name="deploy-agent")
 def local_deploy_agent(
     agent_name: Annotated[str, typer.Argument(help="Agent name")],
-    agent_path: Annotated[str | None, typer.Argument(help="Path to agent directory (default: ./agents/{agent_name})")] = None,
+    agent_path: Annotated[Optional[str], typer.Argument(help="Path to agent directory (default: ./agents/{agent_name})")] = None,
 ) -> None:
     """Deploy an agent to the local stack."""
     try:
@@ -493,7 +493,7 @@ def local_shell(
 
 @local_app.command(name="restart")
 def local_restart(
-    service: Annotated[str | None, typer.Argument(help="Service name (omit to restart all)")] = None,
+    service: Annotated[Optional[str], typer.Argument(help="Service name (omit to restart all)")] = None,
 ) -> None:
     """Restart service(s) in the local stack."""
     try:

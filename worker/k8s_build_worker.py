@@ -42,8 +42,11 @@ class K8sBuildWorker:
         self.base_api_url = "http://nasiko-backend.nasiko.svc.cluster.local:8000"
         
         # Initialize observability injector
-        # Use relative path that works both locally and in container
-        observability_path = os.path.join(os.path.dirname(__file__), "utils", "observability")
+        # Resolve the installed source directory for app.utils.observability inside the container.
+        # The previous relative path (/app/worker/utils/observability) doesn't exist in the image.
+        from pathlib import Path
+        import app.utils.observability as observability_pkg
+        observability_path = str(Path(observability_pkg.__file__).resolve().parent)
         self.tracing_injector = TracingInjector(observability_source_path=observability_path)
         self.observability_config = ObservabilityConfig()
 
@@ -462,8 +465,9 @@ class K8sBuildWorker:
 
         tar_path = None
         try:
-            # Download agent tarball from backend (use versioned endpoint if version provided)
-            if version:
+            # Download agent tarball from backend (use versioned endpoint only for proper versions)
+            # Skip version for N8N agents and other non-versioned agents
+            if version and (version.replace('.', '').replace('-', '').isdigit() or version.split('.')[0].isdigit()):
                 download_url = f"{base_url}/api/v1/agents/{agent_name}/download?version={version}"
                 self.logger.info(f"Downloading versioned agent files for version {version} from {download_url}")
             else:
@@ -1452,10 +1456,11 @@ class K8sBuildWorker:
             
             # Step 1: Download agent files
             download_url = f"{base_url}/api/v1/agents/{agent_name}/download"
-            if agent_path and 'v' in agent_path:
-                # Use versioned download if available
-                version = agent_path.split('v')[-1] if 'v' in agent_path else None
-                if version:
+            if agent_path and agent_path.endswith(tuple(f'/v{i}' for i in range(10))) or '/v' in agent_path and agent_path.split('/v')[-1].replace('.', '').replace('-', '').isdigit():
+                # Use versioned download only for proper version paths (e.g., /v1.0.0, /v2)
+                # Skip version extraction for N8N agents or other non-versioned agents
+                version = agent_path.split('/v')[-1] if '/v' in agent_path else None
+                if version and (version.replace('.', '').replace('-', '').isdigit() or version.split('.')[0].isdigit()):
                     download_url = f"{base_url}/api/v1/agents/{agent_name}/download?version={version}"
                     
             async with aiohttp.ClientSession() as session:

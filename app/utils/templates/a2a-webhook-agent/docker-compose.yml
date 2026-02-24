@@ -5,7 +5,7 @@ services:
       - "8085:5000"
     environment:
       - WEBHOOK_URL=http://host.docker.internal:5678/webhook/53c136fe-3e77-4709-a143-fe82746dd8b6/chat
-      - WEBHOOK_TIMEOUT=30
+      - WEBHOOK_TIMEOUT=120
     networks:
       - nasiko-network
 

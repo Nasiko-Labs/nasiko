@@ -19,7 +19,7 @@ from router.src.services import RouterOrchestrator
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ security = HTTPBearer()
 app = FastAPI(
     title="Nasiko Router Service",
     description="AI-powered agent routing service",
-    version="2.0.0"
+    version="2.0.0",
 )
 
 # Add CORS middleware
@@ -76,17 +76,17 @@ async def process_request(
 ) -> StreamingResponse:
     """
     Process a user request through the router pipeline.
-    
+
     Args:
         session_id: Unique session identifier
         query: User query text
         route: Optional direct route to specific agent
         files: Optional files to upload
         credentials: Bearer token credentials
-        
+
     Returns:
         Streaming response with router processing updates
-        
+
     Raises:
         HTTPException: For validation or processing errors
     """
@@ -96,24 +96,24 @@ async def process_request(
         if validation_error:
             logger.error(f"Validation error: {validation_error}")
             raise HTTPException(status_code=400, detail=validation_error)
-        
+
         # Process files
         files_to_forward = await _process_files(files)
-        
+
         # Create request object
         request = UserRequest(session_id=session_id, query=query, route=route)
         logger.info(f"Processing request: {request}")
         logger.info(f"Files count: {len(files_to_forward)}")
-        
+
         # Extract token
         token = credentials.credentials
-        
+
         # Process through orchestrator
         return StreamingResponse(
             orchestrator.process_request(request, files_to_forward, token),
             media_type="application/json",
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -129,86 +129,90 @@ async def get_metrics():
         "requests_processed": 0,
         "active_sessions": 0,
         "average_response_time": 0.0,
-        "error_rate": 0.0
+        "error_rate": 0.0,
     }
 
 
 def _validate_inputs(session_id: str, query: str) -> Optional[str]:
     """
     Validate request inputs.
-    
+
     Args:
         session_id: Session identifier
         query: User query
-        
+
     Returns:
         Error message if validation fails, None otherwise
     """
     if not session_id or not session_id.strip():
         return "session_id cannot be empty"
-    
+    logger.info(f"Session id: {session_id}")
+
     if not query or not query.strip():
         return "query cannot be empty"
-    
+
     return None
 
 
 async def _process_files(files: Optional[List[UploadFile]]) -> List[tuple]:
     """
     Process uploaded files for forwarding.
-    
+
     Args:
         files: List of uploaded files
-        
+
     Returns:
         List of file tuples ready for forwarding
-        
+
     Raises:
         HTTPException: If file processing fails
     """
     files_to_forward = []
-    
+
     if not files:
         return files_to_forward
-    
+
     for file in files:
         try:
             if file.size and file.size > settings.MAX_FILE_SIZE:
                 raise HTTPException(
                     status_code=413,
-                    detail=f"File {file.filename} exceeds maximum size of {settings.MAX_FILE_SIZE} bytes"
+                    detail=f"File {file.filename} exceeds maximum size of {settings.MAX_FILE_SIZE} bytes",
                 )
-            
+
             content_bytes = await file.read()
             bio = BytesIO(content_bytes)
             bio.seek(0)
-            
+
             files_to_forward.append(
                 (
                     "files",
-                    (file.filename, bio, file.content_type or "application/octet-stream"),
+                    (
+                        file.filename,
+                        bio,
+                        file.content_type or "application/octet-stream",
+                    ),
                 )
             )
-            
+
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Error reading file {file.filename}: {e}")
             raise HTTPException(
-                status_code=400,
-                detail=f"Failed to read file {file.filename}: {str(e)}"
+                status_code=400, detail=f"Failed to read file {file.filename}: {str(e)}"
             )
-    
+
     return files_to_forward
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "main:app",
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.RELOAD,
-        log_level=settings.LOG_LEVEL.lower()
+        log_level=settings.LOG_LEVEL.lower(),
     )

@@ -2,6 +2,7 @@ import sys
 import json
 import os
 import textwrap
+from typing import Optional
 from .utils import ensure_aws_cli, ensure_doctl, ensure_kubectl
 import typer
 import subprocess
@@ -10,7 +11,7 @@ from rich.console import Console
 app = typer.Typer(help="Setup Cloud Native Container Registry (ECR/DOCR)")
 console = Console()
 
-def _sanitize_do_token(token: str | None) -> str | None:
+def _sanitize_do_token(token: Optional[str]) -> Optional[str]:
     t = (token or "").strip()
     if not t:
         return None
@@ -40,7 +41,7 @@ def _die_do_auth_hint():
     console.print("[dim]   Tip: try `doctl account get` with the same token to validate it.[/]")
     sys.exit(1)
 
-def _doctl_cmd(*args: str, token: str | None = None) -> list[str]:
+def _doctl_cmd(*args: str, token: Optional[str] = None) -> list[str]:
     """
     Build a doctl command.
 
@@ -152,7 +153,9 @@ def setup_aws_ecr(region: str, repo_name: str):
     return registry_url, "AWS", password
 
 
-def deploy_ecr_refresher(region: str, account_id: str, namespaces: list[str] = ["nasiko", "buildkit"]):
+def deploy_ecr_refresher(region: str, account_id: str, namespaces: list = None):
+    if namespaces is None:
+        namespaces = ["nasiko", "buildkit"]
     """
     Deploys a CronJob that refreshes the AWS ECR token every 6 hours.
     It updates the 'regcred' secret in the specified namespaces.
@@ -283,7 +286,7 @@ def setup_do_registry(registry_name: str):
 
     # Prefer explicit token to avoid doctl context issues.
     # If the provided token is stale, but doctl is authenticated via context, fall back to context.
-    doctl_token: str | None = token
+    doctl_token: Optional[str] = token
     account_check = subprocess.run(
         _doctl_cmd("account", "get", "--output", "json", token=doctl_token),
         capture_output=True,
@@ -340,9 +343,15 @@ def setup_do_registry(registry_name: str):
 
     check_result = subprocess.run(
         _doctl_cmd("registry", "get", "--output", "json", token=doctl_token),
+        _doctl_cmd("registry", "get", "--output", "json", token=doctl_token),
         capture_output=True,
         text=True
     )
+    if check_result.returncode != 0:
+        stderr = (check_result.stderr or "").strip()
+        stdout = (check_result.stdout or "").strip()
+        if _is_do_auth_error(stderr) or _is_do_auth_error(stdout):
+            _die_do_auth_hint()
     if check_result.returncode != 0:
         stderr = (check_result.stderr or "").strip()
         stdout = (check_result.stdout or "").strip()
@@ -388,6 +397,16 @@ def setup_do_registry(registry_name: str):
             "professional",
             token=doctl_token,
         )
+        create_cmd = _doctl_cmd(
+            "registry",
+            "create",
+            registry_name,
+            "--region",
+            "nyc3",
+            "--subscription-tier",
+            "professional",
+            token=doctl_token,
+        )
 
         create_result = subprocess.run(
             create_cmd,
@@ -400,6 +419,8 @@ def setup_do_registry(registry_name: str):
         else:
             # Handle creation failures
             err_msg = create_result.stderr.strip()
+            if _is_do_auth_error(err_msg) or _is_do_auth_error(create_result.stdout.strip()):
+                _die_do_auth_hint()
             if _is_do_auth_error(err_msg) or _is_do_auth_error(create_result.stdout.strip()):
                 _die_do_auth_hint()
 
@@ -431,6 +452,7 @@ def setup_do_registry(registry_name: str):
         docker_config_str = run_cmd(
             [
                 *_doctl_cmd("registry", "docker-config", token=doctl_token),
+                *_doctl_cmd("registry", "docker-config", token=doctl_token),
                 "--read-write",
                 "--expiry-seconds", "31536000"  # 1 year
             ],
@@ -449,6 +471,11 @@ def setup_do_registry(registry_name: str):
 
     except (SystemExit, ValueError, json.JSONDecodeError) as e:
         console.print(f"[yellow]⚠️  Could not parse credentials from 'doctl registry docker-config': {e}[/]")
+        if doctl_token is None:
+            console.print("[red]❌ Cannot fall back to DIGITALOCEAN_ACCESS_TOKEN because it appears invalid/stale.[/]")
+            console.print("[dim]   Fix DIGITALOCEAN_ACCESS_TOKEN in your config, then re-run.[/]")
+            sys.exit(1)
+        console.print("[yellow]   Falling back to using your configured DigitalOcean token directly.[/]")
         if doctl_token is None:
             console.print("[red]❌ Cannot fall back to DIGITALOCEAN_ACCESS_TOKEN because it appears invalid/stale.[/]")
             console.print("[dim]   Fix DIGITALOCEAN_ACCESS_TOKEN in your config, then re-run.[/]")

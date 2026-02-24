@@ -1,0 +1,46 @@
+# Python cache and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files (should use secrets management instead)
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.coverage
+.pytest_cache/
+.tox/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Docker files (not needed in final image)
+Dockerfile*
+docker-compose*.yml
+docker-compose*.yaml
+
+# Development tools
+uv.lock

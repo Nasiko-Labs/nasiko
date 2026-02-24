@@ -6,6 +6,7 @@
 
 # Agent path to analyze (required)
 AGENT_PATH="${1:-../../../agents/a2a-compliance-checker}"
+AGENT_PATH="${1:-../../../agents/a2a-compliance-checker}"
 
 # Optional settings
 VERBOSE=true          # Set to true for detailed output
@@ -28,6 +29,9 @@ if [ -n "$API_KEY" ]; then
     ARGS="$ARGS --api-key $API_KEY"
 fi
 
+# if [ "$N8N_AGENT" = true ]; then
+#     ARGS="$ARGS --n8n-agent "
+# fi
 # if [ "$N8N_AGENT" = true ]; then
 #     ARGS="$ARGS --n8n-agent "
 # fi

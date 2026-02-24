@@ -16,7 +16,7 @@ def construct_payload(
 ) -> dict:
     """
     Construct a JSON-RPC 2.0 payload for agent communication.
-    
+
     Args:
         request: User request object
         files: List of file paths to include
@@ -24,7 +24,7 @@ def construct_payload(
         accepted_output_modes: Optional list of accepted output modes
         history_length: Optional history length
         blocking: Whether the request should be blocking
-        
+
     Returns:
         JSON-RPC 2.0 payload dictionary
     """

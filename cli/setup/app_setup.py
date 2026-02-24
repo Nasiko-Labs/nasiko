@@ -3,6 +3,8 @@ import os
 import base64
 import secrets
 import urllib.parse
+import secrets
+import urllib.parse
 import json
 import typer
 import yaml
@@ -238,6 +240,8 @@ class NasikoDeployer:
             "infrastructure/postgresql.yaml",
             "infrastructure/ollama.yaml",
             "infrastructure/phoenix.yaml",
+            "infrastructure/ollama.yaml",
+            "infrastructure/phoenix.yaml",
         ]
 
         for component_path in infra_components:
@@ -253,16 +257,17 @@ class NasikoDeployer:
                     placeholder = f"{{{{ {key} }}}}"
                     content = content.replace(placeholder, str(value))
 
+
                 manifests = list(yaml.safe_load_all(content))
-                
+
                 # Deploy PVCs first and wait for them to be bound
                 pvcs_to_wait = []
                 for doc in manifests:
                     if doc and doc.get('kind') == 'PersistentVolumeClaim':
-                            resource_name = doc.get('metadata', {}).get('name', component_name)
-                            apply_manifest(self.k8s_client, doc, f"Infrastructure PVC: {resource_name}")
-                            pvcs_to_wait.append((doc.get('metadata', {}).get('name'), doc.get('metadata', {}).get('namespace', 'default')))
-                
+                        resource_name = doc.get('metadata', {}).get('name', component_name)
+                        apply_manifest(self.k8s_client, doc, f"Infrastructure PVC: {resource_name}")
+                        pvcs_to_wait.append((doc.get('metadata', {}).get('name'), doc.get('metadata', {}).get('namespace', 'default')))
+
                 # Wait for PVCs to be bound before proceeding
                 if pvcs_to_wait:
                     self._wait_for_pvcs_bound(pvcs_to_wait, component_name)
@@ -272,25 +277,25 @@ class NasikoDeployer:
                     if doc and doc.get('kind') != 'PersistentVolumeClaim':  # Skip PVCs as they're already deployed
                         resource_name = doc.get('metadata', {}).get('name', component_name)
                         apply_manifest(self.k8s_client, doc, f"Infrastructure: {resource_name}")
-                            
+
             except Exception as e:
                 console.print(f"[yellow]⚠️  Warning: Could not deploy {component_path}: {e}[/]")
 
     def _wait_for_pvcs_bound(self, pvcs_to_wait, component_name, timeout=300):
         """Wait for PVCs to be bound before proceeding with deployment."""
         import time
-        
+
         if not pvcs_to_wait:
             return
-        
+
         console.print(f"[cyan]⏳ Waiting for {len(pvcs_to_wait)} PVC(s) in {component_name} to be bound...[/]")
         v1 = client.CoreV1Api()
         start_time = time.time()
         check_interval = 5
-        
+
         while pvcs_to_wait and (time.time() - start_time) < timeout:
             remaining_pvcs = []
-            
+
             for pvc_name, pvc_namespace in pvcs_to_wait:
                 try:
                     pvc = v1.read_namespaced_persistent_volume_claim(name=pvc_name, namespace=pvc_namespace)
@@ -306,15 +311,15 @@ class NasikoDeployer:
                     else:
                         console.print(f"[yellow]⚠️  Error checking PVC {pvc_name}: {e}[/]")
                         remaining_pvcs.append((pvc_name, pvc_namespace))
-            
+
             pvcs_to_wait = remaining_pvcs
-            
+
             if pvcs_to_wait:
                 time.sleep(check_interval)
             else:
                 console.print(f"[green]✅ All PVCs for {component_name} are bound[/]")
                 return
-        
+
         if pvcs_to_wait:
             console.print(f"[yellow]⚠️  Timeout waiting for PVCs to bind: {[pvc[0] for pvc in pvcs_to_wait]}[/]")
             console.print(f"[yellow]   Proceeding anyway, but deployment may fail if storage isn't ready[/]")
@@ -409,13 +414,20 @@ class NasikoDeployer:
                     "NODE_ENV": "production",
                     "API_BASE_URL": "/api/v1",
                     "CHAT_SERVICE_URL": "/api/v1",
-                    "ROUTER_URL": "http://nasiko-router:8000/router",
+                    "ROUTER_URL": "/router",
                     "IS_DEVELOPMENT": "false"
                 },
                 "service_port": 4000
             }
         ]
 
+
+        # Add DO token to backend if available
+        do_token = (
+            os.getenv("DIGITALOCEAN_ACCESS_TOKEN")
+            or os.getenv("DO_TOKEN")
+            or os.getenv("TF_VAR_do_token")
+        )
 
         # Add DO token to backend if available
         do_token = (
@@ -466,6 +478,12 @@ class NasikoDeployer:
             or os.getenv("DO_TOKEN")
             or os.getenv("TF_VAR_do_token")
         )
+        # Add DO token for registry auth
+        do_token = (
+            os.getenv("DIGITALOCEAN_ACCESS_TOKEN")
+            or os.getenv("DO_TOKEN")
+            or os.getenv("TF_VAR_do_token")
+        )
         if do_token:
             worker_config["env_vars"]["DO_TOKEN"] = do_token
 
@@ -487,7 +505,7 @@ class NasikoDeployer:
 
         # Deploy N8N PVC first
         n8n_pvc_config = {
-            "yaml_path": "services/n8n/pvc.yaml", 
+            "yaml_path": "services/n8n/pvc.yaml",
             "name": "N8N Storage"
         }
         self._deploy_service(n8n_pvc_config)
@@ -517,7 +535,7 @@ class NasikoDeployer:
                 "name": "N8N Service"
             }
             self._deploy_service(n8n_service_config)
-            
+
             console.print("[green]✅ N8N automation service deployed[/]")
             if self.gateway_url:
                 console.print(f"[cyan]   N8N Editor accessible at: {self.gateway_url}/n8n[/]")
@@ -531,10 +549,10 @@ class NasikoDeployer:
             # Get available storage classes
             v1_storage = client.StorageV1Api()
             storage_classes = v1_storage.list_storage_class()
-            
+
             available_classes = [sc.metadata.name for sc in storage_classes.items]
             console.print(f"[dim]Available storage classes: {available_classes}[/]")
-            
+
             # Priority order: cloud-specific first, then local fallbacks
             priority_order = [
                 "do-block-storage",  # DigitalOcean
@@ -543,21 +561,21 @@ class NasikoDeployer:
                 "hostpath",          # Local/Docker Desktop
                 "local-path"         # k3s/local
             ]
-            
+
             for preferred in priority_order:
                 if preferred in available_classes:
                     console.print(f"[green]Using storage class: {preferred}[/]")
                     return preferred
-                    
+
             # Use default if available
             for sc in storage_classes.items:
                 if sc.metadata.annotations and sc.metadata.annotations.get('storageclass.kubernetes.io/is-default-class') == 'true':
                     console.print(f"[green]Using default storage class: {sc.metadata.name}[/]")
                     return sc.metadata.name
-            
+
             console.print("[yellow]⚠️  No suitable storage class found, using first available[/]")
             return available_classes[0] if available_classes else None
-            
+
         except Exception as e:
             console.print(f"[yellow]⚠️  Could not detect storage class: {e}[/]")
             return None
@@ -589,7 +607,7 @@ class NasikoDeployer:
                     if storage_class:
                         manifest["spec"]["storageClassName"] = storage_class
                     apply_manifest(self.k8s_client, manifest, f"{service_config['name']} PVC")
-                    
+
                 elif manifest and manifest.get("kind") == "Deployment":
                     deployment_yaml = manifest
 
@@ -712,10 +730,15 @@ class NasikoDeployer:
         annotations = service_manifest["metadata"]["annotations"]
 
         if provider == "digitalocean":
-            # DigitalOcean LoadBalancer annotations
-            annotations["service.beta.kubernetes.io/do-loadbalancer-name"] = "nasiko-agent-gateway"
+            # DigitalOcean LoadBalancer annotations - generate unique name
+            import time
+            import random
+            timestamp = int(time.time())
+            random_suffix = random.randint(1000, 9999)
+            unique_name = f"nasiko-gateway-{timestamp}-{random_suffix}"
+            annotations["service.beta.kubernetes.io/do-loadbalancer-name"] = unique_name
             annotations["service.beta.kubernetes.io/do-loadbalancer-size-unit"] = "1"
-            console.print("[cyan]✅ Configured DigitalOcean LoadBalancer[/]")
+            console.print(f"[cyan]✅ Configured DigitalOcean LoadBalancer: {unique_name}[/]")
 
         elif provider == "aws":
             # AWS NLB annotations (works with in-tree controller)
@@ -882,9 +905,9 @@ def deploy(
         deployer.deploy_rbac()
 
         # Prepare template variables for all deployments
-        mongo_user = "root"
+        mongo_user = os.getenv("MONGO_NASIKO_USER", "root")
         # Use a URL-safe password so it works in Mongo URIs without special-casing.
-        mongo_password = f"password{secrets.token_urlsafe(9)}"
+        mongo_password = os.getenv("MONGO_NASIKO_PASSWORD") or ("password" + base64.b64encode(os.urandom(6)).decode('utf-8'))
         mongo_url = (
             "mongodb://"
             f"{urllib.parse.quote(mongo_user, safe='')}"
@@ -896,12 +919,12 @@ def deploy(
             "MONGO_NASIKO_USER": mongo_user,
             "MONGO_NASIKO_PASSWORD": mongo_password,
             "MONGO_URL": mongo_url,
-            "JWT_SECRET": base64.b64encode(os.urandom(32)).decode('utf-8'),
+            "JWT_SECRET": os.getenv("JWT_SECRET") or base64.b64encode(os.urandom(32)).decode('utf-8'),
             "OPENAI_API_KEY": openai_key or "",
             "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY", ""),
             "GITHUB_CLIENT_ID": os.getenv("GITHUB_CLIENT_ID", ""),
             "GITHUB_CLIENT_SECRET": os.getenv("GITHUB_CLIENT_SECRET", ""),
-            "USER_CREDENTIALS_ENCRYPTION_KEY": base64.b64encode(os.urandom(32)).decode('utf-8'),
+            "USER_CREDENTIALS_ENCRYPTION_KEY": os.getenv("USER_CREDENTIALS_ENCRYPTION_KEY") or base64.b64encode(os.urandom(32)).decode('utf-8'),
         }
 
         # 2. Infrastructure
@@ -915,6 +938,12 @@ def deploy(
             "encryption_key": template_vars["USER_CREDENTIALS_ENCRYPTION_KEY"],
         }
         
+        # Add DO token if available
+        do_token = (
+            os.getenv("DIGITALOCEAN_ACCESS_TOKEN")
+            or os.getenv("DO_TOKEN")
+            or os.getenv("TF_VAR_do_token")
+        )
         # Add DO token if available
         do_token = (
             os.getenv("DIGITALOCEAN_ACCESS_TOKEN")
@@ -952,6 +981,9 @@ def deploy(
 
         # 6.75. K8s Build Worker (deployed AFTER gateway to use gateway URL)
         deployer.deploy_k8s_build_worker()
+
+        # 6.8. N8N Automation Service (deployed AFTER gateway to use gateway URL)
+        deployer.deploy_n8n()
 
         # 6.8. N8N Automation Service (deployed AFTER gateway to use gateway URL)
         deployer.deploy_n8n()

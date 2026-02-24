@@ -87,14 +87,22 @@ class AgentUploadTrackingService:
                 from app.service.orchestration_service import OrchestrationService
                 orchestration = OrchestrationService(self.logger)
                 
+                # Agents are stored versioned under /app/agents/{name}/{version} (e.g. v1.0.0).
+                # If we orchestrate the unversioned dir, the BuildKit job downloads a tarball
+                # that contains only the version subdir and no root-level Dockerfile.
+                agent_path = f"/app/agents/{result.agent_name}"
+                if getattr(result, "version", None):
+                    agent_path = f"/app/agents/{result.agent_name}/{result.version}"
+
                 orchestration_triggered = await orchestration.trigger_agent_orchestration(
                     agent_name=result.agent_name,
-                    agent_path=f"/app/agents/{result.agent_name}",
+                    agent_path=agent_path,
                     base_url=settings.NASIKO_API_URL,
                     additional_data={
                         "owner_id": user_id,
                         "upload_id": upload_id,
-                        "upload_type": "zip"
+                        "upload_type": "zip",
+                        "version": getattr(result, "version", None),
                     }
                 )
                 
@@ -255,16 +263,21 @@ class AgentUploadTrackingService:
                 from app.service.orchestration_service import OrchestrationService
                 orchestration = OrchestrationService(self.logger)
 
+                agent_path = f"/app/agents/{result.agent_name}"
+                if getattr(result, "version", None):
+                    agent_path = f"/app/agents/{result.agent_name}/{result.version}"
+
                 orchestration_triggered = await orchestration.trigger_agent_orchestration(
                     agent_name=result.agent_name,
-                    agent_path=f"/app/agents/{result.agent_name}",
+                    agent_path=agent_path,
                     base_url=settings.NASIKO_API_URL,
                     additional_data={
                         "owner_id": user_id,
                         "upload_id": upload_id,
                         "upload_type": "github",
                         "repository_full_name": repository_full_name,
-                        "branch": branch
+                        "branch": branch,
+                        "version": getattr(result, "version", None),
                     }
                 )
 
@@ -376,14 +389,19 @@ class AgentUploadTrackingService:
                 from app.service.orchestration_service import OrchestrationService
                 orchestration = OrchestrationService(self.logger)
                 
+                agent_path = f"/app/agents/{result.agent_name}"
+                if getattr(result, "version", None):
+                    agent_path = f"/app/agents/{result.agent_name}/{result.version}"
+
                 orchestration_triggered = await orchestration.trigger_agent_orchestration(
                     agent_name=result.agent_name,
-                    agent_path=f"/app/agents/{result.agent_name}",
+                    agent_path=agent_path,
                     base_url=settings.NASIKO_API_URL,
                     additional_data={
                         "owner_id": user_id,
                         "upload_id": upload_id,
-                        "upload_type": "directory"
+                        "upload_type": "directory",
+                        "version": getattr(result, "version", None),
                     }
                 )
                 

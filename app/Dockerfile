@@ -12,11 +12,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 # Copy dependency files
 COPY pyproject.toml .
-# COPY .python-version .
 COPY uv.lock .
 
-# Copy application code
-COPY app ./app
+# Copy only the app directory and necessary files
+COPY app/ ./app/
+# Copy any additional files needed at runtime (if any)
+# COPY README.md .
 
 # Expose port
 EXPOSE 8000

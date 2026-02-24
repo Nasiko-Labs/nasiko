@@ -7,7 +7,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, cast, Optional, List, Dict
 
 import typer
 from rich.console import Console
@@ -70,7 +70,7 @@ def _get_project_root() -> Path:
     raise FileNotFoundError("Could not find repository root (expected core/ and web/ directories)")
 
 
-def _resolve_services(service_filter: list[str] | None) -> dict[str, ImageSpec]:
+def _resolve_services(service_filter: Optional[List[str]]) -> Dict[str, ImageSpec]:
     """Validate and resolve service filter against known services (primary names or aliases)."""
     if not service_filter:
         return SERVICES
@@ -276,7 +276,7 @@ def build_cmd(
         ),
     ] = "karannasiko",
     tag: Annotated[str, typer.Option("--tag", "-t", help="Image tag")] = "latest",
-    service: Annotated[list[str] | None, typer.Option("--service", "-s", help="Specific service(s) to build (repeatable)")] = None,
+    service: Annotated[Optional[List[str]], typer.Option("--service", "-s", help="Specific service(s) to build (repeatable)")] = None,
     platform: Annotated[str, typer.Option("--platform", help="Target platform(s), comma-separated for multi-platform")] = "linux/amd64",
     multi_platform: Annotated[bool, typer.Option("--multi-platform", help="Build for both amd64 and arm64")] = False,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Build without Docker cache")] = False,
@@ -319,7 +319,7 @@ def push_cmd(
         ),
     ] = "karannasiko",
     tag: Annotated[str, typer.Option("--tag", "-t", help="Image tag")] = "latest",
-    service: Annotated[list[str] | None, typer.Option("--service", "-s", help="Specific service(s) to push (repeatable)")] = None,
+    service: Annotated[Optional[List[str]], typer.Option("--service", "-s", help="Specific service(s) to push (repeatable)")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print commands without executing")] = False,
 ) -> None:
     """Push Docker images to the registry."""
@@ -350,7 +350,7 @@ def build_push_cmd(
         ),
     ] = "karannasiko",
     tag: Annotated[str, typer.Option("--tag", "-t", help="Image tag")] = "latest",
-    service: Annotated[list[str] | None, typer.Option("--service", "-s", help="Specific service(s) (repeatable)")] = None,
+    service: Annotated[Optional[List[str]], typer.Option("--service", "-s", help="Specific service(s) (repeatable)")] = None,
     platform: Annotated[str, typer.Option("--platform", help="Target platform(s), comma-separated for multi-platform")] = "linux/amd64",
     multi_platform: Annotated[bool, typer.Option("--multi-platform", help="Build for both amd64 and arm64")] = False,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Build without Docker cache")] = False,

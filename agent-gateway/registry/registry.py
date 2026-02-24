@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException
 from kubernetes import client, config, watch
 from pydantic import BaseModel
 from pythonjsonlogger import jsonlogger
+import docker
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -35,16 +36,25 @@ KONG_ADMIN_URL = os.getenv("KONG_ADMIN_URL", "http://kong-gateway:8001")
 REGISTRY_INTERVAL = int(os.getenv("REGISTRY_INTERVAL", "30"))
 AGENTS_NAMESPACE = os.getenv("AGENTS_NAMESPACE", "nasiko-agents")
 PLATFORM_NAMESPACE = os.getenv("PLATFORM_NAMESPACE", "nasiko")
+AGENTS_NETWORK = os.getenv("AGENTS_NETWORK", "agents-net")
 K8S_ENABLED = os.getenv("K8S_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+
 if not K8S_ENABLED:
-    logger.info("K8S_ENABLED=false; Kubernetes discovery disabled")
+    logger.info("K8S_ENABLED=false; Using Docker container discovery")
+else:
+    logger.info("K8S_ENABLED=true; Using Kubernetes service discovery")
 
 # FastAPI app for health checks and status
-app = FastAPI(title="Kong Kubernetes Service Registry", version="1.0.0")
+app = FastAPI(
+    title="Kong Service Registry", 
+    version="1.0.0",
+    description="Automatic service discovery and registration for Kong API Gateway. Supports both Kubernetes and Docker container discovery."
+)
 
 # Global state
 current_services: Set[str] = set()
 k8s_client = None
+docker_client = None
 
 
 class ServiceInfo(BaseModel):
@@ -85,6 +95,23 @@ def get_k8s_client():
             logger.error(f"Failed to initialize Kubernetes client: {e}")
             raise
     return k8s_client
+
+
+def get_docker_client():
+    """Initialize Docker client."""
+    global docker_client
+    if K8S_ENABLED:  # Only use Docker client when K8S is disabled
+        return None
+    if docker_client is None:
+        try:
+            docker_client = docker.from_env()
+            # Test connection
+            docker_client.ping()
+            logger.info("Docker client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Docker client: {e}")
+            raise
+    return docker_client
 
 
 def check_kong_health() -> bool:
@@ -191,6 +218,103 @@ def get_k8s_services() -> List[ServiceInfo]:
 
     except Exception as e:
         logger.error(f"Error discovering services: {e}")
+
+    return services
+
+
+def get_docker_services() -> List[ServiceInfo]:
+    """Discover agent containers from Docker on the agents network."""
+    services = []
+
+    try:
+        if K8S_ENABLED:  # Only discover Docker containers when K8S is disabled
+            return services
+        
+        docker_client = get_docker_client()
+        if docker_client is None:
+            return services
+
+        # Get all containers connected to the agents network
+        try:
+            # Get the agents network
+            agents_network = docker_client.networks.get(AGENTS_NETWORK)
+        except docker.errors.NotFound:
+            logger.warning(f"Docker network '{AGENTS_NETWORK}' not found")
+            return services
+
+        # Get containers connected to this network
+        containers = agents_network.containers
+        
+        for container in containers:
+            try:
+                # Refresh container info
+                container.reload()
+                
+                container_name = container.name
+                container_status = container.status
+
+                # Skip non-running containers
+                if container_status != 'running':
+                    logger.debug(f"Skipping non-running container: {container_name} (status: {container_status})")
+                    continue
+
+                # Skip Kong itself and other infrastructure containers
+                if container_name in [
+                    'kong-gateway',
+                    'kong-database', 
+                    'kong-migrations',
+                    'kong-service-registry',
+                    'nasiko-backend',
+                    'nasiko-web',
+                    'nasiko-router',
+                    'nasiko-auth-service',
+                    'nasiko-chat-history',
+                    'redis',
+                    'mongodb',
+                    'phoenix-observability'
+                ]:
+                    logger.debug(f"Skipping infrastructure container: {container_name}")
+                    continue
+
+                # Only consider agent containers (those that start with 'agent-')
+                if not container_name.startswith('agent-'):
+                    logger.debug(f"Skipping non-agent container: {container_name}")
+                    continue
+
+                # Get container port - look for exposed port 5000
+                service_port = None
+                if hasattr(container, 'ports') and container.ports:
+                    # Look for port 5000/tcp
+                    port_info = container.ports.get('5000/tcp')
+                    if port_info:
+                        # Use internal port 5000 for network communication
+                        service_port = 5000
+                
+                if service_port is None:
+                    logger.warning(f"Container {container_name} has no port 5000 exposed")
+                    continue
+
+                # Use container name as hostname for network communication
+                service_host = container_name
+                
+                service_info = ServiceInfo(
+                    name=container_name,
+                    host=service_host,
+                    port=service_port,
+                    path=f"/agents/{container_name}",
+                    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+                    namespace="docker-agents"  # Use a different namespace for Docker containers
+                )
+
+                services.append(service_info)
+                logger.info(f"Discovered agent container: {container_name} at {service_host}:{service_port}")
+
+            except Exception as e:
+                logger.error(f"Error processing container {container.name}: {e}")
+                continue
+
+    except Exception as e:
+        logger.error(f"Error discovering Docker containers: {e}")
 
     return services
 
@@ -460,16 +584,17 @@ def register_static_proxies():
             "preserve_host": False,
             "middlewares": ["cors", "nasiko-auth", "chat-logger"]  # Full middleware with CORS
         },
-        # Static landing page - served directly by Kong
+        # Static landing page - forward to web app
         {
             "name": "landing-page",
-            "host": "httpbin.org",  # Dummy host, request will be terminated by Kong plugin
-            "port": 80,
+            "host": f"nasiko-web.{PLATFORM_NAMESPACE}.svc.cluster.local",
+            "port": 4000,
             "paths": ["/"],
-            "methods": ["GET"],
+            "upstream_path": "/app/",
+            "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
             "strip_path": False,
-            "preserve_host": False,
-            "middlewares": ["cors", "static-landing"]  # CORS + static response
+            "preserve_host": True,
+            "middlewares": ["cors"]  # CORS only
         },
         # N8N workflow automation service
         {
@@ -676,7 +801,7 @@ def apply_middlewares_to_route(route_name, middlewares):
         "chat-logger": {
             "name": "chat-logger",
             "config": {
-                "chat_service_url": "http://localhost:8002",  # Chat service as sidecar
+                "chat_service_url": "http://localhost:8002" if K8S_ENABLED else "http://nasiko-chat-history:8002",
                 "timeout": 5000
             }
         },
@@ -700,42 +825,12 @@ def apply_middlewares_to_route(route_name, middlewares):
                 "body": """<!DOCTYPE html>
 <html>
 <head>
-    <title>Nasiko Platform</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0; padding: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh; display: flex; align-items: center; justify-content: center;
-        }
-        .container {
-            max-width: 600px; text-align: center; color: white; padding: 40px;
-            background: rgba(255,255,255,0.1); border-radius: 20px; backdrop-filter: blur(10px);
-        }
-        h1 { font-size: 3em; margin-bottom: 0.5em; font-weight: 300; }
-        p { font-size: 1.2em; margin-bottom: 2em; opacity: 0.9; }
-        .buttons { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
-        .btn {
-            background: rgba(255,255,255,0.2); color: white; padding: 15px 30px;
-            text-decoration: none; border-radius: 10px; font-weight: 500;
-            transition: all 0.3s ease; border: 1px solid rgba(255,255,255,0.3);
-        }
-        .btn:hover { background: rgba(255,255,255,0.3); transform: translateY(-2px); }
-        .logo { font-size: 4em; margin-bottom: 20px; }
-    </style>
+    <meta http-equiv="refresh" content="0; url=/app" />
+    <title>Redirecting...</title>
 </head>
 <body>
-    <div class="container">
-        <div class="logo">🚀</div>
-        <h1>Nasiko Platform</h1>
-        <p>AI-powered development platform for the future</p>
-        <div class="buttons">
-            <a href="/app" class="btn">Launch App</a>
-            <a href="/router" class="btn">API Router</a>
-            <a href="/auth/users/login" class="btn">Login</a>
-        </div>
-    </div>
+    <p>Redirecting to <a href="/app">/app</a>...</p>
+    <script>window.location.href = "/app"</script>
 </body>
 </html>"""
             }
@@ -797,8 +892,13 @@ async def sync_services():
                     logger.error(f"Plugin/proxy configuration failed: {e}")
                 # Continue even if plugin configuration fails
 
-            # Discover services
-            services = get_k8s_services()
+            # Discover services based on deployment type
+            if K8S_ENABLED:
+                services = get_k8s_services()
+                logger.debug(f"Discovered {len(services)} Kubernetes services")
+            else:
+                services = get_docker_services()
+                logger.debug(f"Discovered {len(services)} Docker containers")
 
             # Register/update services (dynamic agents with full middleware)
             successful_registrations = set()
@@ -860,14 +960,20 @@ async def list_services():
 async def trigger_sync():
     """Manually trigger a service sync."""
     try:
-        services = get_k8s_services()
+        # Discover services based on deployment type
+        if K8S_ENABLED:
+            services = get_k8s_services()
+            discovery_type = "Kubernetes"
+        else:
+            services = get_docker_services()
+            discovery_type = "Docker"
+            
         registered = 0
-
         for service in services:
             if register_service_in_kong(service):
                 registered += 1
 
-        return {"message": f"Sync completed. Registered {registered} services."}
+        return {"message": f"Sync completed. Registered {registered} {discovery_type} services."}
 
     except Exception as e:
         logger.error(f"Manual sync failed: {e}")

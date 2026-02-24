@@ -34,7 +34,7 @@
     "webhook_timeout": {
       "type": "integer", 
       "description": "Timeout for webhook calls in seconds",
-      "default": 30,
+      "default": 120,
       "env_var": "WEBHOOK_TIMEOUT"
     }
   },

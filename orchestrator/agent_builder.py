@@ -12,7 +12,7 @@ from pathlib import Path
 from docker_utils import run_cmd
 from registry_manager import RegistryManager
 from instrumentation_injector import InstrumentationInjector
-from config import AGENTS_DIRECTORY, DOCKER_NETWORK, LANGTRACE_API_KEY, LANGTRACE_API_HOST, LANGTRACE_ENABLED
+from config import AGENTS_DIRECTORY, DOCKER_NETWORK
 
 logger = logging.getLogger(__name__)
 
@@ -61,25 +61,13 @@ class AgentBuilder:
         logger.info(f"Building agent: {agent_folder_name}")
         
         try:
-            # Get individual API key for this agent
-            agent_api_key = None
-            if LANGTRACE_ENABLED and LANGTRACE_API_HOST:
-                agent_api_key = self.registry_manager.get_agent_api_key(agent_folder_name, langtrace_host=LANGTRACE_API_HOST)
-                if not agent_api_key:
-                    logger.warning(f"No API key found for {agent_folder_name}, using fallback")
-                    agent_api_key = LANGTRACE_API_KEY
-            
             # Create temp directory and copy agent files
             temp_dir = Path(tempfile.mkdtemp())
             agent_temp_path = temp_dir / agent_folder_name
             shutil.copytree(agent_folder, agent_temp_path)
             
-            # Inject LangTrace configuration
-            if LANGTRACE_ENABLED:
-                self.injector.inject_langtrace_config(agent_temp_path, agent_folder_name)
-            
             # Build instrumented Docker image
-            if not self._build_instrumented_image(agent_temp_path, agent_folder_name, agent_api_key):
+            if not self._build_instrumented_image(agent_temp_path, agent_folder_name, None):
                 return False
             
             # Deploy agent with updated compose
@@ -153,25 +141,13 @@ class AgentBuilder:
         try:
             agent_folder = Path(agent_path)
             
-            # Get individual API key for this agent
-            agent_api_key = None
-            if LANGTRACE_ENABLED and LANGTRACE_API_HOST:
-                agent_api_key = self.registry_manager.get_agent_api_key(agent_name, langtrace_host=LANGTRACE_API_HOST)
-                if not agent_api_key:
-                    self.logger.warning(f"No API key found for {agent_name}, using fallback")
-                    agent_api_key = LANGTRACE_API_KEY
-            
             # Create temp directory and copy agent files
             temp_dir = Path(tempfile.mkdtemp())
             agent_temp_path = temp_dir / agent_name
             shutil.copytree(agent_folder, agent_temp_path)
             
-            # Inject LangTrace configuration
-            if LANGTRACE_ENABLED:
-                self.injector.inject_langtrace_config(agent_temp_path, agent_name)
-            
             # Build instrumented Docker image
-            if not self._build_instrumented_image(agent_temp_path, agent_name, agent_api_key):
+            if not self._build_instrumented_image(agent_temp_path, agent_name, None):
                 shutil.rmtree(temp_dir)
                 return {
                     'success': False,
@@ -270,6 +246,7 @@ class AgentBuilder:
             logger.error(f"No Dockerfile found for {agent_folder_name}, skipping...")
             return False
 
+
         try:
             # Check if image already exists locally (optimization for re-deployments)
             image_tag = f"{agent_folder_name}_instrumented"
@@ -281,7 +258,18 @@ class AgentBuilder:
 
             logger.info(f"Building new instrumented image for {agent_folder_name}")
 
+            # Check if image already exists locally (optimization for re-deployments)
+            image_tag = f"{agent_folder_name}_instrumented"
+            result = run_cmd(["docker", "image", "inspect", image_tag], check=False)
+
+            if result.returncode == 0:
+                logger.info(f"Docker image already exists: {image_tag} - reusing cached image (fast path)")
+                return True
+
+            logger.info(f"Building new instrumented image for {agent_folder_name}")
+
             dockerfile_content = dockerfile_path.read_text()
+
 
             # Inject comprehensive instrumentation packages
             instrumentation_install = f'''
@@ -304,11 +292,7 @@ class AgentBuilder:
                 opentelemetry-instrumentation-sqlalchemy \\
                 opentelemetry-instrumentation-redis \\
                 opentelemetry-instrumentation-boto3sqs \\
-                "langtrace-python-sdk>=3.8.21"
                 
-            ENV OTEL_SERVICE_NAME={agent_folder_name}
-            ENV LANGTRACE_API_KEY={agent_api_key}
-            ENV LANGTRACE_API_HOST={LANGTRACE_API_HOST}
             ENV ROOT_PATH=/{agent_folder_name}
             '''
             
@@ -424,3 +408,4 @@ class AgentBuilder:
         except Exception as e:
             logger.error(f"Error deploying agent {agent_folder_name}: {e}")
             return False
+

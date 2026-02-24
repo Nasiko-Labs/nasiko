@@ -176,53 +176,53 @@ def _configure_docker_desktop_for_harbor(registry_password: str):
     """Configure Docker Desktop daemon for Harbor registry access"""
     import json
     from pathlib import Path
-    
+
     # Configuration
     DOCKER_CONFIG_DIR = Path.home() / ".docker"
     DAEMON_JSON_PATH = DOCKER_CONFIG_DIR / "daemon.json"
     HARBOR_NODEPORT = "30500"
     HARBOR_CORE_NODEPORT = "30002"
-    
+
     console.print("  🔧 Configuring Docker Desktop daemon...")
-    
+
     # Create .docker directory if it doesn't exist
     DOCKER_CONFIG_DIR.mkdir(exist_ok=True)
-    
+
     # Backup existing daemon.json if it exists
     if DAEMON_JSON_PATH.exists():
         backup_path = DAEMON_JSON_PATH.with_suffix(f".backup.{int(time.time())}")
         import shutil
         shutil.copy2(DAEMON_JSON_PATH, backup_path)
         console.print(f"    📋 Backed up existing config to {backup_path.name}")
-    
+
     # Read existing configuration or create new one
     if DAEMON_JSON_PATH.exists():
         with open(DAEMON_JSON_PATH) as f:
             existing_config = json.load(f)
     else:
         existing_config = {}
-    
+
     # Add insecure registries
     if 'insecure-registries' not in existing_config:
         existing_config['insecure-registries'] = []
-    
+
     new_registries = [
         f"localhost:{HARBOR_NODEPORT}",
         f"127.0.0.1:{HARBOR_NODEPORT}",
         f"localhost:{HARBOR_CORE_NODEPORT}",
         f"127.0.0.1:{HARBOR_CORE_NODEPORT}"
     ]
-    
+
     for registry in new_registries:
         if registry not in existing_config['insecure-registries']:
             existing_config['insecure-registries'].append(registry)
-    
+
     # Write updated configuration
     with open(DAEMON_JSON_PATH, 'w') as f:
         json.dump(existing_config, f, indent=2)
-    
+
     console.print("    ✅ Docker daemon configuration updated")
-    
+
     # Restart Docker Desktop
     console.print("    🔄 Restarting Docker Desktop...")
     try:
@@ -231,10 +231,10 @@ def _configure_docker_desktop_for_harbor(registry_password: str):
             "osascript", "-e", 'tell application "Docker Desktop" to quit'
         ], capture_output=True, timeout=10)
         time.sleep(5)
-        
+
         # Start Docker Desktop
         subprocess.run(["open", "-a", "Docker Desktop"], check=True)
-        
+
         # Wait for Docker to be ready
         console.print("    ⏳ Waiting for Docker Desktop to restart...")
         timeout = 180  # Increased from 60 to 180 (6 minutes total)
@@ -260,10 +260,10 @@ def _configure_docker_desktop_for_harbor(registry_password: str):
                 return
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 time.sleep(2)
-        
+
         console.print("    [yellow]⚠️  Timeout waiting for Docker Desktop to start[/]")
         console.print("    [yellow]   Please ensure Docker Desktop is running before deploying agents[/]")
-        
+
     except Exception as e:
         console.print(f"    [yellow]⚠️  Could not restart Docker Desktop automatically: {e}[/]")
         console.print("    [yellow]   Please restart Docker Desktop manually[/]")
@@ -272,20 +272,20 @@ def _setup_harbor_credentials(registry_user: str, registry_password: str):
     """Setup Kubernetes registry credentials for Harbor access"""
     NAMESPACE = "nasiko-agents"
     HARBOR_NODEPORT = "30500"
-    
+
     console.print("  🔐 Setting up Kubernetes registry credentials...")
-    
+
     try:
         # Create namespace
         result = subprocess.run([
-            "kubectl", "create", "namespace", NAMESPACE, 
+            "kubectl", "create", "namespace", NAMESPACE,
             "--dry-run=client", "-o", "yaml"
         ], capture_output=True, text=True, check=True)
-        
+
         subprocess.run([
             "kubectl", "apply", "-f", "-"
         ], input=result.stdout, text=True, capture_output=True, check=True)
-        
+
         # Create cluster DNS registry credentials (for BuildKit)
         result = subprocess.run([
             "kubectl", "create", "secret", "docker-registry", "agent-registry-credentials",
@@ -295,28 +295,28 @@ def _setup_harbor_credentials(registry_user: str, registry_password: str):
             f"-n", NAMESPACE,
             "--dry-run=client", "-o", "yaml"
         ], capture_output=True, text=True, check=True)
-        
+
         subprocess.run([
             "kubectl", "apply", "-f", "-"
         ], input=result.stdout, text=True, capture_output=True, check=True)
-        
+
         # Create NodePort registry credentials (for Docker daemon)
         result = subprocess.run([
-            "kubectl", "create", "secret", "docker-registry", "agent-registry-credentials-nodeport", 
+            "kubectl", "create", "secret", "docker-registry", "agent-registry-credentials-nodeport",
             f"--docker-server=localhost:{HARBOR_NODEPORT}",
             f"--docker-username={registry_user}",
             f"--docker-password={registry_password}",
             f"-n", NAMESPACE,
             "--dry-run=client", "-o", "yaml"
         ], capture_output=True, text=True, check=True)
-        
+
         subprocess.run([
             "kubectl", "apply", "-f", "-"
         ], input=result.stdout, text=True, capture_output=True, check=True)
-        
+
         # Wait for secrets to be fully created before patching
         time.sleep(2)
-        
+
         # Wait for default service account to be created (K8s creates it automatically but takes time)
         console.print("    ⏳ Waiting for default service account...")
         for i in range(30):  # Wait up to 30 seconds
@@ -335,23 +335,23 @@ def _setup_harbor_credentials(registry_user: str, registry_password: str):
             subprocess.run([
                 "kubectl", "create", "serviceaccount", "default", "-n", NAMESPACE
             ], capture_output=True, check=True)
-        
+
         # Patch default service account using stdin to avoid shell escaping issues
         patch_json = json.dumps({
             "imagePullSecrets": [
                 {"name": "agent-registry-credentials-nodeport"}
             ]
         })
-        
+
         # Use kubectl patch with --patch-file to avoid shell escaping issues
         subprocess.run([
             "kubectl", "patch", "serviceaccount", "default",
             f"-n", NAMESPACE,
             "--patch", patch_json
         ], capture_output=True, check=True, text=True)
-        
+
         console.print("    ✅ Kubernetes registry credentials configured")
-        
+
     except subprocess.CalledProcessError as e:
         console.print(f"    [yellow]⚠️  Error setting up registry credentials: {e}[/]")
         if e.stderr:
@@ -363,9 +363,9 @@ def _setup_local_port_forwarding():
     LOCAL_PORT = "8000"
     GATEWAY_SERVICE = "kong-gateway"
     NAMESPACE = "nasiko"
-    
+
     console.print(f"  📡 Setting up port forwarding {LOCAL_PORT}:80...")
-    
+
     # Kill any existing port forwarding to avoid conflicts
     try:
         subprocess.run([
@@ -374,7 +374,7 @@ def _setup_local_port_forwarding():
         time.sleep(2)
     except Exception:
         pass  # Ignore if no existing process
-    
+
     # Wait for the service to be ready
     console.print(f"  ⏳ Waiting for {GATEWAY_SERVICE} service to be ready...")
     max_wait = 30  # 5 minutes
@@ -383,14 +383,14 @@ def _setup_local_port_forwarding():
             result = subprocess.run([
                 "kubectl", "get", "svc", GATEWAY_SERVICE, "-n", NAMESPACE
             ], capture_output=True, text=True, check=True)
-            
+
             # Check if service exists
             if GATEWAY_SERVICE in result.stdout:
                 console.print(f"    ✅ Service {GATEWAY_SERVICE} is ready")
                 break
         except subprocess.CalledProcessError:
             pass
-        
+
         if i % 6 == 0:  # Print every 30 seconds
             console.print(f"    [dim]Still waiting for service... ({i*5}s elapsed)[/]")
         time.sleep(5)
@@ -399,22 +399,22 @@ def _setup_local_port_forwarding():
         console.print(f"    [yellow]   You can set up port forwarding manually later:[/]")
         console.print(f"    [cyan]kubectl port-forward -n {NAMESPACE} svc/{GATEWAY_SERVICE} {LOCAL_PORT}:80[/]")
         return
-    
+
     # Setup port forwarding in background with subprocess for persistence
     try:
         console.print(f"    🚀 Starting persistent port forwarding...")
-        
+
         # Start port forwarding as a detached background process using Popen
         with open('/tmp/nasiko-port-forward.log', 'w') as logfile:
             subprocess.Popen([
-                "kubectl", "port-forward", "-n", NAMESPACE, 
+                "kubectl", "port-forward", "-n", NAMESPACE,
                 f"svc/{GATEWAY_SERVICE}", f"{LOCAL_PORT}:80"
-            ], stdout=logfile, stderr=subprocess.STDOUT, 
+            ], stdout=logfile, stderr=subprocess.STDOUT,
                start_new_session=True)  # Detach from parent session
-        
+
         # Give it more time to start
         time.sleep(5)
-        
+
         # Test if port forwarding is working with faster feedback
         max_retries = 15  # 30 seconds total for faster feedback
         for retry in range(max_retries):
@@ -424,7 +424,7 @@ def _setup_local_port_forwarding():
                 sock.settimeout(3)
                 result = sock.connect_ex(('localhost', int(LOCAL_PORT)))
                 sock.close()
-                
+
                 if result == 0:
                     # Port is accessible, declare success immediately
                     console.print(f"    ✅ Port forwarding active on localhost:{LOCAL_PORT}")
@@ -452,7 +452,7 @@ def _setup_local_port_forwarding():
                 else:
                     console.print(f"    [yellow]⚠️  Cannot verify port forwarding: {e}[/]")
                     console.print(f"    [yellow]   Port forwarding may still be starting in background[/]")
-            
+
     except Exception as e:
         console.print(f"    [yellow]⚠️  Could not start port forwarding: {e}[/]")
         console.print(f"    [yellow]   You can start it manually:[/]")
@@ -1397,14 +1397,14 @@ def bootstrap(
         active_registry_url = "harbor-registry.harbor.svc.cluster.local:5000"
         active_username = registry_user
         active_password = registry_pass
-        
+
         # Local Development Setup (when domain is not specified)
         if domain is None:
             console.print("[cyan]🏠 Detected local development setup - configuring Docker Desktop...[/]")
-            
+
             # Configure Docker Desktop for Harbor registry access
             _configure_docker_desktop_for_harbor(registry_pass)
-            
+
             # Setup Kubernetes registry credentials
             _setup_harbor_credentials(registry_user, registry_pass)
 

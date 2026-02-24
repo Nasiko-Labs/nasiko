@@ -7,10 +7,10 @@ log = logging.getLogger(__name__)
 def truncate_agent_cards(agent_cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
     Truncate agent cards to remove unnecessary fields for routing.
-    
+
     Args:
         agent_cards: List of agent card dictionaries
-        
+
     Returns:
         List of truncated agent card dictionaries
     """
@@ -22,19 +22,25 @@ def truncate_agent_cards(agent_cards: List[Dict[str, str]]) -> List[Dict[str, st
             description = agent_card.get("description")
 
             if not name or not description:
-                log.warning(f"Agent card missing name or description, skipping: {agent_card}")
+                log.warning(
+                    f"Agent card missing name or description, skipping: {agent_card}"
+                )
                 continue
 
             skills = []
             agent_skills = agent_card.get("skills", [])
 
             if not isinstance(agent_skills, list):
-                log.warning(f"Agent card skills is not a list for {name}, using empty list")
+                log.warning(
+                    f"Agent card skills is not a list for {name}, using empty list"
+                )
                 agent_skills = []
 
             for skill in agent_skills:
                 if not isinstance(skill, dict):
-                    log.warning(f"Invalid skill format for agent {name}, skipping skill")
+                    log.warning(
+                        f"Invalid skill format for agent {name}, skipping skill"
+                    )
                     continue
 
                 # Create a copy to avoid modifying original
