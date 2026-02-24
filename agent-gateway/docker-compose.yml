@@ -1,0 +1,196 @@
+services:
+  kong-database:
+    image: postgres:13
+    container_name: kong-database
+    environment:
+      POSTGRES_DB: kong
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong
+    volumes:
+      - kong_data:/var/lib/postgresql/data
+    networks:
+      - kong-net
+    restart: unless-stopped
+
+  kong-migrations:
+    image: kong:3.4
+    container_name: kong-migrations
+    command: kong migrations bootstrap
+    depends_on:
+      - kong-database
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+    networks:
+      - kong-net
+    restart: on-failure
+
+  kong:
+    image: kong:3.4
+    container_name: kong-gateway
+    depends_on:
+      - kong-database
+      - kong-migrations
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_GUI_URL: http://localhost:9102
+      KONG_PLUGINS: bundled,chat-logger
+      KONG_LUA_PACKAGE_PATH: /usr/local/custom/?.lua;;
+    volumes:
+      - ./plugins:/usr/local/custom/kong/plugins
+    ports:
+      - "9100:8000"   # Kong proxy port - your main API gateway entry point
+      - "9101:8001"   # Kong admin API port
+      - "9102:8002"   # Kong Manager (GUI)
+      - "9443:8443"   # Kong proxy SSL port
+    networks:
+      - kong-net
+      - agents-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+
+  konga:
+    image: pantsel/konga:latest
+    container_name: konga-dashboard
+    depends_on:
+      - kong
+    environment:
+      NODE_ENV: development
+      KONGA_HOOK_TIMEOUT: 120000
+    ports:
+      - "1337:1337"   # Konga web UI
+    networks:
+      - kong-net
+    restart: unless-stopped
+
+  kong-service-registry:
+    build:
+      context: ./registry
+      dockerfile: Dockerfile
+    container_name: kong-service-registry
+    depends_on:
+      - kong
+    environment:
+      KONG_ADMIN_URL: http://kong:8001
+      DOCKER_SOCKET: /var/run/docker.sock
+      REGISTRY_INTERVAL: 30
+      AGENTS_NETWORK: agents-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "8080:8080"   # Service Registry API
+    networks:
+      - kong-net
+      - agents-net
+    restart: unless-stopped
+
+  nasiko-router:
+    build:
+      context: ./router
+      dockerfile: Dockerfile
+    container_name: nasiko-router
+    depends_on:
+      - kong
+    environment:
+      OLLAMA_SERVER: http://ollama:11434
+      NASIKO_BACKEND: http://nasiko-backend:8000/api/v1
+      OPENAI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+    volumes:
+      - ./router:/app/router  
+    ports:
+      - "8081:8000"   # Router API port
+    networks:
+      - kong-net
+      - agents-net
+    restart: unless-stopped
+
+  nasiko-auth-service:
+    build:
+      context: ../auth-service
+      dockerfile: Dockerfile
+    container_name: nasiko-auth-service
+    depends_on:
+      - kong
+      - auth-redis
+    environment:
+      MONGO_URL: mongodb://mongodb:27017
+      AUTH_DB_NAME: nasiko
+      REDIS_URL: redis://auth-redis:6379
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      NASIKO_BACKEND: http://nasiko-backend:8000/api/v1
+      PORT: 8001
+    ports:
+      - "8082:8001"   # Auth Service API port
+    networks:
+      - kong-net
+      - agents-net
+      - app-network  # Connect to main nasiko network for mongodb access
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  auth-redis:
+    image: redis:7-alpine
+    container_name: nasiko-auth-redis
+    ports:
+      - "6380:6379"   # Redis port for auth tokens
+    volumes:
+      - auth_redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - kong-net
+    restart: unless-stopped
+
+  chat-history-service:
+    build:
+      context: ./chat-history-service
+      dockerfile: Dockerfile
+    container_name: nasiko-chat-history
+    depends_on:
+      - kong
+    environment:
+      MONGO_URL: mongodb://mongodb:27017
+      CHAT_DB_NAME: nasiko
+    ports:
+      - "8083:8002"   # Chat History Service API port
+    networks:
+      - kong-net
+      - app-network  # Connect to main nasiko network for mongodb access
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  kong_data:
+  auth_redis_data:
+
+networks:
+  kong-net:
+    driver: bridge
+  agents-net:
+    external: true
+  app-network:
+    external: true

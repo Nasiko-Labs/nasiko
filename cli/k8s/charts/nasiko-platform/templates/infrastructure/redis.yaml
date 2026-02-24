@@ -1,0 +1,27 @@
+# Redis deployment using Bitnami OCI chart
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-install
+  namespace: nasiko
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    spec:
+      serviceAccountName: nasiko-backend-sa
+      restartPolicy: OnFailure
+      containers:
+      - name: helm-install
+        image: alpine/helm:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          helm upgrade --install redis oci://registry-1.docker.io/bitnamicharts/redis \
+            --namespace nasiko \
+            --set architecture=standalone \
+            --set auth.enabled=false \
+            --wait

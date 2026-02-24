@@ -1,0 +1,70 @@
+services:
+  langtrace-app:
+    container_name: langtrace
+    image: arithmicneeraj/nasiko-langtrace:latest
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    restart: always
+    networks:
+      - agents-net
+    depends_on:
+      postgres-db:
+        condition: service_started
+        required: true
+      clickhouse-db:
+        condition: service_healthy
+        required: true
+
+  postgres-db:
+    container_name: langtrace-postgres
+    image: postgres:16.2-bookworm
+    env_file:
+      - .env
+    ports:
+      - "6432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - agents-net
+
+  clickhouse-db:
+    container_name: langtrace-clickhouse
+    image: clickhouse/clickhouse-server:24.5.1.1763-alpine
+    environment:
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      - CLICKHOUSE_PASSWORD=${CLICK_HOUSE_PASSWORD}
+      - CLICKHOUSE_USER=${CLICK_HOUSE_USER}
+      - CLICKHOUSE_DB=${CLICK_HOUSE_DATABASE_NAME}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://langtrace-clickhouse:8123/ping || exit 1
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
+      interval: 30s
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks:
+      - agents-net
+
+  # langtrace-app-prod:
+  #   extends:
+  #     service: langtrace-app
+  #   build:
+  #     target: production
+  #   profiles:
+  #     - production
+  #   networks:
+  #     - agents-net
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+
+networks:
+  agents-net:
+    external: true

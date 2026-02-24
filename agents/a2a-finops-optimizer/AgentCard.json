@@ -1,0 +1,113 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "FinOps Optimizer Agent",
+  "description": "An agent that analyzes cloud costs, identifies optimization opportunities, and provides financial insights for cloud infrastructure management.",
+  "url": "http://localhost:5001/",
+  "agentFramework": "openai",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:5001/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:5001/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "analyze-cost-trends",
+      "name": "Analyze Cost Trends",
+      "description": "Analyze cloud cost trends across providers for specified time periods.",
+      "tags": [
+        "finops",
+        "cost analysis",
+        "trends"
+      ],
+      "examples": [
+        "Analyze our cloud cost trends for the last 30 days",
+        "Show me cost trends across all cloud providers for the past quarter"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "get-optimization-recommendations",
+      "name": "Get Optimization Recommendations",
+      "description": "Get detailed cost optimization recommendations based on resource usage patterns.",
+      "tags": [
+        "finops",
+        "optimization",
+        "recommendations"
+      ],
+      "examples": [
+        "What are the top cost optimization recommendations for our compute resources?",
+        "Give me aggressive optimization recommendations for all services"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "forecast-costs",
+      "name": "Forecast Costs",
+      "description": "Forecast future cloud costs based on current usage patterns and growth projections.",
+      "tags": [
+        "finops",
+        "forecasting",
+        "budget planning"
+      ],
+      "examples": [
+        "Forecast our cloud costs for the next 6 months",
+        "What will our annual cloud spend be with current growth?"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "analyze-resource-utilization",
+      "name": "Analyze Resource Utilization",
+      "description": "Analyze resource utilization patterns and identify underutilized or wasteful resources.",
+      "tags": [
+        "finops",
+        "utilization",
+        "waste identification"
+      ],
+      "examples": [
+        "Show me underutilized resources in our infrastructure",
+        "Find compute resources with utilization below 30%"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

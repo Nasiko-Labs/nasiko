@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "router"
+version = "0.1.0"
+description = "An agent router for Nasiko."
+authors = ["Arithmic labs"]
+license = "MIT"
+package-mode = false
+
+# Specify Python version >3.12 but <3.14
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+fastapi = ">=0.116.1"
+langchain = ">=0.3.27"
+langchain_core = ">=0.3.76"
+langchain_community = ">=0.3.27"
+langchain_ollama = ">=0.3.8"
+langchain-openai = ">=0.1.0"
+faiss-cpu = "^1.8.0"
+pydantic = ">=2.11.9"
+pydantic-settings = ">=2.0.0"
+typing_extensions = ">=4.15.0"
+uvicorn = ">=0.35.0"
+# transformers = ">=4.55.0"
+# torch = ">=2.8.0"
+# flax = ">=0.11.2"
+requests = "^2.31.0"
+python-multipart = "^0.0.7"
+httpx = ">=0.25.0"
+
+
+[tool.poetry.dev-dependencies]
+pytest = "<=8.3.5"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"

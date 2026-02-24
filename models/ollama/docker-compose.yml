@@ -1,0 +1,22 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./model:/root/.ollama/model
+      - ./ollama_start.sh:/root/ollama_start.sh
+    entrypoint: ["/bin/bash", "/root/ollama_start.sh"]
+    networks:
+      - agents-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  agents-net:
+    external: true

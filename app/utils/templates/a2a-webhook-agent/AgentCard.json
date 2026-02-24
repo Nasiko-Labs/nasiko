@@ -1,0 +1,45 @@
+{
+  "id": "a2a-webhook-agent",
+  "name": "Webhook Agent", 
+  "description": "An A2A agent that forwards messages to webhook endpoints and returns responses in standard A2A format",
+  "version": "1.0.0",
+  "author": "Nasiko Team",
+  "agent_url": "http://localhost:8085",
+  "agent_type": "webhook_proxy",
+  "capabilities": {
+    "streaming": false,
+    "input_modes": ["text"],
+    "output_modes": ["text"]
+  },
+  "skills": [
+    {
+      "id": "webhook_proxy",
+      "name": "Webhook Proxy",
+      "description": "Forward messages to webhook endpoints and return responses",
+      "tags": ["webhook", "proxy", "integration"],
+      "examples": [
+        "Send a message to the webhook",
+        "How are you doing today?", 
+        "Can you help me with my request?"
+      ]
+    }
+  ],
+  "configuration": {
+    "webhook_url": {
+      "type": "string",
+      "description": "The webhook URL to forward messages to",
+      "required": true,
+      "env_var": "WEBHOOK_URL"
+    },
+    "webhook_timeout": {
+      "type": "integer", 
+      "description": "Timeout for webhook calls in seconds",
+      "default": 120,
+      "env_var": "WEBHOOK_TIMEOUT"
+    }
+  },
+  "endpoints": {
+    "message": "/",
+    "health": "/health"
+  }
+}

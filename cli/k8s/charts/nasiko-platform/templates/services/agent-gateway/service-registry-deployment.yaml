@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-service-registry
+  namespace: nasiko
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-service-registry
+  template:
+    metadata:
+      labels:
+        app: k8s-service-registry
+    spec:
+      serviceAccountName: nasiko-backend-sa
+      containers:
+      - name: service-registry
+        image: {{ PUBLIC_REGISTRY }}/nasiko-service-registry:latest
+        imagePullPolicy: Always
+        env:
+        - name: KONG_ADMIN_URL
+          value: "http://kong-gateway:8001"
+        - name: REGISTRY_INTERVAL
+          value: "30"
+        - name: AGENTS_NAMESPACE
+          value: "nasiko-agents"
+        - name: PLATFORM_NAMESPACE
+          value: "nasiko"
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-service-registry
+  namespace: nasiko
+spec:
+  type: ClusterIP
+  selector:
+    app: k8s-service-registry
+  ports:
+  - port: 8080
+    targetPort: 8080

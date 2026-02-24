@@ -1,0 +1,113 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Business Intelligence Agent",
+  "description": "An agent that analyzes business performance, tracks key metrics, and provides executive insights for data-driven decision making.",
+  "url": "http://localhost:5000/",
+  "agentFramework": "openai",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:5000/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:5000/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "analyze-revenue-trends",
+      "name": "Analyze Revenue Trends",
+      "description": "Analyze revenue performance and trends across different time periods and revenue streams.",
+      "tags": [
+        "business intelligence",
+        "revenue analysis",
+        "financial metrics"
+      ],
+      "examples": [
+        "Show me our revenue trends for the last quarter",
+        "Analyze subscription revenue performance for the past 6 months"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "get-kpi-dashboard",
+      "name": "Get KPI Dashboard",
+      "description": "Generate comprehensive KPI dashboards for specific departments or company-wide metrics.",
+      "tags": [
+        "business intelligence",
+        "kpi",
+        "dashboard"
+      ],
+      "examples": [
+        "Generate a KPI dashboard for the sales department",
+        "Show me marketing performance metrics with industry benchmarks"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "forecast-business-metrics",
+      "name": "Forecast Business Metrics",
+      "description": "Forecast key business metrics including revenue, customer growth, and market expansion.",
+      "tags": [
+        "business intelligence",
+        "forecasting",
+        "predictive analytics"
+      ],
+      "examples": [
+        "Forecast our business metrics for the next 6 months",
+        "Predict revenue growth for the coming year"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "analyze-customer-segments",
+      "name": "Analyze Customer Segments",
+      "description": "Analyze customer segment performance, behavior patterns, and churn predictions.",
+      "tags": [
+        "business intelligence",
+        "customer analytics",
+        "segmentation"
+      ],
+      "examples": [
+        "Analyze our customer segments and churn patterns",
+        "Show enterprise customer performance with retention analysis"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

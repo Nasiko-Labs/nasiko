@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nasiko-web
+  namespace: nasiko
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nasiko-web
+  template:
+    metadata:
+      labels:
+        app: nasiko-web
+    spec:
+      containers:
+      - name: web
+        image: {{ PUBLIC_REGISTRY }}/nasiko-web:latest
+        ports:
+        - containerPort: 4000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: API_BASE_URL
+          value: "/api/v1"
+        - name: CHAT_SERVICE_URL
+          value: "/api/v1"
+        - name: ROUTER_URL
+          value: "/router"
+        - name: AUTH_BASE_URL
+          value: ""
+        - name: AGENTS_BASE_URL
+          value: "/agents"
+        - name: IS_DEVELOPMENT
+          value: "false"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nasiko-web
+  namespace: nasiko
+spec:
+  type: ClusterIP
+  selector:
+    app: nasiko-web
+  ports:
+  - protocol: TCP
+    port: 4000
+    targetPort: 4000

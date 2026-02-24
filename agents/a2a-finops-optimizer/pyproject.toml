@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a2a-finops-optimizer"
+version = "1.0.0"
+description = "FinOps optimization agent for cloud cost analysis and recommendations"
+authors = [
+    {name = "Nasiko AI Projects", email = "info@nasiko.ai"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "a2a",
+    "openai",
+    "uvicorn",
+    "starlette",
+    "click",
+    "python-dotenv",
+    "poc-obser"
+]
+
+[project.scripts]
+a2a-finops-optimizer = "src.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.yml"]

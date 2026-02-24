@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nasiko-manager-binding
+subjects:
+- kind: ServiceAccount
+  name: nasiko-backend-sa
+  namespace: nasiko
+roleRef:
+  kind: ClusterRole
+  name: nasiko-manager-role
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,63 @@
+services:
+  mongodb:
+    image: docker.io/library/mongo:latest
+    container_name: mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    env_file:
+      - .env
+    volumes:
+      - mongodb-data:/data/db
+      - ./init-scripts/mongo:/docker-entrypoint-initdb.d:ro
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"  # Expose to host for orchestrator access
+    networks:
+      - app-network
+
+
+  nasiko-backend:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+    container_name: nasiko-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+      - redis
+    env_file:
+      - .env
+    environment:
+      - MONGO_NASIKO_HOST=mongodb
+      - REDIS_HOST=redis
+      - REDIS_URL=redis://redis:6379
+      - LANGTRACE_BASE_URL=http://langtrace:3000
+      - USER_CREDENTIALS_ENCRYPTION_KEY=${USER_CREDENTIALS_ENCRYPTION_KEY}
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - AUTH_SERVICE_URL=http://nasiko-auth-service:8001
+    volumes:
+      - ../agents:/app/agents  # Mount host agents folder to container agents folder
+      - ../app:/app/app  # Mount application code
+    networks:
+      - app-network
+      - agents-net
+
+
+
+networks:
+  app-network:
+    external: true
+  agents-net:
+    external: true
+
+volumes:
+  mongodb-data:

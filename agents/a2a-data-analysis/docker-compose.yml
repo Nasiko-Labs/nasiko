@@ -1,0 +1,10 @@
+services:
+  a2a-data-analysis:
+    build: .
+    container_name: a2a-data-analysis
+    environment:
+      - OPENAI_API_KEY=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
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true

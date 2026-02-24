@@ -1,0 +1,15 @@
+services:
+  a2a-github-agent:
+    build: .
+    container_name: a2a-github-agent
+    environment:
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

@@ -1,0 +1,401 @@
+# Unified Docker Compose for Local Nasiko Development
+# Mimics the K8s bootstrap flow: Infrastructure -> Core -> Auth -> Gateway -> Router
+services:
+  # ============================================================================
+  # INFRASTRUCTURE LAYER (MongoDB, Redis)
+  # ============================================================================
+  mongodb:
+    image: docker.io/library/mongo:latest
+    container_name: mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongodb-data:/data/db
+      - ./app/init-scripts/mongo:/docker-entrypoint-initdb.d:ro
+    networks:
+      - app-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # CORE SERVICES LAYER (Backend)
+  # ============================================================================
+  nasiko-backend:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: nasiko-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      MONGO_NASIKO_USER: admin
+      MONGO_NASIKO_PASSWORD: password
+      MONGO_NASIKO_HOST: mongodb
+      MONGO_NASIKO_PORT: "27017"
+      MONGO_NASIKO_DATABASE: nasiko
+      REDIS_HOST: redis
+      REDIS_URL: redis://redis:6379
+      USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      AUTH_SERVICE_URL: http://nasiko-auth-service:8001
+      PHOENIX_SERVICE_URL: http://phoenix-observability:6006
+      K8S_ENABLED: "false"
+      BUILDKIT_HOST: ""
+      IMAGE_PULL_SECRET: ""
+    volumes:
+      - ./agents:/app/agents
+      - ./app:/app/app
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # AUTH SERVICE LAYER
+  # ============================================================================
+  nasiko-auth-service:
+    image: docker.io/karannasiko/nasiko-auth:latest
+    platform: linux/amd64
+    container_name: nasiko-auth-service
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MONGO_URL: mongodb://admin:password@mongodb:27017
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      AUTH_DB_NAME: nasiko
+      PORT: "8001"
+    ports:
+      - "8082:8001"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # GATEWAY LAYER (Kong + Service Registry + Chat History)
+  # ============================================================================
+  kong-database:
+    image: postgres:13
+    container_name: kong-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kong
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong
+    volumes:
+      - kong-db-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  kong-migrations:
+    image: kong:3.4
+    container_name: kong-migrations
+    restart: on-failure
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+    networks:
+      - app-network
+    command: kong migrations bootstrap
+
+  kong-gateway:
+    image: kong:3.4
+    container_name: kong-gateway
+    restart: unless-stopped
+    depends_on:
+      kong-database:
+        condition: service_healthy
+      kong-migrations:
+        condition: service_completed_successfully
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8003
+      KONG_ADMIN_GUI_URL: http://localhost:9102
+      KONG_PLUGINS: bundled,chat-logger
+      KONG_LUA_PATH: /opt/kong/custom-plugins/?.lua;;
+      KONG_LUA_PACKAGE_PATH: /opt/kong/custom-plugins/?.lua;;
+    volumes:
+      - ./agent-gateway/plugins:/opt/kong/custom-plugins/kong/plugins
+    ports:
+      - "9100:8000"       # Kong proxy port
+      - "9101:8001"       # Kong admin API port
+      - "9102:8003"       # Kong Manager (GUI)
+      - "9443:8443"       # Kong proxy SSL port
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+
+  chat-history-service:
+    build:
+      context: ./agent-gateway/chat-history-service
+      dockerfile: Dockerfile
+    container_name: nasiko-chat-history
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://admin:password@mongodb:27017
+      CHAT_DB_NAME: nasiko
+    ports:
+      - "8083:8002"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  kong-service-registry:
+    build:
+      context: ./agent-gateway/registry
+      dockerfile: Dockerfile
+    container_name: kong-service-registry
+    restart: unless-stopped
+    depends_on:
+      kong-gateway:
+        condition: service_healthy
+    environment:
+      KONG_ADMIN_URL: http://kong-gateway:8001
+      DOCKER_SOCKET: /var/run/docker.sock
+      REGISTRY_INTERVAL: 30
+      AGENTS_NETWORK: core_agents-net
+      K8S_ENABLED: "false"
+      KONG_AUTH_HOST: nasiko-auth-service
+      KONG_BACKEND_HOST: nasiko-backend
+      KONG_WEB_HOST: nasiko-web
+      KONG_ROUTER_HOST: nasiko-router
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # ROUTER SERVICE LAYER
+  # ============================================================================
+  nasiko-router:
+    build:
+      context: ./agent-gateway/router
+      dockerfile: Dockerfile
+    container_name: nasiko-router
+    restart: unless-stopped
+    depends_on:
+      - nasiko-backend
+    environment:
+      OLLAMA_SERVER: http://ollama:11434
+      NASIKO_BACKEND: http://nasiko-backend:8000/api/v1
+      KONG_GATEWAY_URL: http://kong-gateway:8000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    ports:
+      - "8081:8000"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/health').raise_for_status()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # OBSERVABILITY LAYER (Phoenix)
+  # ============================================================================
+  phoenix-observability:
+    image: arizephoenix/phoenix:latest
+    container_name: phoenix-observability
+    restart: unless-stopped
+    ports:
+      - "${NASIKO_PORT_PHOENIX:-6006}:6006"   # Phoenix Web UI
+      - "${NASIKO_PORT_PHOENIX_GRPC:-4317}:4317"  # OTLP gRPC
+      - "${NASIKO_PORT_PHOENIX_HTTP:-4318}:4318"  # OTLP HTTP
+    environment:
+      PHOENIX_HOST: "0.0.0.0"
+      PHOENIX_PORT: "6006"
+      PHOENIX_GRPC_PORT: "4317"
+      PHOENIX_HTTP_PORT: "4318"
+    volumes:
+      - phoenix-data:/root/.phoenix
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6006/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # WEB FRONTEND LAYER
+  # ============================================================================
+  nasiko-web:
+    image: docker.io/karannasiko/nasiko-web:latest
+    platform: linux/amd64
+    container_name: nasiko-web
+    restart: unless-stopped
+    depends_on:
+      kong-gateway:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      API_BASE_URL: /api/v1
+      CHAT_SERVICE_URL: /api/v1
+      ROUTER_URL: /router
+      AUTH_BASE_URL: ""
+      AGENTS_BASE_URL: /agents
+      IS_DEVELOPMENT: "false"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # SUPERUSER CREATION JOB
+  # ============================================================================
+  nasiko-superuser-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker  
+    container_name: nasiko-superuser-init
+    depends_on:
+      - nasiko-auth-service
+      - nasiko-backend
+    environment:
+      SUPERUSER_EMAIL: ${SUPERUSER_EMAIL:-admin@nasiko.com}
+      SUPERUSER_USERNAME: ${SUPERUSER_USERNAME:-admin}
+      SUPERUSER_PASSWORD: ${SUPERUSER_PASSWORD:-admin123}
+      AUTH_SERVICE_URL: http://nasiko-auth-service:8001
+    networks:
+      - app-network
+    volumes:
+      - ./orchestrator:/app/orchestrator
+      - ./superuser_init.py:/app/superuser_init.py:ro
+    entrypoint: ["python"]
+    command: ["/app/superuser_init.py"]
+    restart: "no"
+
+  # ============================================================================
+  # LOCAL REDIS STREAM LISTENER (for agent deployment)
+  # ============================================================================
+  nasiko-redis-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: nasiko-redis-listener
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - nasiko-backend
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      DOCKER_NETWORK: core_agents-net
+      NASIKO_API_URL: http://nasiko-backend:8000
+      KONG_GATEWAY_URL: http://localhost:9100
+      K8S_ENABLED: "false"
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./agents:/app/agents:ro
+      - ./orchestrator:/app/orchestrator:ro
+      - /tmp/agent-builds:/tmp/agent-builds
+    networks:
+      - app-network
+      - agents-net
+    command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
+
+volumes:
+  mongodb-data:
+  redis-data:
+  kong-db-data:
+  phoenix-data:
+
+networks:
+  app-network:
+    driver: bridge
+  agents-net:
+    driver: bridge

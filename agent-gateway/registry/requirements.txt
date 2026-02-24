@@ -1,0 +1,7 @@
+requests==2.31.0
+kubernetes==28.1.0
+docker==7.0.0
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+python-json-logger==2.0.7

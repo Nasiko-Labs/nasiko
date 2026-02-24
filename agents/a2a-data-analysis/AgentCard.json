@@ -1,0 +1,96 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Data Analysis Agent",
+  "description": "An agent that performs statistical analysis and data visualization tasks on datasets.",
+  "url": "http://localhost:10009/",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:10009/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:10009/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "analyze-dataset",
+      "name": "Analyze Dataset",
+      "description": "Perform statistical analysis on uploaded datasets.",
+      "tags": [
+        "data-analysis",
+        "statistics",
+        "visualization"
+      ],
+      "examples": [
+        "Analyze this CSV file for trends",
+        "What are the key statistics for this dataset?"
+      ],
+      "inputModes": [
+        "text",
+        "application/csv"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "create-visualization",
+      "name": "Create Visualization",
+      "description": "Generate charts and graphs from data.",
+      "tags": [
+        "visualization",
+        "charts",
+        "graphs"
+      ],
+      "examples": [
+        "Create a bar chart from this data",
+        "Generate a scatter plot showing correlation"
+      ],
+      "inputModes": [
+        "text",
+        "application/csv"
+      ],
+      "outputModes": [
+        "image/png",
+        "application/json"
+      ]
+    },
+    {
+      "id": "calculate-metrics",
+      "name": "Calculate Metrics",
+      "description": "Calculate key performance indicators and metrics.",
+      "tags": [
+        "metrics",
+        "kpi",
+        "calculation"
+      ],
+      "examples": [
+        "Calculate monthly growth rate",
+        "What's the average conversion rate?"
+      ],
+      "inputModes": [
+        "text",
+        "application/csv"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

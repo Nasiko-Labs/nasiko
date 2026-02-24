@@ -1,0 +1,49 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        include_metadata: true
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: detailed
+
+  # OTLP HTTP to Langtrace - endpoint without /v1/traces since it gets appended
+  ## we need to keep compress false maybe and content-type application/json , will experiment later
+  otlphttp:
+    encoding: json
+    compression: none
+    # endpoint: http://host.docker.internal:3000/api
+    traces_endpoint: http://host.docker.internal:3000/api/trace
+    headers:
+      x-api-key: a1bc751c01d885445d86165b52e42be71e1917eaee3f1d6ad4271bfda7168578
+      Content-Type: "application/json"
+      User-Agent: "opentelemetry-python"
+    tls:
+      insecure: true
+
+processors:
+  batch:
+
+service:
+  telemetry:
+    logs:
+      level: debug
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp, debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

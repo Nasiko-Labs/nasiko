@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nasiko-k8s-build-worker
+  namespace: nasiko
+spec:
+  replicas: 2  # Can scale for parallel builds
+  selector:
+    matchLabels:
+      app: nasiko-k8s-build-worker
+  template:
+    metadata:
+      labels:
+        app: nasiko-k8s-build-worker
+    spec:
+      serviceAccountName: nasiko-backend-sa  # Reuse backend SA for K8s API access
+      containers:
+      - name: worker
+        image: {{ PUBLIC_REGISTRY }}/nasiko-k8s-build-worker:latest  # Replaced at runtime by app_setup.py
+        imagePullPolicy: Always
+        command: ["python", "-m", "worker.k8s_build_worker"]
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        env:
+        # MongoDB Configuration
+        - name: MONGO_NASIKO_USER
+          value: "{{ MONGO_NASIKO_USER }}"
+        - name: MONGO_NASIKO_PASSWORD
+          value: "{{ MONGO_NASIKO_PASSWORD }}"
+        - name: MONGO_NASIKO_HOST
+          value: "mongodb"
+        - name: MONGO_NASIKO_PORT
+          value: "27017"
+        - name: MONGO_NASIKO_DATABASE
+          value: "nasiko"
+
+          # Auth Service
+        - name: AUTH_SERVICE_URL
+          value: "http://nasiko-auth:8001"
+
+        # Redis Configuration
+        - name: REDIS_HOST
+          value: "redis-master"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
+
+        # BuildKit Configuration
+        - name: BUILDKIT_ADDRESS
+          value: "tcp://buildkitd.buildkit.svc.cluster.local:1234"
+
+        # Registry Configuration (to be set during deployment)
+        - name: REGISTRY_URL
+          value: ""  # Will be set by app_setup.py
+
+        # DO Token for registry auth (if using DigitalOcean)
+        - name: DO_TOKEN
+          value: ""  # Will be set by app_setup.py
+
+        # Worker Configuration
+        - name: ENV
+          value: "production"
+
+        # Observability Configuration
+        - name: PHOENIX_COLLECTOR_ENDPOINT
+          value: "http://phoenix-service.nasiko.svc.cluster.local:6006/v1/traces"
+        - name: TRACING_ENABLED
+          value: "true"
+        - name: TRACING_PROJECT_PREFIX
+          value: ""
+        - name: OBSERVABILITY_INJECTION_ENABLED
+          value: "true"
+        - name: OBSERVABILITY_LOG_LEVEL
+          value: "INFO"
+
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "import redis; r = redis.Redis(host='redis-master', port=6379); r.ping()"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 10
+
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "import redis; r = redis.Redis(host='redis-master', port=6379); r.ping()"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5

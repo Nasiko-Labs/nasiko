@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nasiko-auth
+  namespace: nasiko
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nasiko-auth
+  template:
+    metadata:
+      labels:
+        app: nasiko-auth
+    spec:
+      containers:
+      - name: auth
+        image: {{ PUBLIC_REGISTRY }}/nasiko-auth:latest
+        ports:
+        - containerPort: 8001
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: MONGO_URL
+          value: "{{ MONGO_URL }}"
+        - name: REDIS_URL
+          value: "redis://redis-master:6379"
+        - name: JWT_SECRET
+          value: "{{ JWT_SECRET }}"
+        - name: AUTH_DB_NAME
+          value: "nasiko"
+        - name: PORT
+          value: "8001"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nasiko-auth
+  namespace: nasiko
+spec:
+  type: ClusterIP
+  selector:
+    app: nasiko-auth
+  ports:
+  - protocol: TCP
+    port: 8001
+    targetPort: 8001

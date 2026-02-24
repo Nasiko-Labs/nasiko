@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong-gateway
+  namespace: nasiko
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kong-gateway
+  template:
+    metadata:
+      labels:
+        app: kong-gateway
+    spec:
+      containers:
+      - name: kong
+        image: kong:3.4
+        env:
+        - name: KONG_DATABASE
+          value: "postgres"
+        - name: KONG_PG_HOST
+          value: "postgresql"
+        - name: KONG_PG_DATABASE
+          value: "kong"
+        - name: KONG_PG_USER
+          value: "kong"
+        - name: KONG_PG_PASSWORD
+          value: "kong"
+        - name: KONG_PROXY_ACCESS_LOG
+          value: "/dev/stdout"
+        - name: KONG_ADMIN_ACCESS_LOG
+          value: "/dev/stdout"
+        - name: KONG_PROXY_ERROR_LOG
+          value: "/dev/stderr"
+        - name: KONG_ADMIN_ERROR_LOG
+          value: "/dev/stderr"
+        - name: KONG_PROXY_LISTEN
+          value: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
+        - name: KONG_ADMIN_LISTEN
+          value: "0.0.0.0:8001"
+        - name: KONG_ADMIN_GUI_LISTEN
+          value: "0.0.0.0:8003"
+        - name: KONG_ADMIN_GUI_URL
+          value: "http://localhost:9102"
+        - name: KONG_PLUGINS
+          value: "bundled,nasiko-auth,chat-logger"
+        - name: KONG_LUA_PATH
+          value: "/opt/kong/custom-plugins/?.lua;;"
+        - name: KONG_LUA_PACKAGE_PATH
+          value: "/opt/kong/custom-plugins/?.lua;;"
+
+        ports:
+        - containerPort: 8000
+          name: proxy
+        - containerPort: 8001
+          name: admin
+        - containerPort: 8003
+          name: manager
+        - containerPort: 8443
+          name: proxy-ssl
+        volumeMounts:
+        - name: kong-plugins
+          mountPath: /opt/kong/custom-plugins
+        livenessProbe:
+          exec:
+            command:
+            - kong
+            - health
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 30
+      - name: chat-history
+        image: {{ PUBLIC_REGISTRY }}/nasiko-chat-history-service:latest
+        imagePullPolicy: Always
+        env:
+        - name: MONGO_URL
+          value: "{{ MONGO_URL }}"
+        - name: CHAT_DB_NAME
+          value: "nasiko"
+        ports:
+        - containerPort: 8002
+          name: chat-api
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: kong-plugins
+        configMap:
+          name: kong-plugins
+          items:
+          - key: nasiko-auth-handler.lua
+            path: kong/plugins/nasiko-auth/handler.lua 
+          - key: nasiko-auth-schema.lua
+            path: kong/plugins/nasiko-auth/schema.lua
+          - key: chat-logger-handler.lua
+            path: kong/plugins/chat-logger/handler.lua
+          - key: chat-logger-schema.lua
+            path: kong/plugins/chat-logger/schema.lua
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-gateway
+  namespace: nasiko
+spec:
+  type: LoadBalancer
+  selector:
+    app: kong-gateway
+  ports:
+  - name: proxy
+    port: 80
+    targetPort: 8000
+    protocol: TCP
+  - name: proxy-ssl
+    port: 443
+    targetPort: 8443
+    protocol: TCP
+  - name: admin
+    port: 8001
+    targetPort: 8001
+    protocol: TCP
+  - name: manager
+    port: 8003
+    targetPort: 8003
+    protocol: TCP

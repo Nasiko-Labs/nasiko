@@ -1,0 +1,15 @@
+services:
+  crewai:
+    build: .
+    container_name: crewai
+    environment:
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

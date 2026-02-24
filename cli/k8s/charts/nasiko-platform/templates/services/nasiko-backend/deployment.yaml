@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nasiko-backend
+  namespace: nasiko
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nasiko-backend
+  template:
+    metadata:
+      labels:
+        app: nasiko-backend
+    spec:
+      serviceAccountName: nasiko-backend-sa
+      containers:
+      - name: backend
+        image: {{ PUBLIC_REGISTRY }}/nasiko-backend:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: MONGO_NASIKO_USER
+          value: "{{ MONGO_NASIKO_USER }}"
+        - name: MONGO_NASIKO_PASSWORD
+          value: "{{ MONGO_NASIKO_PASSWORD }}"
+        - name: MONGO_NASIKO_HOST
+          value: "mongodb"
+        - name: MONGO_NASIKO_PORT
+          value: "27017"
+        - name: MONGO_NASIKO_DATABASE
+          value: "nasiko"
+        - name: REDIS_HOST
+          value: "redis-master"
+        - name: BUILDKIT_HOST
+          value: "tcp://buildkitd.buildkit.svc.cluster.local:1234"
+        - name: IMAGE_PULL_SECRET
+          value: "regcred"
+        - name: "AUTH_SERVICE_URL"
+          value: "http://nasiko-auth:8001"
+        - name: "OPENAI_API_KEY"
+          value: "{{ OPENAI_API_KEY }}"
+        - name: "GITHUB_CLIENT_ID"
+          value: "{{ GITHUB_CLIENT_ID }}"
+        - name: "GITHUB_CLIENT_SECRET"
+          value: "{{ GITHUB_CLIENT_SECRET }}"
+        - name: "USER_CREDENTIALS_ENCRYPTION_KEY"
+          value: "{{ USER_CREDENTIALS_ENCRYPTION_KEY }}"
+        - name: "PHOENIX_SERVICE_URL"
+          value: "http://phoenix-service.nasiko.svc.cluster.local:6006"
+        - name: "NASIKO_API_URL"
+          value: "http://nasiko-backend.nasiko.svc.cluster.local:8000"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nasiko-backend
+  namespace: nasiko
+spec:
+  type: ClusterIP
+  selector:
+    app: nasiko-backend
+  ports:
+  - protocol: TCP
+    port: 8000
+    targetPort: 8000

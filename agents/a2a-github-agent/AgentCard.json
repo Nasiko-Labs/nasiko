@@ -1,0 +1,91 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "GitHub Agent",
+  "description": "An agent that can query GitHub repositories and recent project updates.",
+  "url": "http://localhost:10007/",
+  "agentFramework": "openai",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:10007/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:10007/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "get-user-repositories",
+      "name": "Get User Repositories",
+      "description": "Get user's repositories with recent updates.",
+      "tags": [
+        "github",
+        "repositories",
+        "updates"
+      ],
+      "examples": [
+        "Show my recent repository updates",
+        "What are the latest commits in my project?"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "get-recent-commits",
+      "name": "Get Recent Commits",
+      "description": "Get recent commits for a repository.",
+      "tags": [
+        "github",
+        "commits",
+        "repository"
+      ],
+      "examples": [
+        "List recent commits for the 'octocat/Hello-World' repository"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "search-repositories",
+      "name": "Search Repositories",
+      "description": "Search for repositories with recent activity.",
+      "tags": [
+        "github",
+        "search",
+        "repositories"
+      ],
+      "examples": [
+        "Find popular Python repositories with recent activity"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

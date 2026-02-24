@@ -1,0 +1,32 @@
+# PostgreSQL for Kong agent-gateway
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgresql-install
+  namespace: nasiko
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    spec:
+      serviceAccountName: nasiko-backend-sa
+      restartPolicy: OnFailure
+      containers:
+      - name: helm-install
+        image: alpine/helm:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          helm upgrade --install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
+            --namespace nasiko \
+            --set auth.postgresPassword=kong \
+            --set auth.username=kong \
+            --set auth.password=kong \
+            --set auth.database=kong \
+            --set image.tag=latest \
+            --set image.registry=docker.io \
+            --set image.repository=bitnami/postgresql \
+            --wait

@@ -1,0 +1,154 @@
+# Super User Initialization ConfigMap with script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: superuser-init-script
+  namespace: nasiko
+data:
+  create-superuser.sh: |
+    #!/bin/sh
+    set -e
+
+    SUPERUSER_USERNAME="${SUPERUSER_USERNAME:-admin}"
+    SUPERUSER_EMAIL="${SUPERUSER_EMAIL:-admin@nasiko.com}"
+
+    echo "Creating super user: $SUPERUSER_USERNAME ($SUPERUSER_EMAIL)"
+
+    # Create super user via API
+    RESPONSE=$(curl -X POST http://nasiko-auth:8001/auth/users/register \
+      -H "Content-Type: application/json" \
+      -d "{\"username\": \"$SUPERUSER_USERNAME\", \"email\": \"$SUPERUSER_EMAIL\", \"is_super_user\": true}" \
+      -s -w "\n%{http_code}")
+
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+
+    echo "HTTP Status Code: $HTTP_CODE"
+
+    if [ "$HTTP_CODE" -eq 200 ]; then
+      echo "✅ Super user created successfully!"
+
+      # Extract credentials
+      USER_ID=$(echo "$BODY" | grep -o '"user_id":"[^"]*"' | cut -d'"' -f4)
+      ACCESS_KEY=$(echo "$BODY" | grep -o '"access_key":"[^"]*"' | cut -d'"' -f4)
+      ACCESS_SECRET=$(echo "$BODY" | grep -o '"access_secret":"[^"]*"' | cut -d'"' -f4)
+
+      echo ""
+      echo "=========================================="
+      echo "SUPER USER CREDENTIALS"
+      echo "=========================================="
+      echo "Username: $SUPERUSER_USERNAME"
+      echo "Email: $SUPERUSER_EMAIL"
+      echo "User ID: $USER_ID"
+      echo "Access Key: $ACCESS_KEY"
+      echo "Access Secret: $ACCESS_SECRET"
+      echo "=========================================="
+      echo ""
+
+      # Get K8s service account token
+      TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+
+      # Create secret JSON (inline to avoid heredoc issues)
+      SECRET_JSON="{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"superuser-credentials\"},\"type\":\"Opaque\",\"stringData\":{\"username\":\"$SUPERUSER_USERNAME\",\"email\":\"$SUPERUSER_EMAIL\",\"user_id\":\"$USER_ID\",\"access_key\":\"$ACCESS_KEY\",\"access_secret\":\"$ACCESS_SECRET\"}}"
+
+      # Try to create secret
+      CREATE_RESPONSE=$(curl -X POST \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+        https://kubernetes.default.svc/api/v1/namespaces/nasiko/secrets \
+        -d "$SECRET_JSON" -s -w "\n%{http_code}")
+
+      CREATE_CODE=$(echo "$CREATE_RESPONSE" | tail -n1)
+
+      if [ "$CREATE_CODE" -eq 201 ]; then
+        echo "✅ Credentials stored in Kubernetes secret 'superuser-credentials'"
+      elif [ "$CREATE_CODE" -eq 409 ]; then
+        echo "Secret already exists, updating..."
+        UPDATE_RESPONSE=$(curl -X PUT \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+          https://kubernetes.default.svc/api/v1/namespaces/nasiko/secrets/superuser-credentials \
+          -d "$SECRET_JSON" -s -w "\n%{http_code}")
+
+        UPDATE_CODE=$(echo "$UPDATE_RESPONSE" | tail -n1)
+        if [ "$UPDATE_CODE" -eq 200 ]; then
+          echo "✅ Credentials updated in Kubernetes secret 'superuser-credentials'"
+        else
+          echo "⚠️  Failed to update secret (HTTP $UPDATE_CODE)"
+        fi
+      else
+        echo "⚠️  Failed to create secret (HTTP $CREATE_CODE)"
+        echo "Response: $(echo "$CREATE_RESPONSE" | sed '$d')"
+      fi
+
+    elif [ "$HTTP_CODE" -eq 400 ]; then
+      if echo "$BODY" | grep -q "already exists"; then
+        echo "❌ Super user '$SUPERUSER_USERNAME' already exists in auth service"
+        echo "This should not happen as the init-superuser command deletes existing users first"
+        echo "Please check the auth service or use a different username"
+        exit 1
+      else
+        echo "❌ Bad request: $BODY"
+        exit 1
+      fi
+    else
+      echo "❌ Failed to create super user (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+---
+# Super User Initialization Job
+# This job runs after all services are deployed and creates the initial super user
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: superuser-init
+  namespace: nasiko
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      serviceAccountName: nasiko-backend-sa
+      restartPolicy: OnFailure
+      initContainers:
+      # Wait for auth service to be ready
+      - name: wait-for-auth
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for auth service to be ready..."
+          for i in $(seq 1 60); do
+            if curl -f -s http://nasiko-auth:8001/health > /dev/null 2>&1; then
+              echo "Auth service is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/60: Auth service not ready yet, waiting 5 seconds..."
+            sleep 5
+          done
+          echo "Auth service failed to become ready"
+          exit 1
+      containers:
+      - name: create-superuser
+        image: curlimages/curl:latest
+        env:
+        - name: SUPERUSER_USERNAME
+          value: "{{ SUPERUSER_USERNAME }}"
+        - name: SUPERUSER_EMAIL
+          value: "{{ SUPERUSER_EMAIL }}"
+        command: ["/bin/sh", "/scripts/create-superuser.sh"]
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+      volumes:
+      - name: script
+        configMap:
+          name: superuser-init-script
+          defaultMode: 0755

@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nasiko
+  labels:
+    name: nasiko
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nasiko-agents
+  labels:
+    name: nasiko-agents

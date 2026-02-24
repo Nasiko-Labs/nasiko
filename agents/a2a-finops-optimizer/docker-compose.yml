@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  finops-optimizer:
+    build: .
+    ports:
+      - "5001:5000"
+    environment:
+      - OPENAI_API_KEY=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
+      - .:/app
+    working_dir: /app
+    command: ["python", "__main__.py", "--host", "0.0.0.0", "--port", "5000"]

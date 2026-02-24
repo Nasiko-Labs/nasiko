@@ -1,0 +1,55 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Translator",
+  "description": "AI-powered translation and multilingual document processing.",
+  "url": "http://localhost:8000/",
+  "agentFramework": "langchain",
+  "preferredTransport": "HTTP+JSON",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:8000/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:8000/docs",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": true
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "application/json",
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "translate-text",
+      "name": "Translate Text",
+      "description": "Translate text using LLM",
+      "tags": [
+        "translation",
+        "text",
+        "LLM"
+      ],
+      "examples": [
+        "Translate 'Hello' to French",
+        "Translate document content"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

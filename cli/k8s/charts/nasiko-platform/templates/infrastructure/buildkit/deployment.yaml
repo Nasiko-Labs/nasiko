@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd
+  namespace: buildkit
+  labels:
+    app: buildkitd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: buildkitd
+  template:
+    metadata:
+      labels:
+        app: buildkitd
+      annotations:
+        container.apparmor.security.beta.kubernetes.io/buildkitd: "unconfined"
+        seccomp.security.alpha.kubernetes.io/pod: "unconfined"
+    spec:
+      serviceAccountName: buildkit-sa
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+      - name: buildkitd
+        image: moby/buildkit:v0.13.2-rootless
+        args:
+        - --addr
+        - tcp://0.0.0.0:1234
+        - --oci-worker-no-process-sandbox
+        ports:
+        - containerPort: 1234
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+        volumeMounts:
+        - name: buildkit-cache
+          mountPath: /home/user/.local/share/buildkit
+        - name: docker-config
+          mountPath: /home/user/.docker
+          readOnly: true
+        livenessProbe:
+          exec:
+            command:
+            - buildctl
+            - --addr
+            - tcp://127.0.0.1:1234
+            - debug
+            - workers
+          initialDelaySeconds: 5
+          periodSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - buildctl
+            - --addr
+            - tcp://127.0.0.1:1234
+            - debug
+            - workers
+          initialDelaySeconds: 5
+          periodSeconds: 30
+      volumes:
+      - name: buildkit-cache
+        persistentVolumeClaim:
+          claimName: buildkit-cache
+      - name: docker-config
+        secret:
+          secretName: regcred
+          items:
+          - key: .dockerconfigjson
+            path: config.json

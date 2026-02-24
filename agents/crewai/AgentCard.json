@@ -1,0 +1,92 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Image Generator Agent",
+  "description": "Generate stunning, high-quality images on demand and leverage powerful editing capabilities to modify, enhance, or completely transform visuals.",
+  "url": "http://localhost:10001/",
+  "agentFramework": "crewai",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:10001/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:10001/docs",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "application/json",
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "application/json",
+    "image/png"
+  ],
+  "skills": [
+    {
+      "id": "generate-image-tool",
+      "name": "Generate Image Tool",
+      "description": "Image generation tool that generates images or modifies a given image based on a prompt.",
+      "tags": [
+        "generate image",
+        "edit image"
+      ],
+      "examples": [
+        "Generate a photorealistic image of raspberry lemonade"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "image/png"
+      ]
+    },
+    {
+      "id": "invoke",
+      "name": "Invoke CrewAI",
+      "description": "Kickoff CrewAI and return the response.",
+      "tags": [
+        "invoke",
+        "CrewAI"
+      ],
+      "examples": [
+        "Invoke CrewAI with a specific query"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "get-image-data",
+      "name": "Get Image Data",
+      "description": "Return Imagedata given a key. This is a helper method from the agent.",
+      "tags": [
+        "get image data",
+        "helper"
+      ],
+      "examples": [
+        "Retrieve image data using a session ID and image key"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "image/png"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

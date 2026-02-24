@@ -1,0 +1,349 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-plugins
+  namespace: nasiko
+data:
+  nasiko-auth-handler.lua: |
+    local http = require "resty.http"
+    local json = require "cjson"
+
+    local NasikoAuthHandler = {
+      VERSION = "1.0.0",
+      PRIORITY = 1000,
+    }
+
+    local function validate_token(auth_service_url, token, timeout)
+      local httpc = http.new()
+      httpc:set_timeout(timeout)
+
+      local res, err = httpc:request_uri(auth_service_url .. "/auth/validate", {
+        method = "POST",
+        headers = {
+          ["Content-Type"] = "application/json",
+          ["Authorization"] = "Bearer " .. token
+        },
+        body = json.encode({
+          token = token
+        })
+      })
+
+      if not res then
+        kong.log.err("Failed to call auth service: ", err)
+        return false, nil
+      end
+
+      if res.status == 200 then
+        local body = json.decode(res.body)
+        -- Return the full TokenValidationResponse
+        return true, body
+      else
+        kong.log.warn("Auth validation failed with status: ", res.status)
+        return false, nil
+      end
+    end
+
+    function NasikoAuthHandler:access(config)
+      -- Skip auth for health checks and auth service endpoints
+      local path = kong.request.get_path()
+      if path == "/health" or path == "/status" then
+        return
+      end
+
+      -- Never require auth on CORS preflight
+      local method = kong.request.get_method()
+      if method == "OPTIONS" then
+        return
+      end
+
+      -- Skip auth for auth service endpoints
+      if path == "/auth/users/login" or
+         path == "/auth/users/register" or
+         path == "/api/v1/auth/github/login-user" or
+         path == "/api/v1/auth/github/callback" or
+         path == "/auth/users/check" then
+        return
+      end
+
+      -- Get authorization header
+      local auth_header = kong.request.get_header("authorization")
+      if not auth_header then
+        return kong.response.exit(401, {
+          message = "Missing Authorization header"
+        })
+      end
+
+      -- Extract Bearer token
+      local token = auth_header:match("Bearer%s+(.+)")
+      if not token then
+        return kong.response.exit(401, {
+          message = "Invalid Authorization header format. Expected 'Bearer <token>'"
+        })
+      end
+
+      -- Validate token with auth service
+      local auth_service_url = config.auth_service_url or "http://nasiko-auth:8001"
+      local is_valid, token_validation_response = validate_token(
+        auth_service_url,
+        token,
+        config.timeout or 5000
+      )
+
+      if not is_valid then
+        return kong.response.exit(401, {
+          message = "Invalid or expired token"
+        })
+      end
+
+      -- Add TokenValidationResponse data to request headers for downstream services
+      if token_validation_response then
+        kong.service.request.set_header("X-Subject-ID", token_validation_response.subject_id or "")
+        kong.service.request.set_header("X-Subject-Type", token_validation_response.subject_type or "")
+        kong.service.request.set_header("X-Is-Super-User", tostring(token_validation_response.is_super_user or false))
+        kong.service.request.set_header("X-Permissions", json.encode(token_validation_response.permissions or {}))
+        kong.service.request.set_header("X-Valid", tostring(token_validation_response.valid or false))
+
+        -- Forward the original Authorization header as Bearer token to downstream services
+        kong.service.request.set_header("Authorization", "Bearer " .. token)
+      end
+
+      kong.log.info("Authentication successful for subject: ", token_validation_response.subject_id, " (", token_validation_response.subject_type, ")")
+    end
+
+    return NasikoAuthHandler
+  nasiko-auth-schema.lua: |
+    return {
+      name = "nasiko-auth",
+      fields = {
+        {
+          config = {
+            type = "record",
+            fields = {
+              {
+                auth_service_url = {
+                  type = "string",
+                  required = true,
+                  description = "URL of the authentication service"
+                }
+              },
+              {
+                timeout = {
+                  type = "number",
+                  default = 5000,
+                  description = "Timeout for auth service calls in milliseconds"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  chat-logger-handler.lua: |
+    local http = require "resty.http"
+    local json = require "cjson"
+
+    local ChatLoggerHandler = {
+      VERSION = "1.0.0",
+      PRIORITY = 900,
+    }
+
+    local function log_chat_interaction(chat_service_url, log_data, timeout)
+      local httpc = http.new()
+      httpc:set_timeout(timeout)
+
+      local res, err = httpc:request_uri(chat_service_url .. "/log-chat", {
+        method = "POST",
+        headers = {
+          ["Content-Type"] = "application/json"
+        },
+        body = json.encode(log_data)
+      })
+
+      if not res then
+        kong.log.err("Failed to log chat interaction: ", err)
+        return false
+      end
+
+      if res.status ~= 200 and res.status ~= 201 then
+        kong.log.warn("Chat logging failed with status: ", res.status)
+        return false
+      end
+
+      return true
+    end
+
+    local function is_chat_request(path, method, body)
+      -- Match any agent request
+      if not string.match(path, "^/agents/") then
+        return false
+      end
+
+      -- For POST requests, check if it's a JSON-RPC message/send method
+      if method == "POST" and body then
+        local ok, parsed = pcall(json.decode, body)
+        if ok and parsed.jsonrpc == "2.0" and parsed.method == "message/send" then
+          return true
+        end
+      end
+
+      return false
+    end
+
+    function ChatLoggerHandler:access(config)
+      local path = kong.request.get_path()
+      local method = kong.request.get_method()
+      local request_body = kong.request.get_raw_body()
+
+      -- Only log chat-related requests
+      if not is_chat_request(path, method, request_body) then
+        return
+      end
+
+      -- Store request data for logging
+      kong.ctx.shared.chat_logger = {
+        request_time = os.time(),
+        method = method,
+        path = path,
+        user_id = kong.request.get_header("X-Subject-ID"),  -- Use auth plugin output
+        user_email = kong.request.get_header("X-Subject-ID"), -- Fallback to subject ID
+        request_body = request_body,
+        ip_address = kong.client.get_ip()
+      }
+    end
+
+    function ChatLoggerHandler:header_filter(config)
+      local logger_data = kong.ctx.shared.chat_logger
+      if not logger_data then
+        return
+      end
+
+      -- Store response info
+      logger_data.response_status = kong.response.get_status()
+      logger_data.response_time = os.time()
+    end
+
+    function ChatLoggerHandler:body_filter(config)
+      local logger_data = kong.ctx.shared.chat_logger
+      if not logger_data then
+        return
+      end
+
+      -- Capture response body
+      local chunk = kong.response.get_raw_body()
+      if chunk then
+        logger_data.response_body = chunk
+      end
+    end
+
+    function ChatLoggerHandler:log(config)
+      local logger_data = kong.ctx.shared.chat_logger
+      if not logger_data then
+        return
+      end
+
+      -- Parse JSON-RPC request and response
+      local request_data = {}
+      local response_data = {}
+
+      -- Parse JSON-RPC request
+      if logger_data.request_body then
+        local ok, parsed = pcall(json.decode, logger_data.request_body)
+        if ok and parsed.jsonrpc == "2.0" and parsed.method == "message/send" then
+          -- Extract JSON-RPC data in format expected by chat service
+          request_data = {
+            id = parsed.id,  -- This becomes session_id
+            method = parsed.method,
+            params = parsed.params,
+            jsonrpc = parsed.jsonrpc,
+            -- Add metadata from Kong request
+            http_method = logger_data.method,
+            path = logger_data.path,
+            user_id = logger_data.user_id,
+            user_email = logger_data.user_email,
+            ip_address = logger_data.ip_address
+          }
+        else
+          -- Fallback for non JSON-RPC requests
+          request_data = { raw_body = logger_data.request_body }
+        end
+      end
+
+      -- Parse JSON-RPC response
+      if logger_data.response_body then
+        local ok, parsed = pcall(json.decode, logger_data.response_body)
+        if ok and parsed.jsonrpc == "2.0" then
+          -- Extract JSON-RPC response data
+          response_data = {
+            id = parsed.id,  -- Should match request id (session_id)
+            result = parsed.result,
+            jsonrpc = parsed.jsonrpc,
+            -- Add metadata from Kong response
+            status = logger_data.response_status,
+            timestamp = logger_data.response_time
+          }
+        else
+          -- Fallback for non JSON-RPC responses
+          response_data = {
+            raw_body = logger_data.response_body,
+            status = logger_data.response_status,
+            timestamp = logger_data.response_time
+          }
+        end
+      end
+
+      -- Prepare log entry for chat-history service
+      local log_entry = {
+        request_data = request_data,
+        response_data = response_data,
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ", logger_data.request_time)
+      }
+
+      -- Send to chat history service asynchronously
+      ngx.timer.at(0, function(premature)
+        if premature then
+          return
+        end
+
+        local chat_service_url = config.chat_service_url or "http://localhost:8002"
+        local success = log_chat_interaction(
+          chat_service_url,
+          log_entry,
+          config.timeout or 5000
+        )
+
+        if success then
+          kong.log.info("JSON-RPC chat logged - session: ", request_data.id, " user: ", logger_data.user_id)
+        else
+          kong.log.warn("Failed to log JSON-RPC chat for session: ", request_data.id)
+        end
+      end)
+    end
+
+    return ChatLoggerHandler
+  chat-logger-schema.lua: |
+    return {
+      name = "chat-logger",
+      fields = {
+        {
+          config = {
+            type = "record",
+            fields = {
+              {
+                chat_service_url = {
+                  type = "string",
+                  default = "http://localhost:8002",
+                  description = "URL of the chat history service"
+                }
+              },
+              {
+                timeout = {
+                  type = "number",
+                  default = 5000,
+                  description = "Timeout for chat service calls in milliseconds"
+                }
+              }
+            }
+          }
+        }
+      }
+    }

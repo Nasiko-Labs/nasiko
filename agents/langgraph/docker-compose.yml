@@ -1,0 +1,15 @@
+services:
+  langgraph:
+    build: .
+    container_name: langgraph
+    environment:
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

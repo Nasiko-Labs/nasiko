@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n
+  namespace: nasiko
+  labels:
+    app: n8n
+    component: automation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: n8n
+  template:
+    metadata:
+      labels:
+        app: n8n
+    spec:
+      containers:
+      - name: n8n
+        image: docker.n8n.io/n8nio/n8n:latest
+        ports:
+        - containerPort: 5678
+          name: http
+        env:
+        - name: GENERIC_TIMEZONE
+          value: "Asia/Kolkata"
+        - name: TZ
+          value: "Asia/Kolkata"
+        - name: N8N_PATH
+          value: "/n8n/"
+        - name: N8N_EDITOR_BASE_URL
+          value: ""  # Will be set by app_setup.py using gateway URL
+        - name: WEBHOOK_URL
+          value: ""  # Will be set by app_setup.py using gateway URL
+        - name: N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
+          value: "true"
+        - name: N8N_RUNNERS_ENABLED
+          value: "true"
+        - name: N8N_HOST
+          value: "0.0.0.0"
+        - name: N8N_PORT
+          value: "5678"
+        - name: N8N_PROTOCOL
+          value: "http"
+        # Basic auth for security (optional)
+        - name: N8N_BASIC_AUTH_ACTIVE
+          value: "false"
+        - name: N8N_BASIC_AUTH_USER
+          value: "admin"
+        - name: N8N_BASIC_AUTH_PASSWORD
+          value: "admin123"
+        volumeMounts:
+        - name: n8n-data
+          mountPath: /home/node/.n8n
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 1Gi
+            cpu: 500m
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5678
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5678
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+      volumes:
+      - name: n8n-data
+        persistentVolumeClaim:
+          claimName: n8n-data
+      # Security context for proper file permissions
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000

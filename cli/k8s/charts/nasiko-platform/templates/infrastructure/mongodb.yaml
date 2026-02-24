@@ -1,0 +1,31 @@
+# MongoDB deployment using Bitnami OCI chart
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongodb-install
+  namespace: nasiko
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    spec:
+      serviceAccountName: nasiko-backend-sa
+      restartPolicy: OnFailure
+      containers:
+      - name: helm-install
+        image: alpine/helm:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          helm upgrade --install mongodb oci://registry-1.docker.io/bitnamicharts/mongodb \
+            --namespace nasiko \
+            --set architecture=standalone \
+            --set auth.rootPassword={{ MONGO_NASIKO_PASSWORD }} \
+            --set auth.enabled=true \
+            --set resources.requests.memory=256Mi \
+            --set resources.requests.cpu=100m \
+            --set resources.limits.memory=512Mi \
+            --wait

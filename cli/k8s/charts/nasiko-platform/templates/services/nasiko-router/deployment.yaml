@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nasiko-router
+  namespace: nasiko
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nasiko-router
+  template:
+    metadata:
+      labels:
+        app: nasiko-router
+    spec:
+      containers:
+      - name: router
+        image: {{ PUBLIC_REGISTRY }}/nasiko-router:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: OLLAMA_SERVER
+          value: "http://ollama:11434"
+        - name: NASIKO_BACKEND
+          value: "http://nasiko-backend:8000/api/v1"
+        - name: OPENAI_API_KEY
+          value: "{{ OPENAI_API_KEY }}"
+        - name: OPENROUTER_API_KEY
+          value: "{{ OPENROUTER_API_KEY }}"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /router/health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /router/health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nasiko-router
+  namespace: nasiko
+spec:
+  type: ClusterIP
+  selector:
+    app: nasiko-router
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000

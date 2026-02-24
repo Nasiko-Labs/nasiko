@@ -1,0 +1,19 @@
+[project]
+name = "chat-history-service"
+version = "1.0.0"
+description = "Chat History Service for Kong Gateway"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "motor>=3.3.2",
+    "pymongo>=4.6.0",
+    "pydantic>=2.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []

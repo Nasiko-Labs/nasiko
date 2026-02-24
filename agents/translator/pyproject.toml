@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "translator-agent"
+version = "0.1.0"
+description = "AI-powered translation and multilingual document processing."
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "pydantic>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "langchain>=0.2.0,<0.3.0",
+    "langchain-openai>=0.1.0,<0.2.0",
+    "openai>=1.0.0",
+    "click>=8.1.7",
+    "beautifulsoup4",
+    "langchain-community",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

@@ -1,0 +1,57 @@
+---
+# Create the nasiko-agents namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nasiko-agents
+  labels:
+    name: nasiko-agents
+
+---
+# Role with permissions to manage agent builds and deployments
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-manager
+  namespace: nasiko-agents
+rules:
+  # Permissions for BuildKit Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+
+  # Permissions for Agent Deployments
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+
+  # Permissions for Agent Services
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+
+  # Permissions for Pods (to check status, get logs)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+  # Permissions for ConfigMaps and Secrets (if agents need them)
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["create", "get", "list", "watch", "update", "patch"]
+
+---
+# RoleBinding to grant nasiko-backend-sa the agent-manager role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nasiko-backend-agent-manager
+  namespace: nasiko-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-manager
+subjects:
+  - kind: ServiceAccount
+    name: nasiko-backend-sa
+    namespace: nasiko
