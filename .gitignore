@@ -153,5 +153,6 @@ cython_debug/
 # Ignore local .env files
 .env.*
 !.env.example
+!.env.local.example
 !*env.example
 .nasiko-local.env
