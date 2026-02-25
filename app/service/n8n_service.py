@@ -2,6 +2,7 @@ import httpx
 import shutil
 import json
 import base64
+import os
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from pathlib import Path
@@ -478,6 +479,7 @@ class N8nService:
             
             # Update docker-compose.yml with unique values
             compose_file = target_dir / "docker-compose.yml"
+            agents_network = os.getenv("AGENTS_NETWORK", "nasiko_agents-net")
             compose_content = f"""services:
   {container_name}:
     build: .
@@ -496,6 +498,7 @@ class N8nService:
 networks:
   agents-net:
     external: true
+    name: {agents_network}
 """
             compose_file.write_text(compose_content)
             

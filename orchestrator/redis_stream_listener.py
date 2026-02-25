@@ -600,8 +600,8 @@ class RedisStreamListener:
         docker_cmd = [
             'docker', 'run', '-d',
             '--name', container_name,
-            '--network', 'core_agents-net',  # Join agents network for Kong discovery
-            '--network', 'core_app-network',  # Also join app network for observability access
+            '--network', Config.AGENTS_NETWORK,  # Join agents network for Kong discovery
+            '--network', Config.APP_NETWORK,  # Also join app network for observability access
             '-p', f'{port}:5000',  # Expose on host for direct access (agent runs on 5000)
             '--restart', 'unless-stopped'
         ]

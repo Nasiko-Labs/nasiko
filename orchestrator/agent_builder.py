@@ -355,13 +355,13 @@ class AgentBuilder:
             if "networks" not in compose_data:
                 compose_data["networks"] = {}
             
-            # Add agents-net
+            # Add agents network
             compose_data["networks"]["agents-net"] = {
                 "external": True,
                 "name": DOCKER_NETWORK
             }
             
-            # Attach services to agents-net & preserve original networks
+            # Attach services to agents network & preserve original networks
             for _, svc_def in compose_data.get("services", {}).items():
                 if "networks" not in svc_def:
                     svc_def["networks"] = []
@@ -370,7 +370,7 @@ class AgentBuilder:
                 if isinstance(svc_def["networks"], dict):
                     svc_def["networks"] = list(svc_def["networks"].keys())
 
-                # Ensure agents-net is attached
+                # Ensure agents network is attached
                 if DOCKER_NETWORK not in svc_def["networks"]:
                     svc_def["networks"].append(DOCKER_NETWORK)
             

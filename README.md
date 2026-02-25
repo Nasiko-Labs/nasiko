@@ -634,8 +634,8 @@ make backend-app        # Restart backend services
    ```
 
 2. **Docker Networks** - Required networks created automatically:
-   - `core_app-network` - Core services communication
-   - `core_agents-net` - Agent-to-agent communication
+   - `nasiko_app-network` - Core services communication
+   - `nasiko_agents-net` - Agent-to-agent communication
 
 3. **AgentCard.json** - Mandatory for all agents, defines capabilities for routing
 
