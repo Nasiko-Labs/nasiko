@@ -1,0 +1,16 @@
+services:
+  a2a-translator:
+    build: .
+    container_name: a2a-translator
+    environment:
+      - OPENAI_API_KEY=your-openai-api-key-here
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

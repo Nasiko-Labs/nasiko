@@ -1,0 +1,96 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Translator Agent",
+  "description": "An intelligent translation agent built with A2A (Agent2Agent) SDK that can translate text and web page content from URLs using natural language.",
+  "url": "http://localhost:5000/",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:5000/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:5000/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "translate-text",
+      "name": "Translate Text",
+      "description": "Translate plain text from one language to another",
+      "tags": [
+        "translation",
+        "text",
+        "language"
+      ],
+      "examples": [
+        "Translate 'Hello world' to Spanish",
+        "Convert this text to French"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "translate-url",
+      "name": "Translate URL Content",
+      "description": "Extract and translate content from a web page URL",
+      "tags": [
+        "translation",
+        "url",
+        "web",
+        "content"
+      ],
+      "examples": [
+        "Translate the content of this webpage to German",
+        "What does this Spanish website say in English?"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "detect-language",
+      "name": "Detect Language",
+      "description": "Detect the language of given text or URL content",
+      "tags": [
+        "language",
+        "detection",
+        "text"
+      ],
+      "examples": [
+        "What language is this text written in?",
+        "Detect the language of this webpage"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

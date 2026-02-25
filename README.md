@@ -2,23 +2,20 @@
 
 <div align="center">
 
-
-
 **AI Agent Registry and Orchestration Platform**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
-[![Kubernetes](https://img.shields.io/badge/kubernetes-1.24+-blue.svg)](https://kubernetes.io/)
+[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://docker.com/)
 
 **Centralized management, intelligent routing, and observability for AI agents**
 
 [🚀 Quick Start](#-quick-start) •
-[📖 Documentation](#-documentation) •
 [🏗️ Architecture](#️-architecture) •
-[🖥️ Desktop App](#️-desktop-app-macos) •
-[🛠️ CLI](#️-cli-tool) •
-[☁️ Cloud Setup](#️-cloud-deployment)
+[🛠️ CLI Tool](#️-cli-tool) •
+[📦 Agent Development](#-agent-development) •
+[☁️ Production Setup](#️-production-deployment)
 
 </div>
 
@@ -26,328 +23,280 @@
 
 ## 🌟 What is Nasiko?
 
-Nasiko is a comprehensive platform for managing AI agents at scale. It provides:
+Nasiko is an enterprise-grade AI agent orchestration platform that transforms how you build, deploy, and manage AI agents at scale. Built with modern microservices architecture, Nasiko provides everything needed to run production AI agent ecosystems.
 
-- **🔍 Intelligent Agent Discovery** - Automatically route queries to the best AI agent
-- **📦 Agent Registry** - Centralized storage and versioning for AI agents
-- **🌐 API Gateway** - Unified access point with load balancing and monitoring
-- **📊 Observability** - Complete tracing and metrics for agent interactions
-- **🚀 Easy Deployment** - One-command agent deployment to Kubernetes or local Docker
-- **🔧 Developer Tools** - CLI, SDK, and web interface for seamless integration
+### 🎯 Core Capabilities
+
+**Agent Lifecycle Management:**
+- **📦 Centralized Registry** - Version-controlled agent storage with metadata management
+- **🚀 Automated Deployment** - Docker-based containerization with Kubernetes orchestration
+- **📝 AgentCard System** - Structured capability definitions for intelligent routing
+- **🔄 Hot Deployment** - Zero-downtime agent updates and rollbacks
+
+**Intelligent Operations:**
+- **🧠 LangChain-Powered Routing** - AI-driven query analysis and agent selection
+- **⚖️ Load Balancing** - Automatic traffic distribution across agent replicas
+- **🎯 Capability Matching** - Semantic matching of queries to agent expertise
+- **📊 Confidence Scoring** - Probabilistic agent selection with fallback handling
+
+**Production Infrastructure:**
+- **🌐 Kong API Gateway** - Enterprise-grade API management with plugins
+- **🔐 Multi-Auth Support** - GitHub OAuth, JWT tokens, and custom authentication
+- **💬 Conversation Logging** - Complete chat history and interaction tracking
+- **🔍 Service Discovery** - Automatic agent registration and health monitoring
+
+**Developer Experience:**
+- **⚡ One-Command Setup** - `docker compose up -d` to full platform
+- **🛠️ Rich CLI Tool** - Complete agent management from command line
+- **🌐 Web Dashboard** - Browser-based interface accessible via Kong Gateway (/app/)
+- **🖥️ Desktop Application** - Native desktop app for enhanced user experience
+- **🔗 REST APIs** - Comprehensive programmatic access with OpenAPI docs
+
+**Enterprise Observability:**
+- **📈 Integrated Observability Dashboard** - Built-in monitoring within the web UI
+- **📋 Request Tracing** - End-to-end visibility across microservices via Arize Phoenix
+- **🚨 Health Monitoring** - Automatic agent health checks and alerting
+- **📊 Usage Analytics** - Real-time metrics on agent performance and utilization
+- **💡 LLM-Native Monitoring** - Specialized observability for AI agent interactions
+
+## 🏗️ Architecture
+
+Nasiko implements a cloud-native microservices architecture designed for enterprise AI agent orchestration:
+
+```
+                           ┌─────────────────────────────────────┐
+                           │            User Interfaces          │
+                           └─────────────────┬───────────────────┘
+                                             │
+                     ┌─────────────────┬─────────────────┬
+                     │                 │                 │                 
+                ┌────▼────┐       ┌────▼────┐       ┌────▼────┐
+                │Web UI   │       │CLI Tool │       │Desktop  │
+                │(/app/)  │       │(Python) │       │App      │
+                └─────────┘       └─────────┘       └─────────┘
+                │                 │                 │
+                └─────────────────┼─────────────────┘
+                                  │
+                              ┌─────────────▼───────────────┐
+                              │      Kong API Gateway       │
+                              │         (Port 9100)         │
+                              │                             │
+                              │ Routes:                     │
+                              │ • /agents/{name}/ → Agents │
+                              │ • /api/ → Backend API       │
+                              │ • /router/ → Router Service │
+                              │ • /auth/ → Auth Service     │
+                              │ • /app/ → Web Interface     │
+                              │ • /n8n/ → N8N Workflows     │
+                              │ • / → Landing (→ /app/)     │
+                              └─────────────┬───────────────┘
+                                            │
+              ┌─────────────────────────────┼─────────────────────────────┐
+              │                             │                             │
+    ┌─────────▼─────────┐         ┌─────────▼─────────┐         ┌─────────▼─────────┐
+    │   Core Platform   │         │  Intelligence     │         │    AI Agents      │
+    │    Services       │         │    Services       │         │   (Dynamic)       │
+    └─────────┬─────────┘         └─────────┬─────────┘         └─────────┬─────────┘
+              │                             │                             │
+    ┌─────────▼─────────┐         ┌─────────▼─────────┐         ┌─────────▼─────────┐
+    │FastAPI Backend    │         │Router Service     │         │compliance-checker │
+    │Port: 8000         │         │Port: 8081         │         │github-agent      │
+    │                   │         │                   │         │translator         │
+    │• Agent Registry   │         │• LangChain Engine │         │crewai-workflows   │
+    │• Upload System    │         │• Query Analysis   │         │langgraph-flows    │
+    │• Kubernetes Orch. │         │• Capability Match │         │custom-agents      │
+    │• GitHub OAuth     │         │• Confidence Score │         │... (auto-deployed)│
+    │• Build Pipeline   │         │• Fallback Logic   │         │                   │
+    │• Health Monitoring│         │• Model Selection  │         │• Health Endpoints │
+    └───────────────────┘         └───────────────────┘         │• Auto-Scaling     │
+              │                             │                   │• Phoenix Tracing  │
+              │                             │                   └───────────────────┘
+    ┌─────────▼─────────┐         ┌─────────▼─────────┐                   │
+    │Auth Service       │         │Chat History       │                   │
+    │Port: 8082         │         │Port: 8083         │                   │
+    │                   │         │                   │                   │
+    │• JWT Management   │         │• Conversation Log │                   │
+    │• GitHub OAuth     │         │• Chat Persistence │                   │
+    │• User Sessions    │         │• Retrieval APIs   │                   │
+    │• Role-Based Auth  │         │• Search & Filter  │                   │
+    └───────────────────┘         └───────────────────┘                   │
+              │                             │                             │
+    ┌─────────▼─────────┐                   │                             │
+    │Kong Registry      │                   │                             │
+    │Port: 8080         │                   │                             │
+    │                   │                   │                             │
+    │• Service Discovery│                   │                             │
+    │• Auto-Registration│                   │                             │
+    │• Health Checks    │                   │                             │
+    │• Route Management │                   │                             │
+    └───────────────────┘                   │                             │
+              │                             │                             │
+              └─────────────────────────────┼─────────────────────────────┘
+                                            │
+                              ┌─────────────▼───────────────┐
+                              │     Infrastructure &        │
+                              │      Observability          │
+                              └─────────────┬───────────────┘
+                                            │
+        ┌─────────────────┬─────────────────┼─────────────────┬─────────────────┐
+        │                 │                 │                 │                 │
+   ┌────▼────┐       ┌────▼────┐       ┌────▼────┐       ┌────▼────┐       ┌────▼────┐
+   │MongoDB  │       │Redis    │       │Phoenix  │       │Kong DB  │       │BuildKit │
+   │:27017   │       │:6379    │       │:6006    │       │(PostgSQL│       │(K8s)    │
+   │         │       │         │       │         │       │:5432)   │       │         │
+   │• Agent  │       │• Session│       │• LLM    │       │• Gateway│       │• Image  │
+   │  Storage│       │  Cache  │       │  Traces │       │  Config │       │  Builds │
+   │• Users  │       │• Queues │       │• Request│       │• Routes │       │• Multi- │
+   │• Chat   │       │• Pub/Sub│       │  Flows  │       │• Plugins│       │  Arch   │
+   │  History│       │• Locks  │       │• Metrics│       │• Rate   │       │• Registry│
+   └─────────┘       └─────────┘       └─────────┘       │  Limits │       │  Push   │
+                                                         └─────────┘       └─────────┘
+```
+
+### 🔄 Data Flow Patterns
+
+**Agent Deployment Flow:**
+```
+CLI/Web → Backend API → Redis Stream → Build System → Container Registry → K8s Deployment → Kong Registration
+```
+
+**Query Routing Flow:**  
+```  
+User Query → Kong Gateway → Router Service → LangChain Analysis → Agent Selection → Kong Proxy → Agent Response
+```
+
+**Observability Flow:**
+```
+Agent Request → Phoenix SDK → Trace Collection → Nasiko Web UI + Phoenix Dashboard → Performance Analytics
+```
+
+### Key Components
+
+- **Kong Gateway** (9100) - API routing, load balancing, service discovery
+- **FastAPI Backend** (8000) - Agent registry, orchestration, agent upload system
+- **Auth Service** (8082) - User authentication, GitHub OAuth, JWT token management
+- **Router Service** (8081) - LangChain-powered intelligent query routing
+- **Chat History** (8083) - Conversation logging and retrieval service
+- **Kong Registry** (8080) - Automatic agent service discovery and registration
+- **Web Interface** (4000) - Browser dashboard accessible via Kong Gateway (/app/)
+- **Agent Network** - Auto-deployed containerized agents with observability
+- **CLI Tool** - Complete command-line management interface
 
 ## 🚀 Quick Start
 
-### Local Development (Recommended)
+### Prerequisites
+
+- Docker & Docker Compose
+- Python 3.12+
+- 4GB+ RAM recommended
+
+### Local Development Setup
 
 ```bash
-# 1. Clone and setup
-git clone https://github.com/your-org/nasiko.git
+# 1. Clone the repository
+git clone https://github.com/Nasiko-Labs/nasiko.git
 cd nasiko
-cp .env.local.example .env
 
-# 2. Install dependencies
+# 2. Create environment configuration
+cp .nasiko-local.env.example .nasiko-local.env
+
+# 3. Edit .nasiko-local.env with your API keys (optional but recommended):
+# OPENAI_API_KEY=sk-your-openai-key
+# GITHUB_CLIENT_ID=your-github-oauth-id
+# GITHUB_CLIENT_SECRET=your-github-oauth-secret
+
+# 4. Install Python dependencies (for CLI)
 pip install uv
 uv sync
 
-# 3. Start the platform
-make start-nasiko
+# 5. Start the entire platform
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d
 
-# 4. Access the web interface
-open http://localhost:4000
+# 6. Access the web interface via Kong Gateway
+open http://localhost:9100/app/
 ```
 
-### Using the CLI Tool
+### Verify Installation
+
+```bash
+# Check all services are healthy
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env ps
+
+# Test the API
+curl http://localhost:8000/api/v1/healthcheck
+
+# Test Kong gateway
+curl http://localhost:9100/health
+```
+
+### Quick Agent Test
 
 ```bash
 # Install CLI
 cd cli && pip install -e .
 
-# Deploy your first agent
-nasiko upload-directory ./agents/document-expert --name doc-agent
+# Deploy a sample agent
+nasiko upload-directory ./agents/a2a-compliance-checker --name compliance-checker
 
-# List available agents
+# List deployed agents
 nasiko registry-list
 
-# Test agent routing
-curl "http://localhost:8005/route?query=analyze this document"
+# Test intelligent routing via Kong Gateway
+curl "http://localhost:9100/router/route?query=check compliance of this document"
 ```
-
-## 🖥️ Desktop App (macOS)
-
-### Download and Install
-
-1. **Download the macOS App**:
-   ```bash
-   # Download the latest release
-   curl -L -o nasiko-macos.zip "https://github.com/your-org/nasiko/releases/latest/download/nasiko-macos.zip"
-   ```
-
-2. **Extract and Install**:
-   ```bash
-   # Extract the app
-   unzip nasiko-macos.zip
-   
-   # Move to Applications folder
-   mv Nasiko.app /Applications/
-   
-   # Grant permissions (first time only)
-   xattr -dr com.apple.quarantine /Applications/Nasiko.app
-   ```
-
-3. **Launch**:
-   - Open Finder → Applications → Nasiko
-   - Or use Spotlight: `⌘ + Space` → type "Nasiko"
-
-### Desktop App Features
-
-- 🎯 **Native macOS Interface** - Built with SwiftUI for optimal performance
-- 🔄 **Real-time Agent Monitoring** - Live status of all deployed agents
-- 📊 **Visual Analytics Dashboard** - Interactive charts and metrics
-- 🚀 **One-click Agent Deployment** - Drag & drop agent deployment
-- 🔍 **Integrated Agent Browser** - Search and discover agents visually
-- 💬 **Chat Interface** - Test agents directly from the desktop
-- 🔔 **Notifications** - Get alerts for agent failures or completions
-
-## 🏗️ Architecture
-
-Nasiko follows a microservices architecture with these core components:
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Web Frontend  │    │   Desktop App   │    │   CLI Tool      │
-│   (Port 4000)   │    │   (macOS)       │    │   (Python)     │
-└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
-          │                      │                      │
-          └──────────────────────┼──────────────────────┘
-                                 │
-                    ┌─────────────▼───────────────┐
-                    │     Kong API Gateway       │
-                    │       (Port 9100)          │
-                    └─────────────┬───────────────┘
-                                  │
-          ┌───────────────────────┼───────────────────────┐
-          │                       │                       │
-┌─────────▼───────┐    ┌─────────▼───────┐    ┌─────────▼───────┐
-│  FastAPI Backend│    │ Intelligent     │    │   AI Agents     │
-│   (Port 8000)   │    │ Router Service  │    │  (Ports 8001+)  │
-│                 │    │   (Port 8005)   │    │                 │
-│ • Agent Registry│    │ • LangChain     │    │ • Document Expert│
-│ • Orchestration │    │ • Query Routing │    │ • GitHub Agent  │
-│ • Deployment    │    │ • Capability    │    │ • Translator    │
-│ • Monitoring    │    │   Matching      │    │ • Compliance    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
-
-### Key Components
-
-- **Kong Gateway** - API routing, load balancing, service discovery
-- **FastAPI Backend** - Core platform logic, agent management, orchestration  
-- **Router Service** - AI-powered query routing using LangChain
-- **Agent Network** - Containerized AI agents with auto-discovery
-- **Observability Stack** - LangTrace, OpenTelemetry, distributed tracing
 
 ## 🛠️ CLI Tool
 
-The Nasiko CLI provides complete control over your agent ecosystem:
+The Nasiko CLI provides complete platform management:
 
-### Installation
+### Installation & Authentication
 
 ```bash
+# Install from source
 cd cli && pip install -e .
-```
 
-### Authentication
+# Configure API endpoint
+export NASIKO_API_URL=http://localhost:8000
 
-```bash
-# Login to your Nasiko instance
+# Authenticate (if GitHub OAuth configured)
 nasiko login
 
-# Or use environment variables
-export NASIKO_API_URL=http://localhost:8000
-export NASIKO_API_KEY=your-api-key
+# Check status
+nasiko status
 ```
 
 ### Agent Management
 
 ```bash
-# Upload from directory
+# Upload agent from directory
 nasiko upload-directory ./my-agent --name my-agent
 
-# Upload from Git repository
+# Upload from GitHub repository
 nasiko clone owner/repo --branch main
 nasiko upload-directory ./repo --name repo-agent
 
-# Upload zip file
+# Upload ZIP file
 nasiko upload-zip agent.zip --name packaged-agent
 
-# List deployed agents
+# Manage registry
 nasiko registry-list
-
-# Get agent details
 nasiko registry-get --name my-agent
-
-# Update agent metadata
-nasiko registry-update agent-123 --description "Updated description"
+nasiko registry-update agent-123 --description "Updated agent"
 ```
 
-### Monitoring & Debugging
+### Monitoring & Operations
 
 ```bash
-# Check platform status
+# Platform monitoring
 nasiko status
-
-# View agent traces
 nasiko traces --agent my-agent
 
-# Monitor deployments
-nasiko deployment-logs --agent my-agent
-```
-
-### Repository Operations
-
-```bash
-# List available repositories
+# Repository operations
 nasiko list-repos
+nasiko clone owner/repo -b feature-branch
 
-# Clone and deploy in one command
-nasiko clone-and-deploy owner/repo --name auto-agent
-```
-
-## ☁️ Cloud Deployment
-
-Deploy Nasiko to Kubernetes clusters on AWS, DigitalOcean, or other cloud providers:
-
-### Prerequisites
-
-- Kubernetes cluster (1.24+)
-- `kubectl` configured
-- Container registry access
-- OpenAI API key (optional, for router service)
-
-### One-Command Bootstrap
-
-```bash
-# DigitalOcean
-uv run cli/main.py setup bootstrap \
-  --provider digitalocean \
-  --registry-name nasiko-images \
-  --region nyc3 \
-  --openai-key sk-proj-...
-
-# AWS
-uv run cli/main.py setup bootstrap \
-  --provider aws \
-  --registry-name nasiko-images \
-  --region us-west-2 \
-  --openai-key sk-proj-...
-```
-
-This command will:
-1. ✅ Provision Kubernetes cluster
-2. ✅ Setup container registry  
-3. ✅ Deploy BuildKit service
-4. ✅ Deploy Nasiko platform
-5. ✅ Configure ingress and networking
-
-### Manual Setup Steps
-
-If you prefer step-by-step deployment:
-
-```bash
-# 1. Setup Kubernetes cluster
-uv run cli/main.py setup k8s deploy --provider digitalocean
-
-# 2. Configure container registry
-uv run cli/main.py setup registry deploy --provider digitalocean
-
-# 3. Deploy BuildKit
-uv run cli/main.py setup buildkit deploy
-
-# 4. Deploy core platform
-uv run cli/main.py setup core deploy
-```
-
-### Access Services
-
-After deployment, your services will be available at:
-
-- **Web UI**: `https://nasiko.your-domain.com`
-- **API**: `https://api.nasiko.your-domain.com`
-- **Kong Gateway**: `https://gateway.nasiko.your-domain.com`
-- **LangTrace**: `https://trace.nasiko.your-domain.com`
-
-## 🔧 Local Development
-
-### Prerequisites
-
-- Python 3.12+
-- Docker & Docker Compose
-- Git
-
-### Detailed Setup
-
-```bash
-# 1. Clone repository
-git clone https://github.com/your-org/nasiko.git
-cd nasiko
-
-# 2. Install UV package manager
-pip install uv
-uv sync
-
-# 3. Setup environment
-cp .env.local.example .env
-# Edit .env with your configuration
-
-# 4. Start infrastructure services
-make clean-start-nasiko
-
-# 5. Start the Redis stream listener (required for agent uploads)
-uv run orchestrator/redis_stream_listener.py
-```
-
-### Development Workflow
-
-```bash
-# Start everything
-make start-nasiko
-
-# View logs
-make logs
-
-# Restart specific services
-make backend-app     # Restart backend only
-make router         # Restart router only
-
-# Clean restart (removes all data)
-make clean-all
-make start-nasiko
-
-# Stop services
-make stop-all
-```
-
-### Environment Configuration
-
-Key environment variables:
-
-```bash
-# Database
-MONGO_URI=mongodb://admin:password@localhost:27017/nasiko
-REDIS_HOST=localhost
-
-# API Keys
-OPENAI_API_KEY=sk-proj-...
-GITHUB_CLIENT_ID=your-github-client-id
-GITHUB_CLIENT_SECRET=your-github-client-secret
-
-# Observability
-LANGTRACE_BASE_URL=http://localhost:3000
-
-# Kubernetes (for cloud deployment)
-BUILDKIT_ADDRESS=tcp://buildkitd.buildkit.svc.cluster.local:1234
-REGISTRY_URL=registry.digitalocean.com/nasiko-images
-DO_TOKEN=your-digitalocean-token
+# Infrastructure (K8s)
+nasiko setup bootstrap --provider digitalocean --region nyc3
 ```
 
 ## 📦 Agent Development
@@ -358,182 +307,419 @@ Every agent must follow this structure:
 
 ```
 my-agent/
+├── AgentCard.json          # Required: Agent capabilities
 ├── Dockerfile              # Container definition
-├── docker-compose.yml      # Local development setup
-├── capabilities.json       # Agent capabilities (required)
+├── pyproject.toml          # Python dependencies
+├── docker-compose.yml      # Local development (optional)
 ├── src/                    # Source code
-│   ├── main.py            # Entry point
-│   └── ...                # Your agent logic
-├── requirements.txt        # Python dependencies
-└── README.md              # Agent documentation
+│   ├── main.py            # FastAPI entry point
+│   └── ...                # Agent logic
+└── README.md              # Documentation
 ```
 
 ### Example Agent
 
+**AgentCard.json** (Required):
+```json
+{
+  "name": "document-analyzer",
+  "description": "AI agent for document analysis and extraction",
+  "capabilities": [
+    "document_analysis",
+    "pdf_extraction", 
+    "text_summarization"
+  ],
+  "tags": ["nlp", "documents", "analysis"],
+  "examples": [
+    "analyze this contract",
+    "extract data from PDF",
+    "summarize document"
+  ],
+  "input_mode": "text",
+  "output_mode": "json",
+  "agent_protocol_version": "a2a-v1",
+  "endpoints": {
+    "/analyze": "Analyze document content",
+    "/extract": "Extract structured data",
+    "/health": "Health check endpoint"
+  }
+}
+```
+
+**src/main.py**:
 ```python
-# src/main.py
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 app = FastAPI()
 
-class QueryRequest(BaseModel):
-    query: str
+class AnalysisRequest(BaseModel):
+    text: str
+    options: dict = {}
 
 @app.post("/analyze")
-async def analyze_query(request: QueryRequest):
+async def analyze_document(request: AnalysisRequest):
     # Your agent logic here
-    return {"result": f"Analyzed: {request.query}"}
+    return {
+        "summary": f"Analysis of: {request.text[:100]}...",
+        "entities": ["entity1", "entity2"],
+        "sentiment": "neutral"
+    }
 
 @app.get("/health")
-async def health():
-    return {"status": "healthy"}
+async def health_check():
+    return {"status": "healthy", "service": "document-analyzer"}
 ```
 
-### Capabilities Definition
+**Dockerfile**:
+```dockerfile
+FROM python:3.12-slim
 
-```json
-{
-  "name": "document-expert",
-  "description": "Expert at analyzing and extracting insights from documents",
-  "capabilities": [
-    "document_analysis",
-    "pdf_extraction", 
-    "text_summarization",
-    "data_extraction"
-  ],
-  "input_types": ["text", "pdf", "docx"],
-  "output_types": ["json", "text"],
-  "endpoints": {
-    "/analyze": "Analyze document content",
-    "/extract": "Extract structured data",
-    "/summarize": "Generate document summary"
-  }
-}
+WORKDIR /app
+COPY pyproject.toml .
+RUN pip install -e .
+
+COPY src/ ./src/
+EXPOSE 8000
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ### Testing Agents Locally
 
 ```bash
-# Deploy locally
-nasiko upload-directory ./my-agent --name my-agent
+# Test agent directly
+cd my-agent
+docker compose up -d
 
-# Test directly
-curl -X POST http://localhost:9100/my-agent/analyze \
+# Deploy to Nasiko
+nasiko upload-directory . --name my-agent
+
+# Test via Kong gateway
+curl -X POST http://localhost:9100/agents/my-agent/analyze \
   -H "Content-Type: application/json" \
-  -d '{"query": "test query"}'
+  -d '{"text": "Sample document content"}'
 
-# Test via router
-curl "http://localhost:8005/route?query=analyze this document" 
+# Test via intelligent routing through Kong
+curl "http://localhost:9100/router/route?query=analyze this document"
 ```
 
-## 📊 Monitoring & Observability
-
-Nasiko provides comprehensive observability out of the box:
-
-### LangTrace Integration
-- **URL**: http://localhost:3000
-- Automatic tracing for all agent interactions
-- Performance metrics and bottleneck analysis
-- Request/response logging with privacy controls
-
-### OpenTelemetry
-- Distributed tracing across all services
-- Custom metrics collection
-- Integration with Prometheus/Grafana
-
-### Kong Analytics
-- **URL**: http://localhost:1337
-- API usage statistics
-- Rate limiting and security metrics
-- Service health monitoring
-
-### Built-in Monitoring
-
-```bash
-# Check service health
-curl http://localhost:8000/health
-
-# View agent registry
-curl http://localhost:8000/api/v1/registries
-
-# Check router capabilities
-curl http://localhost:8005/capabilities
-
-# Monitor Kong services
-curl http://localhost:9101/services
-```
-
-## 🔀 Intelligent Routing
+## 🔄 Intelligent Routing System
 
 The router service automatically selects the best agent for each query:
 
-```python
-# Query gets routed to the best agent automatically
-response = requests.get(
-    "http://localhost:8005/route",
-    params={"query": "translate this to French"}
-)
-# Returns: {"agent_url": "http://localhost:9100/translator", "confidence": 0.95}
-```
+### How It Works
 
-### How Routing Works
+1. **Query Analysis** - LangChain analyzes user intent and requirements
+2. **Capability Matching** - Compares query against AgentCard.json capabilities  
+3. **Confidence Scoring** - Ranks agents by suitability
+4. **Best Match Selection** - Returns optimal agent URL with confidence score
 
-1. **Capability Analysis** - Router analyzes query intent and requirements
-2. **Agent Matching** - Compares query with agent capabilities from `capabilities.json`  
-3. **Scoring** - Uses LangChain to score agent suitability
-4. **Selection** - Returns best matching agent with confidence score
-5. **Fallback** - Falls back to general-purpose agents if no specialist found
-
-## 🔌 API Reference
-
-### Core Endpoints
+### Usage Examples
 
 ```bash
-# Agent Registry
-GET    /api/v1/registries           # List agents
-POST   /api/v1/registries           # Register agent
-GET    /api/v1/registries/{id}      # Get agent
-PUT    /api/v1/registries/{id}      # Update agent
-DELETE /api/v1/registries/{id}      # Delete agent
+# Router automatically selects best agent
+curl "http://localhost:9100/router/route?query=translate this to French"
+# Returns: {"agent_url": "http://localhost:9100/agents/translator", "confidence": 0.95}
 
-# Agent Upload
-POST   /api/v1/upload-agents/github     # Upload from GitHub
-POST   /api/v1/upload-agents/directory  # Upload from directory
+curl "http://localhost:9100/router/route?query=check code compliance"  
+# Returns: {"agent_url": "http://localhost:9100/agents/compliance-checker", "confidence": 0.89}
 
-# Query Routing
-GET    /api/v1/route                # Route query to best agent
-GET    /api/v1/capabilities         # List all capabilities
-
-# Monitoring
-GET    /api/v1/health              # Service health
-GET    /api/v1/metrics             # Platform metrics
-GET    /api/v1/traces/{agent}      # Agent traces
+# Fallback handling
+curl "http://localhost:9100/router/route?query=unknown task"
+# Returns: {"agent_url": "http://localhost:9100/agents/general-agent", "confidence": 0.45}
 ```
 
-Full API documentation: [docs/API.md](docs/API.md)
+## 📊 Observability & Monitoring
 
-## 📖 Documentation
+### Automatic Instrumentation
 
-- **[Architecture Guide](docs/ARCHITECTURE.md)** - Deep dive into system design
-- **[API Reference](docs/API.md)** - Complete REST API documentation
-- **[CLI Guide](docs/CLI.md)** - Command-line tool reference
-- **[Setup Guide](docs/SETUP.md)** - Detailed setup instructions
-- **[Local Development](docs/LOCAL_DEVELOPMENT.md)** - Development environment setup
+All agents automatically receive:
+- **Arize Phoenix SDK** injection for LLM observability
+- **Automatic instrumentation** for request/response tracing  
+- **Chat logging** via Kong plugins with conversation persistence
+- **Health monitoring** with automatic restarts and failover
+
+### Monitoring Dashboards
+
+- **Nasiko Web UI**: http://localhost:9100/app/ - Integrated observability dashboard via Kong Gateway
+- **Arize Phoenix UI**: http://localhost:6006 - Direct access to detailed traces and performance metrics
+- **Kong Manager**: http://localhost:9102 - API gateway analytics and configuration
+- **Agent Registry**: http://localhost:8000/docs - REST API documentation and testing
+
+### Health Checks
+
+```bash
+# Service health
+curl http://localhost:8000/api/v1/healthcheck   # Backend
+curl http://localhost:8081/health               # Router
+curl http://localhost:9100/health               # Kong
+
+# Agent health via Kong Gateway
+curl http://localhost:9100/agents/my-agent/health
+
+# Comprehensive status
+nasiko status
+```
+
+## 🌐 Environment Configuration
+
+### Required Environment Variables
+
+```bash
+# .nasiko-local.env
+
+# API Keys (Optional but recommended)
+OPENAI_API_KEY=sk-your-openai-api-key
+GITHUB_CLIENT_ID=your-github-oauth-client-id  
+GITHUB_CLIENT_SECRET=your-github-oauth-secret
+
+# Security (Change in production)
+JWT_SECRET=your-jwt-signing-secret
+USER_CREDENTIALS_ENCRYPTION_KEY=base64-encoded-key
+
+# Database Credentials
+MONGO_ROOT_PASSWORD=secure-mongo-password
+KONG_DB_PASSWORD=secure-kong-password
+
+# Default Admin Account
+SUPERUSER_EMAIL=admin@example.com
+SUPERUSER_USERNAME=admin
+SUPERUSER_PASSWORD=changeme123
+
+# Port Configuration (Optional - defaults shown)
+NASIKO_PORT_BACKEND=8000
+NASIKO_PORT_WEB=4000
+NASIKO_PORT_KONG=9100
+NASIKO_PORT_ROUTER=8081
+NASIKO_PORT_PHOENIX=6006
+```
+
+### Service Ports
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| Web Interface | 4000 | Browser dashboard (access via Kong Gateway at /app/) |
+| Backend API | 8000 | REST API and documentation |
+| Auth Service | 8082 | User authentication and GitHub OAuth |
+| Router Service | 8081 | Intelligent query routing |
+| Chat History | 8083 | Conversation logging and retrieval |
+| Kong Gateway | 9100 | Agent access point |
+| Kong Admin | 9101 | Gateway configuration |
+| Kong Manager | 9102 | Gateway web UI |
+| Kong Registry | 8080 | Service discovery and registration |
+| Arize Phoenix | 6006 | Observability and LLM tracing |
+| MongoDB | 27017 | Primary database |
+| Redis | 6379 | Caching and sessions |
+
+## ☁️ Production Deployment
+
+### Cloud Setup (One Command)
+
+```bash
+# DigitalOcean Kubernetes
+uv run cli/main.py setup bootstrap \
+  --provider digitalocean \
+  --registry-name nasiko-images \
+  --region nyc3 \
+  --openai-key sk-proj-your-key
+
+# AWS Kubernetes  
+uv run cli/main.py setup bootstrap \
+  --provider aws \
+  --registry-name nasiko-images \
+  --region us-west-2 \
+  --openai-key sk-proj-your-key
+```
+
+This command automatically:
+1. ✅ Provisions Kubernetes cluster with Terraform
+2. ✅ Sets up container registry with credentials
+3. ✅ Deploys BuildKit for remote image building
+4. ✅ Installs Nasiko platform with Helm
+5. ✅ Configures ingress and networking
+
+### Manual Setup Steps
+
+```bash
+# 1. Provision cluster
+uv run cli/main.py setup k8s deploy --provider digitalocean
+
+# 2. Configure registry
+uv run cli/main.py setup registry deploy --provider digitalocean
+
+# 3. Deploy BuildKit
+uv run cli/main.py setup buildkit deploy
+
+# 4. Deploy core platform
+uv run cli/main.py setup core deploy
+```
+
+### Production Architecture
+
+- **Load Balancing**: Kong gateway with multiple replicas
+- **Auto-scaling**: Kubernetes HPA for agents
+- **Storage**: Persistent volumes for databases
+- **Registry**: Cloud container registries (ECR, DigitalOcean)
+- **Building**: Remote BuildKit with registry integration
+- **Monitoring**: Arize Phoenix + cloud observability
+
+## 📚 Sample Agents
+
+Nasiko includes several example agents:
+
+### Available Agents
+
+- **`agents/a2a-compliance-checker/`** - Document policy compliance analysis
+- **`agents/a2a-github-agent/`** - GitHub repository operations
+- **`agents/translator/`** - Multi-language translation service
+- **`agents/crewai/`** - Multi-agent CrewAI framework integration
+- **`agents/langgraph/`** - Graph-based workflow agent
+
+### Deploy Sample Agents
+
+```bash
+# Deploy compliance checker
+nasiko upload-directory ./agents/a2a-compliance-checker --name compliance
+
+# Deploy GitHub agent
+nasiko upload-directory ./agents/a2a-github-agent --name github
+
+# Test deployed agents via Kong Gateway
+curl "http://localhost:9100/router/route?query=check document compliance"
+curl "http://localhost:9100/router/route?query=create GitHub issue"
+```
+
+## 🔧 Development Workflow
+
+### Local Development Commands
+
+```bash
+# Start all services
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d
+
+# View logs
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env logs -f
+
+# Restart specific services
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart nasiko-backend
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart nasiko-router
+
+# Stop all services
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env down
+
+# Clean restart (removes data)
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env down -v
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d
+```
+
+### Alternative Makefile Commands
+
+```bash
+make start-nasiko        # Clean volumes + start services
+make orchestrator        # Run orchestrator only
+make redis-listener      # Run Redis stream processor
+make clean-all          # Nuclear cleanup
+make backend-app        # Restart backend services
+```
+
+## 🚨 Important Notes
+
+### Critical Dependencies
+
+1. **Redis Stream Listener** - Agent uploads require the async processor:
+   ```bash
+   # Must run separately for agent uploads to work
+   uv run orchestrator/redis_stream_listener.py
+   ```
+
+2. **Docker Networks** - Required networks created automatically:
+   - `core_app-network` - Core services communication
+   - `core_agents-net` - Agent-to-agent communication
+
+3. **AgentCard.json** - Mandatory for all agents, defines capabilities for routing
+
+4. **BuildKit** - Required for Kubernetes agent deployments
+
+### Access Patterns
+
+**Kong Gateway Routes** (http://localhost:9100):
+- **`/agents/{agent-name}/`** - Dynamic agent access (auto-registered)
+- **`/api/`** - Backend API with authentication
+- **`/router/`** - Intelligent query routing service  
+- **`/auth/`** - Authentication endpoints
+- **`/app/`** - Web application interface
+- **`/n8n/`** - N8N workflow automation
+- **`/`** - Landing page (redirects to /app/)
+
+**Direct Service Access** (for development only):
+- **Backend API**: `http://localhost:8000/api/v1/`
+- **Web Interface**: `http://localhost:4000` (use Kong Gateway `/app/` for production)
+- **Router Service**: `http://localhost:8081` (use Kong Gateway `/router` for production)
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+**Agent won't deploy:**
+```bash
+# Check Redis stream listener is running
+ps aux | grep redis_stream_listener
+# If not running: uv run orchestrator/redis_stream_listener.py
+
+# Check Docker daemon
+docker info
+
+# Check logs
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env logs nasiko-backend
+```
+
+**Connection refused:**
+```bash
+# Check services are running
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env ps
+
+# Check ports
+lsof -i :8000
+lsof -i :9100
+
+# Restart services
+docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart
+```
+
+**Routing not working:**
+```bash
+# Verify router service
+curl http://localhost:8081/health
+
+# Check agent registration
+curl http://localhost:8000/api/v1/registries
+
+# Verify AgentCard.json exists in agent directory
+```
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes and add tests
-4. Run the test suite: `make test`
-5. Commit your changes: `git commit -m 'Add amazing feature'`
-6. Push to the branch: `git push origin feature/amazing-feature`
+3. Make your changes
+4. Test locally: `docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d`
+5. Commit changes: `git commit -m 'Add amazing feature'`
+6. Push to branch: `git push origin feature/amazing-feature`
 7. Open a Pull Request
 
+## 📄 License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## 🆘 Support
 
-- **Issues**: Report bugs and feature requests on [GitHub Issues](https://github.com/your-org/nasiko/issues)
-- **Discussions**: Join the community on [GitHub Discussions](https://github.com/your-org/nasiko/discussions)
-- **Documentation**: Comprehensive guides in the [docs/](docs/) directory
+- **Issues**: [GitHub Issues](https://github.com/your-org/nasiko/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/your-org/nasiko/discussions)
+- **Documentation**: This README covers the complete system
+
+---
+
+<div align="center">
+<strong>Built with ❤️ for the AI agent community</strong>
+</div>
