@@ -12,10 +12,10 @@
 **Centralized management, intelligent routing, and observability for AI agents**
 
 [🚀 Quick Start](#-quick-start) •
+[📚 Documentation](docs/) •
 [🏗️ Architecture](#️-architecture) •
 [🛠️ CLI Tool](#️-cli-tool) •
-[📦 Agent Development](#-agent-development) •
-[☁️ Production Setup](#️-production-deployment)
+[📦 Agent Development](#-agent-development)
 
 </div>
 
@@ -229,21 +229,22 @@ curl http://localhost:8000/api/v1/healthcheck
 curl http://localhost:9100/health
 ```
 
-### Quick Agent Test
+**🎉 Success!** Access Nasiko at http://localhost:9100/app/
 
-```bash
-# Install CLI
-cd cli && pip install -e .
+## 📚 Documentation
 
-# Deploy a sample agent
-nasiko upload-directory ./agents/a2a-compliance-checker --name compliance-checker
+For comprehensive guides and detailed instructions:
 
-# List deployed agents
-nasiko registry-list
+- **[Getting Started Guide](docs/getting-started.md)** - Complete walkthrough from installation to first agent deployment
+- **[Architecture Overview](docs/)** - System design, components, and data flows
+- **[Agent Development Guide](docs/)** - How to create and deploy custom agents  
+- **[API Reference](http://localhost:8000/docs)** - Full REST API documentation (after startup)
 
-# Test intelligent routing via Kong Gateway
-curl "http://localhost:9100/router/route?query=check compliance of this document"
-```
+### Quick Links
+
+- **📖 Complete Setup Guide**: Follow the [Getting Started Guide](docs/getting-started.md) for detailed installation and first agent deployment
+- **🔑 Login Credentials**: Check `orchestrator/superuser_credentials.json` after startup  
+- **🤖 Test Agent**: Use `agents/a2a-translator.zip` for your first agent upload
 
 ## 🛠️ CLI Tool
 
