@@ -8,8 +8,8 @@ import os
 class Config:
     # Docker Configuration
     DOCKER_NETWORK = os.getenv("DOCKER_NETWORK", "nasiko-network")
-    AGENTS_NETWORK = os.getenv("AGENTS_NETWORK", "nasiko_agents-net")
-    APP_NETWORK = os.getenv("APP_NETWORK", "nasiko_app-network")
+    AGENTS_NETWORK = os.getenv("AGENTS_NETWORK", "agents-net")
+    APP_NETWORK = os.getenv("APP_NETWORK", "app-network")
     NASIKO_API_URL = os.getenv("NASIKO_API_URL", "http://localhost:8000")
     KONG_GATEWAY_URL = os.getenv("KONG_GATEWAY_URL", "http://localhost:9100")
 

@@ -281,18 +281,13 @@ def get_docker_services() -> List[ServiceInfo]:
                     logger.debug(f"Skipping non-agent container: {container_name}")
                     continue
 
-                # Get container port - look for exposed port 5000
-                service_port = None
-                if hasattr(container, 'ports') and container.ports:
-                    # Look for port 5000/tcp
-                    port_info = container.ports.get('5000/tcp')
-                    if port_info:
-                        # Use internal port 5000 for network communication
-                        service_port = 5000
+                # For Docker containers on the same network, we don't need exposed ports
+                # We can communicate directly using container name and internal port
+                # Assume agents run on port 5000 internally (like in K8s)
+                service_port = 5000
                 
-                if service_port is None:
-                    logger.warning(f"Container {container_name} has no port 5000 exposed")
-                    continue
+                # Optional: Verify the container is actually listening on port 5000
+                # by checking container labels or image metadata, but for now assume it is
 
                 # Use container name as hostname for network communication
                 service_host = container_name

@@ -479,7 +479,7 @@ class N8nService:
             
             # Update docker-compose.yml with unique values
             compose_file = target_dir / "docker-compose.yml"
-            agents_network = os.getenv("AGENTS_NETWORK", "nasiko_agents-net")
+            agents_network = os.getenv("AGENTS_NETWORK", "agents-net")
             compose_content = f"""services:
   {container_name}:
     build: .

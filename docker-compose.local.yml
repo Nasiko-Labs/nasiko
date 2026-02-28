@@ -230,7 +230,7 @@ services:
       KONG_ADMIN_URL: http://kong-gateway:8001
       DOCKER_SOCKET: /var/run/docker.sock
       REGISTRY_INTERVAL: 30
-      AGENTS_NETWORK: nasiko_agents-net
+      AGENTS_NETWORK: agents-net
       K8S_ENABLED: "false"
       KONG_AUTH_HOST: nasiko-auth-service
       KONG_BACKEND_HOST: nasiko-backend
@@ -371,7 +371,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: 0
-      DOCKER_NETWORK: nasiko_agents-net
+      DOCKER_NETWORK: agents-net
       NASIKO_API_URL: http://nasiko-backend:8000
       KONG_GATEWAY_URL: http://localhost:9100
       K8S_ENABLED: "false"
@@ -395,5 +395,7 @@ volumes:
 networks:
   app-network:
     driver: bridge
+    name: app-network
   agents-net:
     driver: bridge
+    name: agents-net

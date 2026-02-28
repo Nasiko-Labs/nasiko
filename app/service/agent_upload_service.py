@@ -8,6 +8,7 @@ from typing import Optional, List
 import yaml
 from fastapi import UploadFile
 
+from app.pkg.config.config import settings
 from app.service.agentcard_service import AgentCardService
 from app.service.orchestration_service import OrchestrationService
 

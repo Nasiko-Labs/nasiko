@@ -25,6 +25,7 @@ nano .nasiko-local.env
 # OPENAI_API_KEY=sk-your-openai-key
 # GITHUB_CLIENT_ID=your-github-oauth-id
 # GITHUB_CLIENT_SECRET=your-github-oauth-secret
+# USER_CREDENTIALS_ENCRYPTION_KEY=your-base64-encoded-encryption-key
 ```
 
 ### 2. Start Nasiko Platform
@@ -163,10 +164,19 @@ Try uploading other agents from the `agents/` directory:
 ### Customize Configuration
 
 Edit `.nasiko-local.env` file to customize:
-- Database credentials
-- API keys (OpenAI, GitHub)
-- Port mappings
-- Network configuration
+- **Database credentials**: MongoDB and Redis connection settings
+- **API keys**: OpenAI, GitHub OAuth credentials  
+- **Security**: Generate a new encryption key for user credentials
+- **Port mappings**: Adjust service ports if needed
+- **Network configuration**: Customize Docker network names
+
+**Generate Encryption Key** (recommended for production):
+```bash
+# Generate a secure base64-encoded encryption key
+python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
+```
+
+Copy the output and set it as `USER_CREDENTIALS_ENCRYPTION_KEY` in your `.nasiko-local.env` file.
 
 ## Troubleshooting
 
@@ -221,8 +231,8 @@ Edit `.nasiko-local.env` file to customize:
    ```
 
 2. Should see:
-   - `nasiko_app-network`
-   - `nasiko_agents-net`
+   - `app-network`
+   - `agents-net`
 
 ## Support
 

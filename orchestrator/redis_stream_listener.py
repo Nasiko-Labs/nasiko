@@ -577,8 +577,6 @@ class RedisStreamListener:
         # Stop and remove existing container if it exists
         await self._cleanup_existing_container(agent_name)
         
-        # Find available port
-        port = await self._find_available_port()
         container_name = f"agent-{agent_name}"
         
         # Prepare environment variables like K8s worker
@@ -602,7 +600,6 @@ class RedisStreamListener:
             '--name', container_name,
             '--network', Config.AGENTS_NETWORK,  # Join agents network for Kong discovery
             '--network', Config.APP_NETWORK,  # Also join app network for observability access
-            '-p', f'{port}:5000',  # Expose on host for direct access (agent runs on 5000)
             '--restart', 'unless-stopped'
         ]
         
@@ -627,11 +624,13 @@ class RedisStreamListener:
         
         container_id = stdout.decode().strip()
         
+        # Agent containers run on port 5000 internally but are not exposed to host
+        # They are accessed through Kong gateway for external access
         return {
             'container_id': container_id,
             'container_name': container_name,
-            'port': port,
-            'url': f'http://localhost:{port}',
+            'port': 5000,  # Internal container port
+            'url': f'http://{container_name}:5000',  # Internal network URL
             'network_url': f'http://{container_name}:5000'  # For internal network access (agent runs on 5000)
         }
 
@@ -655,19 +654,6 @@ class RedisStreamListener:
         
         self.logger.debug(f"Cleaned up existing container: {container_name}")
 
-    async def _find_available_port(self, start_port: int = 8010) -> int:
-        """Find an available port for the agent"""
-        import socket
-        
-        for port in range(start_port, start_port + 100):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(('localhost', port))
-                    return port
-            except OSError:
-                continue
-        
-        raise Exception("No available ports found")
 
 
     async def fetch_agentcard_from_local(self, agent_name: str, agent_path: Path) -> Dict[str, Any] | None:

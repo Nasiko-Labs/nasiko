@@ -204,6 +204,7 @@ cp .nasiko-local.env.example .nasiko-local.env
 # OPENAI_API_KEY=sk-your-openai-key
 # GITHUB_CLIENT_ID=your-github-oauth-id
 # GITHUB_CLIENT_SECRET=your-github-oauth-secret
+# USER_CREDENTIALS_ENCRYPTION_KEY=your-base64-encoded-encryption-key
 
 # 4. Install Python dependencies (for CLI)
 pip install uv
@@ -635,8 +636,8 @@ make backend-app        # Restart backend services
    ```
 
 2. **Docker Networks** - Required networks created automatically:
-   - `nasiko_app-network` - Core services communication
-   - `nasiko_agents-net` - Agent-to-agent communication
+   - `app-network` - Core services communication
+   - `agents-net` - Agent-to-agent communication
 
 3. **AgentCard.json** - Mandatory for all agents, defines capabilities for routing
 
