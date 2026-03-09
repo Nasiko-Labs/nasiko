@@ -1,132 +1,80 @@
 # Getting Started with Nasiko
 
-This guide will walk you through setting up Nasiko, creating your first admin account, and deploying your first AI agent.
+This guide picks up where the [README](../README.md) leaves off. It assumes you've already completed the setup steps there and have Nasiko running at `http://localhost:9100/app/`.
 
-## Prerequisites
-
-- **Docker & Docker Compose**: Ensure Docker is installed and running
-- **Python 3.12+**: Required for UV package manager
-- **UV Package Manager**: Install with `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Git**: For cloning repositories
-
-## Quick Start
-
-### 1. Clone and Setup
-
-```bash
-git clone git@github.com:Nasiko-Labs/nasiko.git
-cd nasiko
-
-# Copy environment template
-cp .nasiko-local.env.example .nasiko-local.env
-
-# Edit environment variables
-nano .nasiko-local.env
-# OPENAI_API_KEY=sk-your-openai-key
-# GITHUB_CLIENT_ID=your-github-oauth-id
-# GITHUB_CLIENT_SECRET=your-github-oauth-secret
-# USER_CREDENTIALS_ENCRYPTION_KEY=your-base64-encoded-encryption-key
-```
-
-### 2. Start Nasiko Platform
-
-```bash
-# Start all services using Docker Compose
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d
-```
-
-### 3. Wait for Services
-
-Docker Compose will automatically start:
-- MongoDB, Redis, and Phoenix observability
-- Backend API and web frontend
-- Kong API Gateway with service registry
-- Auth service and chat history service
-- Redis stream listener for agent deployments
-
-**Wait for all services to be healthy** (typically 2-3 minutes).
-
-### 4. Access the Dashboard
-
-Open your browser and navigate to:
-- **Web Dashboard**: http://localhost:9100/app/
-- **API Documentation**: http://localhost:8000/docs
-- **Kong Gateway**: http://localhost:9100
-- **Phoenix Observability**: http://localhost:6006
+If you haven't done that yet, follow the [Quick Start](../README.md#-quick-start) instructions first, then come back here.
 
 ## First Login
 
-After setup completes, Nasiko automatically creates a superuser account and generates credentials.
+Nasiko automatically creates a superuser account during setup and writes the credentials to a local file.
 
-### 1. Locate Superuser Credentials
-
-Check the orchestrator directory for your login credentials:
+### 1. Find Your Credentials
 
 ```bash
 cat orchestrator/superuser_credentials.json
 ```
 
-The file contains:
+You'll see something like:
+
 ```json
 {
   "email": "admin@example.com",
-  "username": "admin", 
+  "username": "admin",
   "access_key": "your-access-key-here",
   "access_secret": "your-access-secret-here",
   "created_at": "2026-02-25T10:30:00Z"
 }
 ```
 
-### 2. Login to Dashboard
+### 2. Sign In
 
 1. Go to http://localhost:9100/app/
-2. Use:
-   - **Access Key and Access Secret**: Use the keys from `superuser_credentials.json`
+2. Enter the **Access Key** and **Access Secret** from the credentials file
 3. Click **Sign In**
+
+You should land on the Home dashboard.
 
 ## Deploy Your First Agent
 
-Let's deploy the translator agent to test the platform.
+The repo ships with pre-built agent ZIP files you can use to verify the platform is working. We'll use the translator agent.
 
-### 1. Navigate to Add Agent
+### 1. Upload the Agent
 
-1. In the web dashboard, click **"Add Agent"** in the sidebar
-2. Select **"Upload ZIP"** option
+1. In the sidebar, click **"Add Agent"**
+2. Select **"Upload ZIP"**
+3. Click **"Choose File"** and select `agents/a2a-translator.zip` from your Nasiko directory
+4. Click **"Upload"**
 
-### 2. Upload Agent
+### 2. Wait for Deployment
 
-1. Click **"Choose File"**
-2. Navigate to your Nasiko directory: `agents/a2a-translator.zip`
-3. Upload the ZIP file
-5. Click **"Upload"**
+Go to **"Your Agents"** in the sidebar to watch progress. You'll see the agent move through these stages:
 
-### 3. Monitor Deployment
+- **Setting Up** — Upload received, container is being built
+- **Active** — Agent is running and ready for queries
+- **Failed** — Something went wrong (see [Troubleshooting](../README.md#-troubleshooting) in the README)
 
-1. Go to **"Your Agents"** section to monitor progress
-2. Deployment stages:
-   - **Setting Up**: Agent upload received and setup started
-   - **Active**: Agent ready for use
-   - **Failed**: Agent setup failed
+Local deployment typically takes 1–2 minutes.
 
-**Local deployment typically takes 1-2 minutes**.
+### 3. Verify It's Running
 
-### 4. Verify Agent
+Once the status shows **Active**, go back to the **Home** dashboard. You should see the translator agent card listed there.
 
-Once deployed:
-1. Return to **"Home"** dashboard
-2. You should see the translator agent card
+You can also verify from the command line:
 
-## Test Agent Interaction
+```bash
+# Check the agent is registered and accessible through Kong
+curl http://localhost:9100/agents/translator/health
+```
 
-### 1. Start Agent Session
+## Test the Agent
 
-1. On the home dashboard, locate your **translator** agent card
-2. Click **"Start Session"**
-3. This opens the agent interaction interface
+### 1. Start a Session
 
-### 2. Query the Agent
+On the Home dashboard, find the **translator** agent card and click **"Start Session"**. This opens the interaction interface.
 
-Try these example queries:
+### 2. Send Some Queries
+
+Try these:
 
 ```
 Translate "Hello, how are you?" to French
@@ -140,107 +88,32 @@ Convert this text to Spanish: "The weather is beautiful today"
 Translate the following to German: "Thank you for your help"
 ```
 
-### 3. View Results
+Responses appear in real-time, and conversation history is saved automatically.
 
-- Agent responses appear in real-time
-- Translation results are displayed with source and target languages
-- Conversation history is automatically saved
+### 3. Try the Router
+
+Instead of talking to a specific agent, you can let the router pick the best agent for a query:
+
+```bash
+curl "http://localhost:9100/router/route?query=translate this to French"
+```
+
+The router analyzes the query, matches it against agent capabilities defined in each agent's `AgentCard.json`, and returns the best match with a confidence score.
 
 ## Next Steps
 
-### Explore More Agents
+**Deploy more agents.** The `agents/` directory includes additional examples:
+- `a2a-compliance-checker` — Document policy compliance analysis
+- `a2a-github-agent` — GitHub repository operations
 
-Try uploading other agents from the `agents/` directory:
-- **a2a-github-agent**: GitHub repository analysis
-- **a2a-compliance-checker**: Document compliance verification
+Upload them the same way (Add Agent → Upload ZIP), or use the CLI:
 
-### Monitor Performance
-
-- **Phoenix Observability**: http://localhost:6006
-  - View agent traces and performance metrics
-  - Monitor API calls and response times
-  - Analyze conversation patterns
-
-### Customize Configuration
-
-Edit `.nasiko-local.env` file to customize:
-- **Database credentials**: MongoDB and Redis connection settings
-- **API keys**: OpenAI, GitHub OAuth credentials  
-- **Security**: Generate a new encryption key for user credentials
-- **Port mappings**: Adjust service ports if needed
-- **Network configuration**: Customize Docker network names
-
-**Generate Encryption Key** (recommended for production):
 ```bash
-# Generate a secure base64-encoded encryption key
-python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
+nasiko agent upload-directory ./agents/a2a-compliance-checker --name compliance
 ```
 
-Copy the output and set it as `USER_CREDENTIALS_ENCRYPTION_KEY` in your `.nasiko-local.env` file.
+**Check observability.** Open [Phoenix](http://localhost:6006) to see traces, API call timing, and conversation patterns for your deployed agents.
 
-## Troubleshooting
+**Build your own agent.** See the [Agent Development](../README.md#-agent-development) section in the README for the required file structure, `AgentCard.json` format, and a complete code example.
 
-### Agent Deployment Fails
-
-1. Check Redis stream listener is running:
-   ```bash
-   docker logs nasiko-redis-listener
-   ```
-
-2. Check agent build status in **"Your Agents"** section
-
-3. Restart the Redis listener if needed:
-   ```bash
-   docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart nasiko-redis-listener
-   ```
-
-### Services Not Starting
-
-1. Verify Docker is running:
-   ```bash
-   docker info
-   ```
-
-2. Check service health:
-   ```bash
-   docker-compose --env-file .nasiko-local.env -f docker-compose.local.yml ps
-   ```
-
-3. View service logs:
-   ```bash
-   docker logs <service-name>
-   ```
-
-### Authentication Issues
-
-1. Verify superuser credentials file exists:
-   ```bash
-   ls orchestrator/superuser_credentials.json
-   ```
-
-2. Check auth service health:
-   ```bash
-   curl http://localhost:8082/health
-   ```
-
-### Network Issues
-
-1. Verify networks exist:
-   ```bash
-   docker network ls | grep nasiko
-   ```
-
-2. Should see:
-   - `app-network`
-   - `agents-net`
-
-## Support
-
-- **Documentation**: Check other files in `docs/` folder
-- **API Reference**: http://localhost:8000/docs
-- **Logs**: Use `docker logs <container-name>` for debugging
-- **Issues**: Report bugs in your project repository
-
----
-
-**🎉 Congratulations!** You now have Nasiko running with your first AI agent. Explore the web dashboard to discover more features and deploy additional agents.
+**Set up the CLI.** The CLI gives you full platform management from the terminal. See [CLI Tool](../README.md#️-cli-tool) in the README for installation and usage.

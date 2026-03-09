@@ -2,20 +2,22 @@
 
 This Kong setup provides dynamic service discovery and routing for your containerized agents. It automatically detects when agent containers start/stop and updates Kong's routing configuration accordingly.
 
+> **Note:** In the standard Nasiko setup, Kong starts as part of the root `docker compose` command. The standalone instructions in this README are for isolated Kong development and testing only. See the [main README](../README.md) for full platform setup.
+
 ## Features
 
 - **Automatic Service Discovery**: Detects containers in the `agents-net` network
-- **Dynamic Routing**: Creates routes like `/translator`, `/document-expert`, etc.
+- **Dynamic Routing**: Creates routes like `/agents/translator/`, `/agents/document-expert/`, etc.
 - **Port Mapping**: Handles dynamic port assignments from Docker
 - **Health Monitoring**: Monitors container and Kong health
-- **Web Dashboard**: Kong Manager + Konga for GUI management
+- **Web Dashboard**: Kong Manager for GUI management
 
 ## Architecture
 
 ```
 Client Request
       ↓
-Kong Gateway :8000
+Kong Gateway :9100
       ↓
 Automatic Route Discovery
       ↓
@@ -24,23 +26,29 @@ Agent Container (dynamic port)
 
 ## Ports
 
-- **9100**: Kong Proxy (main API gateway - use this!)
-- **9101**: Kong Admin API
-- **9102**: Kong Manager (web GUI)
-- **1337**: Konga Dashboard (alternative GUI)
+| Port | Service | Purpose |
+|------|---------|---------|
+| 9100 | Kong Proxy | Main API gateway (use this for all agent access) |
+| 9101 | Kong Admin API | Gateway configuration |
+| 9102 | Kong Manager | Web GUI for gateway management |
+| 8080 | Kong Registry | Service discovery and auto-registration |
+
+For the full service port table, see the [main README](../README.md#service-ports).
 
 ## Usage
 
-### 1. Start Kong
+### 1. Start Kong (Standalone)
 
 ```bash
 cd kong/
-docker-compose up -d
+docker compose up -d
 ```
+
+> In the standard Nasiko setup, skip this step — Kong starts automatically with the platform.
 
 ### 2. Access Your Agents
 
-Instead of using random ports, use Kong routes:
+Instead of using random container ports, use Kong routes:
 
 ```bash
 # Before (random ports):
@@ -48,33 +56,32 @@ curl http://localhost:5000/translate
 curl http://localhost:8001/analyze
 
 # After (Kong routes):
-curl http://localhost:9100/translator/translate
-curl http://localhost:9100/document-expert/analyze
+curl http://localhost:9100/agents/translator/translate
+curl http://localhost:9100/agents/document-expert/analyze
 ```
 
 ### 3. Monitor Services
 
 - Kong Manager: http://localhost:9102
-- Konga Dashboard: http://localhost:1337
 - Registry Status: http://localhost:8080/status
 
 ## Route Patterns
 
-Kong automatically creates routes based on container names:
+Kong automatically creates routes based on container names. All agent routes are prefixed with `/agents/`:
 
 | Container Name | Kong Route | Example URL |
 |---------------|------------|-------------|
-| translator | `/translator` | `http://localhost:9100/translator/api` |
-| document-expert | `/document-expert` | `http://localhost:9100/document-expert/analyze` |
-| github-agent | `/github-agent` | `http://localhost:9100/github-agent/repo` |
-| compliance-checker | `/compliance-checker` | `http://localhost:9100/compliance-checker/check` |
+| translator | `/agents/translator/` | `http://localhost:9100/agents/translator/api` |
+| document-expert | `/agents/document-expert/` | `http://localhost:9100/agents/document-expert/analyze` |
+| github-agent | `/agents/github-agent/` | `http://localhost:9100/agents/github-agent/repo` |
+| compliance-checker | `/agents/compliance-checker/` | `http://localhost:9100/agents/compliance-checker/check` |
 
 ## Service Discovery Process
 
 1. **Container Detection**: Scans containers in `agents-net` network
 2. **Port Discovery**: Finds exposed ports (5000, 8000-8006, 3000)
 3. **Service Registration**: Creates Kong service pointing to container IP:port
-4. **Route Creation**: Creates route `/service-name` → service
+4. **Route Creation**: Creates route `/agents/service-name/` → service
 5. **Health Monitoring**: Continuously monitors and updates
 
 ## Configuration
@@ -87,6 +94,8 @@ environment:
   REGISTRY_INTERVAL: 30  # Check for changes every 30 seconds
   AGENTS_NETWORK: agents-net
 ```
+
+> **Note:** `KONG_ADMIN_URL` uses Kong's internal port 8001. The externally exposed admin port is 9101.
 
 ## Troubleshooting
 
@@ -117,14 +126,14 @@ curl http://localhost:9101/routes
 
 ## Integration with Nasiko
 
-Update your Nasiko backend to use Kong routes instead of direct agent URLs:
+In the Nasiko platform, services use Kong's internal hostname for routing:
 
 ```python
 # Before
 agent_url = f"http://translator:5000/translate"
 
 # After
-agent_url = f"http://kong:9100/translator/translate"
+agent_url = f"http://kong:9100/agents/translator/translate"
 ```
 
 This provides a consistent interface regardless of agent container restarts or port changes.
