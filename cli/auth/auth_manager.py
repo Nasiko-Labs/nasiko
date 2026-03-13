@@ -270,7 +270,7 @@ class AuthManager:
         try:
             # Test token with a lightweight API call
             base_url_str = str(self.base_url)  # Ensure it's a string
-            health_url = f"{base_url_str}/healthcheck"
+            health_url = f"{base_url_str}/api/v1/healthcheck"
             response = requests.get(health_url, headers=headers, timeout=10)
             
             if response.status_code == 401:

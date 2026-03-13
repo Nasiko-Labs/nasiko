@@ -116,11 +116,15 @@ def upload_directory_command(directory_path: str, agent_name: Optional[str] = No
             temp_zip_path = temp_zip.name
         
         print(f"creating temporary zip file...")
+        import re
+        _version_dir = re.compile(r'^v\d+\.\d+')
         with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for file_path in dir_path.rglob('*'):
                 if file_path.is_file():
-                    # Calculate relative path within the directory
                     arcname = file_path.relative_to(dir_path)
+                    # Skip version subdirectories stored by the backend (e.g. v1.0.2/, v1.0.3/)
+                    if _version_dir.match(arcname.parts[0]):
+                        continue
                     zipf.write(file_path, arcname)
         
         # Upload the temporary zip file using the API client
