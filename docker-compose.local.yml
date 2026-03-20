@@ -91,6 +91,7 @@ services:
   # ============================================================================
   nasiko-auth-service:
     image: docker.io/karannasiko/nasiko-auth:latest
+    platform: linux/amd64 # Remove this line if you are not using a Mac for building the image
     container_name: nasiko-auth-service
     restart: unless-stopped
     depends_on:
@@ -311,6 +312,7 @@ services:
   # ============================================================================
   nasiko-web:
     image: docker.io/karannasiko/nasiko-web:latest
+    platform: linux/amd64
     container_name: nasiko-web
     restart: unless-stopped
     depends_on:
