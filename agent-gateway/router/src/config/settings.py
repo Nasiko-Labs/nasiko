@@ -29,8 +29,11 @@ class RouterConfig(BaseSettings):
 
     # Vector store settings
     VECTOR_STORE_CACHE_TTL: int = 3600
+    EMBEDDING_PROVIDER: str = "openai"  # "openai" | "jina"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     RERANKING_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    JINA_API_KEY: Optional[str] = None
+    JINA_EMBEDDING_MODEL: str = "jina-embeddings-v3"
 
     # Request settings
     MAX_FILE_SIZE: int = 1073741824  # 1GB

@@ -271,6 +271,9 @@ services:
       MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
       ROUTER_LLM_PROVIDER: ${ROUTER_LLM_PROVIDER:-openai}
       ROUTER_LLM_MODEL: ${ROUTER_LLM_MODEL:-gpt-4o-mini}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      JINA_API_KEY: ${JINA_API_KEY:-}
+      JINA_EMBEDDING_MODEL: ${JINA_EMBEDDING_MODEL:-jina-embeddings-v3}
     ports:
       - "8081:8000"
     networks:
@@ -328,6 +331,14 @@ services:
       AUTH_BASE_URL: ""
       AGENTS_BASE_URL: /agents
       IS_DEVELOPMENT: "false"
+    # The compiled Flutter bundle has https://nasiko.dev hardcoded. Patch it at
+    # startup so local deployments route through Kong instead of the production host.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        KONG_URL="http://localhost:${NASIKO_PORT_KONG:-9100}"
+        sed -i "s|https://nasiko.dev|$$KONG_URL|g" /usr/share/nginx/html/main.dart.js
+        exec /docker-entrypoint.sh nginx -g 'daemon off;'
     networks:
       - app-network
     healthcheck:
@@ -382,6 +393,8 @@ services:
       KONG_GATEWAY_URL: http://localhost:9100
       K8S_ENABLED: "false"
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agents:/app/agents:ro

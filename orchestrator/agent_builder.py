@@ -12,7 +12,7 @@ from pathlib import Path
 from docker_utils import run_cmd
 from registry_manager import RegistryManager
 from instrumentation_injector import InstrumentationInjector
-from config import AGENTS_DIRECTORY, DOCKER_NETWORK
+from config import AGENTS_DIRECTORY, DOCKER_NETWORK, Config
 
 logger = logging.getLogger(__name__)
 
@@ -420,13 +420,30 @@ class AgentBuilder:
                 if DOCKER_NETWORK not in svc_def["networks"]:
                     svc_def["networks"].append(DOCKER_NETWORK)
 
-            # Update services to use pre-built instrumented image
+            # Update services to use pre-built instrumented image and inject API keys
             image_tag = f"{agent_folder_name}_instrumented"
+            api_key_env = {
+                "OPENAI_API_KEY": Config.OPENAI_API_KEY,
+                "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
+                "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
+            }
             for service_name, svc_def in compose_data.get("services", {}).items():
                 if service_name == agent_folder_name and "build" in svc_def:
-                    # Replace build with image reference
                     svc_def.pop("build", None)
                     svc_def["image"] = image_tag
+
+                # Inject actual API key values directly (bypasses yaml/shell substitution issues)
+                env = svc_def.get("environment", [])
+                if isinstance(env, list):
+                    new_env = []
+                    for item in env:
+                        if isinstance(item, str):
+                            key = item.split("=")[0]
+                            if key in api_key_env and api_key_env[key]:
+                                new_env.append(f"{key}={api_key_env[key]}")
+                                continue
+                        new_env.append(item)
+                    svc_def["environment"] = new_env
 
             # Save updated compose
             with open(compose_path, "w") as f:

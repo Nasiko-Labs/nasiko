@@ -25,6 +25,7 @@ class Config:
 
     # API Keys
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
 
