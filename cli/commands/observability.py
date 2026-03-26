@@ -103,7 +103,7 @@ def get_auth_headers():
     headers = auth_manager.get_auth_headers()
     if not headers:
         console.print(
-            "[red]Error: Not authenticated. Please run 'nasiko login' first.[/red]"
+            "[red]Error: Not authenticated. Please run 'nasiko auth login' first.[/red]"
         )
         raise typer.Exit(1)
     return headers

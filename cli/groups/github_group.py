@@ -9,16 +9,16 @@ import typer
 github_app = typer.Typer(help="GitHub integration and repository management")
 
 
-@github_app.command(name="login")
-def github_login():
+@github_app.command(name="connect")
+def github_connect():
     """Authenticate with GitHub via the Nasiko backend automatically."""
     from commands.github import login_command
 
     login_command()
 
 
-@github_app.command(name="logout")
-def github_logout():
+@github_app.command(name="disconnect")
+def github_disconnect():
     """Logout from GitHub and clear authentication session."""
     from commands.github import logout_command
 

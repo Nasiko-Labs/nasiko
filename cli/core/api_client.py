@@ -109,12 +109,12 @@ class APIClient:
         """Ensure user is authenticated"""
         if not self.auth_manager.is_logged_in():
             typer.echo("❌ Please login first:")
-            typer.echo("   nasiko login")
+            typer.echo("   nasiko auth login")
             raise typer.Exit(1)
 
         if not self.auth_manager.refresh_token_if_needed():
             typer.echo("❌ Authentication failed. Please login again:")
-            typer.echo("   nasiko login")
+            typer.echo("   nasiko auth login")
             raise typer.Exit(1)
 
     def _make_request(
@@ -147,7 +147,7 @@ class APIClient:
             # Handle auth failures
             if response.status_code == 401 and require_auth:
                 typer.echo("❌ Authentication failed. Please login again:")
-                typer.echo("   nasiko login")
+                typer.echo("   nasiko auth login")
                 self.auth_manager.logout()
                 raise typer.Exit(1)
 
@@ -242,7 +242,7 @@ class APIClient:
 
                 if response.status_code == 401 and require_auth:
                     typer.echo("❌ Authentication failed. Please login again:")
-                    typer.echo("   nasiko login")
+                    typer.echo("   nasiko auth login")
                     self.auth_manager.logout()
                     raise typer.Exit(1)
 

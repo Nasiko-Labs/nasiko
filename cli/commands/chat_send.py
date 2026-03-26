@@ -22,7 +22,7 @@ def send_message_command(url: str, message: str, session_id: str):
         # Get authentication headers
         auth_manager = get_auth_manager()
         if not auth_manager.is_logged_in():
-            console.print("[red]Error: Please login first using 'nasiko login'[/red]")
+            console.print("[red]Error: Please login first using 'nasiko auth login'[/red]")
             raise typer.Exit(1)
 
         if not auth_manager.refresh_token_if_needed():
