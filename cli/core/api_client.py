@@ -93,17 +93,9 @@ class APIClient:
         if endpoint.startswith("http"):
             return endpoint
 
-        # All APIEndpoints are relative paths like "/registry"
-        # We assume they belong under /api/v1 unless they explicitly start with /auth
-
+        # All APIEndpoints are relative paths — always route through /api/v1/
         endpoint = endpoint.lstrip("/")
-
-        if endpoint.startswith("auth/"):
-            # Auth service routes (e.g. /auth/users/...) are usually under root
-            return f"{self.base_url}/{endpoint}"
-        else:
-            # Standard API routes
-            return f"{self.api_url}/{endpoint}"
+        return f"{self.api_url}/{endpoint}"
 
     def _require_auth(self):
         """Ensure user is authenticated"""

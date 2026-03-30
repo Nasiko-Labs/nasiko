@@ -51,6 +51,7 @@ class AuthManager:
     def __init__(self, base_url: str = None, cluster_name: str = None):
         self.config_dir = CONFIG_DIR
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.cluster_name = cluster_name or os.environ.get("NASIKO_CLUSTER_NAME")
 
         # Determine Base URL
         if base_url:
@@ -83,9 +84,15 @@ class AuthManager:
 
         self.auth_url = self.base_url  # Auth service is at base URL
 
-        # File-based fallback paths
-        self.token_file = self.config_dir / "token.enc"
-        self.creds_file = self.config_dir / "credentials.enc"
+        # Per-cluster storage keys (so each cluster has its own token)
+        cluster_key = self.cluster_name or self.base_url or "default"
+        self.TOKEN_KEY = f"jwt_token_{cluster_key}"
+        self.CREDS_KEY = f"user_creds_{cluster_key}"
+
+        # File-based fallback paths (per-cluster)
+        safe_key = cluster_key.replace("/", "_").replace(":", "_").replace(".", "_")
+        self.token_file = self.config_dir / f"token_{safe_key}.enc"
+        self.creds_file = self.config_dir / f"credentials_{safe_key}.enc"
 
     def _get_encryption_key(self) -> bytes:
         """Generate encryption key from system/user information"""

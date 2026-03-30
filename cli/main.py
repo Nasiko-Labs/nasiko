@@ -172,10 +172,9 @@ def use_cluster(
     known = {c["name"] for c in list_clusters()}
 
     if cluster not in known:
-        console.print(
-            f"[yellow]Warning:[/] cluster '{cluster}' not found in local state. "
-            "Setting it anyway — run [bold]nasiko cluster list[/] to verify."
-        )
+        console.print(f"[red]Cluster '{cluster}' not found.[/]")
+        console.print("Create it first with [bold]nasiko init[/] or [bold]nasiko cluster create[/], then switch to it.")
+        raise typer.Exit(1)
 
     set_active_cluster(cluster)
     console.print(f"[green]Active cluster:[/] [bold]{cluster}[/]")
@@ -233,10 +232,57 @@ def init_wizard():
         default="remote",
     )
 
-    if cluster_type in ("local", "local-k8s"):
-        console.print(f"[yellow]'{cluster_type}' cluster support is not yet implemented.[/]")
-        console.print("Stay tuned for a future release.")
+    if cluster_type == "local-k8s":
+        console.print("[yellow]'local-k8s' (kind/minikube) support is not yet implemented.[/]")
         raise typer.Exit(0)
+
+    if cluster_type == "local":
+        cluster_name = typer.prompt("Cluster name", default="local")
+        console.print("\n[bold]Step 1:[/] Starting local Docker Compose stack...")
+        try:
+            from groups.local_group import _ensure_docker_running, _ensure_docker_compose, local_up
+            _ensure_docker_running()
+            _ensure_docker_compose()
+            local_up()
+        except SystemExit as e:
+            if e.code != 0:
+                console.print("[red]Failed to start local stack. Aborting.[/]")
+                raise typer.Exit(1)
+
+        from setup.config import save_cluster_info
+        save_cluster_info(
+            provider="local",
+            cluster_name=cluster_name,
+            data={"gateway_url": "http://localhost:9100", "type": "docker-compose"},
+        )
+        set_active_cluster(cluster_name)
+        console.print(f"\n[green]Active cluster set to:[/] [bold]{cluster_name}[/]")
+        console.print("[dim]API URL: http://localhost:9100[/]")
+
+        if typer.confirm("\nWould you like to log in now?", default=True):
+            access_key = typer.prompt("Access key")
+            access_secret = typer.prompt("Access secret", hide_input=True)
+            auth_manager = get_auth_manager(cluster_name=cluster_name)
+            if auth_manager.login(access_key, access_secret):
+                console.print("[green]Login successful![/]")
+            else:
+                console.print("[yellow]Login failed.[/] Try [bold]nasiko auth login[/] once the stack is ready.")
+        else:
+            console.print("Log in later with [bold]nasiko auth login[/].")
+
+        # Optional: GitHub OAuth setup
+        console.print()
+        if typer.confirm("Would you like to set up GitHub integration? (lets you deploy agents from GitHub repos)", default=False):
+            console.print("\n[bold]To enable GitHub integration:[/bold]")
+            console.print("1. Go to [cyan]https://github.com/settings/developers[/cyan] → OAuth Apps → New OAuth App")
+            console.print(f"   Homepage URL:  [cyan]http://localhost:9100[/cyan]")
+            console.print(f"   Callback URL:  [cyan]http://localhost:9100/auth/github/callback[/cyan]")
+            console.print("2. Add to your env file:")
+            console.print("   [dim]GITHUB_CLIENT_ID=your_client_id[/dim]")
+            console.print("   [dim]GITHUB_CLIENT_SECRET=your_client_secret[/dim]")
+            console.print("3. Restart: [cyan]nasiko local down && nasiko local up[/cyan]")
+            console.print("4. Then run: [cyan]nasiko github connect[/cyan]")
+        return
 
     # --- Remote cluster setup ---
     provider = typer.prompt(
@@ -305,11 +351,16 @@ def init_wizard():
 
 
 @app.command(name="docs")
-def api_docs():
-    """Get API documentation and Swagger links."""
-    from commands.registry import api_docs_command
+def docs_command(
+    topic: str = typer.Argument(
+        None,
+        help="Topic: install, quickstart, concepts, auth, cluster, github, agent, chat, observability, access, local, n8n, images, user, search, env",
+    ),
+):
+    """CLI documentation. Run without arguments for an overview, or specify a topic."""
+    from commands.cli_docs import show_docs
 
-    api_docs_command()
+    show_docs(topic)
 
 
 @app.command(name="list-clusters")

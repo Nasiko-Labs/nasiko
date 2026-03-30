@@ -21,7 +21,7 @@ console = Console()
 local_app = typer.Typer(help="Local Docker development stack management")
 
 # Path to docker-compose file (relative to project root)
-COMPOSE_FILE = "docker-compose.nasiko.yml"
+COMPOSE_FILE = "docker-compose.local.yml"
 PROJECT_NAME = "nasiko"
 
 

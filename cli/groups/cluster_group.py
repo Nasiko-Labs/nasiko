@@ -18,6 +18,72 @@ setup_app.add_typer(registry_app, name="registry")
 
 
 # ---------------------------------------------------------------------------
+# nasiko cluster connect
+# ---------------------------------------------------------------------------
+
+@cluster_app.command("connect")
+def connect(
+    name: str = typer.Argument(..., help="Name to give this cluster"),
+    url: str = typer.Option(..., "--url", "-u", help="API gateway URL (e.g. https://api.my-cluster.example.com)"),
+    login: bool = typer.Option(True, "--login/--no-login", help="Prompt for login after connecting"),
+    auth: str = typer.Option("key", "--auth", "-a", help="Login method: key, github, digitalocean"),
+):
+    """Connect to an existing remote cluster by registering its API URL."""
+    import os
+    from rich.console import Console
+    from setup.config import save_cluster_info
+    from core.context import set_active_cluster
+    from auth.auth_manager import get_auth_manager
+
+    console = Console()
+
+    # Validate URL format
+    if not url.startswith(("http://", "https://")):
+        console.print("[red]URL must start with http:// or https://[/]")
+        raise typer.Exit(1)
+
+    if auth not in ("key", "github", "digitalocean"):
+        console.print("[red]--auth must be one of: key, github, digitalocean[/]")
+        raise typer.Exit(1)
+
+    # Save cluster info
+    save_cluster_info(
+        provider="existing",
+        cluster_name=name,
+        data={"gateway_url": url.rstrip("/"), "type": "remote"},
+    )
+    set_active_cluster(name)
+    # Propagate to env so subsequent auth calls use the right cluster
+    os.environ["NASIKO_CLUSTER_NAME"] = name
+
+    console.print(f"[green]Connected to cluster:[/] [bold]{name}[/]")
+    console.print(f"[bold]API URL:[/] {url.rstrip('/')}")
+
+    if not login:
+        return
+
+    console.print()
+
+    if auth == "key":
+        access_key = typer.prompt("Access key")
+        access_secret = typer.prompt("Access secret", hide_input=True)
+        auth_manager = get_auth_manager(cluster_name=name)
+        if auth_manager.login(access_key, access_secret):
+            console.print("[green]Login successful![/] You're ready to use Nasiko.")
+        else:
+            console.print("[yellow]Login failed.[/] Try [bold]nasiko auth login[/] to retry.")
+
+    elif auth == "github":
+        from commands.github import login_command
+        console.print("[cyan]Logging in via GitHub SSO...[/cyan]")
+        login_command()
+
+    elif auth == "digitalocean":
+        console.print("[cyan]DigitalOcean SSO is not yet supported.[/cyan]")
+        console.print("Use [bold]nasiko auth login[/bold] with your access key instead.")
+
+
+# ---------------------------------------------------------------------------
 # nasiko cluster create
 # ---------------------------------------------------------------------------
 
@@ -26,9 +92,21 @@ def create_local(
     name: str = typer.Option("local", "--name", "-n", help="Name for the cluster"),
 ):
     """Create a local Docker Compose cluster."""
-    typer.echo("⚠️  Local Docker Compose cluster creation is not yet implemented.")
-    typer.echo("Coming in a future release.")
-    raise typer.Exit(1)
+    from groups.local_group import _ensure_docker_running, _ensure_docker_compose, local_up
+    from setup.config import save_cluster_info
+    from core.context import set_active_cluster
+
+    _ensure_docker_running()
+    _ensure_docker_compose()
+    local_up()
+
+    save_cluster_info(
+        provider="local",
+        cluster_name=name,
+        data={"gateway_url": "http://localhost:9100", "type": "docker-compose"},
+    )
+    set_active_cluster(name)
+    typer.echo(f"Active cluster set to: {name}")
 
 
 @create_app.command("local-k8s")
@@ -110,15 +188,33 @@ def destroy(
 
 
 @cluster_app.command("list")
-def list_clusters(
-    state_dir: str = typer.Option(
-        None, "--state-dir", "-s", envvar="NASIKO_STATE_DIR",
-        help="Path for storing Terraform state"
-    ),
-):
+def list_clusters():
     """List all clusters managed by Nasiko."""
-    from setup.k8s_setup import list_clusters as _list
-    _list(state_dir=state_dir)
+    from rich.console import Console
+    from rich.table import Table
+    from setup.config import list_clusters as _list_config
+    from core.context import get_active_cluster
+
+    console = Console()
+    clusters = _list_config()
+    active = get_active_cluster()
+
+    if not clusters:
+        console.print("[yellow]No clusters found.[/yellow]")
+        console.print("Create one with: [cyan]nasiko init[/cyan] or [cyan]nasiko cluster connect <name> --url <url>[/cyan]")
+        return
+
+    table = Table(title="Clusters")
+    table.add_column("Name", style="bold")
+    table.add_column("Provider")
+    table.add_column("URL")
+    table.add_column("Active")
+
+    for c in clusters:
+        is_active = "✓" if c.get("name") == active else ""
+        table.add_row(c.get("name", ""), c.get("provider", ""), c.get("url", ""), f"[green]{is_active}[/green]")
+
+    console.print(table)
 
 
 @cluster_app.command("output")
