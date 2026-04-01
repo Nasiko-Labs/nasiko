@@ -187,6 +187,45 @@ def destroy(
     )
 
 
+@cluster_app.command("remove")
+def remove_cluster(
+    name: str = typer.Argument(..., help="Name of the cluster to remove from the list"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+):
+    """Remove a cluster entry from the local list (does not destroy cloud resources)."""
+    import shutil
+    from rich.console import Console
+    from setup.config import get_nasiko_home
+    from core.context import get_active_cluster, set_active_cluster
+
+    console = Console()
+    state_root = get_nasiko_home() / "state"
+
+    found = []
+    for provider_dir in state_root.iterdir():
+        if not provider_dir.is_dir():
+            continue
+        cluster_dir = provider_dir / name
+        if cluster_dir.is_dir():
+            found.append(cluster_dir)
+
+    if not found:
+        console.print(f"[red]Cluster '[bold]{name}[/bold]' not found.[/red]")
+        raise typer.Exit(1)
+
+    if not yes:
+        typer.confirm(f"Remove cluster '{name}' from the list?", abort=True)
+
+    for cluster_dir in found:
+        shutil.rmtree(cluster_dir)
+
+    if get_active_cluster() == name:
+        set_active_cluster(None)
+        console.print(f"[yellow]Active cluster unset (was '{name}').[/yellow]")
+
+    console.print(f"[green]Cluster '[bold]{name}[/bold]' removed.[/green]")
+
+
 @cluster_app.command("list")
 def list_clusters():
     """List all clusters managed by Nasiko."""

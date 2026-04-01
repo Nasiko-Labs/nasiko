@@ -94,15 +94,13 @@ def show_overview():
         ("nasiko auth",          "Login, logout, status"),
         ("nasiko cluster",       "Create, connect, destroy, inspect clusters"),
         ("nasiko github",        "Connect GitHub, clone repos as agents"),
-        ("nasiko agent",         "Deploy and manage AI agents"),
-        ("nasiko chat",          "Create sessions and chat with agents"),
-        ("nasiko observability", "Sessions, traces, spans, stats"),
+        ("nasiko agent",         "Deploy and manage AI agents (incl. nasiko agent n8n)"),
+        ("nasiko chat",          "Interactive chat sessions with agents"),
+        ("nasiko observe",       "Sessions, traces, spans, stats"),
         ("nasiko access",        "Grant / revoke agent permissions"),
+        ("nasiko admin",         "User management + search (super user only)"),
         ("nasiko local",         "Manage local Docker Compose stack"),
-        ("nasiko n8n",           "Connect N8N and register workflows as agents"),
         ("nasiko images",        "Build and push Nasiko core images"),
-        ("nasiko user",          "User management (super user only)"),
-        ("nasiko search",        "Search users and agents"),
     ])
 
     _section("Drill into a topic")
@@ -110,8 +108,8 @@ def show_overview():
     topics = [
         "install", "quickstart", "concepts",
         "auth", "cluster", "github", "agent",
-        "chat", "observability", "access", "local",
-        "n8n", "images", "user", "search", "env",
+        "chat", "observe", "access", "local",
+        "n8n", "images", "admin", "env",
     ]
     console.print("  " + "  ".join(f"[cyan]{t}[/cyan]" for t in topics))
     console.print()
@@ -173,14 +171,18 @@ def show_quickstart():
          "nasiko init\n"
          "  # Cluster type: local\n"
          "  # Cluster name: local  (default)"),
-        ("2", "Find your credentials",
-         "cat orchestrator/superuser_credentials.json"),
-        ("3", "Log in",
+        ("2", "Log in",
          "nasiko auth login\n"
          "  # Access Key:    NASK_xxxx\n"
-         "  # Access Secret: ****"),
-        ("4", "Deploy your first agent",
-         "nasiko agent upload-directory ./my-agent"),
+         "  # Access Secret: ****\n\n"
+         "# If you need to regenerate credentials:\n"
+         "nasiko cluster init-superuser"),
+        ("3", "Deploy your first agent",
+         "nasiko agent deploy ./my-agent\n"
+         "nasiko agent deploy ./my-agent.zip\n"
+         "nasiko agent deploy owner/repo     # from GitHub"),
+        ("4", "Chat with the agent",
+         "nasiko chat start \"My Agent\""),
     ]
     for num, title, code in steps:
         console.print(f" [bold bright_cyan]{num}.[/bold bright_cyan] [bold]{title}[/bold]")
@@ -398,16 +400,27 @@ def show_agent():
 
     _section("Commands")
     _cmd_table([
-        ("nasiko agent upload-directory <path>", "Deploy an agent from a local directory"),
-        ("nasiko agent upload-zip <file>",       "Deploy an agent from a .zip file"),
-        ("nasiko agent list",                    "List all agents in the registry"),
-        ("nasiko agent list-uploaded",           "List agents uploaded by the current user"),
-        ("nasiko agent get",                     "Get detailed info about a specific agent"),
+        ("nasiko agent deploy <source>",   "Smart deploy: directory, .zip, or GitHub owner/repo"),
+        ("nasiko agent list",              "List all agents in the registry"),
+        ("nasiko agent list-uploaded",     "List agents uploaded by the current user"),
+        ("nasiko agent get",               "Get detailed info about a specific agent"),
+        ("nasiko agent n8n",               "N8N sub-group — connect, register workflows as agents"),
+    ])
+
+    _section("nasiko agent deploy — smart routing")
+    _code(
+        "nasiko agent deploy .                  # from current directory\n"
+        "nasiko agent deploy ./my-agent         # from a directory\n"
+        "nasiko agent deploy ./my-agent.zip     # from a zip file\n"
+        "nasiko agent deploy owner/repo         # from GitHub (needs github connect)"
+    )
+    _flags_table([
+        ("--name", "-n", "optional", "Override agent name (auto-detected if omitted)"),
     ])
 
     _section("nasiko agent list — flags")
     _flags_table([
-        ("--format", "-f", "table", "table, json, or list"),
+        ("--format",  "-f", "table", "table, json, or list"),
         ("--details", "-d", "false", "Show additional details"),
     ])
 
@@ -418,12 +431,25 @@ def show_agent():
         ("--format",   "-f", "details",  "details or json"),
     ])
 
+    _section("N8N sub-group")
+    _cmd_table([
+        ("nasiko agent n8n connect",               "Save N8N credentials (--url, --api-key, --connection-name)"),
+        ("nasiko agent n8n credentials",           "View saved N8N credentials"),
+        ("nasiko agent n8n update",                "Update credentials (--name, --url, --api-key, --active)"),
+        ("nasiko agent n8n disconnect",            "Remove N8N credentials permanently"),
+        ("nasiko agent n8n workflows",             "List workflows (--active-only, --limit/-l 100)"),
+        ("nasiko agent n8n register <workflow_id>","Register workflow as agent (--name/-n, --description/-d)"),
+    ])
+
     _section("Example")
     _code(
-        "nasiko agent upload-directory ./agents/my-agent\n"
+        "nasiko agent deploy .\n"
         "nasiko agent list\n"
-        "nasiko agent list --format json\n"
-        "nasiko agent get --name my-agent"
+        "nasiko agent get --name \"Translator Agent\"\n\n"
+        "# Deploy from N8N\n"
+        "nasiko agent n8n connect --url http://n8n.example.com --api-key <key> --connection-name prod\n"
+        "nasiko agent n8n workflows\n"
+        "nasiko agent n8n register <workflow_id> --name my-workflow-agent"
     )
 
 
@@ -436,11 +462,30 @@ def show_chat():
 
     _section("Commands")
     _cmd_table([
-        ("nasiko chat create-session",          "Create a new chat session (--agent/-a for agent name)"),
-        ("nasiko chat list-sessions",           "List sessions (--limit/-l, --cursor, --direction)"),
-        ("nasiko chat history <session_id>",    "View conversation history"),
-        ("nasiko chat delete-session <id>",     "Delete a session"),
-        ("nasiko chat send",                    "Send a one-shot message (--url/-u, --session-id/-s, --message/-m)"),
+        ("nasiko chat start <agent>",        "Interactive chat loop — type messages, get replies, Ctrl+C to quit"),
+        ("nasiko chat send",                 "One-shot message (--url/-u, --session-id/-s, --message/-m)"),
+        ("nasiko chat sessions",             "List sessions (--limit/-l, --cursor, --direction)"),
+        ("nasiko chat history <session_id>", "View conversation history"),
+        ("nasiko chat drop <session_id>",    "Delete a session"),
+    ])
+
+    _section("Interactive chat (recommended)")
+    _code(
+        "nasiko chat start \"Translator Agent\"\n\n"
+        "# ╭─────────────────────────────────╮\n"
+        "# │ Chatting with: Translator Agent │\n"
+        "# │ Type 'exit' or Ctrl+C to quit   │\n"
+        "# ╰─────────────────────────────────╯\n\n"
+        "# You: Translate to French: Hello world\n"
+        "# Agent Reply: Bonjour le monde\n\n"
+        "# You: exit"
+    )
+
+    _section("One-shot send")
+    _flags_table([
+        ("--url",        "-u", "required", "Agent URL (from nasiko agent get --name <agent>)"),
+        ("--session-id", "-s", "required", "Session ID"),
+        ("--message",    "-m", "required", "Message to send"),
     ])
 
 
@@ -448,16 +493,16 @@ def show_chat():
 # OBSERVABILITY
 # ─────────────────────────────────────────────────────────
 
-def show_observability():
-    _header("nasiko observability", "Monitor sessions, traces, and agent performance")
+def show_observe():
+    _header("nasiko observe", "Monitor sessions, traces, and agent performance")
 
     _section("Commands")
     _cmd_table([
-        ("nasiko observability sessions [agent_id]",         "Recent sessions, optionally filtered by agent"),
-        ("nasiko observability session <session_id>",        "Full details for one session"),
-        ("nasiko observability trace <project_id> <trace_id>", "Trace with nested spans"),
-        ("nasiko observability span <span_id>",              "Individual span details"),
-        ("nasiko observability stats <agent_id>",            "Performance stats for an agent"),
+        ("nasiko observe sessions [agent_id]",            "Recent sessions, optionally filtered by agent"),
+        ("nasiko observe session <session_id>",           "Full details for one session"),
+        ("nasiko observe trace <project_id> <trace_id>", "Trace with nested spans"),
+        ("nasiko observe span <span_id>",                 "Individual span details"),
+        ("nasiko observe stats <agent_id>",               "Performance stats for an agent"),
     ])
 
     _section("Common flags")
@@ -477,12 +522,24 @@ def show_access():
 
     _section("Commands")
     _cmd_table([
-        ("nasiko access grant-user <agent_id>",   "Grant user(s) access  (--user-id/-u, repeatable)"),
-        ("nasiko access grant-agent <agent_id>",  "Grant agent-to-agent access  (--agent-id/-a, repeatable)"),
-        ("nasiko access list <agent_id>",         "Show current permissions"),
-        ("nasiko access revoke-user <agent_id>",  "Revoke user access"),
-        ("nasiko access revoke-agent <agent_id>", "Revoke agent-to-agent access"),
+        ("nasiko access grant <agent_id>",  "Grant access — use --user/-u or --agent/-a (repeatable)"),
+        ("nasiko access revoke <agent_id>", "Revoke access — same flags"),
+        ("nasiko access list <agent_id>",   "Show current permissions"),
     ])
+
+    _section("nasiko access grant / revoke — flags")
+    _flags_table([
+        ("--user",  "-u", "optional", "User ID(s) to grant/revoke access (repeatable)"),
+        ("--agent", "-a", "optional", "Agent ID(s) to grant/revoke access (repeatable)"),
+    ])
+
+    _section("Example")
+    _code(
+        "nasiko access grant  my-agent-id --user user-123 --user user-456\n"
+        "nasiko access grant  my-agent-id --agent other-agent-id\n"
+        "nasiko access revoke my-agent-id --user user-123\n"
+        "nasiko access list   my-agent-id"
+    )
 
 
 # ─────────────────────────────────────────────────────────
@@ -524,23 +581,28 @@ def show_local():
 # ─────────────────────────────────────────────────────────
 
 def show_n8n():
-    _header("nasiko n8n", "Connect N8N and register workflows as agents")
+    _header("nasiko agent n8n", "Connect N8N and register workflows as agents")
+
+    console.print(
+        "\n[dim]N8N commands live under[/dim] [cyan]nasiko agent n8n[/cyan][dim].\n"
+        "Run[/dim] [cyan]nasiko docs agent[/cyan] [dim]for the full agent + n8n reference.[/dim]\n"
+    )
 
     _section("Commands")
     _cmd_table([
-        ("nasiko n8n connect",              "Save N8N credentials (--url, --api-key, --connection-name — all required)"),
-        ("nasiko n8n credentials",          "View saved N8N credentials"),
-        ("nasiko n8n update",               "Update credentials (--name, --url, --api-key, --active)"),
-        ("nasiko n8n delete",               "Remove credentials permanently"),
-        ("nasiko n8n workflows",            "List workflows (--active-only, --limit/-l 100)"),
-        ("nasiko n8n register <workflow_id>", "Register workflow as agent (--name/-n, --description/-d)"),
+        ("nasiko agent n8n connect",               "Save N8N credentials (--url, --api-key, --connection-name)"),
+        ("nasiko agent n8n credentials",           "View saved N8N credentials"),
+        ("nasiko agent n8n update",                "Update credentials (--name, --url, --api-key, --active)"),
+        ("nasiko agent n8n disconnect",            "Remove credentials permanently"),
+        ("nasiko agent n8n workflows",             "List workflows (--active-only, --limit/-l 100)"),
+        ("nasiko agent n8n register <workflow_id>","Register workflow as agent (--name/-n, --description/-d)"),
     ])
 
     _section("Example flow")
     _code(
-        "nasiko n8n connect --url http://n8n.example.com --api-key <key> --connection-name prod\n"
-        "nasiko n8n workflows              # find your workflow ID\n"
-        "nasiko n8n register <id> --name my-workflow-agent"
+        "nasiko agent n8n connect --url http://n8n.example.com --api-key <key> --connection-name prod\n"
+        "nasiko agent n8n workflows              # find your workflow ID\n"
+        "nasiko agent n8n register <id> --name my-workflow-agent"
     )
 
 
@@ -575,32 +637,24 @@ def show_images():
 # USER
 # ─────────────────────────────────────────────────────────
 
-def show_user():
-    _header("nasiko user", "User management — super user access required")
+def show_admin():
+    _header("nasiko admin", "User management + search — super user access required")
 
-    _section("Commands")
+    _section("User commands")
     _cmd_table([
-        ("nasiko user register",                     "Register a new user (--username/-u, --email/-e, --super-user/-s)"),
-        ("nasiko user list",                         "List all users (--limit/-l, default 50)"),
-        ("nasiko user get <user_id>",                "Get user details"),
-        ("nasiko user regenerate-credentials <id>",  "Reset credentials for a user"),
-        ("nasiko user revoke <user_id>",             "Revoke all tokens"),
-        ("nasiko user reinstate <user_id>",          "Re-enable a revoked user"),
-        ("nasiko user delete <user_id>",             "Permanently delete a user (--confirm skips prompt)"),
+        ("nasiko admin user register",                    "Register a new user (--username/-u, --email/-e, --super-user/-s)"),
+        ("nasiko admin user list",                        "List all users (--limit/-l, default 50)"),
+        ("nasiko admin user get <user_id>",               "Get user details"),
+        ("nasiko admin user reset-creds <user_id>",       "Regenerate credentials for a user"),
+        ("nasiko admin user revoke <user_id>",            "Revoke all tokens for a user"),
+        ("nasiko admin user reinstate <user_id>",         "Re-enable a revoked user"),
+        ("nasiko admin user delete <user_id>",            "Permanently delete (--confirm skips prompt)"),
     ])
 
-
-# ─────────────────────────────────────────────────────────
-# SEARCH
-# ─────────────────────────────────────────────────────────
-
-def show_search():
-    _header("nasiko search", "Search users and agents")
-
-    _section("Commands")
+    _section("Search commands")
     _cmd_table([
-        ("nasiko search users <query>",  "Search users (min 2 chars, --limit/-l max 50)"),
-        ("nasiko search agents <query>", "Search agents (same flags)"),
+        ("nasiko admin search users <query>",  "Search users (min 2 chars, --limit/-l max 50)"),
+        ("nasiko admin search agents <query>", "Search agents (same flags)"),
     ])
 
 
@@ -687,13 +741,13 @@ TOPICS = {
     "github":        show_github,
     "agent":         show_agent,
     "chat":          show_chat,
-    "observability": show_observability,
+    "observe":       show_observe,
+    "observability": show_observe,   # backward compat alias
     "access":        show_access,
+    "admin":         show_admin,
     "local":         show_local,
     "n8n":           show_n8n,
     "images":        show_images,
-    "user":          show_user,
-    "search":        show_search,
     "env":           show_env,
 }
 

@@ -108,6 +108,60 @@ def send_message_command(url: str, message: str, session_id: str):
         console.print(f"[red]Error: {str(e)}[/red]")
 
 
+def send_message_command_quiet(url: str, message: str, session_id: str):
+    """Send a message in interactive mode — no header noise, just the response."""
+    try:
+        auth_manager = get_auth_manager()
+        if not auth_manager.is_logged_in():
+            console.print("[red]Not logged in. Run 'nasiko auth login'.[/red]")
+            raise typer.Exit(1)
+
+        auth_manager.refresh_token_if_needed()
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": session_id,
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": message}],
+                    "messageId": str(uuid.uuid4()),
+                }
+            },
+        }
+
+        headers = {"Content-Type": "application/json"}
+        auth_headers = auth_manager.get_auth_headers()
+        if auth_headers:
+            headers.update(auth_headers)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[dim]thinking...[/dim]"),
+            console=console,
+            transient=True,
+        ) as progress:
+            progress.add_task("", total=None)
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+
+        if response.status_code == 200:
+            display_agent_response(response.json())
+        else:
+            console.print(f"[red]Error {response.status_code}:[/red] {response.text}")
+
+    except typer.Exit:
+        raise
+    except requests.exceptions.ConnectionError:
+        console.print(f"[red]Could not connect to agent at {url}[/red]")
+    except requests.exceptions.Timeout:
+        console.print("[red]Request timed out.[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+
+    console.print()
+
+
 def display_agent_response(response_data):
     """Parse and display the agent response - show text from artifacts as the main response."""
 
