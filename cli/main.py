@@ -248,6 +248,9 @@ def init_wizard():
             if e.code != 0:
                 console.print("[red]Failed to start local stack. Aborting.[/]")
                 raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]Failed to start local stack:[/] {e}")
+            raise typer.Exit(1)
 
         from setup.config import save_cluster_info
         save_cluster_info(
@@ -410,7 +413,7 @@ def register_groups():
     from groups.n8n_group import n8n_app
     from groups.chat_group import chat_app
     from groups.search_group import search_app
-    from groups.observability_group import observability_app
+    from groups.observability_group import observability_app, observe_app
     from groups.access_group import access_app
     from groups.user_group import user_app
     from groups.local_group import local_app
@@ -424,7 +427,8 @@ def register_groups():
     app.add_typer(n8n_app, name="n8n")
     app.add_typer(chat_app, name="chat")
     app.add_typer(search_app, name="search")
-    app.add_typer(observability_app, name="observability")
+    app.add_typer(observe_app, name="observe")
+    app.add_typer(observability_app, name="observability", hidden=True)  # backward compat
     app.add_typer(access_app, name="access")
     app.add_typer(user_app, name="user")
     app.add_typer(local_app, name="local")

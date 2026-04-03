@@ -221,22 +221,28 @@ def local_up(
         console.print("\n[bold cyan]Starting Nasiko local development stack...[/]")
         console.print(f"[dim]Compose file: {COMPOSE_FILE}[/]\n")
 
-        # Remove stale containers that may conflict (from previous runs or other projects)
-        console.print("[dim]Removing stale containers...[/]")
-        stale = _compose_cmd_silent(["config", "--services"], check=False)
-        if stale.returncode == 0:
-            # Get container names from compose config
-            result_config = _compose_cmd_silent(["config"], check=False)
-            if result_config.returncode == 0:
-                # Extract container_name values and remove any that already exist
-                import re
+        # Remove only stopped/exited containers that may conflict — never kill running ones
+        console.print("[dim]Removing stale stopped containers...[/]")
+        result_config = _compose_cmd_silent(["config"], check=False)
+        if result_config.returncode == 0:
+            import re
 
-                container_names = re.findall(
-                    r"container_name:\s*(.+)", result_config.stdout
+            container_names = re.findall(
+                r"container_name:\s*(.+)", result_config.stdout
+            )
+            if container_names:
+                # Only remove containers that are not currently running
+                stopped = subprocess.run(
+                    ["docker", "ps", "-a", "--filter", "status=exited",
+                     "--filter", "status=created", "--filter", "status=dead",
+                     "--format", "{{.Names}}"],
+                    capture_output=True, text=True, check=False,
                 )
-                if container_names:
+                stopped_names = set(stopped.stdout.splitlines())
+                to_remove = [c for c in container_names if c in stopped_names]
+                if to_remove:
                     subprocess.run(
-                        ["docker", "rm", "-f"] + container_names,
+                        ["docker", "rm", "-f"] + to_remove,
                         capture_output=True,
                         check=False,
                     )
@@ -543,6 +549,125 @@ def local_deploy_agent(
     except Exception as e:
         console.print(f"[red]Error: {e}[/]")
         raise typer.Exit(1)
+
+
+@local_app.command(name="init-superuser")
+def local_init_superuser(
+    auth_url: Annotated[
+        str,
+        typer.Option(
+            "--auth-url",
+            envvar="NASIKO_AUTH_URL",
+            help="Auth service URL",
+        ),
+    ] = "http://localhost:8082",
+    username: Annotated[
+        str,
+        typer.Option(envvar="NASIKO_SUPERUSER_USERNAME"),
+    ] = "admin",
+    email: Annotated[
+        str,
+        typer.Option(envvar="NASIKO_SUPERUSER_EMAIL"),
+    ] = "admin@nasiko.com",
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Delete existing superuser from MongoDB and recreate"),
+    ] = False,
+) -> None:
+    """Create or recreate the superuser for the local Docker stack."""
+    import json
+    import requests
+
+    _ensure_docker_running()
+
+    console.print(f"[cyan]Connecting to auth service at {auth_url}...[/]")
+
+    # Wait for auth service to be reachable
+    for attempt in range(10):
+        try:
+            r = requests.get(f"{auth_url}/health", timeout=5)
+            if r.status_code == 200:
+                break
+        except requests.RequestException:
+            pass
+        if attempt == 9:
+            console.print("[red]Error: Auth service is not reachable. Is the stack running?[/]")
+            console.print("Start it with: [cyan]nasiko local up[/]")
+            raise typer.Exit(1)
+        console.print(f"[dim]Waiting for auth service... ({attempt + 1}/10)[/]")
+        time.sleep(3)
+
+    def _register() -> None:
+        console.print(f"[cyan]Creating superuser '{username}'...[/]")
+        try:
+            response = requests.post(
+                f"{auth_url}/auth/users/register",
+                json={"username": username, "email": email, "is_super_user": True},
+                timeout=10,
+            )
+        except requests.RequestException as e:
+            console.print(f"[red]Error: Could not reach auth service: {e}[/]")
+            raise typer.Exit(1)
+
+        if response.status_code in (200, 201):
+            data = response.json()
+            access_key = data.get("access_key")
+            access_secret = data.get("access_secret")
+            user_id = data.get("user_id")
+
+            if not access_key or not access_secret:
+                console.print(f"[red]Unexpected response from auth service:[/] {data}")
+                raise typer.Exit(1)
+
+            project_root = _get_project_root()
+            creds_file = project_root / "orchestrator" / "superuser_credentials.json"
+            credentials = {
+                "user_id": user_id,
+                "username": username,
+                "email": email,
+                "access_key": access_key,
+                "access_secret": access_secret,
+                "is_super_user": True,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            with open(creds_file, "w") as f:
+                json.dump(credentials, f, indent=2)
+
+            console.print("[green]✓ Superuser created successfully![/]")
+            console.print(f"\n  Access key:    [bold cyan]{access_key}[/]")
+            console.print(f"  Access secret: [bold cyan]{access_secret}[/]")
+            console.print(f"\n[dim]Credentials saved to: {creds_file}[/]")
+            console.print("\nLog in with: [cyan]nasiko auth login[/]")
+
+        elif response.status_code == 400 and "already exists" in response.text.lower():
+            console.print("[yellow]Superuser already exists.[/]")
+            console.print("Run with [cyan]--force[/] to delete and recreate.")
+            raise typer.Exit(0)
+        else:
+            console.print(f"[red]Auth service returned {response.status_code}:[/] {response.text}")
+            raise typer.Exit(1)
+
+    if force:
+        # Drop the user directly from MongoDB via docker exec
+        console.print(f"[yellow]--force: deleting existing superuser from MongoDB...[/]")
+        mongo_cmd = (
+            f"db.getSiblingDB('nasiko').users.deleteMany({{$or:[{{username:'{username}'}},{{email:'{email}'}}]}})"
+        )
+        result = subprocess.run(
+            ["docker", "exec", "mongodb", "mongosh",
+             "--username", "admin", "--password", "password",
+             "--authenticationDatabase", "admin",
+             "--eval", mongo_cmd],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]Failed to delete user from MongoDB:[/] {result.stderr or result.stdout}")
+            raise typer.Exit(1)
+        console.print("[green]✓ Existing superuser removed.[/]")
+
+    _register()
 
 
 @local_app.command(name="shell")

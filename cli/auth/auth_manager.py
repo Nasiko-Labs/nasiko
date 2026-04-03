@@ -218,7 +218,14 @@ class AuthManager:
             )
 
             if response.status_code == 200:
-                token_data = response.json()
+                try:
+                    token_data = response.json()
+                except Exception:
+                    typer.echo("❌ Auth service returned a non-JSON response.")
+                    typer.echo(f"   URL tried: {login_url}")
+                    typer.echo("   The API URL may be wrong — reconnect with the correct URL:")
+                    typer.echo("   nasiko cluster connect <name> --url <correct-url>")
+                    return False
                 jwt_token = token_data["token"]
 
                 # Store JWT token securely
@@ -287,16 +294,28 @@ class AuthManager:
             return False
 
         try:
-            # Test token with a lightweight API call
-            base_url_str = str(self.base_url)  # Ensure it's a string
-            health_url = f"{base_url_str}/api/v1/healthcheck"
-            response = requests.get(health_url, headers=headers, timeout=10)
+            # Validate token against the auth service
+            token = headers.get("Authorization", "").removeprefix("Bearer ")
+            validate_url = f"{self.base_url}/auth/validate"
+            response = requests.post(
+                validate_url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("valid", False)
 
             if response.status_code == 401:
-                # Try to auto-renew with stored credentials
                 return self._auto_renew_token()
 
-            return response.status_code == 200
+            # Auth service unreachable — fall back to healthcheck so offline usage
+            # doesn't hard-block the user
+            base_url_str = str(self.base_url)
+            health_url = f"{base_url_str}/api/v1/healthcheck"
+            health_response = requests.get(health_url, timeout=10)
+            return health_response.status_code == 200
 
         except Exception:
             return self._auto_renew_token()

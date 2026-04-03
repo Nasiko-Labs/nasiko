@@ -42,6 +42,17 @@ def connect(
         console.print("[red]URL must start with http:// or https://[/]")
         raise typer.Exit(1)
 
+    # Warn if URL contains a path — the gateway URL should be the root
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.path.rstrip("/") not in ("", "/"):
+        root_url = f"{parsed.scheme}://{parsed.netloc}"
+        console.print(f"[yellow]Warning: URL contains a path '{parsed.path}' — the API gateway URL should be the root.[/]")
+        console.print(f"[yellow]Did you mean: {root_url}[/]")
+        if not typer.confirm("Continue anyway?", default=False):
+            console.print(f"[dim]Hint: nasiko cluster connect {name} --url {root_url}[/]")
+            raise typer.Exit(0)
+
     if auth not in ("key", "github", "digitalocean"):
         console.print("[red]--auth must be one of: key, github, digitalocean[/]")
         raise typer.Exit(1)
