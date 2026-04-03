@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**AI Agent Registry and Orchestration Platform**
+**AI Agent Developer Control Plane**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -23,7 +23,7 @@
 
 ## 🌟 What is Nasiko?
 
-Nasiko is an enterprise-grade AI agent orchestration platform that transforms how you build, deploy, and manage AI agents at scale. Built with modern microservices architecture, Nasiko provides everything needed to run production AI agent ecosystems.
+Nasiko is a developer control plane that transforms how you build, deploy, and manage AI agents at scale. Built with modern microservices architecture, Nasiko provides everything needed to run production AI agent ecosystems.
 
 ### 🎯 Core Capabilities
 
@@ -215,12 +215,12 @@ cp .nasiko-local.env.example .nasiko-local.env
 # 3. Edit .nasiko-local.env with your API keys:
 # Generate a secure base64-encoded encryption key
 # Example: 5kfdxaT7WRoseTKqksUY4gR2idR4FuBBEIQk5Cpzlek=
-# USER_CREDENTIALS_ENCRYPTION_KEY=your-base64-encoded-encryption-key
+# USER_CREDENTIALS_ENCRYPTION_KEY=5kfdxaT7WRoseTKqksUY4gR2idR4FuBBEIQk5Cpzlek=
 
 # (optional but recommended)
-# OPENAI_API_KEY=sk-your-openai-key
-# GITHUB_CLIENT_ID=your-github-oauth-id
-# GITHUB_CLIENT_SECRET=your-github-oauth-secret
+# OPENAI_API_KEY=<sk-your-openai-key>
+# GITHUB_CLIENT_ID=<your-github-oauth-id>
+# GITHUB_CLIENT_SECRET=<your-github-oauth-secret>
 
 # 4. Install Python dependencies (for CLI)
 pip install uv
@@ -491,10 +491,10 @@ nasiko status
 # .nasiko-local.env
 
 # API Keys (Optional but recommended)
-OPENAI_API_KEY=sk-your-openai-api-key
-MINIMAX_API_KEY=your-minimax-api-key
-GITHUB_CLIENT_ID=your-github-oauth-client-id
-GITHUB_CLIENT_SECRET=your-github-oauth-secret
+OPENAI_API_KEY=<sk-your-openai-api-key>
+MINIMAX_API_KEY=<your-minimax-api-key>
+GITHUB_CLIENT_ID=<your-github-oauth-client-id>
+GITHUB_CLIENT_SECRET=<your-github-oauth-secret>
 
 # Router LLM Provider (Optional - defaults to openai)
 # Supported: "openai", "openrouter", "minimax"
@@ -502,8 +502,8 @@ GITHUB_CLIENT_SECRET=your-github-oauth-secret
 # ROUTER_LLM_MODEL=gpt-4o-mini
 
 # Security (Change in production)
-JWT_SECRET=your-jwt-signing-secret
-USER_CREDENTIALS_ENCRYPTION_KEY=base64-encoded-key
+JWT_SECRET=<your-jwt-signing-secret>
+USER_CREDENTIALS_ENCRYPTION_KEY=<base64-encoded-key>
 
 # Database Credentials
 MONGO_ROOT_PASSWORD=secure-mongo-password
