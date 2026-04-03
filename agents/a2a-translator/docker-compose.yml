@@ -3,7 +3,10 @@ services:
     build: .
     container_name: a2a-translator
     environment:
-      - OPENAI_API_KEY=your-openai-api-key-here
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
     stdin_open: true
     ports:
       - "5000"

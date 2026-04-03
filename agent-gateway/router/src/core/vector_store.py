@@ -27,11 +27,22 @@ class VectorStoreService:
         self._store_cache: Optional[FAISS] = None
         self._cache_hash: Optional[str] = None
 
-    def _create_embeddings(self) -> OpenAIEmbeddings:
-        """Create OpenAI embeddings instance."""
-        if not settings.OPENAI_API_KEY:
-            raise VectorStoreError("OpenAI API key is required for embeddings")
+    def _create_embeddings(self):
+        """Create embeddings instance based on configured provider."""
+        provider = settings.EMBEDDING_PROVIDER.lower()
 
+        if provider == "jina":
+            if not settings.JINA_API_KEY:
+                raise VectorStoreError("JINA_API_KEY is required for Jina embeddings")
+            from langchain_community.embeddings import JinaEmbeddings
+            return JinaEmbeddings(
+                jina_api_key=settings.JINA_API_KEY,
+                model_name=settings.JINA_EMBEDDING_MODEL,
+            )
+
+        # Default: OpenAI
+        if not settings.OPENAI_API_KEY:
+            raise VectorStoreError("OPENAI_API_KEY is required for OpenAI embeddings")
         return OpenAIEmbeddings(
             model=settings.EMBEDDING_MODEL, openai_api_key=settings.OPENAI_API_KEY
         )

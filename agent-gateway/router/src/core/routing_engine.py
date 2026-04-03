@@ -63,8 +63,18 @@ class RoutingEngine:
                 api_key=settings.OPENAI_API_KEY,
             ).with_structured_output(RouterOutput)
 
-    def _create_embedding_model(self) -> OpenAIEmbeddings:
-        """Create OpenAI embeddings instance."""
+    def _create_embedding_model(self):
+        """Create embeddings instance based on configured provider."""
+        provider = settings.EMBEDDING_PROVIDER.lower()
+
+        if provider == "jina":
+            if not settings.JINA_API_KEY:
+                raise RoutingEngineError("JINA_API_KEY is required for Jina embeddings")
+            from langchain_community.embeddings import JinaEmbeddings
+            return JinaEmbeddings(
+                jina_api_key=settings.JINA_API_KEY,
+                model_name=settings.JINA_EMBEDDING_MODEL,
+            )
 
         return OpenAIEmbeddings(
             model=settings.RERANKING_EMBEDDING_MODEL,

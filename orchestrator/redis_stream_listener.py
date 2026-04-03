@@ -776,6 +776,8 @@ class RedisStreamListener:
             "AGENT_NAME": agent_name,
             "OWNER_ID": owner_id or "",
             "OPENAI_API_KEY": Config.OPENAI_API_KEY,
+            "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
+            "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
         }
 
         # Load agent-specific env vars from its .env file if present
