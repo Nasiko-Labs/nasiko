@@ -1,119 +1,180 @@
 # Getting Started with Nasiko
 
-This guide picks up where the [README](../README.md) leaves off. It assumes you've already completed the setup steps there and have Nasiko running at `http://localhost:9100/app/`.
+This guide walks you through logging in, deploying your first agent, and chatting with it — entirely from the CLI.
 
-If you haven't done that yet, follow the [Quick Start](../README.md#-quick-start) instructions first, then come back here.
+If you haven't installed the CLI yet, see [CLI Tool](../README.md#️-cli-tool) in the README.
 
-## First Login
+---
 
-Nasiko automatically creates a superuser account during setup and writes the credentials to a local file.
+## 1. Set Up Your Cluster
 
-### 1. Find Your Credentials
+### Local (Docker Compose) — recommended for first-timers
 
 ```bash
-cat orchestrator/superuser_credentials.json
+nasiko init
+# Cluster type: local
+# Cluster name: local  (or any name you like)
 ```
 
-You'll see something like:
+This starts the Docker Compose stack and sets it as the active cluster.
 
-```json
-{
-  "email": "admin@example.com",
-  "username": "admin",
-  "access_key": "your-access-key-here",
-  "access_secret": "your-access-secret-here",
-  "created_at": "2026-02-25T10:30:00Z"
-}
+### Connect to an existing cluster
+
+```bash
+nasiko cluster connect prod --url https://api.my-cluster.example.com
+nasiko use prod
 ```
 
-### 2. Sign In
+---
 
-1. Go to http://localhost:9100/app/
-2. Enter the **Access Key** and **Access Secret** from the credentials file
-3. Click **Sign In**
+## 2. Log In
 
-You should land on the Home dashboard.
+```bash
+nasiko auth login
+# Access Key:    NASK_xxxx
+# Access Secret: ****
+```
 
-## Deploy Your First Agent
+### Getting credentials
 
-The repo ships with pre-built agent ZIP files you can use to verify the platform is working. We'll use the translator agent.
+If this is a fresh local stack, register the superuser first:
 
-### 1. Upload the Agent
+```bash
+nasiko cluster init-superuser --superuser-username admin --superuser-email admin@nasiko.com
+```
 
-1. In the sidebar, click **"Add Agent"**
-2. Select **"Upload ZIP"**
-3. Click **"Choose File"** and select `agents/a2a-translator.zip` from your Nasiko directory
-4. Click **"Upload"**
+> **Note:** `init-superuser` requires `--kubeconfig` for remote (k8s) clusters. For local Docker Compose, register via the auth service directly:
+> ```bash
+> curl -s -X POST http://localhost:8082/auth/users/register \
+>   -H "Content-Type: application/json" \
+>   -d '{"username":"admin","email":"admin@nasiko.com","is_super_user":true}'
+> ```
+> Use the returned `access_key` and `access_secret` to log in.
 
-### 2. Wait for Deployment
+Verify you're logged in:
 
-Go to **"Your Agents"** in the sidebar to watch progress. You'll see the agent move through these stages:
+```bash
+nasiko current
+# Active cluster: local
+# API URL:        http://localhost:9100
+# Auth:           logged in
+```
 
-- **Setting Up** — Upload received, container is being built
-- **Active** — Agent is running and ready for queries
-- **Failed** — Something went wrong (see [Troubleshooting](../README.md#-troubleshooting) in the README)
+---
+
+## 3. Deploy Your First Agent
+
+The repo ships with pre-built agents in the `agents/` directory.
+
+```bash
+# From a directory
+nasiko agent deploy ./agents/a2a-translator
+
+# From a zip file
+nasiko agent deploy ./agents/a2a-translator.zip
+
+# From GitHub (requires nasiko github connect)
+nasiko agent deploy owner/repo-name
+```
+
+Watch the status:
+
+```bash
+nasiko agent list-uploaded
+# Shows: Setting Up → Active
+```
 
 Local deployment typically takes 1–2 minutes.
 
-### 3. Verify It's Running
+---
 
-Once the status shows **Active**, go back to the **Home** dashboard. You should see the translator agent card listed there.
+## 4. Chat with the Agent
 
-You can also verify from the command line:
-
-```bash
-# Check the agent is registered and accessible through Kong
-curl http://localhost:9100/agents/translator/health
-```
-
-## Test the Agent
-
-### 1. Start a Session
-
-On the Home dashboard, find the **translator** agent card and click **"Start Session"**. This opens the interaction interface.
-
-### 2. Send Some Queries
-
-Try these:
-
-```
-Translate "Hello, how are you?" to French
-```
-
-```
-Convert this text to Spanish: "The weather is beautiful today"
-```
-
-```
-Translate the following to German: "Thank you for your help"
-```
-
-Responses appear in real-time, and conversation history is saved automatically.
-
-### 3. Try the Router
-
-Instead of talking to a specific agent, you can let the router pick the best agent for a query:
+### Interactive mode (recommended)
 
 ```bash
-curl "http://localhost:9100/router/route?query=translate this to French"
+nasiko chat start "Translator Agent"
 ```
 
-The router analyzes the query, matches it against agent capabilities defined in each agent's `AgentCard.json`, and returns the best match with a confidence score.
+You'll enter a live conversation loop:
+
+```
+╭─────────────────────────────────────╮
+│ Chatting with: Translator Agent     │
+│ Type 'exit' or Ctrl+C to quit       │
+╰─────────────────────────────────────╯
+
+You: Translate "Hello world" to French
+Agent Reply: Bonjour le monde
+
+You: Now to Spanish
+Agent Reply: Hola mundo
+
+You: exit
+```
+
+### One-shot message
+
+```bash
+# Get the agent URL first
+nasiko agent get --name "Translator Agent"
+
+# Create a session
+nasiko chat sessions
+
+# Send a message
+nasiko chat send \
+  --url <agent-url> \
+  --session-id <session-id> \
+  --message "Translate to French: Good morning"
+```
+
+---
+
+## 5. Observe What's Happening
+
+```bash
+nasiko observe sessions                   # all recent sessions
+nasiko observe sessions <agent_id>        # filtered by agent
+nasiko observe stats <agent_id>           # performance summary
+```
+
+---
 
 ## Next Steps
 
-**Deploy more agents.** The `agents/` directory includes additional examples:
-- `a2a-compliance-checker` — Document policy compliance analysis
-- `a2a-github-agent` — GitHub repository operations
-
-Upload them the same way (Add Agent → Upload ZIP), or use the CLI:
-
+**Deploy more agents:**
 ```bash
-nasiko agent upload-directory ./agents/a2a-compliance-checker --name compliance
+nasiko agent deploy ./agents/a2a-compliance-checker
+nasiko agent deploy ./agents/a2a-github-agent
 ```
 
-**Check observability.** Open [Phoenix](http://localhost:6006) to see traces, API call timing, and conversation patterns for your deployed agents.
+**Switch clusters:**
+```bash
+nasiko use prod-aws
+nasiko agent list          # now listing prod-aws agents
+nasiko use local           # switch back
+```
 
-**Build your own agent.** See the [Agent Development](../README.md#-agent-development) section in the README for the required file structure, `AgentCard.json` format, and a complete code example.
+**Manage users (super user only):**
+```bash
+nasiko admin user register --username alice --email alice@example.com
+nasiko admin user list
+nasiko admin search users alice
+```
 
-**Set up the CLI.** The CLI gives you full platform management from the terminal. See [CLI Tool](../README.md#️-cli-tool) in the README for installation and usage.
+**Connect GitHub to deploy from repos:**
+```bash
+nasiko github connect
+nasiko github repos
+nasiko agent deploy owner/my-agent-repo
+```
+
+**Full CLI reference:**
+```bash
+nasiko docs                # overview
+nasiko docs agent          # agent commands
+nasiko docs chat           # chat commands
+nasiko docs cluster        # cluster lifecycle
+nasiko docs observe        # observability
+```

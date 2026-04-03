@@ -151,60 +151,219 @@ def callback(
     """Main CLI entry point."""
     if cluster:
         os.environ["NASIKO_CLUSTER_NAME"] = cluster
-    pass
+    elif not os.environ.get("NASIKO_CLUSTER_NAME"):
+        # Fall back to active cluster stored in context.json
+        from core.context import get_active_cluster
+        active = get_active_cluster()
+        if active:
+            os.environ["NASIKO_CLUSTER_NAME"] = active
 
 
-# Top-level Authentication Commands (for convenience)
-@app.command(name="login")
-def login_cmd(
-    access_key: str = typer.Option(
-        ..., "--access-key", "-k", prompt="Access Key", help="Your access key"
-    ),
-    access_secret: str = typer.Option(
-        ...,
-        "--access-secret",
-        "-s",
-        prompt="Access Secret",
-        hide_input=True,
-        help="Your access secret",
-    ),
+@app.command(name="use")
+def use_cluster(
+    cluster: str = typer.Argument(..., help="Cluster name to set as active"),
 ):
-    """Login to Nasiko."""
-    from auth.auth_commands import login_standalone
+    """Set the active cluster for subsequent commands (like 'git checkout')."""
+    from rich.console import Console
+    from setup.config import list_clusters
+    from core.context import set_active_cluster
 
-    login_standalone(access_key, access_secret)
+    console = Console()
+    known = {c["name"] for c in list_clusters()}
 
+    if cluster not in known:
+        console.print(f"[red]Cluster '{cluster}' not found.[/]")
+        console.print("Create it first with [bold]nasiko init[/] or [bold]nasiko cluster create[/], then switch to it.")
+        raise typer.Exit(1)
 
-@app.command(name="logout")
-def logout_cmd():
-    """Logout from Nasiko."""
-    from auth.auth_commands import logout_command
-
-    logout_command()
-
-
-@app.command(name="status")
-def auth_status_cmd():
-    """Check authentication status."""
-    from auth.auth_commands import status_command
-
-    status_command()
+    set_active_cluster(cluster)
+    console.print(f"[green]Active cluster:[/] [bold]{cluster}[/]")
 
 
-@app.command(name="whoami")
-def whoami_cmd():
-    """Show current user information."""
-    from auth.auth_commands import whoami_command
+@app.command(name="current")
+def current_cluster():
+    """Show the active cluster, its API URL, and auth status."""
+    from rich.console import Console
+    from setup.config import get_cluster_api_url
+    from auth.auth_manager import get_auth_manager
+    from core.context import get_active_cluster
 
-    whoami_command()
+    console = Console()
+    name = get_active_cluster()
+
+    if not name:
+        console.print("[yellow]No active cluster set.[/]")
+        console.print("Run [bold]nasiko use <cluster>[/] or [bold]nasiko init[/] to get started.")
+        raise typer.Exit(1)
+
+    api_url = get_cluster_api_url(name) or "(not found in local state)"
+    auth_manager = get_auth_manager(cluster_name=name)
+    logged_in = auth_manager.is_logged_in()
+    auth_status = "[green]logged in[/]" if logged_in else "[red]not logged in[/]"
+
+    console.print(f"[bold]Active cluster:[/] {name}")
+    console.print(f"[bold]API URL:[/]        {api_url}")
+    console.print(f"[bold]Auth:[/]           {auth_status}")
+
+
+@app.command(name="init")
+def init_wizard():
+    """First-run wizard: create a cluster, set it active, and log in."""
+    from rich.console import Console
+    from rich.panel import Panel
+    from setup.config import get_cluster_api_url
+    from core.context import set_active_cluster
+    from auth.auth_manager import get_auth_manager
+
+    console = Console()
+
+    console.print(Panel.fit(
+        "[bold cyan]Welcome to Nasiko![/]\n"
+        "This wizard will help you set up your first cluster.",
+        title="nasiko init",
+        border_style="cyan",
+    ))
+
+    import click
+
+    cluster_type = typer.prompt(
+        "Cluster type",
+        type=click.Choice(["remote", "local", "local-k8s"]),
+        default="remote",
+    )
+
+    if cluster_type == "local-k8s":
+        console.print("[yellow]'local-k8s' (kind/minikube) support is not yet implemented.[/]")
+        raise typer.Exit(0)
+
+    if cluster_type == "local":
+        cluster_name = typer.prompt("Cluster name", default="local")
+        console.print("\n[bold]Step 1:[/] Starting local Docker Compose stack...")
+        try:
+            from groups.local_group import _ensure_docker_running, _ensure_docker_compose, local_up
+            _ensure_docker_running()
+            _ensure_docker_compose()
+            local_up()
+        except SystemExit as e:
+            if e.code != 0:
+                console.print("[red]Failed to start local stack. Aborting.[/]")
+                raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]Failed to start local stack:[/] {e}")
+            raise typer.Exit(1)
+
+        from setup.config import save_cluster_info
+        save_cluster_info(
+            provider="local",
+            cluster_name=cluster_name,
+            data={"gateway_url": "http://localhost:9100", "type": "docker-compose"},
+        )
+        set_active_cluster(cluster_name)
+        console.print(f"\n[green]Active cluster set to:[/] [bold]{cluster_name}[/]")
+        console.print("[dim]API URL: http://localhost:9100[/]")
+
+        if typer.confirm("\nWould you like to log in now?", default=True):
+            access_key = typer.prompt("Access key")
+            access_secret = typer.prompt("Access secret", hide_input=True)
+            auth_manager = get_auth_manager(cluster_name=cluster_name)
+            if auth_manager.login(access_key, access_secret):
+                console.print("[green]Login successful![/]")
+            else:
+                console.print("[yellow]Login failed.[/] Try [bold]nasiko auth login[/] once the stack is ready.")
+        else:
+            console.print("Log in later with [bold]nasiko auth login[/].")
+
+        # Optional: GitHub OAuth setup
+        console.print()
+        if typer.confirm("Would you like to set up GitHub integration? (lets you deploy agents from GitHub repos)", default=False):
+            console.print("\n[bold]To enable GitHub integration:[/bold]")
+            console.print("1. Go to [cyan]https://github.com/settings/developers[/cyan] → OAuth Apps → New OAuth App")
+            console.print(f"   Homepage URL:  [cyan]http://localhost:9100[/cyan]")
+            console.print(f"   Callback URL:  [cyan]http://localhost:9100/auth/github/callback[/cyan]")
+            console.print("2. Add to your env file:")
+            console.print("   [dim]GITHUB_CLIENT_ID=your_client_id[/dim]")
+            console.print("   [dim]GITHUB_CLIENT_SECRET=your_client_secret[/dim]")
+            console.print("3. Restart: [cyan]nasiko local down && nasiko local up[/cyan]")
+            console.print("4. Then run: [cyan]nasiko github connect[/cyan]")
+        return
+
+    # --- Remote cluster setup ---
+    provider = typer.prompt(
+        "Cloud provider",
+        type=click.Choice(["aws", "digitalocean"]),
+        default="aws",
+    )
+    cluster_name = typer.prompt("Cluster name", default="nasiko")
+    region = typer.prompt("Region (e.g. us-east-1, nyc3)", default="").strip() or None
+
+    # Step 1: init-modules
+    console.print("\n[bold]Step 1:[/] Initialising Terraform modules...")
+    try:
+        from setup.k8s_setup import init_modules
+        init_modules(source=None, force=False)
+    except SystemExit as e:
+        if e.code != 0:
+            console.print("[red]Module initialisation failed. Aborting.[/]")
+            raise typer.Exit(1)
+
+    # Step 2: create remote cluster
+    console.print("\n[bold]Step 2:[/] Creating remote cluster (this may take several minutes)...")
+    try:
+        from setup.k8s_setup import create, Provider
+        create(
+            provider=Provider(provider),
+            cluster_name=cluster_name,
+            region=region,
+            node_size=None,
+            auto_approve=False,
+            verbose=False,
+            terraform_dir=None,
+            state_dir=None,
+        )
+    except SystemExit as e:
+        if e.code != 0:
+            console.print("[red]Cluster creation failed. Aborting.[/]")
+            raise typer.Exit(1)
+
+    # Set new cluster as active
+    set_active_cluster(cluster_name)
+    console.print(f"\n[green]Active cluster set to:[/] [bold]{cluster_name}[/]")
+
+    # Offer login
+    api_url = get_cluster_api_url(cluster_name)
+    if not api_url:
+        console.print(
+            "\n[yellow]Cluster API URL not yet available.[/] "
+            "Run [bold]nasiko cluster output[/] once provisioning completes, "
+            "then [bold]nasiko auth login[/]."
+        )
+        return
+
+    if typer.confirm("\nWould you like to log in now?", default=True):
+        access_key = typer.prompt("Access key")
+        access_secret = typer.prompt("Access secret", hide_input=True)
+        auth_manager = get_auth_manager(cluster_name=cluster_name)
+        if auth_manager.login(access_key, access_secret):
+            console.print("[green]Login successful![/] You're ready to use Nasiko.")
+        else:
+            console.print(
+                "[yellow]Login failed.[/] Try [bold]nasiko auth login[/] once the cluster is fully ready."
+            )
+    else:
+        console.print("You can log in later with [bold]nasiko auth login[/].")
 
 
 @app.command(name="docs")
-def api_docs():
-    """Get API documentation and Swagger links."""
-    from commands.registry import api_docs_command
+def docs_command(
+    topic: str = typer.Argument(
+        None,
+        help="Topic: install, quickstart, concepts, auth, cluster, github, agent, chat, observability, access, local, n8n, images, user, search, env",
+    ),
+):
+    """CLI documentation. Run without arguments for an overview, or specify a topic."""
+    from commands.cli_docs import show_docs
 
-    api_docs_command()
+    show_docs(topic)
 
 
 @app.command(name="list-clusters")
@@ -247,24 +406,29 @@ app.add_typer(
 # Import and register command groups
 def register_groups():
     """Register all command groups."""
+    from auth.auth_commands import auth_app
+    from groups.cluster_group import cluster_app
     from groups.github_group import github_app
     from groups.agent_group import agent_app
     from groups.n8n_group import n8n_app
     from groups.chat_group import chat_app
     from groups.search_group import search_app
-    from groups.observability_group import observability_app
+    from groups.observability_group import observability_app, observe_app
     from groups.access_group import access_app
     from groups.user_group import user_app
     from groups.local_group import local_app
     from groups.images_group import images_app
 
     # Add groups to main app
+    app.add_typer(auth_app, name="auth")
+    app.add_typer(cluster_app, name="cluster")
     app.add_typer(github_app, name="github")
     app.add_typer(agent_app, name="agent")
     app.add_typer(n8n_app, name="n8n")
     app.add_typer(chat_app, name="chat")
     app.add_typer(search_app, name="search")
-    app.add_typer(observability_app, name="observability")
+    app.add_typer(observe_app, name="observe")
+    app.add_typer(observability_app, name="observability", hidden=True)  # backward compat
     app.add_typer(access_app, name="access")
     app.add_typer(user_app, name="user")
     app.add_typer(local_app, name="local")

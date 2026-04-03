@@ -13,7 +13,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.box import ROUNDED
 from datetime import datetime, timedelta
 from core.settings import APIEndpoints
-from auth.auth_manager import AuthManager
+from core.api_client import get_api_client
 
 console = Console()
 
@@ -97,18 +97,6 @@ def get_status_color(status):
     return status_colors.get(str(status).lower(), "white")
 
 
-def get_auth_headers():
-    """Get authentication headers"""
-    auth_manager = AuthManager()
-    headers = auth_manager.get_auth_headers()
-    if not headers:
-        console.print(
-            "[red]Error: Not authenticated. Please run 'nasiko login' first.[/red]"
-        )
-        raise typer.Exit(1)
-    return headers
-
-
 def sessions_command(
     agent_id: Optional[str] = typer.Argument(
         None, help="Agent ID to filter sessions (optional)"
@@ -126,7 +114,7 @@ def sessions_command(
     """Get observability sessions for agents"""
 
     try:
-        headers = get_auth_headers()
+        client = get_api_client()
 
         # Calculate start time for filtering
         start_time = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
@@ -139,12 +127,7 @@ def sessions_command(
             console=console,
         ) as progress:
             task = progress.add_task("Fetching observability sessions...", total=None)
-            response = requests.get(
-                APIEndpoints.OBSERVABILITY_SESSIONS,
-                headers=headers,
-                params=params,
-                timeout=30,
-            )
+            response = client.get(APIEndpoints.OBSERVABILITY_SESSIONS, params=params)
             progress.remove_task(task)
 
         if response.status_code == 401:
@@ -225,9 +208,9 @@ def session_details_command(
     """Get detailed information about a specific session"""
 
     try:
-        headers = get_auth_headers()
+        client = get_api_client()
 
-        url = APIEndpoints.OBSERVABILITY_SESSION_DETAILS.format(session_id=session_id)
+        endpoint = APIEndpoints.OBSERVABILITY_SESSION_DETAILS.format(session_id=session_id)
 
         with Progress(
             SpinnerColumn(),
@@ -237,7 +220,7 @@ def session_details_command(
             task = progress.add_task(
                 f"Fetching session {session_id[:8]}...", total=None
             )
-            response = requests.get(url, headers=headers, timeout=30)
+            response = client.get(endpoint)
             progress.remove_task(task)
 
         if response.status_code == 404:
@@ -286,9 +269,9 @@ def trace_details_command(
     """Get detailed trace information with nested spans"""
 
     try:
-        headers = get_auth_headers()
+        client = get_api_client()
 
-        url = APIEndpoints.OBSERVABILITY_TRACE_DETAILS.format(
+        endpoint = APIEndpoints.OBSERVABILITY_TRACE_DETAILS.format(
             project_id=project_id, trace_id=trace_id
         )
 
@@ -298,7 +281,7 @@ def trace_details_command(
             console=console,
         ) as progress:
             task = progress.add_task(f"Fetching trace {trace_id[:8]}...", total=None)
-            response = requests.get(url, headers=headers, timeout=30)
+            response = client.get(endpoint)
             progress.remove_task(task)
 
         if response.status_code == 404:
@@ -348,9 +331,9 @@ def span_details_command(
     """Get detailed information about a specific span"""
 
     try:
-        headers = get_auth_headers()
+        client = get_api_client()
 
-        url = APIEndpoints.OBSERVABILITY_SPAN_DETAILS.format(span_id=span_id)
+        endpoint = APIEndpoints.OBSERVABILITY_SPAN_DETAILS.format(span_id=span_id)
 
         with Progress(
             SpinnerColumn(),
@@ -358,7 +341,7 @@ def span_details_command(
             console=console,
         ) as progress:
             task = progress.add_task(f"Fetching span {span_id[:8]}...", total=None)
-            response = requests.get(url, headers=headers, timeout=30)
+            response = client.get(endpoint)
             progress.remove_task(task)
 
         if response.status_code == 404:
@@ -407,11 +390,11 @@ def agent_stats_command(
     """Get performance statistics for an agent"""
 
     try:
-        headers = get_auth_headers()
+        client = get_api_client()
 
         start_time = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
 
-        url = APIEndpoints.OBSERVABILITY_AGENT_STATS.format(agent_id=agent_id)
+        endpoint = APIEndpoints.OBSERVABILITY_AGENT_STATS.format(agent_id=agent_id)
         params = {"start_time": start_time}
 
         with Progress(
@@ -420,7 +403,7 @@ def agent_stats_command(
             console=console,
         ) as progress:
             task = progress.add_task(f"Fetching stats for {agent_id}...", total=None)
-            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response = client.get(endpoint, params=params)
             progress.remove_task(task)
 
         if response.status_code == 404:

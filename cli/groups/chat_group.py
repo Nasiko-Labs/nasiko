@@ -9,19 +9,17 @@ import typer
 chat_app = typer.Typer(help="Chat sessions and conversation history")
 
 
-@chat_app.command(name="create-session")
-def chat_session_create(
-    agent_name: Optional[str] = typer.Option(
-        None, "--agent", "-a", help="Agent name to associate with session"
-    ),
+@chat_app.command(name="start")
+def chat_start(
+    agent_name: str = typer.Argument(..., help="Agent name to chat with"),
 ):
-    """Create a new chat session."""
-    from commands.chat_history import create_session
+    """Start an interactive chat session with an agent."""
+    from commands.chat_history import interactive_chat
 
-    create_session(agent_name)
+    interactive_chat(agent_name)
 
 
-@chat_app.command(name="list-sessions")
+@chat_app.command(name="sessions")
 def chat_sessions(
     limit: int = typer.Option(
         10, "--limit", "-l", help="Number of sessions per page (1-20)"
@@ -58,8 +56,8 @@ def chat_history(
     get_chat_history(session_id, limit, cursor, direction)
 
 
-@chat_app.command(name="delete-session")
-def chat_session_delete(
+@chat_app.command(name="drop")
+def chat_drop(
     session_id: str = typer.Argument(..., help="Session ID to delete"),
 ):
     """Delete a chat session."""
@@ -88,3 +86,38 @@ def chat_send(
     from commands.chat_send import send_message_command
 
     send_message_command(url, message, session_id)
+
+
+# Backward compat aliases (hidden)
+@chat_app.command(name="create-session", hidden=True)
+def chat_session_create(
+    agent_name: Optional[str] = typer.Option(
+        None, "--agent", "-a", help="Agent name to associate with session"
+    ),
+):
+    """[Deprecated] Use 'chat start <agent>' instead."""
+    from commands.chat_history import create_session
+
+    create_session(agent_name)
+
+
+@chat_app.command(name="list-sessions", hidden=True)
+def chat_list_sessions(
+    limit: int = typer.Option(10, "--limit", "-l"),
+    cursor: Optional[str] = typer.Option(None, "--cursor"),
+    direction: str = typer.Option("after", "--direction"),
+):
+    """[Deprecated] Use 'chat sessions' instead."""
+    from commands.chat_history import list_sessions
+
+    list_sessions(limit, cursor, direction)
+
+
+@chat_app.command(name="delete-session", hidden=True)
+def chat_session_delete(
+    session_id: str = typer.Argument(..., help="Session ID to delete"),
+):
+    """[Deprecated] Use 'chat drop' instead."""
+    from commands.chat_history import delete_session
+
+    delete_session(session_id)
