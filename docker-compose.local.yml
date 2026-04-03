@@ -328,6 +328,14 @@ services:
       AUTH_BASE_URL: ""
       AGENTS_BASE_URL: /agents
       IS_DEVELOPMENT: "false"
+    # The compiled Flutter bundle has https://nasiko.dev hardcoded. Patch it at
+    # startup so local deployments route through Kong instead of the production host.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        KONG_URL="http://localhost:${NASIKO_PORT_KONG:-9100}"
+        sed -i "s|https://nasiko.dev|$$KONG_URL|g" /usr/share/nginx/html/main.dart.js
+        exec /docker-entrypoint.sh nginx -g 'daemon off;'
     networks:
       - app-network
     healthcheck:
