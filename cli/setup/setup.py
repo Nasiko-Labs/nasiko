@@ -14,6 +14,7 @@ from . import harbor_setup
 from . import buildkit_setup as buildkit_setup
 from . import app_setup
 from . import container_registry_setup
+from . import litellm_setup
 
 app = typer.Typer(help="Setup Nasiko cluster components (registry, k8s, core apps).")
 console = Console()
@@ -28,6 +29,7 @@ app.add_typer(buildkit_setup.app, name="buildkit", help="Deploy Rootless Buildki
 app.add_typer(
     app_setup.app, name="core", help="Deploy Nasiko Core Apps (Backend, Web, Router)"
 )
+app.add_typer(litellm_setup.app, name="litellm", help="Manage LLM gateway")
 
 
 class RegistryType(str, enum.Enum):

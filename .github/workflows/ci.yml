@@ -30,3 +30,101 @@ jobs:
         run: pip install black==26.3.1 mypy
       - name: Type check
         run: mypy . --ignore-missing-imports || true
+
+  integration-tests:
+    name: Integration Tests (Track 2 — LLM Gateway)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    # Docker + Compose v2 are preinstalled on ubuntu-latest GHA runners.
+    # Provider keys come from GitHub Secrets; tests skip gracefully if absent.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          pip install \
+            pytest>=8.0 \
+            pytest-asyncio>=0.23 \
+            httpx>=0.28.1 \
+            openai>=1.57.0 \
+            arize-phoenix>=12.0.0 \
+            pyyaml>=6.0.2
+
+      - name: Generate .nasiko-local.env for CI
+        # Generates placeholder keys for gateway startup.
+        # Provider keys (OPENAI_API_KEY, ANTHROPIC_API_KEY) come from secrets.
+        # Tests that need real keys skip gracefully when secrets are absent.
+        run: |
+          cp .nasiko-local.env.example .nasiko-local.env
+
+          # Generate random master key (must start with sk-)
+          MASTER_KEY="sk-ci-$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          echo "LITELLM_MASTER_KEY=${MASTER_KEY}" >> .nasiko-local.env
+
+          # Generate Fernet key for LITELLM_SALT_KEY
+          SALT_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+          echo "LITELLM_SALT_KEY=${SALT_KEY}" >> .nasiko-local.env
+
+          # Postgres password (non-default for CI)
+          echo "LITELLM_POSTGRES_PASSWORD=ci-postgres-$(python3 -c 'import secrets; print(secrets.token_hex(8))')" >> .nasiko-local.env
+
+          # Provider keys from GitHub Secrets (empty string if secret not set)
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .nasiko-local.env
+          echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" >> .nasiko-local.env
+
+      - name: Start partial compose stack (gateway services only)
+        run: |
+          docker compose \
+            --env-file .nasiko-local.env \
+            -f docker-compose.local.yml \
+            up -d \
+            litellm-postgres \
+            llm-gateway \
+            phoenix-observability \
+            redis \
+            mongodb
+
+      - name: Run Track 2 integration tests
+        env:
+          # Export LITELLM_MASTER_KEY so conftest.py can read it directly
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          pytest tests/integration/track2/ \
+            -v \
+            --tb=short \
+            --timeout=300
+
+      - name: Dump gateway logs on failure
+        if: failure()
+        run: |
+          echo "=== llm-gateway logs ==="
+          docker compose \
+            --env-file .nasiko-local.env \
+            -f docker-compose.local.yml \
+            logs llm-gateway
+
+          echo "=== litellm-postgres logs ==="
+          docker compose \
+            --env-file .nasiko-local.env \
+            -f docker-compose.local.yml \
+            logs litellm-postgres
+
+          echo "=== phoenix-observability logs ==="
+          docker compose \
+            --env-file .nasiko-local.env \
+            -f docker-compose.local.yml \
+            logs phoenix-observability
+
+      - name: Tear down compose stack
+        if: always()
+        run: |
+          docker compose \
+            --env-file .nasiko-local.env \
+            -f docker-compose.local.yml \
+            down -v

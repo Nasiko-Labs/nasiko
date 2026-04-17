@@ -1,0 +1,39 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "a2a-gateway-demo",
+  "description": "Demonstration agent using the platform LLM gateway — no provider keys in source.",
+  "url": "http://localhost:5000/",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/Nasiko-Labs/nasiko"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "gateway_demo",
+      "name": "Gateway Demo",
+      "description": "Demonstration LLM call routed through the Nasiko platform LLM gateway. No provider API key required in agent source.",
+      "tags": ["demo", "gateway", "llm"],
+      "examples": [
+        "ping",
+        "Say hello",
+        "What is 2+2?"
+      ],
+      "inputModes": ["application/json", "text/plain"],
+      "outputModes": ["application/json"]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

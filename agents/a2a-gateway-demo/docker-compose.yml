@@ -1,0 +1,20 @@
+services:
+  a2a-gateway-demo:
+    build: .
+    container_name: a2a-gateway-demo
+    environment:
+      # Both variables are injected by the Nasiko orchestrator at deploy time.
+      # OPENAI_BASE_URL points at the platform LLM gateway (llm-gateway:4000).
+      # OPENAI_API_KEY is set to the per-agent virtual key minted by LiteLLM.
+      # Do NOT set real provider API keys here.
+      - OPENAI_BASE_URL=${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+    ports:
+      - "5000"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

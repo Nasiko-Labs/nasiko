@@ -10,12 +10,14 @@ import asyncio
 import signal
 import sys
 import aiohttp
+import httpx
 from typing import Dict, Any, Optional
 from datetime import datetime, UTC
 from pathlib import Path
 
 from config import Config
 from agent_builder import AgentBuilder
+from virtual_keys_repository import VirtualKeyRepository
 
 # Import observability components directly like K8s build worker
 
@@ -771,14 +773,34 @@ class RedisStreamListener:
 
         container_name = f"agent-{agent_name}"
 
+        # [Track 2] Mint or re-use a per-agent virtual key for the LLM gateway.
+        # Falls back to None (silently) if the gateway is not running yet —
+        # legacy direct-provider-key path is preserved in that case.
+        virtual_key = await self._ensure_virtual_key(agent_name, owner_id)
+
         # Prepare environment variables like K8s worker
         env_vars = {
             "AGENT_NAME": agent_name,
             "OWNER_ID": owner_id or "",
-            "OPENAI_API_KEY": Config.OPENAI_API_KEY,
+            "OPENAI_API_KEY": Config.OPENAI_API_KEY,    # legacy path — may be overridden below
             "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
             "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
         }
+
+        # [Track 2] Inject gateway env if a virtual key was successfully obtained.
+        # OPENAI_API_KEY is overridden here so agents using the OpenAI SDK are routed
+        # through the gateway automatically without any code change.
+        # If virtual_key is None (gateway down / misconfigured), this block is skipped
+        # and the original Config.OPENAI_API_KEY remains — legacy agents keep working.
+        if virtual_key and Config.LLM_GATEWAY_URL:
+            env_vars["LLM_GATEWAY_URL"] = Config.LLM_GATEWAY_URL
+            env_vars["LLM_VIRTUAL_KEY"] = virtual_key
+            env_vars["OPENAI_BASE_URL"] = Config.LLM_GATEWAY_URL
+            env_vars["OPENAI_API_KEY"] = virtual_key  # override: virtual key wins
+            self.logger.info(
+                f"[Track2] Injected LLM gateway env for agent '{agent_name}'. "
+                f"OPENAI_BASE_URL -> {Config.LLM_GATEWAY_URL}"
+            )
 
         # Load agent-specific env vars from its .env file if present
         if agent_source_path:
@@ -843,6 +865,111 @@ class RedisStreamListener:
             "url": f"http://{container_name}:5000",  # Internal network URL
             "network_url": f"http://{container_name}:5000",  # For internal network access (agent runs on 5000)
         }
+
+    async def _ensure_virtual_key(
+        self, agent_name: str, owner_id: str
+    ) -> Optional[str]:
+        """
+        [Track 2] Get or mint a per-agent LiteLLM virtual key.
+
+        1. Checks MongoDB virtual_keys collection for an existing active key.
+        2. If found, returns it (no gateway call needed).
+        3. If not, calls POST {gateway}/key/generate, stores in MongoDB, returns it.
+        4. On ANY failure (gateway down, timeout, config missing): logs a warning
+           and returns None. The caller falls back to the legacy provider-key path.
+        """
+        if not Config.LLM_GATEWAY_URL or not Config.LLM_GATEWAY_MASTER_KEY:
+            self.logger.warning(
+                "[Track2] LLM_GATEWAY_URL or LITELLM_MASTER_KEY not set — "
+                "skipping virtual-key mint. Agent will use direct provider keys."
+            )
+            return None
+
+        mongo_url = (
+            f"mongodb://admin:password@{Config.MONGO_HOST}:{Config.MONGO_PORT}"
+        )
+        try:
+            repo, mongo_client = VirtualKeyRepository.from_url(
+                mongo_url, Config.MONGO_DATABASE, self.logger
+            )
+            try:
+                existing_key = await repo.get_active_key(agent_name)
+                if existing_key:
+                    self.logger.info(
+                        f"[Track2] Re-using existing virtual key for agent '{agent_name}'"
+                    )
+                    return existing_key
+            finally:
+                mongo_client.close()
+        except Exception as exc:
+            self.logger.warning(
+                f"[Track2] MongoDB lookup failed for agent '{agent_name}': {exc}. "
+                "Will attempt to mint a fresh key."
+            )
+
+        # Mint a new key from the gateway
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                resp = await http.post(
+                    f"{Config.LLM_GATEWAY_URL}/key/generate",
+                    headers={
+                        "Authorization": f"Bearer {Config.LLM_GATEWAY_MASTER_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "key_alias": f"agent-{agent_name}",
+                        "metadata": {
+                            "agent_id": agent_name,
+                            "owner_id": owner_id or "",
+                            "platform": "nasiko",
+                        },
+                        "models": ["default-model"],
+                        "max_budget": 5.0,
+                        "budget_duration": "30d",
+                    },
+                )
+                resp.raise_for_status()
+                virtual_key = resp.json().get("key", "")
+        except Exception as exc:
+            self.logger.warning(
+                f"[Track2] LLM Gateway unreachable during virtual-key mint for "
+                f"agent '{agent_name}': {exc}. "
+                "Deploying without gateway env vars — existing provider keys still work."
+            )
+            return None
+
+        if not virtual_key:
+            self.logger.warning(
+                f"[Track2] Gateway returned empty key for agent '{agent_name}'. "
+                "Falling back to direct provider key."
+            )
+            return None
+
+        # Persist to MongoDB
+        try:
+            repo, mongo_client = VirtualKeyRepository.from_url(
+                mongo_url, Config.MONGO_DATABASE, self.logger
+            )
+            try:
+                await repo.save_key(
+                    agent_name=agent_name,
+                    owner_id=owner_id or "",
+                    virtual_key=virtual_key,
+                    key_alias=f"agent-{agent_name}",
+                )
+            finally:
+                mongo_client.close()
+        except Exception as exc:
+            self.logger.warning(
+                f"[Track2] Failed to persist virtual key to MongoDB for "
+                f"agent '{agent_name}': {exc}. Key is still valid but won't survive restart."
+            )
+
+        self.logger.info(
+            f"[Track2] Minted and stored virtual key for agent '{agent_name}'. "
+            f"Alias: agent-{agent_name}"
+        )
+        return virtual_key
 
     async def _cleanup_existing_container(self, agent_name: str):
         """Stop and remove existing container if it exists"""

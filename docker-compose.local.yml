@@ -2,6 +2,58 @@
 # Mimics the K8s bootstrap flow: Infrastructure -> Core -> Auth -> Gateway -> Router
 services:
   # ============================================================================
+  # LLM GATEWAY LAYER (Track 2) — LiteLLM proxy + dedicated Postgres
+  # ============================================================================
+  litellm-postgres:
+    image: postgres:16-alpine
+    container_name: litellm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_POSTGRES_PASSWORD:-litellm-local-dev-only}
+    volumes:
+      - litellm-postgres-data:/var/lib/postgresql/data
+    networks:
+      - agents-net
+      - app-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # NOTE: No host port — internal only. Accessed by llm-gateway as
+    # postgresql://litellm:...@litellm-postgres:5432/litellm
+
+  llm-gateway:
+    image: ghcr.io/berriai/litellm:v1.83.3-stable
+    container_name: llm-gateway
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    depends_on:
+      litellm-postgres:
+        condition: service_healthy
+    ports:
+      - "4100:4000"   # Host 4100 (nasiko-web occupies 4000)
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      DATABASE_URL: postgresql://litellm:${LITELLM_POSTGRES_PASSWORD:-litellm-local-dev-only}@litellm-postgres:5432/litellm
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./cli/setup/litellm/config.yaml:/app/config.yaml:ro
+    networks:
+      - agents-net
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health/liveliness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # ============================================================================
   # INFRASTRUCTURE LAYER (MongoDB, Redis)
   # ============================================================================
   mongodb:
@@ -395,6 +447,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      # Track 2: LLM Gateway — orchestrator uses these to mint virtual keys
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agents:/app/agents:ro
@@ -410,6 +466,7 @@ volumes:
   redis-data:
   kong-db-data:
   phoenix-data:
+  litellm-postgres-data:
 
 networks:
   app-network:

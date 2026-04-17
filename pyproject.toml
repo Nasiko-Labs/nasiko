@@ -74,7 +74,21 @@ dev = [
     "black==26.3.1",
     "ruff>=0.8.0",
     "mypy>=1.0.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
+    # httpx and openai are already in prod deps; listed here for explicitness
+    "httpx>=0.28.1",
+    "openai>=1.57.0",
 ]
 
 [tool.black]
 target-version = ['py312']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: integration tests requiring a running docker compose stack",
+    "slow: tests that take longer than 60 seconds",
+]
