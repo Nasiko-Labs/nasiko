@@ -24,6 +24,7 @@ class AgentUploadResult:
         validation_errors: Optional[List[str]] = None,
         upload_id: Optional[str] = None,
         version: Optional[str] = None,
+        artifact_type: str = "agent",
     ):
         self.success = success
         self.agent_name = agent_name
@@ -33,12 +34,14 @@ class AgentUploadResult:
         self.validation_errors = validation_errors or []
         self.upload_id = upload_id
         self.version = version
+        self.artifact_type = artifact_type
 
 
 class ValidationResult:
-    def __init__(self, is_valid: bool, errors: List[str] = None):
+    def __init__(self, is_valid: bool, errors: List[str] = None, artifact_type: str = "agent"):
         self.is_valid = is_valid
         self.errors = errors or []
+        self.artifact_type = artifact_type
 
 
 async def _determine_agent_name(temp_dir: str) -> str:
@@ -107,9 +110,9 @@ class AgentUploadService:
                     validation_errors=validation.errors,
                 )
 
-            # Generate AgentCard.json if missing
-            capabilities_generated = await self._ensure_agentcard_json(
-                temp_dir, agent_name
+            # Generate AgentCard.json OR MCP Manifest if missing
+            capabilities_generated = await self._ensure_manifest_or_card(
+                temp_dir, agent_name, validation.artifact_type
             )
 
             # Copy to agents directory and get the version used
@@ -122,6 +125,7 @@ class AgentUploadService:
                 capabilities_generated=capabilities_generated,
                 orchestration_triggered=False,
                 version=version,
+                artifact_type=validation.artifact_type,
             )
 
         except Exception as e:
@@ -199,9 +203,9 @@ class AgentUploadService:
                     validation_errors=validation.errors,
                 )
 
-            # Generate AgentCard.json if missing
-            capabilities_generated = await self._ensure_agentcard_json(
-                str(source_dir), agent_name
+            # Generate AgentCard.json OR MCP Manifest if missing
+            capabilities_generated = await self._ensure_manifest_or_card(
+                str(source_dir), agent_name, validation.artifact_type
             )
 
             # Copy to agents directory and get the version used
@@ -214,6 +218,7 @@ class AgentUploadService:
                 capabilities_generated=capabilities_generated,
                 orchestration_triggered=False,
                 version=version,
+                artifact_type=validation.artifact_type,
             )
 
         except Exception as e:
@@ -290,6 +295,7 @@ class AgentUploadService:
         ]
 
         main_py_found = False
+        artifact_type = "agent"
         for loc in main_py_locations:
             if loc.exists():
                 main_py_found = True
@@ -298,6 +304,13 @@ class AgentUploadService:
                     main_content = loc.read_text()
                     if not main_content.strip():
                         errors.append(f"main.py is empty: {loc.relative_to(agent_dir)}")
+                    else:
+                        is_mcp = "mcp.server" in main_content or "FastMCP" in main_content or "@mcp.tool" in main_content or "@mcp.resource" in main_content
+                        is_agent = "langchain" in main_content.lower() or "crewai" in main_content.lower()
+                        if is_mcp and is_agent:
+                            errors.append("Ambiguous artifact: Contains both MCP Server signatures and Agent frameworks (LangChain/CrewAI).")
+                        elif is_mcp:
+                            artifact_type = "mcp_server"
                 except Exception as e:
                     errors.append(f"Cannot read main.py: {str(e)}")
                 break
@@ -314,7 +327,7 @@ class AgentUploadService:
 
         self.logger.info(f"Validation completed with {len(errors)} errors")
 
-        return ValidationResult(is_valid=len(errors) == 0, errors=errors)
+        return ValidationResult(is_valid=len(errors) == 0, errors=errors, artifact_type=artifact_type)
 
     async def _extract_zip_file(self, file: UploadFile) -> str:
         """Extract uploaded zip file to temporary directory"""
@@ -411,55 +424,64 @@ class AgentUploadService:
         self.logger.warning(f"Could not identify agent directory, using: {temp_dir}")
         return temp_dir
 
-    async def _ensure_agentcard_json(
-        self, agent_path: str, agent_name: str, n8n_agent: bool = False
+    async def _ensure_manifest_or_card(
+        self, agent_path: str, agent_name: str, artifact_type: str
     ) -> bool:
-        """Generate AgentCard.json if missing using agentcard service"""
-        agentcard_path = Path(agent_path) / "AgentCard.json"
+        """Generate AgentCard.json OR McpServerManifest.json if missing"""
+        is_mcp = artifact_type == "mcp_server"
+        filename = "McpServerManifest.json" if is_mcp else "AgentCard.json"
+        manifest_path = Path(agent_path) / filename
 
-        if agentcard_path.exists():
-            self.logger.info("AgentCard.json already exists")
+        if manifest_path.exists():
+            self.logger.info(f"{filename} already exists")
             return False
 
-        # Generate AgentCard.json using the agentcard service
-        self.logger.info("Generating AgentCard.json using agentcard service")
+        self.logger.info(f"Generating {filename} using agentcard service")
 
         try:
-            # Use the agentcard service to generate AgentCard
-            success = await self.agentcard_service.generate_and_save_agentcard(
-                agent_path=agent_path,
-                agent_name=agent_name,
-                n8n_agent=n8n_agent,
-                base_url=settings.NASIKO_API_URL,
-            )
+            if is_mcp:
+                success = await self.agentcard_service.generate_and_save_mcp_manifest(
+                    agent_path=agent_path,
+                    agent_name=agent_name,
+                    base_url=settings.NASIKO_API_URL,
+                )
+            else:
+                success = await self.agentcard_service.generate_and_save_agentcard(
+                    agent_path=agent_path,
+                    agent_name=agent_name,
+                    n8n_agent=False,
+                    base_url=settings.NASIKO_API_URL,
+                )
 
             if success:
                 self.logger.info(
-                    f"Successfully generated AgentCard.json for {agent_name}"
+                    f"Successfully generated {filename} for {agent_name}"
                 )
                 return True
             else:
                 self.logger.warning(
-                    f"Failed to generate AgentCard for {agent_name}, using fallback"
+                    f"Failed to generate {filename} for {agent_name}, using fallback"
                 )
                 return False
 
         except Exception as e:
-            self.logger.error(f"Error generating AgentCard for {agent_name}: {str(e)}")
+            self.logger.error(f"Error generating {filename} for {agent_name}: {str(e)}")
             return False
 
     async def _get_version_from_agentcard(self, agent_path: str) -> str:
         """Get version from AgentCard.json, fallback to v1.0.0 if not found"""
         try:
-            agentcard = await self.agentcard_service.load_agentcard_from_file(
-                agent_path
-            )
+            # Try McpServerManifest first if existing
+            agentcard = await self.agentcard_service.load_manifest_from_file(
+                agent_path, filename="McpServerManifest.json"
+            ) or await self.agentcard_service.load_agentcard_from_file(agent_path)
+            
             if agentcard and "version" in agentcard:
                 version = agentcard["version"]
                 # Ensure version has 'v' prefix for directory naming
                 if not version.startswith("v"):
                     version = f"v{version}"
-                self.logger.info(f"Found version {version} in AgentCard.json")
+                self.logger.info(f"Found version {version} in manifest")
                 return version
             else:
                 self.logger.warning(
