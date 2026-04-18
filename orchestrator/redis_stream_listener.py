@@ -7,6 +7,7 @@ import redis
 import json
 import logging
 import asyncio
+import os
 import signal
 import sys
 import aiohttp
@@ -771,7 +772,12 @@ class RedisStreamListener:
 
         container_name = f"agent-{agent_name}"
 
-        # Prepare environment variables like K8s worker
+        # Prepare environment variables like K8s worker.
+        #
+        # Track 2: when LITELLM_ENABLED is true we inject the gateway URL and
+        # virtual key. Agents that opt in read LITELLM_BASE_URL / LITELLM_VIRTUAL_KEY
+        # and skip provider-key lookup. Direct provider keys are still passed so
+        # legacy agents keep working unchanged (hackathon must-not-impact rule).
         env_vars = {
             "AGENT_NAME": agent_name,
             "OWNER_ID": owner_id or "",
@@ -779,6 +785,22 @@ class RedisStreamListener:
             "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
             "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
         }
+
+        if Config.LITELLM_ENABLED:
+            virtual_key = self._mint_virtual_key_for_agent(agent_name, owner_id)
+            env_vars["LITELLM_BASE_URL"] = Config.LITELLM_BASE_URL
+            env_vars["LITELLM_VIRTUAL_KEY"] = virtual_key
+            env_vars["LITELLM_DEFAULT_MODEL"] = Config.LITELLM_DEFAULT_MODEL
+            # OpenAI-SDK-compatible aliases so `openai.OpenAI()` with no args
+            # routes through the gateway. Agents that still read OPENAI_API_KEY
+            # directly will also transparently use the gateway.
+            env_vars["OPENAI_BASE_URL"] = Config.LITELLM_BASE_URL
+            if not env_vars.get("OPENAI_API_KEY"):
+                env_vars["OPENAI_API_KEY"] = virtual_key
+            self.logger.info(
+                f"[litellm] Gateway enabled for {agent_name}: "
+                f"base_url={Config.LITELLM_BASE_URL} model={Config.LITELLM_DEFAULT_MODEL}"
+            )
 
         # Load agent-specific env vars from its .env file if present
         if agent_source_path:
@@ -1108,6 +1130,29 @@ class RedisStreamListener:
             "TRACING_ENABLED": "true",
             "AGENT_PROJECT_NAME": agent_name,
         }
+
+    def _mint_virtual_key_for_agent(self, agent_name: str, owner_id: str) -> str:
+        """Return a LiteLLM virtual key for the agent.
+
+        Track 2 virtual-key provisioning design:
+
+        * MVP path (current): return the platform-configured key from
+          ``Config.LITELLM_VIRTUAL_KEY``. This is the master key when
+          LiteLLM runs without a DB. All agents share it.
+        * Target path: POST to ``{LITELLM_BASE_URL}/key/generate`` with the
+          master key, passing ``metadata={agent_name, owner_id}`` and a
+          per-tenant model allowlist. Store the minted key in Redis under
+          ``nasiko:litellm:keys:{agent_name}`` with a TTL matching the
+          rotation policy. Rotation = regenerate on each deploy; revocation
+          = call ``/key/delete`` on agent teardown.
+
+        Centralising the provisioning point here means the rest of the
+        orchestrator is agnostic to how virtual keys are obtained.
+        """
+        if Config.LITELLM_VIRTUAL_KEY:
+            return Config.LITELLM_VIRTUAL_KEY
+        # Fall back to master key alias used by the local stack.
+        return os.getenv("LITELLM_MASTER_KEY", "sk-nasiko-master-dev")
 
     def stop(self):
         """Stop the listener"""

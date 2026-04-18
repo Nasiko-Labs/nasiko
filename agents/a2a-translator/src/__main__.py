@@ -28,10 +28,18 @@ logging.basicConfig()
 @click.option("--host", "host", default="localhost")
 @click.option("--port", "port", default=5000)
 def main(host: str, port: int):
-    base_url = None
-    model = "gpt-4o"
+    # Track 2: prefer the platform LLM gateway. The orchestrator injects
+    # LITELLM_BASE_URL + LITELLM_VIRTUAL_KEY at deploy time so agents never
+    # see provider credentials. Legacy direct-provider paths remain as a
+    # fallback so pre-gateway deployments keep working.
+    litellm_base_url = os.getenv("LITELLM_BASE_URL")
+    litellm_key = os.getenv("LITELLM_VIRTUAL_KEY")
 
-    if os.getenv("OPENROUTER_API_KEY"):
+    if litellm_base_url and litellm_key:
+        api_key = litellm_key
+        base_url = litellm_base_url
+        model = os.getenv("LITELLM_DEFAULT_MODEL", "gpt-4o-mini")
+    elif os.getenv("OPENROUTER_API_KEY"):
         api_key = os.getenv("OPENROUTER_API_KEY")
         base_url = "https://openrouter.ai/api/v1"
         model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
@@ -41,10 +49,14 @@ def main(host: str, port: int):
         model = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
     else:
         api_key = os.getenv("OPENAI_API_KEY")
+        base_url = None
+        model = "gpt-4o"
 
     if not api_key:
         raise ValueError(
-            "One of OPENROUTER_API_KEY, OPENAI_API_KEY, or MINIMAX_API_KEY must be set"
+            "Agent has no LLM credentials. Expected the platform to inject "
+            "LITELLM_BASE_URL + LITELLM_VIRTUAL_KEY, or (legacy) one of "
+            "OPENROUTER_API_KEY / OPENAI_API_KEY / MINIMAX_API_KEY."
         )
 
     skill = AgentSkill(
