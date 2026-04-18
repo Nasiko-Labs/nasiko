@@ -85,7 +85,8 @@ async def test_agent_env_injection_contains_gateway_and_no_provider_key(monkeypa
     import redis_stream_listener as rsl  # type: ignore[import-not-found]
     importlib.reload(rsl)
 
-    listener = rsl.RedisStreamListener(MagicMock())
+    listener = rsl.RedisStreamListener.__new__(rsl.RedisStreamListener)
+    listener.logger = MagicMock()
     listener.get_observability_env_vars = AsyncMock(return_value={})
 
     captured_env: dict = {}
@@ -160,7 +161,8 @@ async def test_legacy_agent_not_force_broken(monkeypatch):
     import redis_stream_listener as rsl  # type: ignore[import-not-found]
     importlib.reload(rsl)
 
-    listener = rsl.RedisStreamListener(MagicMock())
+    listener = rsl.RedisStreamListener.__new__(rsl.RedisStreamListener)
+    listener.logger = MagicMock()
     listener.get_observability_env_vars = AsyncMock(return_value={})
 
     captured_env: dict = {}
