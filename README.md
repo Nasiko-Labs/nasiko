@@ -253,6 +253,7 @@ curl http://localhost:9100/health
 For comprehensive guides and detailed instructions:
 
 - **[Getting Started Guide](docs/getting-started.md)** - First login, deploying your first agent, and testing it 
+- **[MCP Server Developer Guide](docs/mcp-servers.md)** - Publish MCP servers, consume MCP tools from agents, and understand MCP routing
 - **[API Reference](http://localhost:8000/docs)** - Full REST API documentation (after startup)
 
 ### Quick Links
@@ -336,6 +337,25 @@ my-agent/
 └── README.md              # Documentation
 ```
 
+> **Note:** The upload API does not change for MCP servers. Use the same upload commands for agents and MCP artifacts; Nasiko auto-detects the artifact type and routes MCP servers under `/mcp/...`.
+
+### MCP Server Structure
+
+Nasiko supports MCP servers with the same upload flow, but the recommended source layout is slightly different:
+
+```
+my-mcp-server/
+├── Dockerfile              # Container definition
+├── pyproject.toml          # Python dependencies
+├── MCPManifest.json        # Optional; auto-generated when missing
+├── src/
+│   ├── main.py            # Or bridge.py / __main__.py / mcp_bridge.py
+│   └── ...
+└── README.md              # Documentation
+```
+
+Supported MCP markers include `fastmcp` / `mcp` imports, `@tool` decorators, or an existing `MCPManifest.json`.
+
 ### Example Agent
 
 **AgentCard.json** (Required):
@@ -364,6 +384,8 @@ my-agent/
   }
 }
 ```
+
+**MCP server artifacts** do not need an `AgentCard.json`. If the upload looks like an MCP server, Nasiko generates or loads `MCPManifest.json` and stores the artifact as `artifact_type = mcp_server`.
 
 **src/main.py**:
 ```python
@@ -420,6 +442,9 @@ nasiko agent upload-directory . --name my-agent
 curl -X POST http://localhost:9100/agents/my-agent/analyze \
   -H "Content-Type: application/json" \
   -d '{"text": "Sample document content"}'
+
+# MCP servers are published under /mcp/{name}
+curl http://localhost:9100/mcp/my-mcp-server/health
 
 # Test via intelligent routing through Kong
 curl "http://localhost:9100/router/route?query=analyze this document"
@@ -666,6 +691,7 @@ make backend-app        # Restart backend services
    - `agents-net` - Agent-to-agent communication
 
 3. **AgentCard.json** - Mandatory for all agents, defines capabilities for routing
+  - MCP servers use `MCPManifest.json` and `artifact_type = mcp_server` instead of `AgentCard.json`
 
 4. **BuildKit** - Required for Kubernetes agent deployments
 
@@ -673,6 +699,7 @@ make backend-app        # Restart backend services
 
 **Kong Gateway Routes** (http://localhost:9100):
 - **`/agents/{agent-name}/`** - Dynamic agent access (auto-registered)
+- **`/mcp/{server-name}/`** - Dynamic MCP server access (auto-registered)
 - **`/api/`** - Backend API with authentication
 - **`/router/`** - Intelligent query routing service  
 - **`/auth/`** - Authentication endpoints
@@ -725,7 +752,16 @@ curl http://localhost:8081/health
 # Check agent registration
 curl http://localhost:8000/api/v1/registries
 
-# Verify AgentCard.json exists in agent directory
+# Verify the correct manifest exists in the artifact directory (AgentCard.json or MCPManifest.json)
+```
+
+**MCP server not routing correctly:**
+```bash
+# Check the registry entry for artifact_type and manifest metadata
+curl http://localhost:8000/api/v1/registries | jq '.data[] | select(.artifact_type=="mcp_server")'
+
+# Verify the Kong MCP path
+curl http://localhost:9100/mcp/my-mcp-server/health
 ```
 
 ## 🤝 Contributing

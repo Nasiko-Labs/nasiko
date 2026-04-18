@@ -65,17 +65,15 @@ def get_container_host_port(container_name, container_port="5000"):
         return f"http://{container_name}"
 
 
-def get_kong_agent_url(agent_id):
-    """Get the Kong gateway URL for an agent
-
-    Returns the Kong gateway URL that routes to the agent through the API gateway.
-    This should be used for agent registry URLs as it provides external access.
+def get_kong_artifact_url(artifact_id, artifact_type="agent"):
+    """Get Kong gateway URL for an artifact.
 
     Args:
-        agent_id (str): ID of the agent (used for Kong routing)
+        artifact_id (str): artifact identifier
+        artifact_type (str): "agent" or "mcp_server"
 
     Returns:
-        str: Kong gateway URL for the agent
+        str: Kong gateway URL for the artifact
     """
     import socket
 
@@ -91,9 +89,23 @@ def get_kong_agent_url(agent_id):
         )
         private_ip = "localhost"
 
-    kong_url = f"http://{private_ip}:9100/{agent_id}"
-    logger.info("Agent ID: %s, Kong gateway URL: %s", agent_id, kong_url)
+    if artifact_type == "mcp_server":
+        kong_url = f"http://{private_ip}:9100/mcp/{artifact_id}"
+    else:
+        kong_url = f"http://{private_ip}:9100/{artifact_id}"
+
+    logger.info(
+        "Artifact ID: %s, type: %s, Kong gateway URL: %s",
+        artifact_id,
+        artifact_type,
+        kong_url,
+    )
     return kong_url
+
+
+def get_kong_agent_url(agent_id):
+    """Backward-compatible helper for agent URLs."""
+    return get_kong_artifact_url(agent_id, artifact_type="agent")
 
 
 def network_exists(network_name):

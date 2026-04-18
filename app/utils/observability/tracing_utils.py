@@ -131,6 +131,14 @@ def _get_instrumentors_for_framework(framework: Optional[str]) -> list:
         ],
         "minimax": [("openinference.instrumentation.openai", "OpenAIInstrumentor")],
         "custom": [("openinference.instrumentation.openai", "OpenAIInstrumentor")],
+        "mcp": [
+            ("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor"),
+            ("opentelemetry.instrumentation.requests", "RequestsInstrumentor"),
+        ],
+        "mcp-stdio-bridge": [
+            ("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor"),
+            ("opentelemetry.instrumentation.requests", "RequestsInstrumentor"),
+        ],
     }
 
     # Get instrumentors for the framework

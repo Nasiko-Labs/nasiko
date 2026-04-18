@@ -33,6 +33,8 @@ class ObservabilityConfig:
             "opentelemetry-api>=1.36.0",
             "opentelemetry-sdk>=1.36.0",
             "opentelemetry-exporter-otlp>=1.36.0",
+            "opentelemetry-instrumentation-requests>=0.48b0",
+            "opentelemetry-instrumentation-httpx>=0.48b0",
             "pytz",
         ]
 

@@ -249,6 +249,7 @@ def register_groups():
     """Register all command groups."""
     from groups.github_group import github_app
     from groups.agent_group import agent_app
+    from groups.mcp_group import mcp_app
     from groups.n8n_group import n8n_app
     from groups.chat_group import chat_app
     from groups.search_group import search_app
@@ -261,6 +262,7 @@ def register_groups():
     # Add groups to main app
     app.add_typer(github_app, name="github")
     app.add_typer(agent_app, name="agent")
+    app.add_typer(mcp_app, name="mcp")
     app.add_typer(n8n_app, name="n8n")
     app.add_typer(chat_app, name="chat")
     app.add_typer(search_app, name="search")

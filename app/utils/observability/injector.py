@@ -1,6 +1,7 @@
 import os
 import shutil
 import ast
+import re
 import astor
 from typing import Optional, List
 import logging
@@ -17,7 +18,12 @@ class TracingInjector:
         self.observability_source = observability_source_path
         self.config = ObservabilityConfig()
 
-    def inject_into_agent(self, agent_code_path: str, agent_name: str) -> bool:
+    def inject_into_agent(
+        self,
+        agent_code_path: str,
+        agent_name: str,
+        artifact_type: Optional[str] = None,
+    ) -> bool:
         """
         Complete observability injection process
 
@@ -37,14 +43,23 @@ class TracingInjector:
             return True
 
         try:
+            resolved_artifact_type = artifact_type or self._detect_artifact_type(
+                agent_code_path
+            )
             logger.info(f"🔄 Starting observability injection for {agent_name}")
+            logger.info(
+                "Detected artifact type for injection: %s", resolved_artifact_type
+            )
 
             # 1. Copy observability module
             self._copy_observability_module(agent_code_path)
 
-            # 2. Find and modify main entry point
-            main_file = self._find_main_file(agent_code_path)
-            self._inject_tracing_code(main_file, agent_name)
+            # 2. Find and modify entry point
+            if resolved_artifact_type == "mcp_server":
+                self._inject_mcp_tracing_code(agent_code_path, agent_name)
+            else:
+                main_file = self._find_main_file(agent_code_path)
+                self._inject_tracing_code(main_file, agent_name)
 
             # 3. Update dependencies
             self._update_requirements(agent_code_path)
@@ -58,6 +73,94 @@ class TracingInjector:
         except Exception as e:
             logger.error(f"❌ Failed to inject observability for {agent_name}: {e}")
             return False
+
+    def _detect_artifact_type(self, agent_code_path: str) -> str:
+        """Best-effort detection of artifact type from source markers."""
+        try:
+            path = agent_code_path
+            for root, _, files in os.walk(path):
+                for file in files:
+                    if not file.endswith(".py"):
+                        continue
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                    except (UnicodeDecodeError, PermissionError):
+                        continue
+
+                    if any(
+                        re.search(pattern, content, re.IGNORECASE)
+                        for pattern in [
+                            r"\bfrom\s+fastmcp\b",
+                            r"\bimport\s+fastmcp\b",
+                            r"\bfrom\s+mcp\b",
+                            r"\bimport\s+mcp\b",
+                            r"@\s*FastMCP\.tool\b",
+                            r"\bFastMCP\s*\(",
+                        ]
+                    ):
+                        return "mcp_server"
+        except Exception as e:
+            logger.warning(f"Failed to auto-detect artifact type: {e}")
+
+        return "agent"
+
+    def _find_mcp_bridge_file(self, agent_code_path: str) -> Optional[str]:
+        """Find a likely MCP stdio/bridge entry point for instrumentation."""
+        candidates = [
+            "bridge.py",
+            "stdio_bridge.py",
+            "mcp_bridge.py",
+            "main.py",
+            "__main__.py",
+        ]
+
+        # direct root candidates
+        for candidate in candidates:
+            full_path = os.path.join(agent_code_path, candidate)
+            if os.path.exists(full_path):
+                return full_path
+
+        # src candidates
+        src_dir = os.path.join(agent_code_path, "src")
+        if os.path.exists(src_dir):
+            for candidate in candidates:
+                full_path = os.path.join(src_dir, candidate)
+                if os.path.exists(full_path):
+                    return full_path
+
+        # content-based detection
+        markers = [
+            "MCP_BRIDGE_ENABLED",
+            "MCP_TRANSPORT",
+            "stdio",
+            "fastmcp",
+            "from mcp",
+            "import mcp",
+        ]
+        for root, _, files in os.walk(agent_code_path):
+            for file in files:
+                if not file.endswith(".py"):
+                    continue
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read().lower()
+                    if any(marker.lower() in content for marker in markers):
+                        return file_path
+                except (UnicodeDecodeError, PermissionError):
+                    continue
+
+        return None
+
+    def _inject_mcp_tracing_code(self, agent_code_path: str, agent_name: str):
+        """Inject tracing for MCP artifacts. Prefer bridge layer, fallback to main entrypoint."""
+        target_file = self._find_mcp_bridge_file(agent_code_path) or self._find_main_file(
+            agent_code_path
+        )
+        framework = "mcp-stdio-bridge"
+        self._inject_tracing_code(target_file, agent_name, framework_override=framework)
 
     def _copy_observability_module(self, agent_code_path: str):
         """Copy observability module into agent directory"""
@@ -123,7 +226,12 @@ class TracingInjector:
 
         raise ValueError(f"No main entry point found in {agent_code_path}")
 
-    def _inject_tracing_code(self, main_file: str, agent_name: str):
+    def _inject_tracing_code(
+        self,
+        main_file: str,
+        agent_name: str,
+        framework_override: Optional[str] = None,
+    ):
         """Inject tracing imports and bootstrap call using AST"""
         try:
             with open(main_file, "r", encoding="utf-8") as f:
@@ -139,7 +247,7 @@ class TracingInjector:
             )
 
             # Read framework from AgentCard.json if available
-            framework = self._get_agent_framework(main_file)
+            framework = framework_override or self._get_agent_framework(main_file)
 
             # Create bootstrap call with framework
             bootstrap_keywords = [ast.keyword("project_name", ast.Constant(agent_name))]

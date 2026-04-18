@@ -77,6 +77,57 @@ class RegistryStatus(BaseModel):
     kong_status: str
 
 
+def _extract_container_env(container) -> dict:
+    """Extract environment variables from a Docker container attrs object."""
+    try:
+        env_list = (container.attrs or {}).get("Config", {}).get("Env", []) or []
+        env_map = {}
+        for item in env_list:
+            if "=" in item:
+                key, value = item.split("=", 1)
+                env_map[key] = value
+        return env_map
+    except Exception:
+        return {}
+
+
+def _infer_artifact_type(
+    service_name: str,
+    namespace: str,
+    labels: Optional[dict] = None,
+    env_map: Optional[dict] = None,
+) -> str:
+    """Infer artifact type for route selection. Returns 'agent' or 'mcp_server'."""
+    labels = labels or {}
+    env_map = env_map or {}
+
+    # Explicit label/env metadata takes precedence when present
+    label_hint = (
+        labels.get("artifact_type")
+        or labels.get("nasiko.artifact_type")
+        or labels.get("app.kubernetes.io/artifact-type")
+    )
+    env_hint = env_map.get("ARTIFACT_TYPE")
+
+    normalized_hint = (label_hint or env_hint or "").strip().lower()
+    if normalized_hint in {"mcp", "mcp_server", "mcp-server"}:
+        return "mcp_server"
+
+    # Stable naming convention fallback (already used by k8s worker)
+    if service_name.startswith("mcp-"):
+        return "mcp_server"
+
+    # Keep existing behavior unchanged for non-MCP
+    return "agent"
+
+
+def _build_route_path(service_name: str, artifact_type: str) -> str:
+    """Build Kong path for dynamic services by artifact type."""
+    if artifact_type == "mcp_server":
+        return f"/mcp/{service_name}"
+    return f"/agents/{service_name}"
+
+
 def get_k8s_client():
     """Initialize Kubernetes client."""
     global k8s_client
@@ -207,11 +258,17 @@ def get_k8s_services() -> List[ServiceInfo]:
                 # Use service DNS name for internal cluster communication
                 service_host = f"{service_name}.{AGENTS_NAMESPACE}.svc.cluster.local"
 
+                artifact_type = _infer_artifact_type(
+                    service_name=service_name,
+                    namespace=AGENTS_NAMESPACE,
+                    labels=getattr(svc.metadata, "labels", {}) or {},
+                )
+
                 service_info = ServiceInfo(
                     name=service_name,
                     host=service_host,
                     port=service_port,
-                    path=f"/agents/{service_name}",
+                    path=_build_route_path(service_name, artifact_type),
                     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
                     namespace=AGENTS_NAMESPACE,
                 )
@@ -287,8 +344,11 @@ def get_docker_services() -> List[ServiceInfo]:
                     logger.debug(f"Skipping infrastructure container: {container_name}")
                     continue
 
-                # Only consider agent containers (those that start with 'agent-')
-                if not container_name.startswith("agent-"):
+                # Only consider dynamic runtime containers
+                if not (
+                    container_name.startswith("agent-")
+                    or container_name.startswith("mcp-")
+                ):
                     logger.debug(f"Skipping non-agent container: {container_name}")
                     continue
 
@@ -303,11 +363,18 @@ def get_docker_services() -> List[ServiceInfo]:
                 # Use container name as hostname for network communication
                 service_host = container_name
 
+                env_map = _extract_container_env(container)
+                artifact_type = _infer_artifact_type(
+                    service_name=container_name,
+                    namespace="docker-agents",
+                    env_map=env_map,
+                )
+
                 service_info = ServiceInfo(
                     name=container_name,
                     host=service_host,
                     port=service_port,
-                    path=f"/agents/{container_name}",
+                    path=_build_route_path(container_name, artifact_type),
                     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
                     namespace="docker-agents",  # Use a different namespace for Docker containers
                 )

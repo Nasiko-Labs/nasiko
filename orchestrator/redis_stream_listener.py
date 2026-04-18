@@ -161,6 +161,7 @@ class RedisStreamListener:
             owner_id = fields.get("owner_id")
             upload_id = fields.get("upload_id")
             upload_type = fields.get("upload_type")
+            artifact_type = fields.get("artifact_type", "agent")
 
             if not all([command, agent_name]):
                 self.logger.error(
@@ -185,6 +186,7 @@ class RedisStreamListener:
                     "owner_id": owner_id,
                     "upload_id": upload_id,
                     "upload_type": upload_type,
+                    "artifact_type": artifact_type,
                 },
             )
             await self.update_database_status(
@@ -204,6 +206,7 @@ class RedisStreamListener:
                     owner_id,
                     upload_id,
                     upload_type,
+                    artifact_type,
                     agent_path,
                 )
             else:
@@ -243,6 +246,7 @@ class RedisStreamListener:
         owner_id: Optional[str] = None,
         upload_id: Optional[str] = None,
         upload_type: Optional[str] = None,
+        artifact_type: Optional[str] = "agent",
     ):
         """Handle agent deployment command"""
         try:
@@ -281,6 +285,7 @@ class RedisStreamListener:
                     "owner_id": owner_id,
                     "upload_id": upload_id,
                     "upload_type": upload_type,
+                    "artifact_type": artifact_type,
                 },
             )
 
@@ -290,6 +295,7 @@ class RedisStreamListener:
                 agent_path=host_agent_path,
                 base_url=base_url,
                 owner_id=owner_id,
+                artifact_type=artifact_type or "agent",
             )
 
             if result.get("success", False):
@@ -452,13 +458,14 @@ class RedisStreamListener:
         owner_id: Optional[str] = None,
         upload_id: Optional[str] = None,
         upload_type: Optional[str] = None,
+        artifact_type: Optional[str] = "agent",
         agent_path: Optional[str] = None,
     ):
         """Handle both agent deployment and updates from mounted agents folder"""
 
         try:
             self.logger.info(
-                f"{command.title()}ing agent '{agent_name}' for owner: {owner_id}"
+                f"{command.title()}ing artifact '{agent_name}' (type={artifact_type}) for owner: {owner_id}"
             )
 
             # Step 1: Verify agent source exists in mounted folder using provided agent_path
@@ -501,7 +508,7 @@ class RedisStreamListener:
                 25,
             )
             image_tag = await self._build_local_docker_image(
-                agent_source_path, agent_name
+                agent_source_path, agent_name, artifact_type=artifact_type
             )
 
             # Step 4: Deploy agent container
@@ -519,6 +526,7 @@ class RedisStreamListener:
                 image_tag,
                 owner_id,
                 upload_type,
+                artifact_type=artifact_type,
                 agent_source_path=agent_source_path,
             )
 
@@ -533,7 +541,12 @@ class RedisStreamListener:
                 90,
             )
             registry_result = await self._update_agent_registry_with_path(
-                agent_name, deployment_result, owner_id, base_url, agent_source_path
+                agent_name,
+                deployment_result,
+                owner_id,
+                base_url,
+                agent_source_path,
+                artifact_type=artifact_type,
             )
 
             # Step 5.5: Create Agent Permissions (if registry was updated and owner_id is provided)
@@ -559,7 +572,8 @@ class RedisStreamListener:
             container_name = deployment_result.get(
                 "container_name", f"agent-{agent_name}"
             )
-            external_url = f"{Config.KONG_GATEWAY_URL}/agents/{container_name}"
+            route_prefix = "mcp" if artifact_type == "mcp_server" else "agents"
+            external_url = f"{Config.KONG_GATEWAY_URL}/{route_prefix}/{container_name}"
 
             await self._update_status(
                 agent_name,
@@ -574,6 +588,7 @@ class RedisStreamListener:
                     "container_id": deployment_result["container_id"],
                     "registry_id": registry_result.get("registry_id"),
                     "permissions_created": permissions_created,
+                    "artifact_type": artifact_type,
                 },
             )
 
@@ -655,7 +670,7 @@ class RedisStreamListener:
         )
 
     async def _build_local_docker_image(
-        self, source_path: Path, agent_name: str
+        self, source_path: Path, agent_name: str, artifact_type: str = "agent"
     ) -> str:
         """Build Docker image with observability injection"""
         import shutil
@@ -670,7 +685,9 @@ class RedisStreamListener:
             shutil.copytree(source_path, temp_dir / "agent", dirs_exist_ok=True)
 
             # Inject observability (like existing agent_builder.py does)
-            await self._inject_observability(temp_dir / "agent", agent_name)
+            await self._inject_observability(
+                temp_dir / "agent", agent_name, artifact_type=artifact_type
+            )
 
             # Build Docker image
             image_tag = f"local-agent-{agent_name}:latest"
@@ -697,7 +714,9 @@ class RedisStreamListener:
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
 
-    async def _inject_observability(self, agent_path: Path, agent_name: str):
+    async def _inject_observability(
+        self, agent_path: Path, agent_name: str, artifact_type: str = "agent"
+    ):
         """Inject observability code exactly like K8s build worker"""
         if not self.observability_config.get_injection_enabled():
             self.logger.info(
@@ -721,7 +740,7 @@ class RedisStreamListener:
 
             # Inject observability code using TracingInjector
             injection_success = self.tracing_injector.inject_into_agent(
-                str(agent_path), agent_name
+                str(agent_path), agent_name, artifact_type=artifact_type
             )
 
             # Check if Dockerfile exists after injection
@@ -761,6 +780,7 @@ class RedisStreamListener:
         image_tag: str,
         owner_id: str,
         upload_type: Optional[str] = None,
+        artifact_type: Optional[str] = "agent",
         webhook_url: Optional[str] = None,
         agent_source_path: Optional[Path] = None,
     ) -> dict:
@@ -800,6 +820,13 @@ class RedisStreamListener:
         if upload_type == "n8n_register" and webhook_url:
             env_vars["WEBHOOK_URL"] = webhook_url
 
+        # MCP stdio -> HTTP bridge hints for runtime images that support it
+        if artifact_type == "mcp_server":
+            env_vars["ARTIFACT_TYPE"] = "mcp_server"
+            env_vars["MCP_TRANSPORT"] = "stdio"
+            env_vars["MCP_BRIDGE_ENABLED"] = "true"
+            env_vars["MCP_BRIDGE_PORT"] = "8080"
+
         # Build Docker run command with all environment variables
         docker_cmd = [
             "docker",
@@ -822,6 +849,10 @@ class RedisStreamListener:
 
         docker_cmd.append(image_tag)
 
+        # Override CMD for MCP servers to use the stdio-to-HTTP bridge
+        if artifact_type == "mcp_server":
+            docker_cmd.extend(["python", "mcp_stdio_http_bridge.py"])
+
         process = await asyncio.create_subprocess_exec(
             *docker_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -836,12 +867,15 @@ class RedisStreamListener:
 
         # Agent containers run on port 5000 internally but are not exposed to host
         # They are accessed through Kong gateway for external access
+        target_port = 8080 if artifact_type == "mcp_server" else 5000
+
         return {
             "container_id": container_id,
             "container_name": container_name,
-            "port": 5000,  # Internal container port
-            "url": f"http://{container_name}:5000",  # Internal network URL
-            "network_url": f"http://{container_name}:5000",  # For internal network access (agent runs on 5000)
+            "port": target_port,
+            "url": f"http://{container_name}:{target_port}",
+            "network_url": f"http://{container_name}:{target_port}",
+            "artifact_type": artifact_type,
         }
 
     async def _cleanup_existing_container(self, agent_name: str):
@@ -947,6 +981,7 @@ class RedisStreamListener:
         owner_id: str | None,
         base_url: str,
         agent_path: Path | None = None,
+        artifact_type: str = "agent",
     ) -> bool:
         """Register or update agent in the registry via API (mimics K8s worker)"""
         try:
@@ -956,6 +991,13 @@ class RedisStreamListener:
                 agentcard_data = await self.fetch_agentcard_from_local(
                     agent_name, agent_path
                 )
+
+            mcp_manifest = (
+                self._load_mcp_manifest_from_path(agent_path)
+                if artifact_type == "mcp_server" and agent_path
+                else None
+            )
+            associations = self._extract_associations_from_manifest(mcp_manifest)
 
             if agentcard_data:
                 self.logger.info(
@@ -968,7 +1010,31 @@ class RedisStreamListener:
                 # Override/ensure critical local deployment fields
                 registry_data["id"] = agent_name
                 registry_data["url"] = service_url
-                registry_data["deployment_type"] = "docker-local"
+                registry_data["deployment_type"] = (
+                    "docker-local-mcp"
+                    if artifact_type == "mcp_server"
+                    else "docker-local"
+                )
+                registry_data["artifact_type"] = artifact_type
+
+                existing_metadata = registry_data.get("metadata") or {}
+                if not isinstance(existing_metadata, dict):
+                    existing_metadata = {}
+                existing_metadata.update(
+                    {
+                        "artifact_type": artifact_type,
+                        "deployment_type": registry_data["deployment_type"],
+                        "mcp_manifest_present": bool(mcp_manifest),
+                    }
+                )
+                if associations:
+                    existing_metadata["associations"] = associations
+                registry_data["metadata"] = existing_metadata
+
+                if mcp_manifest:
+                    registry_data["mcp_manifest"] = mcp_manifest
+                if associations:
+                    registry_data["associations"] = associations
 
                 if owner_id:
                     registry_data["owner_id"] = owner_id
@@ -984,8 +1050,24 @@ class RedisStreamListener:
                     "description": "Agent deployed via local Docker",
                     "capabilities": {"tools": [], "prompts": []},
                     "version": "1.0.0",
-                    "deployment_type": "docker-local",
+                    "deployment_type": "docker-local-mcp"
+                    if artifact_type == "mcp_server"
+                    else "docker-local",
+                    "artifact_type": artifact_type,
+                    "metadata": {
+                        "artifact_type": artifact_type,
+                        "deployment_type": "docker-local-mcp"
+                        if artifact_type == "mcp_server"
+                        else "docker-local",
+                        "mcp_manifest_present": bool(mcp_manifest),
+                    },
                 }
+
+                if mcp_manifest:
+                    registry_data["mcp_manifest"] = mcp_manifest
+                if associations:
+                    registry_data["associations"] = associations
+                    registry_data["metadata"]["associations"] = associations
 
                 if owner_id:
                     registry_data["owner_id"] = owner_id
@@ -1022,6 +1104,55 @@ class RedisStreamListener:
             self.logger.error(f"Error registering agent {agent_name}: {e}")
             return False
 
+    def _load_mcp_manifest_from_path(self, agent_path: Path | None) -> Dict[str, Any] | None:
+        """Load MCP manifest from known filenames if present."""
+        if not agent_path:
+            return None
+
+        candidates = [
+            agent_path / "MCPManifest.json",
+            agent_path / "mcp-manifest.json",
+            agent_path / "mcp_manifest.json",
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        return json.load(f)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to read MCP manifest {candidate} for registry update: {e}"
+                )
+        return None
+
+    def _extract_associations_from_manifest(
+        self, manifest: Dict[str, Any] | None
+    ) -> Dict[str, list]:
+        """Extract association metadata from MCP manifest in a backward-compatible way."""
+        if not manifest or not isinstance(manifest, dict):
+            return {}
+
+        associations = manifest.get("associations")
+        if isinstance(associations, dict):
+            return {k: v for k, v in associations.items() if isinstance(v, list)}
+
+        metadata = manifest.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("associations"), dict):
+            assoc = metadata.get("associations")
+            return {k: v for k, v in assoc.items() if isinstance(v, list)}
+
+        linked_agents = []
+        for key in ["associated_agents", "associatedAgents", "linked_agents", "linkedAgents"]:
+            value = manifest.get(key)
+            if isinstance(value, list):
+                linked_agents.extend([v for v in value if isinstance(v, str) and v.strip()])
+
+        if linked_agents:
+            deduped = list(dict.fromkeys(linked_agents))
+            return {"agent_ids": deduped}
+
+        return {}
+
     async def _update_agent_registry_with_path(
         self,
         agent_name: str,
@@ -1029,6 +1160,7 @@ class RedisStreamListener:
         owner_id: str,
         base_url: str,
         agent_source_path: Path,
+        artifact_type: str = "agent",
     ) -> dict:
         """Update agent registry via backend API using new AgentCard-based registration"""
         try:
@@ -1037,7 +1169,8 @@ class RedisStreamListener:
             container_name = deployment_result.get(
                 "container_name", f"agent-{agent_name}"
             )
-            gateway_url = f"{Config.KONG_GATEWAY_URL}/agents/{container_name}"
+            route_prefix = "mcp" if artifact_type == "mcp_server" else "agents"
+            gateway_url = f"{Config.KONG_GATEWAY_URL}/{route_prefix}/{container_name}"
 
             # Use the new registry registration method with the actual agent source path
             success = await self.register_agent_in_registry(
@@ -1046,6 +1179,7 @@ class RedisStreamListener:
                 owner_id=owner_id,
                 base_url=base_url,
                 agent_path=agent_source_path,
+                artifact_type=artifact_type,
             )
 
             if success:

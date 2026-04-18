@@ -79,7 +79,10 @@ class AgentBuilder:
 
             # Update agent registry
             registry_result = self.registry_manager.update_agent_registry(
-                agent_folder_name, action="upsert", owner_id=owner_id
+                agent_folder_name,
+                action="upsert",
+                owner_id=owner_id,
+                artifact_type="agent",
             )
 
             # Cleanup temp directory
@@ -107,6 +110,7 @@ class AgentBuilder:
         agent_path: str,
         base_url: str = "http://localhost:8000",
         owner_id=None,
+        artifact_type: str = "agent",
     ):
         """
         Async method to build and deploy a single agent
@@ -143,7 +147,13 @@ class AgentBuilder:
             # Run the build in executor to avoid blocking
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, self._build_agent_sync, agent_name, agent_path, base_url, owner_id
+                None,
+                self._build_agent_sync,
+                agent_name,
+                agent_path,
+                base_url,
+                owner_id,
+                artifact_type,
             )
 
             return result
@@ -153,7 +163,12 @@ class AgentBuilder:
             return {"success": False, "error": f"Build and deploy failed: {str(e)}"}
 
     def _build_agent_sync(
-        self, agent_name: str, agent_path: str, base_url: str, owner_id=None
+        self,
+        agent_name: str,
+        agent_path: str,
+        base_url: str,
+        owner_id=None,
+        artifact_type: str = "agent",
     ):
         """Synchronous method to build and deploy agent"""
         try:
@@ -163,6 +178,13 @@ class AgentBuilder:
             temp_dir = Path(tempfile.mkdtemp())
             agent_temp_path = temp_dir / agent_name
             shutil.copytree(agent_folder, agent_temp_path)
+
+            # Inject stdio-to-HTTP bridge for MCP servers
+            if artifact_type == "mcp_server":
+                self.injector.inject_stdio_http_bridge(agent_temp_path, agent_name)
+                self.logger.info(
+                    f"Stdio-to-HTTP bridge injected for MCP server: {agent_name}"
+                )
 
             # Build instrumented Docker image
             if not self._build_instrumented_image(agent_temp_path, agent_name, None):
@@ -182,14 +204,18 @@ class AgentBuilder:
 
             # Update agent registry
             registry_result = self.registry_manager.update_agent_registry(
-                agent_name, action="upsert", owner_id=owner_id
+                agent_name,
+                action="upsert",
+                owner_id=owner_id,
+                artifact_type=artifact_type,
             )
 
             # Cleanup temp directory
             shutil.rmtree(temp_dir)
 
             # Get agent URL from registry result (the actual URL from container port)
-            url = registry_result.get("url") or f"{base_url}/agents/{agent_name}"
+            path_prefix = "mcp" if artifact_type == "mcp_server" else "agents"
+            url = registry_result.get("url") or f"{base_url}/{path_prefix}/{agent_name}"
             registry_success = registry_result.get("success", False)
             registry_id = registry_result.get("registry_id")
 
@@ -201,6 +227,7 @@ class AgentBuilder:
                 "container_id": None,  # Could be retrieved from docker inspect if needed
                 "registry_updated": registry_success,
                 "registry_id": registry_id,
+                "artifact_type": artifact_type,
             }
 
             if registry_success:
