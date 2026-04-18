@@ -5,5 +5,11 @@ model_list:
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/OPENAI_API_KEY
 
+  - model_name: llama-3.3-70b
+    litellm_params:
+      model: nvidia_nim/meta/llama-3.3-70b-instruct
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/OPENAI_API_KEY
+
 general_settings:
   master_key: sk-nasiko-gateway-key

@@ -15,16 +15,18 @@ def test_gateway_is_running():
 
 
 def test_gateway_model_list():
-    """Track 2 Test 2: Gateway exposes correct models"""
+    """Track 2 Test 2: Gateway exposes all configured models"""
     response = requests.get(f"{GATEWAY_URL}/v1/models", headers=HEADERS)
     assert response.status_code == 200
     models = response.json()["data"]
     model_ids = [m["id"] for m in models]
     assert "gpt-4o-mini" in model_ids
+    assert "llama-3.3-70b" in model_ids
+    # mistral-large not available on all NVIDIA NIM accounts
 
 
 def test_gateway_llm_call():
-    """Track 2 Test 3: Sample agent completes LLM call via gateway"""
+    """Track 2 Test 3: Agent completes LLM call via gateway"""
     response = requests.post(
         f"{GATEWAY_URL}/v1/chat/completions",
         headers=HEADERS,
@@ -46,3 +48,17 @@ def test_gateway_rejects_invalid_key():
         headers={"Authorization": "Bearer wrong-key"}
     )
     assert response.status_code in [400, 401]
+
+
+def test_provider_rotation():
+    """Track 2 Test 5: Different models reachable through same gateway"""
+    for model in ["gpt-4o-mini", "llama-3.3-70b"]:
+        response = requests.post(
+            f"{GATEWAY_URL}/v1/chat/completions",
+            headers=HEADERS,
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+        assert response.status_code == 200, f"Model {model} failed"
