@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from app.utils.agentcard_generator import AgentCardGeneratorAgent
+from app.utils.agentcard_generator.mcp_manifest_generator import McpManifestGeneratorAgent
 
 
 class AgentCardService:
@@ -81,30 +82,71 @@ class AgentCardService:
             )
             return False
 
+    async def generate_and_save_mcp_manifest(
+        self,
+        agent_path: str,
+        agent_name: str,
+        base_url: str = "http://localhost:8000",
+    ) -> bool:
+        """
+        Generate McpServerManifest.json file for an MCP server and save it
+        """
+        try:
+            self.logger.info(f"Generating McpServerManifest for {agent_name} at {agent_path}")
+
+            # Initialize the MCP Manifest generator agent
+            generator = McpManifestGeneratorAgent(
+                api_key=self.openai_api_key,
+                model="gpt-4o",
+            )
+
+            # Generate manifest
+            result = generator.generate_mcp_manifest(agent_path=agent_path, verbose=False)
+
+            if result["status"] != "success" or not result.get("agentcard"): # uses 'agentcard' dict internally
+                self.logger.error(
+                    f"Failed to generate MCP Manifest: {result.get('message')}"
+                )
+                return False
+
+            manifest = result["agentcard"]
+
+            # Save McpServerManifest.json
+            manifest_path = Path(agent_path) / "McpServerManifest.json"
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+            self.logger.info(f"Successfully saved McpServerManifest.json to {manifest_path}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to generate MCP Manifest for {agent_name}: {str(e)}"
+            )
+            return False
+
     async def load_agentcard_from_file(
-        self, agent_path: str
+        self, agent_path: str, filename: str = "AgentCard.json"
     ) -> Optional[Dict[str, Any]]:
         """
-        Load AgentCard.json from an agent directory
+        Load AgentCard.json (or manifest) from an agent directory
 
         Args:
             agent_path: Path to the agent directory
-
-        Returns:
-            Dict containing AgentCard or None if file doesn't exist
+            filename: File to load (defaults to AgentCard.json)
         """
 
         try:
-            agentcard_path = Path(agent_path) / "AgentCard.json"
+            agentcard_path = Path(agent_path) / filename
 
             if not agentcard_path.exists():
-                self.logger.warning(f"AgentCard.json not found at {agentcard_path}")
+                self.logger.warning(f"{filename} not found at {agentcard_path}")
                 return None
 
             with open(agentcard_path, "r") as f:
                 agentcard = json.load(f)
 
-            self.logger.info(f"Successfully loaded AgentCard from {agentcard_path}")
+            self.logger.info(f"Successfully loaded from {agentcard_path}")
             return agentcard
 
         except Exception as e:
