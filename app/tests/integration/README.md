@@ -41,7 +41,7 @@ The conftest.py fixture handles the full compose lifecycle. Just run pytest:
 
 ```bash
 # From repo root
-pytest tests/integration/track2/ -v
+pytest app/tests/integration/ -v
 ```
 
 If you want to start the stack manually first and skip compose management:
@@ -55,7 +55,7 @@ docker compose \
   litellm-postgres llm-gateway phoenix-observability redis mongodb
 
 # Run tests (conftest detects services are already up)
-pytest tests/integration/track2/ -v
+pytest app/tests/integration/ -v
 
 # Teardown (after tests)
 docker compose --env-file .nasiko-local.env -f docker-compose.local.yml down -v
@@ -64,13 +64,13 @@ docker compose --env-file .nasiko-local.env -f docker-compose.local.yml down -v
 To run a single test file:
 
 ```bash
-pytest tests/integration/track2/test_gateway_reachable_from_agents_network.py -v
+pytest app/tests/integration/test_gateway_reachable_from_agents_network.py -v
 ```
 
 To run tests that don't need real API keys (reachability only):
 
 ```bash
-pytest tests/integration/track2/test_gateway_reachable_from_agents_network.py -v
+pytest app/tests/integration/test_gateway_reachable_from_agents_network.py -v
 ```
 
 ---
@@ -85,7 +85,7 @@ The `.github/workflows/ci.yml` `integration-tests` job:
    (`${{ secrets.OPENAI_API_KEY }}`). If the secret is not set, the variable is
    empty and the relevant tests skip gracefully.
 3. Starts the partial compose stack (gateway + postgres + phoenix + redis + mongodb).
-4. Runs `pytest tests/integration/track2/ -v --tb=short`.
+4. Runs `pytest app/tests/integration/ -v --tb=short`.
 5. On failure, dumps `docker compose logs` for `llm-gateway`, `litellm-postgres`,
    and `phoenix-observability` to aid debugging.
 6. Tears down the stack with `docker compose down -v` (always, even on failure).

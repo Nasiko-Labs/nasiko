@@ -18,7 +18,7 @@ import subprocess
 import httpx
 import pytest
 
-from tests.integration.track2.conftest import COMPOSE_CMD_BASE, GATEWAY_HOST_URL
+from app.tests.integration.conftest import COMPOSE_CMD_BASE, GATEWAY_HOST_URL
 
 
 # ─── Test A: Host-level healthcheck ──────────────────────────────────────────
@@ -40,14 +40,25 @@ def test_gateway_health_liveliness(compose_stack: None) -> None:
 
 def test_gateway_returns_json_on_health(compose_stack: None) -> None:
     """
-    /health/liveliness response contains a 'status' field.
+    /health/liveliness returns 200 with a non-empty body.
 
-    LiteLLM returns {"status": "healthy"} on this endpoint.
+    LiteLLM v1.83.3 returns the plain string ``"I'm alive!"``; older versions
+    returned ``{"status": "healthy"}``. We accept either shape — the 200 +
+    non-empty body is what signals a live gateway.
     """
     r = httpx.get(f"{GATEWAY_HOST_URL}/health/liveliness", timeout=10.0)
     assert r.status_code == 200
-    body = r.json()
-    assert "status" in body, f"Expected 'status' key in response, got: {body}"
+    content_type = r.headers.get("content-type", "")
+    if content_type.startswith("application/json"):
+        body = r.json()
+        if isinstance(body, dict):
+            # Older shape: {"status": "healthy"}
+            assert body, f"Expected non-empty JSON body, got: {body}"
+        else:
+            # Newer shape: plain JSON-encoded string "I'm alive!"
+            assert isinstance(body, str) and len(body) > 0, f"Empty body: {body!r}"
+    else:
+        assert r.text.strip(), f"Expected non-empty body, got: {r.text!r}"
 
 
 # ─── Test B: Model list includes default-model alias ─────────────────────────

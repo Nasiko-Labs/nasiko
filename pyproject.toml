@@ -86,7 +86,8 @@ dev = [
 target-version = ['py312']
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["app/tests/integration"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
     "integration: integration tests requiring a running docker compose stack",

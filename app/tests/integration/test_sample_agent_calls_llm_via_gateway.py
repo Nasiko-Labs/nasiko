@@ -28,11 +28,22 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tests.integration.track2.conftest import GATEWAY_HOST_URL, _REPO_ROOT
+from app.tests.integration.conftest import GATEWAY_HOST_URL, _REPO_ROOT
 
 # ─── Skip marker ─────────────────────────────────────────────────────────────
 
-_OPENAI_KEY_AVAILABLE = bool(os.environ.get("OPENAI_API_KEY", ""))
+_OPENAI_KEY_AVAILABLE = not _is_placeholder(os.environ.get("OPENAI_API_KEY", ""))
+
+
+def _is_placeholder(val: str) -> bool:
+    """Covers all placeholder shapes used in .nasiko-local.env.example."""
+    if not val or val == "sk-":
+        return True
+    if "REDACTED" in val:
+        return True
+    if val.startswith("sk-your-") or val.startswith("sk-ant-your-"):
+        return True
+    return False
 
 
 def _openai_key_in_env_file() -> bool:
@@ -45,7 +56,7 @@ def _openai_key_in_env_file() -> bool:
             line = line.strip()
             if line.startswith("OPENAI_API_KEY=") and not line.startswith("#"):
                 val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                return bool(val) and val not in ("sk-REDACTED", "REDACTED", "")
+                return not _is_placeholder(val)
     return False
 
 

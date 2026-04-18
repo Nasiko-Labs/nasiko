@@ -27,7 +27,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tests.integration.track2.conftest import (
+from app.tests.integration.conftest import (
     COMPOSE_CMD_BASE,
     GATEWAY_HOST_URL,
     GATEWAY_UP_TIMEOUT_S,
@@ -42,10 +42,21 @@ CONFIG_PATH = _REPO_ROOT / "cli" / "setup" / "litellm" / "config.yaml"
 _ENV_FILE = _REPO_ROOT / ".nasiko-local.env"
 
 
+def _is_placeholder(val: str) -> bool:
+    """Covers all placeholder shapes used in .nasiko-local.env.example."""
+    if not val or val == "sk-":
+        return True
+    if "REDACTED" in val:
+        return True
+    if val.startswith("sk-your-") or val.startswith("sk-ant-your-"):
+        return True
+    return False
+
+
 def _get_env_value(key: str) -> str:
     """Read a value from environment or .nasiko-local.env file."""
     val = os.environ.get(key, "")
-    if val and val not in ("REDACTED", ""):
+    if not _is_placeholder(val):
         return val
     if _ENV_FILE.exists():
         with open(_ENV_FILE) as f:
@@ -53,7 +64,7 @@ def _get_env_value(key: str) -> str:
                 line = line.strip()
                 if line.startswith(f"{key}=") and not line.startswith("#"):
                     v = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if v and v not in ("REDACTED", "sk-REDACTED", "sk-ant-REDACTED"):
+                    if not _is_placeholder(v):
                         return v
     return ""
 

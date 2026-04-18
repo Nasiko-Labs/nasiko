@@ -41,16 +41,27 @@ from typing import Optional
 
 import pytest
 
-from tests.integration.track2.conftest import GATEWAY_HOST_URL, _REPO_ROOT
+from app.tests.integration.conftest import GATEWAY_HOST_URL, _REPO_ROOT
 
 # ─── Skip guard ───────────────────────────────────────────────────────────────
 
 _ENV_FILE = _REPO_ROOT / ".nasiko-local.env"
 
 
+def _is_placeholder(val: str) -> bool:
+    """Covers all placeholder shapes used in .nasiko-local.env.example."""
+    if not val or val == "sk-":
+        return True
+    if "REDACTED" in val:
+        return True
+    if val.startswith("sk-your-") or val.startswith("sk-ant-your-"):
+        return True
+    return False
+
+
 def _openai_key_available() -> bool:
     val = os.environ.get("OPENAI_API_KEY", "")
-    if val and val not in ("sk-REDACTED", "REDACTED", ""):
+    if not _is_placeholder(val):
         return True
     if _ENV_FILE.exists():
         with open(_ENV_FILE) as f:
@@ -58,7 +69,7 @@ def _openai_key_available() -> bool:
                 line = line.strip()
                 if line.startswith("OPENAI_API_KEY=") and not line.startswith("#"):
                     v = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    return bool(v) and v not in ("sk-REDACTED", "REDACTED", "")
+                    return not _is_placeholder(v)
     return False
 
 

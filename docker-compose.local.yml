@@ -47,7 +47,8 @@ services:
       - agents-net
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health/liveliness"]
+      # The LiteLLM image does not ship curl; use Python's stdlib instead.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness',timeout=3).status==200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -42,7 +42,7 @@ COMPOSE_SERVICES = [
 ]
 
 # Paths are relative to repo root. conftest must be invoked from repo root.
-_REPO_ROOT = Path(__file__).parents[3]  # tests/integration/track2/ → repo root
+_REPO_ROOT = Path(__file__).parents[3]  # app/tests/integration/ → repo root
 COMPOSE_FILE = str(_REPO_ROOT / "docker-compose.local.yml")
 ENV_FILE = str(_REPO_ROOT / ".nasiko-local.env")
 
@@ -174,13 +174,30 @@ def gateway_master_key() -> str:
                     key = line.split("=", 1)[1].strip().strip('"').strip("'")
                     break
 
-    if not key or key in ("sk-REDACTED", "REDACTED", "", "sk-"):
+    if _is_placeholder_key(key):
         pytest.skip(
             "LITELLM_MASTER_KEY is not set or is a placeholder. "
             "Set a real value in .nasiko-local.env to run key-dependent tests."
         )
 
     return key
+
+
+def _is_placeholder_key(value: str) -> bool:
+    """Return True if value is empty, a known placeholder, or a pattern placeholder.
+
+    Covers: ``""``, ``"sk-"``, literal ``"REDACTED"`` / ``"sk-REDACTED"``,
+    anything containing ``REDACTED`` (e.g. ``sk-REDACTED-run-nasiko-setup-litellm-init``),
+    and ``sk-your-…`` / ``sk-ant-your-…`` example placeholders from
+    ``.nasiko-local.env.example``.
+    """
+    if not value or value == "sk-":
+        return True
+    if "REDACTED" in value:
+        return True
+    if value.startswith("sk-your-") or value.startswith("sk-ant-your-"):
+        return True
+    return False
 
 
 # ─── Virtual key helper ───────────────────────────────────────────────────────

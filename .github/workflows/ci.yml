@@ -95,7 +95,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          pytest tests/integration/track2/ \
+          pytest app/tests/integration/ \
             -v \
             --tb=short \
             --timeout=300

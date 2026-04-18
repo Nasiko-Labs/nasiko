@@ -9,11 +9,15 @@ The Nasiko LLM gateway is a self-hosted LiteLLM proxy that centralizes all provi
 ## Quick Start
 
 ```bash
+# 0. Install Python deps (the litellm-setup CLI needs motor, cryptography, httpx, etc.)
+uv sync                              # if using uv (recommended)
+# or: pip install -e .                # plain pip equivalent
+
 # 1. Copy the env template
 cp .nasiko-local.env.example .nasiko-local.env
 
 # 2. Generate LITELLM_MASTER_KEY, LITELLM_SALT_KEY, and LITELLM_POSTGRES_PASSWORD
-nasiko-setup litellm init
+python3 cli/setup/setup.py litellm init
 
 # 3. Set your provider keys in .nasiko-local.env
 #    (open the file and fill in OPENAI_API_KEY and, optionally, ANTHROPIC_API_KEY)
@@ -23,7 +27,8 @@ docker compose --env-file .nasiko-local.env -f docker-compose.local.yml up -d
 
 # 5. Confirm the gateway is healthy (host port 4100 maps to internal 4000)
 curl http://localhost:4100/health/liveliness
-# Expected: {"status":"healthy"}
+# LiteLLM v1.83+ returns the plain string "I'm alive!"; older versions returned
+# {"status":"healthy"}. Either shape means the gateway is up.
 
 # 6. Start the orchestrator and redis listener
 make start-nasiko
@@ -166,6 +171,11 @@ nasiko-setup litellm rotate --agent my-agent
 ```
 
 **Why agent restart is required:** The virtual key is injected as an env var at deploy time. LiteLLM Postgres no longer recognizes the old key after deletion, so the agent will start receiving 401s. A restart causes the orchestrator to inject the new key from MongoDB.
+
+**Why restart-based rotation (decision rationale):**
+- **OSS limitation.** `POST /key/{key}/regenerate` (rotate-in-place with a `grace_period` overlap window) is an Enterprise-tier LiteLLM endpoint. It is not present in the `ghcr.io/berriai/litellm:v1.83.3-stable` OSS image.
+- **Scope discipline.** The PS instructs us not to add an unnecessary proxy layer. Building a thin in-house shim between agents and LiteLLM to perform hot-key-swap on a config signal would duplicate what LiteLLM Enterprise already does — out of scope for a 36-hour submission.
+- **Acceptable cost.** Restart-based rotation causes seconds of downtime per agent. There is no silent key-validity overlap window where both old and new keys are simultaneously accepted, which reduces the risk of stale credentials being exercised after rotation.
 
 ### Revocation
 
@@ -349,7 +359,18 @@ For long-running development: run `docker compose up -d` first to bring up persi
 
 The following are known gaps between this implementation and a production-ready deployment. They are intentional scope decisions for a 36-hour submission.
 
-1. **Key rotation requires agent restart.** OSS LiteLLM does not support rotate-in-place (`/key/regenerate` is an Enterprise-only endpoint). Rotation is create-new + delete-old + agent restart. A production system would use the Enterprise tier or implement a rolling-restart strategy.
+1. **Key rotation requires agent restart.** OSS LiteLLM does not support rotate-in-place (`/key/regenerate` is an Enterprise-only endpoint). Rotation is create-new + delete-old + agent restart. See the "Why restart-based rotation" note in the §Virtual-Key Lifecycle → Rotation section for the full three-point rationale. A production system would use the Enterprise tier or implement a rolling-restart strategy.
+
+### Ephemeral virtual-key storage
+
+`make start-nasiko` runs `docker volume rm $(docker volume ls -q)`, which unconditionally wipes **all** Docker volumes — including `litellm-postgres-data`. Every virtual key minted in that Postgres instance is permanently lost.
+
+**Why we accepted this:**
+- The `Makefile` is explicitly out of scope per the PS and confirmed by organizer response ("do not touch the Makefile"). We cannot add a `--filter` to the volume-wipe command or introduce a volume-preserve target.
+- `make start-nasiko` is a local-dev clean-slate reset, not a production operation. Treating key loss as a fatal issue would misrepresent the production path.
+- Recovery is automatic: MongoDB records pointing at the gone keys become stale, but the orchestrator's `_ensure_virtual_key` re-mints a fresh key from LiteLLM on the agent's next deploy, overwriting the stale MongoDB record. No manual intervention is required.
+
+**Production follow-up:** bind-mount the Postgres data directory to a host path outside Docker's managed-volume namespace (e.g., `./data/litellm-postgres:/var/lib/postgresql/data`) so `docker volume rm` cannot reach it. Alternatively, add an explicit `make preserve-gateway` target that excludes `litellm-postgres-data` from the wipe — but that requires a Makefile edit, which is blocked in this scope.
 
 2. **No per-team or per-environment budget policies.** Virtual keys are created with a flat `max_budget: 5.0` (USD, 30-day window) and `rpm_limit: 60`. A production deployment would define budget tiers per team and enforce them through LiteLLM's team/organization primitives.
 
