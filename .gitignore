@@ -160,4 +160,4 @@ cython_debug/
 .DS_Store
 
 # Sensitive credentials
-superuser_credentials.json
+superuser_credentials.json.nasiko-local.env

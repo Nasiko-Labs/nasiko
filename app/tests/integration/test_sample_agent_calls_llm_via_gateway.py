@@ -32,8 +32,6 @@ from app.tests.integration.conftest import GATEWAY_HOST_URL, _REPO_ROOT
 
 # ─── Skip marker ─────────────────────────────────────────────────────────────
 
-_OPENAI_KEY_AVAILABLE = not _is_placeholder(os.environ.get("OPENAI_API_KEY", ""))
-
 
 def _is_placeholder(val: str) -> bool:
     """Covers all placeholder shapes used in .nasiko-local.env.example."""
@@ -60,6 +58,7 @@ def _openai_key_in_env_file() -> bool:
     return False
 
 
+_OPENAI_KEY_AVAILABLE = not _is_placeholder(os.environ.get("OPENAI_API_KEY", ""))
 _PROVIDER_KEY_AVAILABLE = _OPENAI_KEY_AVAILABLE or _openai_key_in_env_file()
 
 skip_no_provider_key = pytest.mark.skipif(
