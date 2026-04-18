@@ -891,6 +891,40 @@ class AgentAnalyzerTools:
                 "agentcard": None,
             }
 
+    def generate_mcp_manifest_json(
+        self,
+        agent_name: str,
+        description: str,
+        tools: List[Dict[str, Any]],
+        resources: List[Dict[str, Any]],
+        version: str = "1.0.0",
+    ) -> Dict[str, Any]:
+        """
+        Generate MCP Server Manifest JSON
+        """
+        try:
+            manifest = {
+                "name": agent_name,
+                "description": description,
+                "version": version,
+                "transport": "stdio",
+                "capabilities": {
+                    "tools": tools,
+                    "resources": resources,
+                }
+            }
+            
+            self.logger.info(f"Generated MCP Manifest for {agent_name} with {len(tools)} tools")
+            
+            return {
+                "status": "success",
+                "message": "MCP Manifest generated successfully",
+                "agentcard": manifest,
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to generate MCP Manifest: {e}")
+            return {"status": "error", "message": f"Error formatting MCP Manifest: {str(e)}"}
+
     def get_available_tools(self) -> List[str]:
         """Return list of available tool names"""
         return [
@@ -902,4 +936,5 @@ class AgentAnalyzerTools:
             "detect_transport_protocol",
             "detect_agent_framework",
             "generate_agentcard_json",
+            "generate_mcp_manifest_json",
         ]
