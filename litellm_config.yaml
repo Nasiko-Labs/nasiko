@@ -1,0 +1,9 @@
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: nvidia_nim/openai/gpt-oss-120b
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/OPENAI_API_KEY
+
+general_settings:
+  master_key: sk-nasiko-gateway-key
