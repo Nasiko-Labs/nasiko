@@ -21,7 +21,10 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from starlette.applications import Starlette
 
-from gateway_executor import GatewayAgentExecutor  # type: ignore[import-not-found]
+from gateway_executor import (  # type: ignore[import-not-found]
+    GatewayAgentExecutor,
+    _build_http_client,
+)
 
 load_dotenv()
 logging.basicConfig()
@@ -43,7 +46,13 @@ def main(host: str, port: int) -> None:
         )
 
     # The OpenAI SDK is OpenAI-API-compatible; LiteLLM exposes the same interface.
-    client = AsyncOpenAI(api_key=virtual_key, base_url=f"{gateway_url}/v1")
+    # We pass a custom httpx client that injects W3C traceparent headers so the
+    # gateway's OTEL span links back to this agent's trace in Phoenix.
+    client = AsyncOpenAI(
+        api_key=virtual_key,
+        base_url=f"{gateway_url}/v1",
+        http_client=_build_http_client(),
+    )
 
     skill = AgentSkill(
         id="answer-questions",

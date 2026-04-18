@@ -1,0 +1,16 @@
+# Nasiko Platform Helm values.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM Gateway (Track 2)
+# Provider credentials live here so agents never embed them.
+# ─────────────────────────────────────────────────────────────────────────────
+llmGateway:
+  # Master key the orchestrator uses to mint per-agent virtual keys.
+  # CHANGE IN PRODUCTION.
+  masterKey: "sk-nasiko-master-key"
+
+  providers:
+    openaiApiKey: ""
+    openrouterApiKey: ""
+    minimaxApiKey: ""
+    minimaxBaseUrl: "https://api.minimax.io/v1"

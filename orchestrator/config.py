@@ -32,6 +32,13 @@ class Config:
     # LLM Gateway — agents should use these instead of hardcoding provider keys
     LLM_GATEWAY_URL = os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:4000")
     LLM_GATEWAY_MASTER_KEY = os.getenv("LLM_GATEWAY_MASTER_KEY", "")
+    # Optional USD spend cap applied to every freshly minted virtual key.
+    # Leave unset for unlimited (useful during hackathon demo).
+    LLM_GATEWAY_DEFAULT_BUDGET = (
+        float(os.getenv("LLM_GATEWAY_DEFAULT_BUDGET"))
+        if os.getenv("LLM_GATEWAY_DEFAULT_BUDGET")
+        else None
+    )
 
 
 # Legacy constants for backward compatibility

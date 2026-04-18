@@ -1,5 +1,6 @@
 import logging
 
+import httpx
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events.event_queue import EventQueue
@@ -7,6 +8,28 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import AgentCard, TaskState, TextPart, UnsupportedOperationError
 from a2a.utils.errors import ServerError
 from openai import AsyncOpenAI
+
+# ─────────────────────────────────────────────────────────────────────────────
+# W3C traceparent propagation
+# We attach the current OpenTelemetry context to every outbound request so the
+# gateway span stitches into the agent's trace in Phoenix. Without this, the
+# gateway span shows up as an orphan root.
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from opentelemetry.propagate import inject as _otel_inject
+
+    def _build_http_client() -> httpx.AsyncClient:
+        def _propagate(request: httpx.Request) -> None:
+            headers: dict[str, str] = {}
+            _otel_inject(headers)
+            for k, v in headers.items():
+                request.headers.setdefault(k, v)
+
+        return httpx.AsyncClient(event_hooks={"request": [_propagate]})
+except ImportError:  # pragma: no cover — OTEL not installed
+    def _build_http_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient()
+
 
 logger = logging.getLogger(__name__)
 

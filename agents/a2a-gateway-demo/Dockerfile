@@ -9,7 +9,9 @@ RUN pip install --no-cache-dir \
     click>=8.1.8 \
     openai>=1.57.0 \
     python-dotenv>=1.1.0 \
-    uvicorn>=0.34.2
+    uvicorn>=0.34.2 \
+    opentelemetry-api>=1.25.0 \
+    opentelemetry-sdk>=1.25.0
 
 ENV PYTHONUNBUFFERED=1
 

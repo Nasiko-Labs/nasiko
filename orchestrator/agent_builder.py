@@ -436,6 +436,7 @@ class AgentBuilder:
             _gkm = GatewayKeyManager(
                 gateway_url=Config.LLM_GATEWAY_URL,
                 master_key=Config.LLM_GATEWAY_MASTER_KEY,
+                default_max_budget=Config.LLM_GATEWAY_DEFAULT_BUDGET,
             )
             try:
                 _virtual_key = _asyncio.run(_gkm.provision_key(agent_folder_name))

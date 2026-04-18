@@ -86,6 +86,7 @@ class RedisStreamListener:
                 gateway_url=Config.LLM_GATEWAY_URL,
                 master_key=Config.LLM_GATEWAY_MASTER_KEY,
                 redis_client=self.redis_client,
+                default_max_budget=Config.LLM_GATEWAY_DEFAULT_BUDGET,
             )
 
             return True

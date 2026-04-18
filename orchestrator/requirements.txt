@@ -1,3 +1,16 @@
+# Orchestrator runtime dependencies.
+#
+# NOTE: `langtrace-python-sdk` was previously listed here but it is only
+# referenced inside a string template in `instrumentation_injector.py`
+# (generated into AGENT containers, not imported by the orchestrator itself).
+# Keeping it in this file caused a dependency conflict — it pins boto3==1.38.0
+# which collides with `arize-phoenix`'s transitive requirement `boto3>=1.42.14`.
+# It was removed here; agents that opt in with LANGTRACE_ENABLED=true still
+# install it via the injector (see instrumentation_injector.py:_get_langtrace_config_template).
+#
+# Similarly, only `phoenix.otel.register` is used, which lives in the lighter
+# `arize-phoenix-otel` package — no need for the full `arize-phoenix`.
+
 pyyaml>=6.0
 redis>=5.0
 docker>=6.0
