@@ -23,11 +23,15 @@ class Config:
     REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
     REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
-    # API Keys
+    # API Keys (legacy — kept for backward compatibility with direct-key agents)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+
+    # LLM Gateway — agents should use these instead of hardcoding provider keys
+    LLM_GATEWAY_URL = os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:4000")
+    LLM_GATEWAY_MASTER_KEY = os.getenv("LLM_GATEWAY_MASTER_KEY", "")
 
 
 # Legacy constants for backward compatibility

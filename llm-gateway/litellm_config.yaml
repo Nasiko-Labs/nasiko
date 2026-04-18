@@ -1,0 +1,51 @@
+model_list:
+  # ── OpenAI ────────────────────────────────────────────────────────────────
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ── OpenRouter (free-tier fallback) ───────────────────────────────────────
+  - model_name: openrouter/nemotron
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: openrouter/gemini-flash
+    litellm_params:
+      model: openrouter/google/gemini-2.5-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── MiniMax ───────────────────────────────────────────────────────────────
+  - model_name: minimax
+    litellm_params:
+      model: openai/MiniMax-M2.7
+      api_key: os.environ/MINIMAX_API_KEY
+      api_base: os.environ/MINIMAX_BASE_URL
+
+# ── Router: pick first available model for "default" alias ────────────────
+# openrouter/nemotron first because it's free-tier — no credits needed for hackathon demo
+router_settings:
+  routing_strategy: simple-shuffle
+  model_group_alias:
+    default: ["openrouter/nemotron"]
+
+# ── General platform settings ─────────────────────────────────────────────
+general_settings:
+  master_key: os.environ/LLM_GATEWAY_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+# ── Observability: emit OTLP spans to Phoenix ─────────────────────────────
+litellm_settings:
+  success_callback: ["otel"]
+  failure_callback: ["otel"]
+
+environment_variables:
+  OTEL_EXPORTER: "otlp_http"
+  OTEL_ENDPOINT: "http://phoenix-observability:4318"
+  OTEL_HEADERS: ""

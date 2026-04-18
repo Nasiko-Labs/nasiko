@@ -1,0 +1,39 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Gateway Demo Agent",
+  "description": "A demonstration agent that calls the Nasiko LLM gateway instead of hardcoding provider API keys. Answers general questions using whichever model the platform operator has configured.",
+  "url": "http://localhost:5001/",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/nasiko/nasiko"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": true
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "answer-questions",
+      "name": "Answer Questions",
+      "description": "Answer general knowledge questions via the platform LLM gateway",
+      "tags": ["qa", "general", "assistant"],
+      "examples": [
+        "What is the capital of France?",
+        "Explain how TCP/IP works",
+        "Write a haiku about software"
+      ],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

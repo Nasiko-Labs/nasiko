@@ -16,6 +16,7 @@ from pathlib import Path
 
 from config import Config
 from agent_builder import AgentBuilder
+from gateway_key_manager import GatewayKeyManager
 
 # Import observability components directly like K8s build worker
 
@@ -35,6 +36,7 @@ class RedisStreamListener:
         self.stream_name = "orchestration:commands"
         self.consumer_group = "orchestrator"
         self.consumer_name = "orchestrator-1"
+        self.gateway_key_manager: GatewayKeyManager | None = None
 
         # Initialize observability components exactly like K8s build worker
         import app.utils.observability as observability_pkg
@@ -78,6 +80,13 @@ class RedisStreamListener:
                     )
                 else:
                     raise
+
+            # Initialise gateway key manager now that Redis is available
+            self.gateway_key_manager = GatewayKeyManager(
+                gateway_url=Config.LLM_GATEWAY_URL,
+                master_key=Config.LLM_GATEWAY_MASTER_KEY,
+                redis_client=self.redis_client,
+            )
 
             return True
 
@@ -791,6 +800,21 @@ class RedisStreamListener:
                         if line and not line.startswith("#") and "=" in line:
                             key, _, value = line.partition("=")
                             env_vars[key.strip()] = value.strip()
+
+        # Inject LLM gateway URL + per-agent virtual key.
+        # Legacy agents that still set OPENAI_API_KEY directly will keep working;
+        # new agents should use LLM_GATEWAY_URL + LLM_VIRTUAL_KEY instead.
+        env_vars["LLM_GATEWAY_URL"] = Config.LLM_GATEWAY_URL
+        if self.gateway_key_manager:
+            virtual_key = await self.gateway_key_manager.provision_key(agent_name)
+            if virtual_key:
+                env_vars["LLM_VIRTUAL_KEY"] = virtual_key
+                self.logger.info(f"Injected virtual gateway key for agent '{agent_name}'")
+            else:
+                self.logger.warning(
+                    f"No virtual key provisioned for '{agent_name}' — "
+                    "agent must supply its own provider key"
+                )
 
         # Add observability environment variables
         obs_env_vars = await self.get_observability_env_vars(agent_name)
