@@ -280,17 +280,15 @@ class AgentBuilder:
             return False
 
         try:
-            # Check if image already exists locally (optimization for re-deployments)
-            image_tag = f"{agent_folder_name}_instrumented"
-            result = run_cmd(["docker", "image", "inspect", image_tag], check=False)
+            is_mcp = (agent_temp_path / "McpServerManifest.json").exists()
+            if is_mcp:
+                bridge_src = Path(__file__).parent / "mcp_bridge.py"
+                if bridge_src.exists():
+                    logger.info("Injecting mcp_bridge.py into artifact")
+                    shutil.copy(bridge_src, agent_temp_path / "mcp_bridge.py")
 
-            if result.returncode == 0:
-                logger.info(
-                    f"Docker image already exists: {image_tag} - reusing cached image (fast path)"
-                )
-                return True
-
-            logger.info(f"Building new instrumented image for {agent_folder_name}")
+            # Inject LangTrace Configuration
+            self.injector.inject_langtrace_config(agent_temp_path, agent_folder_name)
 
             # Check if image already exists locally (optimization for re-deployments)
             image_tag = f"{agent_folder_name}_instrumented"
@@ -309,7 +307,7 @@ class AgentBuilder:
             # Inject comprehensive instrumentation packages
             instrumentation_install = f"""
             # Install exact versions from pyproject.toml
-            RUN pip install uv uvicorn \\
+            RUN pip install uv uvicorn fastapi mcp sse-starlette \\
                 "opentelemetry-distro>=0.57b0" \\
                 opentelemetry-sdk \\
                 "opentelemetry-exporter-otlp>=1.36.0" \\
@@ -422,15 +420,23 @@ class AgentBuilder:
 
             # Update services to use pre-built instrumented image and inject API keys
             image_tag = f"{agent_folder_name}_instrumented"
+            is_mcp = (agent_temp_path / "McpServerManifest.json").exists()
+            
             api_key_env = {
                 "OPENAI_API_KEY": Config.OPENAI_API_KEY,
                 "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
                 "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
             }
             for service_name, svc_def in compose_data.get("services", {}).items():
-                if service_name == agent_folder_name and "build" in svc_def:
-                    svc_def.pop("build", None)
+                is_main_agent = service_name == agent_folder_name or svc_def.get("container_name") == agent_folder_name
+                
+                if is_main_agent:
+                    if "build" in svc_def:
+                        svc_def.pop("build", None)
                     svc_def["image"] = image_tag
+                    
+                    if is_mcp:
+                        svc_def["command"] = ["python", "mcp_bridge.py"]
 
                 # Inject actual API key values directly (bypasses yaml/shell substitution issues)
                 env = svc_def.get("environment", [])

@@ -22,6 +22,7 @@ class InstrumentationInjector:
             return False
         # Find the correct directory for main.py
         main_py_paths = [
+            agent_temp_path / "mcp_bridge.py",
             agent_temp_path / "src" / "main.py",
             agent_temp_path / "main.py",
             agent_temp_path / "__main__.py",

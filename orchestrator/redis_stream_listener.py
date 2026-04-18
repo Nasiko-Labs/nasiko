@@ -609,12 +609,13 @@ class RedisStreamListener:
         # Verify required files exist
         dockerfile_path = agent_path / "Dockerfile"
         agentcard_path = agent_path / "Agentcard.json"
+        mcp_manifest_path = agent_path / "McpServerManifest.json"
 
         if not dockerfile_path.exists():
             raise ValueError(f"Dockerfile not found in {agent_path}")
 
-        if not agentcard_path.exists():
-            self.logger.warning(f"Agentcard.json not found in {agent_path}")
+        if not agentcard_path.exists() and not mcp_manifest_path.exists():
+            self.logger.warning(f"Agentcard.json or McpServerManifest.json not found in {agent_path}")
 
         return agent_path
 
@@ -668,6 +669,14 @@ class RedisStreamListener:
         try:
             # Copy agent source to temp directory
             shutil.copytree(source_path, temp_dir / "agent", dirs_exist_ok=True)
+
+            is_mcp = (temp_dir / "agent" / "McpServerManifest.json").exists()
+            if is_mcp:
+                from pathlib import Path
+                bridge_src = Path(__file__).parent / "mcp_bridge.py"
+                if bridge_src.exists():
+                    self.logger.info("Injecting mcp_bridge.py into artifact during local build")
+                    shutil.copy(bridge_src, temp_dir / "agent" / "mcp_bridge.py")
 
             # Inject observability (like existing agent_builder.py does)
             await self._inject_observability(temp_dir / "agent", agent_name)
@@ -820,7 +829,11 @@ class RedisStreamListener:
             if value:  # Only add non-empty values
                 docker_cmd.extend(["-e", f"{key}={value}"])
 
+        is_mcp = agent_source_path and (agent_source_path / "McpServerManifest.json").exists()
         docker_cmd.append(image_tag)
+        
+        if is_mcp:
+            docker_cmd.extend(["python", "mcp_bridge.py"])
 
         process = await asyncio.create_subprocess_exec(
             *docker_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -876,8 +889,14 @@ class RedisStreamListener:
         Mimics the K8s worker's fetch_agentcard_from_backend but reads from local filesystem.
         """
         try:
-            # Look for Agentcard.json in the agent directory
+            # Look for manifests in the agent directory
+            mcp_manifest_path = agent_path / "McpServerManifest.json"
             agentcard_path = agent_path / "Agentcard.json"
+
+            if mcp_manifest_path.exists():
+                self.logger.info(f"Found McpServerManifest.json for {agent_name}")
+                with open(mcp_manifest_path, "r") as f:
+                    return json.load(f)
 
             if agentcard_path.exists():
                 self.logger.info(f"Found Agentcard.json for {agent_name}")
@@ -885,7 +904,7 @@ class RedisStreamListener:
                     return json.load(f)
             else:
                 self.logger.warning(
-                    f"Agentcard.json not found for {agent_name}, attempting to generate"
+                    f"Agent schemas not found for {agent_name}, attempting to generate"
                 )
                 return await self.generate_agentcard(str(agent_path), agent_name)
 
