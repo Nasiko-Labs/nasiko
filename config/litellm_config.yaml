@@ -1,0 +1,55 @@
+# LiteLLM Gateway Configuration
+# Agents call http://litellm:4000/v1 with api_key="virtual-key".
+# To switch providers, update model_list here and restart the gateway — no agent code change needed.
+
+model_list:
+  # --- Groq (fast inference, free tier available) ---
+  - model_name: llama3
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+  - model_name: llama3-fast
+    litellm_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
+
+  - model_name: gemma2
+    litellm_params:
+      model: groq/gemma2-9b-it
+      api_key: os.environ/GROQ_API_KEY
+
+  # --- MiniMax (native provider support) ---
+  - model_name: minimax
+    litellm_params:
+      model: minimax/MiniMax-M1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  - model_name: minimax-text
+    litellm_params:
+      model: minimax/MiniMax-Text-01
+      api_key: os.environ/MINIMAX_API_KEY
+
+  # Default alias — agents that request "gpt-4o-mini" get routed to Groq Llama
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+litellm_settings:
+  # Emit OpenTelemetry spans to Phoenix for every LLM call routed through the gateway.
+  # OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_PROPAGATORS are set via env vars in docker-compose
+  # so LiteLLM picks up incoming traceparent headers from agents and creates child spans.
+  success_callback: ["otel"]
+  failure_callback: ["otel"]
+
+general_settings:
+  # virtual-key is injected into every deployed agent container by the orchestrator.
+  # Real provider keys never leave this config file.
+  master_key: virtual-key
+  telemetry: false

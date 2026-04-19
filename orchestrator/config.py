@@ -29,6 +29,14 @@ class Config:
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
 
+    # LiteLLM Gateway
+    LITELLM_ENABLED = os.getenv("LITELLM_ENABLED", "true").lower() == "true"
+    LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:4000")
+    LITELLM_MASTER_KEY = os.getenv("LITELLM_MASTER_KEY", "virtual-key")
+    LITELLM_DEFAULT_MODEL = os.getenv("LITELLM_DEFAULT_MODEL", "llama3-fast")
+    LITELLM_AGENT_BUDGET_USD = float(os.getenv("LITELLM_AGENT_BUDGET_USD", "1.0"))
+    LITELLM_KEY_TTL_SECONDS = int(os.getenv("LITELLM_KEY_TTL_SECONDS", "86400"))  # 24h
+
 
 # Legacy constants for backward compatibility
 DOCKER_NETWORK = Config.DOCKER_NETWORK

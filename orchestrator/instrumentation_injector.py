@@ -14,6 +14,120 @@ class InstrumentationInjector:
 
     def __init__(self):
         self.langtrace_config_template = self._get_langtrace_config_template()
+        self.phoenix_otel_template = self._get_phoenix_otel_template()
+
+    def inject_phoenix_otel_config(self, agent_temp_path, agent_name):
+        """
+        Inject phoenix_otel.py into the agent so its spans export to Phoenix.
+
+        This runs regardless of LANGTRACE_ENABLED. It adds Phoenix as a secondary
+        (or primary) OTLP exporter and activates HTTP client instrumentation so
+        outgoing calls to LiteLLM carry traceparent headers — enabling parent-child
+        span linking between agent traces and gateway spans in Phoenix.
+        """
+        main_py_paths = [
+            agent_temp_path / "src" / "main.py",
+            agent_temp_path / "main.py",
+            agent_temp_path / "__main__.py",
+            agent_temp_path / "src" / "__main__.py",
+        ]
+        main_py_path = next((p for p in main_py_paths if p.exists()), None)
+
+        if not main_py_path:
+            logger.warning(
+                f"No main.py found for {agent_name}, skipping Phoenix OTEL injection"
+            )
+            return False
+
+        config_dir = main_py_path.parent
+        otel_file = config_dir / "phoenix_otel.py"
+        otel_file.write_text(self.phoenix_otel_template)
+        logger.info(f"Created phoenix_otel.py for {agent_name}")
+
+        content = main_py_path.read_text()
+        if "import phoenix_otel" in content:
+            logger.info(f"phoenix_otel already imported in {agent_name}, skipping")
+            return True
+
+        # Inject as the very first import so the tracer is live before any other code runs
+        modified = (
+            "import phoenix_otel  # Auto-injected: Phoenix OTEL + gateway traceparent propagation\n"
+            + content
+        )
+        main_py_path.write_text(modified)
+        logger.info(f"Injected phoenix_otel import into {agent_name}")
+        return True
+
+    def _get_phoenix_otel_template(self):
+        return '''"""
+Auto-injected by Nasiko orchestrator.
+Sets up Phoenix OTEL exporter and HTTP client instrumentation on every deployed agent.
+
+Effect:
+  - Agent spans appear in Phoenix under OTEL_SERVICE_NAME
+  - outgoing HTTP calls to LiteLLM carry W3C traceparent headers
+  - LiteLLM reads traceparent and creates gateway spans as children of this trace
+  - Phoenix shows the full chain: Agent Span → Gateway Span → Provider Call
+"""
+
+import os
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.propagate import set_global_textmap
+from opentelemetry.propagators.composite import CompositePropagator
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
+
+PHOENIX_ENDPOINT = os.getenv(
+    "PHOENIX_COLLECTOR_ENDPOINT",
+    "http://phoenix-observability:6006/v1/traces",
+)
+SERVICE = os.getenv("OTEL_SERVICE_NAME", os.getenv("AGENT_NAME", "nasiko-agent"))
+
+def _setup():
+    # Activate W3C traceparent propagation so outgoing HTTP calls carry parent span context
+    set_global_textmap(CompositePropagator([
+        TraceContextTextMapPropagator(),
+        W3CBaggagePropagator(),
+    ]))
+
+    resource = Resource.create({SERVICE_NAME: SERVICE})
+
+    existing = trace.get_tracer_provider()
+    # If a real provider already exists (e.g. LangTrace initialised first), attach
+    # Phoenix as an additional exporter so both systems receive the same spans.
+    if hasattr(existing, "add_span_processor"):
+        existing.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=PHOENIX_ENDPOINT))
+        )
+        provider = existing
+    else:
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=PHOENIX_ENDPOINT))
+        )
+        trace.set_tracer_provider(provider)
+
+    # Instrument HTTP clients so traceparent is injected into calls to LiteLLM
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        HTTPXClientInstrumentor().instrument()
+    except ImportError:
+        pass
+
+    try:
+        from opentelemetry.instrumentation.requests import RequestsInstrumentor
+        RequestsInstrumentor().instrument()
+    except ImportError:
+        pass
+
+    print(f"[phoenix_otel] Tracing active → {PHOENIX_ENDPOINT} (service: {SERVICE})")
+
+_setup()
+'''
 
     def inject_langtrace_config(self, agent_temp_path, agent_name):
         """Create langtrace_config.py file and inject import at top of main.py"""
