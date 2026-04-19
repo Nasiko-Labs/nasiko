@@ -10,6 +10,7 @@ from ..types import (
     UploadStatusSingleResponse,
     UploadStatusUpdateRequest,
     SimpleUserUploadAgentsResponse,
+    RemoteMcpRegisterRequest,
 )
 from ..auth import get_user_id_from_token
 from typing import Optional
@@ -93,5 +94,22 @@ def create_agent_upload_routes(handlers: HandlerFactory) -> APIRouter:
         ),
     ):
         return await handlers.agent_upload.download_agent_files(agent_name, version)
+
+    @router.post(
+        "/agents/mcp/remote",
+        response_model=AgentUploadResponse,
+        summary="Register Remote MCP Server",
+        description="Register an existing MCP server by its URL",
+    )
+    async def register_remote_mcp(
+        registration: RemoteMcpRegisterRequest,
+        response: Response,
+        user_id: str = Depends(get_user_id_from_token),
+    ):
+        result = await handlers.agent_upload.register_remote_mcp(
+            registration.name, registration.url, user_id
+        )
+        response.status_code = result.status_code
+        return result
 
     return router

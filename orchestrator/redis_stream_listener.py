@@ -10,6 +10,7 @@ import asyncio
 import signal
 import sys
 import aiohttp
+import re
 from typing import Dict, Any, Optional
 from datetime import datetime, UTC
 from pathlib import Path
@@ -45,6 +46,73 @@ class RedisStreamListener:
         )
         self.observability_config = ObservabilityConfig()
         self.logger.info("Initialized observability components successfully")
+
+    def _is_mcp_artifact(self, agent_path: Path) -> bool:
+        """Detect MCP artifacts by manifest or source signatures."""
+        if (agent_path / "McpServerManifest.json").exists():
+            return True
+
+        signatures = ("FastMCP", "mcp.server", "@mcp.tool", "@mcp.resource", "@mcp.prompt")
+        for py_file in agent_path.rglob("*.py"):
+            try:
+                content = py_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if any(signature in content for signature in signatures):
+                return True
+        return False
+
+    def _safe_image_tag(self, agent_name: str) -> str:
+        safe_name = re.sub(r"[^a-z0-9_.-]+", "-", agent_name.lower()).strip(".-")
+        return f"local-agent-{safe_name or 'agent'}:latest"
+
+    def _get_main_service_config(self, agent_source_path: Path, agent_name: str) -> Dict[str, Any]:
+        compose_path = agent_source_path / "docker-compose.yml"
+        if not compose_path.exists():
+            return {}
+
+        try:
+            import yaml
+
+            compose_data = yaml.safe_load(compose_path.read_text()) or {}
+            services = compose_data.get("services") or {}
+            preferred_container = f"agent-{agent_name}"
+
+            for service_name, service_config in services.items():
+                if service_name == agent_name:
+                    return service_config or {}
+                if (service_config or {}).get("container_name") in {agent_name, preferred_container}:
+                    return service_config or {}
+            first = next(iter(services.values()), {})
+            return first or {}
+        except Exception as e:
+            self.logger.warning(f"Could not read compose command for {agent_name}: {e}")
+            return {}
+
+    def _ensure_mcp_dockerfile_runtime(self, agent_path: Path):
+        """Make minimal uploaded MCP Dockerfiles capable of running the HTTP bridge."""
+        dockerfile_path = agent_path / "Dockerfile"
+        if not dockerfile_path.exists():
+            return
+
+        content = dockerfile_path.read_text()
+        additions = []
+
+        if "WORKDIR " not in content:
+            additions.append("WORKDIR /app")
+
+        if not re.search(r"^\s*(COPY|ADD)\s+(\.|\./|src|src/)", content, re.MULTILINE):
+            additions.append("COPY . /app")
+
+        if " mcp" not in content and "\nmcp" not in content and "fastapi" not in content.lower():
+            additions.append(
+                "RUN pip install --no-cache-dir fastapi uvicorn mcp sse-starlette "
+                '"opentelemetry-api>=1.36.0"'
+            )
+
+        if additions:
+            dockerfile_path.write_text(content.rstrip() + "\n\n# Nasiko MCP bridge runtime\n" + "\n".join(additions) + "\n")
+            self.logger.info("Updated MCP Dockerfile with bridge runtime requirements")
 
     def connect_redis(self):
         """Connect to Redis server"""
@@ -478,13 +546,14 @@ class RedisStreamListener:
 
             # Verify required files exist
             dockerfile_path = agent_source_path / "Dockerfile"
-            agentcard_path = agent_source_path / "Agentcard.json"
+            agentcard_path = agent_source_path / "AgentCard.json"
+            mcp_manifest_path = agent_source_path / "McpServerManifest.json"
 
             if not dockerfile_path.exists():
                 raise ValueError(f"Dockerfile not found in {agent_source_path}")
 
-            if not agentcard_path.exists():
-                self.logger.warning(f"Agentcard.json not found in {agent_source_path}")
+            if not agentcard_path.exists() and not mcp_manifest_path.exists():
+                self.logger.warning(f"AgentCard.json or McpServerManifest.json not found in {agent_source_path}")
 
             # Step 2: Stop existing agent if updating
             if command == "update_agent":
@@ -609,12 +678,13 @@ class RedisStreamListener:
         # Verify required files exist
         dockerfile_path = agent_path / "Dockerfile"
         agentcard_path = agent_path / "Agentcard.json"
+        mcp_manifest_path = agent_path / "McpServerManifest.json"
 
         if not dockerfile_path.exists():
             raise ValueError(f"Dockerfile not found in {agent_path}")
 
-        if not agentcard_path.exists():
-            self.logger.warning(f"Agentcard.json not found in {agent_path}")
+        if not agentcard_path.exists() and not mcp_manifest_path.exists():
+            self.logger.warning(f"Agentcard.json or McpServerManifest.json not found in {agent_path}")
 
         return agent_path
 
@@ -669,11 +739,21 @@ class RedisStreamListener:
             # Copy agent source to temp directory
             shutil.copytree(source_path, temp_dir / "agent", dirs_exist_ok=True)
 
-            # Inject observability (like existing agent_builder.py does)
-            await self._inject_observability(temp_dir / "agent", agent_name)
+            is_mcp = self._is_mcp_artifact(temp_dir / "agent")
+            if is_mcp:
+                bridge_src = Path(__file__).parent / "mcp_bridge.py"
+                if bridge_src.exists():
+                    self.logger.info("Injecting mcp_bridge.py into artifact during local build")
+                    shutil.copy(bridge_src, temp_dir / "agent" / "mcp_bridge.py")
+                self._ensure_mcp_dockerfile_runtime(temp_dir / "agent")
+
+            # MCP stdio servers are traced at the HTTP bridge layer. Injecting into
+            # the stdio child can break minimal uploads that do not package utils.
+            if not is_mcp:
+                await self._inject_observability(temp_dir / "agent", agent_name)
 
             # Build Docker image
-            image_tag = f"local-agent-{agent_name}:latest"
+            image_tag = self._safe_image_tag(agent_name)
 
             build_cmd = ["docker", "build", "-t", image_tag, str(temp_dir / "agent")]
 
@@ -775,6 +855,7 @@ class RedisStreamListener:
         env_vars = {
             "AGENT_NAME": agent_name,
             "OWNER_ID": owner_id or "",
+            "PORT": "5000",
             "OPENAI_API_KEY": Config.OPENAI_API_KEY,
             "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
             "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
@@ -820,7 +901,18 @@ class RedisStreamListener:
             if value:  # Only add non-empty values
                 docker_cmd.extend(["-e", f"{key}={value}"])
 
+        is_mcp = bool(agent_source_path and self._is_mcp_artifact(agent_source_path))
         docker_cmd.append(image_tag)
+        
+        if is_mcp:
+            docker_cmd.extend(["python", "mcp_bridge.py"])
+        elif agent_source_path:
+            service_config = self._get_main_service_config(agent_source_path, agent_name)
+            command = service_config.get("command")
+            if isinstance(command, str):
+                docker_cmd.extend(command.split())
+            elif isinstance(command, list):
+                docker_cmd.extend(str(part) for part in command)
 
         process = await asyncio.create_subprocess_exec(
             *docker_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -848,23 +940,24 @@ class RedisStreamListener:
         """Stop and remove existing container if it exists"""
         container_name = f"agent-{agent_name}"
 
-        # Stop container
-        await asyncio.create_subprocess_exec(
+        stop_process = await asyncio.create_subprocess_exec(
             "docker",
             "stop",
             container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        await stop_process.communicate()
 
-        # Remove container
-        await asyncio.create_subprocess_exec(
+        rm_process = await asyncio.create_subprocess_exec(
             "docker",
             "rm",
+            "-f",
             container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        await rm_process.communicate()
 
         self.logger.debug(f"Cleaned up existing container: {container_name}")
 
@@ -876,16 +969,22 @@ class RedisStreamListener:
         Mimics the K8s worker's fetch_agentcard_from_backend but reads from local filesystem.
         """
         try:
-            # Look for Agentcard.json in the agent directory
-            agentcard_path = agent_path / "Agentcard.json"
+            # Look for manifests in the agent directory
+            mcp_manifest_path = agent_path / "McpServerManifest.json"
+            agentcard_path = agent_path / "AgentCard.json"
+
+            if mcp_manifest_path.exists():
+                self.logger.info(f"Found McpServerManifest.json for {agent_name}")
+                with open(mcp_manifest_path, "r") as f:
+                    return json.load(f)
 
             if agentcard_path.exists():
-                self.logger.info(f"Found Agentcard.json for {agent_name}")
+                self.logger.info(f"Found AgentCard.json for {agent_name}")
                 with open(agentcard_path, "r") as f:
                     return json.load(f)
             else:
                 self.logger.warning(
-                    f"Agentcard.json not found for {agent_name}, attempting to generate"
+                    f"Agent schemas not found for {agent_name}, attempting to generate"
                 )
                 return await self.generate_agentcard(str(agent_path), agent_name)
 
@@ -900,6 +999,17 @@ class RedisStreamListener:
     ) -> Dict[str, Any] | None:
         """Generate AgentCard using the AgentCard Generator (mimics K8s worker)"""
         try:
+            source_path = Path(agent_path)
+            if self._is_mcp_artifact(source_path):
+                from app.service.agentcard_service import AgentCardService
+
+                self.logger.info(
+                    f"Generating fallback MCP manifest for {agent_name} without LLM"
+                )
+                return AgentCardService(self.logger).build_mcp_manifest_fallback(
+                    agent_path, agent_name
+                )
+
             from app.utils.agentcard_generator import AgentCardGeneratorAgent
 
             self.logger.info(

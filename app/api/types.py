@@ -141,6 +141,11 @@ class AgentDirectoryUploadRequest(BaseModel):
     agent_name: Optional[str] = None
 
 
+class RemoteMcpRegisterRequest(BaseModel):
+    name: str
+    url: str
+
+
 # User Management Types
 class UserRegistrationRequest(BaseModel):
     username: str

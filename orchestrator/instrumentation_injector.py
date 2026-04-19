@@ -22,6 +22,7 @@ class InstrumentationInjector:
             return False
         # Find the correct directory for main.py
         main_py_paths = [
+            agent_temp_path / "mcp_bridge.py",
             agent_temp_path / "src" / "main.py",
             agent_temp_path / "main.py",
             agent_temp_path / "__main__.py",
@@ -528,5 +529,70 @@ if LANGTRACE_API_KEY:
         print(f"Failed to initialize Langtrace: {e}")
 else:
     print("LANGTRACE_API_KEY not set, Langtrace not initialized")
+
+# --- MCP Auto-Wiring Injection ---
+try:
+    import os
+    mcp_servers_env = os.getenv("MCP_SERVERS")
+    if mcp_servers_env:
+        print(f"[MCP Auto-Wiring] Detected MCP_SERVERS: {mcp_servers_env}")
+        import requests
+        
+        mcp_tools = []
+        for server_url in mcp_servers_env.split(","):
+            url = server_url.strip()
+            if not url: continue
+            
+            try:
+                # Agent container communicates to Kong Gateway using kong-gateway service name or directly to agents
+                resp = requests.get(f"{url}/tools", timeout=5)
+                if resp.status_code == 200:
+                    tools_data = resp.json().get("tools", [])
+                    for t in tools_data:
+                        tool_name = t["name"]
+                        description = t.get("description", "MCP Tool")
+                        
+                        def create_mcp_tool(t_name, mcp_url):
+                            def mcp_tool_func(**kwargs):
+                                import requests
+                                res = requests.post(f"{mcp_url}/tools/call", json={"name": t_name, "arguments": kwargs}, timeout=60)
+                                return res.json().get("content", str(res.text))
+                            mcp_tool_func.__name__ = t_name
+                            mcp_tool_func.__doc__ = description
+                            return mcp_tool_func
+                            
+                        try:
+                            from langchain_core.tools import StructuredTool
+                            dynamic_tool = StructuredTool.from_function(
+                                func=create_mcp_tool(tool_name, url),
+                                name=tool_name,
+                                description=description,
+                            )
+                            mcp_tools.append(dynamic_tool)
+                            print(f"[MCP Auto-Wiring] Wired MCP Tool: {tool_name} from {url}")
+                        except ImportError:
+                            print("[MCP Auto-Wiring] Langchain not found; cannot bind tools automatically.")
+            except Exception as inner_e:
+                print(f"[MCP Auto-Wiring] Error fetching tools from {url}: {inner_e}")
+                
+        if mcp_tools:
+            try:
+                from langchain_core.language_models.chat_models import BaseChatModel
+                original_bind_tools = BaseChatModel.bind_tools
+                
+                def patched_bind_tools(self, tools, **kwargs):
+                    if isinstance(tools, list):
+                        all_tools = list(tools) + mcp_tools
+                    else:
+                        # tools could be a single sequence, just safely fallback if it's not a list
+                        all_tools = tools
+                    return original_bind_tools(self, all_tools, **kwargs)
+                    
+                BaseChatModel.bind_tools = patched_bind_tools
+                print(f"[MCP Auto-Wiring] Successfully monkey-patched BaseChatModel.bind_tools with {len(mcp_tools)} MCP tools")
+            except ImportError:
+                pass
+except Exception as e:
+    print(f"[MCP Auto-Wiring] Failed to auto-wire MCP servers: {e}")
 
 '''
