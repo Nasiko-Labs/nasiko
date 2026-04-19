@@ -6,7 +6,8 @@ mimicking Claude Code's workflow.
 """
 
 from .agent import AgentCardGeneratorAgent
+from .mcp_manifest_generator import MCPManifestGeneratorAgent
 from .tools import AgentAnalyzerTools
 
 __version__ = "1.0.0"
-__all__ = ["AgentCardGeneratorAgent", "AgentAnalyzerTools"]
+__all__ = ["AgentCardGeneratorAgent", "MCPManifestGeneratorAgent", "AgentAnalyzerTools"]

@@ -3,7 +3,7 @@ Agent registry service for fetching and managing agent information.
 """
 
 import logging
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 import httpx
 from router.src.config import settings
@@ -22,12 +22,12 @@ class AgentRegistry:
 
     def __init__(self):
         self.timeout = httpx.Timeout(settings.REQUEST_TIMEOUT)
-        self._cache: Optional[List[Dict[str, str]]] = None
+        self._cache: Optional[List[Dict[str, Any]]] = None
         self._cache_timestamp: Optional[float] = None
 
     async def fetch_agent_cards(
         self, token: str, use_cache: bool = True
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         """
         Fetch agent cards from the registry.
 
@@ -111,8 +111,8 @@ class AgentRegistry:
         logger.info("Agent registry cache cleared")
 
     def find_agent_by_name(
-        self, agent_cards: List[Dict[str, str]], agent_name: str
-    ) -> Optional[Dict[str, str]]:
+        self, agent_cards: List[Dict[str, Any]], agent_name: str
+    ) -> Optional[Dict[str, Any]]:
         """
         Find an agent by name in the agent cards list.
 
@@ -134,7 +134,7 @@ class AgentRegistry:
         return None
 
     def get_agent_url(
-        self, agent_cards: List[Dict[str, str]], agent_name: str
+        self, agent_cards: List[Dict[str, Any]], agent_name: str
     ) -> Optional[str]:
         """
         Get the URL for a specific agent.
@@ -152,7 +152,7 @@ class AgentRegistry:
         return None
 
     def get_fallback_agent(
-        self, agent_cards: List[Dict[str, str]]
+        self, agent_cards: List[Dict[str, Any]]
     ) -> Optional[tuple[str, str]]:
         """
         Get the first available agent with a valid URL as fallback.
@@ -169,3 +169,43 @@ class AgentRegistry:
             if url and name:
                 return name, url
         return None
+
+    def extract_mcp_context(self, agent_card: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Build MCP metadata payload from an agent card.
+
+        Returns:
+            Normalized MCP context with associated server IDs and bridge URLs,
+            or None when no MCP associations are configured.
+        """
+        if not agent_card:
+            return None
+
+        server_ids = agent_card.get("associated_mcp_servers") or []
+        bridge_urls = agent_card.get("mcp_bridge_urls") or {}
+
+        if not isinstance(server_ids, list):
+            server_ids = []
+        if not isinstance(bridge_urls, dict):
+            bridge_urls = {}
+
+        servers = []
+        for server_id in server_ids:
+            if not server_id:
+                continue
+            servers.append(
+                {
+                    "id": str(server_id),
+                    "url": bridge_urls.get(server_id, ""),
+                }
+            )
+
+        if not servers and not bridge_urls:
+            return None
+
+        return {
+            "associated_server_ids": [str(sid) for sid in server_ids if sid],
+            "bridge_urls": {str(k): v for k, v in bridge_urls.items() if k and v},
+            "servers": servers,
+            "transport": "http_bridge",
+        }

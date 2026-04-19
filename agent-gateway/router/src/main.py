@@ -15,6 +15,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from router.src.config import settings
 from router.src.entities import UserRequest
 from router.src.services import RouterOrchestrator
+from router.src.services.mcp_router_service import MCPRouterService
+from router.src.routes.mcp_routes import mcp_router, set_mcp_service
 
 # Configure logging
 logging.basicConfig(
@@ -44,6 +46,8 @@ app.add_middleware(
 
 # Initialize orchestrator
 orchestrator = RouterOrchestrator()
+mcp_service = MCPRouterService(logger)
+set_mcp_service(mcp_service)
 
 
 @app.get("/health")
@@ -60,6 +64,10 @@ async def health_check():
 @app.get("/router/health")
 async def health():
     return {"status": "ok"}
+
+
+# MCP endpoints
+app.include_router(mcp_router)
 
 
 @app.post("/router")
