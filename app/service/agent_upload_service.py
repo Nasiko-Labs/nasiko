@@ -295,7 +295,6 @@ class AgentUploadService:
         ]
 
         main_py_found = False
-        artifact_type = "agent"
         for loc in main_py_locations:
             if loc.exists():
                 main_py_found = True
@@ -304,13 +303,6 @@ class AgentUploadService:
                     main_content = loc.read_text()
                     if not main_content.strip():
                         errors.append(f"main.py is empty: {loc.relative_to(agent_dir)}")
-                    else:
-                        is_mcp = "mcp.server" in main_content or "FastMCP" in main_content or "@mcp.tool" in main_content or "@mcp.resource" in main_content
-                        is_agent = "langchain" in main_content.lower() or "crewai" in main_content.lower()
-                        if is_mcp and is_agent:
-                            errors.append("Ambiguous artifact: Contains both MCP Server signatures and Agent frameworks (LangChain/CrewAI).")
-                        elif is_mcp:
-                            artifact_type = "mcp_server"
                 except Exception as e:
                     errors.append(f"Cannot read main.py: {str(e)}")
                 break
@@ -325,9 +317,44 @@ class AgentUploadService:
         if not python_files:
             errors.append("No Python files found in the agent directory")
 
+        artifact_type = self._detect_artifact_type(agent_dir, python_files, errors)
+
         self.logger.info(f"Validation completed with {len(errors)} errors")
 
         return ValidationResult(is_valid=len(errors) == 0, errors=errors, artifact_type=artifact_type)
+
+    def _detect_artifact_type(
+        self, agent_dir: Path, python_files: List[Path], errors: List[str]
+    ) -> str:
+        """Detect MCP server uploads by scanning Python sources for MCP signatures."""
+        mcp_signatures = (
+            "FastMCP",
+            "mcp.server",
+            "@mcp.tool",
+            "@mcp.resource",
+            "@mcp.prompt",
+        )
+        agent_signatures = ("langchain", "crewai")
+        has_mcp = False
+        has_agent = False
+
+        for py_file in python_files:
+            try:
+                content = py_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            if any(signature in content for signature in mcp_signatures):
+                has_mcp = True
+            lowered = content.lower()
+            if any(signature in lowered for signature in agent_signatures):
+                has_agent = True
+
+        if has_mcp and has_agent:
+            errors.append(
+                "Ambiguous artifact: Contains both MCP Server signatures and Agent frameworks (LangChain/CrewAI)."
+            )
+        return "mcp_server" if has_mcp else "agent"
 
     async def _extract_zip_file(self, file: UploadFile) -> str:
         """Extract uploaded zip file to temporary directory"""

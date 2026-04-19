@@ -370,8 +370,33 @@ class AgentUploadHandler(BaseHandler):
         except HTTPException:
             raise
         except Exception as e:
-            self.log_error(f"Error creating agent tarball for '{agent_name}'", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to create agent tarball: {str(e)}",
             )
+
+    async def register_remote_mcp(
+        self, name: str, url: str, user_id: str
+    ) -> AgentUploadResponse:
+        """Register a remote MCP server"""
+        try:
+            self.log_info(
+                "Registering remote MCP server", name=name, url=url, user_id=user_id
+            )
+            result = await self.upload_service.register_remote_mcp(name, url, user_id)
+
+            return AgentUploadResponse(
+                data=AgentUploadItemResponse(
+                    success=result.success,
+                    agent_name=result.agent_name,
+                    status=result.status,
+                    capabilities_generated=result.capabilities_generated,
+                    orchestration_triggered=result.orchestration_triggered,
+                    validation_errors=result.validation_errors,
+                    version=result.version,
+                ),
+                status_code=201 if result.success else 400,
+                message=result.status,
+            )
+        except Exception as e:
+            await self.handle_service_error("register_remote_mcp", e)

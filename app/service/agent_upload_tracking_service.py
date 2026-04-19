@@ -544,3 +544,109 @@ class AgentUploadTrackingService:
                 f"Failed to update latest upload status for agent {agent_name}: {str(e)}"
             )
             raise
+    
+    async def register_remote_mcp(
+        self, name: str, url: str, user_id: str
+    ) -> AgentUploadResult:
+        """
+        Register a remote MCP server by URL.
+        """
+        import json
+        from pathlib import Path
+        from datetime import datetime, timezone
+        from uuid import uuid4
+        
+        start_time = time.time()
+        upload_id = str(uuid4())
+        
+        # 1. Create status record
+        current_time = datetime.now(timezone.utc)
+        status_data = {
+            "upload_id": upload_id,
+            "agent_name": name,
+            "owner_id": user_id,
+            "status": UploadStatus.INITIATED,
+            "progress_percentage": 10,
+            "source_info": {
+                "remote_url": url,
+                "upload_type": "remote_mcp",
+            },
+            "status_message": f"Registering remote MCP server: {url}",
+            "upload_type": "remote_mcp",
+            "created_at": current_time,
+            "updated_at": current_time,
+        }
+        
+        try:
+            if self.repository:
+                await self.repository.create_upload_status(status_data)
+
+            # 2. Fetch manifest from remote
+            await self._update_status(upload_id, {"status": UploadStatus.PROCESSING, "progress_percentage": 40})
+            
+            manifest = await self.base_service.agentcard_service.generate_mcp_manifest_from_url(url, name)
+            if not manifest:
+                raise ValueError(f"Could not fetch or parse MCP tools from {url}")
+
+            # 3. Save virtual manifest in agents directory
+            # We create a directory for the remote MCP just to store its manifest
+            version = "v1.0.0"
+            agent_dir = Path("/app/agents") / name / version
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            
+            manifest_path = agent_dir / "McpServerManifest.json"
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+
+            # 4. Create registry entry
+            # For remote MCP, the URL is the remote URL itself
+            registry_data = self.base_service.agentcard_service._convert_to_registry_format(manifest, url)
+            registry_data["id"] = name # Ensure ID matches name for simplicity
+            
+            # Save to registry
+            if self.repository:
+                await self.repository.upsert_registry(registry_data)
+                self.logger.info(f"Registered remote MCP in database: {name}")
+
+            await self._update_status(
+                upload_id,
+                {
+                    "status": UploadStatus.COMPLETED,
+                    "progress_percentage": 100,
+                    "status_message": "Remote MCP server registered successfully",
+                    "capabilities_generated": True,
+                    "registry_updated": True,
+                    "processing_duration": time.time() - start_time,
+                },
+            )
+
+            return AgentUploadResult(
+                success=True,
+                agent_name=name,
+                status="registered",
+                capabilities_generated=True,
+                orchestration_triggered=True, # Mark as triggered to indicate it's "live"
+                version=version,
+                artifact_type="remote_mcp",
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error registering remote MCP: {str(e)}")
+            error_msg = str(e)
+            await self._update_status(
+                upload_id,
+                {
+                    "status": UploadStatus.FAILED,
+                    "progress_percentage": 0,
+                    "status_message": f"Registration failed: {error_msg}",
+                    "error_details": [error_msg],
+                    "processing_duration": time.time() - start_time,
+                },
+            )
+            return AgentUploadResult(
+                success=False,
+                agent_name=name,
+                status="registration_failed",
+                validation_errors=[error_msg],
+                upload_id=upload_id,
+            )

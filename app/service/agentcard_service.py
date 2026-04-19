@@ -147,6 +147,55 @@ class AgentCardService:
             self.logger.error(f"Fallback MCP manifest generation failed: {e}")
             return False
 
+    async def generate_mcp_manifest_from_url(
+        self,
+        url: str,
+        name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Generate an McpServerManifest from a remote HTTP MCP server URL.
+        """
+        import requests
+        try:
+            self.logger.info(f"Fetching tools from remote MCP server: {url}")
+            # Standard MCP HTTP path for tools is /tools
+            resp = requests.get(f"{url}/tools", timeout=10)
+            if resp.status_code != 200:
+                self.logger.error(f"Failed to fetch tools from {url}: {resp.status_code}")
+                return None
+            
+            tools_data = resp.json().get("tools", [])
+            return self.build_mcp_manifest_from_tools_data(tools_data, name, url)
+        except Exception as e:
+            self.logger.error(f"Error generating manifest from URL {url}: {e}")
+            return None
+
+    def build_mcp_manifest_from_tools_data(
+        self, tools_data: List[Dict[str, Any]], name: str, url: str
+    ) -> Dict[str, Any]:
+        """Build an McpServerManifest from tool list data."""
+        return {
+            "id": name,
+            "name": name,
+            "description": f"Remote MCP server registered at: {url}",
+            "version": "1.0.0",
+            "artifact_type": "remote_mcp",
+            "transport": "http",
+            "url": url,
+            "bridge": {
+                "type": "none", # It's already HTTP
+                "endpoints": {
+                    "health": "/health",
+                    "list_tools": "/tools",
+                    "call_tool": "/tools/call",
+                    "list_resources": "/resources",
+                },
+            },
+            "tools": tools_data,
+            "resources": [],
+            "prompts": [],
+        }
+
     def build_mcp_manifest_fallback(
         self, agent_path: str, agent_name: str
     ) -> Dict[str, Any]:

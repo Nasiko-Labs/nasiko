@@ -20,6 +20,7 @@ from kubernetes import client, config
 from pydantic import BaseModel
 from pythonjsonlogger import jsonlogger
 import docker
+from urllib.parse import urlparse
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -42,6 +43,8 @@ K8S_ENABLED = os.getenv("K8S_ENABLED", "true").strip().lower() in {
     "y",
     "on",
 }
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://admin:password@mongodb:27017")
+AUTH_DB_NAME = os.getenv("AUTH_DB_NAME", "nasiko")
 
 if not K8S_ENABLED:
     logger.info("K8S_ENABLED=false; Using Docker container discovery")
@@ -65,6 +68,7 @@ class ServiceInfo(BaseModel):
     name: str
     host: str
     port: int
+    protocol: str = "http"
     path: str = "/"
     methods: List[str] = ["GET", "POST", "PUT", "DELETE", "PATCH"]
     namespace: str
@@ -327,11 +331,53 @@ def get_docker_services() -> List[ServiceInfo]:
     return services
 
 
+async def get_remote_mcp_services() -> List[ServiceInfo]:
+    """Fetch remote MCP services from database."""
+    if not MONGO_URL:
+        return []
+
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+        db = client[AUTH_DB_NAME]
+        collection = db["registry"]
+
+        # Find agents with artifact_type: "remote_mcp"
+        cursor = collection.find({"artifact_type": "remote_mcp"})
+        remote_mcps = await cursor.to_list(length=100)
+
+        services = []
+        for mcp in remote_mcps:
+            # url is the target
+            url = mcp.get("url")
+            if not url:
+                continue
+
+            parsed = urlparse(url)
+            services.append(
+                ServiceInfo(
+                    name=f"agent-{mcp['id']}",
+                    host=parsed.hostname,
+                    port=parsed.port or (443 if parsed.scheme == "https" else 80),
+                    protocol=parsed.scheme or "http",
+                    path=parsed.path or "/",
+                    namespace="remote",
+                )
+            )
+
+        client.close()
+        return services
+    except Exception as e:
+        logger.error(f"Error fetching remote MCP services: {e}")
+        return []
+
+
 def register_service_in_kong(service: ServiceInfo) -> bool:
     """Register a service and route in Kong."""
     try:
         # Create service in Kong
-        service_url = f"http://{service.host}:{service.port}"
+        service_url = f"{service.protocol}://{service.host}:{service.port}"
 
         service_data = {
             "name": service.name,
@@ -340,7 +386,7 @@ def register_service_in_kong(service: ServiceInfo) -> bool:
             "write_timeout": 300000,
             "read_timeout": 300000,
             "retries": 3,
-            "protocol": "http",
+            "protocol": service.protocol,
         }
 
         # Check if service exists
@@ -617,7 +663,7 @@ def register_static_proxies():
             "host": web_host,
             "port": 4000,
             "paths": ["/"],
-            "upstream_path": "/app/",
+            "upstream_path": "/",
             "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
             "strip_path": False,
             "preserve_host": True,
@@ -691,6 +737,7 @@ def register_proxy_service_in_kong(service_config):
             "read_timeout": 300000,
             "retries": 3,
             "protocol": "http",
+            "path": service_config.get("upstream_path", "/"),
         }
 
         logger.info(f"Service data for {service_config['name']}: {service_data}")
@@ -1021,6 +1068,14 @@ async def sync_services():
                 services = get_docker_services()
                 logger.debug(f"Discovered {len(services)} Docker containers")
 
+            # Discover remote MCP services
+            try:
+                remote_services = await get_remote_mcp_services()
+                services.extend(remote_services)
+                logger.debug(f"Discovered {len(remote_services)} remote MCP services")
+            except Exception as e:
+                logger.error(f"Remote service discovery failed: {e}")
+
             # Register/update services (dynamic agents with full middleware)
             successful_registrations = set()
             for service in services:
@@ -1086,10 +1141,12 @@ async def trigger_sync():
         # Discover services based on deployment type
         if K8S_ENABLED:
             services = get_k8s_services()
-            discovery_type = "Kubernetes"
         else:
             services = get_docker_services()
-            discovery_type = "Docker"
+
+        # Add remote MCP services
+        remote_services = await get_remote_mcp_services()
+        services.extend(remote_services)
 
         registered = 0
         for service in services:

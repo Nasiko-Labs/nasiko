@@ -65,7 +65,7 @@ services:
       MONGO_NASIKO_DATABASE: nasiko
       REDIS_HOST: redis
       REDIS_URL: redis://redis:6379
-      USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY}
+      USER_CREDENTIALS_ENCRYPTION_KEY: jbn9VlG6yqmcDcTslqNODjpwYm7trf8kxbVftMbPw7M=
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
@@ -227,6 +227,8 @@ services:
     depends_on:
       kong-gateway:
         condition: service_healthy
+      mongodb:
+        condition: service_healthy
     environment:
       KONG_ADMIN_URL: http://kong-gateway:8001
       DOCKER_SOCKET: /var/run/docker.sock
@@ -237,6 +239,8 @@ services:
       KONG_BACKEND_HOST: nasiko-backend
       KONG_WEB_HOST: nasiko-web
       KONG_ROUTER_HOST: nasiko-router
+      MONGO_URL: mongodb://admin:password@mongodb:27017
+      AUTH_DB_NAME: nasiko
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
