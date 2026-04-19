@@ -285,6 +285,60 @@ services:
       retries: 3
 
   # ============================================================================
+  # LLM GATEWAY LAYER (LiteLLM)
+  # ============================================================================
+  litellm-database:
+    image: postgres:15
+    container_name: litellm-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellmpassword
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "litellm"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  litellm-gateway:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-gateway
+    restart: unless-stopped
+    depends_on:
+      litellm-database:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://litellm:litellmpassword@litellm-database:5432/litellm
+      LITELLM_MASTER_KEY: sk-nasiko-litellm-master-key
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Telemetry to Arize Phoenix
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://phoenix-observability:4318"
+      OTEL_EXPORTER_OTLP_HEADERS: "x-api-key="
+    volumes:
+      - ./agent-gateway/litellm-config.yaml:/app/config.yaml:ro
+    command: [ "--config", "/app/config.yaml", "--detailed_debug" ]
+    ports:
+      - "4001:4000"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
   # OBSERVABILITY LAYER (Phoenix)
   # ============================================================================
   phoenix-observability:
@@ -410,6 +464,7 @@ volumes:
   redis-data:
   kong-db-data:
   phoenix-data:
+  litellm-db-data:
 
 networks:
   app-network:
