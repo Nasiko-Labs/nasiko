@@ -904,6 +904,7 @@ class AgentAnalyzerTools:
         """
         try:
             manifest = {
+                "artifact_type": "mcp_server",
                 "name": agent_name,
                 "description": description,
                 "version": version,
@@ -914,7 +915,7 @@ class AgentAnalyzerTools:
                 }
             }
             
-            self.logger.info(f"Generated MCP Manifest for {agent_name} with {len(tools)} tools")
+            logger.info(f"Generated MCP Manifest for {agent_name} with {len(tools)} tools")
             
             return {
                 "status": "success",
@@ -922,7 +923,7 @@ class AgentAnalyzerTools:
                 "agentcard": manifest,
             }
         except Exception as e:
-            self.logger.error(f"Failed to generate MCP Manifest: {e}")
+            logger.error(f"Failed to generate MCP Manifest: {e}")
             return {"status": "error", "message": f"Error formatting MCP Manifest: {str(e)}"}
 
     def get_available_tools(self) -> List[str]:

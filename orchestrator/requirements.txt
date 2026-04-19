@@ -11,5 +11,5 @@ opentelemetry-exporter-otlp>=1.36.0
 opentelemetry-instrumentation-asgi>=0.57b0
 opentelemetry-instrumentation-fastapi>=0.57b0
 opentelemetry-exporter-otlp-proto-http>=1.36.0
-arize-phoenix>=5.16.0
-arize-phoenix-evals>=3.0.0
+arize-phoenix>=12.0.0,<14
+arize-phoenix-evals>=2.11.0,<3

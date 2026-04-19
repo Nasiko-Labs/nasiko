@@ -66,6 +66,9 @@ dependencies = [
     "pyyaml>=6.0.2",
     "semver>=3.0.4",
     "toml>=0.10.2",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "mcp>=0.1.0",
 ]
 
 [dependency-groups]

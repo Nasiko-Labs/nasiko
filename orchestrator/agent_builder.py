@@ -8,6 +8,7 @@ import shutil
 import yaml
 import logging
 import asyncio
+import re
 from pathlib import Path
 from docker_utils import run_cmd
 from registry_manager import RegistryManager
@@ -280,18 +281,19 @@ class AgentBuilder:
             return False
 
         try:
-            is_mcp = (agent_temp_path / "McpServerManifest.json").exists()
+            is_mcp = self._is_mcp_artifact(agent_temp_path)
             if is_mcp:
                 bridge_src = Path(__file__).parent / "mcp_bridge.py"
                 if bridge_src.exists():
                     logger.info("Injecting mcp_bridge.py into artifact")
                     shutil.copy(bridge_src, agent_temp_path / "mcp_bridge.py")
+                self._ensure_mcp_dockerfile_runtime(agent_temp_path)
 
             # Inject LangTrace Configuration
             self.injector.inject_langtrace_config(agent_temp_path, agent_folder_name)
 
             # Check if image already exists locally (optimization for re-deployments)
-            image_tag = f"{agent_folder_name}_instrumented"
+            image_tag = self._safe_image_tag(agent_folder_name)
             result = run_cmd(["docker", "image", "inspect", image_tag], check=False)
 
             if result.returncode == 0:
@@ -334,7 +336,7 @@ class AgentBuilder:
             dockerfile_path.write_text(dockerfile_content)
 
             # Build instrumented image with real-time output
-            image_tag = f"{agent_folder_name}_instrumented"
+            image_tag = self._safe_image_tag(agent_folder_name)
             logger.info(f"Building Docker image: {image_tag}")
 
             # Use subprocess directly for real-time output
@@ -419,8 +421,8 @@ class AgentBuilder:
                     svc_def["networks"].append(DOCKER_NETWORK)
 
             # Update services to use pre-built instrumented image and inject API keys
-            image_tag = f"{agent_folder_name}_instrumented"
-            is_mcp = (agent_temp_path / "McpServerManifest.json").exists()
+            image_tag = self._safe_image_tag(agent_folder_name)
+            is_mcp = self._is_mcp_artifact(agent_temp_path)
             
             api_key_env = {
                 "OPENAI_API_KEY": Config.OPENAI_API_KEY,
@@ -437,6 +439,12 @@ class AgentBuilder:
                     
                     if is_mcp:
                         svc_def["command"] = ["python", "mcp_bridge.py"]
+                        env = svc_def.get("environment", [])
+                        if isinstance(env, list) and not any(str(item).startswith("PORT=") for item in env):
+                            env.append("PORT=5000")
+                        elif isinstance(env, dict):
+                            env.setdefault("PORT", "5000")
+                        svc_def["environment"] = env
 
                 # Inject actual API key values directly (bypasses yaml/shell substitution issues)
                 env = svc_def.get("environment", [])
@@ -487,3 +495,46 @@ class AgentBuilder:
         except Exception as e:
             logger.error(f"Error deploying agent {agent_folder_name}: {e}")
             return False
+
+    def _safe_image_tag(self, agent_name: str) -> str:
+        safe_name = re.sub(r"[^a-z0-9_.-]+", "-", agent_name.lower()).strip(".-")
+        return f"{safe_name or 'agent'}_instrumented"
+
+    def _is_mcp_artifact(self, agent_path: Path) -> bool:
+        if (agent_path / "McpServerManifest.json").exists():
+            return True
+        signatures = ("FastMCP", "mcp.server", "@mcp.tool", "@mcp.resource", "@mcp.prompt")
+        for py_file in agent_path.rglob("*.py"):
+            try:
+                content = py_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if any(signature in content for signature in signatures):
+                return True
+        return False
+
+    def _ensure_mcp_dockerfile_runtime(self, agent_path: Path):
+        dockerfile_path = agent_path / "Dockerfile"
+        if not dockerfile_path.exists():
+            return
+
+        content = dockerfile_path.read_text()
+        additions = []
+        if "WORKDIR " not in content:
+            additions.append("WORKDIR /app")
+        if not re.search(r"^\s*(COPY|ADD)\s+(\.|\./|src|src/)", content, re.MULTILINE):
+            additions.append("COPY . /app")
+        if " mcp" not in content and "\nmcp" not in content and "fastapi" not in content.lower():
+            additions.append(
+                "RUN pip install --no-cache-dir fastapi uvicorn mcp sse-starlette "
+                '"opentelemetry-api>=1.36.0"'
+            )
+
+        if additions:
+            dockerfile_path.write_text(
+                content.rstrip()
+                + "\n\n# Nasiko MCP bridge runtime\n"
+                + "\n".join(additions)
+                + "\n"
+            )
+            logger.info("Updated MCP Dockerfile with bridge runtime requirements")

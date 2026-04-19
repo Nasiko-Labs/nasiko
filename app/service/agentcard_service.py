@@ -7,6 +7,8 @@ using LLM-based analysis.
 
 import json
 import os
+import ast
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -107,7 +109,7 @@ class AgentCardService:
                 self.logger.error(
                     f"Failed to generate MCP Manifest: {result.get('message')}"
                 )
-                return False
+                return self._generate_and_save_mcp_manifest_fallback(agent_path, agent_name)
 
             manifest = result["agentcard"]
 
@@ -123,7 +125,156 @@ class AgentCardService:
             self.logger.error(
                 f"Failed to generate MCP Manifest for {agent_name}: {str(e)}"
             )
+            return self._generate_and_save_mcp_manifest_fallback(agent_path, agent_name)
+
+    def _generate_and_save_mcp_manifest_fallback(
+        self, agent_path: str, agent_name: str
+    ) -> bool:
+        """Create a deterministic MCP manifest from decorators when LLM generation is unavailable."""
+        try:
+            root = Path(agent_path)
+            manifest = self.build_mcp_manifest_fallback(agent_path, agent_name)
+
+            manifest_path = root / "McpServerManifest.json"
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+            self.logger.info(
+                f"Saved fallback McpServerManifest.json to {manifest_path} with {len(manifest.get('tools', []))} tools"
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"Fallback MCP manifest generation failed: {e}")
             return False
+
+    def build_mcp_manifest_fallback(
+        self, agent_path: str, agent_name: str
+    ) -> Dict[str, Any]:
+        """Build a deterministic MCP manifest from decorators without writing files."""
+        root = Path(agent_path)
+        tools = []
+        resources = []
+        prompts = []
+        server_name = agent_name
+
+        for py_file in root.rglob("*.py"):
+            try:
+                source = py_file.read_text(encoding="utf-8")
+                tree = ast.parse(source)
+            except Exception:
+                continue
+
+            name_match = re.search(r"FastMCP\(\s*['\"]([^'\"]+)['\"]", source)
+            if name_match:
+                server_name = name_match.group(1)
+
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+
+                decorator_names = [self._decorator_name(d) for d in node.decorator_list]
+                if any(name.endswith(".tool") or name == "tool" for name in decorator_names):
+                    tools.append(self._function_schema(node))
+                elif any(name.endswith(".resource") or name == "resource" for name in decorator_names):
+                    resources.append(
+                        {
+                            "name": node.name,
+                            "description": ast.get_docstring(node) or f"MCP resource {node.name}",
+                        }
+                    )
+                elif any(name.endswith(".prompt") or name == "prompt" for name in decorator_names):
+                    prompts.append(
+                        {
+                            "name": node.name,
+                            "description": ast.get_docstring(node) or f"MCP prompt {node.name}",
+                        }
+                    )
+
+        return {
+            "id": agent_name,
+            "name": server_name,
+            "description": f"MCP server published through Nasiko: {server_name}",
+            "version": "1.0.0",
+            "artifact_type": "mcp_server",
+            "transport": "stdio",
+            "bridge": {
+                "type": "http",
+                "endpoints": {
+                    "health": "/health",
+                    "list_tools": "/tools",
+                    "call_tool": "/tools/call",
+                    "list_resources": "/resources",
+                },
+            },
+            "tools": tools,
+            "resources": resources,
+            "prompts": prompts,
+        }
+
+    def _decorator_name(self, decorator: ast.AST) -> str:
+        if isinstance(decorator, ast.Call):
+            return self._decorator_name(decorator.func)
+        if isinstance(decorator, ast.Attribute):
+            base = self._decorator_name(decorator.value)
+            return f"{base}.{decorator.attr}" if base else decorator.attr
+        if isinstance(decorator, ast.Name):
+            return decorator.id
+        return ""
+
+    def _function_schema(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> Dict[str, Any]:
+        properties: Dict[str, Any] = {}
+        required = []
+        defaults_by_arg = {
+            arg.arg: default
+            for arg, default in zip(
+                node.args.args[-len(node.args.defaults) :] if node.args.defaults else [],
+                node.args.defaults,
+            )
+        }
+
+        for arg in node.args.args:
+            if arg.arg in {"self", "cls"}:
+                continue
+            properties[arg.arg] = {
+                "type": self._annotation_to_json_type(arg.annotation),
+                "description": f"Argument {arg.arg}",
+            }
+            if arg.arg not in defaults_by_arg:
+                required.append(arg.arg)
+
+        return {
+            "name": node.name,
+            "description": ast.get_docstring(node) or f"MCP tool {node.name}",
+            "input_schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        }
+
+    def _annotation_to_json_type(self, annotation: ast.AST | None) -> str:
+        if annotation is None:
+            return "string"
+        name = ""
+        if isinstance(annotation, ast.Name):
+            name = annotation.id
+        elif isinstance(annotation, ast.Constant):
+            name = str(annotation.value)
+        elif isinstance(annotation, ast.Subscript):
+            name = self._decorator_name(annotation.value)
+        elif isinstance(annotation, ast.Attribute):
+            name = self._decorator_name(annotation)
+
+        return {
+            "str": "string",
+            "int": "integer",
+            "float": "number",
+            "bool": "boolean",
+            "dict": "object",
+            "Dict": "object",
+            "list": "array",
+            "List": "array",
+        }.get(name, "string")
 
     async def load_agentcard_from_file(
         self, agent_path: str, filename: str = "AgentCard.json"
