@@ -53,6 +53,8 @@ class RegistryItemDetailResponse(BaseModel):
     supportsAuthenticatedExtendedCard: bool = False
     signatures: List[Any] = []
     additionalInterfaces: Optional[List[Dict[str, str]]] = None
+    associated_mcp_servers: List[str] = []
+    mcp_bridge_urls: Dict[str, str] = {}
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -128,10 +130,52 @@ class AgentUploadItemResponse(BaseModel):
     orchestration_triggered: bool
     validation_errors: Optional[List[str]] = None
     version: Optional[str] = None
+    is_mcp: bool = False
+    manifest: Optional[Dict[str, Any]] = None
+    bridge_url: Optional[str] = None
 
 
 class AgentUploadResponse(BaseModel):
     data: AgentUploadItemResponse
+    status_code: int
+    message: str
+
+
+class McpServerItemResponse(BaseModel):
+    server_id: str
+    name: Optional[str] = None
+    version: Optional[str] = None
+    tools: int = 0
+    resources: int = 0
+    prompts: int = 0
+    bridge_url: Optional[str] = None
+
+
+class McpServerListResponse(BaseModel):
+    data: List[McpServerItemResponse]
+    status_code: int
+    message: str
+
+
+class McpManifestResponse(BaseModel):
+    data: Dict[str, Any]
+    status_code: int
+    message: str
+
+
+class McpAssociationRequest(BaseModel):
+    mcp_server_ids: List[str]
+    replace: bool = False
+
+
+class McpAssociationItemResponse(BaseModel):
+    agent_id: str
+    associated_mcp_servers: List[str] = []
+    mcp_bridge_urls: Dict[str, str] = {}
+
+
+class McpAssociationResponse(BaseModel):
+    data: McpAssociationItemResponse
     status_code: int
     message: str
 
@@ -326,6 +370,8 @@ class UserAgentItemResponse(BaseModel):
     supportsAuthenticatedExtendedCard: bool = False
     signatures: List[Any] = []
     additionalInterfaces: Optional[List[Dict[str, str]]] = None
+    associated_mcp_servers: List[str] = []
+    mcp_bridge_urls: Dict[str, str] = {}
 
     upload_id: Optional[str] = None  # Only for uploaded agents
     created_at: Optional[str] = None

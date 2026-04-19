@@ -161,6 +161,9 @@ class RouterOrchestrator:
 
         # Step 6: Get agent URL and send request
         try:
+            selected_agent_card = self.agent_registry.find_agent_by_name(
+                agent_cards, agent_name
+            )
             agent_url = await self._get_agent_url(agent_cards, agent_name)
             if not agent_url:
                 yield self._router_response(
@@ -168,9 +171,11 @@ class RouterOrchestrator:
                 )
                 return
 
+            mcp_context = self.agent_registry.extract_mcp_context(selected_agent_card)
+
             # Send request to selected agent
             async for response in self._send_agent_request(
-                request, files, agent_url, token
+                request, files, agent_url, token, mcp_context
             ):
                 yield response
 
@@ -185,6 +190,7 @@ class RouterOrchestrator:
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         agent_url: str,
         token: str,
+        mcp_context: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """Send request to agent and yield response."""
 
@@ -196,7 +202,7 @@ class RouterOrchestrator:
 
             # Send request to agent
             agent_data = await self.agent_client.send_request(
-                agent_url, request, files, token
+                agent_url, request, files, token, mcp_context
             )
 
             # Extract response content
@@ -209,7 +215,7 @@ class RouterOrchestrator:
             yield self._router_response(str(e), "", False, agent_url)
 
     async def _get_agent_url(
-        self, agent_cards: List[Dict[str, str]], agent_name: str
+        self, agent_cards: List[Dict[str, Any]], agent_name: str
     ) -> Optional[str]:
         """Get the URL for a specific agent with fallback logic."""
 

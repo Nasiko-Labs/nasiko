@@ -173,6 +173,17 @@ class RegistryHandler(BaseHandler):
                 if hasattr(registry, "additionalInterfaces")
                 else None
             ),
+            associated_mcp_servers=(
+                registry.associated_mcp_servers
+                if hasattr(registry, "associated_mcp_servers")
+                and registry.associated_mcp_servers
+                else []
+            ),
+            mcp_bridge_urls=(
+                registry.mcp_bridge_urls
+                if hasattr(registry, "mcp_bridge_urls") and registry.mcp_bridge_urls
+                else {}
+            ),
             created_at=created_at_str,
             updated_at=updated_at_str,
         )
@@ -423,6 +434,12 @@ class RegistryHandler(BaseHandler):
                             additionalInterfaces=getattr(
                                 registry, "additionalInterfaces", None
                             ),
+                            associated_mcp_servers=getattr(
+                                registry, "associated_mcp_servers", []
+                            )
+                            or [],
+                            mcp_bridge_urls=getattr(registry, "mcp_bridge_urls", {})
+                            or {},
                             created_at=(
                                 str(registry.created_at)
                                 if hasattr(registry, "created_at")
@@ -461,6 +478,8 @@ class RegistryHandler(BaseHandler):
                         supportsAuthenticatedExtendedCard=False,
                         signatures=[],
                         additionalInterfaces=None,
+                        associated_mcp_servers=[],
+                        mcp_bridge_urls={},
                     )
                     user_agents.append(user_agent)
                     processed_agent_ids.add(agent_id)

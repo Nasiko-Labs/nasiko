@@ -16,6 +16,7 @@ from .search_routes import create_search_routes
 from .superuser_routes import create_superuser_routes
 from .observability_routes import create_observability_routes
 from .nanda_routes import create_nanda_routes
+from .mcp_routes import create_mcp_routes
 from ..handlers import HandlerFactory
 
 
@@ -38,5 +39,6 @@ def create_router(handlers: HandlerFactory, logger) -> APIRouter:
     router.include_router(create_chat_history_routes(handlers))
     router.include_router(create_observability_routes(handlers))
     router.include_router(create_nanda_routes(handlers))
+    router.include_router(create_mcp_routes(handlers))
 
     return router

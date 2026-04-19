@@ -102,6 +102,13 @@ class AgentUploadTrackingService:
                         agent_path=agent_path,
                         base_url=settings.NASIKO_API_URL,
                         additional_data={
+                            "command": "deploy_mcp_server"
+                            if getattr(result, "is_mcp", False)
+                            else "deploy_agent",
+                            "artifact_type": "mcp"
+                            if getattr(result, "is_mcp", False)
+                            else "agent",
+                            "is_mcp": str(bool(getattr(result, "is_mcp", False))).lower(),
                             "owner_id": user_id,
                             "upload_id": upload_id,
                             "upload_type": "zip",
@@ -278,6 +285,13 @@ class AgentUploadTrackingService:
                         agent_path=agent_path,
                         base_url=settings.NASIKO_API_URL,
                         additional_data={
+                            "command": "deploy_mcp_server"
+                            if getattr(result, "is_mcp", False)
+                            else "deploy_agent",
+                            "artifact_type": "mcp"
+                            if getattr(result, "is_mcp", False)
+                            else "agent",
+                            "is_mcp": str(bool(getattr(result, "is_mcp", False))).lower(),
                             "owner_id": user_id,
                             "upload_id": upload_id,
                             "upload_type": "github",
@@ -410,6 +424,13 @@ class AgentUploadTrackingService:
                         agent_path=agent_path,
                         base_url=settings.NASIKO_API_URL,
                         additional_data={
+                            "command": "deploy_mcp_server"
+                            if getattr(result, "is_mcp", False)
+                            else "deploy_agent",
+                            "artifact_type": "mcp"
+                            if getattr(result, "is_mcp", False)
+                            else "agent",
+                            "is_mcp": str(bool(getattr(result, "is_mcp", False))).lower(),
                             "owner_id": user_id,
                             "upload_id": upload_id,
                             "upload_type": "directory",

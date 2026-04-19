@@ -78,6 +78,10 @@ class RegistryBase(BaseModel):
     # Combined tags from all skills (deduplicated)
     tags: List[str] = []
 
+    # MCP associations configured for this agent (Track 1)
+    associated_mcp_servers: List[str] = []
+    mcp_bridge_urls: Dict[str, str] = {}
+
     # Owner information
     owner_id: str
 
@@ -91,7 +95,6 @@ class RegistryInDB(RegistryBase):
     _id: Optional[str] = None
 
     model_config = {
-        "json_encoders": {ObjectId: str, datetime: str, PyObjectId: str},
         "populate_by_name": True,
     }
 

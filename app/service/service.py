@@ -2,7 +2,10 @@ from app.repository.repository import Repository
 from app.entity.entity import RegistryBase, RegistryInDB
 from datetime import datetime, timezone
 from typing import List, Optional, Dict
+from pathlib import Path
+import json
 from app.service.k8s_service import K8sService
+from app.pkg.config.config import settings
 from app.pkg.redisclient.redisclient import (
     get_github_access_token,
 )
@@ -90,6 +93,154 @@ class Service:
         if result:
             return RegistryInDB(**convert_objectid_to_str(result))
         return None
+
+    def _agents_directory(self) -> Path:
+        """Resolve agents folder path across local and container runtimes."""
+        candidates = [Path("agents"), Path("/app/agents")]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir():
+                return candidate
+        return Path("agents")
+
+    def _resolve_mcp_manifest_path(self, server_dir: Path) -> Optional[Path]:
+        """
+        Resolve MCP manifest path for a server directory.
+
+        Supports both:
+        - agents/<server_id>/McpServerManifest.json
+        - agents/<server_id>/<version>/McpServerManifest.json
+        """
+        root_manifest = server_dir / "McpServerManifest.json"
+        if root_manifest.exists() and root_manifest.is_file():
+            return root_manifest
+
+        version_manifests = [
+            path
+            for path in server_dir.glob("*/McpServerManifest.json")
+            if path.is_file()
+        ]
+        if not version_manifests:
+            return None
+
+        # Prefer the most recently updated version folder for discovery/read operations.
+        return max(version_manifests, key=lambda path: path.parent.stat().st_mtime)
+
+    async def list_mcp_servers(self) -> List[Dict]:
+        """List MCP servers by scanning generated manifest files."""
+        servers: List[Dict] = []
+        agents_dir = self._agents_directory()
+
+        if not agents_dir.exists():
+            return servers
+
+        for server_dir in agents_dir.iterdir():
+            if not server_dir.is_dir():
+                continue
+
+            manifest_path = self._resolve_mcp_manifest_path(server_dir)
+            if manifest_path is None:
+                continue
+
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                servers.append(
+                    {
+                        "server_id": server_dir.name,
+                        "name": manifest.get("name"),
+                        "version": manifest.get("version"),
+                        "tools": len(manifest.get("tools", [])),
+                        "resources": len(manifest.get("resources", [])),
+                        "prompts": len(manifest.get("prompts", [])),
+                        "bridge_url": self._build_mcp_bridge_url(server_dir.name),
+                    }
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed reading MCP manifest for {server_dir.name}: {e}"
+                )
+
+        return servers
+
+    async def get_mcp_manifest(self, server_id: str) -> Optional[Dict]:
+        """Get a single MCP manifest by server id."""
+        server_dir = self._agents_directory() / server_id
+        manifest_path = self._resolve_mcp_manifest_path(server_dir)
+        if manifest_path is None:
+            return None
+
+        try:
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            self.logger.error(f"Failed reading MCP manifest for {server_id}: {e}")
+            return None
+
+    async def associate_agent_with_mcp(
+        self, agent_id: str, mcp_server_ids: List[str], replace: bool = False
+    ) -> Dict:
+        """
+        Associate one agent with one or more MCP servers via registry metadata.
+        """
+        if not mcp_server_ids:
+            raise ValueError("mcp_server_ids cannot be empty")
+
+        registry = await self.repo.get_registry_by_agent_id(agent_id)
+        if not registry:
+            raise ValueError(f"Agent '{agent_id}' not found")
+
+        missing = []
+        valid_servers = []
+        for server_id in mcp_server_ids:
+            manifest = await self.get_mcp_manifest(server_id)
+            if manifest is None:
+                missing.append(server_id)
+            else:
+                valid_servers.append(server_id)
+
+        if missing:
+            raise ValueError(
+                f"Unknown MCP server(s): {', '.join(missing)}. Upload/publish them first."
+            )
+
+        existing = registry.get("associated_mcp_servers", []) or []
+        if replace:
+            merged = list(dict.fromkeys(valid_servers))
+        else:
+            merged = list(dict.fromkeys([*existing, *valid_servers]))
+
+        bridge_urls = registry.get("mcp_bridge_urls", {}) or {}
+        for server_id in merged:
+            bridge_urls[server_id] = self._build_mcp_bridge_url(server_id)
+
+        update_data = {
+            "associated_mcp_servers": merged,
+            "mcp_bridge_urls": bridge_urls,
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+        await self.repo.update_registry(registry["_id"], update_data)
+        return {
+            "agent_id": agent_id,
+            "associated_mcp_servers": merged,
+            "mcp_bridge_urls": bridge_urls,
+        }
+
+    async def get_agent_mcp_associations(self, agent_id: str) -> Dict:
+        """Get MCP associations configured for an agent."""
+        registry = await self.repo.get_registry_by_agent_id(agent_id)
+        if not registry:
+            raise ValueError(f"Agent '{agent_id}' not found")
+
+        return {
+            "agent_id": agent_id,
+            "associated_mcp_servers": registry.get("associated_mcp_servers", [])
+            or [],
+            "mcp_bridge_urls": registry.get("mcp_bridge_urls", {}) or {},
+        }
+
+    def _build_mcp_bridge_url(self, server_id: str) -> str:
+        """Build MCP bridge URL using gateway configuration."""
+        base_url = settings.GATEWAY_URL or "http://localhost:9100"
+        return f"{base_url.rstrip('/')}/router/mcp/{server_id}/tool"
 
     def get_github_access_token(self) -> Optional[str]:
         return get_github_access_token()

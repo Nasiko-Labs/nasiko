@@ -16,6 +16,7 @@ from pathlib import Path
 
 from config import Config
 from agent_builder import AgentBuilder
+from mcp_bridge_service import MCPBridgeService
 
 # Import observability components directly like K8s build worker
 
@@ -161,6 +162,15 @@ class RedisStreamListener:
             owner_id = fields.get("owner_id")
             upload_id = fields.get("upload_id")
             upload_type = fields.get("upload_type")
+            artifact_type = fields.get("artifact_type", "agent").lower()
+            is_mcp = str(fields.get("is_mcp", "false")).lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+
+            if is_mcp:
+                artifact_type = "mcp"
 
             if not all([command, agent_name]):
                 self.logger.error(
@@ -185,6 +195,7 @@ class RedisStreamListener:
                     "owner_id": owner_id,
                     "upload_id": upload_id,
                     "upload_type": upload_type,
+                    "artifact_type": artifact_type,
                 },
             )
             await self.update_database_status(
@@ -196,16 +207,26 @@ class RedisStreamListener:
             )
 
             # Process based on command type - both deploy and update use same handler
-            if command in ["deploy_agent", "update_agent"]:
-                await self.handle_agent_deployment(
-                    command,
-                    agent_name,
-                    base_url,
-                    owner_id,
-                    upload_id,
-                    upload_type,
-                    agent_path,
-                )
+            if command in ["deploy_agent", "update_agent", "deploy_mcp_server"]:
+                if command == "deploy_mcp_server" or artifact_type == "mcp":
+                    await self.handle_mcp_deployment(
+                        agent_name,
+                        base_url,
+                        owner_id,
+                        upload_id,
+                        upload_type,
+                        agent_path,
+                    )
+                else:
+                    await self.handle_agent_deployment(
+                        command,
+                        agent_name,
+                        base_url,
+                        owner_id,
+                        upload_id,
+                        upload_type,
+                        agent_path,
+                    )
             else:
                 self.logger.warning(f"Unknown command: {command}")
                 await self.set_agent_status(
@@ -234,6 +255,116 @@ class RedisStreamListener:
                     },
                 )
             await self.acknowledge_message(msg_id)
+
+    async def handle_mcp_deployment(
+        self,
+        agent_name: str,
+        base_url: str,
+        owner_id: Optional[str] = None,
+        upload_id: Optional[str] = None,
+        upload_type: Optional[str] = None,
+        agent_path: Optional[str] = None,
+    ):
+        """Handle MCP server deployment through the same orchestration pipeline stages."""
+
+        try:
+            self.logger.info(
+                f"Deploying MCP server '{agent_name}' for owner: {owner_id}"
+            )
+
+            if agent_path:
+                mcp_source_path = Path(agent_path)
+            else:
+                mcp_source_path = self._get_agent_source_path(agent_name)
+
+            if not mcp_source_path.exists() or not mcp_source_path.is_dir():
+                raise ValueError(f"MCP source not found: {mcp_source_path}")
+
+            dockerfile_path = mcp_source_path / "Dockerfile"
+            manifest_path = mcp_source_path / "McpServerManifest.json"
+
+            if not dockerfile_path.exists():
+                raise ValueError(f"Dockerfile not found in {mcp_source_path}")
+
+            if not manifest_path.exists():
+                raise ValueError(
+                    f"McpServerManifest.json not found in {mcp_source_path}. "
+                    "Upload should generate this before orchestration."
+                )
+
+            await self._update_status(
+                agent_name,
+                "building",
+                "Building MCP server image",
+                owner_id,
+                upload_id,
+                base_url,
+                25,
+                {"artifact_type": "mcp", "upload_type": upload_type},
+            )
+
+            image_tag = await self._build_local_docker_image(
+                mcp_source_path,
+                agent_name,
+                artifact_kind="mcp",
+            )
+
+            await self._update_status(
+                agent_name,
+                "deploying",
+                "Starting MCP bridge warm-up",
+                owner_id,
+                upload_id,
+                base_url,
+                60,
+                {"artifact_type": "mcp", "image_tag": image_tag},
+            )
+
+            bridge_url = f"{Config.KONG_GATEWAY_URL}/router/mcp/{agent_name}/tool"
+
+            # Warm up bridge startup path so publish failures surface during orchestration.
+            bridge = MCPBridgeService(str(mcp_source_path), logger=self.logger)
+            bridge_started = await bridge.start()
+            if bridge_started:
+                await bridge.health_check()
+                await bridge.stop()
+            else:
+                self.logger.warning(
+                    f"Bridge warm-up failed for MCP server '{agent_name}', proceeding with publish metadata"
+                )
+
+            await self._update_status(
+                agent_name,
+                "completed",
+                "MCP server published and ready",
+                owner_id,
+                upload_id,
+                base_url,
+                100,
+                {
+                    "artifact_type": "mcp",
+                    "bridge_url": bridge_url,
+                    "image_tag": image_tag,
+                    "orchestration_triggered": True,
+                },
+            )
+
+            self.logger.info(
+                f"Successfully published MCP server '{agent_name}' at {bridge_url}"
+            )
+
+        except Exception as e:
+            await self._update_status(
+                agent_name,
+                "failed",
+                f"MCP deployment failed: {str(e)}",
+                owner_id,
+                upload_id,
+                base_url,
+                0,
+                {"artifact_type": "mcp", "upload_type": upload_type},
+            )
+            raise
 
     async def handle_deploy_agent(
         self,
@@ -655,7 +786,7 @@ class RedisStreamListener:
         )
 
     async def _build_local_docker_image(
-        self, source_path: Path, agent_name: str
+        self, source_path: Path, agent_name: str, artifact_kind: str = "agent"
     ) -> str:
         """Build Docker image with observability injection"""
         import shutil
@@ -673,7 +804,7 @@ class RedisStreamListener:
             await self._inject_observability(temp_dir / "agent", agent_name)
 
             # Build Docker image
-            image_tag = f"local-agent-{agent_name}:latest"
+            image_tag = f"local-{artifact_kind}-{agent_name}:latest"
 
             build_cmd = ["docker", "build", "-t", image_tag, str(temp_dir / "agent")]
 
@@ -809,8 +940,6 @@ class RedisStreamListener:
             container_name,
             "--network",
             Config.AGENTS_NETWORK,  # Join agents network for Kong discovery
-            "--network",
-            Config.APP_NETWORK,  # Also join app network for observability access
             "--restart",
             "unless-stopped",
         ]
@@ -834,6 +963,27 @@ class RedisStreamListener:
 
         container_id = stdout.decode().strip()
 
+        # Attach the container to app network as secondary network for observability access.
+        # Docker run accepts only one primary --network, so additional networks are attached here.
+        if Config.APP_NETWORK and Config.APP_NETWORK != Config.AGENTS_NETWORK:
+            connect_proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "network",
+                "connect",
+                Config.APP_NETWORK,
+                container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, connect_stderr = await connect_proc.communicate()
+            if connect_proc.returncode != 0:
+                connect_error = (
+                    connect_stderr.decode() if connect_stderr else "Unknown network error"
+                )
+                self.logger.warning(
+                    f"Failed to connect container {container_name} to {Config.APP_NETWORK}: {connect_error}"
+                )
+
         # Agent containers run on port 5000 internally but are not exposed to host
         # They are accessed through Kong gateway for external access
         return {
@@ -849,22 +999,24 @@ class RedisStreamListener:
         container_name = f"agent-{agent_name}"
 
         # Stop container
-        await asyncio.create_subprocess_exec(
+        stop_proc = await asyncio.create_subprocess_exec(
             "docker",
             "stop",
             container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        await stop_proc.communicate()
 
         # Remove container
-        await asyncio.create_subprocess_exec(
+        rm_proc = await asyncio.create_subprocess_exec(
             "docker",
             "rm",
             container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        await rm_proc.communicate()
 
         self.logger.debug(f"Cleaned up existing container: {container_name}")
 

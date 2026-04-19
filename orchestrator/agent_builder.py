@@ -335,41 +335,26 @@ class AgentBuilder:
             dockerfile_content = dockerfile_content + "\n" + instrumentation_install
             dockerfile_path.write_text(dockerfile_content)
 
-            # Build instrumented image with real-time output
+            # Build instrumented image. Avoid manual readline loops that can
+            # deadlock on docker progress output without newline-delimited logs.
             image_tag = f"{agent_folder_name}_instrumented"
             logger.info(f"Building Docker image: {image_tag}")
 
-            # Use subprocess directly for real-time output
-            import subprocess
-
-            process = subprocess.Popen(
+            result = run_cmd(
                 ["docker", "build", "-t", image_tag, str(agent_temp_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                check=False,
             )
 
-            # Stream output in real-time
-            output_lines = []
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    print(line.rstrip())  # Print to console in real-time
-                    output_lines.append(line.rstrip())
-
-            return_code = process.poll()
-
-            if return_code == 0:
+            if result.returncode == 0:
                 logger.info(f"Successfully built instrumented image: {image_tag}")
                 return True
             else:
                 logger.error(
-                    f"Failed to build image for {agent_folder_name} (exit code: {return_code})"
+                    f"Failed to build image for {agent_folder_name} (exit code: {result.returncode})"
                 )
-                # Full output is already printed, but log the last few lines for context
+                output_lines = (
+                    (result.stdout or "") + "\n" + (result.stderr or "")
+                ).splitlines()
                 if output_lines:
                     logger.error("Last few lines of build output:")
                     for line in output_lines[-10:]:  # Show last 10 lines

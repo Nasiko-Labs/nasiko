@@ -89,6 +89,11 @@ class APIEndpoints:
     # User Upload Agents endpoint
     USER_UPLOAD_AGENTS = "/user/upload-agents"
 
+    # MCP endpoints
+    MCP_SERVERS = "/mcp/servers"
+    MCP_MANIFEST = "/mcp/{server_id}/manifest"
+    MCP_AGENT_ASSOCIATIONS = "/mcp/agents/{agent_id}/associations"
+
 
 # Create config directory if it doesn't exist
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)

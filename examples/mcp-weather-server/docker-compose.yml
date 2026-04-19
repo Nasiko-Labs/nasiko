@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  weather-server:
+    container_name: mcp-weather-server
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stdin_open: true
+    tty: true
+    environment:
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./src:/app/src

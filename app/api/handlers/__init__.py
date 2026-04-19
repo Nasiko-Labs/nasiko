@@ -16,6 +16,7 @@ from .traces_handler import TracesHandler
 from .search_handler import SearchHandler
 from .observability_handler import ObservabilityHandler
 from .nanda_handler import NANDAHandler
+from .mcp_handler import McpHandler
 
 
 class HandlerFactory:
@@ -41,6 +42,7 @@ class HandlerFactory:
         self.chat_history = ChatHistoryHandler(service, logger)
         self.observability = ObservabilityHandler(service, logger)
         self.nanda = NANDAHandler(service, logger)
+        self.mcp = McpHandler(service, logger)
 
 
 __all__ = [
@@ -54,4 +56,5 @@ __all__ = [
     "TracesHandler",
     "N8nHandler",
     "NANDAHandler",
+    "McpHandler",
 ]

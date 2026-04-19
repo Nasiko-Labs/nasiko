@@ -48,6 +48,7 @@ class AgentClient:
         request: UserRequest,
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         token: str,
+        mcp_context: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """
         Send a request to an agent.
@@ -57,6 +58,7 @@ class AgentClient:
             request: User request object
             files: List of file tuples for upload
             token: Optional authorization token to forward to agent
+            mcp_context: Optional MCP association context for runtime tool wiring
 
         Returns:
             Agent response data
@@ -67,7 +69,9 @@ class AgentClient:
         try:
             # Translate agent URL for internal Docker network communication
             translated_url = self._translate_agent_url(agent_url)
-            payload = self._construct_payload(request, files, translated_url)
+            payload = self._construct_payload(
+                request, files, translated_url, mcp_context
+            )
 
             logger.info(f"Sending request to agent: {agent_url} -> {translated_url}")
             logger.debug(f"Payload: {payload}")
@@ -117,6 +121,7 @@ class AgentClient:
         request: UserRequest,
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         agent_url: str,
+        mcp_context: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """
         Construct the payload for agent request.
@@ -125,6 +130,7 @@ class AgentClient:
             request: User request object
             files: List of file tuples
             agent_url: Target agent URL
+            mcp_context: Optional MCP context payload
 
         Returns:
             Payload dictionary
@@ -132,7 +138,7 @@ class AgentClient:
         # Import here to avoid circular imports
         from router.src.utils import construct_payload
 
-        return construct_payload(request, files, agent_url)
+        return construct_payload(request, files, agent_url, mcp_context=mcp_context)
 
     def extract_response_content(self, agent_data: Dict[str, Any]) -> str:
         """

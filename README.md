@@ -258,6 +258,7 @@ For comprehensive guides and detailed instructions:
 ### Quick Links
 
 - **📖 First Login & Agent Deploy**: After setup, follow the [Getting Started Guide](docs/getting-started.md) to sign in and deploy your first agent
+- **🧩 Publish MCP Servers**: See [MCP Publishing Guide](docs/mcp-publishing.md) for upload, discover, and association flow
 - **🔑 Login Credentials**: Generated automatically at `orchestrator/superuser_credentials.json`
 - **🤖 Test Agent**: Use `agents/a2a-translator.zip` for your first agent upload
 

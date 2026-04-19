@@ -9,8 +9,11 @@ import yaml
 from fastapi import UploadFile
 
 from app.pkg.config.config import settings
+from app.pkg.config.mcp_detector import MCPDetector, MCPDetectionResult
 from app.service.agentcard_service import AgentCardService
 from app.service.orchestration_service import OrchestrationService
+from app.service.mcp_validation_service import MCPValidationService
+from app.service.mcp_manifest_generator import MCPManifestGenerator
 
 
 class AgentUploadResult:
@@ -24,6 +27,9 @@ class AgentUploadResult:
         validation_errors: Optional[List[str]] = None,
         upload_id: Optional[str] = None,
         version: Optional[str] = None,
+        is_mcp: bool = False,
+        manifest: Optional[dict] = None,
+        bridge_url: Optional[str] = None,
     ):
         self.success = success
         self.agent_name = agent_name
@@ -33,6 +39,9 @@ class AgentUploadResult:
         self.validation_errors = validation_errors or []
         self.upload_id = upload_id
         self.version = version
+        self.is_mcp = is_mcp
+        self.manifest = manifest
+        self.bridge_url = bridge_url
 
 
 class ValidationResult:
@@ -70,6 +79,9 @@ class AgentUploadService:
         self.logger = logger
         self.agentcard_service = AgentCardService(logger)
         self.orchestration = OrchestrationService(logger)
+        self.mcp_detector = MCPDetector()
+        self.mcp_validator = MCPValidationService(logger)
+        self.mcp_manifest_generator = MCPManifestGenerator(logger)
         self.agents_directory = Path("agents")
         self.repository = repository
 
@@ -77,51 +89,89 @@ class AgentUploadService:
         self, file: UploadFile, agent_name: Optional[str] = None
     ) -> AgentUploadResult:
         """
-        Process uploaded .zip file and create agent
+        Process uploaded .zip file and create agent or MCP server
 
         Flow:
         1. Extract zip to temp directory
-        2. Validate agent structure
-        3. Generate capabilities.json if missing
-        4. Copy to agents directory
-        5. Create registry entry
+        2. Determine artifact name
+        3. Detect artifact type (MCP vs Agent)
+        4. Validate structure
+        5. For MCP: Generate manifest
+        6. Copy to appropriate directory
+        7. Return result
         """
-        self.logger.info(f"Processing zip upload for agent: {agent_name}")
+        self.logger.info(f"Processing zip upload for: {agent_name}")
 
         temp_dir = None
         try:
             # Extract zip to temp directory
             temp_dir = await self._extract_zip_file(file)
 
-            # Determine agent name if not provided
+            # Determine name if not provided
             if not agent_name:
                 agent_name = await _determine_agent_name(temp_dir)
 
-            # Validate agent structure
-            validation = await self.validate_agent_structure(temp_dir)
+            # STEP 1: Detect artifact type
+            detection = self.mcp_detector.detect(temp_dir)
+            
+            if detection.error:
+                # Ambiguous artifact
+                return AgentUploadResult(
+                    success=False,
+                    agent_name=agent_name,
+                    status="detection_failed",
+                    validation_errors=[detection.error],
+                )
+            
+            is_mcp = detection.is_mcp
+            self.logger.info(f"Detected artifact type: {'MCP' if is_mcp else 'Agent'}")
+            
+            # STEP 2: Validate structure based on type
+            if is_mcp:
+                validation = await self.mcp_validator.validate_mcp_structure(temp_dir)
+            else:
+                validation = await self.validate_agent_structure(temp_dir)
+            
             if not validation.is_valid:
                 return AgentUploadResult(
                     success=False,
                     agent_name=agent_name,
                     status="validation_failed",
                     validation_errors=validation.errors,
+                    is_mcp=is_mcp,
                 )
-
-            # Generate AgentCard.json if missing
-            capabilities_generated = await self._ensure_agentcard_json(
-                temp_dir, agent_name
-            )
-
-            # Copy to agents directory and get the version used
+            
+            # STEP 3: For MCP, generate manifest
+            manifest = None
+            if is_mcp:
+                self.logger.info(f"Generating manifest for MCP: {agent_name}")
+                manifest = await self.mcp_manifest_generator.generate_manifest(
+                    temp_dir, agent_name
+                )
+                
+                # Save manifest to temp directory
+                if manifest:
+                    await self.mcp_manifest_generator.save_manifest(
+                        manifest, temp_dir
+                    )
+            else:
+                # For agents, generate AgentCard.json if missing
+                manifest = None
+                _ = await self._ensure_agentcard_json(temp_dir, agent_name)
+            
+            # STEP 4: Copy to appropriate directory
             version = await self._copy_to_agents_directory(temp_dir, agent_name)
-
+            
             return AgentUploadResult(
                 success=True,
                 agent_name=agent_name,
                 status="uploaded",
-                capabilities_generated=capabilities_generated,
+                capabilities_generated=not is_mcp,
                 orchestration_triggered=False,
                 version=version,
+                is_mcp=is_mcp,
+                manifest=manifest,
+                bridge_url=self._build_mcp_bridge_url(agent_name) if is_mcp else None,
             )
 
         except Exception as e:
@@ -147,22 +197,24 @@ class AgentUploadService:
         self, directory_path: str, agent_name: Optional[str] = None
     ) -> AgentUploadResult:
         """
-        Process agent upload from a local directory path (for CLI usage)
+        Process artifact upload from a local directory path (for CLI usage)
 
         Flow:
         1. Validate directory path and structure
-        2. Generate capabilities.json if missing
-        3. Copy to agents directory
+        2. Detect artifact type (MCP vs Agent)
+        3. Validate structure based on type
+        4. For MCP: Generate manifest
+        5. Copy to agents directory
 
         Args:
-            directory_path: Path to the agent directory
-            agent_name: Optional agent name (inferred from directory if not provided)
+            directory_path: Path to the artifact directory
+            agent_name: Optional artifact name (inferred from directory if not provided)
 
         Returns:
             AgentUploadResult with deployment details
         """
         self.logger.info(
-            f"Processing directory upload for agent: {agent_name or 'auto-detect'}"
+            f"Processing directory upload for: {agent_name or 'auto-detect'}"
         )
 
         try:
@@ -184,36 +236,69 @@ class AgentUploadService:
                     validation_errors=[f"Path is not a directory: {directory_path}"],
                 )
 
-            # Determine agent name if not provided (getting from docker compose, can use directory name)
+            # Determine name if not provided
             if not agent_name:
                 agent_name = await _determine_agent_name(str(source_dir))
-                self.logger.info(f"Determined agent name: {agent_name}")
+                self.logger.info(f"Determined name: {agent_name}")
 
-            # Validate agent structure
-            validation = await self.validate_agent_structure(str(source_dir))
+            # STEP 1: Detect artifact type
+            detection = self.mcp_detector.detect(str(source_dir))
+            
+            if detection.error:
+                # Ambiguous artifact
+                return AgentUploadResult(
+                    success=False,
+                    agent_name=agent_name,
+                    status="detection_failed",
+                    validation_errors=[detection.error],
+                )
+            
+            is_mcp = detection.is_mcp
+            self.logger.info(f"Detected artifact type: {'MCP' if is_mcp else 'Agent'}")
+
+            # STEP 2: Validate structure based on type
+            if is_mcp:
+                validation = await self.mcp_validator.validate_mcp_structure(str(source_dir))
+            else:
+                validation = await self.validate_agent_structure(str(source_dir))
+            
             if not validation.is_valid:
                 return AgentUploadResult(
                     success=False,
                     agent_name=agent_name,
                     status="validation_failed",
                     validation_errors=validation.errors,
+                    is_mcp=is_mcp,
                 )
 
-            # Generate AgentCard.json if missing
-            capabilities_generated = await self._ensure_agentcard_json(
-                str(source_dir), agent_name
-            )
+            # STEP 3: For MCP, generate manifest
+            manifest = None
+            if is_mcp:
+                self.logger.info(f"Generating manifest for MCP: {agent_name}")
+                manifest = await self.mcp_manifest_generator.generate_manifest(
+                    str(source_dir), agent_name
+                )
+                
+                # Save manifest to source directory
+                if manifest:
+                    await self.mcp_manifest_generator.save_manifest(manifest, str(source_dir))
+            else:
+                # For agents, generate AgentCard.json if missing
+                _ = await self._ensure_agentcard_json(str(source_dir), agent_name)
 
-            # Copy to agents directory and get the version used
+            # STEP 4: Copy to agents directory
             version = await self._copy_to_agents_directory(str(source_dir), agent_name)
 
             return AgentUploadResult(
                 success=True,
                 agent_name=agent_name,
                 status="uploaded",
-                capabilities_generated=capabilities_generated,
+                capabilities_generated=not is_mcp,
                 orchestration_triggered=False,
                 version=version,
+                is_mcp=is_mcp,
+                manifest=manifest,
+                bridge_url=self._build_mcp_bridge_url(agent_name) if is_mcp else None,
             )
 
         except Exception as e:
@@ -496,6 +581,11 @@ class AgentUploadService:
 
         # Return the version used for directory naming
         return version
+
+    def _build_mcp_bridge_url(self, server_id: str) -> str:
+        """Build MCP bridge URL using gateway configuration."""
+        base_url = settings.GATEWAY_URL or "http://localhost:9100"
+        return f"{base_url.rstrip('/')}/router/mcp/{server_id}/tool"
 
     def __del__(self):
         """Cleanup any temporary directories"""
