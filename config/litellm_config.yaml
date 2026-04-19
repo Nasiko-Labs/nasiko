@@ -3,6 +3,22 @@
 # To switch providers, update model_list here and restart the gateway — no agent code change needed.
 
 model_list:
+  # --- OpenAI ---
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4
+    litellm_params:
+      model: openai/gpt-4
+      api_key: os.environ/OPENAI_API_KEY
+
   # --- Groq (fast inference, free tier available) ---
   - model_name: llama3
     litellm_params:
@@ -19,7 +35,18 @@ model_list:
       model: groq/gemma2-9b-it
       api_key: os.environ/GROQ_API_KEY
 
-  # --- MiniMax (native provider support) ---
+  # --- Anthropic ---
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # --- MiniMax ---
   - model_name: minimax
     litellm_params:
       model: minimax/MiniMax-M1
@@ -30,16 +57,11 @@ model_list:
       model: minimax/MiniMax-Text-01
       api_key: os.environ/MINIMAX_API_KEY
 
-  # Default alias — agents that request "gpt-4o-mini" get routed to Groq Llama
-  - model_name: gpt-4o-mini
+  # --- OpenRouter (fallback — routes to any model via one key) ---
+  - model_name: openrouter
     litellm_params:
-      model: groq/llama-3.1-8b-instant
-      api_key: os.environ/GROQ_API_KEY
-
-  - model_name: gpt-4o
-    litellm_params:
-      model: groq/llama-3.3-70b-versatile
-      api_key: os.environ/GROQ_API_KEY
+      model: openrouter/openai/gpt-4o
+      api_key: os.environ/OPENROUTER_API_KEY
 
 litellm_settings:
   # Emit OpenTelemetry spans to Phoenix for every LLM call routed through the gateway.
