@@ -16,7 +16,7 @@ dependencies = [
     "langchain-community>=0.3.27",
     "langchain-openai>=0.3.29",
     "langtrace-python-sdk>=3.8.21",
-    "nltk>=3.9.1",
+    "nltk>=3.9.4",
     "motor==3.5.1",
     "numexpr>=2.11.0",
     "openpyxl>=3.1.5",
