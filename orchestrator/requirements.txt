@@ -1,9 +1,9 @@
 pyyaml>=6.0
 redis>=5.0
 docker>=6.0
-requests>=2.31
-python-dotenv>=1.0
-aiohttp>=3.12
+requests>=2.33.0
+python-dotenv>=1.2.2
+aiohttp>=3.13.4
 astor>=0.8.1
 langtrace-python-sdk>=3.8.21
 opentelemetry-distro>=0.57b0
