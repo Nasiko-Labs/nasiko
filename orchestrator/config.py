@@ -29,6 +29,11 @@ class Config:
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
 
+    # LLM Gateway (LiteLLM) Configuration
+    LITELLM_GATEWAY_URL = os.getenv("LITELLM_GATEWAY_URL", "http://litellm-gateway:4000")
+    LITELLM_API_KEY = os.getenv("LITELLM_API_KEY", "")
+    LITELLM_MASTER_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-nasiko-master-key")
+
 
 # Legacy constants for backward compatibility
 DOCKER_NETWORK = Config.DOCKER_NETWORK

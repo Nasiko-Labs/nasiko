@@ -1,4 +1,4 @@
-.PHONY: clean-all clean-start-nasiko backend-app router orchestrator redis-listener start-nasiko help
+.PHONY: clean-all clean-start-nasiko backend-app router orchestrator redis-listener start-nasiko gateway-key help
 
 # Default target
 help:
@@ -73,3 +73,8 @@ start-nasiko:
 	@echo "Docker cleanup complete!"
 	@$(MAKE) orchestrator
 	@$(MAKE) redis-listener
+
+# Generate a virtual key for agents via the LLM gateway
+gateway-key:
+	@echo "Generating LiteLLM virtual key for agents..."
+	uv run gateway/key_provisioner.py --gateway-url http://localhost:4001

@@ -796,6 +796,10 @@ class RedisStreamListener:
         obs_env_vars = await self.get_observability_env_vars(agent_name)
         env_vars.update(obs_env_vars)
 
+        # Add LLM Gateway environment variables
+        gateway_env = await self._get_gateway_env_vars()
+        env_vars.update(gateway_env)
+
         # Add WEBHOOK_URL for n8n agents
         if upload_type == "n8n_register" and webhook_url:
             env_vars["WEBHOOK_URL"] = webhook_url
@@ -1108,6 +1112,37 @@ class RedisStreamListener:
             "TRACING_ENABLED": "true",
             "AGENT_PROJECT_NAME": agent_name,
         }
+
+    async def _get_gateway_env_vars(self) -> dict:
+        """Get LLM Gateway environment variables for agent containers.
+
+        Reads the virtual key from Redis (set by key_provisioner.py at boot)
+        and returns env vars that agents need to connect to the LiteLLM gateway.
+        """
+        gateway_url = Config.LITELLM_GATEWAY_URL
+        api_key = Config.LITELLM_API_KEY
+
+        # If no API key in env, try to read from Redis (set by key_provisioner)
+        if not api_key and self.is_connected():
+            try:
+                api_key = self.redis_client.get("litellm:agent_key") or ""
+                if api_key:
+                    self.logger.info("Read LiteLLM virtual key from Redis")
+            except Exception as e:
+                self.logger.warning(f"Could not read LiteLLM key from Redis: {e}")
+
+        # Fallback to master key if no virtual key available
+        if not api_key:
+            api_key = Config.LITELLM_MASTER_KEY
+            self.logger.info("Using LiteLLM master key as fallback for agents")
+
+        env_vars = {
+            "LITELLM_GATEWAY_URL": gateway_url,
+            "LITELLM_API_KEY": api_key,
+        }
+
+        self.logger.debug(f"Gateway env: url={gateway_url}, key={api_key[:12]}...")
+        return env_vars
 
     def stop(self):
         """Stop the listener"""

@@ -1,0 +1,24 @@
+services:
+  a2a-translator-gateway:
+    build: .
+    container_name: a2a-translator-gateway
+    environment:
+      # LLM Gateway (recommended — no hardcoded provider keys!)
+      - LITELLM_GATEWAY_URL=${LITELLM_GATEWAY_URL:-http://litellm-gateway:4000}
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-}
+      - LITELLM_MODEL=${LITELLM_MODEL:-gpt-4o-mini}
+      # Fallback: direct provider keys (only used if gateway is not configured)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

@@ -305,10 +305,11 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6006/"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/')"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 15s
 
   # ============================================================================
   # WEB FRONTEND LAYER
@@ -395,6 +396,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      # LLM Gateway — so orchestrator can inject these into deployed agents
+      LITELLM_GATEWAY_URL: http://litellm-gateway:4000
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-nasiko-master-key}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agents:/app/agents:ro
@@ -404,11 +409,99 @@ services:
       - agents-net
     command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
 
+  # ============================================================================
+  # LLM GATEWAY LAYER (LiteLLM)
+  # ============================================================================
+  litellm-db:
+    image: postgres:13
+    container_name: litellm-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "litellm"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  litellm-gateway:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-gateway
+    restart: unless-stopped
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+      phoenix-observability:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://litellm:litellm@litellm-db:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-nasiko-master-key}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-nasiko-salt-key}
+      STORE_MODEL_IN_DB: "True"
+      # Provider API keys — gateway holds these so agents don't have to
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
+      # OpenTelemetry — send traces to Phoenix
+      # Phoenix serves OTLP HTTP on port 6006 (same as UI), not 4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://phoenix-observability:6006
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_SERVICE_NAME: litellm-gateway
+    volumes:
+      - ./gateway/litellm_config.yaml:/app/config.yaml
+    ports:
+      - "${NASIKO_PORT_LITELLM:-4001}:4000"
+    command:
+      - "--config"
+      - "/app/config.yaml"
+      - "--port"
+      - "4000"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  litellm-key-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: litellm-key-init
+    depends_on:
+      litellm-gateway:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: "no"
+    environment:
+      LITELLM_GATEWAY_URL: http://litellm-gateway:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-nasiko-master-key}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./gateway:/app/gateway
+    entrypoint: ["python"]
+    command: ["/app/gateway/key_provisioner.py", "--wait"]
+
 volumes:
   mongodb-data:
   redis-data:
   kong-db-data:
   phoenix-data:
+  litellm-db-data:
 
 networks:
   app-network:

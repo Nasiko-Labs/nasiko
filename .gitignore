@@ -161,3 +161,4 @@ cython_debug/
 
 # Sensitive credentials
 superuser_credentials.json
+gateway/agent_virtual_key.json

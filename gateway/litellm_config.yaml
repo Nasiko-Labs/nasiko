@@ -1,0 +1,64 @@
+# =============================================================================
+# LiteLLM Gateway Configuration for Nasiko
+# =============================================================================
+# This config defines which LLM providers and models are available through
+# the Nasiko LLM gateway. Agents use the gateway URL + virtual key instead
+# of hardcoding provider API keys in their source code.
+#
+# Provider keys are read from environment variables — change providers by
+# editing this file and restarting the gateway container. No agent code
+# changes needed.
+# =============================================================================
+
+model_list:
+  # -------------------------------------------------------------------------
+  # OpenRouter Models (Primary — used this coz it gives free credits)
+  # -------------------------------------------------------------------------
+  - model_name: "gpt-4o"
+    litellm_params:
+      model: "openrouter/openai/gpt-4o"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: "gpt-4o-mini"
+    litellm_params:
+      model: "openrouter/openai/gpt-4o-mini"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: "nemotron-free"
+    litellm_params:
+      model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+      api_base: "https://openrouter.ai/api/v1"
+
+  # -------------------------------------------------------------------------
+  # OpenAI Direct (uncomment if you have an OpenAI key)
+  # -------------------------------------------------------------------------
+  # - model_name: "openai/gpt-4o"
+  #   litellm_params:
+  #     model: "gpt-4o"
+  #     api_key: "os.environ/OPENAI_API_KEY"
+
+  # - model_name: "openai/gpt-4o-mini"
+  #   litellm_params:
+  #     model: "gpt-4o-mini"
+  #     api_key: "os.environ/OPENAI_API_KEY"
+
+  # -------------------------------------------------------------------------
+  # MiniMax  (uncomment if you have a MiniMax key)
+  # -------------------------------------------------------------------------
+  # - model_name: "minimax/MiniMax-M2.7"
+  #   litellm_params:
+  #     model: "minimax/MiniMax-M2.7"
+  #     api_key: "os.environ/MINIMAX_API_KEY"
+  #     api_base: "os.environ/MINIMAX_BASE_URL"
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  otel: true      # Enable OpenTelemetry tracing
+
+litellm_settings:
+  callbacks: ["otel"]    # Export traces via OTEL to Phoenix
+  drop_params: true      # Silently drop unsupported params per model
+  set_verbose: false

@@ -426,6 +426,8 @@ class AgentBuilder:
                 "OPENAI_API_KEY": Config.OPENAI_API_KEY,
                 "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
                 "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
+                "LITELLM_GATEWAY_URL": Config.LITELLM_GATEWAY_URL,
+                "LITELLM_API_KEY": Config.LITELLM_API_KEY or Config.LITELLM_MASTER_KEY,
             }
             for service_name, svc_def in compose_data.get("services", {}).items():
                 if service_name == agent_folder_name and "build" in svc_def:
