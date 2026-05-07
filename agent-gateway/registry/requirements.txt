@@ -1,4 +1,4 @@
-requests==2.31.0
+requests==2.33.0
 kubernetes==28.1.0
 docker==7.0.0
 fastapi==0.104.1
