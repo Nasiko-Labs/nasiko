@@ -1,75 +1,42 @@
-.PHONY: clean-all clean-start-nasiko backend-app router orchestrator redis-listener start-nasiko help
+FROM python:3.11-slim
 
-# Default target
-help:
-	@echo "Available targets:"
-	@echo "  clean-all            - Stop all containers, remove volumes and images"
-	@echo "  clean-start-nasiko   - Clean all and start orchestrator services"
-	@echo "  start-nasiko         - Delete all volumes and run orchestrator + redis listener sequentially"
-	@echo "  backend-app          - Stop app compose, remove app backend image, start app compose, start redis listener"
-	@echo "  router               - Stop router compose, remove router image, start router compose"
-	@echo "  orchestrator         - Run orchestrator service"
-	@echo "  redis-listener       - Run redis stream listener"
-	@echo "  help                 - Show this help message"
+WORKDIR /app
 
-# Stop all containers, clear volumes and images
-clean-all:
-	@echo "Stopping all Docker containers..."
-	-docker stop $$(docker ps -aq)
-	@echo "Removing all Docker containers..."
-	-docker rm $$(docker ps -aq)
-	@echo "Removing all Docker volumes..."
-	-docker volume rm $$(docker volume ls -q)
-	@echo "Removing all Docker images..."
-	-docker rmi $$(docker images -q)
-	@echo "Docker cleanup complete!"
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
-# Clean everything and start orchestrator services
-clean-start-nasiko: clean-all
-	@$(MAKE) orchestrator
-	@$(MAKE) redis-listener
+# Copy dependency definition first (Docker layer caching)
+COPY pyproject.toml .
 
-# Stop app compose, remove app backend image, start app compose, start redis listener
-backend-app:
-	@echo "Stopping app docker compose..."
-	-docker compose -f app/docker-compose.app.yaml down
-	@echo "Removing app-nasiko-backend image..."
-	-docker rmi app-nasiko-backend
-	@echo "Starting app docker compose..."
-	-docker compose -f app/docker-compose.app.yaml up -d
-	@echo "Waiting for services to be ready..."
-	@sleep 5
-	@$(MAKE) redis-listener
-	@echo "App services restarted"
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    "pydantic>=2.0" \
+    "httpx>=0.24" \
+    "fastapi>=0.100" \
+    "uvicorn>=0.23" \
+    "tenacity>=8.0" \
+    "python-multipart>=0.0.6" \
+    "opentelemetry-api>=1.36.0" \
+    "opentelemetry-sdk>=1.36.0" \
+    "opentelemetry-exporter-otlp>=1.36.0" \
+    "opentelemetry-instrumentation-fastapi>=0.48b0" \
+    "arize-phoenix>=12.0.0" \
+    "redis"
 
-# Stop router compose, remove router image, restart router compose
-router:
-	@echo "Stopping router docker compose..."
-	-docker compose -f router/docker-compose.yml down
-	@echo "Removing router image..."
-	-docker rmi router-app
-	@echo "Starting router docker compose..."
-	-docker compose -f router/docker-compose.yml up -d
-	@echo "Router services restarted"
+# Copy application code
+COPY nasiko/ nasiko/
 
-# Run orchestrator service
-orchestrator:
-	@echo "Starting orchestrator..."
-	uv run orchestrator/orchestrator.py
+# Create /tmp/nasiko directories the app expects
+RUN mkdir -p /tmp/nasiko/uploads
 
-# Run redis stream listener
-redis-listener:
-	@echo "Starting redis stream listener..."
-	uv run orchestrator/redis_stream_listener.py
+# Expose bridge port
+EXPOSE 8000
 
-# Delete all volumes and run orchestrator + redis listener sequentially
-start-nasiko:
-	@echo "Stopping all Docker containers..."
-	-docker stop $$(docker ps -aq)
-	@echo "Removing all Docker containers..."
-	-docker rm $$(docker ps -aq)
-	@echo "Removing all Docker volumes..."
-	-docker volume rm $$(docker volume ls -q)
-	@echo "Docker cleanup complete!"
-	@$(MAKE) orchestrator
-	@$(MAKE) redis-listener
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/docs')" || exit 1
+
+# Run the bridge server
+CMD ["uvicorn", "nasiko.mcp_bridge.server:app", "--host", "0.0.0.0", "--port", "8000"]

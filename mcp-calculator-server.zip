@@ -1,0 +1,14 @@
+services:
+  calculator-agent:
+    build: .
+    container_name: calculator-agent
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

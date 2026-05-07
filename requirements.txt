@@ -1,0 +1,65 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "MCP Calculator v2",
+  "description": "A math calculator agent that performs arithmetic operations. Supports add, subtract, multiply, divide, power, and square root. Built for the Nasiko MCP Hackathon to demonstrate MCP server publishing, agent integration, and Phoenix observability.",
+  "url": "http://localhost:5000/",
+  "provider": {
+    "organization": "Nasiko MCP Hackathon",
+    "url": "https://github.com/lazyKid64/work-nasiko"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "chat_agent": false
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "skills": [
+    {
+      "id": "add",
+      "name": "Addition",
+      "description": "Add two numbers together. Example: 'add 40 and 2'",
+      "tags": ["math", "calculator", "addition"],
+      "examples": ["Add 40 and 2", "What is 100 + 200?"]
+    },
+    {
+      "id": "subtract",
+      "name": "Subtraction",
+      "description": "Subtract one number from another. Example: 'subtract 10 from 50'",
+      "tags": ["math", "calculator", "subtraction"],
+      "examples": ["Subtract 10 from 50", "What is 100 - 25?"]
+    },
+    {
+      "id": "multiply",
+      "name": "Multiplication",
+      "description": "Multiply two numbers. Example: 'multiply 6 by 7'",
+      "tags": ["math", "calculator", "multiplication"],
+      "examples": ["Multiply 6 by 7", "What is 12 times 5?"]
+    },
+    {
+      "id": "divide",
+      "name": "Division",
+      "description": "Divide one number by another with zero-division protection. Example: 'divide 100 by 4'",
+      "tags": ["math", "calculator", "division"],
+      "examples": ["Divide 100 by 4", "What is 50 / 10?"]
+    },
+    {
+      "id": "power",
+      "name": "Exponentiation",
+      "description": "Raise a number to a power. Example: '2 power 8'",
+      "tags": ["math", "calculator", "power"],
+      "examples": ["2 power 8", "3 raised to 4"]
+    },
+    {
+      "id": "sqrt",
+      "name": "Square Root",
+      "description": "Calculate the square root of a number. Example: 'sqrt 144'",
+      "tags": ["math", "calculator", "sqrt"],
+      "examples": ["Square root of 144", "sqrt 256"]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
