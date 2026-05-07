@@ -1,0 +1,104 @@
+model_list:
+  # ─── OpenAI ────────────────────────────────────────────────────────────────
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: "os.environ/OPENAI_API_KEY"
+      rpm: 500
+      tpm: 100000
+
+  - model_name: gpt-4
+    litellm_params:
+      model: openai/gpt-4
+      api_key: "os.environ/OPENAI_API_KEY"
+      rpm: 500
+      tpm: 100000
+
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: "os.environ/OPENAI_API_KEY"
+      rpm: 3000
+      tpm: 200000
+
+  # ─── Anthropic ─────────────────────────────────────────────────────────────
+  - model_name: claude-3-5-sonnet
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+      rpm: 200
+      tpm: 100000
+
+  - model_name: claude-3-haiku
+    litellm_params:
+      model: anthropic/claude-3-haiku-20240307
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+      rpm: 300
+      tpm: 150000
+
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-1.5-flash
+      api_key: "os.environ/GEMINI_API_KEY"
+      rpm: 1000
+      tpm: 1000000
+
+  - model_name: gemini-pro
+    litellm_params:
+      model: gemini/gemini-1.5-pro
+      api_key: "os.environ/GEMINI_API_KEY"
+      rpm: 360
+      tpm: 500000
+
+  - model_name: gemini-2-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: "os.environ/GEMINI_API_KEY"
+      rpm: 1000
+      tpm: 1000000
+
+  # Groq (very fast, cheap inference)
+  - model_name: groq-llama3
+    litellm_params:
+      model: groq/llama3-8b-8192
+      api_key: "os.environ/GROQ_API_KEY"
+      rpm: 30
+      tpm: 14400
+
+  - model_name: groq-mixtral
+    litellm_params:
+      model: groq/mixtral-8x7b-32768
+      api_key: "os.environ/GROQ_API_KEY"
+      rpm: 30
+      tpm: 14400
+
+router_settings:
+  routing_strategy: simple-shuffle
+  enable_pre_call_checks: true
+  timeout: 60
+  num_retries: 3
+  fallbacks:
+    - gemini-flash:
+        - gpt-3.5-turbo
+        - claude-3-haiku
+
+# ─── Virtual Keys ────────────────────────────────────────────────────────────
+virtual_key_defaults:
+  max_budget: 100.0
+  budget_duration: "30d"
+  tpm_limit: 100000
+  rpm_limit: 1000
+  allowed_models: null
+
+# ─── General ─────────────────────────────────────────────────────────────────
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  proxy_batch_write_at: 60
+  database_connection_pool_limit: 10
+  ui_access_mode: "admin"
+  enable_ratelimiting: true
+
+# ─── Observability (OpenTelemetry → Arize Phoenix) ───────────────────────────
+litellm_settings:
+  redact_messages_in_logs: false
+  telemetry: false

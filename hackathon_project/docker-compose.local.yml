@@ -1,0 +1,104 @@
+version: '3.8'
+
+# Combined local stack: LiteLLM gateway + Nasiko agent
+# Start everything: make start-nasiko
+# Stop everything:  make stop-nasiko
+
+services:
+
+  # ── LiteLLM Gateway ────────────────────────────────────────────────────────
+  litellm-gateway:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-gateway
+    ports:
+      - "4000:4000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:-litellm}@postgres:5432/litellm
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    volumes:
+      - ./hackathon/config/gateway-config.yaml:/app/config.yaml
+    command: --config /app/config.yaml --port 4000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nasiko-local
+    restart: unless-stopped
+
+  # ── PostgreSQL (LiteLLM usage tracking) ────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: litellm-postgres
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-litellm}
+      POSTGRES_DB: litellm
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - nasiko-local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis (caching) ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: litellm-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - nasiko-local
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Nasiko-Compliant Gateway Agent ─────────────────────────────────────────
+  nasiko-agent:
+    build:
+      context: ./hackathon/nasiko-agent
+      dockerfile: Dockerfile
+    container_name: gateway-demo-agent
+    ports:
+      - "8010:8000"
+    environment:
+      # Runtime injection — no provider keys here, only virtual key
+      - GATEWAY_URL=http://litellm-gateway:4000
+      - GATEWAY_VIRTUAL_KEY=${GATEWAY_VIRTUAL_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-gemini-flash}
+    networks:
+      - nasiko-local
+    depends_on:
+      - litellm-gateway
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+networks:
+  nasiko-local:
+    driver: bridge
+    name: nasiko-local-network
+
+volumes:
+  postgres_data:
+  redis_data:

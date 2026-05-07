@@ -156,6 +156,9 @@ cython_debug/
 !*env.example
 .nasiko-local.env
 
+hackathon_project/hackathon/.env.gateway
+hackathon_project/.env.gateway
+
 # macOS files
 .DS_Store
 

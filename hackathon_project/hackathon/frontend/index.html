@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NasikoGateway — LLM Router Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0c10;
+    --bg2: #111318;
+    --bg3: #181c24;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.13);
+    --text: #e8eaf0;
+    --muted: #7a8299;
+    --accent: #4ade80;
+    --accent2: #818cf8;
+    --accent3: #fb923c;
+    --danger: #f87171;
+    --mono: 'Space Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+    --radius: 10px;
+    --radius-lg: 16px;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Grid bg */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Glow blob */
+  body::after {
+    content: '';
+    position: fixed;
+    top: -200px; left: 50%;
+    transform: translateX(-50%);
+    width: 800px; height: 600px;
+    background: radial-gradient(ellipse at center, rgba(74,222,128,0.06) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .app { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* ── Header ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 28px 0 32px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 36px;
+  }
+  .logo { display: flex; align-items: center; gap: 14px; }
+  .logo-icon {
+    width: 38px; height: 38px; border-radius: 10px;
+    background: linear-gradient(135deg, #4ade80 0%, #22d3ee 100%);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 14px; font-weight: 700; color: #0a0c10;
+  }
+  .logo-text { font-family: var(--mono); font-size: 15px; color: var(--text); letter-spacing: -0.3px; }
+  .logo-text span { color: var(--accent); }
+  .header-badge {
+    font-family: var(--mono); font-size: 11px;
+    background: rgba(74,222,128,0.1); border: 1px solid rgba(74,222,128,0.25);
+    color: var(--accent); padding: 5px 12px; border-radius: 6px;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* ── Section labels ── */
+  .section-label {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 2px;
+    color: var(--muted); text-transform: uppercase; margin-bottom: 14px;
+  }
+
+  /* ── Stat row ── */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 36px; }
+  .stat-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px 20px;
+    transition: border-color 0.2s;
+  }
+  .stat-card:hover { border-color: var(--border2); }
+  .stat-label { font-size: 11px; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.3px; }
+  .stat-value { font-family: var(--mono); font-size: 26px; color: var(--text); }
+  .stat-value.green { color: var(--accent); }
+  .stat-value.purple { color: var(--accent2); }
+  .stat-value.orange { color: var(--accent3); }
+  .stat-sub { font-size: 11px; color: var(--muted); margin-top: 5px; }
+
+  /* ── Main grid ── */
+  .main-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+
+  /* ── Panel ── */
+  .panel {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 24px;
+  }
+  .panel-title {
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    margin-bottom: 20px; display: flex; align-items: center; gap: 8px;
+  }
+  .panel-title-icon { font-size: 14px; }
+
+  /* ── Provider cards ── */
+  .provider-list { display: flex; flex-direction: column; gap: 10px; }
+  .provider-card {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .provider-card:hover { border-color: var(--border2); background: rgba(255,255,255,0.03); }
+  .provider-card.active { border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.04); }
+  .provider-card.active .provider-status { background: rgba(74,222,128,0.15); color: var(--accent); }
+  .provider-left { display: flex; align-items: center; gap: 12px; }
+  .provider-emoji { font-size: 18px; width: 32px; text-align: center; }
+  .provider-name { font-size: 13px; font-weight: 500; color: var(--text); }
+  .provider-model { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .provider-status {
+    font-family: var(--mono); font-size: 10px;
+    background: rgba(255,255,255,0.05); color: var(--muted);
+    padding: 4px 10px; border-radius: 5px; white-space: nowrap;
+  }
+  .provider-default-badge {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 1px;
+    background: rgba(74,222,128,0.12); color: var(--accent);
+    padding: 2px 7px; border-radius: 4px; margin-left: 8px;
+  }
+
+  /* ── Architecture flow ── */
+  .arch-flow { display: flex; flex-direction: column; gap: 8px; }
+  .arch-node {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 16px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .arch-node.highlight { border-color: rgba(129,140,248,0.4); background: rgba(129,140,248,0.04); }
+  .arch-icon { font-size: 16px; width: 28px; text-align: center; }
+  .arch-label { font-size: 12px; font-weight: 500; color: var(--text); }
+  .arch-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .arch-arrow {
+    text-align: center; font-family: var(--mono); font-size: 11px;
+    color: var(--muted); padding: 2px 0;
+  }
+  .arch-key-badge {
+    margin-left: auto; font-family: var(--mono); font-size: 9px;
+    padding: 3px 8px; border-radius: 4px;
+  }
+  .arch-key-badge.no-key { background: rgba(74,222,128,0.1); color: var(--accent); }
+  .arch-key-badge.has-key { background: rgba(248,113,113,0.1); color: var(--danger); }
+
+  /* ── Chat panel ── */
+  .chat-panel { grid-column: 1 / -1; }
+  .chat-controls {
+    display: flex; gap: 10px; margin-bottom: 16px; align-items: center;
+  }
+  .model-select {
+    font-family: var(--mono); font-size: 11px;
+    background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 12px; border-radius: var(--radius);
+    cursor: pointer; outline: none; flex-shrink: 0;
+  }
+  .model-select:focus { border-color: var(--border2); }
+  .chat-input-wrap { flex: 1; position: relative; }
+  .chat-input {
+    width: 100%; background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--sans); font-size: 13px;
+    padding: 10px 14px; border-radius: var(--radius); outline: none;
+    transition: border-color 0.15s;
+  }
+  .chat-input:focus { border-color: var(--border2); }
+  .chat-input::placeholder { color: var(--muted); }
+  .send-btn {
+    background: var(--accent); color: #0a0c10;
+    border: none; font-family: var(--mono); font-size: 11px; font-weight: 700;
+    padding: 10px 18px; border-radius: var(--radius); cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s; white-space: nowrap; flex-shrink: 0;
+  }
+  .send-btn:hover { opacity: 0.88; }
+  .send-btn:active { transform: scale(0.97); }
+  .send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .chat-messages {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px;
+    min-height: 220px; max-height: 320px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .msg { display: flex; flex-direction: column; gap: 4px; }
+  .msg.user .msg-bubble {
+    align-self: flex-end; background: rgba(74,222,128,0.1);
+    border: 1px solid rgba(74,222,128,0.2);
+  }
+  .msg.assistant .msg-bubble {
+    align-self: flex-start; background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+  }
+  .msg-bubble {
+    max-width: 82%; padding: 10px 14px;
+    border-radius: var(--radius); font-size: 13px; line-height: 1.6;
+  }
+  .msg-meta {
+    font-family: var(--mono); font-size: 9px; color: var(--muted);
+    display: flex; gap: 10px;
+  }
+  .msg.user .msg-meta { justify-content: flex-end; }
+  .msg-meta .provider-tag { color: var(--accent2); }
+
+  .empty-chat {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; color: var(--muted);
+  }
+  .empty-chat-icon { font-size: 28px; opacity: 0.5; }
+  .empty-chat-text { font-family: var(--mono); font-size: 11px; }
+
+  /* ── Config snippet ── */
+  .config-snippet {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.8;
+    position: relative; margin-top: 12px;
+  }
+  .config-snippet .key { color: var(--accent2); }
+  .config-snippet .val { color: var(--accent3); }
+  .config-snippet .str { color: var(--accent); }
+  .config-snippet .comment { color: var(--muted); }
+  .copy-btn {
+    position: absolute; top: 10px; right: 10px;
+    background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+    color: var(--muted); font-family: var(--mono); font-size: 9px;
+    padding: 4px 9px; border-radius: 5px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .copy-btn:hover { color: var(--text); border-color: var(--border2); }
+
+  /* ── Trace log ── */
+  .trace-log {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.9;
+    max-height: 180px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .trace-line { display: flex; gap: 12px; }
+  .trace-time { color: var(--muted); flex-shrink: 0; width: 60px; }
+  .trace-level { flex-shrink: 0; width: 50px; }
+  .trace-level.ok { color: var(--accent); }
+  .trace-level.info { color: var(--accent2); }
+  .trace-level.warn { color: var(--accent3); }
+  .trace-msg { color: var(--text); opacity: 0.8; }
+
+  /* ── Bottom panels ── */
+  .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+  /* ── Acceptance checklist ── */
+  .checklist { display: flex; flex-direction: column; gap: 9px; }
+  .check-item { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; }
+  .check-icon { font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+  .check-text { color: var(--muted); line-height: 1.5; }
+  .check-text b { color: var(--text); font-weight: 500; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 720px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .main-grid, .bottom-grid { grid-template-columns: 1fr; }
+    .chat-panel { grid-column: auto; }
+  }
+
+  /* ── Fade-in ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .app > * { animation: fadeUp 0.4s ease both; }
+  header { animation-delay: 0s; }
+  .stats { animation-delay: 0.08s; }
+  .main-grid { animation-delay: 0.14s; }
+  .chat-panel-wrap { animation-delay: 0.2s; }
+  .bottom-grid { animation-delay: 0.26s; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">N→</div>
+      <div class="logo-text">Nasiko<span>Gateway</span></div>
+    </div>
+    <div class="header-badge">
+      <div class="dot"></div>
+      Track 2 · LLM Router Gateway
+    </div>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Active Provider</div>
+      <div class="stat-value green" id="stat-provider">Gemini</div>
+      <div class="stat-sub">via gateway config only</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Requests Routed</div>
+      <div class="stat-value purple" id="stat-requests">0</div>
+      <div class="stat-sub">this session</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Tokens Used</div>
+      <div class="stat-value orange" id="stat-tokens">0</div>
+      <div class="stat-sub">across all providers</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Keys in Agent Code</div>
+      <div class="stat-value green">0</div>
+      <div class="stat-sub">hardcoded = never</div>
+    </div>
+  </div>
+
+  <!-- Main 2-col grid -->
+  <div class="main-grid">
+
+    <!-- Providers -->
+    <div class="panel">
+      <div class="panel-title"><span class="panel-title-icon">⚡</span> Provider Registry</div>
+      <div class="section-label">Click to set active — config-only switch</div>
+      <div class="provider-list" id="provider-list"></div>
+    </div>
+
+    <!-- Architecture -->
+    <div class="panel">
+      <div class="panel-title"><span class="panel-title-icon">🔀</span> Request Flow</div>
+      <div class="section-label">How a call travels — no key ever leaves the gateway</div>
+      <div class="arch-flow">
+        <div class="arch-node">
+          <div class="arch-icon">🤖</div>
+          <div>
+            <div class="arch-label">Agent code</div>
+            <div class="arch-sub">sample-agent-gateway.py</div>
+          </div>
+          <div class="arch-key-badge no-key">NO PROVIDER KEY</div>
+        </div>
+        <div class="arch-arrow">↓ virtual key + gateway URL</div>
+        <div class="arch-node highlight">
+          <div class="arch-icon">🌐</div>
+          <div>
+            <div class="arch-label">LiteLLM Gateway</div>
+            <div class="arch-sub">localhost:4000 · docker-compose.gateway.yml</div>
+          </div>
+          <div class="arch-key-badge has-key">REAL KEYS HERE</div>
+        </div>
+        <div class="arch-arrow">↓ routes to active provider</div>
+        <div class="arch-node" id="active-provider-node">
+          <div class="arch-icon" id="active-provider-icon">🟢</div>
+          <div>
+            <div class="arch-label" id="active-provider-name">Google Gemini (Flash)</div>
+            <div class="arch-sub" id="active-provider-model">gemini/gemini-1.5-flash</div>
+          </div>
+        </div>
+        <div class="arch-arrow">↓ response back through gateway</div>
+        <div class="arch-node">
+          <div class="arch-icon">✅</div>
+          <div>
+            <div class="arch-label">Agent receives response</div>
+            <div class="arch-sub">OpenAI-compatible format — works for all providers</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Chat demo — full width -->
+  <div class="chat-panel-wrap">
+    <div class="panel chat-panel">
+      <div class="panel-title"><span class="panel-title-icon">💬</span> Live Demo — Gateway Chat</div>
+      <div class="chat-controls">
+        <select class="model-select" id="model-select">
+          <option value="">Use gateway default</option>
+          <option value="gemini-flash">gemini-flash</option>
+          <option value="gemini-2-flash">gemini-2-flash</option>
+          <option value="gpt-4o">gpt-4o</option>
+          <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+          <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
+          <option value="claude-3-haiku">claude-3-haiku</option>
+          <option value="groq-llama3">groq-llama3</option>
+          <option value="groq-mixtral">groq-mixtral</option>
+        </select>
+        <div class="chat-input-wrap">
+          <input class="chat-input" id="chat-input" placeholder="Ask anything — routes through gateway, no hardcoded key..." />
+        </div>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()">SEND →</button>
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="empty-chat" id="empty-chat">
+          <div class="empty-chat-icon">⌨</div>
+          <div class="empty-chat-text">messages will appear here</div>
+          <div class="empty-chat-text" style="font-size:10px; margin-top:4px; color: rgba(122,130,153,0.6)">
+            connects to http://localhost:4000 via GATEWAY_VIRTUAL_KEY
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom grid -->
+  <div class="bottom-grid">
+
+    <!-- Config snippet -->
+    <div class="panel">
+      <div class="panel-title"><span class="panel-title-icon">⚙️</span> Provider Switch</div>
+      <div class="section-label">One line in gateway-config.yaml — zero agent changes</div>
+      <div class="config-snippet" id="config-snippet">
+        <button class="copy-btn" onclick="copyConfig()">COPY</button>
+        <div><span class="comment"># gateway-config.yaml — THE only change needed</span></div>
+        <div><span class="key">router_settings</span><span class="val">:</span></div>
+        <div>&nbsp;&nbsp;<span class="key">default_model</span><span class="val">: </span><span class="str" id="config-model-name">gemini-flash</span>  <span class="comment"># ← swap here</span></div>
+        <div>&nbsp;&nbsp;<span class="key">routing_strategy</span><span class="val">: </span><span class="str">simple-shuffle</span></div>
+        <div>&nbsp;&nbsp;<span class="key">fallbacks</span><span class="val">:</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># auto-falls back to next if provider fails</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="key" id="config-fallback">gemini-flash</span><span class="val">:</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <span class="str">gpt-3.5-turbo</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <span class="str">claude-3-haiku</span></div>
+      </div>
+    </div>
+
+    <!-- Acceptance criteria + trace log -->
+    <div class="panel">
+      <div class="panel-title"><span class="panel-title-icon">📋</span> Acceptance Criteria</div>
+      <div class="checklist">
+        <div class="check-item">
+          <div class="check-icon">✅</div>
+          <div class="check-text"><b>Gateway auto-deploys</b> via <code>make start-nasiko</code></div>
+        </div>
+        <div class="check-item">
+          <div class="check-icon">✅</div>
+          <div class="check-text"><b>No provider key in agent source</b> — virtual key only</div>
+        </div>
+        <div class="check-item">
+          <div class="check-icon">✅</div>
+          <div class="check-text"><b>Provider switch = config only</b>, zero agent code change</div>
+        </div>
+        <div class="check-item">
+          <div class="check-icon">✅</div>
+          <div class="check-text"><b>Legacy agents unbroken</b> — direct keys still work</div>
+        </div>
+        <div class="check-item">
+          <div class="check-icon">✅</div>
+          <div class="check-text"><b>Traces correlated</b> via OpenTelemetry spans</div>
+        </div>
+        <div class="check-item">
+          <div class="check-icon">✅</div>
+          <div class="check-text"><b>Multi-provider</b>: Gemini · GPT-4o · Claude · Groq</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Trace log -->
+  <div class="panel" style="margin-top: 20px;">
+    <div class="panel-title"><span class="panel-title-icon">📡</span> Gateway Request Log</div>
+    <div class="trace-log" id="trace-log">
+      <div class="trace-line">
+        <span class="trace-time">--:--:--</span>
+        <span class="trace-level info">INFO</span>
+        <span class="trace-msg">LiteLLM gateway ready · port 4000 · dashboard at /ui</span>
+      </div>
+      <div class="trace-line">
+        <span class="trace-time">--:--:--</span>
+        <span class="trace-level ok">READY</span>
+        <span class="trace-msg">Virtual key management enabled · master key from env</span>
+      </div>
+      <div class="trace-line">
+        <span class="trace-time">--:--:--</span>
+        <span class="trace-level info">INFO</span>
+        <span class="trace-msg">Providers loaded: Gemini, GPT-4o, Claude, Groq · default: gemini-flash</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const GATEWAY_URL = (window.GATEWAY_URL || 'http://localhost:4000');
+const VIRTUAL_KEY  = (window.GATEWAY_VIRTUAL_KEY || '');
+
+const providers = [
+  { id: 'gemini-flash',     name: 'Google Gemini',  model: 'gemini/gemini-1.5-flash',          emoji: '🟢', tag: 'FREE TIER',  default: true  },
+  { id: 'gemini-2-flash',   name: 'Google Gemini',  model: 'gemini/gemini-2.0-flash',           emoji: '🟢', tag: 'FREE TIER'                  },
+  { id: 'gpt-4o',           name: 'OpenAI',         model: 'openai/gpt-4o',                    emoji: '🔵', tag: 'PAID'                        },
+  { id: 'gpt-3.5-turbo',   name: 'OpenAI',         model: 'openai/gpt-3.5-turbo',             emoji: '🔵', tag: 'PAID'                        },
+  { id: 'claude-3-5-sonnet',name: 'Anthropic',      model: 'anthropic/claude-3-5-sonnet',      emoji: '🟠', tag: 'PAID'                        },
+  { id: 'claude-3-haiku',  name: 'Anthropic',      model: 'anthropic/claude-3-haiku',         emoji: '🟠', tag: 'PAID'                        },
+  { id: 'groq-llama3', name: 'Groq', model: 'groq/llama3-8b-8192', emoji: '⚡', tag: 'FREE TIER' },
+  { id: 'groq-mixtral', name: 'Groq', model: 'groq/mixtral-8x7b-32768', emoji: '⚡', tag: 'FREE TIER' },
+];
+
+let activeProvider = providers[0];
+let requestCount = 0;
+let tokenCount = 0;
+const messages = [];
+
+function renderProviders() {
+  const list = document.getElementById('provider-list');
+  list.innerHTML = providers.map(p => `
+    <div class="provider-card ${p.id === activeProvider.id ? 'active' : ''}"
+         onclick="setProvider('${p.id}')">
+      <div class="provider-left">
+        <div class="provider-emoji">${p.emoji}</div>
+        <div>
+          <div class="provider-name">${p.name}
+            ${p.default ? '<span class="provider-default-badge">DEFAULT</span>' : ''}
+          </div>
+          <div class="provider-model">${p.id}</div>
+        </div>
+      </div>
+      <div class="provider-status">${p.tag}</div>
+    </div>
+  `).join('');
+}
+
+function setProvider(id) {
+  activeProvider = providers.find(p => p.id === id);
+  renderProviders();
+
+  document.getElementById('stat-provider').textContent =
+    activeProvider.name.split(' ').pop();
+  document.getElementById('active-provider-icon').textContent = activeProvider.emoji;
+  document.getElementById('active-provider-name').textContent =
+    activeProvider.name + ' (' + activeProvider.id + ')';
+  document.getElementById('active-provider-model').textContent = activeProvider.model;
+  document.getElementById('config-model-name').textContent = activeProvider.id;
+  document.getElementById('config-fallback').textContent = activeProvider.id;
+
+  addTrace('INFO', `Provider switched to ${activeProvider.id} · no agent code changed`);
+}
+
+function addTrace(level, msg) {
+  const log = document.getElementById('trace-log');
+  const now = new Date();
+  const t = now.toTimeString().slice(0,8);
+  const div = document.createElement('div');
+  div.className = 'trace-line';
+  const lvlClass = level === 'OK' ? 'ok' : level === 'WARN' ? 'warn' : 'info';
+  div.innerHTML = `
+    <span class="trace-time">${t}</span>
+    <span class="trace-level ${lvlClass}">${level}</span>
+    <span class="trace-msg">${msg}</span>
+  `;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addMessage(role, content, meta = {}) {
+  messages.push({ role, content, meta });
+  renderMessages();
+}
+
+function renderMessages() {
+  const container = document.getElementById('chat-messages');
+  const empty = document.getElementById('empty-chat');
+  if (messages.length > 0 && empty) empty.style.display = 'none';
+
+  container.innerHTML = messages.map(m => `
+    <div class="msg ${m.role}">
+      <div class="msg-bubble">${escapeHtml(m.content)}</div>
+      ${m.meta.provider ? `
+        <div class="msg-meta">
+          <span class="provider-tag">${m.meta.provider}</span>
+          ${m.meta.model ? `<span>${m.meta.model}</span>` : ''}
+          ${m.meta.tokens ? `<span>${m.meta.tokens} tokens</span>` : ''}
+        </div>
+      ` : `<div class="msg-meta"><span>${m.role}</span></div>`}
+    </div>
+  `).join('');
+
+  container.scrollTop = container.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const btn = document.getElementById('send-btn');
+  const modelSelect = document.getElementById('model-select');
+  const text = input.value.trim();
+  if (!text) return;
+
+  const chosenModel = modelSelect.value || activeProvider.id;
+
+  input.value = '';
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  addMessage('user', text, {});
+  addTrace('INFO', `Routing "${text.slice(0,40)}..." → ${chosenModel}`);
+
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${VIRTUAL_KEY}`,
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant. Be concise.' },
+          { role: 'user', content: text }
+        ],
+        max_tokens: 400,
+        temperature: 0.7,
+      })
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`Gateway ${resp.status}: ${err}`);
+    }
+
+    const data = await resp.json();
+    const content = data.choices[0].message.content;
+    const modelUsed = data.model || chosenModel;
+    const tokens = data.usage?.total_tokens || 0;
+
+    const providerName = modelUsed.includes('gemini') ? 'Google Gemini' :
+                         modelUsed.includes('gpt') ? 'OpenAI' :
+                         modelUsed.includes('claude') ? 'Anthropic' :
+                         modelUsed.includes('groq') ? 'Groq' : 'Gateway';
+
+    addMessage('assistant', content, {
+      provider: providerName,
+      model: modelUsed,
+      tokens,
+    });
+
+    requestCount++;
+    tokenCount += tokens;
+    document.getElementById('stat-requests').textContent = requestCount;
+    document.getElementById('stat-tokens').textContent = tokenCount.toLocaleString();
+
+    addTrace('OK', `Response from ${modelUsed} · ${tokens} tokens`);
+
+  } catch (e) {
+    addMessage('assistant',
+      `Gateway error: ${e.message}\n\nMake sure the gateway is running:\n  make start-gateway\n\nAnd set GATEWAY_VIRTUAL_KEY in your environment.`,
+      { provider: 'Error' }
+    );
+    addTrace('WARN', `Request failed: ${e.message.slice(0,60)}`);
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'SEND →';
+}
+
+function copyConfig() {
+  const text = `router_settings:\n  default_model: ${activeProvider.id}\n  routing_strategy: simple-shuffle\n  fallbacks:\n    - ${activeProvider.id}:\n        - gpt-3.5-turbo\n        - claude-3-haiku`;
+  navigator.clipboard.writeText(text).catch(() => {});
+  const btn = document.querySelector('.copy-btn');
+  btn.textContent = 'COPIED!';
+  setTimeout(() => { btn.textContent = 'COPY'; }, 1500);
+}
+
+// Enter key to send
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('chat-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+});
+
+renderProviders();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+version: '3.8'
+services:
+  gateway-demo-agent:
+    build: .
+    container_name: gateway-demo-agent
+    ports:
+      - "8010:8000"
+    environment:
+      - GATEWAY_URL=${GATEWAY_URL:-http://litellm-gateway:4000}
+      - GATEWAY_VIRTUAL_KEY=${GATEWAY_VIRTUAL_KEY}
+      - LLM_MODEL=${LLM_MODEL:-gemini-flash}
+    networks:
+      - gateway-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  gateway-network:
+    external: true
+    name: hackathon-gateway-network
