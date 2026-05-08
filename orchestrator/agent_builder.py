@@ -13,6 +13,7 @@ from docker_utils import run_cmd
 from registry_manager import RegistryManager
 from instrumentation_injector import InstrumentationInjector
 from config import AGENTS_DIRECTORY, DOCKER_NETWORK, Config
+from gateway_key_manager import GatewayKeyManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class AgentBuilder:
         self.registry_manager = RegistryManager()
         self.injector = InstrumentationInjector()
         self.logger = logger or logging.getLogger(__name__)
+        self.key_manager = GatewayKeyManager() if Config.LITELLM_ENABLED else None
 
     def instrument_and_build_agents(self, owner_id=None):
         """Instrument and build all agents"""
@@ -72,6 +74,9 @@ class AgentBuilder:
                 agent_temp_path, agent_folder_name, None
             ):
                 return False
+
+            # Inject Phoenix OTEL config so agent spans link to gateway spans in Phoenix
+            self.injector.inject_phoenix_otel_config(agent_temp_path, agent_folder_name)
 
             # Deploy agent with updated compose
             if not self._deploy_agent(agent_temp_path, agent_folder_name):
@@ -171,6 +176,9 @@ class AgentBuilder:
                     "success": False,
                     "error": f"Failed to build Docker image for {agent_name}",
                 }
+
+            # Inject Phoenix OTEL config so agent spans link to gateway spans in Phoenix
+            self.injector.inject_phoenix_otel_config(agent_temp_path, agent_name)
 
             # Deploy agent with updated compose
             if not self._deploy_agent(agent_temp_path, agent_name):
@@ -444,6 +452,48 @@ class AgentBuilder:
                                 continue
                         new_env.append(item)
                     svc_def["environment"] = new_env
+
+                # Inject gateway env vars using setdefault semantics — never override
+                # existing values so legacy agents with direct keys continue to work.
+                # When LITELLM_ENABLED, mint a per-agent key (falls back to virtual-key
+                # if the gateway is not yet reachable). When disabled, skip gateway injection
+                # entirely so agents receive direct provider keys as before.
+                if Config.LITELLM_ENABLED:
+                    agent_key = (
+                        self.key_manager.mint_key_for_agent(agent_folder_name)
+                        if self.key_manager
+                        else Config.LITELLM_MASTER_KEY
+                    )
+                    gateway_defaults = {
+                        "LITELLM_BASE_URL": f"{Config.LITELLM_URL}/v1",
+                        "LITELLM_VIRTUAL_KEY": agent_key,
+                        "LITELLM_DEFAULT_MODEL": Config.LITELLM_DEFAULT_MODEL,
+                        # OpenAI-SDK-compatible aliases so unmodified agents route through gateway
+                        "OPENAI_BASE_URL": f"{Config.LITELLM_URL}/v1",
+                        "OPENAI_API_KEY": agent_key,
+                        # OTEL env vars — picked up by phoenix_otel.py and any OTEL-aware code.
+                        # OTEL_SERVICE_NAME identifies the agent in Phoenix traces.
+                        # OTEL_PROPAGATORS ensures W3C traceparent is read/written on HTTP calls.
+                        "OTEL_SERVICE_NAME": agent_folder_name,
+                        "OTEL_PROPAGATORS": "tracecontext,baggage",
+                        "PHOENIX_COLLECTOR_ENDPOINT": "http://phoenix-observability:6006/v1/traces",
+                        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://phoenix-observability:4318",
+                    }
+                    env = svc_def.get("environment", [])
+                    if isinstance(env, dict):
+                        for key, value in gateway_defaults.items():
+                            env.setdefault(key, value)
+                        svc_def["environment"] = env
+                    elif isinstance(env, list):
+                        existing_keys = {
+                            item.split("=")[0]
+                            for item in env
+                            if isinstance(item, str) and "=" in item
+                        }
+                        for key, value in gateway_defaults.items():
+                            if key not in existing_keys:
+                                env.append(f"{key}={value}")
+                        svc_def["environment"] = env
 
             # Save updated compose
             with open(compose_path, "w") as f:

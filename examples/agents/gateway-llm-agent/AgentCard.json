@@ -1,0 +1,14 @@
+{
+  "name": "gateway-llm-agent",
+  "description": "Example agent that routes LLM calls through the Nasiko LiteLLM gateway. No provider API keys stored in source.",
+  "version": "0.1.0",
+  "capabilities": ["chat"],
+  "endpoints": {
+    "chat": "/chat",
+    "health": "/health"
+  },
+  "gateway": {
+    "base_url": "http://litellm:4000/v1",
+    "auth": "virtual-key"
+  }
+}

@@ -1,0 +1,17 @@
+services:
+  gateway-llm-agent:
+    build: .
+    container_name: gateway-llm-agent
+    restart: unless-stopped
+    ports:
+      - "8100:8000"
+    environment:
+      # OPENAI_BASE_URL and OPENAI_API_KEY are injected by the Nasiko orchestrator.
+      # Do NOT set real provider keys here — use the gateway instead.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://litellm:4000/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-virtual-key}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
