@@ -775,10 +775,39 @@ class RedisStreamListener:
         env_vars = {
             "AGENT_NAME": agent_name,
             "OWNER_ID": owner_id or "",
-            "OPENAI_API_KEY": Config.OPENAI_API_KEY,
-            "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
-            "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
         }
+
+        # Mint a virtual key via LiteLLM Admin API
+        try:
+            import time
+            import json
+            import urllib.request
+            import urllib.error
+            gateway_url = "http://litellm-gateway:4000/key/generate"
+            headers = {
+                "Authorization": "Bearer sk-nasiko-litellm-master-key",
+                "Content-Type": "application/json"
+            }
+            data = json.dumps({"alias": agent_name}).encode('utf-8')
+            for attempt in range(5):
+                try:
+                    req = urllib.request.Request(gateway_url, data=data, headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            resp_data = json.loads(resp.read().decode('utf-8'))
+                            virtual_key = resp_data.get("key")
+                            env_vars["LITELLM_VIRTUAL_KEY"] = virtual_key
+                            env_vars["GATEWAY_BASE_URL"] = "http://litellm-gateway:4000"
+                            self.logger.info(f"Minted dynamic LiteLLM virtual key for {agent_name}")
+                            break
+                except urllib.error.HTTPError as e:
+                    self.logger.warning(f"Failed to mint virtual key: {e.code}")
+                    break
+                except Exception as e:
+                    self.logger.warning(f"LiteLLM gateway unreachable, attempt {attempt + 1}/5. ({e})")
+                    time.sleep(1)
+        except Exception as key_err:
+            self.logger.warning(f"Error during key minting: {key_err}")
 
         # Load agent-specific env vars from its .env file if present
         if agent_source_path:

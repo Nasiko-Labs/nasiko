@@ -420,13 +420,41 @@ class AgentBuilder:
                 if DOCKER_NETWORK not in svc_def["networks"]:
                     svc_def["networks"].append(DOCKER_NETWORK)
 
-            # Update services to use pre-built instrumented image and inject API keys
+            # Update services to use pre-built instrumented image
             image_tag = f"{agent_folder_name}_instrumented"
-            api_key_env = {
-                "OPENAI_API_KEY": Config.OPENAI_API_KEY,
-                "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
-                "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
+            # Removed direct API key injection to enforce LiteLLM gateway usage
+            api_key_env = {}
+
+            # Mint a virtual key via LiteLLM Admin API
+            virtual_key = None
+            import time
+            import json
+            import urllib.request
+            import urllib.error
+            
+            gateway_url = "http://litellm-gateway:4000/key/generate"
+            headers = {
+                "Authorization": "Bearer sk-nasiko-litellm-master-key",
+                "Content-Type": "application/json"
             }
+            data = json.dumps({"alias": agent_folder_name}).encode('utf-8')
+            
+            for attempt in range(5):
+                try:
+                    req = urllib.request.Request(gateway_url, data=data, headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            resp_data = json.loads(resp.read().decode('utf-8'))
+                            virtual_key = resp_data.get("key")
+                            logger.info(f"Minted dynamic LiteLLM virtual key for {agent_folder_name}")
+                            break
+                except urllib.error.HTTPError as e:
+                    logger.warning(f"Failed to mint virtual key: {e.code} {e.read().decode('utf-8', errors='ignore')}")
+                    break
+                except Exception as e:
+                    logger.warning(f"LiteLLM gateway unreachable, attempt {attempt + 1}/5. Retrying in 3s... ({e})")
+                    time.sleep(3)
+
             for service_name, svc_def in compose_data.get("services", {}).items():
                 if service_name == agent_folder_name and "build" in svc_def:
                     svc_def.pop("build", None)
@@ -434,6 +462,10 @@ class AgentBuilder:
 
                 # Inject actual API key values directly (bypasses yaml/shell substitution issues)
                 env = svc_def.get("environment", [])
+                if isinstance(env, dict):
+                    # convert dict notation to list
+                    env = [f"{k}={v}" for k,v in env.items()]
+                
                 if isinstance(env, list):
                     new_env = []
                     for item in env:
@@ -443,6 +475,12 @@ class AgentBuilder:
                                 new_env.append(f"{key}={api_key_env[key]}")
                                 continue
                         new_env.append(item)
+                    
+                    # Force inject Gateway credentials
+                    if virtual_key:
+                        new_env.append(f"LITELLM_VIRTUAL_KEY={virtual_key}")
+                        new_env.append("GATEWAY_BASE_URL=http://litellm-gateway:4000")
+                        
                     svc_def["environment"] = new_env
 
             # Save updated compose

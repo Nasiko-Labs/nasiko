@@ -31,7 +31,13 @@ def main(host: str, port: int):
     base_url = None
     model = "gpt-4o"
 
-    if os.getenv("OPENROUTER_API_KEY"):
+    if os.getenv("LITELLM_VIRTUAL_KEY"):
+        api_key = os.getenv("LITELLM_VIRTUAL_KEY")
+        base_url = os.getenv("GATEWAY_BASE_URL", "http://litellm-gateway:4000")
+        if not base_url.endswith("/v1"):
+            base_url += "/v1"
+        model = os.getenv("ROUTER_LLM_MODEL", "nemotron-3")
+    elif os.getenv("OPENROUTER_API_KEY"):
         api_key = os.getenv("OPENROUTER_API_KEY")
         base_url = "https://openrouter.ai/api/v1"
         model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
@@ -44,7 +50,7 @@ def main(host: str, port: int):
 
     if not api_key:
         raise ValueError(
-            "One of OPENROUTER_API_KEY, OPENAI_API_KEY, or MINIMAX_API_KEY must be set"
+            "One of LITELLM_VIRTUAL_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, or MINIMAX_API_KEY must be set"
         )
 
     skill = AgentSkill(

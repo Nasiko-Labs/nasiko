@@ -30,3 +30,20 @@ jobs:
         run: pip install black==26.3.1 mypy
       - name: Type check
         run: mypy . --ignore-missing-imports || true
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Start required services
+        run: docker compose -f docker-compose.local.yml up -d litellm-gateway litellm-database redis
+      - name: Setup Virtual Environment & Dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install pytest requests
+      - name: Run LLM Gateway Tests
+        run: source .venv/bin/activate && pytest tests/integration/test_llm_gateway.py -v

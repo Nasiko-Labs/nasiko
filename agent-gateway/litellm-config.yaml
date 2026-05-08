@@ -1,0 +1,34 @@
+model_list:
+  - model_name: "gpt-4o"
+    litellm_params:
+      model: "gpt-4o"
+      api_key: "os.environ/OPENAI_API_KEY"
+  - model_name: "gpt-4o-mini"
+    litellm_params:
+      model: "gpt-4o-mini"
+      api_key: "os.environ/OPENAI_API_KEY"
+  - model_name: "claude-3-5-sonnet"
+    litellm_params:
+      model: "anthropic/claude-3-5-sonnet-20240620"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+  - model_name: "minimax-m2.7"
+    litellm_params:
+      model: "minimax/MiniMax-M2.7"
+      api_key: "os.environ/MINIMAX_API_KEY"
+  - model_name: "nemotron-3"
+    litellm_params:
+      model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+
+litellm_settings:
+  # Route telemetry through OpenTelemetry correctly
+  success_callback: ["otel"]
+  failure_callback: ["otel"]
+  # Enable Caching
+  cache: True
+  cache_type: "redis"
+
+router_settings:
+  routing_strategy: "latency-based-routing" # Professional touch
+  redis_host: "redis"
+  redis_port: 6379

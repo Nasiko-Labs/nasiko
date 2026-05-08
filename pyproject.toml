@@ -66,6 +66,7 @@ dependencies = [
     "pyyaml>=6.0.2",
     "semver>=3.0.4",
     "toml>=0.10.2",
+    "pytz>=2024.1",
 ]
 
 [dependency-groups]
