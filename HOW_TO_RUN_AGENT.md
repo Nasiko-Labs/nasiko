@@ -110,7 +110,7 @@ Agents live in the `agents/` directory. Each agent needs:
 - `Agentcard.json` (A2A agent card with capabilities)
 - `src/__main__.py` (entry point)
 
-### Configure the Agent's LLM
+### Configure the Agent's LLM 
 
 For agents using OpenRouter, set the provider in `agents/<your-agent>/src/__main__.py` and in `agents/<your-agent>/docker-compose.yml`:
 
@@ -329,3 +329,22 @@ Agent containers
     |-- Kong discovers them via service registry
     |-- each agent has its own LLM client (OpenRouter, etc.)
 ```
+
+### Utilizing LLM Gateway
+Configure the Agent's LLM Gateway-first
+
+**Do not hardcode provider keys in agents.** Use the platform LLM gateway:
+
+```yaml
+# agents/<your-agent>/docker-compose.yml
+environment:
+  - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+  - OPENROUTER_MODEL=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+  - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+  - LLM_VIRTUAL_KEY=${LLM_VIRTUAL_KEY:-nasiko-dev-virtual-key}
+  - LLM_GATEWAY_MODEL=${LLM_GATEWAY_MODEL:-platform-default}
+```
+
+  - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+  - LLM_VIRTUAL_KEY=${LLM_VIRTUAL_KEY:-nasiko-dev-virtual-key}
+  - LLM_GATEWAY_MODEL=${LLM_GATEWAY_MODEL:-platform-default}

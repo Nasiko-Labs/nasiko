@@ -41,6 +41,30 @@ services:
       timeout: 10s
       retries: 3
 
+  llm-gateway:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: llm-gateway
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-nasiko-dev-virtual-key}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LITELLM_PROVIDER_MODEL: ${LITELLM_PROVIDER_MODEL:-openai/gpt-4o-mini}
+      LITELLM_ANTHROPIC_MODEL: ${LITELLM_ANTHROPIC_MODEL:-anthropic/claude-3-5-sonnet-latest}
+    volumes:
+      - ./orchestrator/litellm_config.yaml:/app/config.yaml:ro
+    ports:
+      - "4001:4000"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # ============================================================================
   # CORE SERVICES LAYER (Backend)
   # ============================================================================
@@ -395,6 +419,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+      LLM_VIRTUAL_KEY: ${LLM_VIRTUAL_KEY:-${LITELLM_MASTER_KEY:-nasiko-dev-virtual-key}}
+      LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-platform-default}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agents:/app/agents:ro

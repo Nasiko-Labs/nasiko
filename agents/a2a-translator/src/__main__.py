@@ -29,12 +29,15 @@ logging.basicConfig()
 @click.option("--port", "port", default=5000)
 def main(host: str, port: int):
     base_url = None
-    model = "gpt-4o"
+    model = os.getenv("LLM_GATEWAY_MODEL", "platform-default")
 
-    if os.getenv("OPENROUTER_API_KEY"):
+    if os.getenv("LLM_GATEWAY_URL") and os.getenv("LLM_VIRTUAL_KEY"):
+        api_key = os.getenv("LLM_VIRTUAL_KEY")
+        base_url = os.getenv("LLM_GATEWAY_URL")
+    elif os.getenv("OPENROUTER_API_KEY"):
         api_key = os.getenv("OPENROUTER_API_KEY")
-        base_url = "https://openrouter.ai/api/v1"
-        model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        model = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     elif os.getenv("MINIMAX_API_KEY"):
         api_key = os.getenv("MINIMAX_API_KEY")
         base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
@@ -44,7 +47,7 @@ def main(host: str, port: int):
 
     if not api_key:
         raise ValueError(
-            "One of OPENROUTER_API_KEY, OPENAI_API_KEY, or MINIMAX_API_KEY must be set"
+            "Set LLM_GATEWAY_URL + LLM_VIRTUAL_KEY (recommended), or one of OPENROUTER_API_KEY / OPENAI_API_KEY / MINIMAX_API_KEY"
         )
 
     skill = AgentSkill(

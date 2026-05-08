@@ -4,7 +4,7 @@ Contains all constants and configuration settings.
 """
 
 import os
-
+from dataclasses import dataclass
 
 class Config:
     # Docker Configuration
@@ -28,6 +28,37 @@ class Config:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+    LLM_GATEWAY_URL = os.getenv("LLM_GATEWAY_URL", "")
+    LLM_VIRTUAL_KEY = os.getenv("LLM_VIRTUAL_KEY", "")
+    LLM_GATEWAY_MODEL = os.getenv("LLM_GATEWAY_MODEL", "platform-default")
+    LLM_VIRTUAL_KEY_MODE = os.getenv("LLM_VIRTUAL_KEY_MODE", "shared")
+
+
+@dataclass
+class LLMVirtualKeyProvider:
+    """
+    MVP key provider abstraction for gateway virtual keys.
+    Today we support a shared key; future per-agent mint/rotate/revoke can be added
+    behind this interface without changing deploy orchestration paths.
+    """
+
+    mode: str
+    shared_key: str
+
+    def get_key(self, agent_name: str | None = None) -> str:
+        if self.mode == "shared":
+            return self.shared_key
+
+        # Target-ready placeholder for a future per-agent key backend.
+        # Fall back to the shared key to preserve backward compatibility.
+        return self.shared_key
+
+
+def get_llm_virtual_key_provider() -> LLMVirtualKeyProvider:
+    return LLMVirtualKeyProvider(
+        mode=Config.LLM_VIRTUAL_KEY_MODE,
+        shared_key=Config.LLM_VIRTUAL_KEY,
+    )
 
 
 # Legacy constants for backward compatibility

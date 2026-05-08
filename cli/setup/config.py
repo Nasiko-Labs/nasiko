@@ -70,6 +70,9 @@ ENV_VAR_MAPPING = {
     "email": "NASIKO_EMAIL",
     # Application configuration
     "openai_key": "OPENAI_API_KEY",
+    "anthropic_key": "ANTHROPIC_API_KEY",
+    "llm_gateway_url": "LLM_GATEWAY_URL",
+    "llm_virtual_key": "LLM_VIRTUAL_KEY",
     "public_registry_user": "NASIKO_PUBLIC_REGISTRY_USER",
     # Super user configuration
     "superuser_username": "NASIKO_SUPERUSER_USERNAME",

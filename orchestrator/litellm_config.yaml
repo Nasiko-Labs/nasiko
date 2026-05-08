@@ -1,0 +1,18 @@
+model_list:
+  - model_name: platform-default
+    litellm_params:
+      model: ${LITELLM_PROVIDER_MODEL:-openai/gpt-4o-mini}
+      api_key: ${OPENAI_API_KEY}
+  - model_name: anthropic-default
+    litellm_params:
+      model: ${LITELLM_ANTHROPIC_MODEL:-anthropic/claude-3-5-sonnet-latest}
+      api_key: ${ANTHROPIC_API_KEY}
+
+litellm_settings:
+  set_verbose: ${LITELLM_VERBOSE:-false}
+  drop_params: true
+
+general_settings:
+  master_key: ${LITELLM_MASTER_KEY:-nasiko-dev-virtual-key}
+  # LiteLLM will still serve OpenAI-compatible routes while credentials stay centralized here.
+  disable_spend_logs: true

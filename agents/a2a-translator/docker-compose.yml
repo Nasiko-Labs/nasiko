@@ -3,10 +3,9 @@ services:
     build: .
     container_name: a2a-translator
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
-      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+      - LLM_VIRTUAL_KEY=${LLM_VIRTUAL_KEY:-nasiko-dev-virtual-key}
+      - LLM_GATEWAY_MODEL=${LLM_GATEWAY_MODEL:-platform-default}
     stdin_open: true
     ports:
       - "5000"

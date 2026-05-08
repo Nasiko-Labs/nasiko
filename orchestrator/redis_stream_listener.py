@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime, UTC
 from pathlib import Path
 
-from config import Config
+from config import Config, get_llm_virtual_key_provider
 from agent_builder import AgentBuilder
 
 # Import observability components directly like K8s build worker
@@ -31,6 +31,7 @@ class RedisStreamListener:
         self.logger = logger
         self.redis_client = None
         self.agent_builder = AgentBuilder(logger)
+        self.llm_virtual_key_provider = get_llm_virtual_key_provider()
         self.running = False
         self.stream_name = "orchestration:commands"
         self.consumer_group = "orchestrator"
@@ -778,6 +779,9 @@ class RedisStreamListener:
             "OPENAI_API_KEY": Config.OPENAI_API_KEY,
             "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
             "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
+            "LLM_GATEWAY_URL": Config.LLM_GATEWAY_URL,
+            "LLM_VIRTUAL_KEY": self.llm_virtual_key_provider.get_key(agent_name),
+            "LLM_GATEWAY_MODEL": Config.LLM_GATEWAY_MODEL,
         }
 
         # Load agent-specific env vars from its .env file if present
