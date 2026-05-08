@@ -1,0 +1,46 @@
+# cli/setup/litellm/config.yaml
+# LiteLLM proxy configuration for the Nasiko LLM Gateway.
+#
+# Provider API keys are NEVER committed here. All secrets use os.environ/VAR_NAME
+# expansion so they are sourced from the container environment at runtime.
+#
+# To swap providers: edit the default-model entry below and restart the gateway.
+#   docker compose --env-file .nasiko-local.env -f docker-compose.local.yml restart llm-gateway
+
+model_list:
+  # OpenAI — gpt-4o-mini
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Anthropic — claude-3-5-haiku (provider rotation target)
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Provider-rotation alias: agents always call "default-model".
+  # Change the `model:` line below to swap providers without any agent code change.
+  # Restart the gateway container after editing.
+  - model_name: default-model
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  drop_params: true
+  num_retries: 0           # FAIL CLEARLY — no retries, no fallbacks (PS requirement)
+  request_timeout: 60
+  callbacks: ["otel"]
+  set_verbose: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: false
+
+environment_variables:
+  OTEL_EXPORTER: "otlp_http"
+  OTEL_ENDPOINT: "http://phoenix-observability:6006/v1/traces"
+  OTEL_SERVICE_NAME: "llm-gateway"

@@ -29,6 +29,18 @@ class Config:
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
 
+    # LLM Gateway Configuration (Track 2)
+    LLM_GATEWAY_URL: str = os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:4000")
+    LLM_GATEWAY_MASTER_KEY: str = os.getenv("LITELLM_MASTER_KEY", "")
+    LLM_GATEWAY_CONFIG_PATH: str = os.getenv(
+        "LLM_GATEWAY_CONFIG_PATH", "cli/setup/litellm/config.yaml"
+    )
+
+    # MongoDB connection (for virtual key storage — mirrors backend env var names)
+    MONGO_HOST: str = os.getenv("MONGO_NASIKO_HOST", "mongodb")
+    MONGO_PORT: int = int(os.getenv("MONGO_NASIKO_PORT", "27017"))
+    MONGO_DATABASE: str = os.getenv("MONGO_NASIKO_DATABASE", "nasiko")
+
 
 # Legacy constants for backward compatibility
 DOCKER_NETWORK = Config.DOCKER_NETWORK
