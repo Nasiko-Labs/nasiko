@@ -107,3 +107,14 @@ def registry_get(
     from commands.registry import get_agent_command
 
     get_agent_command(identifier, by_name, by_agent_id, format_type)
+
+
+@agent_app.command(name="associate-mcp")
+def associate_mcp(
+    agent_id: str = typer.Argument(..., help="Source agent ID"),
+    mcp_agent_id: str = typer.Argument(..., help="MCP server agent ID"),
+):
+    """Associate an agent with an MCP server in registry metadata."""
+    from commands.registry import associate_agent_with_mcp_command
+
+    associate_agent_with_mcp_command(agent_id, mcp_agent_id)

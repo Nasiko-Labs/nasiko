@@ -78,6 +78,13 @@ class RegistryBase(BaseModel):
     # Combined tags from all skills (deduplicated)
     tags: List[str] = []
 
+    # Artifact classification and metadata (backward-compatible additions)
+    artifact_type: str = "agent"  # "agent" | "mcp_server"
+    deployment_type: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    mcp_manifest: Optional[Dict[str, Any]] = None
+    associations: Dict[str, List[str]] = {}
+
     # Owner information
     owner_id: str
 

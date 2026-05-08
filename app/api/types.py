@@ -20,10 +20,15 @@ class RegistryItemResponse(BaseModel):
     description: str
     url: str
     preferredTransport: str = "JSONRPC"
+    artifact_type: str = "agent"
+    deployment_type: Optional[str] = None
     capabilities: Dict[str, Any] = {}
     skills: List[Dict[str, Any]] = []
     defaultInputModes: List[str] = []
     defaultOutputModes: List[str] = []
+    metadata: Dict[str, Any] = {}
+    mcp_manifest: Optional[Dict[str, Any]] = None
+    associations: Dict[str, List[str]] = {}
 
 
 class RegistryResponse(BaseModel):
@@ -39,6 +44,8 @@ class RegistryItemDetailResponse(BaseModel):
     description: str
     url: str
     preferredTransport: str = "JSONRPC"
+    artifact_type: str = "agent"
+    deployment_type: Optional[str] = None
     protocolVersion: str = "0.2.9"
     provider: Optional[Dict[str, Any]] = None
     iconUrl: Optional[str] = None
@@ -53,6 +60,9 @@ class RegistryItemDetailResponse(BaseModel):
     supportsAuthenticatedExtendedCard: bool = False
     signatures: List[Any] = []
     additionalInterfaces: Optional[List[Dict[str, str]]] = None
+    metadata: Dict[str, Any] = {}
+    mcp_manifest: Optional[Dict[str, Any]] = None
+    associations: Dict[str, List[str]] = {}
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -310,6 +320,8 @@ class UserAgentItemResponse(BaseModel):
     # Protocol info
     protocolVersion: str = "0.2.9"
     preferredTransport: str = "JSONRPC"
+    artifact_type: str = "agent"
+    deployment_type: Optional[str] = None
 
     # Provider info
     provider: Optional[Dict[str, Any]] = None
@@ -326,6 +338,9 @@ class UserAgentItemResponse(BaseModel):
     supportsAuthenticatedExtendedCard: bool = False
     signatures: List[Any] = []
     additionalInterfaces: Optional[List[Dict[str, str]]] = None
+    metadata: Dict[str, Any] = {}
+    mcp_manifest: Optional[Dict[str, Any]] = None
+    associations: Dict[str, List[str]] = {}
 
     upload_id: Optional[str] = None  # Only for uploaded agents
     created_at: Optional[str] = None
@@ -351,6 +366,9 @@ class SimpleUserUploadAgentResponse(BaseModel):
     upload_info: UploadInfoResponse
     tags: List[str] = []
     description: Optional[str] = None
+    artifact_type: str = "agent"
+    has_mcp_manifest: bool = False
+    associations: Dict[str, List[str]] = {}
 
 
 class SimpleUserAgentResponse(BaseModel):
@@ -359,6 +377,9 @@ class SimpleUserAgentResponse(BaseModel):
     icon_url: Optional[str] = None
     tags: List[str] = []
     description: Optional[str] = None
+    artifact_type: str = "agent"
+    has_mcp_manifest: bool = False
+    associations: Dict[str, List[str]] = {}
 
 
 class SimpleUserUploadAgentsResponse(BaseModel):

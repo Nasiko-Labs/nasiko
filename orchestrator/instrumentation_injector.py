@@ -14,28 +14,18 @@ class InstrumentationInjector:
 
     def __init__(self):
         self.langtrace_config_template = self._get_langtrace_config_template()
+        self.langtrace_mcp_bridge_template = self._get_langtrace_mcp_bridge_template()
+        self.stdio_http_bridge_template = self._get_stdio_http_bridge_template()
 
-    def inject_langtrace_config(self, agent_temp_path, agent_name):
+    def inject_langtrace_config(
+        self, agent_temp_path, agent_name, artifact_type: str = "agent"
+    ):
         """Create langtrace_config.py file and inject import at top of main.py"""
         if os.getenv("LANGTRACE_ENABLED", "false").lower() not in ("1", "true", "yes"):
             logger.info(f"Langtrace disabled; skipping injection for {agent_name}")
             return False
-        # Find the correct directory for main.py
-        main_py_paths = [
-            agent_temp_path / "src" / "main.py",
-            agent_temp_path / "main.py",
-            agent_temp_path / "__main__.py",
-            agent_temp_path / "src" / "__main__.py",
-        ]
-
-        main_py_path = None
-        config_dir = None
-
-        for path in main_py_paths:
-            if path.exists():
-                main_py_path = path
-                config_dir = path.parent
-                break
+        main_py_path = self._find_entrypoint_file(agent_temp_path, artifact_type)
+        config_dir = main_py_path.parent if main_py_path else None
 
         if not main_py_path:
             logger.warning(
@@ -43,16 +33,26 @@ class InstrumentationInjector:
             )
             return False
 
-        # Create langtrace_config.py in the same directory as main.py
-        config_file_path = config_dir / "langtrace_config.py"
-        config_file_path.write_text(self.langtrace_config_template)
-        logger.info(f"Created langtrace_config.py for {agent_name}")
+        # Create config file in the same directory as target entrypoint
+        config_module_name = (
+            "langtrace_mcp_bridge"
+            if artifact_type == "mcp_server"
+            else "langtrace_config"
+        )
+        config_template = (
+            self.langtrace_mcp_bridge_template
+            if artifact_type == "mcp_server"
+            else self.langtrace_config_template
+        )
+        config_file_path = config_dir / f"{config_module_name}.py"
+        config_file_path.write_text(config_template)
+        logger.info(f"Created {config_file_path.name} for {agent_name}")
 
         # Read current main.py content
         original_content = main_py_path.read_text()
 
-        # Check if langtrace_config is already imported
-        if "import langtrace_config" in original_content:
+        # Check if config module is already imported
+        if f"import {config_module_name}" in original_content:
             logger.info(
                 f"Langtrace config already imported in {agent_name} main.py, skipping injection..."
             )
@@ -139,7 +139,9 @@ class InstrumentationInjector:
                 break
 
         # Insert the import at the right position
-        import_line = "import langtrace_config  # Auto-injected for observability"
+        import_line = (
+            f"import {config_module_name}  # Auto-injected for observability"
+        )
         lines.insert(insert_index, import_line)
 
         # Write back the modified content
@@ -150,6 +152,36 @@ class InstrumentationInjector:
         )
 
         return True
+
+    def _find_entrypoint_file(self, agent_temp_path, artifact_type: str = "agent"):
+        """Find target file for config import injection."""
+        default_paths = [
+            agent_temp_path / "src" / "main.py",
+            agent_temp_path / "main.py",
+            agent_temp_path / "__main__.py",
+            agent_temp_path / "src" / "__main__.py",
+        ]
+
+        mcp_bridge_paths = [
+            agent_temp_path / "src" / "bridge.py",
+            agent_temp_path / "bridge.py",
+            agent_temp_path / "src" / "stdio_bridge.py",
+            agent_temp_path / "stdio_bridge.py",
+            agent_temp_path / "src" / "mcp_bridge.py",
+            agent_temp_path / "mcp_bridge.py",
+        ]
+
+        search_paths = (
+            mcp_bridge_paths + default_paths
+            if artifact_type == "mcp_server"
+            else default_paths
+        )
+
+        for path in search_paths:
+            if path.exists():
+                return path
+
+        return None
 
     def _get_langtrace_config_template(self):
         """Get the LangTrace configuration template"""
@@ -529,4 +561,305 @@ if LANGTRACE_API_KEY:
 else:
     print("LANGTRACE_API_KEY not set, Langtrace not initialized")
 
+'''
+
+    def _get_langtrace_mcp_bridge_template(self):
+        """LangTrace config for MCP stdio bridge layer instrumentation."""
+        return '''import os
+from langtrace_python_sdk import langtrace
+
+LANGTRACE_API_KEY = os.getenv("LANGTRACE_API_KEY")
+LANGTRACE_API_HOST = os.getenv("LANGTRACE_API_HOST", "http://localhost:3000/api/trace")
+
+if LANGTRACE_API_KEY:
+    try:
+        langtrace.init(api_key=LANGTRACE_API_KEY, api_host=LANGTRACE_API_HOST)
+        print("Langtrace initialized for MCP bridge")
+    except Exception as e:
+        print(f"Failed to initialize Langtrace for MCP bridge: {e}")
+else:
+    print("LANGTRACE_API_KEY not set, MCP bridge tracing disabled")
+
+try:
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    HTTPXClientInstrumentor().instrument()
+except Exception:
+    pass
+
+try:
+    from opentelemetry.instrumentation.requests import RequestsInstrumentor
+    RequestsInstrumentor().instrument()
+except Exception:
+    pass
+
+'''
+
+    def inject_stdio_http_bridge(self, agent_temp_path, agent_name):
+        """Inject a stdio-to-HTTP bridge script into an MCP server build context.
+
+        The bridge wraps the original stdio-based MCP entrypoint with an
+        asyncio HTTP server on $MCP_BRIDGE_PORT (default 8080) so that Kong
+        can route HTTP traffic to the container.
+
+        The file is written to the *root* of the build context so that any
+        Dockerfile with ``COPY . /app`` (or similar) will pick it up.
+        """
+        from pathlib import Path
+
+        bridge_path = Path(agent_temp_path) / "mcp_stdio_http_bridge.py"
+        bridge_path.write_text(self.stdio_http_bridge_template)
+        logger.info(
+            f"Injected stdio-to-HTTP bridge into {agent_name} at {bridge_path}"
+        )
+        return True
+
+    def _get_stdio_http_bridge_template(self):
+        """Stdlib-only stdio-to-HTTP bridge for MCP servers.
+
+        The script:
+        1. Discovers the original MCP entrypoint (src/main.py etc.).
+        2. Starts it as a subprocess with pipes on stdin/stdout.
+        3. Listens on $MCP_BRIDGE_PORT (default 8080) for HTTP requests.
+        4. Translates incoming JSON-RPC HTTP POSTs into newline-delimited
+           JSON on the subprocess's stdin, reads the response from stdout,
+           and returns it as the HTTP response.
+        5. Exposes /health for Kong health checks.
+        """
+        return r'''#!/usr/bin/env python3
+"""MCP stdio-to-HTTP bridge.
+
+Wraps a stdio-based MCP server with an HTTP endpoint so that Kong and
+other HTTP clients can communicate with it.  Uses only the Python
+standard library so no extra dependencies are needed beyond the base
+image.
+"""
+
+import asyncio
+import json
+import os
+import signal
+import sys
+from http import HTTPStatus
+from pathlib import Path
+
+BRIDGE_PORT = int(os.getenv("MCP_BRIDGE_PORT", "8080"))
+BRIDGE_HOST = os.getenv("MCP_BRIDGE_HOST", "0.0.0.0")
+
+
+def _find_entrypoint() -> str | None:
+    """Locate the original MCP server entrypoint."""
+    candidates = [
+        "src/main.py",
+        "main.py",
+        "src/__main__.py",
+        "__main__.py",
+        "src/server.py",
+        "server.py",
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    return None
+
+
+class _StdioBridge:
+    """Manages the child MCP process and serialises request/response pairs."""
+
+    def __init__(self, entrypoint: str):
+        self.entrypoint = entrypoint
+        self._process: asyncio.subprocess.Process | None = None
+        self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        self._process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            self.entrypoint,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        # Drain stderr in background so the child never blocks on it
+        asyncio.ensure_future(self._drain_stderr())
+        print(f"[bridge] MCP process started (pid={self._process.pid})", flush=True)
+
+    async def _drain_stderr(self) -> None:
+        assert self._process and self._process.stderr
+        while True:
+            line = await self._process.stderr.readline()
+            if not line:
+                break
+            sys.stderr.buffer.write(line)
+            sys.stderr.buffer.flush()
+
+    async def send(self, payload: dict) -> dict:
+        """Send a JSON-RPC request via stdin and return the parsed response."""
+        async with self._lock:
+            if self._process is None or self._process.returncode is not None:
+                raise RuntimeError("MCP process is not running")
+            data = json.dumps(payload) + "\n"
+            self._process.stdin.write(data.encode())
+            await self._process.stdin.drain()
+
+            line = await asyncio.wait_for(
+                self._process.stdout.readline(), timeout=120
+            )
+            if not line:
+                raise RuntimeError("MCP process closed stdout")
+            return json.loads(line.decode())
+
+    async def stop(self) -> None:
+        if self._process and self._process.returncode is None:
+            self._process.terminate()
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                self._process.kill()
+
+
+def _make_http_response(
+    status: int,
+    body: bytes | None = None,
+    content_type: str = "application/json",
+) -> bytes:
+    reason = HTTPStatus(status).phrase
+    body = body or b""
+    header = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+    )
+    return header.encode() + body
+
+
+async def _read_http_request(
+    reader: asyncio.StreamReader,
+) -> tuple[str, str, dict[str, str], bytes]:
+    request_line = await reader.readline()
+    if not request_line:
+        raise ConnectionError("empty request")
+    parts = request_line.decode().strip().split(" ", 2)
+    method, path = parts[0], parts[1] if len(parts) > 1 else "/"
+
+    headers: dict[str, str] = {}
+    while True:
+        line = await reader.readline()
+        text = line.decode().strip()
+        if not text:
+            break
+        if ": " in text:
+            k, v = text.split(": ", 1)
+            headers[k.lower()] = v
+
+    body = b""
+    cl = int(headers.get("content-length", 0))
+    if cl > 0:
+        body = await reader.readexactly(cl)
+
+    return method, path, headers, body
+
+
+async def _handle_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    bridge: _StdioBridge,
+) -> None:
+    try:
+        method, path, _headers, body = await _read_http_request(reader)
+
+        # Health endpoint
+        if path in ("/health", "/healthz"):
+            resp_body = json.dumps({"status": "ok", "bridge": "stdio-to-http"}).encode()
+            writer.write(_make_http_response(200, resp_body))
+            await writer.drain()
+            return
+
+        # Only accept POST for JSON-RPC
+        if method != "POST":
+            writer.write(
+                _make_http_response(
+                    405,
+                    json.dumps({"error": "Method not allowed"}).encode(),
+                )
+            )
+            await writer.drain()
+            return
+
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            writer.write(
+                _make_http_response(
+                    400,
+                    json.dumps(
+                        {"jsonrpc": "2.0", "error": {"code": -32700, "message": str(exc)}, "id": None}
+                    ).encode(),
+                )
+            )
+            await writer.drain()
+            return
+
+        try:
+            result = await bridge.send(payload)
+            writer.write(_make_http_response(200, json.dumps(result).encode()))
+        except Exception as exc:
+            writer.write(
+                _make_http_response(
+                    502,
+                    json.dumps(
+                        {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(exc)}, "id": None}
+                    ).encode(),
+                )
+            )
+
+        await writer.drain()
+    except Exception as exc:
+        print(f"[bridge] connection error: {exc}", file=sys.stderr, flush=True)
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+async def _run() -> None:
+    entrypoint = _find_entrypoint()
+    if not entrypoint:
+        print("[bridge] FATAL: no MCP entrypoint found", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    print(f"[bridge] Using entrypoint: {entrypoint}", flush=True)
+
+    bridge = _StdioBridge(entrypoint)
+    await bridge.start()
+
+    async def on_connection(reader, writer):
+        await _handle_client(reader, writer, bridge)
+
+    server = await asyncio.start_server(on_connection, BRIDGE_HOST, BRIDGE_PORT)
+    print(f"[bridge] Listening on {BRIDGE_HOST}:{BRIDGE_PORT}", flush=True)
+
+    loop = asyncio.get_event_loop()
+    stop = loop.create_future()
+
+    def _shutdown(sig):
+        if not stop.done():
+            stop.set_result(sig)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _shutdown, sig)
+
+    try:
+        await stop
+    finally:
+        server.close()
+        await server.wait_closed()
+        await bridge.stop()
+        print("[bridge] Shutdown complete", flush=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(_run())
 '''

@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -24,6 +25,7 @@ class AgentUploadResult:
         validation_errors: Optional[List[str]] = None,
         upload_id: Optional[str] = None,
         version: Optional[str] = None,
+        artifact_type: Optional[str] = None,
     ):
         self.success = success
         self.agent_name = agent_name
@@ -33,12 +35,19 @@ class AgentUploadResult:
         self.validation_errors = validation_errors or []
         self.upload_id = upload_id
         self.version = version
+        self.artifact_type = artifact_type
 
 
 class ValidationResult:
-    def __init__(self, is_valid: bool, errors: List[str] = None):
+    def __init__(
+        self,
+        is_valid: bool,
+        errors: List[str] = None,
+        artifact_type: Optional[str] = None,
+    ):
         self.is_valid = is_valid
         self.errors = errors or []
+        self.artifact_type = artifact_type or "agent"
 
 
 async def _determine_agent_name(temp_dir: str) -> str:
@@ -69,9 +78,171 @@ class AgentUploadService:
     def __init__(self, logger, repository=None):
         self.logger = logger
         self.agentcard_service = AgentCardService(logger)
+        from app.utils.agentcard_generator.mcp_manifest_generator import (
+            MCPManifestGeneratorAgent,
+        )
+
+        self.mcp_manifest_service = MCPManifestGeneratorAgent()
         self.orchestration = OrchestrationService(logger)
         self.agents_directory = Path("agents")
         self.repository = repository
+
+    def _scan_file_for_markers(self, file_path: Path) -> tuple[bool, bool]:
+        """
+        Return (agent_marker_found, mcp_marker_found) for one python file.
+        """
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return False, False
+
+        agent_patterns = [
+            r"\bfrom\s+langchain\b",
+            r"\bimport\s+langchain\b",
+            r"\bfrom\s+crewai\b",
+            r"\bimport\s+crewai\b",
+            r"\bAgentCard\b",
+            r"\ba2a\b",
+        ]
+
+        mcp_patterns = [
+            r"\bfrom\s+fastmcp\b",
+            r"\bimport\s+fastmcp\b",
+            r"\bfrom\s+mcp\b",
+            r"\bimport\s+mcp\b",
+            r"@\s*tool\b",
+            r"@\s*FastMCP\.tool\b",
+            r"\bFastMCP\s*\(",
+        ]
+
+        agent_found = any(
+            re.search(pattern, content, re.IGNORECASE) for pattern in agent_patterns
+        )
+        mcp_found = any(
+            re.search(pattern, content, re.IGNORECASE) for pattern in mcp_patterns
+        )
+
+        return agent_found, mcp_found
+
+    def _detect_artifact_type(self, agent_dir: Path) -> tuple[str, List[str]]:
+        """
+        Detect whether this upload is a standard agent or an MCP server.
+        Returns: (artifact_type, errors)
+        """
+        errors: List[str] = []
+
+        agent_markers = []
+        mcp_markers = []
+
+        # Manifest signals
+        if (agent_dir / "AgentCard.json").exists() or (agent_dir / "Agentcard.json").exists():
+            agent_markers.append("AgentCard.json")
+
+        for mcp_name in ["MCPManifest.json", "mcp-manifest.json", "mcp_manifest.json"]:
+            if (agent_dir / mcp_name).exists():
+                mcp_markers.append(mcp_name)
+
+        # Code signals
+        python_files = list(agent_dir.rglob("*.py"))
+        for py_file in python_files:
+            agent_found, mcp_found = self._scan_file_for_markers(py_file)
+            if agent_found:
+                agent_markers.append(str(py_file.relative_to(agent_dir)))
+            if mcp_found:
+                mcp_markers.append(str(py_file.relative_to(agent_dir)))
+
+        # Ambiguity check
+        if agent_markers and mcp_markers:
+            errors.append(
+                "Ambiguous artifact detected: both standard agent markers and MCP server markers were found."
+            )
+            errors.append(f"Agent markers: {sorted(set(agent_markers))}")
+            errors.append(f"MCP markers: {sorted(set(mcp_markers))}")
+            return "ambiguous", errors
+
+        if mcp_markers:
+            return "mcp_server", []
+
+        # Default to standard agent so existing behavior stays unchanged
+        return "agent", []
+
+    def _validate_mcp_structure(self, agent_dir: Path) -> List[str]:
+        """Validate MCP-specific markers and entrypoint shape."""
+        errors: List[str] = []
+
+        entrypoint_candidates = [
+            agent_dir / "src" / "main.py",
+            agent_dir / "main.py",
+            agent_dir / "src" / "__main__.py",
+            agent_dir / "__main__.py",
+        ]
+
+        entrypoint = next((p for p in entrypoint_candidates if p.exists()), None)
+        if not entrypoint:
+            errors.append(
+                "MCP server entrypoint not found (checked src/main.py, main.py, src/__main__.py, __main__.py)"
+            )
+            return errors
+
+        try:
+            content = entrypoint.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            errors.append(f"Cannot read MCP entrypoint {entrypoint.name}: {e}")
+            return errors
+
+        mcp_entry_patterns = [
+            r"\bfrom\s+fastmcp\b",
+            r"\bimport\s+fastmcp\b",
+            r"\bfrom\s+mcp\b",
+            r"\bimport\s+mcp\b",
+            r"@\s*tool\b",
+            r"@\s*FastMCP\.tool\b",
+            r"\bFastMCP\s*\(",
+        ]
+
+        if not any(re.search(pattern, content, re.IGNORECASE) for pattern in mcp_entry_patterns):
+            errors.append(
+                f"MCP artifact detected but entrypoint '{entrypoint.name}' does not contain expected MCP markers (fastmcp/mcp imports or tool decorators)"
+            )
+
+        return errors
+
+    async def _ensure_mcp_manifest_json(
+        self, agent_path: str, agent_name: str
+    ) -> bool:
+        """Generate MCP manifest if missing using the MCP manifest service"""
+        manifest_paths = [
+            Path(agent_path) / "MCPManifest.json",
+            Path(agent_path) / "mcp-manifest.json",
+            Path(agent_path) / "mcp_manifest.json",
+        ]
+
+        if any(path.exists() for path in manifest_paths):
+            self.logger.info("MCP manifest already exists")
+            return False
+
+        self.logger.info("Generating MCP manifest using MCP manifest service")
+
+        try:
+            success = await self.mcp_manifest_service.generate_and_save_mcp_manifest(
+                agent_path=agent_path,
+                agent_name=agent_name,
+            )
+
+            if success:
+                self.logger.info(f"Successfully generated MCP manifest for {agent_name}")
+                return True
+
+            self.logger.warning(
+                f"Failed to generate MCP manifest for {agent_name}, using fallback"
+            )
+            return False
+
+        except Exception as e:
+            self.logger.error(
+                f"Error generating MCP manifest for {agent_name}: {str(e)}"
+            )
+            return False
 
     async def process_zip_upload(
         self, file: UploadFile, agent_name: Optional[str] = None
@@ -107,10 +278,14 @@ class AgentUploadService:
                     validation_errors=validation.errors,
                 )
 
-            # Generate AgentCard.json if missing
-            capabilities_generated = await self._ensure_agentcard_json(
-                temp_dir, agent_name
-            )
+            # Generate metadata based on detected artifact type
+            if validation.artifact_type == "mcp_server":
+                await self._ensure_mcp_manifest_json(temp_dir, agent_name)
+                capabilities_generated = False
+            else:
+                capabilities_generated = await self._ensure_agentcard_json(
+                    temp_dir, agent_name
+                )
 
             # Copy to agents directory and get the version used
             version = await self._copy_to_agents_directory(temp_dir, agent_name)
@@ -122,6 +297,7 @@ class AgentUploadService:
                 capabilities_generated=capabilities_generated,
                 orchestration_triggered=False,
                 version=version,
+                artifact_type=validation.artifact_type,
             )
 
         except Exception as e:
@@ -199,10 +375,14 @@ class AgentUploadService:
                     validation_errors=validation.errors,
                 )
 
-            # Generate AgentCard.json if missing
-            capabilities_generated = await self._ensure_agentcard_json(
-                str(source_dir), agent_name
-            )
+            # Generate metadata based on detected artifact type
+            if validation.artifact_type == "mcp_server":
+                await self._ensure_mcp_manifest_json(str(source_dir), agent_name)
+                capabilities_generated = False
+            else:
+                capabilities_generated = await self._ensure_agentcard_json(
+                    str(source_dir), agent_name
+                )
 
             # Copy to agents directory and get the version used
             version = await self._copy_to_agents_directory(str(source_dir), agent_name)
@@ -214,6 +394,7 @@ class AgentUploadService:
                 capabilities_generated=capabilities_generated,
                 orchestration_triggered=False,
                 version=version,
+                artifact_type=validation.artifact_type,
             )
 
         except Exception as e:
@@ -312,9 +493,23 @@ class AgentUploadService:
         if not python_files:
             errors.append("No Python files found in the agent directory")
 
-        self.logger.info(f"Validation completed with {len(errors)} errors")
+        # Detect artifact type
+        artifact_type, detection_errors = self._detect_artifact_type(agent_dir)
+        errors.extend(detection_errors)
 
-        return ValidationResult(is_valid=len(errors) == 0, errors=errors)
+        # MCP-specific validation
+        if artifact_type == "mcp_server":
+            errors.extend(self._validate_mcp_structure(agent_dir))
+
+        self.logger.info(
+            f"Validation completed with {len(errors)} errors, artifact_type={artifact_type}"
+        )
+
+        return ValidationResult(
+            is_valid=len(errors) == 0,
+            errors=errors,
+            artifact_type=artifact_type,
+        )
 
     async def _extract_zip_file(self, file: UploadFile) -> str:
         """Extract uploaded zip file to temporary directory"""

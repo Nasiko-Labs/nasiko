@@ -15,6 +15,15 @@ from auth.auth_manager import get_auth_manager
 console = Console()
 
 
+def build_agent_invoke_url(
+    gateway_base_url: str, agent_id: str, artifact_type: str = "agent"
+) -> str:
+    """Build a Kong/web-path-compatible invoke URL for agent or MCP artifacts."""
+    base = gateway_base_url.rstrip("/")
+    prefix = "mcp" if artifact_type == "mcp_server" else "agents"
+    return f"{base}/{prefix}/{agent_id}"
+
+
 def send_message_command(url: str, message: str, session_id: str):
     """Send a message to an agent using JSON-RPC format and display the response."""
 

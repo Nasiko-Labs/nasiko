@@ -27,6 +27,10 @@ class RegistryRepository(BaseRepository):
             await self.RegistryCollection.create_index([("id", 1), ("version", 1)])
             await self.RegistryCollection.create_index("version_history.status")
 
+            # MCP / artifact metadata indexes
+            await self.RegistryCollection.create_index("artifact_type")
+            await self.RegistryCollection.create_index("metadata.associations.agent_ids")
+
             self.logger.info("Registry collection indexes initialized successfully")
         except Exception as e:
             self.logger.warning(f"Error ensuring registry indexes: {e}")

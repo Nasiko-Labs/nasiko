@@ -38,6 +38,8 @@ You should land on the Home dashboard.
 
 The repo ships with pre-built agent ZIP files you can use to verify the platform is working. We'll use the translator agent.
 
+If you're publishing an MCP server instead of a standard agent, use the exact same upload flow. Nasiko will auto-detect the artifact type, generate or load an MCP manifest, and publish the service under `/mcp/<name>` instead of `/agents/<name>`.
+
 ### 1. Upload the Agent
 
 1. In the sidebar, click **"Add Agent"**
@@ -64,6 +66,12 @@ You can also verify from the command line:
 ```bash
 # Check the agent is registered and accessible through Kong
 curl http://localhost:9100/agents/translator/health
+```
+
+For MCP servers, the equivalent health check is:
+
+```bash
+curl http://localhost:9100/mcp/<mcp-server-name>/health
 ```
 
 ## Test the Agent
@@ -115,5 +123,7 @@ nasiko agent upload-directory ./agents/a2a-compliance-checker --name compliance
 **Check observability.** Open [Phoenix](http://localhost:6006) to see traces, API call timing, and conversation patterns for your deployed agents.
 
 **Build your own agent.** See the [Agent Development](../README.md#-agent-development) section in the README for the required file structure, `AgentCard.json` format, and a complete code example.
+
+**Build an MCP server.** See the [MCP Server Developer Guide](mcp-servers.md) for the required structure, publish flow, and tool-consumption patterns.
 
 **Set up the CLI.** The CLI gives you full platform management from the terminal. See [CLI Tool](../README.md#️-cli-tool) in the README for installation and usage.

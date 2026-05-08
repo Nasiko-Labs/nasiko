@@ -52,6 +52,7 @@ class AgentUploadTrackingService:
             "agent_name": temp_agent_name,
             "owner_id": user_id,
             "status": UploadStatus.INITIATED,
+            "artifact_type": "unknown",
             "progress_percentage": 0,
             "source_info": {
                 "filename": file.filename,
@@ -105,6 +106,7 @@ class AgentUploadTrackingService:
                             "owner_id": user_id,
                             "upload_id": upload_id,
                             "upload_type": "zip",
+                            "artifact_type": getattr(result, "artifact_type", "agent"),
                             "version": getattr(result, "version", None),
                         },
                     )
@@ -139,6 +141,7 @@ class AgentUploadTrackingService:
                         "status": status,
                         "progress_percentage": progress,
                         "status_message": message,
+                        "artifact_type": getattr(result, "artifact_type", "agent"),
                         "capabilities_generated": result.capabilities_generated,
                         "orchestration_triggered": result.orchestration_triggered,
                         "processing_duration": time.time() - start_time,
@@ -153,6 +156,7 @@ class AgentUploadTrackingService:
                         "status": UploadStatus.FAILED,
                         "progress_percentage": 0,
                         "status_message": f"Upload failed: {result.status}",
+                        "artifact_type": getattr(result, "artifact_type", "agent"),
                         "error_details": [result.status],
                         "validation_errors": result.validation_errors,
                         "processing_duration": time.time() - start_time,
@@ -216,6 +220,7 @@ class AgentUploadTrackingService:
             "agent_name": temp_agent_name,
             "owner_id": user_id,
             "status": UploadStatus.INITIATED,
+            "artifact_type": "unknown",
             "progress_percentage": 0,
             "source_info": {
                 "directory_path": directory_path,
@@ -260,6 +265,7 @@ class AgentUploadTrackingService:
                         "progress_percentage": 60,
                         "status_message": "GitHub repository processed successfully",
                         "agent_name": result.agent_name,  # Update with actual agent name
+                        "artifact_type": getattr(result, "artifact_type", "agent"),
                         "capabilities_generated": result.capabilities_generated,
                     },
                 )
@@ -281,6 +287,7 @@ class AgentUploadTrackingService:
                             "owner_id": user_id,
                             "upload_id": upload_id,
                             "upload_type": "github",
+                            "artifact_type": getattr(result, "artifact_type", "agent"),
                             "repository_full_name": repository_full_name,
                             "branch": branch,
                             "version": getattr(result, "version", None),
@@ -298,6 +305,7 @@ class AgentUploadTrackingService:
                             "status": UploadStatus.ORCHESTRATION_TRIGGERED,
                             "progress_percentage": 80,
                             "status_message": "GitHub agent deployment initiated",
+                            "artifact_type": getattr(result, "artifact_type", "agent"),
                         },
                     )
                 else:
@@ -306,6 +314,7 @@ class AgentUploadTrackingService:
                         {
                             "status": UploadStatus.FAILED,
                             "status_message": "Failed to trigger deployment orchestration",
+                            "artifact_type": getattr(result, "artifact_type", "agent"),
                         },
                     )
 
@@ -362,6 +371,7 @@ class AgentUploadTrackingService:
             "agent_name": temp_agent_name,
             "owner_id": user_id,
             "status": UploadStatus.INITIATED,
+            "artifact_type": "unknown",
             "progress_percentage": 0,
             "source_info": {
                 "directory_path": directory_path,
@@ -413,6 +423,7 @@ class AgentUploadTrackingService:
                             "owner_id": user_id,
                             "upload_id": upload_id,
                             "upload_type": "directory",
+                            "artifact_type": getattr(result, "artifact_type", "agent"),
                             "version": getattr(result, "version", None),
                         },
                     )
@@ -447,6 +458,7 @@ class AgentUploadTrackingService:
                         "status": status,
                         "progress_percentage": progress,
                         "status_message": message,
+                        "artifact_type": getattr(result, "artifact_type", "agent"),
                         "capabilities_generated": result.capabilities_generated,
                         "orchestration_triggered": result.orchestration_triggered,
                         "processing_duration": time.time() - start_time,
@@ -461,6 +473,7 @@ class AgentUploadTrackingService:
                         "status": UploadStatus.FAILED,
                         "progress_percentage": 0,
                         "status_message": f"Upload failed: {result.status}",
+                        "artifact_type": getattr(result, "artifact_type", "agent"),
                         "error_details": [result.status],
                         "validation_errors": result.validation_errors,
                         "processing_duration": time.time() - start_time,

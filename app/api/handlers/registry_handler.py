@@ -51,6 +51,8 @@ class RegistryHandler(BaseHandler):
                 "owner_id": getattr(registry, "owner_id", None),
                 "version": registry.version,
                 "url": registry.url,
+                "artifact_type": getattr(registry, "artifact_type", "agent"),
+                "metadata": getattr(registry, "metadata", {}) or {},
                 "created_at": getattr(registry, "created_at", None),
                 "updated_at": getattr(registry, "updated_at", None),
             }
@@ -122,6 +124,16 @@ class RegistryHandler(BaseHandler):
             version=registry.version,
             description=registry.description,
             url=registry.url,
+            artifact_type=(
+                registry.artifact_type
+                if hasattr(registry, "artifact_type") and registry.artifact_type
+                else "agent"
+            ),
+            deployment_type=(
+                registry.deployment_type
+                if hasattr(registry, "deployment_type")
+                else None
+            ),
             preferredTransport=(
                 registry.preferredTransport
                 if hasattr(registry, "preferredTransport")
@@ -172,6 +184,21 @@ class RegistryHandler(BaseHandler):
                 registry.additionalInterfaces
                 if hasattr(registry, "additionalInterfaces")
                 else None
+            ),
+            metadata=(
+                registry.metadata
+                if hasattr(registry, "metadata") and isinstance(registry.metadata, dict)
+                else {}
+            ),
+            mcp_manifest=(
+                registry.mcp_manifest
+                if hasattr(registry, "mcp_manifest") and isinstance(registry.mcp_manifest, dict)
+                else None
+            ),
+            associations=(
+                registry.associations
+                if hasattr(registry, "associations") and isinstance(registry.associations, dict)
+                else {}
             ),
             created_at=created_at_str,
             updated_at=updated_at_str,
@@ -237,6 +264,16 @@ class RegistryHandler(BaseHandler):
                     version=registry.version,
                     description=registry.description,
                     url=registry.url,
+                    artifact_type=(
+                        registry.artifact_type
+                        if hasattr(registry, "artifact_type") and registry.artifact_type
+                        else "agent"
+                    ),
+                    deployment_type=(
+                        registry.deployment_type
+                        if hasattr(registry, "deployment_type")
+                        else None
+                    ),
                     preferredTransport=(
                         registry.preferredTransport
                         if hasattr(registry, "preferredTransport")
@@ -253,6 +290,21 @@ class RegistryHandler(BaseHandler):
                         registry.defaultOutputModes
                         if hasattr(registry, "defaultOutputModes")
                         else []
+                    ),
+                    metadata=(
+                        registry.metadata
+                        if hasattr(registry, "metadata") and isinstance(registry.metadata, dict)
+                        else {}
+                    ),
+                    mcp_manifest=(
+                        registry.mcp_manifest
+                        if hasattr(registry, "mcp_manifest") and isinstance(registry.mcp_manifest, dict)
+                        else None
+                    ),
+                    associations=(
+                        registry.associations
+                        if hasattr(registry, "associations") and isinstance(registry.associations, dict)
+                        else {}
                     ),
                 )
                 registry_items.append(item)
@@ -401,6 +453,12 @@ class RegistryHandler(BaseHandler):
                             preferredTransport=getattr(
                                 registry, "preferredTransport", "JSONRPC"
                             ),
+                            artifact_type=getattr(
+                                registry, "artifact_type", "agent"
+                            ),
+                            deployment_type=getattr(
+                                registry, "deployment_type", None
+                            ),
                             provider=provider_dict,
                             iconUrl=getattr(registry, "iconUrl", None),
                             documentationUrl=getattr(
@@ -423,6 +481,9 @@ class RegistryHandler(BaseHandler):
                             additionalInterfaces=getattr(
                                 registry, "additionalInterfaces", None
                             ),
+                            metadata=getattr(registry, "metadata", {}) or {},
+                            mcp_manifest=getattr(registry, "mcp_manifest", None),
+                            associations=getattr(registry, "associations", {}) or {},
                             created_at=(
                                 str(registry.created_at)
                                 if hasattr(registry, "created_at")
@@ -449,6 +510,8 @@ class RegistryHandler(BaseHandler):
                         url="",
                         protocolVersion="0.2.9",
                         preferredTransport="JSONRPC",
+                        artifact_type="agent",
+                        deployment_type=None,
                         provider=None,
                         iconUrl=None,
                         documentationUrl=None,
@@ -461,6 +524,9 @@ class RegistryHandler(BaseHandler):
                         supportsAuthenticatedExtendedCard=False,
                         signatures=[],
                         additionalInterfaces=None,
+                        metadata={},
+                        mcp_manifest=None,
+                        associations={},
                     )
                     user_agents.append(user_agent)
                     processed_agent_ids.add(agent_id)
@@ -549,6 +615,13 @@ class RegistryHandler(BaseHandler):
                             icon_url=icon_url,
                             tags=tags,
                             description=description,
+                            artifact_type=getattr(
+                                registry, "artifact_type", "agent"
+                            ),
+                            has_mcp_manifest=bool(
+                                getattr(registry, "mcp_manifest", None)
+                            ),
+                            associations=getattr(registry, "associations", {}) or {},
                         )
                         user_agents.append(user_agent)
                         processed_agent_ids.add(agent_id)
@@ -564,6 +637,9 @@ class RegistryHandler(BaseHandler):
                         icon_url=None,
                         tags=[],
                         description="Agent accessible via permissions (details unavailable)",
+                        artifact_type="agent",
+                        has_mcp_manifest=False,
+                        associations={},
                     )
                     user_agents.append(user_agent)
                     processed_agent_ids.add(agent_id)

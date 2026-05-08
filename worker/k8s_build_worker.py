@@ -167,6 +167,7 @@ class K8sBuildWorker:
             owner_id = fields.get("owner_id")
             upload_id = fields.get("upload_id")
             upload_type = fields.get("upload_type")
+            artifact_type = fields.get("artifact_type", "agent")
             git_url = fields.get("git_url")  # Optional: for git-based builds
             webhook_url = fields.get(
                 "webhook_url"
@@ -202,6 +203,7 @@ class K8sBuildWorker:
                     "owner_id": owner_id,
                     "upload_id": upload_id,
                     "upload_type": upload_type,
+                    "artifact_type": artifact_type,
                 },
             )
             await self.update_database_status(
@@ -249,6 +251,7 @@ class K8sBuildWorker:
                     owner_id,
                     upload_id,
                     upload_type,
+                    artifact_type,
                     git_url,
                     webhook_url,
                 )
@@ -289,6 +292,7 @@ class K8sBuildWorker:
         owner_id: str | None = None,
         upload_id: str | None = None,
         upload_type: str | None = None,
+        artifact_type: str | None = "agent",
         git_url: str | None = None,
         webhook_url: str | None = None,
     ):
@@ -303,7 +307,9 @@ class K8sBuildWorker:
 
             # Generate unique identifiers
             timestamp = int(time.time())
-            job_id = f"{agent_name}-{timestamp}"
+            is_mcp = artifact_type == "mcp_server" or upload_type == "mcp_server"
+            job_prefix = "mcp" if is_mcp else agent_name
+            job_id = f"{job_prefix}-{timestamp}"
             build_job_name = f"job-{job_id}"
 
             # Determine image destination
@@ -322,6 +328,7 @@ class K8sBuildWorker:
                     "owner_id": owner_id,
                     "upload_id": upload_id,
                     "upload_type": upload_type,
+                    "artifact_type": artifact_type,
                 },
             )
             await self.update_database_status(
@@ -362,7 +369,7 @@ class K8sBuildWorker:
 
             # Step 0: Inject Observability (if enabled) and get modified files path
             modified_files_path = await self._inject_observability_if_enabled(
-                agent_name, base_url, agent_path
+                agent_name, base_url, agent_path, artifact_type=artifact_type or "agent"
             )
 
             # Step 1: Create Build Job
@@ -446,7 +453,7 @@ class K8sBuildWorker:
 
             # Step 3: Deploy Agent
             self.logger.info(
-                f"Deploying agent {agent_name} with image {image_destination}"
+                f"Deploying artifact {agent_name} (type={artifact_type}) with image {image_destination}"
             )
             await self.set_agent_status(
                 agent_name,
@@ -465,7 +472,8 @@ class K8sBuildWorker:
                 "Image built, deploying to cluster",
             )
 
-            deployment_name = f"agent-{agent_name}-{timestamp}"
+            deployment_prefix = "mcp" if is_mcp else "agent"
+            deployment_name = f"{deployment_prefix}-{agent_name}-{timestamp}"
 
             # Create deployment record in agent operations collection
             deployment_id = await self.create_deployment_record(
@@ -487,10 +495,18 @@ class K8sBuildWorker:
             if upload_type == "n8n_register" and webhook_url:
                 env_vars["WEBHOOK_URL"] = webhook_url
 
+            # MCP stdio -> HTTP bridge hints for MCP server artifacts
+            target_port = 8080 if is_mcp else 5000
+            if is_mcp:
+                env_vars["ARTIFACT_TYPE"] = "mcp_server"
+                env_vars["MCP_TRANSPORT"] = "stdio"
+                env_vars["MCP_BRIDGE_ENABLED"] = "true"
+                env_vars["MCP_BRIDGE_PORT"] = str(target_port)
+
             deploy_result = self.k8s_service.deploy_agent(
                 deployment_name=deployment_name,
                 image_reference=image_destination,
-                port=5000,
+                port=target_port,
                 env_vars=env_vars,
             )
 
@@ -518,7 +534,8 @@ class K8sBuildWorker:
             gateway_base = self.gateway_url.rstrip("/")
             if self.gateway_url == "http://localhost":
                 gateway_base = gateway_base + ":8000"  # for local deployment
-            agent_url = f"{gateway_base}/agents/{deployment_name}"
+            route_prefix = "mcp" if is_mcp else "agents"
+            agent_url = f"{gateway_base}/{route_prefix}/{deployment_name}"
 
             self.logger.info(f"Agent will be accessible at: {agent_url}")
 
@@ -530,6 +547,7 @@ class K8sBuildWorker:
                 owner_id=owner_id,
                 base_url=base_url,
                 agent_path=agent_path,
+                artifact_type=artifact_type or "agent",
             )
 
             # Step 5: Create Agent Permissions (if registry was updated and owner_id is provided)
@@ -585,6 +603,7 @@ class K8sBuildWorker:
                     "permissions_created": permissions_created,
                     "image": image_destination,
                     "deployment_name": deployment_name,
+                    "artifact_type": artifact_type,
                 },
             )
             self.logger.info(
@@ -739,6 +758,7 @@ class K8sBuildWorker:
         owner_id: str | None,
         base_url: str,
         agent_path: str | None = None,
+        artifact_type: str = "agent",
     ) -> bool:
         """Register or update agent in the registry via API"""
         try:
@@ -752,6 +772,13 @@ class K8sBuildWorker:
                 agent_name, base_url, version
             )
 
+            mcp_manifest = (
+                self._load_mcp_manifest_from_path(agent_path)
+                if artifact_type == "mcp_server" and agent_path
+                else None
+            )
+            associations = self._extract_associations_from_manifest(mcp_manifest)
+
             if agentcard_data:
                 self.logger.info(
                     f"Using AgentCard data for {agent_name} with {len(agentcard_data.get('skills', []))} skills"
@@ -763,7 +790,29 @@ class K8sBuildWorker:
                 # Override/ensure critical K8s-specific fields
                 registry_data["id"] = agent_name
                 registry_data["url"] = service_url
-                registry_data["deployment_type"] = "kubernetes"
+                registry_data["deployment_type"] = (
+                    "kubernetes-mcp" if artifact_type == "mcp_server" else "kubernetes"
+                )
+                registry_data["artifact_type"] = artifact_type
+
+                existing_metadata = registry_data.get("metadata") or {}
+                if not isinstance(existing_metadata, dict):
+                    existing_metadata = {}
+                existing_metadata.update(
+                    {
+                        "artifact_type": artifact_type,
+                        "deployment_type": registry_data["deployment_type"],
+                        "mcp_manifest_present": bool(mcp_manifest),
+                    }
+                )
+                if associations:
+                    existing_metadata["associations"] = associations
+                registry_data["metadata"] = existing_metadata
+
+                if mcp_manifest:
+                    registry_data["mcp_manifest"] = mcp_manifest
+                if associations:
+                    registry_data["associations"] = associations
 
                 if owner_id:
                     registry_data["owner_id"] = owner_id
@@ -779,8 +828,24 @@ class K8sBuildWorker:
                     "description": "Agent deployed via K8s BuildKit",
                     "capabilities": {"tools": [], "prompts": []},
                     "version": "1.0.0",
-                    "deployment_type": "kubernetes",
+                    "deployment_type": "kubernetes-mcp"
+                    if artifact_type == "mcp_server"
+                    else "kubernetes",
+                    "artifact_type": artifact_type,
+                    "metadata": {
+                        "artifact_type": artifact_type,
+                        "deployment_type": "kubernetes-mcp"
+                        if artifact_type == "mcp_server"
+                        else "kubernetes",
+                        "mcp_manifest_present": bool(mcp_manifest),
+                    },
                 }
+
+                if mcp_manifest:
+                    registry_data["mcp_manifest"] = mcp_manifest
+                if associations:
+                    registry_data["associations"] = associations
+                    registry_data["metadata"]["associations"] = associations
 
                 if owner_id:
                     registry_data["owner_id"] = owner_id
@@ -816,6 +881,53 @@ class K8sBuildWorker:
         except Exception as e:
             self.logger.error(f"Error registering agent {agent_name}: {e}")
             return False
+
+    def _load_mcp_manifest_from_path(self, agent_path: str | None) -> dict | None:
+        """Load MCP manifest from the local agent directory path if available."""
+        if not agent_path:
+            return None
+
+        base = Path(agent_path)
+        candidates = [
+            base / "MCPManifest.json",
+            base / "mcp-manifest.json",
+            base / "mcp_manifest.json",
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        return json.load(f)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to read MCP manifest {candidate} for registry update: {e}"
+                )
+        return None
+
+    def _extract_associations_from_manifest(self, manifest: dict | None) -> dict:
+        """Extract agent-to-MCP associations from manifest shape variants."""
+        if not manifest or not isinstance(manifest, dict):
+            return {}
+
+        associations = manifest.get("associations")
+        if isinstance(associations, dict):
+            return {k: v for k, v in associations.items() if isinstance(v, list)}
+
+        metadata = manifest.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("associations"), dict):
+            assoc = metadata.get("associations")
+            return {k: v for k, v in assoc.items() if isinstance(v, list)}
+
+        linked_agents = []
+        for key in ["associated_agents", "associatedAgents", "linked_agents", "linkedAgents"]:
+            value = manifest.get(key)
+            if isinstance(value, list):
+                linked_agents.extend([v for v in value if isinstance(v, str) and v.strip()])
+
+        if linked_agents:
+            return {"agent_ids": list(dict.fromkeys(linked_agents))}
+
+        return {}
 
     async def create_agent_permissions(self, agent_id: str, owner_id: str) -> bool:
         """Create agent permissions in the auth service"""
@@ -1185,7 +1297,7 @@ class K8sBuildWorker:
 
             # Step 0: Inject Observability (if enabled) and get modified files path
             modified_files_path = await self._inject_observability_if_enabled(
-                agent_name, base_url, agent_path
+                agent_name, base_url, agent_path, artifact_type="agent"
             )
 
             # Build new version using modified files if observability injection succeeded, otherwise use original
@@ -1482,7 +1594,7 @@ class K8sBuildWorker:
 
             # Step 0: Inject Observability (if enabled) and get modified files path
             modified_files_path = await self._inject_observability_if_enabled(
-                agent_name, base_url, agent_path
+                agent_name, base_url, agent_path, artifact_type="agent"
             )
 
             # Rebuild using existing files (with observability if injection succeeded)
@@ -1913,7 +2025,11 @@ class K8sBuildWorker:
         return fallback_tag
 
     async def _inject_observability_if_enabled(
-        self, agent_name: str, base_url: str, agent_path: str
+        self,
+        agent_name: str,
+        base_url: str,
+        agent_path: str,
+        artifact_type: str = "agent",
     ) -> str | None:
         """Inject observability code into agent if enabled"""
         if not self.observability_config.get_injection_enabled():
@@ -1986,7 +2102,9 @@ class K8sBuildWorker:
 
                 # Inject observability code
                 injection_success = self.tracing_injector.inject_into_agent(
-                    extract_dir, agent_name
+                    extract_dir,
+                    agent_name,
+                    artifact_type=artifact_type,
                 )
 
                 # Check if Dockerfile exists after injection
