@@ -25,6 +25,8 @@ class Config:
 
     # API Keys
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    LLM_GATEWAY_URL = os.getenv("LLM_GATEWAY_URL", "http://nasiko-llm-gateway:4000")
+    LLM_VIRTUAL_KEY = os.getenv("LLM_VIRTUAL_KEY", "sk-nasiko-gateway-key")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")

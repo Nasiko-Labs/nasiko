@@ -426,6 +426,9 @@ class AgentBuilder:
                 "OPENAI_API_KEY": Config.OPENAI_API_KEY,
                 "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
                 "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
+                "LLM_GATEWAY_URL": "http://nasiko-llm-gateway:4000",
+                "LLM_VIRTUAL_KEY": "sk-nasiko-gateway-key",
+            
             }
             for service_name, svc_def in compose_data.get("services", {}).items():
                 if service_name == agent_folder_name and "build" in svc_def:

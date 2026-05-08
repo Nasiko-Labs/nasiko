@@ -309,7 +309,20 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
+  llm-gateway:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: nasiko-llm-gateway
+    ports:
+      - "4001:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    networks:
+      - agents-net
+    restart: unless-stopped
   # ============================================================================
   # WEB FRONTEND LAYER
   # ============================================================================

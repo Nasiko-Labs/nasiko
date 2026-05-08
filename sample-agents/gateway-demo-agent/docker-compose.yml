@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  gateway-demo-agent:
+    build: .
+    environment:
+      - LLM_GATEWAY_URL=http://nasiko-llm-gateway:4000
+      - LLM_VIRTUAL_KEY=sk-nasiko-gateway-key
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true
