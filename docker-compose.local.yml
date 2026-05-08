@@ -183,10 +183,10 @@ services:
     volumes:
       - ./agent-gateway/plugins:/opt/kong/custom-plugins/kong/plugins
     ports:
-      - "9100:8000"       # Kong proxy port
-      - "9101:8001"       # Kong admin API port
-      - "9102:8003"       # Kong Manager (GUI)
-      - "9443:8443"       # Kong proxy SSL port
+      - "9100:8000"        # Kong proxy port
+      - "9101:8001"        # Kong admin API port
+      - "9102:8003"        # Kong Manager (GUI)
+      - "9443:8443"        # Kong proxy SSL port
     networks:
       - app-network
       - agents-net
@@ -403,6 +403,26 @@ services:
       - app-network
       - agents-net
     command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
+
+# ============================================================================
+  # LITELLM GATEWAY LAYER (Track 2 Integration)
+  # ============================================================================
+  litellm-gateway:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-gateway
+    environment:
+      - LITELLM_MASTER_KEY=sk-nasiko-local-dev-key
+      - STORE_MODEL_IN_DB=True
+      # TRACK 2: Send gateway traces to the local Phoenix instance
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix-observability:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    ports:
+      - "4001:4000"
+    command: [ "--port", "4000", "--config", "/app/config.yaml" ]
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    networks:
+      - app-network
 
 volumes:
   mongodb-data:

@@ -422,8 +422,13 @@ class AgentBuilder:
 
             # Update services to use pre-built instrumented image and inject API keys
             image_tag = f"{agent_folder_name}_instrumented"
+            
+            # TRACK 2: Inject LiteLLM Gateway URLs and Virtual Keys
+            # Overriding OPENAI_BASE_URL forces agents using the OpenAI SDK to hit our gateway
             api_key_env = {
-                "OPENAI_API_KEY": Config.OPENAI_API_KEY,
+                "OPENAI_API_KEY": "sk-nasiko-local-dev-key", # The virtual key we set in docker-compose
+                "OPENAI_BASE_URL": "http://litellm-gateway:4000/v1", # Route traffic to gateway
+                "LITELLM_URL": "http://litellm-gateway:4000",
                 "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
                 "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
             }

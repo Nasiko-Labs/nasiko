@@ -19,6 +19,20 @@
 
 </div>
 
+
+---
+
+## 🚀 Track 2 Integration: Platform-Managed LLM Routing
+*This fork contains the official Track 2 submission for the Srishti Hackathon.*
+
+Nasiko now features a centralized **LiteLLM Gateway** to manage provider credentials and secure agent routing. This eliminates the critical security risk of hardcoded API keys in agent source code.
+
+**Key Architectural Enhancements:**
+* **Centralized Credential Management:** All model provider keys (OpenAI, Anthropic, etc.) are securely stored in the platform-level `litellm_config.yaml`.
+* **Zero-Touch Agent Rerouting:** The orchestrator (`agent_builder.py`) now dynamically injects `OPENAI_BASE_URL` and virtual keys into the agent's Docker runtime. 
+* **Legacy Compatibility:** Existing agents using standard OpenAI SDKs are automatically hijacked and securely routed through the in-cluster `litellm-gateway:4000` proxy without requiring any developer code changes.
+* **Design Documentation:** Full trade-off rationale (LiteLLM vs. Portkey) is available in [`GATEWAY_DESIGN.md`](./GATEWAY_DESIGN.md).
+
 ---
 
 ## 🌟 What is Nasiko?

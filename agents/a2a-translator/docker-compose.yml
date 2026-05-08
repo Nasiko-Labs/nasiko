@@ -2,8 +2,12 @@ services:
   a2a-translator:
     build: .
     container_name: a2a-translator
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+   environment:
+      # TRACK 2 UPDATE: 
+      # Provider keys are intentionally removed from this agent's configuration.
+      # The Nasiko orchestrator automatically injects the LITELLM_URL and 
+      # virtual key, routing traffic securely through the platform gateway.
+      # - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
