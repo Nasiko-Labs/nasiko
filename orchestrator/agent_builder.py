@@ -13,6 +13,7 @@ from docker_utils import run_cmd
 from registry_manager import RegistryManager
 from instrumentation_injector import InstrumentationInjector
 from config import AGENTS_DIRECTORY, DOCKER_NETWORK, Config
+from gateway_key_manager import GatewayKeyManager
 
 logger = logging.getLogger(__name__)
 
@@ -420,29 +421,59 @@ class AgentBuilder:
                 if DOCKER_NETWORK not in svc_def["networks"]:
                     svc_def["networks"].append(DOCKER_NETWORK)
 
-            # Update services to use pre-built instrumented image and inject API keys
+            # Update services to use pre-built instrumented image and inject env vars.
+            # Legacy direct provider keys are preserved for backward compatibility.
+            # New agents should use LLM_GATEWAY_URL + LLM_VIRTUAL_KEY instead.
             image_tag = f"{agent_folder_name}_instrumented"
             api_key_env = {
                 "OPENAI_API_KEY": Config.OPENAI_API_KEY,
                 "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
                 "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
             }
+
+            # Mint a virtual key for this agent synchronously (used in non-async path)
+            import asyncio as _asyncio
+            _gkm = GatewayKeyManager(
+                gateway_url=Config.LLM_GATEWAY_URL,
+                master_key=Config.LLM_GATEWAY_MASTER_KEY,
+                default_max_budget=Config.LLM_GATEWAY_DEFAULT_BUDGET,
+            )
+            try:
+                _virtual_key = _asyncio.run(_gkm.provision_key(agent_folder_name))
+            except Exception:
+                _virtual_key = None
+
+            gateway_env = {
+                "LLM_GATEWAY_URL": Config.LLM_GATEWAY_URL,
+            }
+            if _virtual_key:
+                gateway_env["LLM_VIRTUAL_KEY"] = _virtual_key
+
+            inject_env = {**api_key_env, **gateway_env}
+
             for service_name, svc_def in compose_data.get("services", {}).items():
                 if service_name == agent_folder_name and "build" in svc_def:
                     svc_def.pop("build", None)
                     svc_def["image"] = image_tag
 
-                # Inject actual API key values directly (bypasses yaml/shell substitution issues)
+                # Inject values directly (bypasses yaml/shell substitution issues)
                 env = svc_def.get("environment", [])
                 if isinstance(env, list):
                     new_env = []
                     for item in env:
                         if isinstance(item, str):
                             key = item.split("=")[0]
-                            if key in api_key_env and api_key_env[key]:
-                                new_env.append(f"{key}={api_key_env[key]}")
+                            if key in inject_env and inject_env[key]:
+                                new_env.append(f"{key}={inject_env[key]}")
                                 continue
                         new_env.append(item)
+                    # Append gateway vars if not already present in the compose env list
+                    existing_keys = {
+                        i.split("=")[0] for i in new_env if isinstance(i, str) and "=" in i
+                    }
+                    for k, v in gateway_env.items():
+                        if k not in existing_keys and v:
+                            new_env.append(f"{k}={v}")
                     svc_def["environment"] = new_env
 
             # Save updated compose

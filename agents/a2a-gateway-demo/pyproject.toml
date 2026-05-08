@@ -1,0 +1,19 @@
+[project]
+name = "a2a-gateway-demo"
+version = "0.1.0"
+description = "Demo agent that uses the Nasiko LLM gateway (no hardcoded provider keys)"
+requires-python = ">=3.10"
+dependencies = [
+    "a2a-sdk>=0.3.0",
+    "click>=8.1.8",
+    "openai>=1.57.0",
+    "python-dotenv>=1.1.0",
+    "uvicorn>=0.34.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

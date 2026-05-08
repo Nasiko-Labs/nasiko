@@ -1,0 +1,19 @@
+services:
+  a2a-gateway-demo:
+    build: .
+    container_name: a2a-gateway-demo
+    environment:
+      # ── LLM gateway config (injected by the Nasiko orchestrator at deploy time) ──
+      # Do NOT add OPENAI_API_KEY or any direct provider key here.
+      # The platform injects LLM_GATEWAY_URL and LLM_VIRTUAL_KEY automatically.
+      - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:4000}
+      - LLM_VIRTUAL_KEY=${LLM_VIRTUAL_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-openrouter/nemotron}
+    ports:
+      - "5001"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

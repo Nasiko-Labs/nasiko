@@ -257,6 +257,7 @@ def register_groups():
     from groups.user_group import user_app
     from groups.local_group import local_app
     from groups.images_group import images_app
+    from groups.gateway_group import gateway_app
 
     # Add groups to main app
     app.add_typer(github_app, name="github")
@@ -269,6 +270,7 @@ def register_groups():
     app.add_typer(user_app, name="user")
     app.add_typer(local_app, name="local")
     app.add_typer(images_app, name="images")
+    app.add_typer(gateway_app, name="gateway")
 
 
 def main():

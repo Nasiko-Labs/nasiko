@@ -285,6 +285,62 @@ services:
       retries: 3
 
   # ============================================================================
+  # LLM GATEWAY LAYER (LiteLLM proxy — agents use this instead of direct keys)
+  # ============================================================================
+  llm-gateway-db:
+    image: postgres:15
+    container_name: llm-gateway-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+    volumes:
+      - llm-gateway-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  llm-gateway:
+    image: ghcr.io/berriai/litellm-database:main-latest
+    container_name: llm-gateway
+    restart: unless-stopped
+    ports:
+      - "${NASIKO_PORT_LLM_GATEWAY:-4001}:4000"
+    environment:
+      LITELLM_MASTER_KEY: ${LLM_GATEWAY_MASTER_KEY:-sk-nasiko-master-key}
+      LLM_GATEWAY_MASTER_KEY: ${LLM_GATEWAY_MASTER_KEY:-sk-nasiko-master-key}
+      DATABASE_URL: postgresql://litellm:litellm@llm-gateway-db:5432/litellm
+      LLM_GATEWAY_DATABASE_URL: postgresql://litellm:litellm@llm-gateway-db:5432/litellm
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
+      OTEL_EXPORTER: otlp_http
+      OTEL_ENDPOINT: http://phoenix-observability:4318
+    volumes:
+      - ./llm-gateway/litellm_config.yaml:/app/litellm_config.yaml:ro
+    command: ["--config", "/app/litellm_config.yaml", "--port", "4000", "--num_workers", "4"]
+    depends_on:
+      llm-gateway-db:
+        condition: service_healthy
+      phoenix-observability:
+        condition: service_started
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness').read()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ============================================================================
   # OBSERVABILITY LAYER (Phoenix)
   # ============================================================================
   phoenix-observability:
@@ -305,10 +361,11 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6006/"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:6006/').read()\" || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
   # ============================================================================
   # WEB FRONTEND LAYER
@@ -395,6 +452,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      LLM_GATEWAY_URL: http://llm-gateway:4000
+      LLM_GATEWAY_MASTER_KEY: ${LLM_GATEWAY_MASTER_KEY:-sk-nasiko-master-key}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agents:/app/agents:ro
@@ -409,6 +468,7 @@ volumes:
   redis-data:
   kong-db-data:
   phoenix-data:
+  llm-gateway-data:
 
 networks:
   app-network:
