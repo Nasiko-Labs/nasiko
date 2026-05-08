@@ -59,6 +59,41 @@ class TracingInjector:
             logger.error(f"❌ Failed to inject observability for {agent_name}: {e}")
             return False
 
+    def inject_into_mcp_server(self, mcp_code_path: str, server_name: str) -> bool:
+        """
+        Complete observability injection process specifically customized or wrapped for MCP Servers
+        """
+        if not self.config.is_tracing_enabled():
+            logger.info(f"Tracing disabled, skipping injection for {server_name}")
+            return True
+
+        if not self.config.get_injection_enabled():
+            logger.info(f"Injection disabled, skipping for {server_name}")
+            return True
+
+        try:
+            logger.info(f"🔄 Starting observability injection for MCP Server {server_name}")
+
+            # 1. Copy observability module
+            self._copy_observability_module(mcp_code_path)
+
+            # 2. Find and modify main entry point (the MCP python script)
+            main_file = self._find_main_file(mcp_code_path)
+            self._inject_tracing_code(main_file, server_name)
+
+            # 3. Update dependencies
+            self._update_requirements(mcp_code_path)
+
+            # 4. Update Dockerfile if needed
+            self._update_dockerfile(mcp_code_path)
+
+            logger.info(f"✅ Observability injection completed for MCP {server_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to inject observability for MCP {server_name}: {e}")
+            return False
+
     def _copy_observability_module(self, agent_code_path: str):
         """Copy observability module into agent directory"""
         # Create utils directory structure

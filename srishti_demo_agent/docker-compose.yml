@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  github-mcp-server:
+    build: .
+    container_name: github-mcp-server
+    stdin_open: true
+    tty: true
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}

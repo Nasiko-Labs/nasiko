@@ -107,6 +107,7 @@ class AgentBuilder:
         agent_path: str,
         base_url: str = "http://localhost:8000",
         owner_id=None,
+        artifact_type: str = "agent",
     ):
         """
         Async method to build and deploy a single agent
@@ -116,6 +117,8 @@ class AgentBuilder:
             agent_path: Full path to agent directory on host
             base_url: Base URL for agent service
             owner_id: Owner ID
+            artifact_type: 'agent' or 'mcp_server'
+
 
         Returns:
             Dict with success status and details
@@ -143,7 +146,7 @@ class AgentBuilder:
             # Run the build in executor to avoid blocking
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, self._build_agent_sync, agent_name, agent_path, base_url, owner_id
+                None, self._build_agent_sync, agent_name, agent_path, base_url, owner_id, artifact_type
             )
 
             return result
@@ -153,7 +156,7 @@ class AgentBuilder:
             return {"success": False, "error": f"Build and deploy failed: {str(e)}"}
 
     def _build_agent_sync(
-        self, agent_name: str, agent_path: str, base_url: str, owner_id=None
+        self, agent_name: str, agent_path: str, base_url: str, owner_id=None, artifact_type="agent"
     ):
         """Synchronous method to build and deploy agent"""
         try:
@@ -165,7 +168,7 @@ class AgentBuilder:
             shutil.copytree(agent_folder, agent_temp_path)
 
             # Build instrumented Docker image
-            if not self._build_instrumented_image(agent_temp_path, agent_name, None):
+            if not self._build_instrumented_image(agent_temp_path, agent_name, None, artifact_type):
                 shutil.rmtree(temp_dir)
                 return {
                     "success": False,
@@ -271,9 +274,9 @@ class AgentBuilder:
             return False
 
     def _build_instrumented_image(
-        self, agent_temp_path, agent_folder_name, agent_api_key
+        self, agent_temp_path, agent_folder_name, agent_api_key, artifact_type="agent"
     ):
-        """Build Docker image with instrumentation"""
+        """Build Docker image with instrumentation and optional MCP bridge"""
         dockerfile_path = agent_temp_path / "Dockerfile"
         if not dockerfile_path.exists():
             logger.error(f"No Dockerfile found for {agent_folder_name}, skipping...")
@@ -292,19 +295,30 @@ class AgentBuilder:
 
             logger.info(f"Building new instrumented image for {agent_folder_name}")
 
-            # Check if image already exists locally (optimization for re-deployments)
-            image_tag = f"{agent_folder_name}_instrumented"
-            result = run_cmd(["docker", "image", "inspect", image_tag], check=False)
-
-            if result.returncode == 0:
-                logger.info(
-                    f"Docker image already exists: {image_tag} - reusing cached image (fast path)"
-                )
-                return True
-
-            logger.info(f"Building new instrumented image for {agent_folder_name}")
-
             dockerfile_content = dockerfile_path.read_text()
+            
+            # If this is an MCP server, inject the HTTP bridge wrapper
+            if artifact_type == "mcp_server":
+                logger.info(f"Injecting MCP HTTP Bridge for {agent_folder_name}")
+                
+                # Copy bridge template
+                bridge_source = Path(__file__).parent / "mcp_bridge_template"
+                bridge_dest = agent_temp_path / "mcp_bridge"
+                shutil.copytree(bridge_source, bridge_dest, dirs_exist_ok=True)
+                
+                # Modify Dockerfile to run the bridge instead of the direct script
+                dockerfile_content = dockerfile_content.replace(
+                    'CMD ["python"', '# CMD ["python"'  # Comment out old CMD
+                )
+                
+                mcp_injection = f"""
+                # MCP Bridge setup
+                COPY mcp_bridge /app/mcp_bridge
+                RUN pip install -r /app/mcp_bridge/requirements.txt
+                ENV MCP_SCRIPT=/app/main.py
+                CMD ["python", "/app/mcp_bridge/main.py"]
+                """
+                dockerfile_content += "\n" + mcp_injection
 
             # Inject comprehensive instrumentation packages
             instrumentation_install = f"""

@@ -479,12 +479,15 @@ class RedisStreamListener:
             # Verify required files exist
             dockerfile_path = agent_source_path / "Dockerfile"
             agentcard_path = agent_source_path / "Agentcard.json"
+            mcp_manifest_path = agent_source_path / "mcp_manifest.json"
 
             if not dockerfile_path.exists():
                 raise ValueError(f"Dockerfile not found in {agent_source_path}")
 
-            if not agentcard_path.exists():
-                self.logger.warning(f"Agentcard.json not found in {agent_source_path}")
+            if not agentcard_path.exists() and not mcp_manifest_path.exists():
+                self.logger.warning(f"Neither Agentcard.json nor mcp_manifest.json found in {agent_source_path}")
+                
+            artifact_type = "mcp_server" if mcp_manifest_path.exists() else "agent"
 
             # Step 2: Stop existing agent if updating
             if command == "update_agent":
@@ -501,7 +504,7 @@ class RedisStreamListener:
                 25,
             )
             image_tag = await self._build_local_docker_image(
-                agent_source_path, agent_name
+                agent_source_path, agent_name, artifact_type
             )
 
             # Step 4: Deploy agent container
@@ -655,9 +658,9 @@ class RedisStreamListener:
         )
 
     async def _build_local_docker_image(
-        self, source_path: Path, agent_name: str
+        self, source_path: Path, agent_name: str, artifact_type: str = "agent"
     ) -> str:
-        """Build Docker image with observability injection"""
+        """Build Docker image with observability injection and MCP wrapping if needed"""
         import shutil
         import time
 
@@ -669,8 +672,30 @@ class RedisStreamListener:
             # Copy agent source to temp directory
             shutil.copytree(source_path, temp_dir / "agent", dirs_exist_ok=True)
 
-            # Inject observability (like existing agent_builder.py does)
-            await self._inject_observability(temp_dir / "agent", agent_name)
+            # Inject observability (using agent_builder/injector)
+            if artifact_type == "mcp_server":
+                # For mcp server, use specific injection
+                self.tracing_injector.inject_into_mcp_server(str(temp_dir / "agent"), agent_name)
+            else:
+                await self._inject_observability(temp_dir / "agent", agent_name)
+
+            # If this is an MCP server, wrap it with the HTTP bridge
+            if artifact_type == "mcp_server":
+                orchestrator_dir = Path(__file__).resolve().parent
+                bridge_source = orchestrator_dir / "mcp_bridge_template"
+                bridge_dest = temp_dir / "agent" / "mcp_bridge"
+                if bridge_source.exists():
+                    shutil.copytree(bridge_source, bridge_dest, dirs_exist_ok=True)
+                
+                # Write Dockerfile append
+                dockerfile_path = temp_dir / "agent" / "Dockerfile"
+                if dockerfile_path.exists():
+                    dockerfile_content = dockerfile_path.read_text()
+                    dockerfile_content = dockerfile_content.replace(
+                        'CMD ["python"', '# CMD ["python"'
+                    )
+                    dockerfile_content += "\n# MCP Bridge setup\nCOPY mcp_bridge /app/mcp_bridge\nRUN pip install -r /app/mcp_bridge/requirements.txt\nENV MCP_SCRIPT=/app/main.py\nCMD [\"python\", \"/app/mcp_bridge/main.py\"]\n"
+                    dockerfile_path.write_text(dockerfile_content)
 
             # Build Docker image
             image_tag = f"local-agent-{agent_name}:latest"
