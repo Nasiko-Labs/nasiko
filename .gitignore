@@ -161,3 +161,6 @@ cython_debug/
 
 # Sensitive credentials
 superuser_credentials.json
+docs/cli-reference.md
+docs/cli-command-design.md
+docs/copy design.md

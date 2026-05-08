@@ -36,21 +36,50 @@ def get_github_status():
         raise typer.Exit(1)
 
 
+def _print_github_oauth_setup_instructions(api_url: str):
+    """Print clear instructions for configuring GitHub OAuth."""
+    console.print("\n[bold yellow]GitHub OAuth is not configured on this cluster.[/bold yellow]")
+    console.print("\nTo enable it, follow these steps:\n")
+    console.print("[bold]1. Create a GitHub OAuth App[/bold]")
+    console.print("   Go to: [cyan]https://github.com/settings/developers[/cyan]")
+    console.print("   → OAuth Apps → New OAuth App")
+    console.print(f"   → Homepage URL:      [cyan]{api_url}[/cyan]")
+    console.print(f"   → Callback URL:      [cyan]{api_url}/auth/github/callback[/cyan]")
+    console.print("\n[bold]2. Add credentials to your env file[/bold]")
+    console.print("   Add these lines to [cyan].nasiko-local.env[/cyan] (or your cluster's env file):")
+    console.print("   [dim]GITHUB_CLIENT_ID=your_client_id[/dim]")
+    console.print("   [dim]GITHUB_CLIENT_SECRET=your_client_secret[/dim]")
+    console.print("\n[bold]3. Restart the stack to apply[/bold]")
+    console.print("   [cyan]nasiko local down && nasiko local up[/cyan]")
+    console.print("\nThen run [bold]nasiko github connect[/bold] again.\n")
+
+
 def login_command():
     """
     Authenticate with GitHub via the Nasiko backend automatically.
     """
-    console.print("[bold magenta]--- GitHub Authentication ---[/bold magenta]")
-    console.print("A browser window will open for you to authorize the application.")
-
     try:
         client = get_api_client()
 
-        # The login endpoint now handles authentication automatically and returns a redirect
+        # Check if already connected on this cluster (no auth required)
+        status_response = client.get(APIEndpoints.GITHUB_TOKEN, require_auth=False)
+        if status_response.status_code == 200:
+            status = status_response.json()
+            if status.get("success") and status.get("status") == "connected":
+                console.print(f"[green]GitHub already connected[/] as [bold]{status.get('username')}[/bold] on this cluster.")
+                return
+
+        console.print("[bold magenta]--- GitHub Authentication ---[/bold magenta]")
+        console.print("A browser window will open for you to authorize the application.")
         console.print("\n[cyan]Initiating GitHub login...[/cyan]")
 
-        # Call the login endpoint which will return an auth URL
-        response = client.get(APIEndpoints.GITHUB_LOGIN)
+        response = client.get(APIEndpoints.GITHUB_LOGIN, require_auth=False)
+
+        # Preflight: detect unconfigured GitHub OAuth
+        if response.status_code == 404:
+            _print_github_oauth_setup_instructions(client.base_url)
+            raise typer.Exit(1)
+
         result = client.handle_response(response)
         if result is None:
             raise typer.Exit(1)
@@ -73,12 +102,10 @@ def login_command():
             )
             console.print(f"[cyan]{auth_url}[/cyan]")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error: could not initiate GitHub login: {e}[/red]")
-        console.print(
-            "[yellow]You can try accessing the login URL manually in your browser:[/yellow]"
-        )
-        console.print(f"[cyan]{APIEndpoints.GITHUB_LOGIN}[/cyan]")
         raise typer.Exit(1)
 
     # Wait a moment for the browser to hit the login endpoint and initialize the session
@@ -97,8 +124,8 @@ def login_command():
 
     while time.time() - start_time < timeout_seconds:
         try:
-            # Check if token is available
-            response = client.get(APIEndpoints.GITHUB_TOKEN)
+            # Check if token is available (no auth required — this IS the auth flow)
+            response = client.get(APIEndpoints.GITHUB_TOKEN, require_auth=False)
 
             # If we get a successful response, check if we have a valid token
             if response.status_code == 200:

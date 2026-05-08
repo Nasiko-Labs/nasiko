@@ -473,7 +473,7 @@ def destroy(
         console.print(
             f"[yellow]No state found for cluster '{cluster_name}' ({provider.value})[/]"
         )
-        console.print("[yellow]Use 'nasiko setup k8s list' to see managed clusters[/]")
+        console.print("[yellow]Use 'nasiko cluster list' to see managed clusters[/]")
         raise typer.Exit(code=1)
 
     work_dir = state_info["work_dir"]
@@ -563,7 +563,7 @@ def list_clusters(
     if not clusters:
         console.print("[yellow]No managed clusters found.[/]")
         console.print(
-            "[dim]Create a cluster with: nasiko setup k8s create <provider>[/]"
+            "[dim]Create a cluster with: nasiko cluster create remote --provider <provider>[/]"
         )
         return
 
@@ -639,7 +639,7 @@ def init_modules(
     directory structure (for development) or prompt for a path.
 
     Example:
-        nasiko setup k8s init-modules --source /path/to/terraform
+        nasiko cluster init-modules --source /path/to/terraform
     """
 
     console.print("[cyan]Initializing Terraform modules...[/]\n")
@@ -664,7 +664,7 @@ def init_modules(
     if not aws_exists or not do_exists:
         console.print("\n[yellow]Some modules are missing. Provide the source path:[/]")
         console.print(
-            "[dim]  nasiko setup k8s init-modules --source /path/to/terraform[/]"
+            "[dim]  nasiko cluster init-modules --source /path/to/terraform[/]"
         )
 
 

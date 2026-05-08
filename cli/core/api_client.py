@@ -93,28 +93,20 @@ class APIClient:
         if endpoint.startswith("http"):
             return endpoint
 
-        # All APIEndpoints are relative paths like "/registry"
-        # We assume they belong under /api/v1 unless they explicitly start with /auth
-
+        # All APIEndpoints are relative paths — always route through /api/v1/
         endpoint = endpoint.lstrip("/")
-
-        if endpoint.startswith("auth/"):
-            # Auth service routes (e.g. /auth/users/...) are usually under root
-            return f"{self.base_url}/{endpoint}"
-        else:
-            # Standard API routes
-            return f"{self.api_url}/{endpoint}"
+        return f"{self.api_url}/{endpoint}"
 
     def _require_auth(self):
         """Ensure user is authenticated"""
         if not self.auth_manager.is_logged_in():
             typer.echo("❌ Please login first:")
-            typer.echo("   nasiko login")
+            typer.echo("   nasiko auth login")
             raise typer.Exit(1)
 
         if not self.auth_manager.refresh_token_if_needed():
             typer.echo("❌ Authentication failed. Please login again:")
-            typer.echo("   nasiko login")
+            typer.echo("   nasiko auth login")
             raise typer.Exit(1)
 
     def _make_request(
@@ -147,7 +139,7 @@ class APIClient:
             # Handle auth failures
             if response.status_code == 401 and require_auth:
                 typer.echo("❌ Authentication failed. Please login again:")
-                typer.echo("   nasiko login")
+                typer.echo("   nasiko auth login")
                 self.auth_manager.logout()
                 raise typer.Exit(1)
 
@@ -242,7 +234,7 @@ class APIClient:
 
                 if response.status_code == 401 and require_auth:
                     typer.echo("❌ Authentication failed. Please login again:")
-                    typer.echo("   nasiko login")
+                    typer.echo("   nasiko auth login")
                     self.auth_manager.logout()
                     raise typer.Exit(1)
 

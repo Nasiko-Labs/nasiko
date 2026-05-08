@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nasiko"
+version = "0.0.1"
+description = "Nasiko - Build, deploy, and manage AI agents"
+license = "MIT"
+authors = [
+    {name = "Nasiko Team"},
+]
+requires-python = ">=3.9"
+dependencies = [
+    "nasiko-cli>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/arithmic/nasiko"
+Repository = "https://github.com/arithmic/nasiko"
+
+[tool.setuptools]
+packages = []

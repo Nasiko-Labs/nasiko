@@ -8,8 +8,54 @@ import typer
 # Create Agent command group
 agent_app = typer.Typer(help="Agent management and registry operations")
 
+# N8N sub-group under agent
+from groups.n8n_group import n8n_app
+agent_app.add_typer(n8n_app, name="n8n", help="N8N workflow integration")
 
-@agent_app.command(name="upload-zip")
+
+@agent_app.command(name="deploy")
+def deploy(
+    source: str = typer.Argument(
+        ".",
+        help="Source to deploy: directory path, .zip file, or GitHub repo (owner/repo)",
+    ),
+    agent_name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Agent name (auto-detected if not provided)",
+    ),
+):
+    """Deploy an agent from a directory, zip file, or GitHub repo.
+
+    Examples:
+      nasiko agent deploy .
+      nasiko agent deploy ./my-agent.zip
+      nasiko agent deploy owner/repo
+    """
+    from pathlib import Path
+    from commands.upload_agent import upload_zip_command, upload_directory_command
+
+    path = Path(source)
+
+    if path.exists():
+        if path.is_dir():
+            upload_directory_command(str(path), agent_name)
+        elif path.is_file() and path.suffix.lower() == ".zip":
+            upload_zip_command(str(path), agent_name)
+        else:
+            typer.echo(f"Error: '{source}' is not a directory or .zip file.")
+            raise typer.Exit(1)
+    elif "/" in source and not source.startswith("/"):
+        # Looks like owner/repo — delegate to github clone
+        from commands.github import clone_command
+        clone_command(repo=source, branch=None)
+    else:
+        typer.echo(f"Error: '{source}' not found and doesn't look like a GitHub repo (owner/repo).")
+        raise typer.Exit(1)
+
+
+@agent_app.command(name="upload-zip", hidden=True)
 def upload_zip(
     zip_file: str = typer.Argument(
         ..., help="Path to the .zip file containing the agent"
@@ -21,13 +67,13 @@ def upload_zip(
         help="Optional agent name (will be auto-detected if not provided)",
     ),
 ):
-    """Upload and deploy an agent from a .zip file."""
+    """[Deprecated] Use 'agent deploy' instead."""
     from commands.upload_agent import upload_zip_command
 
     upload_zip_command(zip_file, agent_name)
 
 
-@agent_app.command(name="upload-directory")
+@agent_app.command(name="upload-directory", hidden=True)
 def upload_directory(
     directory_path: str = typer.Argument(
         ..., help="Path to the directory containing the agent"
@@ -39,7 +85,7 @@ def upload_directory(
         help="Optional agent name (will be auto-detected if not provided)",
     ),
 ):
-    """Upload and deploy an agent from a local directory."""
+    """[Deprecated] Use 'agent deploy' instead."""
     from commands.upload_agent import upload_directory_command
 
     upload_directory_command(directory_path, agent_name)

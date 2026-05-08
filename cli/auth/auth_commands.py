@@ -66,10 +66,10 @@ def login_command(
             typer.echo(f"👋 Welcome back, {username} ({role})")
 
         typer.echo("\n🚀 You can now use authenticated commands:")
-        typer.echo("   • nasiko registry-list")
-        typer.echo("   • nasiko upload-zip <file.zip>")
-        typer.echo("   • nasiko status")
-        typer.echo("   • nasiko traces <agent-name>")
+        typer.echo("   • nasiko agent deploy .")
+        typer.echo("   • nasiko agent list")
+        typer.echo("   • nasiko auth status")
+        typer.echo("   • nasiko chat start <agent>")
     else:
         raise typer.Exit(1)
 
@@ -98,121 +98,44 @@ def logout_command(
 
 @auth_app.command("status")
 def status_command():
-    """Check authentication status."""
-
-    auth_manager = get_auth_manager()
-
-    if auth_manager.is_logged_in():
-        typer.echo("✅ Logged in")
-
-        # Try to get user info
-        user_info = auth_manager.get_user_info()
-        if user_info:
-            typer.echo(f"   User: {user_info.get('username', 'Unknown')}")
-            typer.echo(
-                f"   Role: {'Super User' if user_info.get('is_super_user') else 'User'}"
-            )
-            typer.echo(f"   Email: {user_info.get('email', 'Not available')}")
-
-            if user_info.get("last_login"):
-                typer.echo(f"   Last login: {user_info['last_login']}")
-
-        # Test API connectivity
-        try:
-            client = get_api_client()
-            response = client.get("healthcheck", require_auth=False)
-            if response.status_code == 200:
-                typer.echo("   API: ✅ Connected")
-            else:
-                typer.echo("   API: ⚠️  Connection issues")
-        except:
-            typer.echo("   API: ❌ Cannot connect")
-
-    else:
-        typer.echo("❌ Not logged in")
-        typer.echo("\n💡 To login:")
-        typer.echo("   nasiko login")
-
-
-@auth_app.command("whoami")
-def whoami_command():
-    """Show current user information."""
+    """Check authentication status and show current user information."""
 
     auth_manager = get_auth_manager()
 
     if not auth_manager.is_logged_in():
         typer.echo("❌ Not logged in")
-        typer.echo("💡 Use: nasiko login")
-        raise typer.Exit(1)
+        typer.echo("\n💡 To login:")
+        typer.echo("   nasiko auth login")
+        return
+
+    typer.echo("✅ Logged in")
 
     user_info = auth_manager.get_user_info()
+    if user_info:
+        typer.echo(f"   Username: {user_info.get('username', 'Unknown')}")
+        typer.echo(f"   Email: {user_info.get('email', 'Not available')}")
+        typer.echo(
+            f"   Role: {'Super User' if user_info.get('is_super_user') else 'User'}"
+        )
+        typer.echo(f"   Active: {'Yes' if user_info.get('is_active') else 'No'}")
 
-    if not user_info:
-        typer.echo("❌ Could not retrieve user information")
-        typer.echo("💡 Try: nasiko login")
-        raise typer.Exit(1)
+        if user_info.get("created_at"):
+            typer.echo(f"   Created: {user_info['created_at']}")
 
-    # Display user information
-    typer.echo("👤 User Information:")
-    typer.echo(f"   Username: {user_info.get('username', 'Unknown')}")
-    typer.echo(f"   Email: {user_info.get('email', 'Not available')}")
-    typer.echo(f"   Role: {'Super User' if user_info.get('is_super_user') else 'User'}")
-    typer.echo(f"   Active: {'Yes' if user_info.get('is_active') else 'No'}")
+        if user_info.get("last_login"):
+            typer.echo(f"   Last login: {user_info['last_login']}")
 
-    if user_info.get("created_at"):
-        typer.echo(f"   Created: {user_info['created_at']}")
-
-    if user_info.get("last_login"):
-        typer.echo(f"   Last login: {user_info['last_login']}")
-
-
-# Standalone commands for backward compatibility
-def login_standalone(
-    access_key: str = None,
-    access_secret: str = None,
-    save_credentials: bool = True,
-    api_url: str = None,
-):
-    """Standalone login function for backward compatibility"""
-    # Call the actual login_command with proper parameters
-    return _do_login(access_key, access_secret, save_credentials, api_url)
+    # Test API connectivity
+    try:
+        client = get_api_client()
+        response = client.get("healthcheck", require_auth=False)
+        if response.status_code == 200:
+            typer.echo("   API: ✅ Connected")
+        else:
+            typer.echo("   API: ⚠️  Connection issues")
+    except Exception:
+        typer.echo("   API: ❌ Cannot connect")
 
 
-def _do_login(
-    access_key: Optional[str],
-    access_secret: Optional[str],
-    save_credentials: bool = True,
-    api_url: Optional[str] = None,
-):
-    """Internal login function that does the actual work"""
-    # Validate inputs
-    if not access_key or not access_secret:
-        typer.echo("❌ Access key and secret are required")
-        raise typer.Exit(1)
-
-    if not access_key.startswith("NASK_"):
-        typer.echo("❌ Invalid access key format (should start with NASK_)")
-        raise typer.Exit(1)
-
-    # Login with auth manager
-    auth_manager = get_auth_manager()
-    if api_url:
-        auth_manager.auth_url = api_url
-
-    typer.echo("🔐 Authenticating...")
-
-    if auth_manager.login(access_key, access_secret, save_credentials):
-        # Get user info if available
-        user_info = auth_manager.get_user_info()
-        if user_info:
-            username = user_info.get("username", "Unknown")
-            is_super = user_info.get("is_super_user", False)
-            role = "Super User" if is_super else "User"
-            typer.echo(f"👋 Welcome back, {username} ({role})")
-    else:
-        raise typer.Exit(1)
-
-
-# Export for use in main CLI
 if __name__ == "__main__":
     auth_app()

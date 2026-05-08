@@ -15,13 +15,30 @@ from core.api_client import get_api_client
 console = Console()
 
 
+def _get_agent_url(agent_name: str) -> Optional[str]:
+    """Look up agent URL from the registry by name."""
+    try:
+        client = get_api_client()
+        response = client.get(
+            APIEndpoints.REGISTRY_BY_AGENT_NAME.format(agent_name=agent_name),
+            True,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        actual = data.get("data", data)
+        return actual.get("url")
+    except Exception:
+        return None
+
+
 def create_session(agent_name: Optional[str] = None):
     """Create a new chat session."""
 
     try:
         client = get_api_client()
 
-        # Send agent_name wrapped in proper request body structure
         if agent_name:
             response = client.post(
                 APIEndpoints.CHAT_SESSION, data={"agent_id": agent_name}
@@ -48,6 +65,57 @@ def create_session(agent_name: Optional[str] = None):
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
         raise typer.Exit(1)
+
+
+def interactive_chat(agent_name: str):
+    """Create a session and enter an interactive chat loop with the agent."""
+    from commands.chat_send import send_message_command_quiet
+
+    # Look up agent URL
+    console.print(f"[dim]Looking up agent '{agent_name}'...[/dim]")
+    agent_url = _get_agent_url(agent_name)
+    if not agent_url:
+        console.print(f"[red]Agent '{agent_name}' not found in registry.[/red]")
+        console.print("Run [bold]nk agent list[/bold] to see available agents.")
+        raise typer.Exit(1)
+
+    # Create session
+    try:
+        client = get_api_client()
+        response = client.post(APIEndpoints.CHAT_SESSION, data={"agent_id": agent_name})
+        result = client.handle_response(response)
+        if result is None:
+            raise typer.Exit(1)
+        data = result.get("data", result)
+        session_id = data.get("session_id")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Failed to create session: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel.fit(
+        f"[bold cyan]Chatting with:[/bold cyan] [green]{agent_name}[/green]\n"
+        f"[dim]Session: {session_id}[/dim]\n"
+        f"[dim]Type 'exit' or press Ctrl+C to quit[/dim]",
+        border_style="cyan",
+    ))
+    console.print()
+
+    while True:
+        try:
+            user_input = console.input("[bold yellow]You:[/bold yellow] ").strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Goodbye![/dim]")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "bye"):
+            console.print("[dim]Goodbye![/dim]")
+            break
+
+        send_message_command_quiet(agent_url, user_input, session_id)
 
 
 def list_sessions(
