@@ -42,6 +42,41 @@ services:
       retries: 3
 
   # ============================================================================
+  # LLM GATEWAY LAYER (LiteLLM proxy) — Track 2
+  # Centralised LLM access so agents never hold provider keys directly.
+  # Agents receive LITELLM_BASE_URL + LITELLM_VIRTUAL_KEY via env injection.
+  # ============================================================================
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm-gateway
+    restart: unless-stopped
+    command:
+      - "--config=/app/config.yaml"
+      - "--port=4000"
+      - "--num_workers=1"
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-nasiko-master-dev}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-nasiko-salt-dev}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://phoenix-observability:4318
+      OTEL_SERVICE_NAME: litellm-gateway
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "${NASIKO_PORT_LITELLM:-4100}:4000"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================================
   # CORE SERVICES LAYER (Backend)
   # ============================================================================
   nasiko-backend:
@@ -392,9 +427,13 @@ services:
       NASIKO_API_URL: http://nasiko-backend:8000
       KONG_GATEWAY_URL: http://localhost:9100
       K8S_ENABLED: "false"
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      LITELLM_ENABLED: ${LITELLM_ENABLED:-true}
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://litellm:4000}
+      LITELLM_VIRTUAL_KEY: ${LITELLM_VIRTUAL_KEY:-sk-nasiko-master-dev}
+      LITELLM_DEFAULT_MODEL: ${LITELLM_DEFAULT_MODEL:-gpt-4o-mini}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agents:/app/agents:ro

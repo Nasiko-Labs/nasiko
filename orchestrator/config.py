@@ -23,11 +23,22 @@ class Config:
     REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
     REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
-    # API Keys
+    # API Keys (legacy direct-provider path — kept for backward compatibility)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
     MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+
+    # LLM Gateway (Track 2) — platform-managed LiteLLM proxy.
+    # When enabled, agents receive LITELLM_BASE_URL + a virtual key at
+    # deploy time instead of raw provider credentials. Provider swap and
+    # key rotation then happen in gateway config, not in agent code.
+    LITELLM_ENABLED = os.getenv("LITELLM_ENABLED", "true").lower() in (
+        "1", "true", "yes", "on",
+    )
+    LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://litellm:4000")
+    LITELLM_VIRTUAL_KEY = os.getenv("LITELLM_VIRTUAL_KEY", "")
+    LITELLM_DEFAULT_MODEL = os.getenv("LITELLM_DEFAULT_MODEL", "gpt-4o-mini")
 
 
 # Legacy constants for backward compatibility

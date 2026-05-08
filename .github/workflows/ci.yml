@@ -30,3 +30,20 @@ jobs:
         run: pip install black==26.3.1 mypy
       - name: Type check
         run: mypy . --ignore-missing-imports || true
+
+  # Track 2: LiteLLM gateway integration tests.
+  # Runs the unit-level pieces (env injection, config rotation, legacy path)
+  # in CI without needing Docker. The two live-gateway tests self-skip when
+  # the gateway isn't reachable, so they stay green here and only flip to
+  # a full end-to-end check when executed locally against `make start-nasiko`.
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: pip install pytest pytest-asyncio redis aiohttp pyyaml
+      - name: Run Track 2 integration tests
+        run: pytest tests/integration/test_litellm_gateway.py -v
