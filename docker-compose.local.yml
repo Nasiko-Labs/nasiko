@@ -218,6 +218,36 @@ services:
       timeout: 10s
       retries: 3
 
+  nasiko-request-manager:
+    build:
+      context: ./agent-gateway/request-manager
+      dockerfile: Dockerfile
+    container_name: nasiko-request-manager
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      REQUEST_MANAGER_CACHE_TTL_SECONDS: "600"
+      REQUEST_MANAGER_MAX_CONCURRENCY_PER_AGENT: "2"
+      REQUEST_MANAGER_SUSTAINED_RPS_PER_AGENT: "5"
+      REQUEST_MANAGER_BURST_CAPACITY_PER_AGENT: "10"
+      REQUEST_MANAGER_MAX_QUEUE_DEPTH_PER_AGENT: "20"
+      REQUEST_MANAGER_MAX_QUEUE_WAIT_MS: "10000"
+      REQUEST_MANAGER_UPSTREAM_TIMEOUT_SECONDS: "45"
+      REQUEST_MANAGER_GLOBAL_ACTIVE_CAP: "50"
+    ports:
+      - "8090:8090"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; urlopen('http://localhost:8090/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   kong-service-registry:
     build:
       context: ./agent-gateway/registry
@@ -227,8 +257,11 @@ services:
     depends_on:
       kong-gateway:
         condition: service_healthy
+      nasiko-request-manager:
+        condition: service_healthy
     environment:
       KONG_ADMIN_URL: http://kong-gateway:8001
+      REDIS_URL: redis://redis:6379
       DOCKER_SOCKET: /var/run/docker.sock
       REGISTRY_INTERVAL: 30
       AGENTS_NETWORK: agents-net
@@ -237,6 +270,9 @@ services:
       KONG_BACKEND_HOST: nasiko-backend
       KONG_WEB_HOST: nasiko-web
       KONG_ROUTER_HOST: nasiko-router
+      KONG_REQUEST_MANAGER_HOST: nasiko-request-manager
+      KONG_REQUEST_MANAGER_PORT: "8090"
+      KONG_REQUEST_MANAGER_SERVICE_NAME: agent-request-manager
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:

@@ -1,0 +1,1 @@
+"""Nasiko Request Manager service."""

@@ -144,6 +144,10 @@ cython_debug/
 # VS Code
 .vscode/
 
+# Local implementation worktrees
+.worktrees
+.worktrees/
+
 # Uvicorn logs
 *.log
 
