@@ -35,6 +35,7 @@ class RedisStreamListener:
         self.stream_name = "orchestration:commands"
         self.consumer_group = "orchestrator"
         self.consumer_name = "orchestrator-1"
+        self._superuser_id: Optional[str] = self._load_superuser_id()
 
         # Initialize observability components exactly like K8s build worker
         import app.utils.observability as observability_pkg
@@ -45,6 +46,39 @@ class RedisStreamListener:
         )
         self.observability_config = ObservabilityConfig()
         self.logger.info("Initialized observability components successfully")
+
+    @staticmethod
+    def _safe_docker_name(agent_name: str) -> str:
+        """Convert an agent name to a valid Docker image/container name.
+
+        Docker requires names to be lowercase with no spaces; only letters, digits,
+        hyphens, underscores, and dots are allowed.
+        """
+        import re
+        name = agent_name.lower().strip()
+        name = re.sub(r"[^a-z0-9._-]", "-", name)   # replace invalid chars with -
+        name = re.sub(r"-{2,}", "-", name)             # collapse consecutive hyphens
+        name = name.strip("-")                          # remove leading/trailing -
+        return name or "agent"
+
+    def _load_superuser_id(self) -> Optional[str]:
+        """Read superuser ID from credentials file written at startup."""
+        creds_file = Path(__file__).parent / "superuser_credentials.json"
+        try:
+            with open(creds_file) as f:
+                data = json.load(f)
+            uid = data.get("user_id")
+            if uid:
+                self.logger.info(f"Loaded superuser ID for system deployments: {uid}")
+            return uid
+        except FileNotFoundError:
+            self.logger.warning(
+                "superuser_credentials.json not found; system deployments without owner_id will fail registration"
+            )
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to load superuser credentials: {e}")
+            return None
 
     def connect_redis(self):
         """Connect to Redis server"""
@@ -673,7 +707,7 @@ class RedisStreamListener:
             await self._inject_observability(temp_dir / "agent", agent_name)
 
             # Build Docker image
-            image_tag = f"local-agent-{agent_name}:latest"
+            image_tag = f"local-agent-{self._safe_docker_name(agent_name)}:latest"
 
             build_cmd = ["docker", "build", "-t", image_tag, str(temp_dir / "agent")]
 
@@ -769,7 +803,7 @@ class RedisStreamListener:
         # Stop and remove existing container if it exists
         await self._cleanup_existing_container(agent_name)
 
-        container_name = f"agent-{agent_name}"
+        container_name = f"agent-{self._safe_docker_name(agent_name)}"
 
         # Prepare environment variables like K8s worker
         env_vars = {
@@ -846,25 +880,27 @@ class RedisStreamListener:
 
     async def _cleanup_existing_container(self, agent_name: str):
         """Stop and remove existing container if it exists"""
-        container_name = f"agent-{agent_name}"
+        container_name = f"agent-{self._safe_docker_name(agent_name)}"
 
-        # Stop container
-        await asyncio.create_subprocess_exec(
+        # Stop container and wait for it to finish
+        stop_proc = await asyncio.create_subprocess_exec(
             "docker",
             "stop",
             container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        await stop_proc.wait()
 
-        # Remove container
-        await asyncio.create_subprocess_exec(
+        # Remove container and wait for it to finish
+        rm_proc = await asyncio.create_subprocess_exec(
             "docker",
             "rm",
             container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        await rm_proc.wait()
 
         self.logger.debug(f"Cleaned up existing container: {container_name}")
 
@@ -970,13 +1006,19 @@ class RedisStreamListener:
                 registry_data["url"] = service_url
                 registry_data["deployment_type"] = "docker-local"
 
-                if owner_id:
-                    registry_data["owner_id"] = owner_id
+                effective_owner = owner_id or self._superuser_id
+                if effective_owner:
+                    registry_data["owner_id"] = effective_owner
+                else:
+                    self.logger.error(
+                        f"No owner_id available for {agent_name} and superuser ID not loaded; registration will fail"
+                    )
             else:
                 # Fallback to minimal registry entry
                 self.logger.warning(
                     f"No AgentCard found/generated for {agent_name}, using minimal capabilities"
                 )
+                effective_owner = owner_id or self._superuser_id
                 registry_data = {
                     "id": agent_name,
                     "name": agent_name,
@@ -987,8 +1029,12 @@ class RedisStreamListener:
                     "deployment_type": "docker-local",
                 }
 
-                if owner_id:
-                    registry_data["owner_id"] = owner_id
+                if effective_owner:
+                    registry_data["owner_id"] = effective_owner
+                else:
+                    self.logger.error(
+                        f"No owner_id available for {agent_name} and superuser ID not loaded; registration will fail"
+                    )
 
             # Call registry API
             url = f"{base_url}/api/v1/registry/agent/{agent_name}"
@@ -1035,7 +1081,7 @@ class RedisStreamListener:
             # For local deployment, use Kong gateway URL like K8s worker does
             # Kong gateway runs at port 9100 for local deployment
             container_name = deployment_result.get(
-                "container_name", f"agent-{agent_name}"
+                "container_name", f"agent-{self._safe_docker_name(agent_name)}"
             )
             gateway_url = f"{Config.KONG_GATEWAY_URL}/agents/{container_name}"
 
