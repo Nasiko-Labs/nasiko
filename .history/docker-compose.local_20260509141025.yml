@@ -1,5 +1,5 @@
 # Unified Docker Compose for Local Nasiko Development
-# Optimized for Buildthon: Includes Resilient Request Layer & Redis Stack
+# Includes the Resilient Request Layer for the Buildthon Challenge
 services:
   # ============================================================================
   # INFRASTRUCTURE LAYER (MongoDB, Redis Stack)
@@ -15,6 +15,7 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: password
     volumes:
       - mongodb-data:/data/db
+      - ./app/init-scripts/mongo:/docker-entrypoint-initdb.d:ro
     networks:
       - app-network
     healthcheck:
@@ -24,13 +25,13 @@ services:
       retries: 3
 
   redis:
-    # Essential for Semantic Caching: provides RediSearch/Vector similarity
+    # UPDATED: Using redis-stack to support FT commands for Semantic Caching
     image: redis/redis-stack:latest 
     container_name: redis
     restart: unless-stopped
     ports:
       - "6379:6379"
-      - "8001:8001" # Redis Insight Dashboard (GUI)
+      - "8001:8001" # Redis Insight Dashboard
     command: redis-server --appendonly yes
     volumes:
       - redis-data:/data
@@ -38,9 +39,9 @@ services:
       - app-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ============================================================================
   # CORE SERVICES LAYER (Backend)
@@ -68,7 +69,11 @@ services:
       REDIS_URL: redis://redis:6379
       USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       AUTH_SERVICE_URL: http://nasiko-auth-service:8001
+      PHOENIX_SERVICE_URL: http://phoenix-observability:6006
+      K8S_ENABLED: "false"
     volumes:
       - ./agents:/app/agents
       - ./app:/app/app
@@ -86,10 +91,14 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
+      NODE_ENV: production
       MONGO_URL: mongodb://admin:password@mongodb:27017
       REDIS_URL: redis://redis:6379
       JWT_SECRET: your-super-secret-jwt-key
+      AUTH_DB_NAME: nasiko
       PORT: "8001"
     ports:
       - "8082:8001"
@@ -112,13 +121,12 @@ services:
       - app-network
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "kong"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   kong-migrations:
     image: kong:3.4
-    container_name: kong-migrations
     depends_on:
       kong-database:
         condition: service_healthy
@@ -145,8 +153,6 @@ services:
       KONG_PG_PASSWORD: kong
       KONG_PROXY_LISTEN: 0.0.0.0:8000
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
-      # Note: chat-logger removed to prevent crash if plugin directory missing
-      KONG_PLUGINS: bundled 
     ports:
       - "9100:8000" # Proxy
       - "9101:8001" # Admin
@@ -162,8 +168,7 @@ services:
     restart: unless-stopped
     depends_on:
       kong-gateway:
-        # Changed to service_started to bypass healthcheck loops during dev
-        condition: service_started 
+        condition: service_healthy
     environment:
       KONG_ADMIN_URL: http://kong-gateway:8001
       DOCKER_SOCKET: /var/run/docker.sock
@@ -182,20 +187,19 @@ services:
   resilient-layer:
     build:
       context: .
-      dockerfile: Dockerfile 
+      dockerfile: Dockerfile # Ensure Dockerfile installs redisvl, fastapi, httpx
     container_name: resilient-layer
     restart: unless-stopped
     ports:
-      - "8090:8090" # The external entry point for your tests
+      - "8090:8090" # Avoids conflict with port 8080
     depends_on:
       redis:
         condition: service_healthy
       kong-gateway:
-        condition: service_started
+        condition: service_healthy
     environment:
       - REDIS_URL=redis://redis:6379
       - KONG_URL=http://kong-gateway:8000
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
     networks:
       - app-network
 
@@ -206,15 +210,45 @@ services:
     image: docker.io/karannasiko/nasiko-web:oss
     container_name: nasiko-web
     restart: unless-stopped
+    depends_on:
+      kong-gateway:
+        condition: service_healthy
     ports:
       - "4000:4000"
     networks:
       - app-network
 
+  # ============================================================================
+  # WORKERS (Redis Stream Listener)
+  # ============================================================================
+  nasiko-redis-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: nasiko-redis-listener
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - nasiko-backend
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DOCKER_NETWORK: agents-net
+      NASIKO_API_URL: http://nasiko-backend:8000
+      KONG_GATEWAY_URL: http://localhost:9100
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./agents:/app/agents:ro
+    networks:
+      - app-network
+      - agents-net
+
 volumes:
   mongodb-data:
   redis-data:
   kong-db-data:
+  phoenix-data:
 
 networks:
   app-network:

@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies for vector math and networking
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the specific libraries needed for the Resilient Layer
+RUN pip install fastapi uvicorn redisvl httpx redis
+
+# Copy your Python script into the container
+COPY request_layer.py .
+
+# Expose the port we chose to avoid conflicts
+EXPOSE 8090
+
+# Start the application
+CMD ["python", "request_layer.py"]
