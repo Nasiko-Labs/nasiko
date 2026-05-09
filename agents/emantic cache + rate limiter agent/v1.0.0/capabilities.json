@@ -1,0 +1,16 @@
+{
+  "name": "sentinel-guard",
+  "description": "Intelligent request guard that caches agent responses using semantic similarity and applies per-agent rate limiting. All agent traffic should pass through sentinel-guard first.",
+  "version": "1.0.0",
+  "capabilities": [
+    "request_caching",
+    "rate_limiting",
+    "traffic_control",
+    "semantic_deduplication",
+    "queue_management"
+  ],
+  "endpoints": {
+    "/proxy": "Forward a request to a named agent with caching and rate limiting",
+    "/health": "Health check"
+  }
+}

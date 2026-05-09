@@ -1,0 +1,8 @@
+version: "3.8"
+services:
+  sentinel-monitor:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SENTINEL_GUARD_URL=http://localhost:9100/agents/sentinel-guard

@@ -1,0 +1,29 @@
+{
+  "name": "sentinel-guard",
+  "description": "Resilient request layer with semantic caching (MemPalace + sentence-transformers), adaptive per-agent rate limiting, request queuing with backpressure, and a real-time monitoring dashboard. All agent traffic should pass through sentinel-guard first.",
+  "version": "1.0.0",
+  "capabilities": [
+    "semantic_caching",
+    "exact_match_caching",
+    "per_agent_rate_limiting",
+    "request_queuing",
+    "traffic_control",
+    "semantic_deduplication",
+    "queue_management",
+    "real_time_monitoring",
+    "operational_controls"
+  ],
+  "endpoints": {
+    "/proxy": "Forward a request to a named agent with caching and rate limiting",
+    "/health": "Health check with component status",
+    "/stats": "Full runtime statistics (cache, rate limits, queues)",
+    "/dashboard": "Real-time monitoring dashboard (HTML)",
+    "/events": "SSE stream for live dashboard updates",
+    "/cache/check": "Check cache for a query without forwarding",
+    "/cache/store": "Manually store a response in cache",
+    "/cache/flush": "Flush all or per-agent cache",
+    "/rate/check/{agent}": "Check rate limit status for an agent",
+    "/config/rate-limit/{agent}": "Update per-agent rate limit (PUT)",
+    "/queue/status": "View queue depths for all agents"
+  }
+}

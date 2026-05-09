@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SENTINEL Observatory</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#05060D;--surface:#0E0F1A;--surface2:#161829;--accent:#6366F1;--cyan:#06B6D4;--green:#22C55E;--yellow:#EAB308;--red:#EF4444;--text:#E2E8F0;--muted:#64748B;--border:#1E293B;--radius:12px}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{padding:12px 20px;border-radius:8px;background:var(--surface2);border:1px solid var(--accent);color:var(--text);font-size:13px;animation:slideIn .3s ease,fadeOut .3s ease 2.7s;opacity:0;animation-fill-mode:forwards}
+.toast.success{border-color:var(--green)}.toast.error{border-color:var(--red)}
+@keyframes slideIn{from{transform:translateX(100px);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes fadeOut{to{opacity:0;transform:translateX(50px)}}
+header{padding:24px 32px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-icon{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--cyan));border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.logo h1{font-size:20px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.logo span{font-size:12px;color:var(--muted);display:block}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+.status-badge{display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:20px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);font-size:12px;color:var(--green)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.container{max-width:1400px;margin:0 auto;padding:24px 32px}
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;position:relative;overflow:hidden;transition:border-color .2s}
+.kpi:hover{border-color:var(--accent)}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--radius) var(--radius) 0 0}
+.kpi:nth-child(1)::before{background:var(--green)}.kpi:nth-child(2)::before{background:var(--cyan)}
+.kpi:nth-child(3)::before{background:var(--yellow)}.kpi:nth-child(4)::before{background:var(--accent)}
+.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px}
+.kpi-value{font-size:32px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi:nth-child(1) .kpi-value{color:var(--green)}.kpi:nth-child(2) .kpi-value{color:var(--cyan)}
+.kpi:nth-child(3) .kpi-value{color:var(--yellow)}.kpi:nth-child(4) .kpi-value{color:var(--accent)}
+.kpi-sub{font-size:11px;color:var(--muted);margin-top:4px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.card-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.card-title{font-size:14px;font-weight:600}
+.card-body{padding:20px}
+.bar-group{margin-bottom:14px}
+.bar-label{display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px}
+.bar-label span:first-child{color:var(--text)}.bar-label span:last-child{color:var(--muted)}
+.bar-track{height:10px;background:var(--surface2);border-radius:5px;overflow:hidden}
+.bar-fill{height:100%;border-radius:5px;transition:width .6s ease}
+.bar-fill.green{background:linear-gradient(90deg,#22C55E,#4ADE80)}.bar-fill.indigo{background:linear-gradient(90deg,#6366F1,#818CF8)}
+.bar-fill.yellow{background:linear-gradient(90deg,#EAB308,#FACC15)}
+.controls{margin-bottom:24px}
+.ctrl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;padding:20px}
+.ctrl-group{display:flex;gap:8px;align-items:end}
+.ctrl-group label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);display:block;margin-bottom:4px}
+.ctrl-group input{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:13px;width:100%;outline:none;transition:border-color .2s}
+.ctrl-group input:focus{border-color:var(--accent)}
+.btn{padding:8px 16px;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:#4F46E5}
+.btn-danger{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3)}.btn-danger:hover{background:rgba(239,68,68,.25)}
+.btn-cyan{background:rgba(6,182,212,.15);color:var(--cyan);border:1px solid rgba(6,182,212,.3)}.btn-cyan:hover{background:rgba(6,182,212,.25)}
+.btn-yellow{background:rgba(234,179,8,.15);color:var(--yellow);border:1px solid rgba(234,179,8,.3)}.btn-yellow:hover{background:rgba(234,179,8,.25)}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:10px 16px;border-bottom:1px solid var(--border)}
+td{padding:10px 16px;font-size:13px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
+tr:hover td{background:rgba(99,102,241,.03)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.badge-hit{background:rgba(34,197,94,.15);color:var(--green)}.badge-miss{background:rgba(100,116,139,.15);color:var(--muted)}
+.badge-limit{background:rgba(234,179,8,.15);color:var(--yellow)}.badge-fwd{background:rgba(6,182,212,.15);color:var(--cyan)}
+.empty-state{text-align:center;padding:40px;color:var(--muted);font-size:13px}
+@media(max-width:900px){.kpi-row{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}}
+@media(max-width:600px){.kpi-row{grid-template-columns:1fr}.container{padding:16px}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">⛨</div>
+    <div><h1>SENTINEL</h1><span>Observatory v1.0</span></div>
+  </div>
+  <div class="status-badge"><div class="status-dot"></div><span id="guardStatus">Connecting…</span></div>
+</header>
+
+<div class="container">
+  <!-- KPI Cards -->
+  <div class="kpi-row">
+    <div class="kpi"><div class="kpi-label">Global Hit Rate</div><div class="kpi-value" id="kpiHitRate">—</div><div class="kpi-sub" id="kpiHitSub">Semantic cache efficiency</div></div>
+    <div class="kpi"><div class="kpi-label">Total Cache Hits</div><div class="kpi-value" id="kpiHits">0</div><div class="kpi-sub">Compute saved</div></div>
+    <div class="kpi"><div class="kpi-label">Rate Limited</div><div class="kpi-value" id="kpiLimited">0</div><div class="kpi-sub">Requests queued</div></div>
+    <div class="kpi"><div class="kpi-label">Agents Monitored</div><div class="kpi-value" id="kpiAgents">0</div><div class="kpi-sub">Active in fleet</div></div>
+  </div>
+
+  <!-- Charts -->
+  <div class="grid-2">
+    <div class="card"><div class="card-header"><span class="card-title">Cache Hit Rate by Agent</span></div><div class="card-body" id="cacheChart"><div class="empty-state">Waiting for data…</div></div></div>
+    <div class="card"><div class="card-header"><span class="card-title">Rate Limit Utilisation</span></div><div class="card-body" id="rateChart"><div class="empty-state">Waiting for data…</div></div></div>
+  </div>
+
+  <!-- Controls -->
+  <div class="card controls">
+    <div class="card-header"><span class="card-title">⚙ Operator Controls</span></div>
+    <div class="ctrl-grid">
+      <div class="ctrl-group"><div style="flex:1"><label>Agent Name</label><input id="flushAgent" placeholder="e.g. translator"></div><button class="btn btn-danger" onclick="flushCache()">Flush Cache</button></div>
+      <div class="ctrl-group"><div style="flex:1"><label>Flush All</label><input disabled value="All agents" style="opacity:.5"></div><button class="btn btn-danger" onclick="flushAll()">Flush All</button></div>
+      <div class="ctrl-group"><div style="flex:1"><label>Agent</label><input id="limitAgent" placeholder="agent name"></div><div style="flex:1"><label>RPM</label><input id="limitRPM" type="number" placeholder="60"></div><button class="btn btn-yellow" onclick="setLimit()">Set Limit</button></div>
+      <div class="ctrl-group"><div style="flex:1"><label>Agent</label><input id="threshAgent" placeholder="agent name"></div><div style="flex:1"><label>Threshold</label><input id="threshVal" type="number" step="0.01" placeholder="0.92"></div><button class="btn btn-cyan" onclick="setThreshold()">Set</button></div>
+    </div>
+  </div>
+
+  <!-- Decision Log -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">Decision Log</span><span style="font-size:12px;color:var(--muted)" id="decCount">0 decisions</span></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Time</th><th>Outcome</th><th>Agent</th><th>Query</th><th>Similarity / Wait</th><th>Latency</th></tr></thead>
+        <tbody id="decBody"><tr><td colspan="6" class="empty-state">No decisions yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+const GUARD = location.origin + location.pathname.replace('/sentinel-monitor/dashboard','') + '/sentinel-guard';
+
+function toast(msg, type='success'){
+  const el=document.createElement('div');el.className='toast '+type;el.textContent=msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(()=>el.remove(),3100);
+}
+
+async function fetchStats(){
+  try{
+    const r=await fetch(GUARD+'/stats');
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    document.getElementById('guardStatus').textContent='Guard Online';
+    const agents=d.agents||{};const names=Object.keys(agents);
+    document.getElementById('kpiAgents').textContent=names.length;
+    let totalHits=0,totalMisses=0,totalLimited=0;
+    let cacheHTML='',rateHTML='';
+    names.forEach(ag=>{
+      const c=agents[ag].cache||{};const rt=agents[ag].rate||{};
+      const hits=c.hits||0,misses=c.misses||0,hr=c.hit_rate||0;
+      totalHits+=hits;totalMisses+=misses;
+      const qd=rt.queue_depth||0;totalLimited+=qd;
+      const util=rt.utilization_pct||0;
+      cacheHTML+=`<div class="bar-group"><div class="bar-label"><span>${ag}</span><span>${(hr*100).toFixed(1)}% (${hits}H/${misses}M)</span></div><div class="bar-track"><div class="bar-fill green" style="width:${Math.max(hr*100,2)}%"></div></div></div>`;
+      rateHTML+=`<div class="bar-group"><div class="bar-label"><span>${ag}</span><span>${util}% (${rt.remaining||0} rem)</span></div><div class="bar-track"><div class="bar-fill ${util>80?'yellow':'indigo'}" style="width:${Math.max(util,2)}%"></div></div></div>`;
+    });
+    const total=totalHits+totalMisses;
+    document.getElementById('kpiHitRate').textContent=total>0?(totalHits/total*100).toFixed(1)+'%':'—';
+    document.getElementById('kpiHitSub').textContent=total>0?`${totalHits} hits / ${totalMisses} misses`:'Semantic cache efficiency';
+    document.getElementById('kpiHits').textContent=totalHits;
+    document.getElementById('kpiLimited').textContent=totalLimited;
+    document.getElementById('cacheChart').innerHTML=cacheHTML||'<div class="empty-state">No agents cached yet</div>';
+    document.getElementById('rateChart').innerHTML=rateHTML||'<div class="empty-state">No rate data yet</div>';
+  }catch(e){
+    document.getElementById('guardStatus').textContent='Guard Offline';
+  }
+}
+
+async function fetchDecisions(){
+  try{
+    const r=await fetch(GUARD+'/decisions');if(!r.ok)return;
+    const d=await r.json();const decs=d.decisions||[];
+    document.getElementById('decCount').textContent=d.count+' decisions';
+    if(!decs.length){document.getElementById('decBody').innerHTML='<tr><td colspan="6" class="empty-state">No decisions yet</td></tr>';return;}
+    let html='';
+    decs.slice(0,50).forEach(dec=>{
+      const t=new Date(dec.timestamp*1000).toLocaleTimeString();
+      let badge='badge-fwd',label=dec.outcome;
+      if(dec.outcome==='CACHE_HIT'){badge='badge-hit';label='HIT';}
+      else if(dec.outcome==='RATE_LIMITED'){badge='badge-limit';label='LIMITED';}
+      else if(dec.outcome==='FORWARDED'){badge='badge-fwd';label='FWD';}
+      const detail=dec.similarity!=null?'~'+dec.similarity:(dec.estimated_wait_ms!=null?dec.estimated_wait_ms+'ms':'—');
+      html+=`<tr><td>${t}</td><td><span class="badge ${badge}">${label}</span></td><td>${dec.agent}</td><td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${dec.query||'—'}</td><td>${detail}</td><td>${dec.latency_ms!=null?dec.latency_ms+'ms':'—'}</td></tr>`;
+    });
+    document.getElementById('decBody').innerHTML=html;
+  }catch(e){}
+}
+
+async function flushCache(){
+  const ag=document.getElementById('flushAgent').value.trim();
+  if(!ag){toast('Enter an agent name','error');return;}
+  try{const r=await fetch(GUARD+'/cache/flush',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_name:ag})});const d=await r.json();toast(`Flushed ${d.entries_cleared||0} entries for ${ag}`);}catch(e){toast('Flush failed','error');}
+}
+async function flushAll(){
+  try{const r=await fetch(GUARD+'/cache/flush/all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const d=await r.json();toast(`Flushed all: ${d.entries_cleared||0} entries`);}catch(e){toast('Flush all failed','error');}
+}
+async function setLimit(){
+  const ag=document.getElementById('limitAgent').value.trim();const rpm=parseInt(document.getElementById('limitRPM').value);
+  if(!ag||isNaN(rpm)){toast('Enter agent + RPM','error');return;}
+  try{await fetch(GUARD+'/limits/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_name:ag,requests_per_minute:rpm})});toast(`Rate limit set: ${ag} → ${rpm} RPM`);}catch(e){toast('Set limit failed','error');}
+}
+async function setThreshold(){
+  const ag=document.getElementById('threshAgent').value.trim();const th=parseFloat(document.getElementById('threshVal').value);
+  if(!ag||isNaN(th)){toast('Enter agent + threshold','error');return;}
+  try{await fetch(GUARD+'/cache/threshold',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_name:ag,threshold:th})});toast(`Threshold set: ${ag} → ${th}`);}catch(e){toast('Set threshold failed','error');}
+}
+
+fetchStats();fetchDecisions();
+setInterval(()=>{fetchStats();fetchDecisions();},3000);
+</script>
+</body>
+</html>

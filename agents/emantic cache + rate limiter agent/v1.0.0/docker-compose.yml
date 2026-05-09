@@ -1,0 +1,8 @@
+version: "3.8"
+services:
+  sentinel-guard:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - NASIKO_BASE_URL=http://localhost:9100/agents

@@ -1,0 +1,19 @@
+{
+  "name": "sentinel-monitor",
+  "description": "Real-time monitoring and control dashboard for SENTINEL traffic layer. Provides cache stats, rate limit controls, and a live HTML observatory.",
+  "version": "1.0.0",
+  "capabilities": [
+    "monitoring",
+    "observability",
+    "cache_management",
+    "rate_limit_configuration",
+    "dashboard"
+  ],
+  "endpoints": {
+    "/dashboard": "Live HTML dashboard",
+    "/stats": "JSON stats for all agents",
+    "/cache/flush": "Flush cache for a named agent",
+    "/limits/set": "Update rate limit at runtime",
+    "/health": "Health check"
+  }
+}

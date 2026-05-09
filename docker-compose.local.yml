@@ -274,6 +274,7 @@ services:
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       JINA_API_KEY: ${JINA_API_KEY:-}
       JINA_EMBEDDING_MODEL: ${JINA_EMBEDDING_MODEL:-jina-embeddings-v3}
+      SENTINEL_GUARD_URL: http://sentinel-guard:8000
     ports:
       - "8081:8000"
     networks:
@@ -404,11 +405,46 @@ services:
       - agents-net
     command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
 
+  # ============================================================================
+  # SENTINEL GUARD — Resilient Agent Request Layer
+  # Semantic caching + adaptive rate limiting + request queuing + monitoring
+  # ============================================================================
+  sentinel-guard:
+    build:
+      context: ./agents/sentinel-guard/v1.0.0
+      dockerfile: Dockerfile
+    container_name: sentinel-guard
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NASIKO_BASE_URL: http://kong-gateway:8000/agents
+      CACHE_TTL_SECONDS: 1800
+      RATE_LIMIT_DEFAULT_RPM: 60
+      MAX_QUEUE_DEPTH: 50
+      SIMILARITY_THRESHOLD: "0.92"
+    ports:
+      - "8500:8000"
+    volumes:
+      - sentinel-cache-data:/root/.mempalace
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/health').raise_for_status()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 volumes:
   mongodb-data:
   redis-data:
   kong-db-data:
   phoenix-data:
+  sentinel-cache-data:
 
 networks:
   app-network:
