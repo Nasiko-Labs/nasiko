@@ -62,7 +62,13 @@ class LimitResolver:
                 continue
             try:
                 if isinstance(data[field], bool):
-                    value = override[field].lower() in {"1", "true", "yes", "on"}
+                    token = override[field].lower()
+                    if token in {"1", "true", "yes", "on"}:
+                        value = True
+                    elif token in {"0", "false", "no", "off"}:
+                        value = False
+                    else:
+                        raise ValueError(f"invalid boolean override for {field}")
                 elif isinstance(data[field], int):
                     value = int(float(override[field]))
                 elif isinstance(data[field], float):

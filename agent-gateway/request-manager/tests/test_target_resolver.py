@@ -125,6 +125,21 @@ async def test_limit_resolver_ignores_malformed_overrides(fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_limit_resolver_ignores_malformed_boolean_override(fake_redis):
+    await fake_redis.hset(
+        "request-manager:limits:agent-a2a-demo",
+        mapping={"cache_enabled": "tru", "max_queue_depth": "11"},
+    )
+    settings = RequestManagerSettings(redis_url="redis://redis:6379")
+    resolver = LimitResolver(fake_redis, settings)
+
+    limits = await resolver.resolve("agent-a2a-demo")
+
+    assert limits.cache_enabled is True
+    assert limits.max_queue_depth == 11
+
+
+@pytest.mark.asyncio
 async def test_limit_resolver_update_serializes_cache_enabled_as_string(fake_redis):
     settings = RequestManagerSettings(redis_url="redis://redis:6379")
     resolver = LimitResolver(fake_redis, settings)
