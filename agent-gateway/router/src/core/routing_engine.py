@@ -56,6 +56,13 @@ class RoutingEngine:
                 api_key=settings.OPENROUTER_API_KEY,
                 base_url="https://openrouter.ai/api/v1",
             ).with_structured_output(RouterOutput)
+        elif provider == "groq":
+            return ChatOpenAI(
+                model=model or "llama-3.1-8b-instant",
+                temperature=0,
+                api_key=settings.GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1",
+            ).with_structured_output(RouterOutput)
         else:
             return ChatOpenAI(
                 model=model or "gpt-4o-mini",

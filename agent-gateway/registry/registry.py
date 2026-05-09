@@ -451,6 +451,7 @@ def cleanup_stale_services(current_service_names: Set[str]) -> None:
             "web-app-proxy",
             "auth-proxy",
             "nasiko-router",
+            "nasiko-resilience-layer",
             "landing-page",
             "n8n",
             "gateway-status",
@@ -657,6 +658,22 @@ def register_static_proxies():
             "middlewares": [
                 "cors"
             ],  # CORS only, no auth for now (n8n has its own auth)
+        },
+        # Resilience Layer — caching + rate limiting proxy for agents
+        # Accessible at /resilience/proxy/{agent_name} through Kong
+        {
+            "name": "nasiko-resilience-layer",
+            "host": _resolve_service_host(
+                k8s_service="nasiko-resilience-layer",
+                local_service="nasiko-resilience-layer",
+                env_var="KONG_RESILIENCE_HOST",
+            ),
+            "port": 8090,
+            "paths": ["/resilience"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            "strip_path": True,   # strip /resilience → forward /proxy/{agent_name}
+            "preserve_host": False,
+            "middlewares": ["cors"],
         },
     ]
 
