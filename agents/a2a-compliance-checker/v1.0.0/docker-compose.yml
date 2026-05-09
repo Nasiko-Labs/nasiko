@@ -1,0 +1,21 @@
+services:
+  a2a-compliance-checker:
+    build: .
+    container_name: a2a-compliance-checker
+    environment:
+      - MONGO_URL=mongodb://agents-mongo:27017
+      - DB_NAME=a2a-compliance-checker
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+      - agents-db-net
+
+
+networks:
+  agents-net:
+    external: true
+  agents-db-net:
+    external: true

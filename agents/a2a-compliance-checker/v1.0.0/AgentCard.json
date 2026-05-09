@@ -1,0 +1,71 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Compliance Checker Agent",
+  "description": "An agent that analyzes documents for policy violations and compliance issues.",
+  "url": "http://localhost:10008/",
+  "agentFramework": "langchain",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:10008/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:10008/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "check-compliance",
+      "name": "Check Compliance",
+      "description": "Check document for policy compliance.",
+      "tags": [
+        "compliance",
+        "policy",
+        "document-analysis"
+      ],
+      "examples": [
+        "Check this document for policy compliance",
+        "Does this email violate any policies?"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "analyze-policy",
+      "name": "Analyze Policy",
+      "description": "Answer questions about policies.",
+      "tags": [
+        "policy",
+        "question-answering"
+      ],
+      "examples": [
+        "What are the encryption requirements for file transfers?"
+      ],
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

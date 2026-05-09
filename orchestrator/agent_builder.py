@@ -325,8 +325,8 @@ class AgentBuilder:
                 opentelemetry-instrumentation-pymongo \\
                 opentelemetry-instrumentation-psycopg2 \\
                 opentelemetry-instrumentation-sqlalchemy \\
-                opentelemetry-instrumentation-redis \\
-                opentelemetry-instrumentation-boto3sqs \\
+                opentelemetry-instrumentation-redis \
+                opentelemetry-instrumentation-boto3sqs
                 
             ENV ROOT_PATH=/{agent_folder_name}
             """

@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn==0.30.0
+redis==5.0.8
+httpx==0.27.0
+slowapi==0.1.9
+sentence-transformers==3.0.1
+numpy==1.26.4
+streamlit==1.37.0
+plotly==5.22.0
+aiohttp==3.9.5
