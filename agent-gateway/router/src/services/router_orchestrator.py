@@ -19,17 +19,21 @@ from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
 from router.src.utils import truncate_agent_cards
 
+# Add resilient import
+from router.src.resilient import ResilientRequestLayer
+
 logger = logging.getLogger(__name__)
 
 
 class RouterOrchestrator:
     """Main orchestrator service for router operations."""
 
-    def __init__(self):
+    def __init__(self, resilient_layer: ResilientRequestLayer = None):
         self.agent_registry = AgentRegistry()
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.resilient_layer = resilient_layer
 
     async def process_request(
         self,
@@ -170,7 +174,7 @@ class RouterOrchestrator:
 
             # Send request to selected agent
             async for response in self._send_agent_request(
-                request, files, agent_url, token
+                request, files, agent_url, token, agent_name
             ):
                 yield response
 
@@ -185,14 +189,51 @@ class RouterOrchestrator:
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         agent_url: str,
         token: str,
+        agent_id: str,
     ) -> AsyncGenerator[str, None]:
-        """Send request to agent and yield response."""
+        """Send request to agent and yield response with resilient layer protection."""
 
         try:
             logger.info(f"Sending request to agent: {agent_url}")
             yield self._router_response(
                 "Sending user's query to agent...", "", False, agent_url
             )
+
+            # Prepare request data for caching
+            request_data = {
+                "query": request.query,
+                "session_id": request.session_id,
+                "files": [{"name": f[0], "size": len(f[1][1])} for f in files] if files else []
+            }
+
+            # Check cache
+            if self.resilient_layer:
+                cached_response = self.resilient_layer.cache.get(agent_id, request_data)
+                if cached_response:
+                    logger.info(f"Cache hit for agent {agent_id}")
+                    yield self._router_response("Retrieved from cache", cached_response, True, agent_id)
+                    self.resilient_layer.metrics.record_request(agent_id, True)
+                    return
+
+            # Check rate limit
+            if self.resilient_layer:
+                allowed, wait_time = self.resilient_layer.rate_limiter.check_rate_limit(agent_id)
+                if not allowed:
+                    logger.info(f"Rate limit exceeded for agent {agent_id}")
+                    if self.resilient_layer.queue:
+                        queued = self.resilient_layer.queue.add_to_queue(agent_id, request_data)
+                        if queued:
+                            yield self._router_response(f"Request queued, estimated wait time: {wait_time}s", "", False, agent_id)
+                            self.resilient_layer.metrics.record_request(agent_id, False)
+                            return
+                        else:
+                            yield self._router_response("Rate limited and queue full", "", False, "")
+                            self.resilient_layer.metrics.record_request(agent_id, False)
+                            return
+                    else:
+                        yield self._router_response(f"Rate limited, try again in {wait_time}s", "", False, "")
+                        self.resilient_layer.metrics.record_request(agent_id, False)
+                        return
 
             # Send request to agent
             agent_data = await self.agent_client.send_request(
@@ -205,8 +246,15 @@ class RouterOrchestrator:
             logger.info("Successfully received response from agent")
             yield self._router_response(agent_response, "", False, agent_url)
 
+            # Cache the response
+            if self.resilient_layer:
+                self.resilient_layer.cache.set(agent_id, request_data, agent_response)
+                self.resilient_layer.metrics.record_request(agent_id, True)
+
         except AgentClientError as e:
             yield self._router_response(str(e), "", False, agent_url)
+            if self.resilient_layer:
+                self.resilient_layer.metrics.record_request(agent_id, False)
 
     async def _get_agent_url(
         self, agent_cards: List[Dict[str, str]], agent_name: str
