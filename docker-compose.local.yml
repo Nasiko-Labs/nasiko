@@ -1,9 +1,7 @@
 # Unified Docker Compose for Local Nasiko Development
 # Mimics the K8s bootstrap flow: Infrastructure -> Core -> Auth -> Gateway -> Router
 services:
-  # ============================================================================
-  # INFRASTRUCTURE LAYER (MongoDB, Redis)
-  # ============================================================================
+
   mongodb:
     image: docker.io/library/mongo:latest
     container_name: mongodb
@@ -81,7 +79,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthcheck', timeout=5).read()\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -250,6 +248,34 @@ services:
       timeout: 10s
       retries: 3
 
+  agent-gateway:
+    build:
+      context: ./agent-gateway
+      dockerfile: Dockerfile
+    container_name: agent-gateway
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      kong-gateway:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CACHE_TTL: ${CACHE_TTL:-300}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-10}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60}
+      AGENT_FLEET_BASE_URL: http://kong-gateway:8000/agents
+    ports:
+      - "8090:8090"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=5).read()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # ============================================================================
   # ROUTER SERVICE LAYER
   # ============================================================================
@@ -393,8 +419,8 @@ services:
       KONG_GATEWAY_URL: http://localhost:9100
       K8S_ENABLED: "false"
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      OPENROUTER_API_KEY: ""
+      MINIMAX_API_KEY: ""
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agents:/app/agents:ro
@@ -417,3 +443,4 @@ networks:
   agents-net:
     driver: bridge
     name: agents-net
+
