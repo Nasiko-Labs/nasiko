@@ -41,9 +41,10 @@ RUN pip install --no-cache-dir -r /app/orchestrator/requirements.txt
 # Create non-root user for security (kept for potential future use)
 RUN useradd -m -u 1000 worker && chown -R worker:worker /app
 
-# Health check - verify orchestrator can be imported
+# Health check - verify the worker can reach Redis, which is required to
+# consume orchestration commands.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from orchestrator.redis_stream_listener import main; print('OK')" || exit 1
+    CMD python -c "import os, redis; redis.Redis(host=os.getenv('REDIS_HOST', 'redis'), port=int(os.getenv('REDIS_PORT', '6379')), db=int(os.getenv('REDIS_DB', '0'))).ping()" || exit 1
 
 # Entrypoint: Run Redis stream listener (orchestrator)
 ENTRYPOINT ["python", "-u", "orchestrator/redis_stream_listener.py"]
