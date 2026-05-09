@@ -293,3 +293,48 @@ async def test_redis_response_cache_clear_fake_redis_deletes_cache_keys_only(fak
     assert "request-manager:cache:key-1" not in fake_redis.values
     assert "request-manager:cache:key-2" not in fake_redis.values
     assert fake_redis.values["request-manager:not-cache:key-3"] == "value"
+
+
+@pytest.mark.asyncio
+async def test_redis_response_cache_clear_with_agent_id_returns_zero(fake_redis):
+    await fake_redis.set("request-manager:cache:key-1", "value")
+
+    removed = await RedisResponseCache(fake_redis).clear(agent_id="agent-a2a-demo")
+
+    assert removed == 0
+    assert fake_redis.values["request-manager:cache:key-1"] == "value"
+
+
+class ScanIterRedis:
+    def __init__(self) -> None:
+        self.values = {
+            "request-manager:cache:key-1": "value",
+            "request-manager:cache:key-2": "value",
+            "request-manager:not-cache:key-3": "value",
+        }
+
+    async def scan_iter(self, match: str):
+        prefix = match.removesuffix("*")
+        for key in list(self.values):
+            if key.startswith(prefix):
+                yield key
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            if key in self.values:
+                removed += 1
+                self.values.pop(key)
+        return removed
+
+
+@pytest.mark.asyncio
+async def test_redis_response_cache_clear_scan_iter_deletes_cache_keys_only():
+    redis = ScanIterRedis()
+
+    removed = await RedisResponseCache(redis).clear()
+
+    assert removed == 2
+    assert "request-manager:cache:key-1" not in redis.values
+    assert "request-manager:cache:key-2" not in redis.values
+    assert redis.values["request-manager:not-cache:key-3"] == "value"
