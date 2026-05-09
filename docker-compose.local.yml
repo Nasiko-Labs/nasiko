@@ -404,6 +404,35 @@ services:
       - agents-net
     command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
 
+  nasiko-worker:
+    container_name: nasiko-worker
+    build:
+      context: ./
+      dockerfile: Dockerfile.worker
+    command: python worker/k8s_build_worker.py
+    depends_on:
+      - redis
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  aria-request-layer:
+    build:
+      context: ./request-layer
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - KONG_URL=http://kong-gateway:8000
+    networks:
+      - app-network
+    depends_on:
+      - redis
+      - nasiko-backend
+      - kong-gateway
+    restart: unless-stopped
+
 volumes:
   mongodb-data:
   redis-data:
