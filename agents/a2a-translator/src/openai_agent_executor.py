@@ -1,6 +1,8 @@
 import json
 import logging
 import inspect
+import re
+import time
 
 from typing import Any
 
@@ -20,6 +22,17 @@ from openai import AsyncOpenAI
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+# Regex for simple "translate X to Y" patterns — matched → fast path
+_FAST_PATH_RE = re.compile(
+    r'(?:translate|convert)\s+["\']?(.+?)["\']?\s+(?:to|into)\s+(\w+)',
+    re.IGNORECASE,
+)
+
+
+def _timing_footer(elapsed_s: float, fast_path: bool) -> str:
+    label = "fast-path" if fast_path else "full-agent"
+    return f"\n\n---\n*Translator ({label}): {elapsed_s * 1000:.0f} ms*"
+
 
 class OpenAIAgentExecutor(AgentExecutor):
     """An AgentExecutor that runs an OpenAI-based Agent."""
@@ -38,9 +51,53 @@ class OpenAIAgentExecutor(AgentExecutor):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
+            timeout=15.0,   # hard 15-second ceiling on every API call
         )
         self.model = model
         self.system_prompt = system_prompt
+
+    # ── Fast path ─────────────────────────────────────────────────────────────
+
+    async def _fast_translate(
+        self,
+        text: str,
+        target_lang: str,
+        task_updater: TaskUpdater,
+    ) -> bool:
+        """
+        Direct single-shot translation for simple patterns.
+        Returns True if handled, False to fall through to full agent.
+        """
+        t0 = time.perf_counter()
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"You are a professional translator. "
+                            f"Translate the user's text to {target_lang}. "
+                            "Reply with only the translated text, nothing else."
+                        ),
+                    },
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.1,
+                max_tokens=1024,
+            )
+            content = response.choices[0].message.content or ""
+            elapsed = time.perf_counter() - t0
+            content += _timing_footer(elapsed, fast_path=True)
+            await task_updater.add_artifact([TextPart(text=content)])
+            await task_updater.complete()
+            logger.debug(f"Fast-path translation done in {elapsed*1000:.0f}ms")
+            return True
+        except Exception as e:
+            logger.warning(f"Fast-path failed, falling back to full agent: {e}")
+            return False
+
+    # ── Full agent loop ───────────────────────────────────────────────────────
 
     async def _process_request(
         self,
@@ -48,17 +105,27 @@ class OpenAIAgentExecutor(AgentExecutor):
         context: RequestContext,
         task_updater: TaskUpdater,
     ) -> None:
+        t0 = time.perf_counter()
+
+        # Fast path: simple "translate X to Y" pattern
+        m = _FAST_PATH_RE.search(message_text)
+        if m:
+            text_to_translate = m.group(1).strip()
+            target_language   = m.group(2).strip()
+            handled = await self._fast_translate(text_to_translate, target_language, task_updater)
+            if handled:
+                return
+
+        # Full agentic loop
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": message_text},
         ]
 
-        # Convert tools to OpenAI format
         openai_tools = []
         for tool_name, tool_instance in self.tools.items():
             if hasattr(tool_instance, tool_name):
                 func = getattr(tool_instance, tool_name)
-                # Extract function schema from the method
                 schema = self._extract_function_schema(func)
                 openai_tools.append({"type": "function", "function": schema})
 
@@ -69,7 +136,6 @@ class OpenAIAgentExecutor(AgentExecutor):
             iteration += 1
 
             try:
-                # Make API call to OpenAI
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -81,7 +147,6 @@ class OpenAIAgentExecutor(AgentExecutor):
 
                 message = response.choices[0].message
 
-                # Add assistant's response to messages
                 messages.append(
                     {
                         "role": "assistant",
@@ -90,9 +155,7 @@ class OpenAIAgentExecutor(AgentExecutor):
                     }
                 )
 
-                # Check if there are tool calls to execute
                 if message.tool_calls:
-                    # Execute tool calls
                     for tool_call in message.tool_calls:
                         function_name = tool_call.function.name
                         function_args = json.loads(tool_call.function.arguments)
@@ -101,14 +164,11 @@ class OpenAIAgentExecutor(AgentExecutor):
                             f"Calling function: {function_name} with args: {function_args}"
                         )
 
-                        # Execute the function
                         if function_name in self.tools:
                             tool_instance = self.tools[function_name]
-                            # Get the method from the instance
                             if hasattr(tool_instance, function_name):
                                 method = getattr(tool_instance, function_name)
                                 result = method(**function_args)
-                                # Check if the result is a coroutine and await it
                                 if inspect.iscoroutine(result):
                                     result = await result
                             else:
@@ -118,18 +178,13 @@ class OpenAIAgentExecutor(AgentExecutor):
                         else:
                             result = {"error": f"Function {function_name} not found"}
 
-                        # Serialize result properly - handle Pydantic models
                         if hasattr(result, "model_dump"):
-                            # It's a Pydantic model, use model_dump() to convert to dict
                             result_json = json.dumps(result.model_dump())
                         elif isinstance(result, dict):
-                            # It's a regular dict
                             result_json = json.dumps(result)
                         else:
-                            # Convert to string as fallback
                             result_json = str(result)
 
-                        # Add tool result to messages
                         messages.append(
                             {
                                 "role": "tool",
@@ -138,29 +193,30 @@ class OpenAIAgentExecutor(AgentExecutor):
                             }
                         )
 
-                    # Send update to show we're processing
                     await task_updater.update_status(
                         TaskState.working,
                         message=task_updater.new_agent_message(
                             [TextPart(text="Processing tool calls...")]
                         ),
                     )
-
-                    # Continue the loop to get the final response
                     continue
-                # No more tool calls, this is the final response
+
                 if message.content:
-                    parts = [TextPart(text=message.content)]
-                    logger.debug(f"Yielding final response: {parts}")
+                    elapsed = time.perf_counter() - t0
+                    content = message.content + _timing_footer(elapsed, fast_path=False)
+                    parts = [TextPart(text=content)]
+                    logger.debug(f"Full-agent response in {elapsed*1000:.0f}ms")
                     await task_updater.add_artifact(parts)
                     await task_updater.complete()
                 break
 
             except Exception as e:
                 logger.error(f"Error in OpenAI API call: {e}")
+                elapsed = time.perf_counter() - t0
                 error_parts = [
                     TextPart(
                         text=f"Sorry, an error occurred while processing the request: {e!s}"
+                        + _timing_footer(elapsed, fast_path=False)
                     )
                 ]
                 await task_updater.add_artifact(error_parts)
@@ -168,9 +224,11 @@ class OpenAIAgentExecutor(AgentExecutor):
                 break
 
         if iteration >= max_iterations:
+            elapsed = time.perf_counter() - t0
             error_parts = [
                 TextPart(
                     text="Sorry, the request has exceeded the maximum number of iterations."
+                    + _timing_footer(elapsed, fast_path=False)
                 )
             ]
             await task_updater.add_artifact(error_parts)
@@ -180,25 +238,18 @@ class OpenAIAgentExecutor(AgentExecutor):
         """Extract OpenAI function schema from a Python function"""
         import inspect
 
-        # Get function signature
         sig = inspect.signature(func)
-
-        # Get docstring
         docstring = inspect.getdoc(func) or ""
-
-        # Extract description and parameter info from docstring
         lines = docstring.split("\n")
         description = lines[0] if lines else func.__name__
 
-        # Build parameters schema
         properties = {}
         required = []
 
         for param_name, param in sig.parameters.items():
-            param_type = "string"  # Default type
+            param_type = "string"
             param_description = f"Parameter {param_name}"
 
-            # Try to infer type from annotation
             if param.annotation != inspect.Parameter.empty:
                 if param.annotation == int:
                     param_type = "integer"
@@ -211,7 +262,6 @@ class OpenAIAgentExecutor(AgentExecutor):
                 elif param.annotation == dict:
                     param_type = "object"
 
-            # Check if parameter has default value
             if param.default == inspect.Parameter.empty:
                 required.append(param_name)
 
@@ -235,14 +285,11 @@ class OpenAIAgentExecutor(AgentExecutor):
         context: RequestContext,
         event_queue: EventQueue,
     ):
-        # Run the agent until complete
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
-        # Immediately notify that the task is submitted.
         if not context.current_task:
             await updater.submit()
         await updater.start_work()
 
-        # Extract text from message parts
         message_text = ""
         for part in context.message.parts:
             if isinstance(part.root, TextPart):
@@ -252,5 +299,4 @@ class OpenAIAgentExecutor(AgentExecutor):
         logger.debug("[Translator Agent] execute exiting")
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue):
-        # Ideally: kill any ongoing tasks.
         raise ServerError(error=UnsupportedOperationError())

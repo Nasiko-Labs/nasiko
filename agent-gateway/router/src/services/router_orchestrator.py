@@ -16,6 +16,7 @@ from router.src.core import (
     SessionHistoryService,
     ResilientAgentExecutor,
 )
+from router.src.core.resilient_executor import RequestLayerContext
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
 from router.src.utils import truncate_agent_cards
@@ -38,6 +39,7 @@ class RouterOrchestrator:
         request: UserRequest,
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         token: str,
+        ctx: Optional[RequestLayerContext] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user request through the complete router pipeline.
@@ -46,13 +48,13 @@ class RouterOrchestrator:
             request: User request object
             files: List of file tuples for upload
             token: Authorization token
+            ctx: Cache-control directives from incoming request headers
 
         Yields:
             Router response messages as JSON strings
         """
         try:
-            # Route selection needed
-            async for response in self._handle_route_selection(request, files, token):
+            async for response in self._handle_route_selection(request, files, token, ctx):
                 yield response
 
         except Exception as e:
@@ -65,6 +67,7 @@ class RouterOrchestrator:
         request: UserRequest,
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         token: str,
+        ctx: Optional[RequestLayerContext] = None,
     ) -> AsyncGenerator[str, None]:
         """Handle requests that need route selection."""
 
@@ -172,7 +175,7 @@ class RouterOrchestrator:
 
             # Send request to selected agent
             async for response in self._send_agent_request(
-                request, files, agent_url, token, agent_id=agent_name
+                request, files, agent_url, token, agent_id=agent_name, ctx=ctx
             ):
                 yield response
 
@@ -188,6 +191,7 @@ class RouterOrchestrator:
         agent_url: str,
         token: str,
         agent_id: str = "",
+        ctx: Optional[RequestLayerContext] = None,
     ) -> AsyncGenerator[str, None]:
         """Send request to agent via ResilientAgentExecutor (cache + rate-limit + stats)."""
 
@@ -197,22 +201,24 @@ class RouterOrchestrator:
                 "Sending user's query to agent...", "", False, agent_url
             )
 
-            # Derive a stable per-user scope from the token (no PII stored)
             import hashlib
             user_scope = hashlib.sha256(token.encode()).hexdigest()[:16] if token else ""
 
-            response_text, cached, latency_s, queue_wait_s = await self.executor.execute(
-                agent_id=agent_id,
-                agent_url=agent_url,
-                request=request,
-                files=files,
-                token=token,
-                user_scope=user_scope,
+            response_text, cache_status, latency_s, queue_wait_s, cache_age = (
+                await self.executor.execute(
+                    agent_id=agent_id,
+                    agent_url=agent_url,
+                    request=request,
+                    files=files,
+                    token=token,
+                    user_scope=user_scope,
+                    ctx=ctx,
+                )
             )
 
-            footer = self.executor.timing_footer(cached, latency_s, queue_wait_s, agent_id)
+            footer = self.executor.timing_footer(cache_status, latency_s, queue_wait_s, agent_id)
             logger.info(
-                f"Agent '{agent_id}' responded — cached={cached}, "
+                f"Agent '{agent_id}' responded — cache={cache_status}, "
                 f"latency={latency_s*1000:.0f}ms, queue_wait={queue_wait_s*1000:.0f}ms"
             )
             yield self._router_response(response_text + footer, "", False, agent_url)
