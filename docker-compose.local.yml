@@ -67,6 +67,8 @@ services:
       REDIS_URL: redis://redis:6379
       USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       AUTH_SERVICE_URL: http://nasiko-auth-service:8001
@@ -81,7 +83,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthcheck', timeout=5).read()\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -213,7 +215,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5).read()\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -267,6 +269,8 @@ services:
       KONG_GATEWAY_URL: http://kong-gateway:8000
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
       MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
       ROUTER_LLM_PROVIDER: ${ROUTER_LLM_PROVIDER:-openai}
@@ -274,12 +278,22 @@ services:
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       JINA_API_KEY: ${JINA_API_KEY:-}
       JINA_EMBEDDING_MODEL: ${JINA_EMBEDDING_MODEL:-jina-embeddings-v3}
+      REDIS_URL: redis://redis:6379
+      RESILIENCE_ENABLED: "true"
+      RESILIENCE_CACHE_TTL_SECONDS: ${RESILIENCE_CACHE_TTL_SECONDS:-3600}
+      RESILIENCE_DEFAULT_AGENT_RPS: ${RESILIENCE_DEFAULT_AGENT_RPS:-5}
+      RESILIENCE_MIN_AGENT_RPS: ${RESILIENCE_MIN_AGENT_RPS:-0.25}
+      RESILIENCE_BURST: ${RESILIENCE_BURST:-5}
+      RESILIENCE_MAX_QUEUE_DEPTH: ${RESILIENCE_MAX_QUEUE_DEPTH:-50}
+      RESILIENCE_MAX_QUEUE_WAIT_SECONDS: ${RESILIENCE_MAX_QUEUE_WAIT_SECONDS:-10}
+      RESILIENCE_TARGET_LATENCY_SECONDS: ${RESILIENCE_TARGET_LATENCY_SECONDS:-2}
+      RESILIENCE_ADMIN_API_KEY: ${RESILIENCE_ADMIN_API_KEY:-}
     ports:
       - "8081:8000"
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/health').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/router/health', timeout=5).read()\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -394,6 +408,9 @@ services:
       K8S_ENABLED: "false"
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-z-ai/glm-5.1}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -403,6 +420,11 @@ services:
       - app-network
       - agents-net
     command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os, redis; redis.Redis(host=os.getenv('REDIS_HOST', 'redis'), port=int(os.getenv('REDIS_PORT', '6379')), db=int(os.getenv('REDIS_DB', '0'))).ping()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   mongodb-data:

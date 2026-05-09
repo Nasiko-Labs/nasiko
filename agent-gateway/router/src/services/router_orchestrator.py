@@ -3,6 +3,7 @@ Router orchestrator service that coordinates all router operations.
 """
 
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -17,7 +18,14 @@ from router.src.core import (
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
+from router.src.config import settings
 from router.src.utils import truncate_agent_cards
+from router.src.resilience import (
+    CacheConfig,
+    LimitConfig,
+    ResilienceError,
+    ResilientAgentExecutor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +38,22 @@ class RouterOrchestrator:
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.resilient_executor = ResilientAgentExecutor(
+            cache_config=CacheConfig(
+                ttl_seconds=settings.RESILIENCE_CACHE_TTL_SECONDS,
+                redis_url=settings.REDIS_URL,
+                semantic_enabled=settings.RESILIENCE_SEMANTIC_ENABLED,
+                semantic_threshold=settings.RESILIENCE_SEMANTIC_THRESHOLD,
+            ),
+            limit_config=LimitConfig(
+                base_rps=settings.RESILIENCE_DEFAULT_AGENT_RPS,
+                min_rps=settings.RESILIENCE_MIN_AGENT_RPS,
+                burst=settings.RESILIENCE_BURST,
+                max_queue_depth=settings.RESILIENCE_MAX_QUEUE_DEPTH,
+                max_queue_wait_seconds=settings.RESILIENCE_MAX_QUEUE_WAIT_SECONDS,
+                target_latency_seconds=settings.RESILIENCE_TARGET_LATENCY_SECONDS,
+            ),
+        )
 
     async def process_request(
         self,
@@ -108,7 +132,9 @@ class RouterOrchestrator:
                 "Determining the best agent to serve the user's query..."
             )
 
-            vectorstore = self.vector_store.create_vector_store(agent_cards)
+            vectorstore = None
+            if len(agent_cards) >= 15:
+                vectorstore = self.vector_store.create_vector_store(agent_cards)
 
         except VectorStoreError as e:
             yield self._router_response(str(e), "", False, "")
@@ -193,17 +219,38 @@ class RouterOrchestrator:
             yield self._router_response(
                 "Sending user's query to agent...", "", False, agent_url
             )
+            started = time.monotonic()
+            before_stats = self.resilient_executor.runtime_snapshot()
 
-            # Send request to agent
-            agent_data = await self.agent_client.send_request(
-                agent_url, request, files, token
-            )
+            async def call_agent() -> str:
+                agent_data = await self.agent_client.send_request(
+                    agent_url, request, files, token
+                )
+                return self.agent_client.extract_response_content(agent_data)
 
-            # Extract response content
-            agent_response = self.agent_client.extract_response_content(agent_data)
+            if settings.RESILIENCE_ENABLED:
+                agent_response = await self.resilient_executor.execute(
+                    agent_id=agent_url,
+                    request=request,
+                    files=files,
+                    token=token,
+                    call_agent=call_agent,
+                )
+            else:
+                agent_response = await call_agent()
+
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if settings.RESILIENCE_ENABLED:
+                after_stats = self.resilient_executor.runtime_snapshot()
+                agent_response = self._append_resilience_timing(
+                    agent_response, before_stats, after_stats, elapsed_ms
+                )
 
             logger.info("Successfully received response from agent")
             yield self._router_response(agent_response, "", False, agent_url)
+
+        except ResilienceError as e:
+            yield self._router_response(str(e), "", False, agent_url)
 
         except AgentClientError as e:
             yield self._router_response(str(e), "", False, agent_url)
@@ -246,6 +293,28 @@ class RouterOrchestrator:
                 url=url,
             ).model_dump_json()
             + "\n"
+        )
+
+    def _append_resilience_timing(
+        self,
+        agent_response: str,
+        before_stats: Any,
+        after_stats: Any,
+        elapsed_ms: int,
+    ) -> str:
+        cache_delta = after_stats.cache_hits - before_stats.cache_hits
+        miss_delta = after_stats.cache_misses - before_stats.cache_misses
+        if cache_delta > 0:
+            mode = "cache hit"
+        elif miss_delta > 0:
+            mode = "agent call + cache store"
+        else:
+            mode = "agent call"
+
+        return (
+            f"{agent_response}\n\n"
+            f"Request layer: {mode} in {elapsed_ms} ms "
+            f"(hit ratio {after_stats.cache_hit_ratio:.0%})."
         )
 
     async def health_check(self) -> Dict[str, Any]:

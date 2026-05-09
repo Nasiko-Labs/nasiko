@@ -9,11 +9,12 @@ from typing import List, Optional
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from router.src.config import settings
 from router.src.entities import UserRequest
+from router.src.resilience.admin import build_admin_router
 from router.src.services import RouterOrchestrator
 
 # Configure logging
@@ -44,6 +45,22 @@ app.add_middleware(
 
 # Initialize orchestrator
 orchestrator = RouterOrchestrator()
+app.include_router(build_admin_router(orchestrator.resilient_executor))
+
+
+@app.get("/")
+async def root():
+    """Operational entrypoint for local demos and health probes."""
+    return {
+        "service": "Nasiko Router Service",
+        "status": "ok",
+        "endpoints": {
+            "health": "/router/health",
+            "admin_stats": "/admin/stats/runtime",
+            "metrics": "/metrics",
+            "docs": "/docs",
+        },
+    }
 
 
 @app.get("/health")
@@ -123,14 +140,11 @@ async def process_request(
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
-    return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
-    }
+    """Get Prometheus-compatible router resilience metrics."""
+    return PlainTextResponse(
+        orchestrator.resilient_executor.metrics_text(),
+        media_type="text/plain; version=0.0.4",
+    )
 
 
 def _validate_inputs(session_id: str, query: str) -> Optional[str]:

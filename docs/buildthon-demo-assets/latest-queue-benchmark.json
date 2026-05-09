@@ -1,0 +1,47 @@
+{
+  "wall_seconds": 19.281,
+  "results": [
+    {
+      "status": 200,
+      "elapsed_seconds": 19.266,
+      "message": "rouge"
+    },
+    {
+      "status": 200,
+      "elapsed_seconds": 8.116,
+      "message": "bleu"
+    },
+    {
+      "status": 200,
+      "elapsed_seconds": 8.821,
+      "message": "vert"
+    }
+  ],
+  "failures": 0,
+  "stats": {
+    "cache_hits": 3,
+    "cache_misses": 11,
+    "cache_hit_ratio": 0.21428571428571427,
+    "cache_stores": 9,
+    "rate_limit_rejections": 2,
+    "agent_errors": 0,
+    "queue_depths": {
+      "http://localhost:9100/agents/agent-translator/": 2
+    },
+    "current_limits": {
+      "http://localhost:9100/agents/agent-translator/": 0.25
+    },
+    "agent_latency_count": {
+      "http://localhost:9100/agents/agent-translator/": 9
+    },
+    "agent_latency_average_seconds": {
+      "http://localhost:9100/agents/agent-translator/": 7.2989604246666
+    },
+    "queue_wait_count": {
+      "http://localhost:9100/agents/agent-translator/": 2
+    },
+    "queue_wait_average_seconds": {
+      "http://localhost:9100/agents/agent-translator/": 6.051371169500044
+    }
+  }
+}

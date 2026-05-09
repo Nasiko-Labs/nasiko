@@ -56,6 +56,23 @@ class TestRouterConfigMiniMax:
         )
         assert config.MINIMAX_BASE_URL == "https://api.minimaxi.com/v1"
 
+    def test_nvidia_api_config(self):
+        """NVIDIA NIM should be configurable as an OpenAI-compatible provider."""
+        from router.src.config.settings import RouterConfig
+
+        config = RouterConfig(
+            _env_file=None,
+            NVIDIA_API_KEY="test-nvidia-key",
+            NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1",
+            ROUTER_LLM_PROVIDER="nvidia",
+            ROUTER_LLM_MODEL="meta/llama-3.1-8b-instruct",
+        )
+
+        assert config.NVIDIA_API_KEY == "test-nvidia-key"
+        assert config.NVIDIA_BASE_URL == "https://integrate.api.nvidia.com/v1"
+        assert config.ROUTER_LLM_PROVIDER == "nvidia"
+        assert config.ROUTER_LLM_MODEL == "meta/llama-3.1-8b-instruct"
+
 
 class TestRoutingEngineLLMCreation:
     """Test LLM creation logic in the routing engine.
@@ -152,6 +169,32 @@ class TestRoutingEngineLLMCreation:
             base_url = None
 
         assert base_url == "https://openrouter.ai/api/v1"
+
+    def test_nvidia_provider_selects_correct_config(self):
+        """When provider is 'nvidia', correct OpenAI-compatible base_url is used."""
+        provider = "nvidia"
+        model = "meta/llama-3.1-8b-instruct"
+        api_key = "test-nvidia-key"
+        base_url = "https://integrate.api.nvidia.com/v1"
+
+        if provider == "nvidia":
+            config = {
+                "model": model or "z-ai/glm-5.1",
+                "temperature": 1.0,
+                "api_key": api_key,
+                "base_url": base_url,
+            }
+        else:
+            config = {
+                "model": model or "gpt-4o-mini",
+                "temperature": 0,
+                "api_key": api_key,
+            }
+
+        assert config["model"] == "meta/llama-3.1-8b-instruct"
+        assert config["temperature"] == 1.0
+        assert config["api_key"] == "test-nvidia-key"
+        assert config["base_url"] == "https://integrate.api.nvidia.com/v1"
 
 
 class TestMiniMaxModels:

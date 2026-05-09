@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760">
+  <rect width="1400" height="760" fill="#f7fafc"/>
+  <text x="700" y="58" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="34" font-weight="700" fill="#1f2937">Resilient Agent Request Layer</text>
+  <text x="700" y="92" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b">Cache first. Rate-limit per agent. Queue bursts. Expose live controls.</text>
+
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <style>
+      .box{fill:#ffffff;stroke:#cbd5e1;stroke-width:2;rx:14}
+      .primary{fill:#eef6ff;stroke:#2563eb}
+      .cache{fill:#ecfdf5;stroke:#059669}
+      .warn{fill:#fff7ed;stroke:#ea580c}
+      .obs{fill:#f5f3ff;stroke:#7c3aed}
+      .title{font:700 20px Inter,Arial,sans-serif;fill:#1f2937}
+      .body{font:15px Inter,Arial,sans-serif;fill:#475569}
+      .small{font:13px Inter,Arial,sans-serif;fill:#64748b}
+      .line{stroke:#334155;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect x="70" y="170" width="180" height="110" class="box"/>
+  <text x="160" y="215" text-anchor="middle" class="title">Client / UI</text>
+  <text x="160" y="245" text-anchor="middle" class="body">Nasiko web app</text>
+
+  <rect x="320" y="170" width="170" height="110" class="box"/>
+  <text x="405" y="215" text-anchor="middle" class="title">Kong</text>
+  <text x="405" y="245" text-anchor="middle" class="body">Gateway route</text>
+
+  <rect x="560" y="145" width="320" height="160" class="box primary"/>
+  <text x="720" y="190" text-anchor="middle" class="title">Resilient Router</text>
+  <text x="720" y="222" text-anchor="middle" class="body">Registry fetch + route selection</text>
+  <text x="720" y="250" text-anchor="middle" class="body">Cache lookup before agent call</text>
+  <text x="720" y="278" text-anchor="middle" class="body">Adaptive limiter + queue</text>
+
+  <rect x="990" y="170" width="260" height="110" class="box"/>
+  <text x="1120" y="215" text-anchor="middle" class="title">Agent Fleet</text>
+  <text x="1120" y="245" text-anchor="middle" class="body">A2A translator agent</text>
+
+  <path d="M250 225 H320" class="line"/>
+  <path d="M490 225 H560" class="line"/>
+  <path d="M880 225 H990" class="line"/>
+
+  <rect x="570" y="390" width="260" height="105" class="box cache"/>
+  <text x="700" y="430" text-anchor="middle" class="title">Cache Store</text>
+  <text x="700" y="460" text-anchor="middle" class="body">Repeated request returns</text>
+  <text x="700" y="485" text-anchor="middle" class="body">without recompute</text>
+  <path d="M700 305 V390" class="line"/>
+
+  <rect x="930" y="390" width="285" height="105" class="box warn"/>
+  <text x="1072" y="430" text-anchor="middle" class="title">Queue / Circuit Breaker</text>
+  <text x="1072" y="460" text-anchor="middle" class="body">Bursts wait for tokens</text>
+  <text x="1072" y="485" text-anchor="middle" class="body">only rejects when bounded</text>
+  <path d="M1010 280 C1000 330 1035 350 1072 390" class="line"/>
+
+  <rect x="195" y="390" width="270" height="105" class="box obs"/>
+  <text x="330" y="430" text-anchor="middle" class="title">Ops Controls</text>
+  <text x="330" y="460" text-anchor="middle" class="body">/admin/stats/runtime</text>
+  <text x="330" y="485" text-anchor="middle" class="body">/metrics, cache + limits</text>
+  <path d="M560 260 C460 320 420 355 365 390" class="line"/>
+
+  <rect x="92" y="600" width="1215" height="74" fill="#111827" rx="18"/>
+  <text x="700" y="632" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="700" fill="#ffffff">Why it wins</text>
+  <text x="700" y="660" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="16" fill="#d1d5db">It treats caching and throttling as one traffic-control layer, protecting expensive agent execution while giving operators live visibility.</text>
+</svg>

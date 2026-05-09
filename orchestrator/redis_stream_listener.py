@@ -777,6 +777,9 @@ class RedisStreamListener:
             "OWNER_ID": owner_id or "",
             "OPENAI_API_KEY": Config.OPENAI_API_KEY,
             "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
+            "NVIDIA_API_KEY": Config.NVIDIA_API_KEY,
+            "NVIDIA_BASE_URL": Config.NVIDIA_BASE_URL,
+            "NVIDIA_MODEL": Config.NVIDIA_MODEL,
             "MINIMAX_API_KEY": Config.MINIMAX_API_KEY,
         }
 
