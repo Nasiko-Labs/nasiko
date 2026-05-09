@@ -20,6 +20,7 @@ from kubernetes import client, config
 from pydantic import BaseModel
 from pythonjsonlogger import jsonlogger
 import docker
+from target_publisher import RedisTargetPublisher, build_target_record
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -35,6 +36,14 @@ REGISTRY_INTERVAL = int(os.getenv("REGISTRY_INTERVAL", "30"))
 AGENTS_NAMESPACE = os.getenv("AGENTS_NAMESPACE", "nasiko-agents")
 PLATFORM_NAMESPACE = os.getenv("PLATFORM_NAMESPACE", "nasiko")
 AGENTS_NETWORK = os.getenv("AGENTS_NETWORK", "agents-net")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+REQUEST_MANAGER_SERVICE_NAME = os.getenv(
+    "KONG_REQUEST_MANAGER_SERVICE_NAME",
+    "agent-request-manager",
+)
+REQUEST_MANAGER_HOST = os.getenv("KONG_REQUEST_MANAGER_HOST", "nasiko-request-manager")
+REQUEST_MANAGER_PORT = int(os.getenv("KONG_REQUEST_MANAGER_PORT", "8090"))
+REQUEST_MANAGER_ROUTE_PREFIX = os.getenv("KONG_REQUEST_MANAGER_ROUTE_PREFIX", "/agents")
 K8S_ENABLED = os.getenv("K8S_ENABLED", "true").strip().lower() in {
     "1",
     "true",
@@ -59,6 +68,7 @@ app = FastAPI(
 current_services: Set[str] = set()
 k8s_client = None
 docker_client = None
+target_publisher = None
 
 
 class ServiceInfo(BaseModel):
@@ -68,6 +78,8 @@ class ServiceInfo(BaseModel):
     path: str = "/"
     methods: List[str] = ["GET", "POST", "PUT", "DELETE", "PATCH"]
     namespace: str
+    source: str
+    target_revision: str
 
 
 class RegistryStatus(BaseModel):
@@ -116,6 +128,19 @@ def get_docker_client():
             logger.error(f"Failed to initialize Docker client: {e}")
             raise
     return docker_client
+
+
+def get_target_publisher() -> RedisTargetPublisher | None:
+    """Initialize Redis publisher for Request Manager target records."""
+    global target_publisher
+    if target_publisher is None:
+        try:
+            target_publisher = RedisTargetPublisher(REDIS_URL)
+            logger.info("Request Manager target publisher initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize target publisher: {e}")
+            return None
+    return target_publisher
 
 
 def check_kong_health() -> bool:
@@ -214,6 +239,10 @@ def get_k8s_services() -> List[ServiceInfo]:
                     path=f"/agents/{service_name}",
                     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
                     namespace=AGENTS_NAMESPACE,
+                    source="kubernetes",
+                    target_revision=svc.metadata.resource_version
+                    or svc.metadata.uid
+                    or service_name,
                 )
 
                 services.append(service_info)
@@ -280,6 +309,7 @@ def get_docker_services() -> List[ServiceInfo]:
                     "nasiko-router",
                     "nasiko-auth-service",
                     "nasiko-chat-history",
+                    "nasiko-request-manager",
                     "redis",
                     "mongodb",
                     "phoenix-observability",
@@ -310,6 +340,8 @@ def get_docker_services() -> List[ServiceInfo]:
                     path=f"/agents/{container_name}",
                     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
                     namespace="docker-agents",  # Use a different namespace for Docker containers
+                    source="docker",
+                    target_revision=container.id,
                 )
 
                 services.append(service_info)
@@ -327,110 +359,83 @@ def get_docker_services() -> List[ServiceInfo]:
     return services
 
 
-def register_service_in_kong(service: ServiceInfo) -> bool:
-    """Register a service and route in Kong."""
+def ensure_request_manager_service() -> bool:
+    """Ensure the shared Kong service for all dynamic agent routes exists."""
+    service_data = {
+        "name": REQUEST_MANAGER_SERVICE_NAME,
+        "url": f"http://{REQUEST_MANAGER_HOST}:{REQUEST_MANAGER_PORT}",
+        "connect_timeout": 60000,
+        "write_timeout": 300000,
+        "read_timeout": 300000,
+        "retries": 0,
+        "protocol": "http",
+    }
+
     try:
-        # Create service in Kong
-        service_url = f"http://{service.host}:{service.port}"
-
-        service_data = {
-            "name": service.name,
-            "url": service_url,
-            "connect_timeout": 60000,
-            "write_timeout": 300000,
-            "read_timeout": 300000,
-            "retries": 3,
-            "protocol": "http",
-        }
-
-        # Check if service exists
-        try:
-            response = requests.get(f"{KONG_ADMIN_URL}/services/{service.name}")
-            if response.status_code == 200:
-                # Update existing service
-                response = requests.patch(
-                    f"{KONG_ADMIN_URL}/services/{service.name}",
-                    json=service_data,
-                    timeout=10,
-                )
-                logger.info(f"Updated existing service: {service.name}")
-            else:
-                # Create new service
-                response = requests.post(
-                    f"{KONG_ADMIN_URL}/services", json=service_data, timeout=10
-                )
-                logger.info(f"Created new service: {service.name}")
-        except requests.exceptions.RequestException:
-            # Create new service
+        response = requests.get(
+            f"{KONG_ADMIN_URL}/services/{REQUEST_MANAGER_SERVICE_NAME}", timeout=10
+        )
+        if response.status_code == 200:
+            response = requests.patch(
+                f"{KONG_ADMIN_URL}/services/{REQUEST_MANAGER_SERVICE_NAME}",
+                json=service_data,
+                timeout=10,
+            )
+            logger.info("Updated Request Manager Kong service")
+        else:
             response = requests.post(
                 f"{KONG_ADMIN_URL}/services", json=service_data, timeout=10
             )
-            logger.info(f"Created new service: {service.name}")
+            logger.info("Created Request Manager Kong service")
+        return response.status_code in [200, 201]
+    except Exception as e:
+        logger.error(f"Failed to ensure Request Manager Kong service: {e}")
+        return False
 
-        if response.status_code not in [200, 201]:
-            logger.error(f"Failed to register service {service.name}: {response.text}")
+
+def register_service_in_kong(service: ServiceInfo) -> bool:
+    """Register an agent route in Kong that points to the Request Manager."""
+    try:
+        if not ensure_request_manager_service():
             return False
 
-        # Create route for agent services
         route_data = {
             "name": f"{service.name}-route",
             "paths": [service.path],
             "methods": service.methods,
-            "strip_path": True,
+            "strip_path": False,
             "preserve_host": False,
+            "service": {"name": REQUEST_MANAGER_SERVICE_NAME},
         }
 
-        # Check if route exists
-        try:
-            response = requests.get(f"{KONG_ADMIN_URL}/routes/{service.name}-route")
-            if response.status_code == 200:
-                # Update existing route
-                response = requests.patch(
-                    f"{KONG_ADMIN_URL}/routes/{service.name}-route",
-                    json=route_data,
-                    timeout=10,
-                )
-                logger.info(f"Updated existing route: {service.name}-route")
-            else:
-                # Create new route
-                route_data["service"] = {"name": service.name}
-                response = requests.post(
-                    f"{KONG_ADMIN_URL}/services/{service.name}/routes",
-                    json=route_data,
-                    timeout=10,
-                )
-                logger.info(f"Created new route: {service.name}-route")
-        except requests.exceptions.RequestException:
-            # Create new route
-            route_data["service"] = {"name": service.name}
-            response = requests.post(
-                f"{KONG_ADMIN_URL}/services/{service.name}/routes",
+        response = requests.get(
+            f"{KONG_ADMIN_URL}/routes/{service.name}-route", timeout=10
+        )
+        if response.status_code == 200:
+            response = requests.patch(
+                f"{KONG_ADMIN_URL}/routes/{service.name}-route",
                 json=route_data,
                 timeout=10,
             )
-            logger.info(f"Created new route: {service.name}-route")
+            logger.info(f"Updated dynamic Request Manager route: {service.name}-route")
+        else:
+            response = requests.post(
+                f"{KONG_ADMIN_URL}/services/{REQUEST_MANAGER_SERVICE_NAME}/routes",
+                json=route_data,
+                timeout=10,
+            )
+            logger.info(f"Created dynamic Request Manager route: {service.name}-route")
 
         if response.status_code not in [200, 201]:
             logger.error(
-                f"Failed to register route for {service.name}: {response.text}"
+                f"Failed to register Request Manager route for {service.name}: {response.text}"
             )
             return False
 
-        logger.info(f"Successfully registered {service.name} in Kong")
-
-        # Note: Swagger docs issue - Kong strips path but Swagger UI uses absolute URLs
-        # This requires either:
-        # 1. Agent-level changes (root_path in FastAPI)
-        # 2. Custom docs proxy service
-        # 3. Use direct agent ports for docs access
-        logger.info(
-            "For Swagger docs access: Use direct agent port or configure agent root_path"
-        )
-
+        logger.info(f"Registered {service.path} through Request Manager")
         return True
-
     except Exception as e:
-        logger.error(f"Error registering service {service.name} in Kong: {e}")
+        logger.error(f"Error registering Request Manager route for {service.name}: {e}")
         return False
 
 
@@ -455,6 +460,7 @@ def cleanup_stale_services(current_service_names: Set[str]) -> None:
             "n8n",
             "gateway-status",
             "gateway-health",
+            REQUEST_MANAGER_SERVICE_NAME,
         }
 
         for kong_service in kong_services:
@@ -466,6 +472,34 @@ def cleanup_stale_services(current_service_names: Set[str]) -> None:
 
             # Skip static proxy services - they're not k8s services but should be preserved
             if service_name in static_proxy_services:
+                continue
+
+            if (
+                service_name.startswith("agent-")
+                and service_name != REQUEST_MANAGER_SERVICE_NAME
+            ):
+                try:
+                    routes_response = requests.get(
+                        f"{KONG_ADMIN_URL}/services/{service_name}/routes",
+                        timeout=10,
+                    )
+                    if routes_response.status_code == 200:
+                        for route in routes_response.json().get("data", []):
+                            requests.delete(
+                                f"{KONG_ADMIN_URL}/routes/{route['id']}", timeout=10
+                            )
+                    delete_response = requests.delete(
+                        f"{KONG_ADMIN_URL}/services/{service_name}",
+                        timeout=10,
+                    )
+                    if delete_response.status_code == 204:
+                        logger.info(
+                            f"Removed legacy direct agent service: {service_name}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Error removing legacy direct agent service {service_name}: {e}"
+                    )
                 continue
 
             # If service is not in current running containers, remove it
@@ -498,6 +532,32 @@ def cleanup_stale_services(current_service_names: Set[str]) -> None:
 
     except Exception as e:
         logger.error(f"Error cleaning up stale services: {e}")
+
+
+def cleanup_stale_agent_routes(current_service_names: Set[str]) -> None:
+    """Remove dynamic agent routes that no longer have discovered targets."""
+    try:
+        response = requests.get(f"{KONG_ADMIN_URL}/routes", timeout=10)
+        if response.status_code != 200:
+            logger.error(f"Failed to get Kong routes: {response.text}")
+            return
+
+        valid_route_names = {f"{name}-route" for name in current_service_names}
+        for route in response.json().get("data", []):
+            route_name = route.get("name", "")
+            if not route_name.endswith("-route"):
+                continue
+            if not route_name.startswith("agent-"):
+                continue
+            if route_name in valid_route_names:
+                continue
+            delete_response = requests.delete(
+                f"{KONG_ADMIN_URL}/routes/{route['id']}", timeout=10
+            )
+            if delete_response.status_code == 204:
+                logger.info(f"Deleted stale agent route: {route_name}")
+    except Exception as e:
+        logger.error(f"Error cleaning up stale agent routes: {e}")
 
 
 def configure_kong_plugins():
@@ -928,6 +988,10 @@ def apply_middlewares_to_route(route_name, middlewares):
                     "X-Subject-Type",
                     "X-Is-Super-User",
                     "X-Permissions",
+                    "X-Request-Layer-Agent",
+                    "X-Request-Layer-Cache",
+                    "X-Request-Layer-Queue-Wait-Ms",
+                    "X-Request-Layer-Limit-State",
                 ],
                 "credentials": True,
                 "max_age": 3600,
@@ -1021,6 +1085,25 @@ async def sync_services():
                 services = get_docker_services()
                 logger.debug(f"Discovered {len(services)} Docker containers")
 
+            publisher = get_target_publisher()
+            if publisher:
+                target_records = [
+                    build_target_record(
+                        agent_id=service.name,
+                        host=service.host,
+                        port=service.port,
+                        public_path=service.path,
+                        namespace=service.namespace,
+                        source=service.source,
+                        target_revision=service.target_revision,
+                    )
+                    for service in services
+                ]
+                try:
+                    publisher.publish(target_records)
+                except Exception as e:
+                    logger.error(f"Failed to publish Request Manager targets: {e}")
+
             # Register/update services (dynamic agents with full middleware)
             successful_registrations = set()
             for service in services:
@@ -1035,6 +1118,7 @@ async def sync_services():
 
             # Clean up stale services
             cleanup_stale_services(successful_registrations)
+            cleanup_stale_agent_routes(successful_registrations)
 
             # Update current services
             current_services = successful_registrations
@@ -1091,10 +1175,33 @@ async def trigger_sync():
             services = get_docker_services()
             discovery_type = "Docker"
 
+        publisher = get_target_publisher()
+        if publisher:
+            target_records = [
+                build_target_record(
+                    agent_id=service.name,
+                    host=service.host,
+                    port=service.port,
+                    public_path=service.path,
+                    namespace=service.namespace,
+                    source=service.source,
+                    target_revision=service.target_revision,
+                )
+                for service in services
+            ]
+            try:
+                publisher.publish(target_records)
+            except Exception as e:
+                logger.error(f"Failed to publish Request Manager targets: {e}")
+
         registered = 0
         for service in services:
             if register_service_in_kong(service):
                 registered += 1
+                route_name = f"{service.name}-route"
+                apply_middlewares_to_route(
+                    route_name, ["cors", "nasiko-auth", "chat-logger"]
+                )
 
         return {
             "message": f"Sync completed. Registered {registered} {discovery_type} services."
