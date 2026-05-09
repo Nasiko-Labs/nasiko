@@ -1,0 +1,13 @@
+You are helping build RARL, a FastAPI sidecar that sits between Kong Gateway
+and AI agent containers. Read BUILD_PLAN.md for full context.
+
+Hard rules:
+- Python 3.12, FastAPI, asyncio, redis-py 5.x async client, httpx async.
+- One file per concern. Do NOT merge files unless I ask.
+- Every async I/O call must be awaited; no blocking calls in request path.
+- Add type hints on every function.
+- Keep functions under 30 lines where possible; extract helpers.
+- Do NOT add new dependencies without me asking.
+- When unsure, prefer the simplest working version — this is a 3-hour hackathon build.
+- Comment any non-obvious line; otherwise no comments.
+- Never write tests unless explicitly asked (we do manual verification).
