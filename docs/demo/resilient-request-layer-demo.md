@@ -696,7 +696,93 @@ The stats endpoint calculates:
 
 Why this matters: the problem statement explicitly asks for operational visibility. This gives a live view of whether caching and overload controls are working.
 
-#### 15. Redis State Summary
+#### 15. Dashboard And Observability Graph Guide
+
+The dashboard is available at:
+
+```text
+http://localhost:8090/
+```
+
+It refreshes every two seconds from:
+
+```text
+GET /control/stats
+```
+
+The dashboard has two parts:
+
+- Top summary cards for whole-platform health.
+- Per-agent table for agent-level traffic behavior.
+
+##### Top Summary Cards
+
+| Dashboard section | What it means | Source data | How to explain it in demo |
+| --- | --- | --- | --- |
+| `Status` | Overall Request Manager status: `healthy` when Redis is reachable, `degraded` when Redis is unavailable. | `redis.ping()` through `/control/stats` | "This tells judges whether the shared coordination layer is currently available." |
+| `Cache Hit Rate` | Percentage of cacheable requests served from cache instead of recomputing. | `cache_hits / (cache_hits + cache_misses)` from `request-manager:metrics:global` | "When I repeat the same request, this increases, proving repeated calls are faster and duplicate compute is reduced." |
+| `Active Requests` | Total in-flight requests currently allowed through the limiter. | `request-manager:active:global` | "This shows how many requests are currently consuming agent execution capacity." |
+| `Upstream Errors` | Count of upstream agent transport errors and timeouts observed by Request Manager. | `upstream_errors` in `request-manager:metrics:global` | "This shows whether agents are failing or timing out behind the request layer." |
+| `Queue Timeouts` | Count of requests that waited in queue but exceeded `max_queue_wait_ms`. | `queue_timeouts` in `request-manager:metrics:global` | "This proves the queue has a predictable max wait instead of letting requests hang forever." |
+
+Example story while presenting:
+
+```text
+First I run a cold request. Cache hit rate is low because Request Manager had to call the agent.
+Then I repeat the same request. Cache hit rate rises because Request Manager serves it from Redis.
+Then I run overload. Active requests and queued requests move, but failures remain controlled.
+```
+
+##### Per-Agent Table
+
+Each row is one discovered agent from `request-manager:targets`.
+
+| Column | What it means | Source data | What good looks like |
+| --- | --- | --- | --- |
+| `Agent` | Agent ID discovered by the registry. | `request-manager:targets` | The real translator and demo agent should both appear. |
+| `Active` | Current in-flight requests for that agent. | `request-manager:active:{agent_id}` | Should stay at or below `max_concurrency`. |
+| `Queued` | Requests currently waiting in that agent's FIFO queue. | `LLEN request-manager:queue:{agent_id}` | Should rise during a burst and return to `0` after the burst drains. |
+| `Hit Rate` | Agent-specific cache hit rate. | `cache_hits / (cache_hits + cache_misses)` from `request-manager:metrics:{agent_id}` | Should rise when repeated requests are sent to the same agent. |
+| `P95 Latency` | 95th percentile request latency for recent samples. | Last 200 samples in `request-manager:latency:{agent_id}` | Cache-heavy traffic should lower this; overload can raise it predictably. |
+| `P95 Queue` | 95th percentile queue wait for recent samples. | Last 200 samples in `request-manager:queue-wait:{agent_id}` | Should be near `0` normally and increase during overload demos. |
+| `Circuit` | Current circuit breaker state: `closed`, `open`, `half-open`, or `degraded`. | `request-manager:circuit:{agent_id}` | Healthy agents should be `closed`; failing agents can move to `open`. |
+
+##### How Each Dashboard Section Maps To The Problem Statement
+
+| Problem statement need | Dashboard proof |
+| --- | --- |
+| Faster repeated responses | Cache Hit Rate rises, P95 Latency drops after repeated calls. |
+| Reduced duplicate processing | Cache Hit Rate rises while Upstream Requests grow more slowly than total requests. |
+| Stable overload handling | Active stays bounded, Queued rises during burst, Queue Timeouts show controlled backpressure. |
+| Operational visibility | Operators can see status, per-agent health, cache behavior, queue behavior, and circuit state live. |
+
+##### Demo Walkthrough For The Dashboard
+
+Use this sequence while the dashboard is open:
+
+1. Run the real UI translator request once.
+2. Point to `Cache Hit Rate` and explain that the first request is a miss.
+3. Run the exact same translator request again.
+4. Point to `Cache Hit Rate` and the agent row `Hit Rate`; both should improve.
+5. Run the overload script.
+6. Point to `Active` and `Queued`; the agent is not receiving unlimited traffic.
+7. Run the queue-depth demo.
+8. Point to `Queue Timeouts`; this shows controlled backpressure when the queue policy is exceeded.
+9. Point to `Circuit`; healthy agents remain `closed`, and unhealthy agents would move to `open`.
+
+##### Important Clarification
+
+The current dashboard is intentionally lightweight for the MVP. It is not a full Prometheus or Phoenix dashboard yet. The purpose is to show the live signals required by the problem statement directly inside the Request Manager:
+
+- Cache behavior.
+- Queue behavior.
+- Rate-limit pressure.
+- Agent health.
+- Runtime stats.
+
+In production, the same metrics should be exported to Prometheus and added to Phoenix/OpenTelemetry spans.
+
+#### 16. Redis State Summary
 
 | Redis key | Type | Example contents | TTL |
 | --- | --- | --- | --- |
@@ -718,7 +804,7 @@ Why this matters: the problem statement explicitly asks for operational visibili
 | `request-manager:latency:{agent}` | List | Last 200 latency samples | Trimmed to last 200 |
 | `request-manager:queue-wait:{agent}` | List | Last 200 queue-wait samples | Trimmed to last 200 |
 
-#### 16. Redis Failure Behavior
+#### 17. Redis Failure Behavior
 
 The MVP uses Redis as the shared coordination layer, but it does not make every Redis failure fatal.
 
