@@ -126,6 +126,177 @@ Request Manager does not call public Kong `/agents/*` URLs. That avoids a proxy 
 9. Proxy to the internal agent target.
 10. Cache safe successful JSON responses and emit runtime metrics.
 
+### Proposed Solution Components
+
+#### Kong Gateway
+
+Kong remains the single public entry point. It still receives traffic from the Web UI, external clients, and direct `/agents/{agent}` callers. This keeps gateway responsibilities such as public routing and middleware separate from agent execution control.
+
+Why it matters: the solution does not replace Nasiko's gateway. It inserts protection behind the gateway, where the selected agent is known.
+
+#### Router Service
+
+The router continues to do what it already does well: understand the user request and choose the right agent. The router contract does not need to change. Once it has selected an agent, it still calls `/agents/{agent}`.
+
+Why it matters: we avoid changing the client and router flow during the MVP, which makes the solution safer to integrate.
+
+#### Service Registry
+
+The registry keeps discovering agent containers. The new responsibility is that it publishes two things:
+
+- Kong route target: dynamic `/agents/{agent}` routes point to Request Manager.
+- Internal agent target: the real container host and port are written into Redis for Request Manager to use.
+
+Why it matters: this avoids a proxy loop. Request Manager does not call Kong again; it calls the internal agent target directly.
+
+#### Request Manager
+
+Request Manager is the new traffic-control service. It sits after Kong and before the agent fleet. It owns cache checks, single-flight dedupe, per-agent limits, bounded queueing, circuit breaking, proxying, and runtime metrics.
+
+Why it matters: this is the main layer that turns unprotected agent execution into controlled agent execution.
+
+#### Response Cache
+
+The cache stores safe successful agent responses. It is checked before rate limiting and before the agent is called. A cache hit returns immediately.
+
+Why it matters: repeated requests become fast and do not consume agent capacity.
+
+#### Cache Policy And Cache Key
+
+The cache is conservative by design. It only caches text-only A2A `message/send` responses with a user/auth scope. The key includes agent identity, request method, normalized text payload, subject/auth scope, and target revision.
+
+Why it matters: the cache avoids incorrect reuse across users, agents, or agent versions.
+
+#### Single-Flight Dedupe
+
+Single-flight handles concurrent identical cache misses. If eight identical requests arrive at the same time and the cache is empty, only the first request calls the agent. The other seven wait for that result.
+
+Why it matters: this solves cache stampede, where a burst of identical misses would otherwise duplicate expensive work.
+
+#### Per-Agent Limiter
+
+Each agent gets independent traffic limits: concurrency cap, sustained RPS, burst capacity, queue depth, and max queue wait.
+
+Why it matters: one overloaded agent cannot consume unlimited platform capacity or affect unrelated agents.
+
+#### Bounded FIFO Queue
+
+When an agent is temporarily full, Request Manager waits briefly in a bounded FIFO queue instead of rejecting immediately. If the queue is full or the wait exceeds policy, the request receives controlled backpressure.
+
+Why it matters: short spikes are absorbed, but the system still has a hard safety boundary.
+
+#### Circuit Breaker
+
+If an agent repeatedly fails, Request Manager opens a per-agent circuit and fails fast for a short period.
+
+Why it matters: the platform stops sending more traffic to an agent that is already unhealthy.
+
+#### Redis
+
+Redis is used for shared target discovery, cache storage, runtime limit overrides, counters, and coordination state.
+
+Why it matters: the design is ready for more than one Request Manager replica because important state is outside a single process.
+
+#### Dashboard And Control APIs
+
+The dashboard and `/control/*` APIs expose cache stats, queue behavior, per-agent limits, cache clearing, and runtime configuration.
+
+Why it matters: operators can see what is happening and change policy without redeploying the stack.
+
+### How The Solution Handles Existing Problems
+
+#### Example 1: Repeated Translation Request
+
+Existing behavior:
+
+```text
+User asks: "Translate this sentence to Spanish"
+Kong -> Router -> Agent
+Agent performs LLM/tool work
+
+User asks the same request again
+Kong -> Router -> Agent
+Agent performs the same LLM/tool work again
+```
+
+Problem in existing design: repeated requests still consume agent compute and return with cold-call latency.
+
+New behavior:
+
+```text
+First request
+Kong -> Router -> Request Manager
+Request Manager cache miss -> agent call -> cache response
+
+Second identical request
+Kong -> Router -> Request Manager
+Request Manager cache hit -> return cached response in milliseconds
+```
+
+How this solves it: the repeated request never reaches the agent. In the demo, cold latency was about `1272.7ms`, while warm cache latency averaged about `4.9ms`.
+
+#### Example 2: Eight Users Ask The Same Question At The Same Time
+
+Existing behavior:
+
+```text
+8 concurrent identical requests -> 8 agent calls -> 8 duplicate computations
+```
+
+Problem in existing design: even if a cache is added, all eight requests can miss at the same time before the first result is stored. This creates a cache stampede.
+
+New behavior:
+
+```text
+8 concurrent identical requests -> Request Manager single-flight
+1 request calls the agent
+7 requests wait for the shared result
+All 8 receive the response
+```
+
+How this solves it: duplicate processing is avoided even during bursts. In the demo, eight concurrent requests produced one miss and seven cache hits.
+
+#### Example 3: One Agent Receives A Traffic Spike
+
+Existing behavior:
+
+```text
+Traffic spike -> Kong forwards many requests -> agent receives all pressure
+```
+
+Problem in existing design: a slow or overloaded agent can accumulate too much work, leading to unpredictable latency and failure.
+
+New behavior:
+
+```text
+Traffic spike -> Request Manager checks per-agent capacity
+Available capacity -> request goes to agent
+Temporary overflow -> request waits in bounded queue
+Queue full or wait too long -> controlled 429 backpressure
+```
+
+How this solves it: the agent only receives traffic within its configured limits. Short spikes are queued, but unbounded overload is prevented.
+
+#### Example 4: One Agent Becomes Unhealthy
+
+Existing behavior:
+
+```text
+Agent starts failing -> gateway/router can keep sending traffic -> failures continue
+```
+
+Problem in existing design: repeated failures waste capacity and make the platform look unstable.
+
+New behavior:
+
+```text
+Agent starts failing -> Request Manager records failures
+Failure threshold reached -> circuit opens
+New requests fail fast until cooldown completes
+```
+
+How this solves it: the platform protects itself and avoids repeatedly calling an unhealthy dependency.
+
 ## MVP: What Is Done
 
 ### Request Manager Service
