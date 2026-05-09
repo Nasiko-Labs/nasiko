@@ -6,6 +6,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y gcc g++ && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
+# Install CPU-only PyTorch first (saves ~2GB vs full CUDA build)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the embedding model so it's baked into the image
