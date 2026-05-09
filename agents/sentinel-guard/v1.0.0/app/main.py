@@ -259,6 +259,124 @@ async def sse_events():
     )
 
 
+@app.api_route("/agents/{agent_name:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def passthrough_agent_request(agent_name: str, request: Request):
+    """
+    Transparent passthrough route that mirrors Kong's /agents/{agent_name} path.
+    This intercepts direct UI → Kong → Agent requests, adding cache + rate limiting
+    without changing the request/response format the UI expects.
+    """
+    start = time.time()
+
+    # Normalize agent name (strip "agent-" prefix if present)
+    clean_name = agent_name.replace("agent-", "") if agent_name.startswith("agent-") else agent_name
+
+    # Read request body
+    body_bytes = await request.body()
+    body = {}
+    query = ""
+    try:
+        if body_bytes:
+            body = json.loads(body_bytes)
+            # Extract query — support multiple formats:
+            # 1. Simple: {"query": "..."} or {"message": "..."}
+            # 2. JSON-RPC (Nasiko a2a): {"params": {"message": {"parts": [{"text": "..."}]}}}
+            query = body.get("query", "") or body.get("message", "") or body.get("text", "") or body.get("input", "")
+
+            # JSON-RPC a2a format
+            if not query:
+                try:
+                    parts = body.get("params", {}).get("message", {}).get("parts", [])
+                    for part in parts:
+                        if isinstance(part, dict) and part.get("text"):
+                            query = part["text"]
+                            break
+                except (AttributeError, TypeError, IndexError):
+                    pass
+
+            if not query:
+                query = json.dumps(body)[:200]
+    except (json.JSONDecodeError, Exception):
+        query = body_bytes.decode("utf-8", errors="replace")[:200]
+
+    if query:
+        increment_counter(total_requests, clean_name)
+
+        # ── Cache check ─────────────────────────────────────
+        cached = cache_layer.lookup(query, clean_name)
+        if cached is not None:
+            latency = (time.time() - start) * 1000
+            increment_float(total_latency_ms, clean_name, latency)
+            cached.pop("_similarity", None)
+            cached.pop("_cache_source", None)
+            logger.info(f"[PASSTHROUGH HIT] agent={clean_name} latency={latency:.1f}ms")
+            return cached
+
+        # ── Rate limit check ────────────────────────────────
+        rate_result = rate_limiter.check(clean_name)
+        if not rate_result["allowed"]:
+            increment_counter(requests_rejected, clean_name)
+            record_decision(Decision(
+                timestamp=time.time(), agent=clean_name, query=query[:100],
+                outcome="rate_limited", estimated_wait_ms=rate_result.get("retry_after_ms"),
+            ))
+            raise HTTPException(status_code=429, detail="Rate limited")
+
+        rate_limiter.record_request(clean_name)
+
+    # ── Forward to actual agent ─────────────────────────────
+    increment_counter(requests_forwarded, clean_name)
+    # Forward directly to agent container (not back through Kong, which would loop)
+    # Agent containers are named like "agent-a2a-translator" and listen on port 5000
+    agent_url = f"http://{agent_name}:5000"
+
+    timeout = httpx.Timeout(120.0, connect=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # Forward with original headers (minus host)
+            fwd_headers = {
+                k: v for k, v in request.headers.items()
+                if k.lower() not in ("host", "content-length", "transfer-encoding")
+            }
+            resp = await client.request(
+                method=request.method,
+                url=agent_url,
+                content=body_bytes,
+                headers=fwd_headers,
+            )
+    except Exception as exc:
+        latency = (time.time() - start) * 1000
+        record_decision(Decision(
+            timestamp=time.time(), agent=clean_name, query=query[:100],
+            outcome="forward_error", latency_ms=latency,
+        ))
+        raise HTTPException(status_code=502, detail=f"Agent unreachable: {exc}")
+
+    latency = (time.time() - start) * 1000
+
+    # ── Cache the response ──────────────────────────────────
+    if query and resp.status_code == 200:
+        try:
+            resp_data = resp.json()
+            cache_layer.store(query, resp_data, clean_name)
+            record_decision(Decision(
+                timestamp=time.time(), agent=clean_name, query=query[:100],
+                outcome="forwarded", latency_ms=latency,
+            ))
+            increment_float(total_latency_ms, clean_name, latency)
+            return resp_data
+        except Exception:
+            pass
+
+    # Return raw response for non-JSON or error responses
+    from fastapi.responses import Response
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=dict(resp.headers),
+    )
+
+
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
 _start_time = time.time()
