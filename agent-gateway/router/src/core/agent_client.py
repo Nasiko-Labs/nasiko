@@ -9,6 +9,8 @@ import httpx
 from router.src.config import settings
 from router.src.entities import UserRequest
 
+from router.src.core.aarl import execute_request
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,13 +80,24 @@ class AgentClient:
                 headers["Authorization"] = f"Bearer {token}"
                 logger.debug("Added Authorization header for agent request")
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    translated_url, json=payload, headers=headers
-                )
-                response.raise_for_status()
+            wrapped_response = await execute_request(
+                agent_name=translated_url.split("/")[-2],
+                agent_url=translated_url,
+                payload=payload,
+                headers=headers,
+                timeout=self.timeout,
+            )
 
-            data = response.json()
+            if "error" in wrapped_response:
+                raise AgentClientError(
+                    wrapped_response["error"]
+                )
+
+            data = wrapped_response["data"]
+
+            logger.info(
+                f"AARL source={wrapped_response['aarl_source']}"
+            )
 
             if "error" in data:
                 raise AgentClientError(f"Agent error: {data['error']}")
