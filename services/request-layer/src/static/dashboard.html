@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Nasiko Request Layer — Fleet Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #21262d;
+    --text: #e6edf3;
+    --muted: #7d8590;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --grey: #484f58;
+    --blue: #58a6ff;
+    --accent: #1f6feb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .badge { background: var(--accent); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; gap: 16px; padding: 16px 24px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .panel h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 14px; }
+  .fleet-map { position: relative; }
+  #fleet-svg { width: 100%; height: 280px; }
+  .recommendation-banner { margin-top: 12px; background: #1c2128; border: 1px solid var(--yellow); border-radius: 6px; padding: 12px; display: none; }
+  .recommendation-banner p { color: var(--yellow); font-size: 13px; margin-bottom: 10px; }
+  .rec-actions { display: flex; gap: 8px; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 500; transition: opacity .15s; }
+  button:hover { opacity: .8; }
+  .btn-confirm { background: var(--green); color: #000; }
+  .btn-reject  { background: var(--grey);  color: var(--text); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td .bar-wrap { background: var(--bg); border-radius: 4px; height: 6px; width: 120px; overflow: hidden; }
+  td .bar { background: var(--blue); height: 100%; border-radius: 4px; transition: width .4s; }
+  .stat-row { display: flex; gap: 16px; margin-bottom: 14px; }
+  .stat { flex: 1; background: var(--bg); border-radius: 6px; padding: 12px; }
+  .stat .val { font-size: 24px; font-weight: 700; color: var(--blue); }
+  .stat .lbl { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .top-queries li { padding: 5px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+  .top-queries li span { color: var(--text); }
+  .history-list { max-height: 200px; overflow-y: auto; }
+  .history-list li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .history-list li strong { color: var(--text); }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .tag-hibernate { background: #30363d; color: var(--grey); }
+  .tag-spawn     { background: #1c3a5e; color: var(--blue); }
+  .tag-restore   { background: #1a3326; color: var(--green); }
+  .purge-btn { float: right; background: #21262d; color: var(--muted); padding: 4px 10px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#58a6ff" stroke-width="2"/><path d="M8 12h8M12 8v8" stroke="#58a6ff" stroke-width="2" stroke-linecap="round"/></svg>
+  <h1>Nasiko Request Layer</h1>
+  <span class="badge">LIVE</span>
+</header>
+
+<div class="grid">
+  <!-- Panel 1: Fleet Map -->
+  <div class="panel fleet-map">
+    <h2>Fleet Map</h2>
+    <svg id="fleet-svg"></svg>
+    <div class="recommendation-banner" id="rec-banner">
+      <p id="rec-text"></p>
+      <div class="rec-actions">
+        <button class="btn-confirm" id="rec-confirm">Confirm Reallocation</button>
+        <button class="btn-reject"  id="rec-reject">Reject</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 2: Live Metrics -->
+  <div class="panel">
+    <h2>Live Metrics</h2>
+    <table id="metrics-table">
+      <thead><tr><th>Agent</th><th>Slots</th><th>Queue</th><th>Req/min</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- Panel 3: Cache Performance -->
+  <div class="panel">
+    <h2>Cache Performance <button class="purge-btn" id="purge-all-btn">Purge All</button></h2>
+    <div class="stat-row">
+      <div class="stat"><div class="val" id="stat-hit-rate">—</div><div class="lbl">Hit Rate</div></div>
+      <div class="stat"><div class="val" id="stat-entries">—</div><div class="lbl">Cached Entries</div></div>
+      <div class="stat"><div class="val" id="stat-hits">—</div><div class="lbl">Calls Saved</div></div>
+    </div>
+    <ul class="top-queries" id="top-queries"></ul>
+  </div>
+
+  <!-- Panel 4: Reallocation History -->
+  <div class="panel">
+    <h2>Reallocation History</h2>
+    <ul class="history-list" id="history-list"></ul>
+  </div>
+</div>
+
+<script>
+const BASE = '';
+let _prevRates = {};
+let _lastRecommendation = null;
+
+async function fetchJSON(path) {
+  try {
+    const r = await fetch(BASE + path);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+// ─── Fleet Map ───────────────────────────────────────────────────────────────
+function statusColor(status) {
+  return { healthy: '#3fb950', overloaded: '#f85149', idle: '#d29922', hibernated: '#484f58' }[status] || '#484f58';
+}
+
+function renderFleetMap(fleet, recommendation) {
+  const svg = document.getElementById('fleet-svg');
+  const W = svg.clientWidth || 500, H = 280;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  if (!fleet || fleet.length === 0) {
+    svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#484f58" font-size="13">No agents registered</text>`;
+    return;
+  }
+
+  const n = fleet.length;
+  const cx = W / 2, cy = H / 2, rx = Math.min(cx - 60, 120), ry = Math.min(cy - 50, 90);
+  const positions = fleet.map((_, i) => ({
+    x: cx + rx * Math.cos((2 * Math.PI * i / n) - Math.PI / 2),
+    y: cy + ry * Math.sin((2 * Math.PI * i / n) - Math.PI / 2),
+  }));
+
+  let html = '';
+
+  if (recommendation) {
+    const srcIdx = fleet.findIndex(a => a.agent === recommendation.hibernate);
+    const dstIdx = fleet.findIndex(a => a.agent === recommendation.spawn_replica_for);
+    if (srcIdx >= 0 && dstIdx >= 0) {
+      const s = positions[srcIdx], d = positions[dstIdx];
+      html += `<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d29922"/></marker></defs>`;
+      html += `<line x1="${s.x}" y1="${s.y}" x2="${d.x}" y2="${d.y}" stroke="#d29922" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrow)" opacity=".8"/>`;
+    }
+  }
+
+  fleet.forEach((agent, i) => {
+    const { x, y } = positions[i];
+    const r = 22 + Math.min(agent.queue_depth * 3, 18);
+    const color = statusColor(agent.status);
+    const label = agent.agent.replace(/^agent-/, '').replace(/-/g, '\u2011');
+    html += `<circle cx="${x}" cy="${y}" r="${r}" fill="${color}22" stroke="${color}" stroke-width="2"/>`;
+    html += `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle" fill="${color}" font-size="11" font-weight="600">${label}</text>`;
+    html += `<text x="${x}" y="${y + r + 12}" text-anchor="middle" fill="#7d8590" font-size="10">Q:${agent.queue_depth}</text>`;
+  });
+
+  svg.innerHTML = html;
+}
+
+// ─── Metrics Table ────────────────────────────────────────────────────────────
+function renderMetrics(fleet) {
+  const tbody = document.querySelector('#metrics-table tbody');
+  if (!fleet || fleet.length === 0) { tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">No agents</td></tr>'; return; }
+
+  tbody.innerHTML = fleet.map(a => {
+    const pct = a.slots_max > 0 ? Math.round((a.slots_used / a.slots_max) * 100) : 0;
+    const key = a.agent;
+    const now = Date.now();
+    if (!_prevRates[key]) _prevRates[key] = { hits: 0, ts: now };
+    const rpm = '—';
+    const statusDot = { healthy: '🟢', overloaded: '🔴', idle: '🟡', hibernated: '⚫' }[a.status] || '⚫';
+    return `<tr>
+      <td>${a.agent}</td>
+      <td>
+        <div style="font-size:11px;margin-bottom:3px">${a.slots_used}/${a.slots_max}</div>
+        <div class="bar-wrap"><div class="bar" style="width:${pct}%"></div></div>
+      </td>
+      <td>${a.queue_depth}</td>
+      <td>${rpm}</td>
+      <td>${statusDot} ${a.status}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Cache Panel ─────────────────────────────────────────────────────────────
+function renderCache(stats) {
+  if (!stats) return;
+  const total = stats.total_entries || 0;
+  const hits  = stats.total_hits   || 0;
+  const rate  = total > 0 ? Math.round((hits / (hits + total)) * 100) : 0;
+
+  document.getElementById('stat-hit-rate').textContent = rate + '%';
+  document.getElementById('stat-entries').textContent = total;
+  document.getElementById('stat-hits').textContent = hits;
+
+  const ul = document.getElementById('top-queries');
+  ul.innerHTML = (stats.top_queries || []).map(q =>
+    `<li><span>${q.query.length > 60 ? q.query.slice(0, 60) + '…' : q.query}</span>${q.hits} hits</li>`
+  ).join('') || '<li style="color:var(--muted)">No cached queries yet</li>';
+}
+
+// ─── History Panel ────────────────────────────────────────────────────────────
+function renderHistory(history) {
+  const ul = document.getElementById('history-list');
+  if (!history || history.length === 0) {
+    ul.innerHTML = '<li style="color:var(--muted)">No reallocation events yet</li>';
+    return;
+  }
+  ul.innerHTML = history.map(e => {
+    const ts = new Date(e.timestamp * 1000).toLocaleTimeString();
+    const tagClass = { hibernate: 'tag-hibernate', spawn_replica: 'tag-spawn', restore: 'tag-restore' }[e.action] || '';
+    return `<li>
+      <span class="tag ${tagClass}">${e.action}</span>
+      <strong> ${e.agent}</strong>
+      &nbsp;Q: ${e.before_queue_depth}→${e.after_queue_depth}
+      <span style="float:right">${ts}</span>
+    </li>`;
+  }).join('');
+}
+
+// ─── Recommendation Banner ────────────────────────────────────────────────────
+function renderRecommendation(rec) {
+  const banner = document.getElementById('rec-banner');
+  if (!rec) { banner.style.display = 'none'; _lastRecommendation = null; return; }
+  _lastRecommendation = rec;
+  banner.style.display = 'block';
+  document.getElementById('rec-text').textContent =
+    `⚡ ${rec.reason} — Hibernate ${rec.hibernate}, spawn replica for ${rec.spawn_replica_for}`;
+}
+
+document.getElementById('rec-confirm').addEventListener('click', async () => {
+  if (!_lastRecommendation) return;
+  const { hibernate, spawn_replica_for } = _lastRecommendation;
+  await fetch(`${BASE}/monitor/fleet/hibernate/${hibernate}`, { method: 'POST' });
+  await fetch(`${BASE}/monitor/fleet/spawn/${spawn_replica_for}`, { method: 'POST' });
+  document.getElementById('rec-banner').style.display = 'none';
+});
+
+document.getElementById('rec-reject').addEventListener('click', async () => {
+  await fetch(`${BASE}/monitor/fleet/recommendation`, { method: 'DELETE' });
+  document.getElementById('rec-banner').style.display = 'none';
+});
+
+document.getElementById('purge-all-btn').addEventListener('click', async () => {
+  if (confirm('Purge all cached responses?')) {
+    await fetch(`${BASE}/monitor/cache`, { method: 'DELETE' });
+  }
+});
+
+// ─── Poll Loop ────────────────────────────────────────────────────────────────
+async function pollFleet() {
+  const [fleet, rec] = await Promise.all([
+    fetchJSON('/monitor/fleet/state'),
+    fetchJSON('/monitor/fleet/recommendation'),
+  ]);
+  renderFleetMap(fleet, rec);
+  renderMetrics(fleet);
+  renderRecommendation(rec);
+}
+
+async function pollCache() {
+  const stats = await fetchJSON('/monitor/cache/stats');
+  renderCache(stats);
+}
+
+async function pollHistory() {
+  const history = await fetchJSON('/monitor/fleet/history');
+  renderHistory(history);
+}
+
+async function tick() {
+  await pollFleet();
+}
+
+async function tickSlow() {
+  await Promise.all([pollCache(), pollHistory()]);
+}
+
+tick();
+tickSlow();
+setInterval(tick, 2000);
+setInterval(tickSlow, 5000);
+</script>
+</body>
+</html>

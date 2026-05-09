@@ -1,0 +1,11 @@
+fastapi>=0.116.1
+uvicorn>=0.35.0
+httpx>=0.25.0
+redis>=5.0.0
+numpy>=1.26.0,<2.0
+pydantic>=2.11.0
+pydantic-settings>=2.0.0
+requests>=2.31.0
+docker>=7.0.0
+transformers>=4.41.0,<5.0.0
+sentence-transformers>=2.7.0,<3.0.0

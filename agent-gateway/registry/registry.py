@@ -280,6 +280,7 @@ def get_docker_services() -> List[ServiceInfo]:
                     "nasiko-router",
                     "nasiko-auth-service",
                     "nasiko-chat-history",
+                    "nasiko-request-layer",
                     "redis",
                     "mongodb",
                     "phoenix-observability",

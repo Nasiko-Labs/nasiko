@@ -251,6 +251,38 @@ services:
       retries: 3
 
   # ============================================================================
+  # REQUEST LAYER (Semantic Cache, Slot Queue, Demand Detector, Reallocation)
+  # ============================================================================
+  nasiko-request-layer:
+    build:
+      context: ./services/request-layer
+      dockerfile: Dockerfile
+    container_name: nasiko-request-layer
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      kong-gateway:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      KONG_ADMIN_URL: http://kong-gateway:8001
+      AGENTS_NETWORK: agents-net
+      LOG_LEVEL: INFO
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8090:8090"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
   # ROUTER SERVICE LAYER
   # ============================================================================
   nasiko-router:
