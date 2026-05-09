@@ -1,0 +1,176 @@
+{
+  "timestamp": "2026-05-09T09:40:32Z",
+  "python_version": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+  "scenarios": [
+    {
+      "scenario": "exact_cache",
+      "unique_entries": 30,
+      "repeat_reads": 10,
+      "total_reads": 300,
+      "hits": 300,
+      "misses": 0,
+      "hit_ratio": 1.0,
+      "store_batch_ms": 0.2,
+      "read_batch_ms": 1.03,
+      "avg_read_us": 3.45,
+      "cache_stats": {
+        "total_keys": 30,
+        "active_keys": 30,
+        "hits": 300,
+        "misses": 0,
+        "stores": 30,
+        "hit_ratio": 1.0,
+        "ttl_seconds": 60,
+        "max_size": 500,
+        "semantic_enabled": false
+      }
+    },
+    {
+      "scenario": "no_cache_header",
+      "requests": 100,
+      "bypassed": 100,
+      "bypass_ratio": 1.0,
+      "total_ms": 0.03,
+      "avg_us": 0.28
+    },
+    {
+      "scenario": "file_not_cached",
+      "requests": 50,
+      "correctly_missed": 50,
+      "stores": 0
+    },
+    {
+      "scenario": "rate_limiter",
+      "configured_rpm": 10,
+      "burst_requests": 15,
+      "allowed": 14,
+      "rejected": 1,
+      "queue_waits": 1,
+      "latencies_ms": [
+        0.01,
+        0.01,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        30048.65,
+        30059.21,
+        0.01,
+        0.0,
+        0.0
+      ],
+      "avg_latency_ms": 4007.19,
+      "limiter_stats": {
+        "allowed": 13,
+        "queued": 2,
+        "rejected": 1,
+        "total": 15,
+        "current_rpm": 4,
+        "limit_rpm": 10,
+        "queue_depth": 0
+      }
+    },
+    {
+      "scenario": "adaptive_limits",
+      "slow_agent": {
+        "before_rpm": 20,
+        "after_rpm": 16,
+        "direction": "reduced"
+      },
+      "fast_agent": {
+        "before_rpm": 10,
+        "after_rpm": 12,
+        "direction": "increased"
+      }
+    },
+    {
+      "scenario": "stats_and_prometheus",
+      "snapshot": {
+        "uptime_seconds": 0.0,
+        "total_requests": 6,
+        "forwarded": 3,
+        "cache_hits_total": 3,
+        "semantic_hits_total": 0,
+        "cache_misses_total": 3,
+        "cache_stores_total": 3,
+        "errors_total": 0,
+        "cache_hit_ratio": 0.5,
+        "cache": {
+          "total_keys": 3,
+          "active_keys": 3,
+          "hits": 3,
+          "misses": 3,
+          "stores": 3,
+          "hit_ratio": 0.5,
+          "ttl_seconds": 300,
+          "max_size": 1000,
+          "semantic_enabled": false
+        },
+        "rate_limits": {
+          "summarizer-agent": {
+            "allowed": 1,
+            "queued": 0,
+            "rejected": 0,
+            "total": 1,
+            "current_rpm": 1,
+            "limit_rpm": 8,
+            "queue_depth": 0
+          },
+          "qa-agent": {
+            "allowed": 1,
+            "queued": 0,
+            "rejected": 0,
+            "total": 1,
+            "current_rpm": 1,
+            "limit_rpm": 9,
+            "queue_depth": 0
+          },
+          "sentiment-agent": {
+            "allowed": 1,
+            "queued": 0,
+            "rejected": 0,
+            "total": 1,
+            "current_rpm": 1,
+            "limit_rpm": 10,
+            "queue_depth": 0
+          }
+        },
+        "agent_latency": {
+          "summarizer-agent": {
+            "avg_s": 0.05,
+            "p50_s": 0.05,
+            "p95_s": 0.05,
+            "samples": 1
+          },
+          "qa-agent": {
+            "avg_s": 0.1,
+            "p50_s": 0.1,
+            "p95_s": 0.1,
+            "samples": 1
+          },
+          "sentiment-agent": {
+            "avg_s": 0.15,
+            "p50_s": 0.15,
+            "p95_s": 0.15,
+            "samples": 1
+          }
+        },
+        "agent_queue_wait": {}
+      },
+      "prometheus_lines": 45,
+      "metrics_present": {
+        "gateway_cache_hits_total": true,
+        "gateway_cache_misses_total": true,
+        "gateway_cache_hit_ratio": true,
+        "gateway_queue_depth": true,
+        "gateway_adaptive_limit_current": true,
+        "gateway_agent_latency_seconds": true
+      },
+      "all_metrics_ok": true
+    }
+  ]
+}

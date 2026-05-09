@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nasiko — Resilient Request Layer Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo-mark">N</div>
+      <h1 class="logo-text">Nasiko <span class="logo-sub">Request Layer</span></h1>
+    </div>
+    <div class="topbar-right">
+      <span class="uptime-badge" id="uptime">--</span>
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-text" id="statusText">Connecting…</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- Row 1: KPI Cards -->
+    <section class="kpi-row">
+      <div class="kpi-card accent-blue">
+        <div class="kpi-icon">⚡</div>
+        <div class="kpi-body">
+          <span class="kpi-value" id="totalReqs">0</span>
+          <span class="kpi-label">Total Requests</span>
+        </div>
+      </div>
+      <div class="kpi-card accent-green">
+        <div class="kpi-icon">🎯</div>
+        <div class="kpi-body">
+          <span class="kpi-value" id="hitRatio">0%</span>
+          <span class="kpi-label">Cache Hit Ratio</span>
+        </div>
+      </div>
+      <div class="kpi-card accent-purple">
+        <div class="kpi-icon">💾</div>
+        <div class="kpi-body">
+          <span class="kpi-value" id="cacheHits">0</span>
+          <span class="kpi-label">Cache Hits</span>
+        </div>
+      </div>
+      <div class="kpi-card accent-amber">
+        <div class="kpi-icon">🔄</div>
+        <div class="kpi-body">
+          <span class="kpi-value" id="cacheMisses">0</span>
+          <span class="kpi-label">Cache Misses</span>
+        </div>
+      </div>
+      <div class="kpi-card accent-cyan">
+        <div class="kpi-icon">🧠</div>
+        <div class="kpi-body">
+          <span class="kpi-value" id="semanticHits">0</span>
+          <span class="kpi-label">Semantic Hits</span>
+        </div>
+      </div>
+      <div class="kpi-card accent-red">
+        <div class="kpi-icon">❌</div>
+        <div class="kpi-body">
+          <span class="kpi-value" id="errors">0</span>
+          <span class="kpi-label">Errors</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 2: Benchmark + Cache Config -->
+    <section class="panel-row">
+      <div class="panel benchmark-panel">
+        <div class="panel-header">
+          <h2>🏎️ Cache Benchmark</h2>
+          <button class="btn btn-primary" id="runBenchmark">Run Benchmark</button>
+        </div>
+        <div class="benchmark-body" id="benchmarkBody">
+          <div class="bench-placeholder">Click <strong>Run Benchmark</strong> to measure cache speedup</div>
+        </div>
+      </div>
+      <div class="panel cache-panel">
+        <div class="panel-header"><h2>💾 Cache Status</h2></div>
+        <div class="stat-grid" id="cacheStats">
+          <div class="stat-item"><span class="stat-val" id="cTotalKeys">0</span><span class="stat-lbl">Total Keys</span></div>
+          <div class="stat-item"><span class="stat-val" id="cActiveKeys">0</span><span class="stat-lbl">Active Keys</span></div>
+          <div class="stat-item"><span class="stat-val" id="cStores">0</span><span class="stat-lbl">Stores</span></div>
+          <div class="stat-item"><span class="stat-val" id="cTTL">0s</span><span class="stat-lbl">TTL</span></div>
+          <div class="stat-item"><span class="stat-val" id="cMaxSize">0</span><span class="stat-lbl">Max Size</span></div>
+          <div class="stat-item"><span class="stat-val" id="cSemantic">—</span><span class="stat-lbl">Semantic</span></div>
+        </div>
+        <div class="cache-actions">
+          <button class="btn btn-danger btn-sm" id="flushCache">Flush Cache</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 2.5: Interactive Traffic Generator -->
+    <section class="panel-row">
+      <div class="panel traffic-panel" style="flex: 2;">
+        <div class="panel-header">
+          <h2>🚀 Live Traffic Generator</h2>
+        </div>
+        <div class="traffic-controls">
+          <div class="input-group">
+            <label>Query (e.g., translate hi world to French)</label>
+            <input type="text" id="customQuery" class="text-input" value="translate hello world to French" placeholder="Enter custom prompt...">
+          </div>
+          <div class="input-group">
+            <label>Agent Route (optional)</label>
+            <input type="text" id="customRoute" class="text-input" value="a2a-translator" placeholder="a2a-translator">
+          </div>
+          <div class="input-group">
+            <label>Auth Token (JWT)</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="password" id="authToken" class="text-input" placeholder="Paste your Bearer token here (eyJ...)" style="flex: 1;">
+              <button class="btn btn-outline" id="autoLoginBtn">Auto-Login (Admin)</button>
+            </div>
+            <span style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">* Required to authorize upstream agent registry calls. Get it from your web app's local storage.</span>
+          </div>
+          <div class="traffic-actions">
+            <button class="btn btn-primary" id="sendSingle">Send 1x Request</button>
+            <button class="btn btn-amber" id="sendSpam">Spam 5x (Trigger Rate Limit)</button>
+          </div>
+        </div>
+      </div>
+      
+      <div class="panel log-panel" style="flex: 3;">
+        <div class="panel-header">
+          <h2>📡 Request / Response Log</h2>
+          <button class="btn btn-sm btn-outline" id="clearLogs">Clear</button>
+        </div>
+        <div class="api-logs" id="apiLogs">
+          <div class="bench-placeholder">Send a request to see the exact payload, cache status, and rate limit info here.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 3: Per-Agent Table -->
+    <section class="panel full-width">
+      <div class="panel-header"><h2>🤖 Per-Agent Rate Limits & Latency</h2></div>
+      <div class="table-wrap">
+        <table class="data-table" id="agentTable">
+          <thead>
+            <tr>
+              <th>Agent</th><th>RPM Limit</th><th>Current RPM</th><th>Queue</th>
+              <th>Allowed</th><th>Queued</th><th>Rejected</th>
+              <th>Avg Latency</th><th>P50</th><th>P95</th>
+            </tr>
+          </thead>
+          <tbody id="agentTableBody"><tr><td colspan="10" class="empty-row">Waiting for data…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Row 4: Checks -->
+    <section class="panel full-width">
+      <div class="panel-header">
+        <h2>✅ Verification Checks</h2>
+        <button class="btn btn-primary" id="runChecks">Run All Checks</button>
+      </div>
+      <div class="checks-grid" id="checksGrid"></div>
+    </section>
+
+    <!-- Row 5: Prometheus Raw -->
+    <section class="panel full-width collapsible">
+      <div class="panel-header clickable" id="toggleMetrics">
+        <h2>📊 Prometheus Metrics</h2>
+        <span class="chevron">▼</span>
+      </div>
+      <pre class="metrics-pre collapsed" id="metricsRaw">Loading…</pre>
+    </section>
+  </main>
+</div>
+<script src="dashboard.js"></script>
+</body>
+</html>
