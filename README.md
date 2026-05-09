@@ -468,6 +468,21 @@ All agents automatically receive:
 - **Kong Manager**: http://localhost:9102 - API gateway analytics and configuration
 - **Agent Registry**: http://localhost:8000/docs - REST API documentation and testing
 
+### Buildathon Spotlight
+
+Nasiko now includes a resilient request layer in the router for buildathon demos and experimentation. It adds:
+
+- **Request caching** for repeated router queries before they hit agents
+- **Per-agent concurrency limiting and queueing** backed by Redis
+- **Live router stats** at `http://localhost:9100/router/stats`
+- **Interactive dashboard** at `http://localhost:9100/router/dashboard`
+
+Helpful entry points:
+
+- [Buildathon Submission](BUILDATHON_SUBMISSION.md)
+- [Resilient Request Layer Notes](docs/buildathon-resilient-request-layer.md)
+- Demo script: `python scripts/demo_resilient_request_layer.py`
+
 ### Health Checks
 
 ```bash

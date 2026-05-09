@@ -1,3 +1,8 @@
-from .router_entities import RouterOutput, UserRequest, RouterResponse
+from .router_entities import (
+    RouterOutput,
+    UserRequest,
+    RouterResponse,
+    AgentControlUpdate,
+)
 
-__all__ = ["RouterOutput", "UserRequest", "RouterResponse"]
+__all__ = ["RouterOutput", "UserRequest", "RouterResponse", "AgentControlUpdate"]

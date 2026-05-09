@@ -4,7 +4,7 @@ Routing engine service for AI-powered agent selection.
 
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import numpy as np
 
@@ -29,7 +29,7 @@ class RoutingEngine:
 
     def __init__(self):
         self.llm = self._create_llm()
-        self.embedding_model = self._create_embedding_model()
+        self.embedding_model = None
 
     def _create_llm(self) -> ChatOpenAI:
         """Create LLM instance for routing decisions.
@@ -87,7 +87,7 @@ class RoutingEngine:
         message: str,
         conversation_history: List[Dict[str, str]],
         agent_cards: List[Dict[str, Any]],
-        vectorstore: FAISS,
+        vectorstore: Optional[FAISS],
     ) -> Tuple[List[str], List[float], List[str], RouterOutput]:
         """
         Route a user query to the most appropriate agent.
@@ -201,6 +201,8 @@ class RoutingEngine:
         """
         try:
             k = 15
+            if self.embedding_model is None:
+                self.embedding_model = self._create_embedding_model()
 
             # Embed the query
             query_embedding = np.array(
@@ -334,7 +336,7 @@ def router(
     message: str,
     conversation_history: List[Dict[str, str]],
     agent_cards: List[Dict[str, Any]],
-    vectorstore: FAISS,
+    vectorstore: Optional[FAISS],
 ) -> Tuple[List[str], List[float], List[str], RouterOutput]:
     """
     Route a user query to the most appropriate agent.

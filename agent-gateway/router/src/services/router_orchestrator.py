@@ -3,6 +3,7 @@ Router orchestrator service that coordinates all router operations.
 """
 
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -14,6 +15,8 @@ from router.src.core import (
     AgentClient,
     AgentClientError,
     SessionHistoryService,
+    RequestControlService,
+    AgentQueueTimeoutError,
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
@@ -30,6 +33,7 @@ class RouterOrchestrator:
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.request_control = RequestControlService()
 
     async def process_request(
         self,
@@ -49,6 +53,31 @@ class RouterOrchestrator:
             Router response messages as JSON strings
         """
         try:
+            await self.request_control.record_request_received()
+            cached_response = await self.request_control.get_cached_response(
+                request, files
+            )
+            if cached_response:
+                logger.info("Serving repeated request from cache")
+                yield self._router_response(
+                    "Cache hit: serving a repeated request without recomputing.",
+                    cached_response.get("agent_id", ""),
+                    True,
+                    cached_response.get("url", ""),
+                    {
+                        "cache_hit": True,
+                        "cached_at": cached_response.get("cached_at"),
+                    },
+                )
+                yield self._router_response(
+                    cached_response["message"],
+                    cached_response.get("agent_id", ""),
+                    False,
+                    cached_response.get("url", ""),
+                    {"cache_hit": True},
+                )
+                return
+
             # Route selection needed
             async for response in self._handle_route_selection(request, files, token):
                 yield response
@@ -108,7 +137,14 @@ class RouterOrchestrator:
                 "Determining the best agent to serve the user's query..."
             )
 
-            vectorstore = self.vector_store.create_vector_store(agent_cards)
+            if len(agent_cards) < 15:
+                logger.info(
+                    "Skipping vector store creation because only %s agents are registered",
+                    len(agent_cards),
+                )
+                vectorstore = None
+            else:
+                vectorstore = self.vector_store.create_vector_store(agent_cards)
 
         except VectorStoreError as e:
             yield self._router_response(str(e), "", False, "")
@@ -170,7 +206,7 @@ class RouterOrchestrator:
 
             # Send request to selected agent
             async for response in self._send_agent_request(
-                request, files, agent_url, token
+                request, files, agent_name, agent_url, token
             ):
                 yield response
 
@@ -183,30 +219,90 @@ class RouterOrchestrator:
         self,
         request: UserRequest,
         files: List[Tuple[str, Tuple[str, bytes, str]]],
+        agent_name: str,
         agent_url: str,
         token: str,
     ) -> AsyncGenerator[str, None]:
         """Send request to agent and yield response."""
 
         try:
-            logger.info(f"Sending request to agent: {agent_url}")
+            async with self.request_control.acquire_agent_slot(agent_name) as slot:
+                logger.info("Sending request to agent: %s", agent_url)
+                if slot["queued"]:
+                    yield self._router_response(
+                        f"Agent is busy, request queued for {slot['wait_time_ms']} ms.",
+                        agent_name,
+                        True,
+                        agent_url,
+                        {
+                            "queued": True,
+                            "wait_time_ms": slot["wait_time_ms"],
+                            "max_concurrent": slot["max_concurrent"],
+                        },
+                    )
+
+                yield self._router_response(
+                    "Sending user's query to agent...",
+                    agent_name,
+                    True,
+                    agent_url,
+                    {
+                        "queued": slot["queued"],
+                        "wait_time_ms": slot["wait_time_ms"],
+                        "max_concurrent": slot["max_concurrent"],
+                    },
+                )
+
+                started_at = time.monotonic()
+
+                # Send request to agent
+                agent_data = await self.agent_client.send_request(
+                    agent_url, request, files, token
+                )
+
+                # Extract response content
+                agent_response = self.agent_client.extract_response_content(agent_data)
+                response_latency_ms = int((time.monotonic() - started_at) * 1000)
+
+                await self.request_control.store_cached_response(
+                    request,
+                    files,
+                    {
+                        "message": agent_response,
+                        "agent_id": agent_name,
+                        "url": agent_url,
+                    },
+                )
+                await self.request_control.record_agent_success(
+                    agent_name, response_latency_ms, cache_stored=True
+                )
+
+                logger.info("Successfully received response from agent")
+                yield self._router_response(
+                    agent_response,
+                    agent_name,
+                    False,
+                    agent_url,
+                    {
+                        "cache_hit": False,
+                        "queued": slot["queued"],
+                        "wait_time_ms": slot["wait_time_ms"],
+                        "response_latency_ms": response_latency_ms,
+                    },
+                )
+
+        except AgentQueueTimeoutError as e:
+            await self.request_control.record_agent_failure(agent_name)
             yield self._router_response(
-                "Sending user's query to agent...", "", False, agent_url
+                str(e),
+                agent_name,
+                False,
+                agent_url,
+                {"queue_timeout": True},
             )
-
-            # Send request to agent
-            agent_data = await self.agent_client.send_request(
-                agent_url, request, files, token
-            )
-
-            # Extract response content
-            agent_response = self.agent_client.extract_response_content(agent_data)
-
-            logger.info("Successfully received response from agent")
-            yield self._router_response(agent_response, "", False, agent_url)
-
         except AgentClientError as e:
-            yield self._router_response(str(e), "", False, agent_url)
+            await self.request_control.record_agent_failure(agent_name)
+            yield self._router_response(str(e), agent_name, False, agent_url)
 
     async def _get_agent_url(
         self, agent_cards: List[Dict[str, str]], agent_name: str
@@ -236,6 +332,7 @@ class RouterOrchestrator:
         agent_id: str = "",
         is_int_response: bool = True,
         url: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Create a router response message."""
         return (
@@ -244,6 +341,7 @@ class RouterOrchestrator:
                 is_int_response=is_int_response,
                 agent_id=agent_id,
                 url=url,
+                metadata=metadata,
             ).model_dump_json()
             + "\n"
         )
@@ -266,6 +364,9 @@ class RouterOrchestrator:
 
             # Check agent client
             health_status["components"]["agent_client"] = "healthy"
+
+            request_control_health = await self.request_control.health_check()
+            health_status["components"]["request_control"] = request_control_health
 
         except Exception as e:
             health_status["router"] = "unhealthy"

@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Any
 
 
 class RouterOutput(BaseModel):
@@ -24,3 +25,10 @@ class RouterResponse(BaseModel):
     is_int_response: bool
     agent_id: str | None
     url: str
+    metadata: dict[str, Any] | None = None
+
+
+class AgentControlUpdate(BaseModel):
+    """Request body for updating per-agent concurrency limits."""
+
+    max_concurrent: int = Field(ge=1, description="Maximum concurrent requests")

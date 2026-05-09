@@ -4,16 +4,17 @@ Refactored main router application with modular architecture.
 
 import logging
 from io import BytesIO
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from router.src.config import settings
-from router.src.entities import UserRequest
+from router.src.entities import UserRequest, AgentControlUpdate
 from router.src.services import RouterOrchestrator
 
 # Configure logging
@@ -122,15 +123,64 @@ async def process_request(
 
 
 @app.get("/metrics")
-async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
-    return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
-    }
+async def get_metrics(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Get router service metrics (alias for /router/stats)."""
+    return await orchestrator.request_control.get_runtime_stats()
+
+
+@app.get("/router/stats")
+async def get_router_stats(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Get runtime stats for cache, queues, and per-agent traffic."""
+    return await orchestrator.request_control.get_runtime_stats()
+
+
+@app.post("/router/cache/clear")
+async def clear_router_cache(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Clear cached router responses."""
+    deleted = await orchestrator.request_control.clear_cache()
+    return {"status": "ok", "deleted_keys": deleted}
+
+
+@app.get("/router/controls/{agent_name}")
+async def get_agent_controls(
+    agent_name: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Get the live queue and concurrency controls for one agent."""
+    return await orchestrator.request_control.get_agent_controls(agent_name)
+
+
+@app.put("/router/controls/{agent_name}")
+async def update_agent_controls(
+    agent_name: str,
+    payload: AgentControlUpdate,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Update the per-agent concurrency limit used by the request layer."""
+    return await orchestrator.request_control.set_agent_limit(
+        agent_name, payload.max_concurrent
+    )
+
+
+@app.get("/router/dashboard", response_class=HTMLResponse)
+async def router_dashboard():
+    """Serve the live operational dashboard (no auth required for demo)."""
+    html_path = Path(__file__).with_name("dashboard.html")
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+# ---- Dashboard API (unauthenticated, for live polling) ----
+
+@app.get("/router/dashboard/api/stats")
+async def dashboard_stats():
+    """Unauthenticated stats endpoint for the live dashboard."""
+    return await orchestrator.request_control.get_runtime_stats()
 
 
 def _validate_inputs(session_id: str, query: str) -> Optional[str]:

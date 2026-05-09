@@ -23,7 +23,7 @@ class VectorStoreService:
     """Service for managing vector stores and similarity search."""
 
     def __init__(self):
-        self.embeddings = self._create_embeddings()
+        self.embeddings = None
         self._store_cache: Optional[FAISS] = None
         self._cache_hash: Optional[str] = None
 
@@ -80,6 +80,8 @@ class VectorStoreService:
 
         try:
             logger.info(f"Creating vector store with {len(texts)} agent descriptions")
+            if self.embeddings is None:
+                self.embeddings = self._create_embeddings()
             vectorstore = FAISS.from_texts(
                 texts, embedding=self.embeddings, metadatas=metadatas
             )

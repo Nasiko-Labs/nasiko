@@ -39,6 +39,13 @@ class RouterConfig(BaseSettings):
     MAX_FILE_SIZE: int = 1073741824  # 1GB
     REQUEST_TIMEOUT: float = 60.0
     MAX_CONCURRENT_REQUESTS: int = 10
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REQUEST_CACHE_ENABLED: bool = True
+    REQUEST_CACHE_TTL_SECONDS: int = 300
+    AGENT_RATE_LIMIT_ENABLED: bool = True
+    DEFAULT_AGENT_MAX_CONCURRENT: int = 2
+    AGENT_QUEUE_TIMEOUT_SECONDS: int = 15
+    AGENT_QUEUE_POLL_INTERVAL_MS: int = 250
 
     # Server settings
     HOST: str = "0.0.0.0"
