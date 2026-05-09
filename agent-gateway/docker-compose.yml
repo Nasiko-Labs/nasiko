@@ -107,11 +107,21 @@ services:
     container_name: nasiko-router
     depends_on:
       - kong
+      - nasiko-cache-redis
     environment:
       OLLAMA_SERVER: http://ollama:11434
       NASIKO_BACKEND: http://nasiko-backend:8000/api/v1
       OPENAI_API_KEY: ""
       OPENROUTER_API_KEY: ""
+      # Response cache — points to the dedicated cache Redis instance
+      CACHE_REDIS_URL: redis://nasiko-cache-redis:6379/0
+      CACHE_TTL_SECONDS: "300"
+      CACHE_MAX_SIZE: "512"
+      # Per-agent rate limiter defaults
+      RATE_LIMIT_REQUESTS_PER_SECOND: "5.0"
+      RATE_LIMIT_BURST_CAPACITY: "10"
+      RATE_LIMIT_QUEUE_SIZE: "20"
+      RATE_LIMIT_QUEUE_TIMEOUT: "30.0"
     volumes:
       - ./router:/app/router  
     ports:
@@ -120,6 +130,27 @@ services:
       - kong-net
       - agents-net
     restart: unless-stopped
+
+  nasiko-cache-redis:
+    image: redis:7-alpine
+    container_name: nasiko-cache-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6381:6379"   # Cache Redis (separate from auth-redis on 6380)
+    volumes:
+      - cache_redis_data:/data
+    networks:
+      - kong-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   nasiko-auth-service:
     build:
@@ -186,6 +217,7 @@ services:
 volumes:
   kong_data:
   auth_redis_data:
+  cache_redis_data:
 
 networks:
   kong-net:
