@@ -7,6 +7,15 @@ from dataclasses import dataclass
 
 from request_manager import redis_keys
 
+_RELEASE_IF_OWNER_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    redis.call("SET", KEYS[2], "1", "PX", 1000)
+    redis.call("DEL", KEYS[1])
+    return 1
+end
+return 0
+"""
+
 
 @dataclass(frozen=True)
 class SingleFlightClaim:
@@ -39,18 +48,29 @@ class SingleFlight:
             try:
                 if await self.redis.get(redis_keys.singleflight_ready(cache_key)):
                     return True
-                if not await self.redis.get(redis_keys.singleflight_lock(cache_key)):
-                    return True
             except Exception:
-                return True
+                return False
             await asyncio.sleep(0.05)
         return False
 
     async def release(self, claim: SingleFlightClaim) -> None:
         if not claim.owner:
             return
+        lock_key = redis_keys.singleflight_lock(claim.cache_key)
+        ready_key = redis_keys.singleflight_ready(claim.cache_key)
+
+        eval_script = getattr(self.redis, "eval", None)
+        if eval_script is not None:
+            try:
+                await eval_script(_RELEASE_IF_OWNER_SCRIPT, 2, lock_key, ready_key, claim.token)
+                return
+            except Exception:
+                return
+
         try:
-            await self.redis.set(redis_keys.singleflight_ready(claim.cache_key), "1", px=1000)
-            await self.redis.delete(redis_keys.singleflight_lock(claim.cache_key))
+            if await self.redis.get(lock_key) != claim.token:
+                return
+            await self.redis.set(ready_key, "1", px=1000)
+            await self.redis.delete(lock_key)
         except Exception:
             return
