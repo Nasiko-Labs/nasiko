@@ -1,0 +1,34 @@
+{
+  "name": "aegis-firewall",
+  "description": "Runtime security firewall for AI agents. Intercepts tool calls, scores risk (0.0-1.0), enforces YAML policies, and blocks dangerous actions with human-in-the-loop approval for sensitive operations.",
+  "capabilities": [
+    "tool_call_evaluation",
+    "risk_scoring",
+    "policy_enforcement",
+    "human_approval_gating",
+    "batch_evaluation",
+    "trace_logging",
+    "agentcard_policy_extraction"
+  ],
+  "tags": ["security", "firewall", "risk", "policy", "observability"],
+  "examples": [
+    "evaluate if this shell command is safe to run",
+    "check risk score for sending an email",
+    "is this file deletion allowed by policy?",
+    "batch evaluate these 5 tool calls",
+    "show me the current firewall policies",
+    "load agent card and auto-configure security rules"
+  ],
+  "input_mode": "json",
+  "output_mode": "json",
+  "agent_protocol_version": "a2a-v1",
+  "endpoints": {
+    "/evaluate": "Evaluate a single tool call (POST)",
+    "/batch-evaluate": "Evaluate multiple tool calls in one request (POST)",
+    "/policies": "Get current firewall policies (GET)",
+    "/policies/reload": "Hot-reload policies from disk (POST)",
+    "/agentcard/load": "Parse AgentCard and auto-configure policies (POST)",
+    "/traces": "Return verdicts from the current session (GET)",
+    "/health": "Health check endpoint"
+  }
+}

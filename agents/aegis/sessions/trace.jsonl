@@ -1,0 +1,78 @@
+{"call_id": "61832139", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-08T12:19:20.474224"}
+{"call_id": "8ebad6ab", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-08T12:19:21.995697"}
+{"call_id": "eb8d8f76", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-08T12:19:23.318081"}
+{"call_id": "d09dd579", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "ALLOW", "reason": "tool=shell_exec", "timestamp": "2026-05-08T12:19:24.523652"}
+{"call_id": "d1639199", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-08T12:19:30.038116"}
+{"call_id": "f282f4c5", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-08T12:19:31.248692"}
+{"call_id": "35397b88", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-08T13:21:41.586420"}
+{"call_id": "433bb91a", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-08T13:21:43.109309"}
+{"call_id": "5f3150ad", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-08T13:21:44.426302"}
+{"call_id": "6849c772", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "BLOCK", "reason": "tool=shell_exec", "timestamp": "2026-05-08T13:21:45.641654"}
+{"call_id": "cd464b1c", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-08T13:21:47.071781"}
+{"call_id": "aed27e1c", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-08T13:21:48.288153"}
+{"call_id": "cb2ede40", "tool": "shell_exec", "agent": "github-agent", "risk_score": 0.75, "decision": "BLOCK", "reason": "tool=shell_exec", "timestamp": "2026-05-08T18:30:35.205911"}
+{"call_id": "3c235272", "tool": "github_search", "agent": "github-agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=github_search", "timestamp": "2026-05-08T18:36:18.674993"}
+{"call_id": "d14e7f31", "tool": "send_email", "agent": "github-agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-08T18:36:18.744939"}
+{"call_id": "ff1e271f", "tool": "shell_exec", "agent": "github-agent", "risk_score": 0.75, "decision": "PENDING", "reason": "tool=shell_exec", "timestamp": "2026-05-08T18:36:18.818388"}
+{"call_id": "cdc4695d", "tool": "read_file", "agent": "test-agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-08T18:36:47.449117"}
+{"call_id": "0cb200b6", "tool": "delete_file", "agent": "test-agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-08T18:36:47.449440"}
+{"call_id": "f2335dc9", "tool": "extract_secrets", "agent": "test-agent", "risk_score": 0.95, "decision": "BLOCK", "reason": "tool=extract_secrets", "timestamp": "2026-05-08T18:36:47.449815"}
+{"call_id": "7a32d299", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T07:22:36.765489"}
+{"call_id": "3fb846e6", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T07:22:38.268415"}
+{"call_id": "3bc63673", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T07:22:39.569890"}
+{"call_id": "98d1e090", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "BLOCK", "reason": "tool=shell_exec", "timestamp": "2026-05-09T07:22:40.771512"}
+{"call_id": "2c7d3e88", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T07:23:11.971345"}
+{"call_id": "1e3639e0", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T07:23:13.171988"}
+{"call_id": "cdcd3af2", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T08:32:34.942432"}
+{"call_id": "ee8e462e", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T08:32:36.454446"}
+{"call_id": "c7c3f007", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T08:32:37.755579"}
+{"call_id": "689df2fb", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "BLOCK", "reason": "tool=shell_exec", "timestamp": "2026-05-09T08:32:38.959090"}
+{"call_id": "609aa9c2", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T08:33:10.161826"}
+{"call_id": "30c7cbb7", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T08:33:11.362524"}
+{"call_id": "e0bbc9e7", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T08:36:36.740732"}
+{"call_id": "5358dbbb", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T08:36:38.244193"}
+{"call_id": "d4617692", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T08:36:39.546488"}
+{"call_id": "24098a5b", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "ALLOW", "reason": "tool=shell_exec", "timestamp": "2026-05-09T08:36:40.748010"}
+{"call_id": "f6634c87", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T08:37:00.389879"}
+{"call_id": "f252a765", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T08:37:01.591991"}
+{"call_id": "9b3b56f4", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T08:59:43.769991"}
+{"call_id": "953b009e", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T08:59:45.273188"}
+{"call_id": "8ea8043f", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T08:59:46.603439"}
+{"call_id": "b9690933", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "BLOCK", "reason": "tool=shell_exec", "timestamp": "2026-05-09T08:59:47.805417"}
+{"call_id": "87132919", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T08:59:56.740677"}
+{"call_id": "e71c543a", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T08:59:57.941569"}
+{"call_id": "60b0bbe7", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:03:02.527368"}
+{"call_id": "4194666a", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T09:03:04.029379"}
+{"call_id": "896086ef", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:03:05.353478"}
+{"call_id": "6e8c2934", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "ALLOW", "reason": "tool=shell_exec", "timestamp": "2026-05-09T09:03:06.554345"}
+{"call_id": "43c37da9", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T09:03:13.659644"}
+{"call_id": "480aa76b", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T09:03:14.861551"}
+{"call_id": "a2a53ce8", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T09:04:51.059746"}
+{"call_id": "b04ca2ca", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T09:06:17.221066"}
+{"call_id": "ace25818", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:07:04.277295"}
+{"call_id": "d09a07e7", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T09:07:05.779207"}
+{"call_id": "a334d8a5", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:07:07.081197"}
+{"call_id": "ca42b3b2", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "BLOCK", "reason": "tool=shell_exec", "timestamp": "2026-05-09T09:07:08.282294"}
+{"call_id": "2ddbef65", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T09:07:14.210625"}
+{"call_id": "960184f9", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T09:07:15.412294"}
+{"call_id": "309e7223", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T09:07:28.932539"}
+{"call_id": "ae9b09a8", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=github_search", "timestamp": "2026-05-09T09:15:57.977006"}
+{"call_id": "dee42e8f", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:16:38.638065"}
+{"call_id": "1d7f3d7b", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T09:16:40.139862"}
+{"call_id": "b7694ce5", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:16:41.442777"}
+{"call_id": "6c321b75", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "ALLOW", "reason": "tool=shell_exec", "timestamp": "2026-05-09T09:16:42.643455"}
+{"call_id": "2e6cffa7", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T09:16:49.586633"}
+{"call_id": "3bbaeda7", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T09:16:50.788507"}
+{"call_id": "4d85b25a", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:24:12.777919"}
+{"call_id": "d2c64669", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T09:24:14.282356"}
+{"call_id": "4019a4e3", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T09:24:15.584570"}
+{"call_id": "eb4fbf19", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "BLOCK", "reason": "tool=shell_exec", "timestamp": "2026-05-09T09:24:16.785796"}
+{"call_id": "7c934083", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T09:24:20.437251"}
+{"call_id": "293c97df", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T09:24:21.639385"}
+{"call_id": "a098a214", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T10:08:00.065509"}
+{"call_id": "d07489cd", "tool": "github_search", "agent": "demo_agent", "risk_score": 0.35, "decision": "ALLOW", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T10:08:11.488236"}
+{"call_id": "e06bd3e1", "tool": "read_file", "agent": "demo_agent", "risk_score": 0.1, "decision": "ALLOW", "reason": "tool=read_file", "timestamp": "2026-05-09T10:08:12.991007"}
+{"call_id": "e81efc1a", "tool": "extract_secrets", "agent": "demo_agent", "risk_score": 1.0, "decision": "BLOCK", "reason": "dangerous keyword: credential", "timestamp": "2026-05-09T10:08:14.293539"}
+{"call_id": "a36c0eed", "tool": "shell_exec", "agent": "demo_agent", "risk_score": 0.75, "decision": "ALLOW", "reason": "tool=shell_exec", "timestamp": "2026-05-09T10:08:15.495118"}
+{"call_id": "8845d7ae", "tool": "send_email", "agent": "demo_agent", "risk_score": 0.85, "decision": "BLOCK", "reason": "tool=send_email", "timestamp": "2026-05-09T10:08:18.975177"}
+{"call_id": "68219fcf", "tool": "delete_file", "agent": "demo_agent", "risk_score": 0.9, "decision": "BLOCK", "reason": "tool=delete_file", "timestamp": "2026-05-09T10:08:20.176557"}
