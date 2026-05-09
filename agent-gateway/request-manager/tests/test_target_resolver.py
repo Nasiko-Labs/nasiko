@@ -105,6 +105,26 @@ async def test_limit_resolver_merges_redis_overrides(fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_limit_resolver_ignores_malformed_overrides(fake_redis):
+    await fake_redis.hset(
+        "request-manager:limits:agent-a2a-demo",
+        mapping={
+            "max_concurrency": "abc",
+            "sustained_rps": "0",
+            "max_queue_depth": "11",
+        },
+    )
+    settings = RequestManagerSettings(redis_url="redis://redis:6379")
+    resolver = LimitResolver(fake_redis, settings)
+
+    limits = await resolver.resolve("agent-a2a-demo")
+
+    assert limits.max_concurrency == settings.max_concurrency_per_agent
+    assert limits.sustained_rps == settings.sustained_rps_per_agent
+    assert limits.max_queue_depth == 11
+
+
+@pytest.mark.asyncio
 async def test_limit_resolver_update_serializes_cache_enabled_as_string(fake_redis):
     settings = RequestManagerSettings(redis_url="redis://redis:6379")
     resolver = LimitResolver(fake_redis, settings)

@@ -60,15 +60,23 @@ class LimitResolver:
         for field in data:
             if field not in override:
                 continue
-            if isinstance(data[field], bool):
-                data[field] = override[field].lower() in {"1", "true", "yes", "on"}
-            elif isinstance(data[field], int):
-                data[field] = int(float(override[field]))
-            elif isinstance(data[field], float):
-                data[field] = float(override[field])
-            else:
-                data[field] = override[field]
-        return AgentLimits(**data)
+            try:
+                if isinstance(data[field], bool):
+                    value = override[field].lower() in {"1", "true", "yes", "on"}
+                elif isinstance(data[field], int):
+                    value = int(float(override[field]))
+                elif isinstance(data[field], float):
+                    value = float(override[field])
+                else:
+                    value = override[field]
+                AgentLimits(**{**data, field: value})
+            except Exception:
+                continue
+            data[field] = value
+        try:
+            return AgentLimits(**data)
+        except Exception:
+            return defaults
 
     async def update(self, agent_id: str, limits: AgentLimits) -> AgentLimits:
         mapping = {}
