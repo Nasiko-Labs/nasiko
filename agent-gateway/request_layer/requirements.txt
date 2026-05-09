@@ -1,0 +1,16 @@
+# Request layer: resilient agent request layer.
+# Pinned to floors compatible with the rest of Nasiko (see root pyproject.toml).
+fastapi>=0.116.1
+uvicorn>=0.35.0
+pydantic>=2.11.7
+pydantic-settings>=2.10.1
+httpx>=0.28.1
+redis>=6.4.0
+numpy>=1.26.0
+sentence-transformers>=3.0.0
+opentelemetry-api>=1.36.0
+opentelemetry-sdk>=1.36.0
+opentelemetry-exporter-otlp-proto-grpc>=1.36.0
+opentelemetry-exporter-otlp-proto-http>=1.36.0
+opentelemetry-instrumentation-fastapi>=0.57b0
+arize-phoenix-otel>=0.6.0

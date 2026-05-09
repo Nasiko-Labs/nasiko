@@ -193,6 +193,7 @@ To switch the router's LLM provider, set `ROUTER_LLM_PROVIDER` and `ROUTER_LLM_M
 - **Web Interface** (4000) - Browser dashboard accessible via Kong Gateway (/app/)
 - **Agent Network** - Auto-deployed containerized agents with observability
 - **CLI Tool** - Complete command-line management interface
+- **Request Layer** (8090, opt-in) - Resilient agent request management between Kong and the agent fleet: response caching (exact + semantic similarity + opt-in router-decision), in-flight request coalescing, per-agent rate limits with $/min cost gate and priority queueing, plus admin REST endpoints and Phoenix span annotations. See [`docs/request-layer.md`](docs/request-layer.md).
 
 ## 🚀 Quick Start
 
