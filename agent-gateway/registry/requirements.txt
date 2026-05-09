@@ -5,3 +5,5 @@ fastapi==0.104.1
 uvicorn==0.24.0
 pydantic==2.5.0
 python-json-logger==2.0.7
+redis==5.0.8
+pytest==8.3.5
