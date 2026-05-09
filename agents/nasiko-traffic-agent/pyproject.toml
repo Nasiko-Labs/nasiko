@@ -1,0 +1,17 @@
+[project]
+name = "nasiko-traffic-agent"
+version = "1.0.0"
+description = "Demo traffic agent for Nasiko caching showcase"
+requires-python = ">=3.10"
+dependencies = [
+    "a2a-sdk>=0.3.0,<1.0.0",
+    "click>=8.1.8",
+    "uvicorn>=0.34.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

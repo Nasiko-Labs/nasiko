@@ -1,0 +1,38 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Nasiko Traffic Agent",
+  "description": "A demo agent that simulates realistic business query analysis with variable latency — designed to make caching benefits immediately visible.",
+  "url": "http://localhost:5000/",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/Nasiko-Labs/nasiko"
+  },
+  "iconUrl": "http://localhost:5000/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:5000/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "analyze-query",
+      "name": "Business Query Analysis",
+      "description": "Analyzes business and data queries, returning structured insights. Demonstrates caching: repeat the same query to see sub-10ms cache hits vs 800-2500ms uncached.",
+      "tags": ["analysis", "demo", "caching-showcase", "business", "data"],
+      "examples": [
+        "Analyze revenue trend for Q3 2025",
+        "What are the top customer complaints?",
+        "Summarize this week's performance",
+        "Show me the sales breakdown by region"
+      ]
+    }
+  ]
+}

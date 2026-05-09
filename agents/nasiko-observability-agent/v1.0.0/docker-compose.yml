@@ -1,0 +1,21 @@
+services:
+  nasiko-observability-agent:
+    build: .
+    container_name: nasiko-observability-agent
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ROUTER_URL=${ROUTER_URL:-http://nasiko-router:8000}
+      - OBSERVABILITY_MODEL=${OBSERVABILITY_MODEL:-gpt-4o-mini}
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+      - app-network
+
+networks:
+  agents-net:
+    external: true
+  app-network:
+    external: true

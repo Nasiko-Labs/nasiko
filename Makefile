@@ -1,8 +1,32 @@
-.PHONY: clean-all clean-start-nasiko backend-app router orchestrator redis-listener start-nasiko help
+.PHONY: down stop-agents clean-all clean-start-nasiko backend-app router orchestrator redis-listener start-nasiko help
+
+ENV_FILE ?= .nasiko-local.env
+COMPOSE  := docker compose -f docker-compose.local.yml --env-file $(ENV_FILE)
+
+# ---------------------------------------------------------------------------
+# Graceful stack teardown — removes dynamically-deployed agent containers
+# (started by redis-listener, not tracked by compose) before compose down,
+# so app-network and agents-net are always released cleanly.
+# ---------------------------------------------------------------------------
+stop-agents:
+	@echo "Removing agent containers attached to agents-net / app-network..."
+	@AGENTS=$$(docker ps -aq --filter network=agents-net --filter network=app-network 2>/dev/null); \
+	if [ -n "$$AGENTS" ]; then \
+	    docker rm -f $$AGENTS && echo "  removed agent containers"; \
+	else \
+	    echo "  no agent containers found"; \
+	fi
+
+down: stop-agents
+	@echo "Bringing down compose stack..."
+	$(COMPOSE) down
+	@echo "Done."
 
 # Default target
 help:
 	@echo "Available targets:"
+	@echo "  down                 - Remove agent containers then bring compose stack down cleanly"
+	@echo "  stop-agents          - Remove dynamically-deployed agent containers from both networks"
 	@echo "  clean-all            - Stop all containers, remove volumes and images"
 	@echo "  clean-start-nasiko   - Clean all and start orchestrator services"
 	@echo "  start-nasiko         - Delete all volumes and run orchestrator + redis listener sequentially"

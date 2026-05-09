@@ -1,0 +1,38 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Nasiko Observability Agent",
+  "description": "An AI agent that reads live Nasiko router monitoring data and answers natural language questions about system state, performance, and caching impact.",
+  "url": "http://localhost:5000/",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/Nasiko-Labs/nasiko"
+  },
+  "iconUrl": "http://localhost:5000/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:5000/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "explain-system-state",
+      "name": "System State Explanation",
+      "description": "Reads live monitoring APIs and explains system behavior in natural language. Ask about performance, cache impact, or system health.",
+      "tags": ["observability", "monitoring", "ai", "analysis", "demo"],
+      "examples": [
+        "Why was the last request slow?",
+        "What has improved since caching was enabled?",
+        "Is the system under pressure right now?",
+        "How much compute has been saved today?"
+      ]
+    }
+  ]
+}

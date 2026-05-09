@@ -35,6 +35,25 @@ class RouterConfig(BaseSettings):
     JINA_API_KEY: Optional[str] = None
     JINA_EMBEDDING_MODEL: str = "jina-embeddings-v3"
 
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379"
+
+    # Response cache
+    CACHE_ENABLED: bool = True
+    CACHE_DEFAULT_TTL: int = 3600
+    MODEL_VERSION: str = "1"
+    PROMPT_VERSION: str = "1"
+
+    # Rate limiting
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_DEFAULT_RPM: int = 60
+    RATE_LIMIT_MAX_QUEUE_SIZE: int = 50
+    RATE_LIMIT_QUEUE_TIMEOUT: float = 30.0
+
+    # Agent health
+    HEALTH_ENABLED: bool = True
+    HEALTH_SCORE_THRESHOLD: float = 0.3
+
     # Request settings
     MAX_FILE_SIZE: int = 1073741824  # 1GB
     REQUEST_TIMEOUT: float = 60.0
