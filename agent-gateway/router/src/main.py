@@ -2,11 +2,13 @@
 Refactored main router application with modular architecture.
 """
 
+
+from router.src.core.traffic_control import traffic_controller
 import logging
 from io import BytesIO
 from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends
 from fastapi.responses import StreamingResponse
@@ -25,6 +27,19 @@ logger = logging.getLogger(__name__)
 
 # Security
 security = HTTPBearer()
+VALID_API_KEYS = {
+    "sk_sentinel_demo_2026"
+}
+
+
+def verify_api_key(x_api_key: str = Header(...)):
+    if x_api_key not in VALID_API_KEYS:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+
+    return True
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -204,6 +219,141 @@ async def _process_files(files: Optional[List[UploadFile]]) -> List[tuple]:
             )
 
     return files_to_forward
+@app.get("/admin/cache/stats")
+async def cache_stats():
+    stats = traffic_controller.stats()
+    return {
+        "metrics": stats["metrics"],
+        "cache_entries": stats["cache_entries"],
+        "active_queues": stats["active_queues"]
+    }
+
+
+@app.post("/admin/cache/clear")
+async def clear_cache():
+    traffic_controller.cache.clear()
+    return {
+        "status": "success",
+        "message": "Cache cleared successfully"
+    }
+
+
+@app.get("/admin/queue/stats")
+async def queue_stats():
+    return {
+        "queues": {
+            agent: len(queue)
+            for agent, queue in traffic_controller.queues.items()
+        }
+    }
+
+
+@app.post("/admin/rate-limit/update")
+async def update_rate_limit(agent_name: str, limit: int, window: int):
+    traffic_controller.rate_limits[agent_name]["limit"] = limit
+    traffic_controller.rate_limits[agent_name]["window"] = window
+
+    return {
+        "status": "updated",
+        "agent": agent_name,
+        "limit": limit,
+        "window": window
+    }
+
+
+@app.get("/dashboard/metrics")
+async def dashboard_metrics():
+    stats = traffic_controller.stats()
+
+    metrics = stats["metrics"]
+
+    total = metrics["cache_hits"] + metrics["cache_misses"]
+
+    cache_hit_rate = 0
+    if total > 0:
+        cache_hit_rate = (metrics["cache_hits"] / total) * 100
+
+    return {
+        "cache_hit_rate": cache_hit_rate,
+        "cache_hits": metrics["cache_hits"],
+        "cache_misses": metrics["cache_misses"],
+        "queued_requests": metrics["queued_requests"],
+        "processed_requests": metrics["processed_requests"],
+        "rate_limited": metrics["rate_limited"],
+        "active_queues": stats["active_queues"]
+    }
+@app.get("/demo/test-cache")
+async def demo_test_cache(query: str):
+    cached = traffic_controller.get_cached(query)
+
+    if cached:
+        return {
+            "source": "cache",
+            "response": cached
+        }
+
+    fake_response = f"Processed response for: {query}"
+
+    traffic_controller.set_cache(query, fake_response)
+    traffic_controller.metrics["processed_requests"] += 1
+
+    return {
+        "source": "fresh",
+        "response": fake_response
+    }
+
+
+@app.get("/demo/test-rate-limit")
+async def demo_test_rate_limit(agent: str = "demo-agent"):
+    if not traffic_controller.allow_request(agent):
+        traffic_controller.queue_request(agent, {"demo": True})
+
+        return {
+            "status": "queued",
+            "queue_size": traffic_controller.queue_size(agent)
+        }
+
+    traffic_controller.metrics["processed_requests"] += 1
+
+    return {
+        "status": "processed"
+    }
+@app.post("/api/v1/query")
+async def public_query(
+    query: str,
+    x_api_key: str = Header(...)
+):
+    verify_api_key(x_api_key)
+
+    cached = traffic_controller.get_cached(query)
+
+    if cached:
+        return {
+            "status": "success",
+            "source": "cache",
+            "response": cached
+        }
+
+    if not traffic_controller.allow_request("public-api"):
+        traffic_controller.queue_request("public-api", {"query": query})
+
+        return {
+            "status": "queued",
+            "message": "System busy. Request queued.",
+            "queue_size": traffic_controller.queue_size("public-api")
+        }
+
+    response_text = f"Processed through Sentinel AI traffic layer for query: {query}"
+
+    traffic_controller.set_cache(query, response_text)
+    traffic_controller.metrics["processed_requests"] += 1
+
+    return {
+        "status": "success",
+        "source": "fresh",
+        "response": response_text
+    }
+
 
 
 if __name__ == "__main__":
