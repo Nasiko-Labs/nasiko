@@ -14,6 +14,7 @@ from router.src.core import (
     AgentClient,
     AgentClientError,
     SessionHistoryService,
+    ResilientAgentExecutor,
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
@@ -30,6 +31,7 @@ class RouterOrchestrator:
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.executor = ResilientAgentExecutor()
 
     async def process_request(
         self,
@@ -170,7 +172,7 @@ class RouterOrchestrator:
 
             # Send request to selected agent
             async for response in self._send_agent_request(
-                request, files, agent_url, token
+                request, files, agent_url, token, agent_id=agent_name
             ):
                 yield response
 
@@ -185,8 +187,9 @@ class RouterOrchestrator:
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         agent_url: str,
         token: str,
+        agent_id: str = "",
     ) -> AsyncGenerator[str, None]:
-        """Send request to agent and yield response."""
+        """Send request to agent via ResilientAgentExecutor (cache + rate-limit + stats)."""
 
         try:
             logger.info(f"Sending request to agent: {agent_url}")
@@ -194,16 +197,25 @@ class RouterOrchestrator:
                 "Sending user's query to agent...", "", False, agent_url
             )
 
-            # Send request to agent
-            agent_data = await self.agent_client.send_request(
-                agent_url, request, files, token
+            # Derive a stable per-user scope from the token (no PII stored)
+            import hashlib
+            user_scope = hashlib.sha256(token.encode()).hexdigest()[:16] if token else ""
+
+            response_text, cached, latency_s, queue_wait_s = await self.executor.execute(
+                agent_id=agent_id,
+                agent_url=agent_url,
+                request=request,
+                files=files,
+                token=token,
+                user_scope=user_scope,
             )
 
-            # Extract response content
-            agent_response = self.agent_client.extract_response_content(agent_data)
-
-            logger.info("Successfully received response from agent")
-            yield self._router_response(agent_response, "", False, agent_url)
+            footer = self.executor.timing_footer(cached, latency_s, queue_wait_s, agent_id)
+            logger.info(
+                f"Agent '{agent_id}' responded — cached={cached}, "
+                f"latency={latency_s*1000:.0f}ms, queue_wait={queue_wait_s*1000:.0f}ms"
+            )
+            yield self._router_response(response_text + footer, "", False, agent_url)
 
         except AgentClientError as e:
             yield self._router_response(str(e), "", False, agent_url)

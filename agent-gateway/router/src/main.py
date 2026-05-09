@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from router.src.config import settings
 from router.src.entities import UserRequest
 from router.src.services import RouterOrchestrator
+from router.src.core.resilient_executor import get_cache, get_limiter, get_stats
 
 # Configure logging
 logging.basicConfig(
@@ -123,14 +124,55 @@ async def process_request(
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
-    return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
-    }
+    """Prometheus-compatible metrics for the request layer."""
+    from fastapi.responses import PlainTextResponse
+    text = get_stats().prometheus_text(get_cache(), get_limiter())
+    return PlainTextResponse(text, media_type="text/plain; version=0.0.4")
+
+
+# ── Admin endpoints ───────────────────────────────────────────────────────────
+
+@app.get("/admin/stats/runtime")
+async def admin_runtime_stats():
+    """Full runtime stats: cache hits/misses/stores, queue depth, per-agent latency."""
+    return get_stats().snapshot(get_cache(), get_limiter())
+
+
+@app.post("/admin/cache/clear")
+async def admin_cache_clear(agent_id: Optional[str] = None):
+    """
+    Clear cached responses.
+    - agent_id provided → clear only that agent's entries.
+    - no agent_id        → flush entire cache.
+    """
+    cache = get_cache()
+    if agent_id:
+        deleted = cache.clear_agent(agent_id)
+        return {"cleared": deleted, "agent_id": agent_id}
+    flushed = cache.flush()
+    return {"flushed": flushed}
+
+
+@app.put("/admin/cache/config")
+async def admin_cache_config(ttl: Optional[int] = None, max_keys: Optional[int] = None):
+    """
+    Tune cache at runtime.
+    - ttl      → new TTL in seconds.
+    - max_keys → new max entry cap.
+    """
+    if ttl is None and max_keys is None:
+        raise HTTPException(status_code=400, detail="Provide at least one of: ttl, max_keys")
+    get_cache().configure(ttl=ttl, max_keys=max_keys)
+    return get_cache().stats()
+
+
+@app.put("/admin/limits/{agent_id:path}")
+async def admin_set_limit(agent_id: str, rpm: int):
+    """Set per-agent requests-per-minute limit. Takes effect immediately."""
+    if rpm < 1:
+        raise HTTPException(status_code=400, detail="rpm must be >= 1")
+    get_limiter().set_limit(agent_id, rpm)
+    return {"agent_id": agent_id, "new_limit_rpm": rpm}
 
 
 def _validate_inputs(session_id: str, query: str) -> Optional[str]:
