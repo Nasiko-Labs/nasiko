@@ -1,0 +1,18 @@
+[project]
+name = "nasiko-request-manager"
+version = "1.0.0"
+description = "Request management layer: caching, rate limiting, and queueing for Nasiko agent traffic"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "httpx>=0.25.0",
+    "redis>=6.4.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
+    "python-json-logger>=2.0.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
