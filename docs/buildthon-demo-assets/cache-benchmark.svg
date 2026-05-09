@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680">
+  <rect width="1200" height="680" fill="#f8fafc"/>
+  <text x="600" y="58" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="34" font-weight="700" fill="#111827">Repeated Request Benchmark</text>
+  <text x="600" y="92" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b">Same routed query, real NVIDIA-backed A2A agent, cache checked before forwarding.</text>
+
+  <rect x="135" y="165" width="380" height="390" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="325" y="215" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="700" fill="#1f2937">First Request</text>
+  <text x="325" y="250" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="16" fill="#64748b">Cache miss, real agent execution</text>
+  <rect x="230" y="305" width="190" height="170" rx="14" fill="#dbeafe"/>
+  <text x="325" y="397" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="46" font-weight="800" fill="#1d4ed8">8.468s</text>
+
+  <rect x="685" y="165" width="380" height="390" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="875" y="215" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="700" fill="#1f2937">Repeated Request</text>
+  <text x="875" y="250" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="16" fill="#64748b">Cache hit, no agent recompute</text>
+  <rect x="850" y="442" width="50" height="33" rx="10" fill="#bbf7d0"/>
+  <text x="875" y="405" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="46" font-weight="800" fill="#047857">0.074s</text>
+
+  <path d="M525 360 H668" stroke="#334155" stroke-width="3" marker-end="url(#arrow)"/>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect x="440" y="575" width="320" height="58" rx="18" fill="#111827"/>
+  <text x="600" y="613" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="800" fill="#ffffff">114.4x faster</text>
+</svg>

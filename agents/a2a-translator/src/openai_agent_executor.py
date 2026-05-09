@@ -2,6 +2,8 @@ import json
 import logging
 import inspect
 import os
+import re
+import time
 
 from typing import Any
 
@@ -22,6 +24,23 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
+LANGUAGE_CODES = {
+    "arabic": "ar",
+    "chinese": "zh-cn",
+    "english": "en",
+    "french": "fr",
+    "german": "de",
+    "hindi": "hi",
+    "italian": "it",
+    "japanese": "ja",
+    "korean": "ko",
+    "portuguese": "pt",
+    "russian": "ru",
+    "spanish": "es",
+    "tamil": "ta",
+}
+
+
 class OpenAIAgentExecutor(AgentExecutor):
     """An AgentExecutor that runs an OpenAI-based Agent."""
 
@@ -40,6 +59,7 @@ class OpenAIAgentExecutor(AgentExecutor):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
+            timeout=float(os.getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "12")),
         )
         self.model = model
         self.system_prompt = system_prompt
@@ -51,6 +71,21 @@ class OpenAIAgentExecutor(AgentExecutor):
         context: RequestContext,
         task_updater: TaskUpdater,
     ) -> None:
+        request_started = time.monotonic()
+        direct_translation = await self._try_direct_translation(message_text)
+        if direct_translation is not None:
+            await task_updater.add_artifact(
+                [
+                    TextPart(
+                        text=self._with_timing(
+                            direct_translation, request_started, "translator tool"
+                        )
+                    )
+                ]
+            )
+            await task_updater.complete()
+            return
+
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": message_text},
@@ -163,7 +198,15 @@ class OpenAIAgentExecutor(AgentExecutor):
                         "true",
                         "yes",
                     }:
-                        parts = [TextPart(text="\n".join(direct_outputs))]
+                        parts = [
+                            TextPart(
+                                text=self._with_timing(
+                                    "\n".join(direct_outputs),
+                                    request_started,
+                                    "LLM tool call",
+                                )
+                            )
+                        ]
                         await task_updater.add_artifact(parts)
                         await task_updater.complete()
                         break
@@ -172,7 +215,13 @@ class OpenAIAgentExecutor(AgentExecutor):
                     continue
                 # No more tool calls, this is the final response
                 if message.content:
-                    parts = [TextPart(text=message.content)]
+                    parts = [
+                        TextPart(
+                            text=self._with_timing(
+                                message.content, request_started, "LLM response"
+                            )
+                        )
+                    ]
                     logger.debug(f"Yielding final response: {parts}")
                     await task_updater.add_artifact(parts)
                     await task_updater.complete()
@@ -197,6 +246,40 @@ class OpenAIAgentExecutor(AgentExecutor):
             ]
             await task_updater.add_artifact(error_parts)
             await task_updater.complete()
+
+    async def _try_direct_translation(self, message_text: str) -> str | None:
+        match = re.search(
+            r"^\s*translate\s+(.+?)\s+to\s+([a-zA-Z][a-zA-Z\s-]{1,40})(?:[.!?]|$)",
+            message_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match or "translate_text" not in self.tools:
+            return None
+
+        text = match.group(1).strip(" \"'")
+        target_language = match.group(2).strip(" .!?")
+        target_language = re.sub(
+            r"\s+reply\s+briefly$",
+            "",
+            target_language,
+            flags=re.IGNORECASE,
+        )
+        target_language = LANGUAGE_CODES.get(target_language.lower(), target_language)
+        if not text or not target_language:
+            return None
+
+        tool_instance = self.tools["translate_text"]
+        if not hasattr(tool_instance, "translate_text"):
+            return None
+
+        result = tool_instance.translate_text(text=text, target_language=target_language)
+        if inspect.iscoroutine(result):
+            result = await result
+        return str(result)
+
+    def _with_timing(self, text: str, started: float, source: str) -> str:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return f"{text}\n\nGenerated in {elapsed_ms} ms via {source}."
 
     def _extract_function_schema(self, func):
         """Extract OpenAI function schema from a Python function"""

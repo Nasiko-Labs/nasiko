@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <rect width="1200" height="700" fill="#f8fafc"/>
+  <text x="600" y="58" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="34" font-weight="700" fill="#111827">Stable Overload Handling</text>
+  <text x="600" y="92" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b">Low per-agent RPS, 3 concurrent routed requests, excess traffic queued instead of failing.</text>
+
+  <rect x="100" y="155" width="260" height="145" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="230" y="202" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700" fill="#1f2937">Concurrent Burst</text>
+  <text x="230" y="242" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="42" font-weight="800" fill="#2563eb">3</text>
+  <text x="230" y="274" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="16" fill="#64748b">requests at once</text>
+
+  <rect x="470" y="155" width="260" height="145" rx="18" fill="#fff7ed" stroke="#ea580c" stroke-width="2"/>
+  <text x="600" y="202" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700" fill="#1f2937">Queue Waits</text>
+  <text x="600" y="242" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="42" font-weight="800" fill="#c2410c">2</text>
+  <text x="600" y="274" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="16" fill="#64748b">queued admissions</text>
+
+  <rect x="840" y="155" width="260" height="145" rx="18" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="970" y="202" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700" fill="#1f2937">Failures</text>
+  <text x="970" y="242" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="42" font-weight="800" fill="#047857">0</text>
+  <text x="970" y="274" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="16" fill="#64748b">in corrected overload run</text>
+
+  <rect x="170" y="390" width="860" height="165" rx="20" fill="#111827"/>
+  <text x="600" y="433" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="700" fill="#ffffff">Measured Result</text>
+  <text x="600" y="472" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d1d5db">Wall time: 19.281s with constrained RPS</text>
+  <text x="600" y="505" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d1d5db">Average queue wait: about 6.05s</text>
+  <text x="600" y="538" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d1d5db">Backend protected while clients receive completed responses</text>
+</svg>

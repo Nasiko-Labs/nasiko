@@ -3,6 +3,7 @@ Router orchestrator service that coordinates all router operations.
 """
 
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -218,6 +219,8 @@ class RouterOrchestrator:
             yield self._router_response(
                 "Sending user's query to agent...", "", False, agent_url
             )
+            started = time.monotonic()
+            before_stats = self.resilient_executor.runtime_snapshot()
 
             async def call_agent() -> str:
                 agent_data = await self.agent_client.send_request(
@@ -235,6 +238,13 @@ class RouterOrchestrator:
                 )
             else:
                 agent_response = await call_agent()
+
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if settings.RESILIENCE_ENABLED:
+                after_stats = self.resilient_executor.runtime_snapshot()
+                agent_response = self._append_resilience_timing(
+                    agent_response, before_stats, after_stats, elapsed_ms
+                )
 
             logger.info("Successfully received response from agent")
             yield self._router_response(agent_response, "", False, agent_url)
@@ -283,6 +293,28 @@ class RouterOrchestrator:
                 url=url,
             ).model_dump_json()
             + "\n"
+        )
+
+    def _append_resilience_timing(
+        self,
+        agent_response: str,
+        before_stats: Any,
+        after_stats: Any,
+        elapsed_ms: int,
+    ) -> str:
+        cache_delta = after_stats.cache_hits - before_stats.cache_hits
+        miss_delta = after_stats.cache_misses - before_stats.cache_misses
+        if cache_delta > 0:
+            mode = "cache hit"
+        elif miss_delta > 0:
+            mode = "agent call + cache store"
+        else:
+            mode = "agent call"
+
+        return (
+            f"{agent_response}\n\n"
+            f"Request layer: {mode} in {elapsed_ms} ms "
+            f"(hit ratio {after_stats.cache_hit_ratio:.0%})."
         )
 
     async def health_check(self) -> Dict[str, Any]:

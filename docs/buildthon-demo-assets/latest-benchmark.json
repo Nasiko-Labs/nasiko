@@ -1,0 +1,115 @@
+{
+  "cache_benchmark": {
+    "first": {
+      "status": 200,
+      "elapsed_seconds": 0.647,
+      "final": {
+        "message": "Bonjour\n\nGenerated in 236 ms via translator tool.\n\nRequest layer: agent call + cache store in 501 ms (hit ratio 25%).",
+        "is_int_response": false,
+        "agent_id": "",
+        "url": "http://localhost:9100/agents/agent-translator/"
+      }
+    },
+    "second": {
+      "status": 200,
+      "elapsed_seconds": 0.176,
+      "final": {
+        "message": "Bonjour\n\nGenerated in 236 ms via translator tool.\n\nRequest layer: cache hit in 8 ms (hit ratio 40%).",
+        "is_int_response": false,
+        "agent_id": "",
+        "url": "http://localhost:9100/agents/agent-translator/"
+      }
+    },
+    "speedup_x": 3.7,
+    "stats": {
+      "cache_hits": 2,
+      "cache_misses": 3,
+      "cache_hit_ratio": 0.4,
+      "cache_stores": 3,
+      "rate_limit_rejections": 0,
+      "agent_errors": 0,
+      "queue_depths": {
+        "http://localhost:9100/agents/agent-translator/": 0
+      },
+      "current_limits": {
+        "http://localhost:9100/agents/agent-translator/": 5.0
+      },
+      "agent_latency_count": {
+        "http://localhost:9100/agents/agent-translator/": 3
+      },
+      "agent_latency_average_seconds": {
+        "http://localhost:9100/agents/agent-translator/": 0.3058335836664507
+      },
+      "queue_wait_count": {},
+      "queue_wait_average_seconds": {}
+    }
+  },
+  "queue_benchmark": {
+    "wall_seconds": 19.281,
+    "results": [
+      {
+        "status": 200,
+        "elapsed_seconds": 19.266,
+        "final": {
+          "message": "rouge",
+          "is_int_response": false,
+          "agent_id": "",
+          "url": "http://localhost:9100/agents/agent-translator/"
+        }
+      },
+      {
+        "status": 200,
+        "elapsed_seconds": 8.116,
+        "final": {
+          "message": "bleu",
+          "is_int_response": false,
+          "agent_id": "",
+          "url": "http://localhost:9100/agents/agent-translator/"
+        }
+      },
+      {
+        "status": 200,
+        "elapsed_seconds": 8.821,
+        "final": {
+          "message": "vert",
+          "is_int_response": false,
+          "agent_id": "",
+          "url": "http://localhost:9100/agents/agent-translator/"
+        }
+      }
+    ],
+    "failures": 0,
+    "stats": {
+      "cache_hits": 3,
+      "cache_misses": 11,
+      "cache_hit_ratio": 0.21428571428571427,
+      "cache_stores": 9,
+      "rate_limit_rejections": 2,
+      "agent_errors": 0,
+      "queue_depths": {
+        "http://localhost:9100/agents/agent-translator/": 2
+      },
+      "current_limits": {
+        "http://localhost:9100/agents/agent-translator/": 0.25
+      },
+      "agent_latency_count": {
+        "http://localhost:9100/agents/agent-translator/": 9
+      },
+      "agent_latency_average_seconds": {
+        "http://localhost:9100/agents/agent-translator/": 7.2989604246666
+      },
+      "queue_wait_count": {
+        "http://localhost:9100/agents/agent-translator/": 2
+      },
+      "queue_wait_average_seconds": {
+        "http://localhost:9100/agents/agent-translator/": 6.051371169500044
+      }
+    }
+  },
+  "health_urls": {
+    "ui": "http://127.0.0.1:9100/app/",
+    "router_health": "http://127.0.0.1:8081/router/health",
+    "admin_stats": "http://127.0.0.1:8081/admin/stats/runtime",
+    "metrics": "http://127.0.0.1:8081/metrics"
+  }
+}
