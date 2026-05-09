@@ -21,6 +21,19 @@
 
 ---
 
+## Buildathon: Resilient Agent Request Layer
+
+The [`buildathon-resilient-request-layer`](buildathon-resilient-request-layer/) service adds a traffic-control layer between Nasiko's Kong gateway and the agent fleet. It intercepts every inbound request before it reaches an agent: returning cached responses for identical inputs (eliminating redundant LLM calls), enforcing per-agent token-bucket rate limits so a single slow or noisy agent cannot saturate the platform, and queuing bursts that exceed the limit rather than dropping them. A live ops dashboard at `/ops/dashboard` surfaces cache hit rates, per-agent p95 latency, token levels, and queue depth — with runtime config knobs via a single POST and no redeploy needed.
+
+**Key capabilities**
+- **Intelligent response caching** — workflow-aware SHA-256 keys on `agent_id + input + workflow_id`; 60 s TTL; **93% hit rate** for repeated workflow queries in benchmarks
+- **Per-agent token-bucket rate limiting + queues** — each agent gets its own independent budget; bursts queue gracefully; zero drops under designed load
+- **Operator dashboard** — live metrics and per-agent config at [`/ops/dashboard`](http://localhost:4001/ops/dashboard), no redeploy required
+
+**Run the demo →** Start the Nasiko stack with [LOCAL_SETUP.md](LOCAL_SETUP.md), then follow [BUILDATHON_DEMO.md](BUILDATHON_DEMO.md) for the full walkthrough and load-test results.
+
+---
+
 ## 🌟 What is Nasiko?
 
 Nasiko is a developer control plane that transforms how you build, deploy, and manage AI agents at scale. Built with modern microservices architecture, Nasiko provides everything needed to run production AI agent ecosystems.

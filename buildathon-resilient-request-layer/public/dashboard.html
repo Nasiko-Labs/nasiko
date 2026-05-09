@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resilient Request Layer — Nasiko Ops</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Design tokens ─────────────────────────────────────────────────────── */
+    :root {
+      --bg:         #f1f5f9;
+      --surface:    #ffffff;
+      --surface-2:  #f8fafc;
+
+      --border:     #e2e8f0;
+      --border-2:   #f1f5f9;
+
+      --text:       #0f172a;
+      --text-2:     #334155;
+      --muted:      #64748b;
+      --subtle:     #94a3b8;
+
+      --green:      #10b981;
+      --green-d:    #059669;
+      --green-bg:   #f0fdf4;
+      --green-b:    #bbf7d0;
+
+      --amber:      #f59e0b;
+      --amber-d:    #d97706;
+      --amber-bg:   #fffbeb;
+      --amber-b:    #fde68a;
+
+      --red:        #f43f5e;
+      --red-d:      #e11d48;
+      --red-bg:     #fff1f2;
+      --red-b:      #fecdd3;
+
+      --blue:       #3b82f6;
+      --blue-d:     #2563eb;
+      --blue-bg:    #eff6ff;
+      --blue-b:     #bfdbfe;
+
+      --brand:      #6366f1;
+      --brand-d:    #4f46e5;
+      --brand-bg:   #eef2ff;
+      --brand-b:    #c7d2fe;
+
+      --sh-xs:    0 1px 2px rgba(15,23,42,.04);
+      --sh-sm:    0 1px 3px rgba(15,23,42,.08), 0 1px 2px rgba(15,23,42,.04);
+      --sh:       0 4px 6px rgba(15,23,42,.06), 0 2px 4px rgba(15,23,42,.04);
+      --sh-focus: 0 0 0 3px rgba(99,102,241,.18);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────────────── */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      height: 56px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      box-shadow: var(--sh-xs);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-mark {
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, var(--brand) 0%, var(--blue-d) 100%);
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.5px;
+      flex-shrink: 0;
+      box-shadow: 0 2px 4px rgba(99,102,241,.35);
+    }
+
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 14px;
+    }
+    .breadcrumb .b-brand { font-weight: 700; color: var(--text); }
+    .breadcrumb .b-sep   { color: var(--border); font-size: 18px; font-weight: 300; }
+    .breadcrumb .b-page  { font-weight: 500; color: var(--muted); }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .live-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 11px;
+      background: var(--green-bg);
+      border: 1px solid var(--green-b);
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--green-d);
+    }
+    .live-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: blink 2s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.45;transform:scale(.75)} }
+
+    #last-updated { font-size: 12px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+
+    /* ── Replay burst button ───────────────────────────────────────────────── */
+    .replay-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 13px;
+      background: var(--brand-bg);
+      border: 1px solid var(--brand-b);
+      border-radius: 8px;
+      color: var(--brand-d);
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .15s, color .15s, box-shadow .15s;
+    }
+    .replay-btn:hover:not(:disabled) { background: var(--brand); color: #fff; border-color: var(--brand); }
+    .replay-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .replay-spinner {
+      width: 11px; height: 11px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      display: none;
+      animation: rspin .65s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes rspin { to { transform: rotate(360deg); } }
+    .replay-btn.running .replay-spinner { display: block; }
+
+    /* ── Toast notification ────────────────────────────────────────────────── */
+    #replay-toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--text);
+      color: #fff;
+      padding: 11px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      box-shadow: var(--sh);
+      z-index: 1000;
+      max-width: 380px;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity .2s ease, transform .2s ease;
+      pointer-events: none;
+    }
+    #replay-toast.visible { opacity: 1; transform: translateY(0); }
+
+    /* ── KPI strip ─────────────────────────────────────────────────────────── */
+    .kpi-strip {
+      display: flex;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .kpi-card {
+      flex: 1;
+      padding: 18px 26px 16px;
+      border-right: 1px solid var(--border);
+      position: relative;
+    }
+    .kpi-card:last-child { border-right: none; }
+
+    .kpi-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .kpi-value {
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: -.75px;
+      line-height: 1;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    .kpi-value.green { color: var(--green-d); }
+    .kpi-value.amber { color: var(--amber-d); }
+    .kpi-value.red   { color: var(--red-d);   }
+    .kpi-value.blue  { color: var(--blue-d);  }
+
+    .kpi-sub {
+      font-size: 11px;
+      color: var(--subtle);
+      margin-top: 5px;
+      font-weight: 500;
+      min-height: 14px;
+    }
+
+    /* ── Main ──────────────────────────────────────────────────────────────── */
+    main {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 32px 28px 56px;
+    }
+
+    section { margin-bottom: 36px; }
+
+    .section-hd {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .section-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 9px;
+      border-radius: 12px;
+      background: var(--brand-bg);
+      color: var(--brand-d);
+      border: 1px solid var(--brand-b);
+    }
+
+    /* ── Agent grid ────────────────────────────────────────────────────────── */
+    .agent-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 16px;
+    }
+
+    /* Card */
+    .agent-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left-width: 4px;
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      box-shadow: var(--sh-xs);
+      transition: box-shadow .15s, transform .15s;
+    }
+    .agent-card:hover { box-shadow: var(--sh); transform: translateY(-2px); }
+
+    .agent-card.s-green { border-left-color: var(--green); }
+    .agent-card.s-amber { border-left-color: var(--amber); }
+    .agent-card.s-red   { border-left-color: var(--red);   }
+    .agent-card.s-blue  { border-left-color: var(--blue);  }
+
+    /* Card head */
+    .card-head {
+      padding: 15px 18px 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-2);
+    }
+
+    .agent-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+      letter-spacing: .01em;
+    }
+
+    .s-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 20px;
+    }
+    .s-chip.green { background: var(--green-bg); color: var(--green-d); border: 1px solid var(--green-b); }
+    .s-chip.amber { background: var(--amber-bg); color: var(--amber-d); border: 1px solid var(--amber-b); }
+    .s-chip.red   { background: var(--red-bg);   color: var(--red-d);   border: 1px solid var(--red-b);   }
+    .s-chip.blue  { background: var(--blue-bg);  color: var(--blue-d);  border: 1px solid var(--blue-b);  }
+    .s-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+    /* Card body */
+    .card-body { padding: 16px 18px 14px; }
+
+    /* 4-col mini stats */
+    .mini-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      border: 1px solid var(--border-2);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .ms {
+      padding: 10px 8px;
+      text-align: center;
+      border-right: 1px solid var(--border-2);
+    }
+    .ms:last-child { border-right: none; }
+    .ms-lbl {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--subtle);
+      margin-bottom: 4px;
+    }
+    .ms-val {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -.3px;
+      color: var(--text-2);
+      font-variant-numeric: tabular-nums;
+    }
+    .ms-val.danger { color: var(--red-d); }
+    .ms-val.warn   { color: var(--amber-d); }
+
+    /* p95 row */
+    .p95-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--border-2);
+    }
+    .p95-lbl { font-size: 12px; color: var(--muted); font-weight: 500; }
+    .p95-val { font-size: 13px; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+    /* Progress rows */
+    .prog { margin-bottom: 10px; }
+    .prog:last-of-type { margin-bottom: 0; }
+
+    .prog-hd {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 5px;
+    }
+    .prog-name {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--muted);
+    }
+    .prog-meta {
+      font-size: 11px;
+      color: var(--subtle);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .prog-track {
+      height: 6px;
+      background: var(--border-2);
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .prog-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width .5s ease, background-color .3s;
+    }
+
+    .card-hint {
+      text-align: center;
+      font-size: 11px;
+      color: var(--subtle);
+      margin-top: 12px;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .agent-card:hover .card-hint { opacity: 1; }
+
+    /* ── Fairness / blast-radius tags ─────────────────────────────────────── */
+    .tag-row { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
+
+    .tag {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+    .tag-fairness { background: var(--amber-bg); color: var(--amber-d); border: 1px solid var(--amber-b); }
+    .tag-critical { background: var(--red-bg);   color: var(--red-d);   border: 1px solid var(--red-b);   }
+
+    /* ── In-flight concurrency row ─────────────────────────────────────────── */
+    .inflight-meta { font-size: 11px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+    .inflight-meta .at-limit { color: var(--red-d); font-weight: 700; }
+
+    /* ── Config form: checkbox field ───────────────────────────────────────── */
+    .field-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-top: 22px; /* vertically align with inputs */
+    }
+    .field-check input[type="checkbox"] {
+      width: 16px; height: 16px;
+      accent-color: var(--brand);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .field-check label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-2);
+      cursor: pointer;
+      text-transform: none;
+      letter-spacing: 0;
+      line-height: 1.4;
+    }
+
+    /* ── Advisory section (per-agent recommendation) ──────────────────────── */
+    .advisory {
+      border-top: 1px solid var(--border-2);
+      padding-top: 9px;
+      margin-top: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .advisory-hd {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--subtle);
+    }
+    .advisory.warn .advisory-hd { color: var(--amber-d); }
+    .advisory-body { font-size: 12px; line-height: 1.4; }
+    .advisory-ok   { color: var(--green-d); font-weight: 500; }
+    .advisory-dim  { color: var(--subtle);  font-style: italic; }
+    .advisory-suggested { color: var(--text-2); }
+    .advisory-suggested b { color: var(--amber-d); font-weight: 700; }
+    .advisory-rationale { font-size: 11px; color: var(--muted); margin-top: 1px; line-height: 1.4; }
+
+    /* ── SLO status row (inside agent card) ───────────────────────────────── */
+    .slo-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 0 0;
+      margin-top: 2px;
+      border-top: 1px solid var(--border-2);
+    }
+    .slo-lbl {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 500;
+      flex-shrink: 0;
+    }
+    .slo-val {
+      font-size: 12px;
+      font-weight: 600;
+      text-align: right;
+    }
+    .slo-ok        { color: var(--green-d); }
+    .slo-breaching { color: var(--red-d); }
+    .slo-unknown   { color: var(--subtle); font-weight: 500; }
+
+    /* ── Workflow dedupe row (inside agent card) ───────────────────────────── */
+    .dedupe-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 0 0;
+      margin-top: 2px;
+      border-top: 1px solid var(--border-2);
+    }
+    .dedupe-lbl {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .dedupe-lbl::before {
+      content: '';
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--brand);
+      opacity: .7;
+    }
+    .dedupe-val        { font-size: 13px; font-weight: 700; color: var(--brand-d); font-variant-numeric: tabular-nums; }
+    .dedupe-val.zero   { font-weight: 500; color: var(--subtle); }
+
+    /* ── KPI strip: workflow dedupe sub-note ───────────────────────────────── */
+    .kpi-dedupe {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--brand-d);
+      margin-top: 3px;
+      min-height: 14px;
+    }
+
+    /* ── Empty state ───────────────────────────────────────────────────────── */
+    .empty-state {
+      grid-column: 1 / -1;
+      padding: 52px 24px;
+      text-align: center;
+      background: var(--surface);
+      border: 1.5px dashed var(--border);
+      border-radius: 12px;
+    }
+    .empty-state p { font-size: 14px; font-weight: 500; color: var(--muted); }
+    .empty-state code {
+      font-family: 'SF Mono', 'Consolas', monospace;
+      background: var(--border-2);
+      border: 1px solid var(--border);
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 12px;
+      color: var(--brand-d);
+    }
+
+    /* ── Config panel ──────────────────────────────────────────────────────── */
+    .config-panel {
+      max-width: 640px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--sh-xs);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      padding: 16px 22px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+    }
+    .panel-head h3 { font-size: 13px; font-weight: 700; color: var(--text-2); }
+    .panel-head p  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    .panel-body { padding: 20px 22px; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 0;
+    }
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field.full { grid-column: span 2; }
+
+    .field label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+    }
+    .field input {
+      width: 100%;
+      background: var(--bg);
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 9px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s, background .15s;
+    }
+    .field input:focus {
+      border-color: var(--brand);
+      box-shadow: var(--sh-focus);
+      background: var(--surface);
+    }
+    .field input::placeholder { color: var(--subtle); }
+
+    .panel-foot {
+      padding: 14px 22px;
+      background: var(--surface-2);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .btn {
+      background: var(--brand);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      letter-spacing: .01em;
+      transition: background .15s, box-shadow .15s, transform .1s;
+      white-space: nowrap;
+    }
+    .btn:hover  { background: var(--brand-d); box-shadow: var(--sh-sm); }
+    .btn:active { transform: scale(.97); }
+
+    #cfg-msg {
+      font-size: 12px;
+      font-weight: 600;
+      min-height: 16px;
+      flex: 1;
+    }
+    #cfg-msg.ok  { color: var(--green-d); }
+    #cfg-msg.err { color: var(--red-d);   }
+
+    /* ── Responsive ────────────────────────────────────────────────────────── */
+    @media (max-width: 720px) {
+      .kpi-strip { flex-wrap: wrap; }
+      .kpi-card  { min-width: 50%; border-bottom: 1px solid var(--border); }
+      .form-grid { grid-template-columns: 1fr; }
+      .field.full { grid-column: span 1; }
+      .mini-stats { grid-template-columns: repeat(2, 1fr); }
+      .ms:nth-child(2) { border-right: none; }
+      header { padding: 0 16px; }
+      main   { padding: 20px 16px 40px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="header-left">
+    <div class="logo-mark">N</div>
+    <nav class="breadcrumb">
+      <span class="b-brand">Nasiko</span>
+      <span class="b-sep">/</span>
+      <span class="b-page">Resilient Request Layer</span>
+    </nav>
+  </div>
+  <div class="header-right">
+    <button class="replay-btn" id="replay-btn">
+      <span class="replay-spinner"></span>
+      <span class="replay-label">⚡ Replay Burst</span>
+    </button>
+    <div class="live-pill"><span class="live-dot"></span>Live</div>
+    <span id="last-updated">Connecting…</span>
+  </div>
+</header>
+
+<!-- ── KPI strip ───────────────────────────────────────────────────────────── -->
+<div class="kpi-strip">
+  <div class="kpi-card">
+    <div class="kpi-label">Total Requests</div>
+    <div class="kpi-value" id="kpi-reqs">—</div>
+    <div class="kpi-sub">all time, this session</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Cache Hit Rate</div>
+    <div class="kpi-value" id="kpi-rate">—</div>
+    <div class="kpi-sub" id="kpi-rate-sub"></div>
+    <div class="kpi-dedupe" id="kpi-dedupe-note"></div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Cache Hits</div>
+    <div class="kpi-value green" id="kpi-hits">—</div>
+    <div class="kpi-sub">agent call eliminated</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Cache Misses</div>
+    <div class="kpi-value amber" id="kpi-misses">—</div>
+    <div class="kpi-sub">forwarded to agent</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Live Entries</div>
+    <div class="kpi-value blue" id="kpi-entries">—</div>
+    <div class="kpi-sub">60 s TTL, auto-evicted</div>
+  </div>
+</div>
+
+<!-- ── Main ────────────────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- Agent Fleet -->
+  <section>
+    <div class="section-hd">
+      <span class="section-title">Agent Fleet</span>
+      <span class="section-badge" id="agent-count">—</span>
+    </div>
+    <div class="agent-grid" id="agent-grid">
+      <div class="empty-state">
+        <p>No agent data yet</p>
+        <p style="margin-top:10px;font-size:12px;color:var(--subtle)">
+          Send <code>POST /request</code> with <code>agent_id</code> and <code>input</code> to populate this view.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Configure Agent -->
+  <section>
+    <div class="section-hd">
+      <span class="section-title">Configure Agent</span>
+    </div>
+    <div class="config-panel">
+      <div class="panel-head">
+        <h3>Rate Limiter &amp; Queue Settings</h3>
+        <p>Changes apply immediately — no restart needed. Click an agent card above to pre-fill the ID.</p>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field full">
+            <label>Agent ID</label>
+            <input id="cfg-id" type="text" placeholder="e.g. agent_fast" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Capacity (tokens)</label>
+            <input id="cfg-capacity" type="number" min="1" step="1" placeholder="10" />
+          </div>
+          <div class="field">
+            <label>Refill Rate (tokens / sec)</label>
+            <input id="cfg-refill" type="number" min="0.1" step="0.1" placeholder="2" />
+          </div>
+          <div class="field">
+            <label>Max Queue Length</label>
+            <input id="cfg-queue" type="number" min="0" step="1" placeholder="50" />
+          </div>
+          <div class="field">
+            <label>Max Concurrent</label>
+            <input id="cfg-concurrent" type="number" min="1" step="1" placeholder="10" />
+          </div>
+          <div class="field">
+            <label>Min Tokens Reserved</label>
+            <input id="cfg-reserve" type="number" min="0" step="1" placeholder="0" />
+          </div>
+          <div class="field-check">
+            <input id="cfg-critical" type="checkbox" />
+            <label for="cfg-critical">Critical agent — protected capacity floor</label>
+          </div>
+          <div class="field">
+            <label>SLO p95 target (ms)</label>
+            <input id="cfg-slo-p95" type="number" min="1" step="1" placeholder="e.g. 200" />
+          </div>
+          <div class="field">
+            <label>SLO label</label>
+            <input id="cfg-slo-label" type="text" placeholder="e.g. Interactive" />
+          </div>
+        </div>
+      </div>
+      <div class="panel-foot">
+        <span id="cfg-msg"></span>
+        <button class="btn" id="cfg-submit">Apply Changes</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div id="replay-toast"></div>
+<script src="/dashboard.js"></script>
+</body>
+</html>
