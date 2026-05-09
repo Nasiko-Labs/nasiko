@@ -1,0 +1,17 @@
+services:
+  nasiko-traffic-agent:
+    build: .
+    container_name: nasiko-traffic-agent
+    stdin_open: true
+    ports:
+      - "5000"
+    tty: true
+    networks:
+      - agents-net
+      - app-network
+
+networks:
+  agents-net:
+    external: true
+  app-network:
+    external: true

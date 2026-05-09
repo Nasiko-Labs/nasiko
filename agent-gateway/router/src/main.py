@@ -3,16 +3,22 @@ Refactored main router application with modular architecture.
 """
 
 import logging
+import os
+from contextlib import asynccontextmanager
 from io import BytesIO
 from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+import redis.asyncio as aioredis
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 
+from router.src.api import create_monitoring_router
 from router.src.config import settings
+from router.src.core import AgentHealthTracker, AgentRateLimiter, AgentResponseCache, EventEmitter
 from router.src.entities import UserRequest
 from router.src.services import RouterOrchestrator
 
@@ -26,11 +32,75 @@ logger = logging.getLogger(__name__)
 # Security
 security = HTTPBearer()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start Redis-backed services on startup and close cleanly on shutdown."""
+    redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    emitter = EventEmitter(redis_client)
+
+    cache = (
+        AgentResponseCache(
+            redis_client,
+            settings.CACHE_DEFAULT_TTL,
+            settings.MODEL_VERSION,
+            settings.PROMPT_VERSION,
+            emitter=emitter,
+        )
+        if settings.CACHE_ENABLED
+        else None
+    )
+
+    rate_limiter = (
+        AgentRateLimiter(
+            redis_client,
+            settings.RATE_LIMIT_DEFAULT_RPM,
+            settings.RATE_LIMIT_MAX_QUEUE_SIZE,
+            settings.RATE_LIMIT_QUEUE_TIMEOUT,
+            emitter=emitter,
+        )
+        if settings.RATE_LIMIT_ENABLED
+        else None
+    )
+
+    health = (
+        AgentHealthTracker(redis_client, settings.RATE_LIMIT_MAX_QUEUE_SIZE)
+        if settings.HEALTH_ENABLED
+        else None
+    )
+
+    app.state.orchestrator = RouterOrchestrator(
+        emitter=emitter, cache=cache, rate_limiter=rate_limiter, health=health
+    )
+    app.include_router(
+        create_monitoring_router(cache, rate_limiter, health, emitter),
+        prefix="/monitoring",
+    )
+
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    if os.path.isdir(static_dir):
+        app.mount("/dashboard", StaticFiles(directory=static_dir, html=True), name="dashboard")
+        logger.info(f"Dashboard mounted at /dashboard from {static_dir}")
+
+    logger.info(
+        f"Router started — cache={'on' if cache else 'off'}, "
+        f"rate_limit={'on' if rate_limiter else 'off'}, "
+        f"health={'on' if health else 'off'}"
+    )
+
+    yield
+
+    await redis_client.aclose()
+    logger.info("Redis connection closed")
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Nasiko Router Service",
-    description="AI-powered agent routing service",
-    version="2.0.0",
+    description="AI-powered agent routing service with caching, rate limiting, and health tracking",
+    version="3.0.0",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -42,15 +112,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize orchestrator
-orchestrator = RouterOrchestrator()
-
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
     try:
-        health_status = await orchestrator.health_check()
+        health_status = await app.state.orchestrator.health_check()
         return health_status
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -58,7 +125,7 @@ async def health_check():
 
 
 @app.get("/router/health")
-async def health():
+async def router_health():
     return {"status": "ok"}
 
 
@@ -77,40 +144,25 @@ async def process_request(
     """
     Process a user request through the router pipeline.
 
-    Args:
-        session_id: Unique session identifier
-        query: User query text
-        route: Optional direct route to specific agent
-        files: Optional files to upload
-        credentials: Bearer token credentials
-
     Returns:
         Streaming response with router processing updates
-
-    Raises:
-        HTTPException: For validation or processing errors
     """
     try:
-        # Validate inputs
         validation_error = _validate_inputs(session_id, query)
         if validation_error:
             logger.error(f"Validation error: {validation_error}")
             raise HTTPException(status_code=400, detail=validation_error)
 
-        # Process files
         files_to_forward = await _process_files(files)
 
-        # Create request object
         request = UserRequest(session_id=session_id, query=query, route=route)
         logger.info(f"Processing request: {request}")
         logger.info(f"Files count: {len(files_to_forward)}")
 
-        # Extract token
         token = credentials.credentials
 
-        # Process through orchestrator
         return StreamingResponse(
-            orchestrator.process_request(request, files_to_forward, token),
+            app.state.orchestrator.process_request(request, files_to_forward, token),
             media_type="application/json",
         )
 
@@ -123,50 +175,20 @@ async def process_request(
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
-    return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
-    }
+    """Redirect to the monitoring overview endpoint."""
+    return RedirectResponse(url="/monitoring/overview")
 
 
 def _validate_inputs(session_id: str, query: str) -> Optional[str]:
-    """
-    Validate request inputs.
-
-    Args:
-        session_id: Session identifier
-        query: User query
-
-    Returns:
-        Error message if validation fails, None otherwise
-    """
     if not session_id or not session_id.strip():
         return "session_id cannot be empty"
     logger.info(f"Session id: {session_id}")
-
     if not query or not query.strip():
         return "query cannot be empty"
-
     return None
 
 
 async def _process_files(files: Optional[List[UploadFile]]) -> List[tuple]:
-    """
-    Process uploaded files for forwarding.
-
-    Args:
-        files: List of uploaded files
-
-    Returns:
-        List of file tuples ready for forwarding
-
-    Raises:
-        HTTPException: If file processing fails
-    """
     files_to_forward = []
 
     if not files:

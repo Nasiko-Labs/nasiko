@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nasiko Router — Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+
+  header { background: #1e293b; border-bottom: 1px solid #334155; padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 1.25rem; font-weight: 600; color: #f8fafc; }
+  #status-badge { padding: 4px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+  .healthy  { background: #166534; color: #bbf7d0; }
+  .degraded { background: #854d0e; color: #fef08a; }
+  .overloaded { background: #7f1d1d; color: #fca5a5; }
+
+  .kpi-bar { display: flex; gap: 16px; padding: 16px 24px; background: #1e293b; border-bottom: 1px solid #334155; flex-wrap: wrap; }
+  .kpi { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px 20px; min-width: 160px; }
+  .kpi label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; display: block; margin-bottom: 4px; }
+  .kpi span  { font-size: 1.5rem; font-weight: 700; color: #f1f5f9; }
+
+  main { display: grid; grid-template-columns: 280px 1fr; grid-template-rows: auto auto; gap: 16px; padding: 16px 24px; }
+
+  .chart-box { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+  .chart-box h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; margin-bottom: 12px; }
+  canvas { max-height: 220px; }
+
+  .agents-section { grid-column: 1 / -1; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+  .agents-section h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; margin-bottom: 12px; }
+  .agent-cards { display: flex; gap: 12px; flex-wrap: wrap; }
+  .agent-card { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 12px 16px; min-width: 220px; }
+  .agent-card .name { font-size: 0.85rem; font-weight: 600; color: #e2e8f0; margin-bottom: 6px; }
+  .agent-card .meta { font-size: 0.72rem; color: #64748b; line-height: 1.7; }
+  .agent-card .score { font-size: 1.1rem; font-weight: 700; }
+  .score-good { color: #4ade80; }
+  .score-warn { color: #facc15; }
+  .score-bad  { color: #f87171; }
+
+  .events-section { grid-column: 1 / -1; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+  .events-section h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; margin-bottom: 12px; }
+  #event-log { font-family: 'Courier New', monospace; font-size: 0.78rem; max-height: 320px; overflow-y: auto; }
+  .event { display: grid; grid-template-columns: 70px 160px 1fr 80px; gap: 8px; padding: 5px 8px; border-radius: 4px; align-items: center; margin-bottom: 2px; }
+  .event:hover { background: #0f172a; }
+  .event .ts   { color: #64748b; }
+  .event .type { font-weight: 600; }
+  .event .agent-name { color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .event .lat  { color: #64748b; text-align: right; }
+
+  .cache_hit        .type { color: #4ade80; }
+  .cache_miss       .type { color: #94a3b8; }
+  .rate_limited     .type { color: #f87171; }
+  .fallback_triggered .type { color: #fb923c; }
+  .request_completed  .type { color: #60a5fa; }
+  .agent_selected   .type { color: #a78bfa; }
+  .queued           .type { color: #facc15; }
+
+  #last-updated { font-size: 0.65rem; color: #475569; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Nasiko Router — Live Dashboard</h1>
+  <span id="status-badge" class="healthy">healthy</span>
+  <span id="last-updated">updating…</span>
+</header>
+
+<div class="kpi-bar">
+  <div class="kpi"><label>Cache Hit Rate</label><span id="kpi-hit-rate">—</span></div>
+  <div class="kpi"><label>LLM Calls Saved</label><span id="kpi-saved">—</span></div>
+  <div class="kpi"><label>Compute Saved (ms)</label><span id="kpi-compute">—</span></div>
+  <div class="kpi"><label>Avg Latency (uncached)</label><span id="kpi-latency">—</span></div>
+  <div class="kpi"><label>Queue Depth</label><span id="kpi-queue">—</span></div>
+  <div class="kpi"><label>Total Requests</label><span id="kpi-total">—</span></div>
+</div>
+
+<main>
+  <div class="chart-box">
+    <h2>Hit Rate</h2>
+    <canvas id="donut-chart"></canvas>
+  </div>
+
+  <div class="chart-box">
+    <h2>Cache Hit / Miss Timeline (last 30 events)</h2>
+    <canvas id="timeline-chart"></canvas>
+  </div>
+
+  <div class="agents-section">
+    <h2>Agent Health</h2>
+    <div class="agent-cards" id="agent-cards">—</div>
+  </div>
+
+  <div class="events-section">
+    <h2>Live Event Stream (real Redis events — no inference)</h2>
+    <div id="event-log"></div>
+  </div>
+</main>
+
+<script>
+const donutCtx = document.getElementById('donut-chart').getContext('2d');
+const donut = new Chart(donutCtx, {
+  type: 'doughnut',
+  data: {
+    labels: ['Hit', 'Miss'],
+    datasets: [{ data: [0, 1], backgroundColor: ['#4ade80', '#334155'], borderWidth: 0 }]
+  },
+  options: { responsive: true, plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } } }
+});
+
+const tlCtx = document.getElementById('timeline-chart').getContext('2d');
+const timeline = new Chart(tlCtx, {
+  type: 'bar',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'Cache Hit',  data: [], backgroundColor: '#4ade80' },
+      { label: 'Cache Miss', data: [], backgroundColor: '#475569' },
+    ]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      x: { stacked: true, ticks: { color: '#475569', maxRotation: 0 }, grid: { color: '#1e293b' } },
+      y: { stacked: true, ticks: { color: '#475569', stepSize: 1 }, grid: { color: '#334155' } }
+    },
+    plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } }
+  }
+});
+
+async function updateOverview() {
+  try {
+    const [ovr, imp] = await Promise.all([
+      fetch('/monitoring/overview').then(r => r.json()),
+      fetch('/monitoring/impact').then(r => r.json()),
+    ]);
+
+    const badge = document.getElementById('status-badge');
+    badge.textContent = ovr.status;
+    badge.className = ovr.status;
+
+    document.getElementById('kpi-hit-rate').textContent =
+      ovr.cache_hit_rate != null ? (ovr.cache_hit_rate * 100).toFixed(1) + '%' : '—';
+    document.getElementById('kpi-saved').textContent = imp.llm_calls_saved ?? '—';
+    document.getElementById('kpi-compute').textContent =
+      imp.compute_saved_estimate_ms != null ? imp.compute_saved_estimate_ms.toLocaleString() : '—';
+    document.getElementById('kpi-latency').textContent =
+      imp.avg_latency_uncached_ms != null ? imp.avg_latency_uncached_ms.toFixed(0) + 'ms' : '—';
+    document.getElementById('kpi-queue').textContent = ovr.queue_depth_total ?? '—';
+    document.getElementById('kpi-total').textContent = ovr.total_requests ?? '—';
+
+    const hits = imp.llm_calls_saved ?? 0;
+    const total = ovr.total_requests ?? 0;
+    const misses = total - hits;
+    donut.data.datasets[0].data = [hits, Math.max(0, misses)];
+    donut.update('none');
+  } catch (e) { console.warn('overview fetch failed', e); }
+}
+
+async function updateAgents() {
+  try {
+    const { agents } = await fetch('/monitoring/agents/health').then(r => r.json());
+    const container = document.getElementById('agent-cards');
+    if (!agents || !Object.keys(agents).length) { container.innerHTML = '<span style="color:#475569">No agents registered yet</span>'; return; }
+    container.innerHTML = Object.entries(agents).map(([name, d]) => {
+      const score = d.health_score ?? 0;
+      const cls = score >= 0.6 ? 'score-good' : score >= 0.3 ? 'score-warn' : 'score-bad';
+      const icon = score >= 0.6 ? '✅' : score >= 0.3 ? '⚠️' : '❌';
+      return `<div class="agent-card">
+        <div class="name">${name}</div>
+        <div class="meta">
+          Score: <span class="score ${cls}">${score.toFixed(2)} ${icon}</span><br>
+          Avg latency: ${d.avg_latency_ms ? d.avg_latency_ms.toFixed(0) + 'ms' : '—'}<br>
+          Requests: ${d.total ?? 0} &nbsp; Failures: ${d.failures ?? 0}
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) { console.warn('agents fetch failed', e); }
+}
+
+async function updateEvents() {
+  try {
+    const { events } = await fetch('/monitoring/events').then(r => r.json());
+    if (!events) return;
+
+    // Render events DIRECTLY from Redis — no delta inference, no computed fields
+    document.getElementById('event-log').innerHTML = events.map(e => {
+      const ts = e.ts ? e.ts.slice(11, 19) : '';
+      const typeLabel = (e.type || '').toUpperCase().replace(/_/g, ' ');
+      const lat = e.latency_ms != null ? e.latency_ms.toFixed(0) + 'ms' : '';
+      return `<div class="event ${e.type || ''}">
+        <span class="ts">${ts}</span>
+        <span class="type">${typeLabel}</span>
+        <span class="agent-name">${e.agent || ''}</span>
+        <span class="lat">${lat}</span>
+      </div>`;
+    }).join('');
+
+    // Build 30-second hit/miss buckets from raw events
+    const now = Date.now();
+    const buckets = {};
+    for (let i = 29; i >= 0; i--) {
+      const label = i === 0 ? 'now' : `-${i}s`;
+      buckets[label] = { hit: 0, miss: 0 };
+    }
+    events.forEach(e => {
+      if (e.type !== 'cache_hit' && e.type !== 'cache_miss') return;
+      const age = Math.round((now - new Date(e.ts).getTime()) / 1000);
+      if (age > 29) return;
+      const label = age === 0 ? 'now' : `-${age}s`;
+      if (buckets[label]) {
+        e.type === 'cache_hit' ? buckets[label].hit++ : buckets[label].miss++;
+      }
+    });
+    timeline.data.labels = Object.keys(buckets);
+    timeline.data.datasets[0].data = Object.values(buckets).map(b => b.hit);
+    timeline.data.datasets[1].data = Object.values(buckets).map(b => b.miss);
+    timeline.update('none');
+  } catch (e) { console.warn('events fetch failed', e); }
+}
+
+async function tick() {
+  await Promise.all([updateOverview(), updateAgents(), updateEvents()]);
+  document.getElementById('last-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+}
+
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
