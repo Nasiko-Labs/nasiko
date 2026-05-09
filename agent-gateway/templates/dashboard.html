@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Gateway - Live Monitor</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 0 24px;
+      border-bottom: 1px solid #30363d;
+    }
+
+    .title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0;
+      line-height: 1.2;
+    }
+
+    .pulse-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: #00ff88;
+      box-shadow: 0 0 0 rgba(0, 255, 136, 0.7);
+      animation: pulse 1.4s infinite;
+      flex: 0 0 auto;
+    }
+
+    @keyframes pulse {
+      0% {
+        box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.55);
+      }
+      70% {
+        box-shadow: 0 0 0 10px rgba(0, 255, 136, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(0, 255, 136, 0);
+      }
+    }
+
+    .last-refresh {
+      color: #8b949e;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 24px 0;
+    }
+
+    .card,
+    .panel,
+    .activity-log {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+    }
+
+    .card {
+      padding: 18px;
+      min-height: 112px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .label {
+      color: #8b949e;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .value {
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1;
+      color: #e6edf3;
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: 0.85fr 1.15fr;
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .panel {
+      padding: 20px;
+      min-height: 290px;
+    }
+
+    .panel h2,
+    .activity-log h2 {
+      margin: 0 0 18px;
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .hit-miss {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      height: calc(100% - 42px);
+      min-height: 190px;
+    }
+
+    .metric-block {
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      padding: 18px;
+      background: #0d1117;
+    }
+
+    .metric-block .metric-title {
+      color: #8b949e;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .metric-number {
+      font-size: 58px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    #cache-hits {
+      color: #00ff88;
+    }
+
+    #cache-misses {
+      color: #ff4444;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      overflow: hidden;
+      border-radius: 8px;
+    }
+
+    th,
+    td {
+      padding: 12px;
+      border-bottom: 1px solid #30363d;
+      text-align: left;
+      font-size: 14px;
+      word-break: break-word;
+    }
+
+    th {
+      color: #8b949e;
+      font-weight: 700;
+      background: #0d1117;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #0d1117;
+      background: #00ff88;
+    }
+
+    .status.queued {
+      background: #ff8c00;
+    }
+
+    .queue-warn {
+      background: rgba(255, 140, 0, 0.22);
+      color: #ffd19a;
+    }
+
+    .queue-hot {
+      background: rgba(255, 68, 68, 0.28);
+      color: #ffb3b3;
+    }
+
+    .empty {
+      color: #8b949e;
+      text-align: center;
+      padding: 32px 12px;
+    }
+
+    .activity-log {
+      margin-top: 16px;
+      padding: 20px;
+    }
+
+    #activity-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    #activity-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 12px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-size: 14px;
+    }
+
+    .rate {
+      font-weight: 800;
+    }
+
+    @media (max-width: 860px) {
+      .stats-grid,
+      .content-grid {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .last-refresh {
+        white-space: normal;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .hit-miss {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 23px;
+      }
+
+      .value {
+        font-size: 30px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div class="title-wrap">
+        <span id="live-dot" class="pulse-dot"></span>
+        <h1>Agent Gateway &mdash; Live Monitor</h1>
+      </div>
+      <div id="last-refresh" class="last-refresh">Waiting for first refresh</div>
+    </header>
+
+    <section class="stats-grid" aria-label="Gateway statistics">
+      <article class="card">
+        <div class="label">Total Requests</div>
+        <div id="total-requests" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Hit Rate %</div>
+        <div id="hit-rate" class="value">0.0%</div>
+      </article>
+      <article class="card">
+        <div class="label">Total Queued</div>
+        <div id="total-queued" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Agents Tracked</div>
+        <div id="agents-tracked" class="value">0</div>
+      </article>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel">
+        <h2>Cache Balance</h2>
+        <div class="hit-miss">
+          <div class="metric-block">
+            <div class="metric-title">HITS</div>
+            <div id="cache-hits" class="metric-number">0</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-title">MISSES</div>
+            <div id="cache-misses" class="metric-number">0</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Agents</h2>
+        <table>
+          <thead>
+            <tr>
+              <th id="agent-col">Agent</th>
+              <th id="requests-col">Requests</th>
+              <th id="queue-col">Queue Depth</th>
+              <th id="status-col">Status</th>
+            </tr>
+          </thead>
+          <tbody id="agent-table-body">
+            <tr>
+              <td class="empty" colspan="4">No agent traffic yet</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+
+    <section class="activity-log">
+      <h2>Activity Log</h2>
+      <ul id="activity-list"></ul>
+    </section>
+  </main>
+
+  <script>
+    const activity = [];
+
+    const elements = {
+      totalRequests: document.getElementById("total-requests"),
+      hitRate: document.getElementById("hit-rate"),
+      totalQueued: document.getElementById("total-queued"),
+      agentsTracked: document.getElementById("agents-tracked"),
+      cacheHits: document.getElementById("cache-hits"),
+      cacheMisses: document.getElementById("cache-misses"),
+      agentTableBody: document.getElementById("agent-table-body"),
+      activityList: document.getElementById("activity-list"),
+      lastRefresh: document.getElementById("last-refresh")
+    };
+
+    function hitRateColor(rate) {
+      if (rate > 70) return "#00ff88";
+      if (rate >= 40) return "#ff8c00";
+      return "#ff4444";
+    }
+
+    function queueClass(depth) {
+      if (depth > 5) return "queue-hot";
+      if (depth > 0) return "queue-warn";
+      return "";
+    }
+
+    function formatRate(rate) {
+      return `${Number(rate || 0).toFixed(1)}%`;
+    }
+
+    function renderAgents(perAgentRequests, queues) {
+      const agents = Array.from(new Set([
+        ...Object.keys(perAgentRequests || {}),
+        ...Object.keys(queues || {})
+      ])).sort();
+
+      if (agents.length === 0) {
+        elements.agentTableBody.innerHTML = '<tr><td id="agent-empty" class="empty" colspan="4">No agent traffic yet</td></tr>';
+        return;
+      }
+
+      elements.agentTableBody.innerHTML = agents.map((agent) => {
+        const requests = Number(perAgentRequests[agent] || 0);
+        const depth = Number(queues[agent] || 0);
+        const status = depth > 0 ? "Queued" : "Live";
+        const statusClass = depth > 0 ? "status queued" : "status";
+        return `
+          <tr id="agent-row-${agent}">
+            <td id="agent-name-${agent}">${agent}</td>
+            <td id="agent-requests-${agent}">${requests}</td>
+            <td id="agent-queue-${agent}" class="${queueClass(depth)}">${depth}</td>
+            <td id="agent-status-${agent}"><span class="${statusClass}">${status}</span></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function renderActivity(rate) {
+      const now = new Date();
+      activity.unshift({
+        time: now.toLocaleTimeString(),
+        rate: formatRate(rate)
+      });
+
+      if (activity.length > 10) {
+        activity.pop();
+      }
+
+      elements.activityList.innerHTML = activity.map((item, index) => `
+        <li id="activity-${index}">
+          <span id="activity-time-${index}">${item.time}</span>
+          <span id="activity-rate-${index}" class="rate">Hit rate ${item.rate}</span>
+        </li>
+      `).join("");
+
+      elements.lastRefresh.textContent = `Last refresh: ${now.toLocaleString()}`;
+    }
+
+    async function refreshStats() {
+      try {
+        const response = await fetch("/control/stats", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        const cache = data.cache || {};
+        const perAgentRequests = data.per_agent_requests || {};
+        const queues = data.queues || {};
+
+        const hits = Number(cache.hits || 0);
+        const misses = Number(cache.misses || 0);
+        const rate = Number(cache.hit_rate_percent || 0);
+        const totalRequests = Object.values(perAgentRequests).reduce((sum, value) => sum + Number(value || 0), 0);
+        const totalQueued = Object.values(queues).reduce((sum, value) => sum + Number(value || 0), 0);
+        const agentsTracked = new Set([
+          ...Object.keys(perAgentRequests),
+          ...Object.keys(queues)
+        ]).size;
+
+        elements.totalRequests.textContent = totalRequests;
+        elements.hitRate.textContent = formatRate(rate);
+        elements.hitRate.style.color = hitRateColor(rate);
+        elements.totalQueued.textContent = totalQueued;
+        elements.agentsTracked.textContent = agentsTracked;
+        elements.cacheHits.textContent = hits;
+        elements.cacheMisses.textContent = misses;
+
+        renderAgents(perAgentRequests, queues);
+        renderActivity(rate);
+      } catch (error) {
+        elements.lastRefresh.textContent = `Refresh failed: ${error.message}`;
+      }
+    }
+
+    refreshStats();
+    setInterval(refreshStats, 2000);
+  </script>
+</body>
+</html>
