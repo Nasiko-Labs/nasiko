@@ -54,6 +54,10 @@ class CachePolicy:
 
         scope = normalized_headers.get("x-subject-id", "").strip()
         if not scope:
+            authorization = normalized_headers.get("authorization", "").strip()
+            if authorization:
+                scope = f"auth:{hashlib.sha256(authorization.encode('utf-8')).hexdigest()[:16]}"
+        if not scope:
             return CacheDecision(cacheable=False, reason="missing-subject-scope")
 
         params = json_body.get("params")
