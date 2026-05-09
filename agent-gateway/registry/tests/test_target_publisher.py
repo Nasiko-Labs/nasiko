@@ -1,6 +1,45 @@
+import sys
 import time
+from pathlib import Path
 
-from target_publisher import AgentTargetRecord, build_target_record
+REGISTRY_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REGISTRY_DIR))
+
+from target_publisher import AgentTargetRecord, RedisTargetPublisher, build_target_record
+
+
+class FakePipeline:
+    def __init__(self):
+        self.commands = []
+
+    def hset(self, key, mapping):
+        self.commands.append(("hset", key, mapping))
+
+    def sadd(self, key, member):
+        self.commands.append(("sadd", key, member))
+
+    def delete(self, key):
+        self.commands.append(("delete", key))
+
+    def srem(self, key, member):
+        self.commands.append(("srem", key, member))
+
+    def execute(self):
+        self.commands.append(("execute",))
+
+
+class FakeRedisClient:
+    def __init__(self, existing_ids):
+        self.existing_ids = existing_ids
+        self.pipeline_instance = FakePipeline()
+        self.smembers_called = False
+
+    def pipeline(self):
+        return self.pipeline_instance
+
+    def smembers(self, key):
+        self.smembers_called = True
+        return self.existing_ids
 
 
 def test_build_target_record_uses_internal_url_and_revision():
@@ -39,3 +78,14 @@ def test_agent_target_record_serializes_for_redis_hash():
     assert payload["agent_id"] == "agent-a2a-demo"
     assert payload["upstream_url"] == "http://agent-a2a-demo:5000"
     assert "updated_at" in payload
+
+
+def test_empty_publish_does_not_delete_existing_targets():
+    publisher = RedisTargetPublisher.__new__(RedisTargetPublisher)
+    client = FakeRedisClient(existing_ids={"agent-a2a-demo"})
+    publisher.client = client
+
+    publisher.publish([])
+
+    assert client.smembers_called is False
+    assert client.pipeline_instance.commands == [("execute",)]

@@ -77,6 +77,11 @@ class RedisTargetPublisher:
             )
             pipeline.sadd(TARGET_INDEX_KEY, record.agent_id)
 
+        if not records:
+            pipeline.execute()
+            logger.info("Published 0 request-manager target records")
+            return
+
         existing_ids = self.client.smembers(TARGET_INDEX_KEY)
         stale_ids = set(existing_ids) - active_ids
         for stale_id in stale_ids:
