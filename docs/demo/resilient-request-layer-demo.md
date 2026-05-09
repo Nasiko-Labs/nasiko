@@ -126,82 +126,609 @@ Request Manager does not call public Kong `/agents/*` URLs. That avoids a proxy 
 9. Proxy to the internal agent target.
 10. Cache safe successful JSON responses and emit runtime metrics.
 
-### Proposed Solution Components
+### Proposed Solution Components In Detail
 
-#### Kong Gateway
+#### 1. Kong Gateway
 
-Kong remains the single public entry point. It still receives traffic from the Web UI, external clients, and direct `/agents/{agent}` callers. This keeps gateway responsibilities such as public routing and middleware separate from agent execution control.
+Kong remains Nasiko's public entry point. The Web UI, router, and external callers still use the same public gateway URL and the same dynamic agent paths such as `/agents/agent-a2a-translator`.
 
-Why it matters: the solution does not replace Nasiko's gateway. It inserts protection behind the gateway, where the selected agent is known.
+What changed is the upstream behind dynamic agent routes. Before this MVP, each dynamic route pointed directly to the discovered agent container. Now the registry points those dynamic routes to the shared Request Manager service.
 
-#### Router Service
+```text
+Before:
+/agents/agent-a2a-translator -> agent-a2a-translator:5000
 
-The router continues to do what it already does well: understand the user request and choose the right agent. The router contract does not need to change. Once it has selected an agent, it still calls `/agents/{agent}`.
+After:
+/agents/agent-a2a-translator -> nasiko-request-manager:8090
+```
 
-Why it matters: we avoid changing the client and router flow during the MVP, which makes the solution safer to integrate.
+Kong is still responsible for gateway concerns: public route matching, preserving Nasiko's external contract, and forwarding requests. Request Manager is responsible for execution control after the request has already been mapped to a specific agent path.
 
-#### Service Registry
+Why this matters: the solution does not replace Kong or move gateway logic into application code. It uses Kong exactly where Kong is strong, then adds a focused control plane behind it.
 
-The registry keeps discovering agent containers. The new responsibility is that it publishes two things:
+#### 2. Router Service
 
-- Kong route target: dynamic `/agents/{agent}` routes point to Request Manager.
-- Internal agent target: the real container host and port are written into Redis for Request Manager to use.
+The router keeps its original responsibility: choose the best agent for a user request. The router does not need a new client contract and does not need to know the internals of caching, queueing, or circuit breaking.
 
-Why it matters: this avoids a proxy loop. Request Manager does not call Kong again; it calls the internal agent target directly.
+For routed traffic, the router still calls the selected agent path:
 
-#### Request Manager
+```text
+Router -> Kong /agents/{selected_agent}
+```
 
-Request Manager is the new traffic-control service. It sits after Kong and before the agent fleet. It owns cache checks, single-flight dedupe, per-agent limits, bounded queueing, circuit breaking, proxying, and runtime metrics.
+Because Kong now forwards dynamic agent paths to Request Manager, routed requests automatically receive the same protection as direct agent calls.
 
-Why it matters: this is the main layer that turns unprotected agent execution into controlled agent execution.
+Why this matters: both traffic types are protected by one layer:
 
-#### Response Cache
+- Web UI request that goes through router selection.
+- Direct API caller that already knows the target agent and calls `/agents/{agent}`.
 
-The cache stores safe successful agent responses. It is checked before rate limiting and before the agent is called. A cache hit returns immediately.
+#### 3. Service Registry
 
-Why it matters: repeated requests become fast and do not consume agent capacity.
+The registry still discovers agent services from Kubernetes or Docker. In this MVP it has two responsibilities:
 
-#### Cache Policy And Cache Key
+- Register dynamic Kong routes for each agent.
+- Publish the real internal agent target into Redis for Request Manager.
 
-The cache is conservative by design. It only caches text-only A2A `message/send` responses with a user/auth scope. The key includes agent identity, request method, normalized text payload, subject/auth scope, and target revision.
+Kong route registration points every dynamic agent route to Request Manager:
 
-Why it matters: the cache avoids incorrect reuse across users, agents, or agent versions.
+```text
+Kong service: agent-request-manager
+Kong service URL: http://nasiko-request-manager:8090
+Kong route: /agents/{agent_id}
+```
 
-#### Single-Flight Dedupe
+Redis target publishing writes the actual upstream target:
 
-Single-flight handles concurrent identical cache misses. If eight identical requests arrive at the same time and the cache is empty, only the first request calls the agent. The other seven wait for that result.
+```text
+Redis set:
+request-manager:targets
+  members: agent-a2a-translator, agent-demo-request-layer, ...
 
-Why it matters: this solves cache stampede, where a burst of identical misses would otherwise duplicate expensive work.
+Redis hash:
+request-manager:targets:{agent_id}
+  agent_id: agent-a2a-translator
+  public_path: /agents/agent-a2a-translator
+  upstream_url: http://agent-a2a-translator:5000
+  target_revision: <k8s resource_version or docker container id>
+  source: kubernetes | docker
+  namespace: nasiko-agents | docker-agents
+  updated_at: <unix timestamp>
+```
 
-#### Per-Agent Limiter
+There is no TTL on target records. The registry periodically refreshes the target table and removes stale targets when an agent disappears. This is deliberate: target records represent current discovery state, not short-lived request state.
 
-Each agent gets independent traffic limits: concurrency cap, sustained RPS, burst capacity, queue depth, and max queue wait.
+Why this matters: Request Manager can proxy to the real internal container without calling public Kong again. That avoids a loop like `Kong -> Request Manager -> Kong -> Request Manager`.
 
-Why it matters: one overloaded agent cannot consume unlimited platform capacity or affect unrelated agents.
+#### 4. Request Manager Service
 
-#### Bounded FIFO Queue
+Request Manager is a FastAPI service running on port `8090`. On startup it creates:
 
-When an agent is temporarily full, Request Manager waits briefly in a bounded FIFO queue instead of rejecting immediately. If the queue is full or the wait exceeds policy, the request receives controlled backpressure.
+- Redis client with a short Redis timeout.
+- HTTP client for upstream agent calls.
+- Target resolver.
+- Limit resolver.
+- Redis response cache.
+- Cache policy.
+- Single-flight coordinator.
+- Request limiter.
+- Circuit breaker.
+- Metrics recorder.
 
-Why it matters: short spikes are absorbed, but the system still has a hard safety boundary.
+It exposes two kinds of routes:
 
-#### Circuit Breaker
+- Control routes: `/health`, `/control/stats`, `/control/limits`, `/control/cache`, dashboard `/`.
+- Proxy route: `/agents/{path:path}` for all dynamic agent traffic.
 
-If an agent repeatedly fails, Request Manager opens a per-agent circuit and fails fast for a short period.
+Its central job is to take an incoming request and decide:
 
-Why it matters: the platform stops sending more traffic to an agent that is already unhealthy.
+- Can this be served from cache?
+- If not cached, is another identical request already doing the work?
+- Is this agent allowed to take more traffic now?
+- Should the request wait in queue?
+- Is the agent circuit open?
+- Which internal upstream should receive the call?
+- Which metrics and response headers should be emitted?
 
-#### Redis
+#### 5. Target Resolver
 
-Redis is used for shared target discovery, cache storage, runtime limit overrides, counters, and coordination state.
+The target resolver reads the real upstream location from Redis:
 
-Why it matters: the design is ready for more than one Request Manager replica because important state is outside a single process.
+```text
+request-manager:targets:{agent_id}
+```
 
-#### Dashboard And Control APIs
+Example:
 
-The dashboard and `/control/*` APIs expose cache stats, queue behavior, per-agent limits, cache clearing, and runtime configuration.
+```text
+agent_id: agent-a2a-translator
+upstream_url: http://agent-a2a-translator:5000
+target_revision: 8f8e...
+```
 
-Why it matters: operators can see what is happening and change policy without redeploying the stack.
+Request Manager then builds the final upstream URL:
+
+```text
+Incoming: /agents/agent-a2a-translator/
+Resolved upstream: http://agent-a2a-translator:5000/
+```
+
+If Redis is temporarily unavailable, the resolver can use its in-memory copy of the last valid target. If no target exists, Request Manager returns:
+
+```json
+{"error":"agent_target_not_found","agent_id":"agent-a2a-translator"}
+```
+
+Why this matters: target resolution is separated from routing. Kong only knows "send dynamic agent traffic to Request Manager"; Request Manager knows the actual current container target.
+
+#### 6. Limit Resolver And Runtime Configuration
+
+Request Manager starts with environment-backed defaults:
+
+```text
+cache_ttl_seconds: 600
+max_concurrency_per_agent: 2
+sustained_rps_per_agent: 5.0
+burst_capacity_per_agent: 10
+max_queue_depth_per_agent: 20
+max_queue_wait_ms: 10000
+upstream_timeout_seconds: 45
+global_active_cap: 50
+circuit_window_size: 20
+circuit_min_failures: 5
+circuit_failure_ratio: 0.5
+circuit_open_seconds: 30
+singleflight_wait_ms: 10000
+redis_timeout_seconds: 1
+```
+
+Per-agent runtime overrides are stored in Redis:
+
+```text
+Redis hash:
+request-manager:limits:{agent_id}
+  cache_ttl_seconds: 600
+  max_concurrency: 2
+  sustained_rps: 5.0
+  burst_capacity: 10
+  max_queue_depth: 20
+  max_queue_wait_ms: 10000
+  cache_enabled: true
+```
+
+There is no TTL on limits. Limits are operational configuration, so they remain until changed again.
+
+Runtime update example:
+
+```bash
+curl -s -X PUT http://localhost:8090/control/limits/agent-demo-request-layer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "cache_enabled": true,
+    "cache_ttl_seconds": 600,
+    "max_concurrency": 1,
+    "sustained_rps": 1,
+    "burst_capacity": 1,
+    "max_queue_depth": 2,
+    "max_queue_wait_ms": 2000
+  }' | jq
+```
+
+Why this matters: judges can see that operators can tune an individual agent without restarting the stack.
+
+#### 7. Cache Policy
+
+The cache policy decides whether a request is safe to cache. The MVP intentionally caches only conservative read-like requests.
+
+A request is cacheable only when:
+
+- Agent-level `cache_enabled` is true.
+- Request does not include `Cache-Control: no-cache` or `Cache-Control: no-store`.
+- Body is JSON-RPC `2.0`.
+- Method is A2A `message/send`.
+- Request has a user scope from `X-Subject-ID` or an auth-token fingerprint.
+- Message shape is valid.
+- All message parts are text parts.
+
+A request is bypassed when:
+
+- It has non-text parts.
+- It uses an unsupported method.
+- It has missing user/auth scope.
+- The caller explicitly sends `Cache-Control: no-cache` or `no-store`.
+- Cache is disabled for that agent.
+
+Example cacheable request fingerprint:
+
+```json
+{
+  "agent_id": "agent-a2a-translator",
+  "method": "message/send",
+  "scope": "auth:7bbfd6e1c10a2f09",
+  "target_revision": "container-123",
+  "texts": ["translate request manager makes repeated calls fast to spanish"]
+}
+```
+
+The fingerprint is serialized in stable JSON order and hashed with SHA-256. The final cache key is:
+
+```text
+request-manager:cache:{sha256_fingerprint}
+```
+
+Why this matters: a query-only cache would be unsafe. The same text might produce different answers for different users, agents, or agent versions. This cache key protects against those collisions.
+
+#### 8. Response Cache Storage And TTL
+
+Cached responses are stored in Redis as JSON payloads:
+
+```text
+Redis string:
+request-manager:cache:{cache_key}
+  {
+    "status_code": 200,
+    "media_type": "application/json",
+    "headers": {...},
+    "body_b64": "<base64 encoded response body>"
+  }
+```
+
+The TTL comes from the resolved per-agent limit:
+
+```text
+ttl_seconds = limits.cache_ttl_seconds
+default = 600 seconds
+```
+
+So by default, a cached response lives for 10 minutes.
+
+Cache write happens only when:
+
+- The request was cacheable.
+- The upstream agent returned `2xx`.
+- The upstream response content type is JSON.
+
+Cache read happens before single-flight, limiter, queue, circuit breaker, and upstream proxying. That means cache hits do not consume agent concurrency and do not wait in queue.
+
+Cache clear endpoint:
+
+```bash
+curl -s -X DELETE http://localhost:8090/control/cache | jq
+```
+
+Current MVP behavior: global cache clear is implemented. Agent-specific cache clear is intentionally not relied on in the demo because cache keys are hashed and not indexed per agent yet.
+
+#### 9. Single-Flight Coordinator
+
+Single-flight prevents cache stampedes. It is used only for requests that are cacheable and missed the cache.
+
+Redis keys:
+
+```text
+request-manager:singleflight:{cache_key}
+request-manager:singleflight:ready:{cache_key}
+```
+
+Flow:
+
+1. First cache-miss request tries to create `request-manager:singleflight:{cache_key}` with `NX`.
+2. If it succeeds, that request becomes the owner and calls the agent.
+3. If another identical request arrives, it cannot acquire the lock.
+4. The waiter polls `request-manager:singleflight:ready:{cache_key}` every 50ms.
+5. When the owner finishes, it sets the ready key and deletes the lock.
+6. Waiters read the newly cached response and return it.
+
+TTL behavior:
+
+```text
+singleflight lock TTL: max(singleflight_wait_ms, 1000ms)
+default lock TTL: 10000ms
+ready marker TTL: 1000ms
+waiter polling interval: 50ms
+```
+
+If the owner crashes, the lock expires. If waiters do not see readiness before the wait deadline, they receive:
+
+```json
+{"error":"singleflight_timeout","agent_id":"..."}
+```
+
+Why this matters: cache alone helps repeated requests after the first result is stored. Single-flight helps the burst case where many identical requests arrive before the first result is ready.
+
+#### 10. Per-Agent Limiter
+
+The limiter protects agents using two controls together:
+
+- Concurrency cap: how many active in-flight requests this agent may run at once.
+- Token bucket: how many new requests per second this agent may start, with burst capacity.
+
+Redis keys:
+
+```text
+request-manager:active:{agent_id}
+request-manager:active:global
+request-manager:active:{agent_id}:requests
+request-manager:bucket:{agent_id}
+```
+
+Example:
+
+```text
+max_concurrency: 2
+sustained_rps: 5
+burst_capacity: 10
+global_active_cap: 50
+```
+
+Processing:
+
+1. Check active requests for the agent.
+2. Check global active request count.
+3. Refill token bucket based on elapsed time.
+4. If there is at least one token and capacity is available, consume one token.
+5. Increment `request-manager:active:{agent_id}`.
+6. Increment `request-manager:active:global`.
+7. Add request ID to `request-manager:active:{agent_id}:requests`.
+8. Allow the request to proxy to the agent.
+9. On completion, remove request ID and decrement active counters.
+
+Token bucket storage:
+
+```text
+Redis hash:
+request-manager:bucket:{agent_id}
+  tokens: <current token count>
+  updated_at: <unix timestamp>
+```
+
+Token bucket TTL:
+
+```text
+request-manager:bucket:{agent_id}: 3600 seconds
+```
+
+Why this matters: concurrency prevents too many simultaneous slow calls. Token bucket prevents a sustained flood of new calls even if each one is quick.
+
+#### 11. Bounded FIFO Queue
+
+The queue appears only when immediate limiter acquisition fails. That can happen when:
+
+- Agent concurrency is already full.
+- Global active request cap is full.
+- Token bucket has no token available.
+
+Redis key:
+
+```text
+request-manager:queue:{agent_id}
+```
+
+It is a Redis list:
+
+```text
+RPUSH request_id
+LINDEX queue 0
+LPOP queue
+LREM queue request_id
+```
+
+Queue processing:
+
+1. Request tries immediate capacity acquisition.
+2. If capacity is unavailable, Request Manager checks `LLEN request-manager:queue:{agent_id}`.
+3. If queue length is already `max_queue_depth`, it returns `429 queue-full`.
+4. Otherwise it appends the request ID with `RPUSH`.
+5. The request waits while holding the HTTP connection open.
+6. Every 50ms, it checks whether it is at the head of the queue.
+7. Only the head request is allowed to acquire capacity.
+8. When capacity and token are available, the head request is popped with `LPOP`.
+9. The request proxies to the agent.
+10. If max wait is exceeded, it returns `429 queue-timeout`.
+11. In cleanup, the request removes itself from the queue with `LREM` if needed.
+
+Example with tight demo limits:
+
+```text
+max_concurrency: 1
+sustained_rps: 1
+burst_capacity: 1
+max_queue_depth: 2
+max_queue_wait_ms: 2000
+```
+
+Six simultaneous no-cache requests behave like this:
+
+```text
+Request 1: gets the active slot and calls the agent.
+Request 2: waits in queue.
+Request 3: waits in queue.
+Request 4: queue is full -> 429 queue-full.
+Request 5: may get capacity if timing allows, otherwise queues.
+Request 6: queue is full -> 429 queue-full.
+```
+
+Observed demo output included:
+
+```text
+status=200
+status=429 body={"error":"queue-timeout","agent_id":"agent-demo-request-layer"}
+status=429 body={"error":"queue-full","agent_id":"agent-demo-request-layer"}
+```
+
+Why this matters: the requirement says excess traffic should be queued where possible instead of immediately rejected. This design queues short bursts, but still has a maximum queue depth and maximum wait so overload remains predictable.
+
+#### 12. Circuit Breaker
+
+The circuit breaker protects the platform from repeatedly calling an unhealthy agent.
+
+Redis keys:
+
+```text
+request-manager:circuit:{agent_id}
+request-manager:outcomes:{agent_id}
+```
+
+Circuit config defaults:
+
+```text
+circuit_window_size: 20
+circuit_min_failures: 5
+circuit_failure_ratio: 0.5
+circuit_open_seconds: 30
+```
+
+Outcome storage:
+
+```text
+request-manager:outcomes:{agent_id}
+  list of recent outcomes, "1" for success and "0" for failure
+  trimmed to last 20 entries
+```
+
+Circuit hash:
+
+```text
+request-manager:circuit:{agent_id}
+  state: closed | open | half-open
+  open_until: <unix timestamp>
+```
+
+Processing:
+
+1. Before proxying, Request Manager checks `request-manager:circuit:{agent_id}`.
+2. If state is open and `open_until` is in the future, it returns `503 circuit_open`.
+3. If open time has expired, the next request is allowed as `half-open`.
+4. After each upstream call, Request Manager records success or failure.
+5. If failures cross the configured threshold and ratio, the circuit opens for 30 seconds.
+6. A successful half-open request closes the circuit again.
+
+Why this matters: rate limits protect against volume. Circuit breaker protects against unhealthy behavior.
+
+#### 13. Upstream Proxy
+
+If a request passes cache, single-flight, circuit, and limiter checks, Request Manager proxies it to the resolved internal upstream.
+
+It forwards:
+
+- HTTP method.
+- Body.
+- Query parameters.
+- Most request headers.
+
+It strips hop-by-hop headers such as:
+
+```text
+connection
+keep-alive
+transfer-encoding
+upgrade
+host
+content-length
+```
+
+It uses the configured upstream timeout:
+
+```text
+upstream_timeout_seconds: 45
+```
+
+Response behavior:
+
+- `2xx` JSON responses may be cached.
+- `2xx`, `3xx`, and `4xx` count as upstream success for circuit purposes.
+- `5xx`, timeout, and HTTP transport errors count as failures.
+- Timeout returns `504 upstream_timeout`.
+- HTTP transport error returns `502 upstream_error`.
+
+Request Manager adds observability headers:
+
+```text
+X-Request-Layer-Agent: {agent_id}
+X-Request-Layer-Cache: HIT | MISS | BYPASS
+X-Request-Layer-Queue-Wait-Ms: {wait_ms}
+X-Request-Layer-Limit-State: normal | degraded | circuit-open
+```
+
+#### 14. Metrics Recorder
+
+Metrics are stored in Redis so the dashboard and control endpoints can show runtime behavior.
+
+Redis keys:
+
+```text
+request-manager:metrics:global
+request-manager:metrics:{agent_id}
+request-manager:latency:{agent_id}
+request-manager:queue-wait:{agent_id}
+```
+
+Counter fields:
+
+```text
+cache_hits
+cache_misses
+cache_bypasses
+singleflight_waiters
+upstream_requests
+upstream_errors
+queue_timeouts
+```
+
+Sample lists:
+
+```text
+request-manager:latency:{agent_id}: last 200 latency samples
+request-manager:queue-wait:{agent_id}: last 200 queue wait samples
+```
+
+The stats endpoint calculates:
+
+- Active requests.
+- Queued requests.
+- Cache hits/misses/bypasses.
+- Upstream requests/errors.
+- Queue timeouts.
+- Circuit state.
+- P50 latency.
+- P95 latency.
+- P95 queue wait.
+- Current limits.
+
+Why this matters: the problem statement explicitly asks for operational visibility. This gives a live view of whether caching and overload controls are working.
+
+#### 15. Redis State Summary
+
+| Redis key | Type | Example contents | TTL |
+| --- | --- | --- | --- |
+| `request-manager:targets` | Set | Agent IDs known to Request Manager | No TTL; registry refreshes/removes |
+| `request-manager:targets:{agent}` | Hash | `upstream_url`, `target_revision`, `source`, `updated_at` | No TTL; registry refreshes/removes |
+| `request-manager:limits:{agent}` | Hash | Per-agent runtime limits | No TTL; changed by control API |
+| `request-manager:cache:{hash}` | String JSON | Cached response body, headers, status | `cache_ttl_seconds`, default 600s |
+| `request-manager:singleflight:{hash}` | String | Owner token for in-progress miss | Default 10000ms |
+| `request-manager:singleflight:ready:{hash}` | String | Ready marker for waiters | 1000ms |
+| `request-manager:active:{agent}` | String int | Active in-flight count for agent | No TTL |
+| `request-manager:active:global` | String int | Active in-flight count globally | No TTL |
+| `request-manager:active:{agent}:requests` | Set | Active request IDs | No TTL |
+| `request-manager:bucket:{agent}` | Hash | Token bucket `tokens`, `updated_at` | 3600s |
+| `request-manager:queue:{agent}` | List | FIFO queued request IDs | No TTL; cleaned on acquire/timeout |
+| `request-manager:circuit:{agent}` | Hash | Circuit `state`, `open_until` | No TTL |
+| `request-manager:outcomes:{agent}` | List | Last success/failure outcomes | Trimmed to last 20 |
+| `request-manager:metrics:global` | Hash | Global counters | No TTL |
+| `request-manager:metrics:{agent}` | Hash | Per-agent counters | No TTL |
+| `request-manager:latency:{agent}` | List | Last 200 latency samples | Trimmed to last 200 |
+| `request-manager:queue-wait:{agent}` | List | Last 200 queue-wait samples | Trimmed to last 200 |
+
+#### 16. Redis Failure Behavior
+
+The MVP uses Redis as the shared coordination layer, but it does not make every Redis failure fatal.
+
+- Cache read/write failures are treated as cache misses or no-op writes.
+- Target resolver can fall back to the last valid in-memory target.
+- Limiter can fall back to local semaphores with `X-Request-Layer-Limit-State: degraded`.
+- Circuit checks allow traffic in degraded mode if Redis is unavailable.
+- Metrics failures are ignored so they do not break request serving.
+
+Why this matters: the platform should prefer availability during a Redis blip, while clearly reporting degraded behavior.
 
 ### How The Solution Handles Existing Problems
 
