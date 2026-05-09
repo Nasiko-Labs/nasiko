@@ -91,6 +91,216 @@ flowchart LR
     class FastResponse fast;
 ```
 
+## Key Features
+
+### 1. Unified Agent Request Layer
+
+All dynamic `/agents/{agent}` traffic now passes through Request Manager before reaching the agent. This includes both router-selected traffic and direct agent calls.
+
+Example:
+
+```text
+Web UI -> Kong -> Router -> /agents/translator -> Request Manager -> Translator Agent
+Direct API -> Kong /agents/translator -> Request Manager -> Translator Agent
+```
+
+Why this is important: the protection is not limited to one caller. Any path that executes an agent gets the same caching, queueing, rate limiting, and observability.
+
+### 2. Safe Response Caching
+
+Request Manager checks Redis before forwarding a cacheable request to the agent. If the same safe request was recently answered, it returns the cached response immediately.
+
+Example:
+
+```text
+First request: "Translate Hello to Spanish"
+Result: cache miss -> agent executes -> response stored in Redis for 600 seconds
+
+Second request: " translate   hello to spanish "
+Result: same normalized cache key -> Redis hit -> no agent execution
+```
+
+Why this is important: repeated requests become much faster and avoid duplicate LLM/tool compute.
+
+### 3. Conservative Cache Correctness
+
+The MVP does not cache everything. It only caches text-only A2A `message/send` requests with a user/auth scope and successful JSON responses.
+
+The cache key includes:
+
+```text
+agent_id
+method
+subject/auth scope
+target_revision
+normalized text parts
+```
+
+Why this is important: the same text can mean different things for different agents, users, or agent versions. The key design prioritizes correctness over an unsafe high hit rate.
+
+### 4. Input Normalization For Exact Reuse
+
+Before building the cache key, text input is normalized with a small safe process:
+
+```text
+trim leading/trailing spaces
+lowercase
+collapse repeated whitespace into one space
+```
+
+Example:
+
+```text
+"   Translate    Hello   to   Spanish   "
+-> "translate hello to spanish"
+```
+
+This means formatting differences can hit the same cache entry, but semantically similar rewrites do not.
+
+Example that matches:
+
+```text
+"Translate Hello to Spanish"
+" translate   hello to spanish "
+```
+
+Example that does not match:
+
+```text
+"Translate Hello to Spanish"
+"Can you convert Hello into Spanish?"
+```
+
+Why this is important: it improves cache reuse without introducing semantic-cache correctness risk.
+
+### 5. Single-Flight Duplicate Protection
+
+Single-flight prevents a cache stampede. If many identical requests arrive at the same time and the cache is empty, only one request calls the agent. The rest wait for the first result and then read from cache.
+
+Example:
+
+```text
+8 concurrent identical translation requests
+1 request becomes the owner and calls the agent
+7 requests wait
+owner stores response in Redis
+7 waiters return the cached response
+```
+
+Why this is important: caching alone helps after the first response is stored. Single-flight protects the critical window before the first response is ready.
+
+### 6. Per-Agent Rate Limiting
+
+Each agent has its own limits:
+
+```text
+max_concurrency
+sustained_rps
+burst_capacity
+max_queue_depth
+max_queue_wait_ms
+cache_enabled
+cache_ttl_seconds
+```
+
+Example:
+
+```text
+Translator Agent: max_concurrency=2
+Research Agent: max_concurrency=1
+Email Agent: cache_enabled=false
+```
+
+Why this is important: different agents have different cost and reliability profiles. A slow or expensive agent can be protected more aggressively without slowing every other agent.
+
+### 7. Bounded Queue Instead Of Immediate Rejection
+
+When an agent is temporarily at capacity, Request Manager queues the request if there is queue space. The request waits in FIFO order until capacity becomes available or the max queue wait is exceeded.
+
+Example:
+
+```text
+max_concurrency=1
+max_queue_depth=2
+
+Request 1 -> executes
+Request 2 -> waits in queue
+Request 3 -> waits in queue
+Request 4 -> queue-full 429
+```
+
+Why this is important: short bursts are absorbed, but the queue is bounded so the system does not hide overload forever.
+
+### 8. Controlled Backpressure
+
+If the queue is full or a request waits too long, Request Manager returns a controlled `429` response such as:
+
+```json
+{"error":"queue-full","agent_id":"agent-demo-request-layer"}
+```
+
+or:
+
+```json
+{"error":"queue-timeout","agent_id":"agent-demo-request-layer"}
+```
+
+Why this is important: failure becomes predictable. The platform rejects excess traffic intentionally instead of letting agent latency grow without bounds.
+
+### 9. Circuit Breaker For Unhealthy Agents
+
+Request Manager tracks recent upstream outcomes for each agent. If failures cross the configured threshold, the circuit opens and requests fail fast for a cooldown period.
+
+Example:
+
+```text
+5+ failures in recent window and failure ratio >= 50%
+-> circuit opens for 30 seconds
+-> new requests return 503 circuit_open
+```
+
+Why this is important: rate limiting protects against too much traffic; circuit breaking protects against repeatedly calling a broken dependency.
+
+### 10. Runtime Operational Controls
+
+Operators can view stats, update limits, and clear cache at runtime.
+
+Examples:
+
+```bash
+curl -s http://localhost:8090/control/stats | jq
+curl -s http://localhost:8090/control/limits | jq
+curl -s -X DELETE http://localhost:8090/control/cache | jq
+```
+
+Why this is important: the problem statement asks for operational controls, not just request-time behavior.
+
+### 11. Live Observability Dashboard
+
+The dashboard shows:
+
+```text
+status
+cache hit rate
+active requests
+upstream errors
+queue timeouts
+per-agent active count
+per-agent queue depth
+per-agent hit rate
+per-agent p95 latency
+per-agent p95 queue wait
+per-agent circuit state
+```
+
+Why this is important: judges can see the system working live while demo scripts run.
+
+### 12. No Client Contract Change
+
+Clients still call the same routes. The router still calls `/agents/{agent}`. Agents still speak A2A JSON-RPC.
+
+Why this is important: the MVP improves resilience without forcing every client, router flow, or agent implementation to change.
+
 ### Runtime Paths
 
 Routed request path:
