@@ -92,7 +92,7 @@ class CacheEngine:
     async def store(
         self,
         query: str,
-        response: Dict,
+        response: Any,
         agent_hint: Optional[str] = None,
         ttl: Optional[int] = None
     ):
@@ -100,12 +100,20 @@ class CacheEngine:
         
         key = self._generate_key(query, agent_hint)
         
-        cache_entry = {
-            **response,
-            "original_query": query,
-            "cached_at": datetime.utcnow().isoformat(),
-            "agent_hint": agent_hint
-        }
+        if isinstance(response, dict):
+            cache_entry = {
+                **response,
+                "original_query": query,
+                "cached_at": datetime.utcnow().isoformat(),
+                "agent_hint": agent_hint
+            }
+        else:
+            cache_entry = {
+                "result": response,
+                "original_query": query,
+                "cached_at": datetime.utcnow().isoformat(),
+                "agent_hint": agent_hint
+            }
         
         await self.redis.setex(
             key,

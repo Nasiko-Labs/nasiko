@@ -166,6 +166,25 @@ def generate_cache_key(query: str, agent_hint: Optional[str] = None) -> str:
     content = f"{query}:{agent_hint or 'any'}"
     return hashlib.sha256(content.encode()).hexdigest()
 
+def zero_tokens(data: Any) -> Any:
+    """Recursively set any token usage tracking fields to 0 for cache hits."""
+    if isinstance(data, dict):
+        new_data = {}
+        for k, v in data.items():
+            if k in ["tokens", "total_tokens", "prompt_tokens", "completion_tokens", "token_usage", "usage"]:
+                if isinstance(v, (int, float)):
+                    new_data[k] = 0
+                elif isinstance(v, dict):
+                    new_data[k] = zero_tokens(v)
+                else:
+                    new_data[k] = v
+            else:
+                new_data[k] = zero_tokens(v)
+        return new_data
+    elif isinstance(data, list):
+        return [zero_tokens(item) for item in data]
+    else:
+        return data
 
 async def forward_to_router(query: str, session_id: Optional[str] = None, agent_hint: Optional[str] = None) -> Dict[str, Any]:
     """Forward request to Nasiko router via POST /router (multipart/form-data)"""
@@ -311,6 +330,10 @@ async def process_request(
     
     if cached_result and similarity > 0.95:
         metrics.record_cache_hit()
+        
+        # Zero out the token cost before returning cache
+        cached_result = zero_tokens(cached_result)
+        
         await coalescer.complete_request(pending_key, cached_result)
         elapsed = (datetime.utcnow() - request_start).total_seconds() * 1000
         metrics.record_latency(elapsed)
