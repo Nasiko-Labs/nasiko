@@ -21,6 +21,7 @@ Nasiko already has the right seams for this design:
 - Kong is the public gateway on port `9100` and routes `/router`, `/api`, `/auth`, `/app`, and dynamic `/agents/{agent}` traffic.
 - `agent-gateway/registry/registry.py` discovers agent containers on `agents-net` and registers dynamic Kong routes for `/agents/{container}`.
 - The router service (`agent-gateway/router`) selects an agent, then calls the chosen agent through a Kong `/agents/{agent}` URL.
+- Nasiko agents communicate through the A2A JSON-RPC protocol. The standard upstream execution method is `message/send`, which is why cacheability rules key off that method.
 - Router-level caches already exist for routing support: agent cards are cached in `AgentRegistry`, and FAISS/vector-store data is cached in `VectorStoreService`.
 - Redis is already available in `docker-compose.local.yml` and is used by other platform workflows.
 - Existing chat logging is implemented as a Kong plugin, proving gateway extensibility, but the queueing/adaptive logic is better expressed in a dedicated service than in Lua.
@@ -43,6 +44,8 @@ For routed requests:
 Client -> Kong -> Router -> Kong /agents/{agent} -> Request Manager -> Agent
 ```
 
+For MVP, the router keeps calling the existing Kong `/agents/{agent}` URL instead of calling the Request Manager directly. This preserves the current `AgentClient` contract, gateway middleware behavior, and chat logging path while avoiding router-specific wiring. The extra local hop is acceptable for MVP because agent/LLM execution dominates latency. A later production optimization can add a direct internal `Router -> Request Manager` path after equivalent auth/logging/metrics behavior exists there.
+
 For direct agent requests:
 
 ```text
@@ -51,9 +54,23 @@ Client -> Kong /agents/{agent} -> Request Manager -> Agent
 
 Kong remains the public front door for auth, CORS, and route matching. The Request Manager becomes the execution-control layer for all `/agents/*` traffic. The router decides which agent should handle a request; the Request Manager controls execution once a specific agent is selected.
 
+### Agent Target Discovery
+
+`agent-gateway/registry/registry.py` remains the single owner of Docker/Kubernetes agent discovery. Instead of duplicating Docker socket or Kubernetes watcher logic inside the Request Manager, extend `registry.py` to publish a Redis-backed internal target table whenever it discovers, updates, or removes an agent.
+
+Target records are keyed by public agent id and include:
+
+- Public agent id, for example `agent-a2a-translator`.
+- Public path, for example `/agents/agent-a2a-translator`.
+- Internal upstream URL, for example `http://agent-a2a-translator:5000` in local Docker or the Kubernetes service DNS URL in cluster mode.
+- `target_revision`, derived from container id or image id locally and deployment/service version metadata in Kubernetes.
+- Health/discovery source and last-updated timestamp.
+
+Kong dynamic `/agents/{agent}` routes point to the Request Manager service. The Request Manager resolves `{agent}` through the Redis target table, then proxies to the internal upstream URL. This prevents proxy loops because the Request Manager never calls the public Kong `/agents/*` URL.
+
 ## Why This Placement
 
-The layer sits after Kong, not before it, because placing it before Kong would duplicate gateway concerns such as public routing and auth. It sits outside the router because router-only caching/rate limiting would miss direct `/agents/*` traffic and would not satisfy the gateway-to-agent traffic-control requirement.
+The layer sits after Kong, not before it, because placing it before Kong would duplicate gateway concerns such as public routing and auth. It sits outside the router because router-only caching/rate limiting would miss direct `/agents/*` traffic and would not satisfy the gateway-to-agent traffic-control requirement. A shared Python library inside the router has the same limitation: it can optimize routed calls, but it cannot protect direct agent calls that never enter the router.
 
 This placement gives one chokepoint for all agent execution. It lets direct calls and router-selected calls share the same cache, queue, limit, and metric model.
 
@@ -62,14 +79,15 @@ This placement gives one chokepoint for all agent execution. It lets direct call
 Every `/agents/{agent}` request handled by the Request Manager follows this order:
 
 1. Classify the request and extract the target agent.
-2. Decide whether the request is cacheable.
-3. Check Redis cache before any agent call.
-4. Collapse identical in-flight cache misses so concurrent duplicates share one computation.
-5. Acquire per-agent capacity or wait in a bounded FIFO queue.
-6. Proxy the request to the internal agent target.
-7. Cache successful responses when safe.
-8. Release capacity and record metrics.
-9. Return the agent response or a controlled overload response.
+2. Resolve the internal agent target from the Redis target table.
+3. Decide whether the request is cacheable.
+4. Check Redis cache before any agent call.
+5. Collapse identical in-flight cache misses so concurrent duplicates share one computation.
+6. Acquire per-agent capacity or wait in a bounded FIFO queue.
+7. Proxy the request to the resolved internal agent target.
+8. Cache successful responses when safe.
+9. Release capacity and record metrics.
+10. Return the agent response or a controlled overload response.
 
 ## Cache Design
 
@@ -87,6 +105,8 @@ Router-level caches remain routing-support caches only:
 ### Cacheable Requests
 
 MVP cacheability is intentionally conservative:
+
+In this design, "agent response" means the upstream HTTP response returned by the agent to the Request Manager, typically a JSON A2A response. It does not mean the router's user-facing `StreamingResponse`, which is a progress stream emitted by the router while it orchestrates the request.
 
 - Cache only HTTP JSON requests using A2A JSON-RPC `message/send`.
 - Cache only text-only user messages.
@@ -109,8 +129,8 @@ The cache key is a stable hash over:
 - JSON-RPC method.
 - Normalized text parts.
 - Safe route/config metadata that affects response shape.
-- User or tenant scope when available from gateway/auth headers.
-- Agent version or version token when available.
+- User or tenant scope from gateway/auth headers, preferably `X-Subject-ID`; local unauthenticated calls use an explicit `anonymous` scope.
+- `target_revision` from the Redis target table.
 
 Normalization for MVP is limited to trimming whitespace, lowercasing, and stable JSON field ordering. Semantic matching is deferred because it increases cost and risks returning incorrect responses.
 
@@ -120,8 +140,8 @@ MVP uses Redis TTL eviction:
 
 - Global default TTL, configurable through environment/config.
 - Per-agent TTL override through runtime config.
-- Cache entries include an agent version token when available.
-- Per-agent cache invalidation is triggered on agent version/config change or manually through control endpoints.
+- Cache entries always include `target_revision`.
+- Per-agent cache invalidation is triggered on `target_revision` change, cacheability/config change, or manually through control endpoints.
 
 LRU/LFU memory policies, cache warming, and semantic cache are deferred.
 
@@ -141,7 +161,7 @@ MVP limit dimensions:
 - Per-agent token bucket with sustained RPS and burst capacity.
 - Per-agent bounded queue depth.
 - Per-agent max queue wait.
-- Optional global safety cap.
+- Global safety cap.
 - Runtime per-agent overrides.
 
 Deferred dimensions:
@@ -161,29 +181,19 @@ These defaults are intentionally conservative for local demo and can be overridd
 - Per-agent sustained RPS: `5`.
 - Per-agent burst capacity: `10`.
 - Per-agent max queue depth: `20`.
-- Per-request max queue wait: `30_000` milliseconds.
-- Agent upstream timeout: `60` seconds.
-- Global safety cap: `50` active upstream requests.
+- Per-request max queue wait: `10_000` milliseconds.
+- Agent upstream timeout: `45` seconds.
+- Global safety cap: `50` active upstream requests, enabled by default.
 - Circuit breaker open trigger: at least `5` failures and `50%` error/timeout rate over a rolling `20` requests.
 - Circuit breaker open duration: `30` seconds before half-open probe.
 
-## Adaptive Degradation
+## Circuit-Breaker Degradation
 
-The limiter is configurable first, adaptive second. Each agent has base limits, and the Request Manager adjusts behavior based on rolling signals:
+MVP adaptive behavior is limited to circuit-breaker-based degradation. The Request Manager does not dynamically tune concurrency from p95 latency in MVP.
 
-- p95 latency above threshold.
-- Error or timeout rate above threshold.
-- Queue depth near or above threshold.
-- Circuit breaker state.
+When an agent crosses the circuit-breaker threshold, the Request Manager opens the circuit for that agent and returns controlled `503` responses with `Retry-After` until the open duration expires. It then allows a small half-open probe. If the probe succeeds, the circuit closes; if it fails, the circuit opens again.
 
-During degradation, the layer may:
-
-- Shorten queue wait.
-- Reduce effective concurrency temporarily.
-- Return faster overload responses with `Retry-After`.
-- Open a circuit for consistently failing agents.
-
-When health recovers for a configured cooldown period, the agent returns toward its base limits.
+More advanced p95-latency-based concurrency tuning, queue wait adjustment, and automatic limit recovery are production-evolution items.
 
 ## Queue Design
 
@@ -217,13 +227,17 @@ MVP failure behavior:
 
 Circuit breaker responses include enough metadata for operators and clients to understand whether the failure is overload, timeout, or open-circuit protection.
 
+### Timeout Budget
+
+The Request Manager timeout budget must fit beneath the caller's timeout. For MVP, queue wait is capped at `10` seconds and upstream agent execution at `45` seconds, keeping the Request Manager's worst-case wait below roughly `55` seconds plus small proxy overhead. This is intentionally below the existing router `REQUEST_TIMEOUT` default of `60` seconds and Kong's longer service timeouts, so the Request Manager returns controlled outcomes before upstream callers give up.
+
 ## Operational Controls
 
 The Request Manager exposes JSON control endpoints and a minimal dashboard.
 
 Required endpoints:
 
-- `GET /health`: service and Redis readiness.
+- `GET /health`: service readiness, Redis readiness/degraded mode, and aggregate circuit state.
 - `GET /control/stats`: global cache, latency, queue, and error summary.
 - `GET /control/agents/{agent}/stats`: per-agent active requests, queued requests, hit rate, p50/p95 latency, errors, timeouts, and circuit state.
 - `GET /control/limits`: current global and per-agent limits.
@@ -259,18 +273,25 @@ Prometheus `/metrics`, Phoenix span attributes, alerting, and richer UI polish a
 
 ## Configuration Model
 
-Use a layered configuration model:
+MVP uses a two-layer configuration model:
 
 1. Global defaults from environment/config.
-2. Per-agent overrides in Redis/config store.
-3. Runtime updates through control API.
-4. Optional future AgentCard hints for cacheability and safe request types.
+2. Per-agent Redis overrides written by the control API.
 
-Ops-controlled config takes precedence over AgentCard hints. This avoids trusting agent authors to define platform safety limits unilaterally.
+Merge order is deterministic: Redis per-agent overrides replace global defaults for only the fields they set; all missing fields fall back to global defaults. Optional future AgentCard hints for cacheability and safe request types may be added later, but ops-controlled config remains authoritative.
 
 ## Demo And KPI Verification
 
 The MVP includes repeatable demo scripts so every KPI has evidence.
+
+### Demo Targets
+
+- Cached response latency: under `100ms` locally, or at least `80%` faster than the cold call when machine load makes an absolute target noisy.
+- Repeated workflow cache hit rate: above `90%` for identical safe text requests after the first miss.
+- Concurrent duplicate processing: one upstream agent call for a burst of identical misses, with the rest served by single-flight/cache.
+- Overload failure rate: below `5%` upstream agent failures during a 2x limit burst; controlled `429`/`503` responses are counted separately from upstream failures.
+- Queue p95 wait: below `5s` for a configured demo burst that fits within queue capacity.
+- Operational visibility: dashboard and `/control/stats` update during the demo without service restart.
 
 ### Faster Repeated Responses
 
@@ -342,11 +363,11 @@ Included:
 
 - New dedicated Request Manager service.
 - Kong registry integration so public `/agents/*` routes reach Request Manager.
-- Internal agent-target resolution to avoid proxy loops.
+- Redis-published internal agent-target resolution from `registry.py` to avoid proxy loops.
 - Redis exact response cache.
 - Single-flight dedupe.
 - Per-agent concurrency and bounded synchronous FIFO queue.
-- Simple adaptive degradation and circuit breaker.
+- Circuit-breaker-based degradation.
 - Control endpoints.
 - Minimal live dashboard.
 - Demo scripts for all KPIs.
@@ -362,12 +383,17 @@ Excluded from MVP:
 - Priority queues.
 - Prometheus/Phoenix deep integration.
 - Production audit log and alerting.
+- p95-latency-based adaptive concurrency tuning.
 
 ## Risks And Mitigations
 
 Risk: Proxy loop between Kong and Request Manager.
 
-Mitigation: The Request Manager must call internal container host/port targets, not public `/agents/*` Kong URLs.
+Mitigation: `registry.py` publishes internal target URLs to Redis. The Request Manager resolves agents from that table and never calls public `/agents/*` Kong URLs.
+
+Risk: Cache-key collision or over-normalization returns an incorrect response.
+
+Mitigation: Use SHA-256 over stable JSON fields, include agent id, user/tenant scope, and `target_revision`, and keep normalization conservative.
 
 Risk: Incorrect cache hits for side-effect or user-specific agents.
 
@@ -381,9 +407,9 @@ Risk: Redis outage removes distributed coordination.
 
 Mitigation: Degraded mode with local conservative limits, cache bypass, and degraded health.
 
-Risk: Adaptive limits become hard to explain.
+Risk: Adaptive behavior becomes hard to explain.
 
-Mitigation: MVP uses simple threshold-based degradation with visible metrics and clear state transitions.
+Mitigation: MVP limits adaptive behavior to a circuit breaker with visible metrics and clear closed, open, and half-open states.
 
 ## Production Evolution
 
@@ -393,6 +419,8 @@ After MVP, the design can evolve without changing the placement:
 - Add Prometheus metrics and Phoenix span attributes.
 - Add per-tenant fairness and priority classes.
 - Add semantic cache for explicitly safe agents.
+- Add direct internal `Router -> Request Manager` calls after equivalent auth/logging/metrics behavior is available.
+- Add p95-latency-based adaptive concurrency tuning and automatic recovery.
 - Add audit logs for control actions.
 - Add alerting for queue spikes, low hit rate, and circuit-open states.
 - Add richer health-aware routing feedback to router or gateway.
