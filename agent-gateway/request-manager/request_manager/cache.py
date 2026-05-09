@@ -15,6 +15,15 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+def _cache_control_directives(value: str) -> set[str]:
+    directives: set[str] = set()
+    for directive in value.split(","):
+        name = directive.strip().split("=", 1)[0].lower()
+        if name:
+            directives.add(name)
+    return directives
+
+
 class CachePolicy:
     def decide(
         self,
@@ -31,16 +40,33 @@ class CachePolicy:
             return CacheDecision(cacheable=False, reason="agent-cache-disabled")
 
         cache_control = normalized_headers.get("cache-control", "")
-        if "no-cache" in cache_control.lower():
+        cache_control_directives = _cache_control_directives(cache_control)
+        if "no-cache" in cache_control_directives:
             return CacheDecision(cacheable=False, reason="cache-control-no-cache")
+        if "no-store" in cache_control_directives:
+            return CacheDecision(cacheable=False, reason="cache-control-no-store")
 
+        if json_body.get("jsonrpc") != "2.0":
+            return CacheDecision(cacheable=False, reason="unsupported-jsonrpc")
         method = json_body.get("method")
         if method != "message/send":
             return CacheDecision(cacheable=False, reason="unsupported-method")
 
-        parts = json_body.get("params", {}).get("message", {}).get("parts")
-        if not parts:
-            return CacheDecision(cacheable=False, reason="non-text-part")
+        scope = normalized_headers.get("x-subject-id", "").strip()
+        if not scope:
+            return CacheDecision(cacheable=False, reason="missing-subject-scope")
+
+        params = json_body.get("params")
+        if not isinstance(params, dict):
+            return CacheDecision(cacheable=False, reason="invalid-message-shape")
+
+        message = params.get("message")
+        if not isinstance(message, dict):
+            return CacheDecision(cacheable=False, reason="invalid-message-shape")
+
+        parts = message.get("parts")
+        if not isinstance(parts, list) or not parts:
+            return CacheDecision(cacheable=False, reason="invalid-message-shape")
 
         texts: list[str] = []
         for part in parts:
@@ -55,7 +81,7 @@ class CachePolicy:
         fingerprint = {
             "agent_id": agent_id,
             "method": method,
-            "scope": normalized_headers.get("x-subject-id", "anonymous"),
+            "scope": scope,
             "target_revision": target.target_revision,
             "texts": texts,
         }
