@@ -331,7 +331,8 @@ def register_service_in_kong(service: ServiceInfo) -> bool:
     """Register a service and route in Kong."""
     try:
         # Create service in Kong
-        service_url = f"http://{service.host}:{service.port}"
+        # All Nasiko agents use /router as their main intelligence endpoint
+        service_url = f"http://{service.host}:{service.port}/router"
 
         service_data = {
             "name": service.name,
@@ -542,6 +543,11 @@ def register_static_proxies():
         local_service="nasiko-router",
         env_var="KONG_ROUTER_HOST",
     )
+    resilient_layer_host = _resolve_service_host(
+        k8s_service="resilient-layer",
+        local_service="resilient-layer",
+        env_var="KONG_RESILIENT_LAYER_HOST",
+    )
     n8n_host = _resolve_service_host(
         k8s_service="n8n",
         local_service="n8n",
@@ -595,21 +601,33 @@ def register_static_proxies():
         #     "preserve_host": False,
         #     "middlewares": []  # No middleware
         # },
-        # Router service - mapped to /router path
+        # Router health endpoint - keep direct health checks against the router service
         {
-            "name": "nasiko-router",
+            "name": "nasiko-router-health",
             "host": router_host,
             "port": 8000,
+            "paths": ["/router/health"],
+            "upstream_path": "",
+            "methods": ["GET", "OPTIONS"],
+            "strip_path": False,
+            "preserve_host": False,
+            "middlewares": ["cors"],
+        },
+        # AgentShield proxy - route /router requests through resilient layer
+        {
+            "name": "nasiko-router",
+            "host": resilient_layer_host,
+            "port": 8500,
             "paths": ["/router"],
-            "upstream_path": "",  # No upstream path to avoid double /router
+            "upstream_path": "/process",
             "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-            "strip_path": False,  # Keep /router in path when forwarding
+            "strip_path": True,
             "preserve_host": False,
             "middlewares": [
                 "cors",
                 "nasiko-auth",
                 "chat-logger",
-            ],  # Full middleware with CORS
+            ],
         },
         # Static landing page - forward to web app
         {

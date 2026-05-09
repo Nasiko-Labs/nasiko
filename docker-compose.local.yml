@@ -177,7 +177,7 @@ services:
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
       KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8003
       KONG_ADMIN_GUI_URL: http://localhost:9102
-      KONG_PLUGINS: bundled,chat-logger
+      KONG_PLUGINS: bundled,chat-logger,nasiko-auth
       KONG_LUA_PATH: /opt/kong/custom-plugins/?.lua;;
       KONG_LUA_PACKAGE_PATH: /opt/kong/custom-plugins/?.lua;;
     volumes:
@@ -346,6 +346,26 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  resilient-layer:
+    build: ./resilient-layer
+    container_name: resilient-layer
+    ports:
+      - "8500:8500"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - ROUTER_URL=http://nasiko-router:8000
+      - AUTH_SERVICE_URL=http://nasiko-auth-service:8001
+    depends_on:
+      redis:
+        condition: service_healthy
+      nasiko-router:
+        condition: service_started
+      nasiko-auth-service:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
 
   # ============================================================================
   # SUPERUSER CREATION JOB

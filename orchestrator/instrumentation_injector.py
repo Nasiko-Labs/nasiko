@@ -340,19 +340,57 @@ if LANGTRACE_API_KEY:
                                             print(f"[SessionExtractor] Error parsing LangChain inputs: {e}")
                             
                             # Inject session context if found
-                            if session_id and hasattr(span, 'attributes'):
+                            if hasattr(span, 'attributes'):
                                 # Patch the span attributes directly
                                 from opentelemetry.sdk.trace import ReadableSpan
                                 if isinstance(span, ReadableSpan):
                                     new_attributes = dict(span.attributes) if span.attributes else {}
-                                    new_attributes.update({
-                                        "session.id": session_id,
-                                        "session_id": session_id,
-                                        "agent.name": os.getenv('OTEL_SERVICE_NAME', 'unknown-agent'),
-                                        "agent.type": "upload"
-                                    })
-                                    span._attributes = new_attributes
-                                    print(f"[SessionExtractor] Session context injected into span: {session_id}")
+                                    changed = False
+                                    
+                                    if session_id:
+                                        new_attributes.update({
+                                            "session.id": session_id,
+                                            "session_id": session_id,
+                                            "agent.name": os.getenv('OTEL_SERVICE_NAME', 'unknown-agent'),
+                                            "agent.type": "upload"
+                                        })
+                                        changed = True
+                                        print(f"[SessionExtractor] Session context injected into span: {session_id}")
+                                        
+                                    # Extract token counts for Phoenix
+                                    try:
+                                        import json
+                                        # Langtrace might put it in output.value
+                                        output_val = new_attributes.get("output.value")
+                                        if output_val and isinstance(output_val, str):
+                                            out_data = json.loads(output_val)
+                                            if "usage" in out_data:
+                                                usage = out_data["usage"]
+                                                if "total_tokens" in usage:
+                                                    new_attributes["llm.token_count.total"] = usage["total_tokens"]
+                                                    changed = True
+                                                if "prompt_tokens" in usage:
+                                                    new_attributes["llm.token_count.prompt"] = usage["prompt_tokens"]
+                                                    changed = True
+                                                if "completion_tokens" in usage:
+                                                    new_attributes["llm.token_count.completion"] = usage["completion_tokens"]
+                                                    changed = True
+                                                    
+                                        # Or map from langtrace's custom token attributes if they exist
+                                        if "llm.usage.total_tokens" in new_attributes:
+                                            new_attributes["llm.token_count.total"] = new_attributes["llm.usage.total_tokens"]
+                                            changed = True
+                                        if "llm.usage.prompt_tokens" in new_attributes:
+                                            new_attributes["llm.token_count.prompt"] = new_attributes["llm.usage.prompt_tokens"]
+                                            changed = True
+                                        if "llm.usage.completion_tokens" in new_attributes:
+                                            new_attributes["llm.token_count.completion"] = new_attributes["llm.usage.completion_tokens"]
+                                            changed = True
+                                    except Exception as e:
+                                        print(f"[TokenExtractor] Error parsing tokens: {e}")
+                                        
+                                    if changed:
+                                        span._attributes = new_attributes
                             
                             modified_spans.append(span)
                         
