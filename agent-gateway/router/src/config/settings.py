@@ -51,6 +51,27 @@ class RouterConfig(BaseSettings):
     # Logging settings
     LOG_LEVEL: str = "INFO"
 
+    # ── Resilient Agent Request Layer (RAL) ──────────────────────────────
+    # These mirror ral/config.py — declared here so Docker env-vars flow in
+    # via the shared RouterConfig env_file chain.
+    REDIS_URL: Optional[str] = None
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+
+    RAL_CACHE_TTL: int = 300
+    RAL_RATE_LIMIT_RPS: float = 10.0
+    RAL_RATE_LIMIT_BURST: int = 20
+    RAL_MAX_CONCURRENT: int = 5
+    RAL_MAX_QUEUE_SIZE: int = 100
+    RAL_QUEUE_TIMEOUT: float = 30.0
+    RAL_MAX_RETRIES: int = 3
+    RAL_RETRY_DELAY: float = 1.0
+    RAL_METRICS_RETENTION: int = 3600
+    RAL_LOG_MAX_ENTRIES: int = 1000
+    RAL_RPS_WINDOW: int = 10
+    RAL_REDIS_PREFIX: str = "ral"
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Parse CORS origins from comma-separated string."""

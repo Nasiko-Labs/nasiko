@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nasiko — RAL Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0A0A0F;
+    --surface: #13131A;
+    --surface2: #1A1A25;
+    --border: #2A2A3A;
+    --accent: #00E5CC;
+    --accent2: #7C3AED;
+    --green: #22C55E;
+    --red: #EF4444;
+    --yellow: #F59E0B;
+    --text: #F0F0F5;
+    --muted: #6B7280;
+    --font: 'Inter', system-ui, sans-serif;
+  }
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; }
+
+  /* ── Grid layout ── */
+  .layout { display: grid; grid-template-rows: auto auto 1fr; min-height: 100vh; }
+
+  /* ── Top bar ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; letter-spacing: .04em; }
+  .logo-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.4; } }
+  .header-right { display: flex; align-items: center; gap: 16px; }
+  .health-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+  .health-badge .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.healthy  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.degraded { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+  .dot.unhealthy{ background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .last-updated { font-size: 11px; color: var(--muted); }
+  .btn-flush {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--accent);
+    background: transparent; color: var(--accent); font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all .15s;
+  }
+  .btn-flush:hover { background: var(--accent); color: var(--bg); }
+
+  /* ── KPI bar ── */
+  .kpi-bar {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px; background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  .kpi {
+    background: var(--surface); padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .kpi-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .kpi-value { font-size: 26px; font-weight: 700; line-height: 1; }
+  .kpi-sub   { font-size: 11px; color: var(--muted); }
+  .accent  { color: var(--accent); }
+  .green   { color: var(--green); }
+  .red     { color: var(--red); }
+  .yellow  { color: var(--yellow); }
+
+  /* ── Main grid ── */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 12px; padding: 16px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .card-title { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .card-body  { padding: 16px; }
+  .chart-wrap { position: relative; height: 160px; }
+
+  /* span helpers */
+  .span2 { grid-column: span 2; }
+  .span3 { grid-column: span 3; }
+
+  /* ── Queue bar ── */
+  .queue-track { background: var(--surface2); border-radius: 4px; height: 12px; overflow: hidden; margin: 8px 0; }
+  .queue-fill  { height: 100%; border-radius: 4px; background: var(--accent); transition: width .4s; }
+
+  /* ── Agent table ── */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; padding: 6px 10px; color: var(--muted); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.04); }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+  .badge-ok  { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge-err { background: rgba(239,68,68,.15);  color: var(--red); }
+  .badge-cache { background: rgba(0,229,204,.12); color: var(--accent); }
+
+  /* ── Rate-limit gauge ── */
+  .gauge-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 12px; }
+  .gauge-track { flex: 1; background: var(--surface2); border-radius: 4px; height: 8px; overflow: hidden; }
+  .gauge-fill  { height: 100%; border-radius: 4px; transition: width .4s; }
+
+  /* ── Log table ── */
+  .log-table-wrap { max-height: 220px; overflow-y: auto; }
+  .log-table-wrap::-webkit-scrollbar { width: 4px; }
+  .log-table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  /* ── Responsive ── */
+  @media(max-width:900px){
+    main { grid-template-columns: 1fr 1fr; }
+    .span2,.span3 { grid-column: span 2; }
+  }
+  @media(max-width:600px){
+    main { grid-template-columns: 1fr; }
+    .span2,.span3 { grid-column: span 1; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- ── Header ── -->
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    NASIKO &nbsp;/&nbsp; <span style="color:var(--accent)">RAL Monitor</span>
+  </div>
+  <div class="header-right">
+    <div class="health-badge">
+      <div class="dot healthy" id="hDot"></div>
+      <span id="hLabel">Healthy</span>
+    </div>
+    <span class="last-updated" id="lastUpdated">—</span>
+    <button class="btn-flush" onclick="flushCache()">Flush Cache</button>
+  </div>
+</header>
+
+<!-- ── KPI Strip ── -->
+<div class="kpi-bar">
+  <div class="kpi">
+    <span class="kpi-label">Active Requests</span>
+    <span class="kpi-value accent" id="kActive">—</span>
+    <span class="kpi-sub">in-flight now</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-label">Requests / sec</span>
+    <span class="kpi-value accent" id="kRps">—</span>
+    <span class="kpi-sub">10 s window</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-label">Avg Latency</span>
+    <span class="kpi-value" id="kLat">—</span>
+    <span class="kpi-sub">milliseconds</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-label">Cache Hit Ratio</span>
+    <span class="kpi-value green" id="kHit">—</span>
+    <span class="kpi-sub" id="kHitSub">— hits / — total</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-label">Queue Depth</span>
+    <span class="kpi-value yellow" id="kQueue">—</span>
+    <span class="kpi-sub" id="kQueueSub">of — max</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-label">Total Errors</span>
+    <span class="kpi-value red" id="kErr">—</span>
+    <span class="kpi-sub" id="kRetry">— retries</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-label">Throttled</span>
+    <span class="kpi-value yellow" id="kThrottle">—</span>
+    <span class="kpi-sub">rate-limited reqs</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-label">Total Requests</span>
+    <span class="kpi-value" id="kTotal">—</span>
+    <span class="kpi-sub">all time</span>
+  </div>
+</div>
+
+<!-- ── Main Grid ── -->
+<main>
+
+  <!-- Traffic chart -->
+  <div class="card span2">
+    <div class="card-head">
+      <span class="card-title">Live Request Traffic</span>
+      <span style="font-size:11px;color:var(--muted)" id="trafficLegend">req/s over time</span>
+    </div>
+    <div class="card-body">
+      <div class="chart-wrap"><canvas id="trafficChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Cache donut -->
+  <div class="card">
+    <div class="card-head"><span class="card-title">Cache Hit / Miss</span></div>
+    <div class="card-body" style="display:flex;flex-direction:column;align-items:center;gap:10px">
+      <div class="chart-wrap" style="width:160px;height:160px">
+        <canvas id="cacheChart"></canvas>
+      </div>
+      <div style="display:flex;gap:16px;font-size:12px">
+        <span><span style="color:var(--accent)">■</span> Hits</span>
+        <span><span style="color:var(--surface2)">■</span> Misses</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Queue viz -->
+  <div class="card">
+    <div class="card-head"><span class="card-title">Request Queue</span></div>
+    <div class="card-body">
+      <div style="font-size:32px;font-weight:700;color:var(--yellow)" id="queueBig">0</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px" id="queueSub">items queued</div>
+      <div class="queue-track"><div class="queue-fill" id="queueBar" style="width:0%"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
+        <span>0</span><span id="queueMax">100</span>
+      </div>
+      <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
+        <div><span style="color:var(--muted)">Completed</span><br><strong id="qComp">—</strong></div>
+        <div><span style="color:var(--muted)">Failed</span><br><strong id="qFail" class="red">—</strong></div>
+        <div><span style="color:var(--muted)">Retried</span><br><strong id="qRetry" class="yellow">—</strong></div>
+        <div><span style="color:var(--muted)">Timed out</span><br><strong id="qTimeout" class="red">—</strong></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Latency histogram -->
+  <div class="card">
+    <div class="card-head"><span class="card-title">Response Time</span></div>
+    <div class="card-body">
+      <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Active agents -->
+  <div class="card span2">
+    <div class="card-head">
+      <span class="card-title">Active Agents</span>
+      <span style="font-size:11px;color:var(--muted)" id="agentCount">0 agents</span>
+    </div>
+    <div class="card-body" style="padding:8px">
+      <table>
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Requests</th>
+            <th>Errors</th>
+            <th>Avg Latency</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="agentTbody">
+          <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:20px">No agent data yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Rate limiter per-agent -->
+  <div class="card">
+    <div class="card-head"><span class="card-title">Rate Limit Utilisation</span></div>
+    <div class="card-body" id="rateLimitBody">
+      <div style="color:var(--muted);font-size:12px;text-align:center;padding:20px">No data</div>
+    </div>
+  </div>
+
+  <!-- Recent logs -->
+  <div class="card span3">
+    <div class="card-head">
+      <span class="card-title">Recent Request Logs</span>
+      <span style="font-size:11px;color:var(--muted)" id="logCount">0 entries</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div class="log-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Request ID</th>
+              <th>Query</th>
+              <th>Agent</th>
+              <th>Latency</th>
+              <th>Cache</th>
+              <th>Throttled</th>
+              <th>Status</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="logTbody">
+            <tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No logs yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────
+const API = '/api/v1/ral';
+const POLL_MS = 2000;
+const TRAFFIC_POINTS = 30;
+
+// ── Chart setup ────────────────────────────────────────────────────────────
+const chartDefaults = {
+  color: '#F0F0F5',
+  font: { family: 'Inter, system-ui, sans-serif', size: 11 },
+};
+Chart.defaults.color = chartDefaults.color;
+Chart.defaults.font  = chartDefaults.font;
+
+const mkGrid = () => ({
+  color: 'rgba(255,255,255,0.05)',
+  borderColor: 'rgba(255,255,255,0.05)',
+});
+
+// Traffic line chart
+const trafficLabels = Array(TRAFFIC_POINTS).fill('');
+const trafficData   = Array(TRAFFIC_POINTS).fill(0);
+const trafficCtx = document.getElementById('trafficChart').getContext('2d');
+const trafficChart = new Chart(trafficCtx, {
+  type: 'line',
+  data: {
+    labels: trafficLabels,
+    datasets: [{
+      label: 'Req/s',
+      data: trafficData,
+      borderColor: '#00E5CC',
+      backgroundColor: 'rgba(0,229,204,0.08)',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.4,
+      fill: true,
+    }]
+  },
+  options: {
+    animation: false, responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { display: false },
+      y: { beginAtZero: true, grid: mkGrid(), ticks: { maxTicksLimit: 4 } },
+    },
+    plugins: { legend: { display: false } },
+  }
+});
+
+// Cache donut chart
+const cacheCtx = document.getElementById('cacheChart').getContext('2d');
+const cacheChart = new Chart(cacheCtx, {
+  type: 'doughnut',
+  data: {
+    labels: ['Hits', 'Misses'],
+    datasets: [{
+      data: [0, 1],
+      backgroundColor: ['#00E5CC', '#1A1A25'],
+      borderColor: ['#00E5CC', '#2A2A3A'],
+      borderWidth: 1,
+    }]
+  },
+  options: {
+    cutout: '72%',
+    animation: { duration: 400 },
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed}` } }
+    }
+  }
+});
+
+// Latency bar chart (histogram of last N avg values)
+const latHistory  = Array(20).fill(0);
+const latCtx = document.getElementById('latencyChart').getContext('2d');
+const latencyChart = new Chart(latCtx, {
+  type: 'bar',
+  data: {
+    labels: latHistory.map((_, i) => i),
+    datasets: [{
+      label: 'Avg ms',
+      data: latHistory,
+      backgroundColor: 'rgba(124,58,237,0.6)',
+      borderColor: '#7C3AED',
+      borderWidth: 1,
+      borderRadius: 3,
+    }]
+  },
+  options: {
+    animation: false, responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { display: false },
+      y: { beginAtZero: true, grid: mkGrid(), ticks: { maxTicksLimit: 4 } },
+    },
+    plugins: { legend: { display: false } },
+  }
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt = n => (n == null ? '—' : typeof n === 'number' ? n.toLocaleString() : n);
+const fmtMs = ms => ms == null ? '—' : ms < 1000 ? `${ms.toFixed(0)} ms` : `${(ms/1000).toFixed(1)} s`;
+const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleTimeString() : '—';
+const clamp = (v,min,max) => Math.min(Math.max(v,min),max);
+
+function setHealth(status) {
+  const dot = $('hDot'), lbl = $('hLabel');
+  dot.className = 'dot ' + (status || 'healthy');
+  lbl.textContent = (status || 'healthy').charAt(0).toUpperCase() + (status||'healthy').slice(1);
+}
+
+function gaugeColor(pct) {
+  if (pct < 50) return '#22C55E';
+  if (pct < 80) return '#F59E0B';
+  return '#EF4444';
+}
+
+// ── Poll & render ──────────────────────────────────────────────────────────
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function refresh() {
+  try {
+    const [snap, logs, health] = await Promise.all([
+      fetchJSON(`${API}/metrics`),
+      fetchJSON(`${API}/logs?limit=50`),
+      fetchJSON(`${API}/health`),
+    ]);
+
+    // ── KPIs ──
+    $('kActive').textContent   = fmt(snap.active_requests);
+    $('kRps').textContent      = fmt(snap.requests_per_sec);
+    const lat = snap.avg_latency_ms;
+    $('kLat').textContent = fmtMs(lat);
+    $('kLat').className = 'kpi-value ' + (lat > 2000 ? 'red' : lat > 800 ? 'yellow' : '');
+
+    const cache = snap.cache || {};
+    const hitPct = ((cache.hit_ratio || 0) * 100).toFixed(1);
+    $('kHit').textContent   = `${hitPct}%`;
+    $('kHitSub').textContent = `${fmt(cache.hits)} hits / ${fmt((cache.hits||0)+(cache.misses||0))} total`;
+
+    const queue = snap.queue || {};
+    const qSize = queue.queue_size || 0;
+    const qMax  = queue.max_queue_size || 100;
+    $('kQueue').textContent   = fmt(qSize);
+    $('kQueueSub').textContent = `of ${qMax} max`;
+
+    $('kErr').textContent     = fmt(snap.total_errors);
+    $('kRetry').textContent   = `${fmt(snap.total_retries)} retries`;
+    $('kThrottle').textContent = fmt(snap.total_throttled);
+    $('kTotal').textContent   = fmt(snap.total_requests);
+
+    // ── Traffic chart ──
+    trafficData.push(snap.requests_per_sec || 0);
+    if (trafficData.length > TRAFFIC_POINTS) trafficData.shift();
+    trafficLabels.push('');
+    if (trafficLabels.length > TRAFFIC_POINTS) trafficLabels.shift();
+    trafficChart.update('none');
+
+    // ── Cache donut ──
+    cacheChart.data.datasets[0].data = [cache.hits || 0, cache.misses || 0];
+    cacheChart.update('none');
+
+    // ── Latency bar ──
+    latHistory.push(lat || 0);
+    if (latHistory.length > 20) latHistory.shift();
+    latencyChart.data.datasets[0].data = [...latHistory];
+    latencyChart.update('none');
+
+    // ── Queue card ──
+    $('queueBig').textContent = qSize;
+    $('queueSub').textContent = `items queued (${((qSize/qMax)*100).toFixed(0)}% full)`;
+    $('queueBar').style.width = `${clamp((qSize/qMax)*100,0,100)}%`;
+    $('queueMax').textContent = qMax;
+    $('qComp').textContent    = fmt(queue.completed);
+    $('qFail').textContent    = fmt(queue.failed);
+    $('qRetry').textContent   = fmt(queue.retried);
+    $('qTimeout').textContent = fmt(queue.timed_out);
+
+    // ── Agent table ──
+    const perAgent = snap.per_agent || {};
+    const agents = Object.entries(perAgent);
+    $('agentCount').textContent = `${agents.length} agent${agents.length !== 1 ? 's' : ''}`;
+    if (agents.length) {
+      $('agentTbody').innerHTML = agents.map(([name, s]) => {
+        const hasErr = s.errors > 0;
+        return `<tr>
+          <td><strong>${name}</strong></td>
+          <td>${fmt(s.requests)}</td>
+          <td class="${hasErr ? 'red' : ''}">${fmt(s.errors)}</td>
+          <td>${fmtMs(s.avg_latency_ms)}</td>
+          <td><span class="badge ${hasErr ? 'badge-err' : 'badge-ok'}">${hasErr ? 'Errors' : 'OK'}</span></td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ── Rate limiter ──
+    const rl = snap.rate_limiter || {};
+    const rlEntries = Object.entries(rl);
+    if (rlEntries.length) {
+      $('rateLimitBody').innerHTML = rlEntries.map(([agent, s]) => {
+        const pct = s.utilisation_pct || 0;
+        return `<div class="gauge-row">
+          <span style="flex:0 0 90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${agent}</span>
+          <div class="gauge-track">
+            <div class="gauge-fill" style="width:${clamp(pct,0,100)}%;background:${gaugeColor(pct)}"></div>
+          </div>
+          <span style="font-size:10px;color:var(--muted);flex:0 0 36px;text-align:right">${pct.toFixed(0)}%</span>
+        </div>`;
+      }).join('');
+    }
+
+    // ── Health ──
+    setHealth(health.overall);
+
+    // ── Logs ──
+    const logEntries = logs.logs || [];
+    $('logCount').textContent = `${logEntries.length} entries`;
+    if (logEntries.length) {
+      $('logTbody').innerHTML = logEntries.map(l => `<tr>
+        <td style="font-family:monospace;font-size:10px;color:var(--muted)">${l.request_id || '—'}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(l.query||'').replace(/"/g,'&quot;')}">${l.query || '—'}</td>
+        <td>${l.agent_id || '—'}</td>
+        <td>${fmtMs(l.latency_ms)}</td>
+        <td>${l.from_cache ? '<span class="badge badge-cache">HIT</span>' : '<span style="color:var(--muted);font-size:10px">MISS</span>'}</td>
+        <td>${l.throttled ? '<span class="badge" style="background:rgba(245,158,11,.15);color:#F59E0B">YES</span>' : '—'}</td>
+        <td><span class="badge ${l.status === 'ok' ? 'badge-ok' : 'badge-err'}">${l.status || '—'}</span></td>
+        <td style="color:var(--muted);font-size:10px">${fmtTime(l.timestamp)}</td>
+      </tr>`).join('');
+    }
+
+    $('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    console.warn('RAL poll error:', e);
+    setHealth('degraded');
+  }
+}
+
+async function flushCache() {
+  try {
+    const r = await fetch(`${API}/cache/clear`, { method: 'POST' });
+    const d = await r.json();
+    alert(`Cache flushed — ${d.deleted} entries removed.`);
+  } catch (e) {
+    alert('Flush failed: ' + e.message);
+  }
+}
+
+// ── Start polling ──────────────────────────────────────────────────────────
+refresh();
+setInterval(refresh, POLL_MS);
+</script>
+</body>
+</html>
