@@ -4,7 +4,7 @@ Routing engine service for AI-powered agent selection.
 
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -29,7 +29,7 @@ class RoutingEngine:
 
     def __init__(self):
         self.llm = self._create_llm()
-        self.embedding_model = self._create_embedding_model()
+        self.embedding_model = None
 
     def _create_llm(self) -> ChatOpenAI:
         """Create LLM instance for routing decisions.
@@ -37,6 +37,7 @@ class RoutingEngine:
         Supports multiple providers via ROUTER_LLM_PROVIDER setting:
         - "openai": Uses OpenAI API (default)
         - "openrouter": Uses OpenRouter API
+        - "nvidia": Uses NVIDIA NIM OpenAI-compatible API
         - "minimax": Uses MiniMax OpenAI-compatible API
         """
         provider = settings.ROUTER_LLM_PROVIDER.lower()
@@ -55,6 +56,13 @@ class RoutingEngine:
                 temperature=0,
                 api_key=settings.OPENROUTER_API_KEY,
                 base_url="https://openrouter.ai/api/v1",
+            ).with_structured_output(RouterOutput)
+        elif provider == "nvidia":
+            return ChatOpenAI(
+                model=model or "z-ai/glm-5.1",
+                temperature=1.0,
+                api_key=settings.NVIDIA_API_KEY,
+                base_url=settings.NVIDIA_BASE_URL,
             ).with_structured_output(RouterOutput)
         else:
             return ChatOpenAI(
@@ -87,7 +95,7 @@ class RoutingEngine:
         message: str,
         conversation_history: List[Dict[str, str]],
         agent_cards: List[Dict[str, Any]],
-        vectorstore: FAISS,
+        vectorstore: Optional[FAISS],
     ) -> Tuple[List[str], List[float], List[str], RouterOutput]:
         """
         Route a user query to the most appropriate agent.
@@ -105,6 +113,10 @@ class RoutingEngine:
             RoutingEngineError: If routing fails
         """
         try:
+            if len(agent_cards) == 1:
+                selected = agent_cards[0].get("name", "unknown")
+                return [selected], [1.0], [selected], RouterOutput(agent_name=selected)
+
             if len(agent_cards) < 15:
                 first_shortlist = [agent["name"] for agent in agent_cards]
                 second_shortlist = [agent["name"] for agent in agent_cards]
@@ -200,6 +212,9 @@ class RoutingEngine:
             Tuple of (first_shortlist, second_shortlist, shortlisted_agent_cards)
         """
         try:
+            if self.embedding_model is None:
+                self.embedding_model = self._create_embedding_model()
+
             k = 15
 
             # Embed the query
@@ -334,7 +349,7 @@ def router(
     message: str,
     conversation_history: List[Dict[str, str]],
     agent_cards: List[Dict[str, Any]],
-    vectorstore: FAISS,
+    vectorstore: Optional[FAISS],
 ) -> Tuple[List[str], List[float], List[str], RouterOutput]:
     """
     Route a user query to the most appropriate agent.

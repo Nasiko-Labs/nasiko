@@ -1,6 +1,7 @@
 import json
 import logging
 import inspect
+import os
 
 from typing import Any
 
@@ -32,6 +33,7 @@ class OpenAIAgentExecutor(AgentExecutor):
         system_prompt: str,
         base_url: str | None = None,
         model: str = "gpt-4o",
+        extra_body: dict[str, Any] | None = None,
     ):
         self._card = card
         self.tools = tools
@@ -41,6 +43,7 @@ class OpenAIAgentExecutor(AgentExecutor):
         )
         self.model = model
         self.system_prompt = system_prompt
+        self.extra_body = extra_body
 
     async def _process_request(
         self,
@@ -70,13 +73,19 @@ class OpenAIAgentExecutor(AgentExecutor):
 
             try:
                 # Make API call to OpenAI
+                completion_kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "tools": openai_tools if openai_tools else None,
+                    "tool_choice": "auto" if openai_tools else None,
+                    "temperature": 0.1,
+                    "max_tokens": 4000,
+                }
+                if self.extra_body:
+                    completion_kwargs["extra_body"] = self.extra_body
+
                 response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=openai_tools if openai_tools else None,
-                    tool_choice="auto" if openai_tools else None,
-                    temperature=0.1,
-                    max_tokens=4000,
+                    **completion_kwargs
                 )
 
                 message = response.choices[0].message
@@ -93,6 +102,7 @@ class OpenAIAgentExecutor(AgentExecutor):
                 # Check if there are tool calls to execute
                 if message.tool_calls:
                     # Execute tool calls
+                    direct_outputs = []
                     for tool_call in message.tool_calls:
                         function_name = tool_call.function.name
                         function_args = json.loads(tool_call.function.arguments)
@@ -129,6 +139,8 @@ class OpenAIAgentExecutor(AgentExecutor):
                             # Convert to string as fallback
                             result_json = str(result)
 
+                        direct_outputs.append(result_json)
+
                         # Add tool result to messages
                         messages.append(
                             {
@@ -145,6 +157,16 @@ class OpenAIAgentExecutor(AgentExecutor):
                             [TextPart(text="Processing tool calls...")]
                         ),
                     )
+
+                    if os.getenv("RETURN_TOOL_RESULT_DIRECTLY", "true").lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                    }:
+                        parts = [TextPart(text="\n".join(direct_outputs))]
+                        await task_updater.add_artifact(parts)
+                        await task_updater.complete()
+                        break
 
                     # Continue the loop to get the final response
                     continue

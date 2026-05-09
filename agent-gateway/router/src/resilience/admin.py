@@ -53,7 +53,7 @@ def build_admin_router(executor: ResilientAgentExecutor) -> APIRouter:
         config = executor.cache.update_config(**payload.model_dump())
         return config.model_dump()
 
-    @router.put("/limits/{agent_id}", dependencies=[Depends(require_admin_key)])
+    @router.put("/limits/{agent_id:path}", dependencies=[Depends(require_admin_key)])
     async def update_limit(agent_id: str, payload: LimitConfigRequest):
         config = executor.limiter.update_config(agent_id, **payload.model_dump())
         return config.model_dump()

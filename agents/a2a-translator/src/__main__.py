@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 
 import click
@@ -30,8 +31,14 @@ logging.basicConfig()
 def main(host: str, port: int):
     base_url = None
     model = "gpt-4o"
+    extra_body = None
 
-    if os.getenv("OPENROUTER_API_KEY"):
+    if os.getenv("NVIDIA_API_KEY"):
+        api_key = os.getenv("NVIDIA_API_KEY")
+        base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+        model = os.getenv("NVIDIA_MODEL", "z-ai/glm-5.1")
+        extra_body = _get_nvidia_extra_body(model)
+    elif os.getenv("OPENROUTER_API_KEY"):
         api_key = os.getenv("OPENROUTER_API_KEY")
         base_url = "https://openrouter.ai/api/v1"
         model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
@@ -44,7 +51,7 @@ def main(host: str, port: int):
 
     if not api_key:
         raise ValueError(
-            "One of OPENROUTER_API_KEY, OPENAI_API_KEY, or MINIMAX_API_KEY must be set"
+            "One of NVIDIA_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, or MINIMAX_API_KEY must be set"
         )
 
     skill = AgentSkill(
@@ -82,6 +89,7 @@ def main(host: str, port: int):
         system_prompt=agent_data["system_prompt"],
         base_url=base_url,
         model=model,
+        extra_body=extra_body,
     )
 
     request_handler = DefaultRequestHandler(
@@ -96,6 +104,26 @@ def main(host: str, port: int):
     app = Starlette(routes=routes)
 
     uvicorn.run(app, host=host, port=port)
+
+
+def _get_nvidia_extra_body(model: str) -> dict | None:
+    raw_extra_body = os.getenv("NVIDIA_EXTRA_BODY_JSON")
+    if raw_extra_body:
+        return json.loads(raw_extra_body)
+
+    if model.startswith("z-ai/") and os.getenv("NVIDIA_ENABLE_THINKING", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return {
+            "chat_template_kwargs": {
+                "enable_thinking": True,
+                "clear_thinking": False,
+            }
+        }
+
+    return None
 
 
 if __name__ == "__main__":

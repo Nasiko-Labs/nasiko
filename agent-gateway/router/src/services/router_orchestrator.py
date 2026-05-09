@@ -131,7 +131,9 @@ class RouterOrchestrator:
                 "Determining the best agent to serve the user's query..."
             )
 
-            vectorstore = self.vector_store.create_vector_store(agent_cards)
+            vectorstore = None
+            if len(agent_cards) >= 15:
+                vectorstore = self.vector_store.create_vector_store(agent_cards)
 
         except VectorStoreError as e:
             yield self._router_response(str(e), "", False, "")
