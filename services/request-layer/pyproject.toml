@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "request-layer"
+version = "1.0.0"
+description = "Resilient agent request layer for Nasiko — semantic cache, slot queue, demand detector, reallocation engine."
+authors = ["Nasiko AI Projects"]
+license = "MIT"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+fastapi = ">=0.116.1"
+uvicorn = ">=0.35.0"
+httpx = ">=0.25.0"
+redis = ">=5.0.0"
+numpy = ">=1.26.0"
+sentence-transformers = ">=3.0.0"
+docker = ">=7.0.0"
+pydantic = ">=2.11.0"
+pydantic-settings = ">=2.0.0"
+requests = ">=2.31.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "<=8.3.5"
+pytest-asyncio = ">=0.23.0"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"

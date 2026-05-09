@@ -28,8 +28,9 @@ class AgentClient:
         """
         Translate external agent URLs to internal Docker network URLs for local deployment.
 
-        Converts localhost:9100 (external Kong Gateway access) to kong-gateway:8000
-        (internal Docker network access) when running in local Docker deployment.
+        Routes agent requests through the request-layer service to enable
+        semantic caching and slot-aware queuing. Falls back to direct Kong
+        Gateway access if the request-layer is unavailable.
 
         Args:
             agent_url: Original agent URL from registry
@@ -38,8 +39,8 @@ class AgentClient:
             Translated URL suitable for internal container communication
         """
         if "localhost:9100" in agent_url:
-            # Local Docker deployment: translate to internal Kong Gateway address
-            return agent_url.replace("localhost:9100", "kong-gateway:8000")
+            # Route through request-layer for caching + slot queuing
+            return agent_url.replace("localhost:9100", "nasiko-request-layer:8090")
         return agent_url
 
     async def send_request(

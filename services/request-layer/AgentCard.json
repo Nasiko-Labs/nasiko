@@ -1,0 +1,22 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Request Layer",
+  "description": "Resilient agent request layer that provides semantic caching, slot-aware queuing, demand imbalance detection, and operator-controlled reallocation for the Nasiko agent fleet.",
+  "url": "http://nasiko-request-layer:8090/",
+  "version": "1.0.0",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "chat_agent": false
+  },
+  "defaultInputModes": ["application/json"],
+  "defaultOutputModes": ["application/json"],
+  "skills": [],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
