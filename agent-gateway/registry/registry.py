@@ -1194,6 +1194,7 @@ async def sync_services():
                 await asyncio.sleep(REGISTRY_INTERVAL)
                 continue
 
+            discovered_service_names = {service.name for service in services}
             publish_request_manager_targets(services)
 
             request_manager_service_ready = ensure_request_manager_service()
@@ -1220,8 +1221,8 @@ async def sync_services():
                     )
 
             # Clean up stale services
-            cleanup_stale_services(successful_registrations)
-            cleanup_stale_agent_routes(successful_registrations)
+            cleanup_stale_services(discovered_service_names)
+            cleanup_stale_agent_routes(discovered_service_names)
 
             # Update current services
             current_services = successful_registrations
@@ -1288,6 +1289,7 @@ async def trigger_sync():
                 "message": f"Sync completed. Registered 0 {discovery_type} services; cleanup skipped because discovery was empty."
             }
 
+        discovered_service_names = {service.name for service in services}
         publish_request_manager_targets(services)
 
         request_manager_service_ready = ensure_request_manager_service()
@@ -1311,14 +1313,16 @@ async def trigger_sync():
                     route_name, ["cors", "nasiko-auth", "chat-logger"]
                 )
 
-        cleanup_stale_services(successful_registrations)
-        cleanup_stale_agent_routes(successful_registrations)
+        cleanup_stale_services(discovered_service_names)
+        cleanup_stale_agent_routes(discovered_service_names)
         current_services = successful_registrations
 
         return {
             "message": f"Sync completed. Registered {registered} {discovery_type} services."
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Manual sync failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
