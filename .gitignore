@@ -160,4 +160,8 @@ cython_debug/
 .DS_Store
 
 # Sensitive credentials
+
 superuser_credentials.json
+
+#history file
+.history/
