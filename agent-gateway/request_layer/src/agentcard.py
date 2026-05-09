@@ -72,20 +72,54 @@ class NasikoAdapter:
         """
 
         base = self._settings.request_layer_nasiko_registry_url.rstrip("/")
-        url = f"{base}/api/v1/registry/agents"
-        response = await self._client.get(url)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            data = payload.get("data")
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                # Some endpoints wrap a single agent — coerce to list.
-                return [data]
-        return []
+        # Discovery uses Kong's Admin API as the source of truth — Kong is
+        # the single point that already knows about every registered agent
+        # (the kong-service-registry container reconciles agents into Kong
+        # Services on startup). This avoids depending on backend auth.
+        kong_admin = self._settings.request_layer_kong_admin_url.rstrip("/")
+        services_url = f"{kong_admin}/services"
+        try:
+            response = await self._client.get(services_url)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return []
+
+        services = (response.json() or {}).get("data", [])
+        cards: list[dict[str, Any]] = []
+        for service in services:
+            name = service.get("name") or ""
+            host = service.get("host") or ""
+            port = service.get("port") or 80
+            # Kong's service-registry registers agents with the Kong service
+            # name being the agent name; agent containers are at host:port.
+            if not name or not host or "kong" in name.lower():
+                continue
+            cards.append(
+                {
+                    "name": name.replace("agent-", ""),
+                    "url": f"http://{host}:{port}",
+                    "capabilities": [],
+                    "tags": [],
+                }
+            )
+        # Best-effort: enrich each card with its AgentCard via the backend
+        # name-lookup endpoint (does not require auth).
+        nasiko_base = self._settings.request_layer_nasiko_registry_url.rstrip("/")
+        for card in cards:
+            try:
+                resp = await self._client.get(
+                    f"{nasiko_base}/api/v1/registry/agent/name/{card['name']}"
+                )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    data = payload.get("data") if isinstance(payload, dict) else None
+                    if isinstance(data, dict):
+                        for key in ("capabilities", "tags", "skills", "model"):
+                            if key in data and data[key]:
+                                card[key] = data[key]
+            except httpx.HTTPError:
+                continue
+        return cards
 
     async def poll_loop(self) -> None:
         """Background coroutine that refreshes the snapshot periodically."""
