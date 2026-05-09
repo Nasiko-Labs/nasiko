@@ -1,0 +1,9 @@
+[project]
+name = "agent-b"
+version = "0.1.0"
+description = "Medium Agent - responds in 300-700ms"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "pydantic==2.10.3"
+]

@@ -1,0 +1,92 @@
+services:
+
+  # ── Redis ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ral-redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+  # ── Gateway (Resilient Agent Request Layer) ──────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ral-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - AGENT_FLEET_CONFIG=/app/agents.json
+      - DEFAULT_CACHE_TTL=60
+      - DEFAULT_RATE_LIMIT_RPS=10
+      - DEFAULT_BURST_CAPACITY=20
+      - DEFAULT_QUEUE_MAX_SIZE=100
+      - DEFAULT_QUEUE_TIMEOUT_MS=5000
+    volumes:
+      - ./agents.json:/app/agents.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      agent-a:
+        condition: service_started
+      agent-b:
+        condition: service_started
+      agent-slow:
+        condition: service_started
+
+  # ── Mock Agents ──────────────────────────────────────────────────
+  agent-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: ral-agent-a
+    command: uvicorn agents.agent_a:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+  agent-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: ral-agent-b
+    command: uvicorn agents.agent_b:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+  agent-slow:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: ral-agent-slow
+    command: uvicorn agents.slow_agent:app --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+  # ── Monitoring Dashboard ─────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: ral-dashboard
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_GATEWAY_URL=http://localhost:8000
+    depends_on:
+      - gateway
+
+volumes:
+  redis-data:

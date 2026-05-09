@@ -1,0 +1,6 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+redis[asyncio]==5.2.1
+httpx==0.28.1
+pydantic==2.10.3
+openai>=1.0.0

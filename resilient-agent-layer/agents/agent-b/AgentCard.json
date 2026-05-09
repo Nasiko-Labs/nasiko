@@ -1,0 +1,21 @@
+{
+  "name": "agent-b",
+  "description": "Medium Agent - responds in 300-700ms",
+  "capabilities": [
+    "medium_processing"
+  ],
+  "tags": [
+    "demo",
+    "resilient-layer"
+  ],
+  "examples": [
+    "test query"
+  ],
+  "input_mode": "text",
+  "output_mode": "json",
+  "agent_protocol_version": "a2a-v1",
+  "endpoints": {
+    "/invoke": "Process query",
+    "/health": "Health check"
+  }
+}
