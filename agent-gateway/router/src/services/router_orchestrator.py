@@ -3,6 +3,7 @@ Router orchestrator service that coordinates all router operations.
 """
 
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -18,6 +19,8 @@ from router.src.core import (
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
 from router.src.utils import truncate_agent_cards
+from router.src.services.cache_service import agent_response_cache
+from router.src.services.rate_limiter_service import agent_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -190,22 +193,48 @@ class RouterOrchestrator:
 
         try:
             logger.info(f"Sending request to agent: {agent_url}")
-            yield self._router_response(
-                "Sending user's query to agent...", "", False, agent_url
-            )
+            
+            # Check cache before sending request
+            cached_response = agent_response_cache.get_cached_response(request.query, agent_url)
+            if cached_response:
+                yield self._router_response(
+                    "Cache hit! Serving previous response to save time...", "", False, agent_url
+                )
+                yield self._router_response(cached_response, "", False, agent_url)
+                return
 
-            # Send request to agent
-            agent_data = await self.agent_client.send_request(
-                agent_url, request, files, token
-            )
+            # Acquire rate limit slot (with queuing)
+            await agent_rate_limiter.acquire(agent_url)
+            start_time = time.time()
+            success = False
+            try:
+                yield self._router_response(
+                    "Sending user's query to agent...", "", False, agent_url
+                )
 
-            # Extract response content
-            agent_response = self.agent_client.extract_response_content(agent_data)
+                # Send request to agent
+                agent_data = await self.agent_client.send_request(
+                    agent_url, request, files, token
+                )
 
-            logger.info("Successfully received response from agent")
-            yield self._router_response(agent_response, "", False, agent_url)
+                # Extract response content
+                agent_response = self.agent_client.extract_response_content(agent_data)
+
+                # Cache the new response
+                if agent_response:
+                    agent_response_cache.set_cached_response(request.query, agent_url, agent_response)
+
+                logger.info("Successfully received response from agent")
+                success = True
+                yield self._router_response(agent_response, "", False, agent_url)
+            finally:
+                # Track completion and release the slot
+                response_time_ms = (time.time() - start_time) * 1000
+                agent_rate_limiter.track_completion(agent_url, response_time_ms, success)
+                await agent_rate_limiter.release(agent_url)
 
         except AgentClientError as e:
+            # Note: error is also tracked in finally via success=False
             yield self._router_response(str(e), "", False, agent_url)
 
     async def _get_agent_url(
@@ -253,7 +282,7 @@ class RouterOrchestrator:
 
         health_status = {
             "router": "healthy",
-            "timestamp": __import__("time").time(),
+            "timestamp": time.time(),
             "components": {},
         }
 

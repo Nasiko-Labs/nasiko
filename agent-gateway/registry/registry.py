@@ -607,9 +607,8 @@ def register_static_proxies():
             "preserve_host": False,
             "middlewares": [
                 "cors",
-                "nasiko-auth",
                 "chat-logger",
-            ],  # Full middleware with CORS
+            ],  # Full middleware with CORS (removed nasiko-auth for local dev)
         },
         # Static landing page - forward to web app
         {

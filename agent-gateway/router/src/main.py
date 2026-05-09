@@ -4,7 +4,7 @@ Refactored main router application with modular architecture.
 
 import logging
 from io import BytesIO
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from router.src.config import settings
 from router.src.entities import UserRequest
 from router.src.services import RouterOrchestrator
+from router.src.services.rate_limiter_service import agent_rate_limiter
 
 # Configure logging
 logging.basicConfig(
@@ -24,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Security
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -72,7 +73,7 @@ async def process_request(
         max_length=settings.MAX_FILE_SIZE,
         description="Optional files to upload (PDF, TXT, DOCX, XLSX)",
     ),
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> StreamingResponse:
     """
     Process a user request through the router pipeline.
@@ -106,7 +107,7 @@ async def process_request(
         logger.info(f"Files count: {len(files_to_forward)}")
 
         # Extract token
-        token = credentials.credentials
+        token = credentials.credentials if credentials else ""
 
         # Process through orchestrator
         return StreamingResponse(
@@ -121,15 +122,63 @@ async def process_request(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.get("/router/limits")
+async def get_all_limits():
+    """Get rate limit statistics for all agents."""
+    return agent_rate_limiter.get_all_stats()
+
+
+@app.get("/router/limits/{agent_id:path}")
+async def get_agent_limit(agent_id: str):
+    """Get rate limit statistics for a specific agent."""
+    stats = agent_rate_limiter.get_agent_stats(agent_id)
+    if not stats:
+        raise HTTPException(status_code=404, detail="Agent not found in rate limiter")
+    return stats
+
+
+@app.post("/router/limits")
+async def update_agent_limit(config: Dict[str, Any]):
+    """
+    Update rate limit for an agent.
+    Expected payload: {"agent_id": "...", "limit": 10}
+    """
+    agent_id = config.get("agent_id")
+    limit = config.get("limit")
+    
+    if not agent_id or limit is None:
+        raise HTTPException(status_code=400, detail="Missing agent_id or limit")
+        
+    try:
+        limit_int = int(limit)
+        await agent_rate_limiter.set_limit(agent_id, limit_int)
+        return {"status": "success", "agent_id": agent_id, "limit": limit_int}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Limit must be an integer")
+
+
 @app.get("/metrics")
 async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
+    """Get router service metrics including rate limiting stats."""
+    agent_stats = agent_rate_limiter.get_all_stats()
+    
+    total_active = sum(s.active_requests for s in agent_stats)
+    total_queued = sum(s.queued_requests for s in agent_stats)
+    total_requests = sum(s.total_requests for s in agent_stats)
+    
+    avg_wait = sum(s.avg_wait_time_ms for s in agent_stats) / len(agent_stats) if agent_stats else 0.0
+    avg_resp = sum(s.avg_response_time_ms for s in agent_stats) / len(agent_stats) if agent_stats else 0.0
+    total_errors = sum(s.error_count for s in agent_stats)
+    
     return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
+        "requests_processed": total_requests,
+        "active_requests": total_active,
+        "queued_requests": total_queued,
+        "agent_specific_stats": agent_stats,
+        "average_wait_time_ms": avg_wait,
+        "average_response_time_ms": avg_resp,
+        "total_errors": total_errors,
+        "error_rate": total_errors / total_requests if total_requests > 0 else 0.0,
     }
 
 
