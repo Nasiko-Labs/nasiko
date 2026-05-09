@@ -79,8 +79,8 @@ class FakeRedis:
 
     async def decr(self, key: str) -> int:
         current = int(self.values.get(key, "0")) - 1
-        self.values[key] = str(max(current, 0))
-        return int(self.values[key])
+        self.values[key] = str(current)
+        return current
 
     async def rpush(self, key: str, value: str) -> int:
         self.lists[key].append(value)
