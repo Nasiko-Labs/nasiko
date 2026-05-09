@@ -398,6 +398,194 @@ WORKDIR /app
 # Your agent's pyproject.toml should list its own dependencies (fastapi, uvicorn, etc.)
 # See agents/a2a-translator/ for a working example.
 COPY pyproject.toml .
+
+################################################################################
+# Intelligent Request Management Layer
+################################################################################
+
+# Intelligent Request Management Layer
+
+This project now includes a small, self-contained middleware demo that sits
+between external clients and AI agents. It demonstrates how caching,
+per-agent rate limiting, and an async queue can be composed to make agent
+systems resilient and presentation-ready for hackathons or early-stage demos.
+
+## 1. What Nasiko Provides
+
+- Nasiko is an AI agent control plane that manages and orchestrates AI agents.
+- It provides a centralized management and routing layer for agent ecosystems.
+- Nasiko acts as the management layer for agent lifecycle, discovery, and
+  observability.
+
+## 2. Problem Statement
+
+Originally, requests were forwarded directly to agents. This can cause:
+
+- Repeated computation for identical requests (wasted compute and cost).
+- Overload when traffic spikes (no backpressure or queuing).
+- Lack of traffic control per agent (no per-agent limits).
+- Limited observability into request lifecycle and latency.
+- Inefficient scaling and poor demo visibility for presentation.
+
+## 3. What We Built
+
+We added an Intelligent Request Management Middleware Layer — a simple,
+in-memory FastAPI-based middleware that demonstrates the following features:
+
+- Smart caching (request fingerprinting + TTL)
+- Per-agent adaptive rate limiting
+- Async queue/backpressure handling using `asyncio.Queue`
+- Detailed in-memory metrics and `/stats` observability endpoint
+- Health checks via `/health`
+- Mock agent execution to simulate realistic latency and responses
+
+This implementation is intentionally simple and in-memory so it is easy to
+present and reason about during a live demo. It is not a production-ready
+distributed system (see Future Improvements below).
+
+## 4. Architecture Diagram
+
+```
+User
+  ↓
+FastAPI API Layer
+  ↓
+Request Management Layer
+  ├── Cache Check (fingerprint: agent_name + query)
+  ├── Rate Limiter (per-agent windows)
+  ├── Queue Manager (asyncio.Queue, FIFO)
+  ├── Metrics Collector (in-memory)
+  ↓
+AI Agent Execution (mocked for demo)
+  ↓
+Response Returned
+
+# Notes:
+# - Cache reduces duplicated computation and lowers latency for repeated requests.
+# - Rate limiting prevents cascading overload and queues allow safe backpressure.
+```
+
+## 5. Request Flow (Beginner Friendly)
+
+1. A user sends a JSON request to `/process-request` (includes `agent_name` and `query`).
+2. FastAPI validates the request body and forwards it to the `RequestManager`.
+3. The manager generates a cache key (based on `agent_name` + `query`) and checks cache.
+   - If cached: the response is returned instantly (CACHE HIT).
+   - If not cached: continue to rate limiting (CACHE MISS).
+4. Rate limiter checks per-agent windows (e.g., `coding-agent` 2 requests / 10s).
+   - If under the limit: request executes immediately.
+   - If the limit is exceeded: the request is placed into an async FIFO queue instead of being dropped.
+5. The background queue worker dequeues requests and processes them FIFO.
+6. After agent execution the result is cached and metrics are updated.
+7. The response is returned to the client and the `/stats` endpoint reflects the change.
+
+## 6. Features Implemented
+
+| Feature | Description |
+|---------|-------------|
+| Caching | In-memory TTL cache keyed by `agent_name + query` to avoid duplicate work |
+| Rate limiting | Per-agent adaptive limits (configurable windows and counts) |
+| Queue handling | `asyncio.Queue` overflow handling with FIFO processing and wait semantics |
+| Observability | `/stats` endpoint exposing cache hits, misses, queue depth, latencies |
+| Health checks | `/health` endpoint for simple readiness checks |
+| Agent-wise metrics | Per-agent counters for processed requests and rate-limit triggers |
+| Latency tracking | Average response times and average queue wait time collected in-memory |
+
+## 7. API Endpoints
+
+- `POST /process-request` — Main demo endpoint. Body: `{ "agent_name": "translator-agent", "query": "..." }`.
+  - Purpose: Run requests through the middleware (cache → limiter → queue → agent).
+
+- `GET /stats` — Returns in-memory metrics and runtime stats (cache hits, queue depth, per-agent stats).
+  - Purpose: Observability for demo and judging; useful to demonstrate queue growth and cache hit-rate.
+
+- `GET /health` — Simple health check returning `status: ok` and current queue depth.
+  - Purpose: Basic readiness/health for load tests or probes.
+
+- `GET /docs` — FastAPI OpenAPI docs (auto-generated) for endpoints and models.
+
+## 8. Sample Request / Response
+
+Example request (slow first-run, fast on repeat due to cache):
+
+```bash
+curl -X POST http://127.0.0.1:8010/process-request \
+  -H "Content-Type: application/json" \
+  -d '{"agent_name":"translator-agent","query":"Translate hello into Spanish"}'
+```
+
+Example response (first call — uncached):
+
+```json
+{
+  "agent_name": "translator-agent",
+  "query": "Translate hello into Spanish",
+  "source": "agent",
+  "elapsed_ms": 2003.45,
+  "result": {
+    "status": "ok",
+    "message": "Mock agent executed successfully",
+    "agent_id": "translator-agent",
+    "echo": {"query":"Translate hello into Spanish"}
+  }
+}
+```
+
+Example response (repeat call — cached):
+
+```json
+{
+  "agent_name": "translator-agent",
+  "query": "Translate hello into Spanish",
+  "source": "cache",
+  "elapsed_ms": 12.34,
+  "result": {
+    "status": "ok",
+    "message": "Mock agent executed successfully",
+    "agent_id": "translator-agent",
+    "echo": {"query":"Translate hello into Spanish"}
+  },
+  "cache": { "served_from_cache": true }
+}
+```
+
+## 9. Observability / Stats Explained
+
+The `/stats` endpoint exposes the following runtime information (useful for demos):
+
+- `cache_hit_rate` — Ratio of cache hits to total requests.
+- `active_requests` — Number of requests currently executing.
+- `queue_depth` — Current number of items waiting in the overflow queue.
+- `average_latency_ms` — Average time to complete requests.
+- `average_queue_wait_ms` — Average time requests spent waiting in queue.
+- `per_agent` — Per-agent buckets with `requests_processed`, `rate_limit_triggers`, and `average_response_time_ms`.
+
+These values are intentionally kept in-memory for easy presentation. They provide clear, real-time signals for judging and debugging.
+
+## 10. Performance Improvements (Demo Observations)
+
+- First request for a unique payload is intentionally slower (simulated agent delay), demonstrating the cost of initial computation.
+- Repeated identical requests are served instantly from cache — this demonstrates how caching reduces latency and compute.
+- Under burst traffic, per-agent rate limiting prevents a single noisy agent from overwhelming the system; queued requests are processed FIFO so no requests are silently dropped.
+
+## 11. Future Improvements / Scalability
+
+Planned upgrades to make the middleware production-ready:
+
+- Replace in-memory cache with **Redis** (shared cache across instances).
+- Move the queue to a distributed broker (e.g., **Redis Streams**, **RabbitMQ**, or **Celery**) for horizontal scaling.
+- Replace the mock agent executor with calls to the Nasiko router and real agent endpoints.
+- Add persistent metrics export (Prometheus) and dashboards (Grafana).
+- Deploy queue workers and the API behind Kubernetes for resilience and auto-scaling.
+
+## Integration TODOs
+
+- TODO: Wire `RequestManager` into the Nasiko router for real agent invocation (see `request_manager.py`).
+- TODO: Replace `CacheManager` with a Redis-backed cache and add TTL eviction metrics.
+- TODO: Emit Prometheus metrics from the `MetricsCollector` (current snapshot available at `/stats`).
+
+---
+
 RUN pip install -e .
 
 COPY src/ ./src/
