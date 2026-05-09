@@ -1,0 +1,19 @@
+services:
+  resilience-service:
+    build:
+      context: ./resilience-service
+      dockerfile: Dockerfile
+    container_name: nasiko-resilience
+    ports:
+      - "8090:8090"
+    networks:
+      - app-network
+      - agents-net
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+      - nasiko-backend
+    restart: unless-stopped
+    # Health is verified via API; curl not present in base image
