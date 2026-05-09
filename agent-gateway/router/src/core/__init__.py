@@ -6,6 +6,11 @@ from .agent_registry import AgentRegistry, AgentRegistryError
 from .vector_store import VectorStoreService, VectorStoreError
 from .agent_client import AgentClient, AgentClientError
 from .session_history import SessionHistoryService, SessionHistoryError
+from .request_control import (
+    RequestControlService,
+    RequestControlError,
+    AgentQueueTimeoutError,
+)
 
 __all__ = [
     "AgentRegistry",
@@ -16,4 +21,7 @@ __all__ = [
     "AgentClientError",
     "SessionHistoryService",
     "SessionHistoryError",
+    "RequestControlService",
+    "RequestControlError",
+    "AgentQueueTimeoutError",
 ]

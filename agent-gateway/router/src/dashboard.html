@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nasiko Router — Live Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Inter',system-ui,sans-serif;background:#0b0f1a;color:#e2e8f0;min-height:100vh;padding:24px}
+  a{color:#7c3aed}
+
+  /* Header */
+  .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;flex-wrap:wrap;gap:12px}
+  .header h1{font-size:22px;font-weight:700;background:linear-gradient(135deg,#7c3aed,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  .header .status{display:flex;align-items:center;gap:8px;font-size:13px;color:#94a3b8}
+  .header .dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px #22c55e}
+  .header .dot.err{background:#ef4444;box-shadow:0 0 6px #ef4444}
+
+  /* Cards */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin-bottom:24px}
+  .card{background:rgba(30,41,59,.55);border:1px solid rgba(148,163,184,.12);border-radius:14px;padding:20px;backdrop-filter:blur(12px);transition:border-color .2s}
+  .card:hover{border-color:rgba(124,58,237,.35)}
+  .card .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:6px}
+  .card .value{font-size:28px;font-weight:700;color:#f1f5f9}
+  .card .sub{font-size:12px;color:#94a3b8;margin-top:4px}
+
+  /* Donut */
+  .donut-wrap{display:flex;align-items:center;gap:20px}
+  .donut{width:80px;height:80px;position:relative}
+  .donut svg{transform:rotate(-90deg)}
+  .donut .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#f1f5f9}
+  .donut circle{fill:none;stroke-width:8;stroke-linecap:round}
+  .donut .bg{stroke:rgba(148,163,184,.15)}
+  .donut .fg{stroke:url(#grad);transition:stroke-dashoffset .6s ease}
+
+  /* Agent section */
+  .section-title{font-size:15px;font-weight:600;color:#94a3b8;margin-bottom:14px;text-transform:uppercase;letter-spacing:1px}
+  .agent-card{background:rgba(30,41,59,.55);border:1px solid rgba(148,163,184,.12);border-radius:14px;padding:20px;margin-bottom:12px;backdrop-filter:blur(12px)}
+  .agent-card .agent-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px}
+  .agent-card .agent-name{font-size:15px;font-weight:600;color:#e2e8f0}
+  .agent-card .agent-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+  .agent-card .stat{background:rgba(15,23,42,.5);border-radius:8px;padding:10px 12px}
+  .agent-card .stat .label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:#64748b;margin-bottom:2px}
+  .agent-card .stat .val{font-size:18px;font-weight:600;color:#f1f5f9}
+
+  /* Controls row */
+  .controls-row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+  .controls-row label{font-size:12px;color:#94a3b8}
+  .controls-row input[type=number]{width:64px;padding:6px 8px;border-radius:6px;border:1px solid rgba(148,163,184,.2);background:rgba(15,23,42,.6);color:#f1f5f9;font-size:13px;font-family:inherit;text-align:center}
+  .controls-row input[type=number]:focus{outline:none;border-color:#7c3aed}
+
+  /* Buttons */
+  .btn{padding:7px 16px;border-radius:8px;border:none;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;font-family:inherit}
+  .btn-primary{background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff}
+  .btn-primary:hover{opacity:.9;transform:translateY(-1px)}
+  .btn-danger{background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.25)}
+  .btn-danger:hover{background:rgba(239,68,68,.25)}
+  .btn-sm{padding:5px 12px;font-size:11px}
+  .btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+
+  /* Action bar */
+  .action-bar{display:flex;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap}
+  .action-bar .meta{font-size:12px;color:#64748b}
+
+  /* Bar indicator */
+  .bar-wrap{height:6px;background:rgba(148,163,184,.1);border-radius:3px;overflow:hidden;margin-top:6px}
+  .bar-fill{height:100%;border-radius:3px;transition:width .4s ease}
+  .bar-fill.green{background:linear-gradient(90deg,#22c55e,#16a34a)}
+  .bar-fill.amber{background:linear-gradient(90deg,#f59e0b,#d97706)}
+  .bar-fill.red{background:linear-gradient(90deg,#ef4444,#dc2626)}
+  .bar-fill.purple{background:linear-gradient(90deg,#7c3aed,#6d28d9)}
+
+  /* Toast */
+  .toast{position:fixed;bottom:24px;right:24px;background:rgba(30,41,59,.9);border:1px solid rgba(148,163,184,.15);border-radius:10px;padding:12px 20px;font-size:13px;color:#e2e8f0;backdrop-filter:blur(12px);transform:translateY(80px);opacity:0;transition:all .3s ease;z-index:100}
+  .toast.show{transform:translateY(0);opacity:1}
+
+  /* Empty state */
+  .empty{text-align:center;padding:40px 20px;color:#64748b;font-size:14px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>&#9889; Nasiko Router — Live Dashboard</h1>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Connecting…</span></div>
+</div>
+
+<div class="action-bar">
+  <button class="btn btn-danger" id="clearCacheBtn" onclick="clearCache()">Clear Cache</button>
+  <input id="tokenInput" type="password" placeholder="Paste bearer token for controls" style="min-width:280px;padding:8px 10px;border-radius:8px;border:1px solid rgba(148,163,184,.2);background:rgba(15,23,42,.6);color:#f1f5f9;font-size:12px;font-family:inherit">
+  <button class="btn btn-primary btn-sm" onclick="saveToken()">Save Token</button>
+  <span class="meta" id="statsAge"></span>
+</div>
+
+<!-- Global metrics -->
+<div class="grid" id="globalGrid">
+  <!-- Populated by JS -->
+</div>
+
+<!-- Per-agent section -->
+<div class="section-title">Per-Agent Controls &amp; Stats</div>
+<div id="agentSection"><div class="empty">Waiting for data…</div></div>
+
+<div id="toast" class="toast"></div>
+
+<!-- SVG gradient definition for donut -->
+<svg width="0" height="0"><defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#7c3aed"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient></defs></svg>
+
+<script>
+const POLL_MS = 2000;
+const CIRC = 2 * Math.PI * 36; // donut circumference (r=36)
+const API = '/router/dashboard/api'; // public read-only dashboard endpoint
+const SECURE_API = '/router'; // authenticated mutation endpoints
+
+/* ---------- helpers ---------- */
+function fmt(n){return n==null?'—':Number(n).toLocaleString()}
+function pct(n){return n==null?'—':(n*100).toFixed(1)+'%'}
+
+function toast(msg, ms=2500){
+  const el=document.getElementById('toast');
+  el.textContent=msg;el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'),ms);
+}
+
+async function apiFetch(path,opts={}){
+  const res=await fetch(path,{...opts,headers:opts.headers||{}});
+  if(!res.ok) throw new Error(res.status+' '+res.statusText);
+  return res.json();
+}
+
+function getToken(){
+  return localStorage.getItem('nasikoDashboardToken') || '';
+}
+
+function saveToken(){
+  const value=document.getElementById('tokenInput').value.trim();
+  if(!value){toast('Paste a bearer token first');return}
+  localStorage.setItem('nasikoDashboardToken', value);
+  toast('Bearer token saved for dashboard controls');
+}
+
+function authHeaders(extra={}){
+  const token=getToken();
+  if(!token) throw new Error('Missing bearer token for dashboard controls');
+  return {...extra, Authorization:'Bearer '+token};
+}
+
+/* ---------- clear cache ---------- */
+async function clearCache(){
+  const btn=document.getElementById('clearCacheBtn');
+  btn.disabled=true;btn.textContent='Clearing…';
+  try{
+    const r=await apiFetch(SECURE_API+'/cache/clear',{method:'POST',headers:authHeaders()});
+    toast('Cache cleared — '+r.deleted_keys+' keys removed');
+  }catch(e){toast('Failed: '+e.message)}
+  finally{btn.disabled=false;btn.textContent='Clear Cache'}
+}
+
+/* ---------- update agent limit ---------- */
+async function updateLimit(agentName){
+  const input=document.getElementById('limit-'+CSS.escape(agentName));
+  const val=parseInt(input.value,10);
+  if(!val||val<1){toast('Limit must be >= 1');return}
+  const encoded=encodeURIComponent(agentName);
+  try{
+    await apiFetch(
+      SECURE_API+'/controls/'+encoded,
+      {
+        method:'PUT',
+        headers:authHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({max_concurrent:val})
+      }
+    );
+    toast(agentName+' → max_concurrent='+val);
+  }catch(e){toast('Failed: '+e.message)}
+}
+
+/* ---------- render ---------- */
+function renderGlobal(stats){
+  const c=stats.cache||{};
+  const t=stats.traffic||{};
+  const rl=stats.rate_limits||{};
+  const hitRate=c.hit_rate||0;
+  const offset=CIRC-(hitRate*CIRC);
+
+  document.getElementById('globalGrid').innerHTML=`
+    <div class="card donut-wrap">
+      <div class="donut">
+        <svg viewBox="0 0 80 80"><circle class="bg" cx="40" cy="40" r="36"/><circle class="fg" cx="40" cy="40" r="36" stroke-dasharray="${CIRC}" stroke-dashoffset="${offset}"/></svg>
+        <span class="pct">${pct(hitRate)}</span>
+      </div>
+      <div><div class="label">Cache Hit Rate</div><div class="sub">${fmt(c.hits)} hits / ${fmt(c.misses)} misses</div><div class="sub">${fmt(c.writes)} writes · TTL ${c.ttl_seconds||'—'}s</div></div>
+    </div>
+    <div class="card"><div class="label">Total Requests</div><div class="value">${fmt(t.total_requests)}</div><div class="sub">Since service start</div></div>
+    <div class="card"><div class="label">Queued Requests</div><div class="value">${fmt(t.queued_requests)}</div>
+      <div class="bar-wrap"><div class="bar-fill amber" style="width:${Math.min(100,(t.queued_requests||0)/(Math.max(1,t.total_requests||1))*100)}%"></div></div>
+    </div>
+    <div class="card"><div class="label">Queue Timeouts</div><div class="value">${fmt(t.queue_timeouts)}</div>
+      <div class="bar-wrap"><div class="bar-fill red" style="width:${Math.min(100,(t.queue_timeouts||0)/(Math.max(1,t.total_requests||1))*100)}%"></div></div>
+    </div>
+    <div class="card"><div class="label">Active Right Now</div><div class="value">${fmt(t.active_requests)}</div><div class="sub">${fmt(t.queue_depth)} in queue</div></div>
+    <div class="card"><div class="label">Rate Limiting</div><div class="value">${rl.enabled?'ON':'OFF'}</div><div class="sub">Default max: ${fmt(rl.default_max_concurrent)} · Timeout: ${rl.queue_timeout_seconds||'—'}s</div></div>
+  `;
+
+  // stats age
+  if(stats.stats_since){
+    const age=Math.round((Date.now()/1000)-stats.stats_since);
+    const mm=Math.floor(age/60), ss=age%60;
+    document.getElementById('statsAge').textContent='Stats window: '+mm+'m '+ss+'s';
+  }
+}
+
+function renderAgents(agents){
+  const section=document.getElementById('agentSection');
+  if(!agents||agents.length===0){section.innerHTML='<div class="empty">No agent traffic recorded yet. Send a request through the router to see agent stats.</div>';return}
+
+  section.innerHTML=agents.map(a=>{
+    const s=a.stats||{};
+    const maxC=a.max_concurrent||1;
+    const pctActive=Math.min(100,(a.active_requests/maxC)*100);
+    const barClass=pctActive>=100?'red':pctActive>=50?'amber':'green';
+    const eid=CSS.escape(a.agent_name);
+    return `
+    <div class="agent-card">
+      <div class="agent-header">
+        <span class="agent-name">${a.agent_name}</span>
+        <div class="controls-row">
+          <label>max_concurrent</label>
+          <input type="number" id="limit-${eid}" value="${maxC}" min="1" max="50">
+          <button class="btn btn-primary btn-sm" onclick="updateLimit('${a.agent_name.replace(/'/g,"\\'")}')">Apply</button>
+        </div>
+      </div>
+      <div class="agent-stats">
+        <div class="stat"><div class="label">Active</div><div class="val">${fmt(a.active_requests)}<span style="font-size:12px;color:#64748b"> / ${maxC}</span></div>
+          <div class="bar-wrap"><div class="bar-fill ${barClass}" style="width:${pctActive}%"></div></div>
+        </div>
+        <div class="stat"><div class="label">Queue Depth</div><div class="val">${fmt(a.queue_depth)}</div></div>
+        <div class="stat"><div class="label">Requests</div><div class="val">${fmt(s.requests)}</div></div>
+        <div class="stat"><div class="label">Queued</div><div class="val">${fmt(s.queued_requests)}</div></div>
+        <div class="stat"><div class="label">Successes</div><div class="val">${fmt(s.successes)}</div></div>
+        <div class="stat"><div class="label">Failures</div><div class="val">${fmt(s.failures)}</div></div>
+        <div class="stat"><div class="label">Timeouts</div><div class="val">${fmt(s.queue_timeouts)}</div></div>
+        <div class="stat"><div class="label">Last Latency</div><div class="val">${s.last_response_latency_ms!=null?s.last_response_latency_ms+'ms':'—'}</div></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ---------- poll loop ---------- */
+async function poll(){
+  const dot=document.getElementById('statusDot');
+  const txt=document.getElementById('statusText');
+  try{
+    const stats=await apiFetch(API+'/stats');
+    dot.classList.remove('err');
+    txt.textContent='Live · polling every '+POLL_MS/1000+'s';
+    renderGlobal(stats);
+    renderAgents(stats.agents);
+  }catch(e){
+    dot.classList.add('err');
+    txt.textContent='Error: '+e.message;
+  }
+}
+
+async function init(){
+  document.getElementById('tokenInput').value=getToken();
+  poll();
+  setInterval(poll,POLL_MS);
+}
+init();
+</script>
+</body>
+</html>
