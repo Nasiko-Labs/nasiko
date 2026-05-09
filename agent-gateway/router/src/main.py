@@ -16,6 +16,10 @@ from router.src.config import settings
 from router.src.entities import UserRequest
 from router.src.services import RouterOrchestrator
 
+# Add resilient imports
+from router.src.resilient import ResilientRequestLayer
+from router.src.resilient.routes import create_resilient_routes
+
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
@@ -43,7 +47,32 @@ app.add_middleware(
 )
 
 # Initialize orchestrator
-orchestrator = RouterOrchestrator()
+orchestrator = RouterOrchestrator(resilient_layer)
+
+# Initialize resilient request layer
+resilient_layer = ResilientRequestLayer(
+    redis_db=1,  # Use separate DB from main app
+    cache_ttl_seconds=3600,
+    default_rps=10.0,
+    default_burst=50,
+)
+
+# Configure default limits for known agents
+# This would typically come from a configuration file
+DEFAULT_AGENT_LIMITS = {
+    "a2a-translator": {"rps": 5.0, "burst": 25},
+    "a2a-github-agent": {"rps": 15.0, "burst": 75},
+}
+
+for agent_id, config in DEFAULT_AGENT_LIMITS.items():
+    resilient_layer.configure_agent(
+        agent_id,
+        requests_per_second=config["rps"],
+        burst_capacity=config["burst"],
+    )
+
+# Add resilient routes to app
+app.include_router(create_resilient_routes(resilient_layer))
 
 
 @app.get("/health")
@@ -60,6 +89,10 @@ async def health_check():
 @app.get("/router/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/router/test")
+async def test():
+    return {"test": "ok"}
 
 
 @app.post("/router")
