@@ -2,6 +2,8 @@
 Router orchestrator service that coordinates all router operations.
 """
 
+
+from router.src.core.traffic_control import traffic_controller
 import logging
 from collections.abc import AsyncGenerator
 from typing import List, Tuple, Dict, Any, Optional
@@ -49,6 +51,23 @@ class RouterOrchestrator:
             Router response messages as JSON strings
         """
         try:
+            cached_response = traffic_controller.get_cached(request.query)
+
+            if cached_response:
+                yield self._router_response(
+                    "CACHE HIT ⚡ Serving cached response instantly",
+                    "",
+                    True,
+                    ""
+                )
+                yield self._router_response(
+                    cached_response,
+                    "",
+                    False,
+                    ""
+                )
+                return
+
             # Route selection needed
             async for response in self._handle_route_selection(request, files, token):
                 yield response
@@ -152,6 +171,16 @@ class RouterOrchestrator:
             yield self._router_response(
                 f"Agent selected to serve user's query: {router_output}", agent_name
             )
+            if not traffic_controller.allow_request(agent_name):
+                traffic_controller.queue_request(agent_name, request)
+
+                yield self._router_response(
+                    f"RATE LIMITED 🚦 Request queued for {agent_name}. Queue size: {traffic_controller.queue_size(agent_name)}",
+                    agent_name,
+                    True,
+                    ""
+                )
+                return
 
         except Exception as e:
             error_msg = f"Agent routing failed: {str(e)}"
@@ -201,6 +230,10 @@ class RouterOrchestrator:
 
             # Extract response content
             agent_response = self.agent_client.extract_response_content(agent_data)
+
+            if agent_response:
+                traffic_controller.set_cache(request.query, agent_response)
+                traffic_controller.metrics["processed_requests"] += 1
 
             logger.info("Successfully received response from agent")
             yield self._router_response(agent_response, "", False, agent_url)
@@ -266,6 +299,7 @@ class RouterOrchestrator:
 
             # Check agent client
             health_status["components"]["agent_client"] = "healthy"
+            health_status["components"]["traffic_control"] = traffic_controller.stats()
 
         except Exception as e:
             health_status["router"] = "unhealthy"
