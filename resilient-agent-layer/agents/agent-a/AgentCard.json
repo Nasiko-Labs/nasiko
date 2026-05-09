@@ -1,0 +1,21 @@
+{
+  "name": "agent-a",
+  "description": "Fast Agent - responds in 50-150ms",
+  "capabilities": [
+    "fast_processing"
+  ],
+  "tags": [
+    "demo",
+    "resilient-layer"
+  ],
+  "examples": [
+    "test query"
+  ],
+  "input_mode": "text",
+  "output_mode": "json",
+  "agent_protocol_version": "a2a-v1",
+  "endpoints": {
+    "/invoke": "Process query",
+    "/health": "Health check"
+  }
+}
