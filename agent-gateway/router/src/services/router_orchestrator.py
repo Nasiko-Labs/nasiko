@@ -14,6 +14,8 @@ from router.src.core import (
     AgentClient,
     AgentClientError,
     SessionHistoryService,
+    CacheService,
+    RateLimiter,
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
@@ -30,6 +32,8 @@ class RouterOrchestrator:
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.cache = CacheService()
+        self.rate_limiter = RateLimiter()
 
     async def process_request(
         self,
@@ -67,6 +71,15 @@ class RouterOrchestrator:
         """Handle requests that need route selection."""
 
         logger.info(f"Processing query for route selection: {request.query}")
+
+        cached = await self.cache.get(request.query, agent_name="router")
+        if cached is not None:
+            yield self._router_response(
+                "Cache hit — serving cached response", "", True, ""
+            )
+            yield cached
+            return
+
         yield self._router_response("Processing user's query...")
 
         # Step 1: Fetch agent cards
@@ -170,7 +183,7 @@ class RouterOrchestrator:
 
             # Send request to selected agent
             async for response in self._send_agent_request(
-                request, files, agent_url, token
+                request, files, agent_url, token, agent_name
             ):
                 yield response
 
@@ -185,8 +198,26 @@ class RouterOrchestrator:
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         agent_url: str,
         token: str,
+        agent_name: str,
     ) -> AsyncGenerator[str, None]:
         """Send request to agent and yield response."""
+
+        allowed, disposition = await self.rate_limiter.acquire(agent_name)
+        if not allowed:
+            yield self._router_response(
+                f"Rate limit exceeded for agent '{agent_name}'. Please retry in a moment.",
+                agent_name,
+                False,
+                agent_url,
+            )
+            return
+        if disposition == "queued":
+            yield self._router_response(
+                f"Request queued for agent '{agent_name}' — now processing...",
+                agent_name,
+                True,
+                agent_url,
+            )
 
         try:
             logger.info(f"Sending request to agent: {agent_url}")
@@ -204,6 +235,9 @@ class RouterOrchestrator:
 
             logger.info("Successfully received response from agent")
             yield self._router_response(agent_response, "", False, agent_url)
+
+            # Cache the successful response keyed by query
+            await self.cache.set(request.query, agent_name, agent_response)
 
         except AgentClientError as e:
             yield self._router_response(str(e), "", False, agent_url)

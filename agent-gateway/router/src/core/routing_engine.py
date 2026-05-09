@@ -77,6 +77,11 @@ class RoutingEngine:
                 model_name=settings.JINA_EMBEDDING_MODEL,
             )
 
+        if provider == "none" or not settings.OPENAI_API_KEY:
+            from router.src.core.vector_store import _DummyEmbeddings
+
+            return _DummyEmbeddings()
+
         return OpenAIEmbeddings(
             model=settings.RERANKING_EMBEDDING_MODEL,
             openai_api_key=settings.OPENAI_API_KEY,

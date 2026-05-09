@@ -11,8 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 
 from router.src.config import settings
+from router.src.core.cache_service import CacheService
+from router.src.core.rate_limiter import RateLimiter
 from router.src.entities import UserRequest
 from router.src.services import RouterOrchestrator
 
@@ -44,6 +47,16 @@ app.add_middleware(
 
 # Initialize orchestrator
 orchestrator = RouterOrchestrator()
+
+# Singletons for monitoring endpoints (separate from orchestrator's instances —
+# these read the same Redis-backed state)
+_cache = CacheService()
+_rate_limiter = RateLimiter()
+
+
+class RateLimitConfig(BaseModel):
+    limit: int
+    window_seconds: int
 
 
 @app.get("/health")
@@ -122,15 +135,70 @@ async def process_request(
 
 
 @app.get("/metrics")
+@app.get("/router/metrics")
 async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
+    """Combined cache + rate-limit dashboard."""
     return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
+        "cache": await _cache.stats(),
+        "rate_limits": await _rate_limiter.stats(),
     }
+
+
+@app.get("/cache/stats")
+@app.get("/router/cache/stats")
+async def cache_stats():
+    return await _cache.stats()
+
+
+@app.get("/cache/agent/{agent_name}")
+@app.get("/router/cache/agent/{agent_name}")
+async def cache_agent_stats(agent_name: str):
+    return await _cache.agent_stats(agent_name)
+
+
+@app.delete("/cache")
+@app.delete("/router/cache")
+async def cache_flush_all():
+    deleted = await _cache.flush_all()
+    return {"deleted_keys": deleted, "message": "Cache cleared"}
+
+
+@app.delete("/cache/agent/{agent_name}")
+@app.delete("/router/cache/agent/{agent_name}")
+async def cache_flush_agent(agent_name: str):
+    deleted = await _cache.flush_agent(agent_name)
+    return {"agent_name": agent_name, "deleted_keys": deleted}
+
+
+@app.get("/ratelimit/stats")
+@app.get("/router/ratelimit/stats")
+async def ratelimit_stats():
+    return await _rate_limiter.stats()
+
+
+@app.get("/ratelimit/stats/{agent_name}")
+@app.get("/router/ratelimit/stats/{agent_name}")
+async def ratelimit_agent_stats(agent_name: str):
+    return await _rate_limiter.stats(agent_name)
+
+
+@app.post("/ratelimit/config/{agent_name}")
+@app.post("/router/ratelimit/config/{agent_name}")
+async def ratelimit_set_config(agent_name: str, cfg: RateLimitConfig):
+    await _rate_limiter.set_config(agent_name, cfg.limit, cfg.window_seconds)
+    return {
+        "agent_name": agent_name,
+        "limit": cfg.limit,
+        "window_seconds": cfg.window_seconds,
+        "message": "Rate limit config updated",
+    }
+
+
+@app.delete("/ratelimit/stats/{agent_name}")
+@app.delete("/router/ratelimit/stats/{agent_name}")
+async def ratelimit_reset_stats(agent_name: str):
+    await _rate_limiter.reset_stats(agent_name)
+    return {"agent_name": agent_name, "message": "Stats reset"}
 
 
 def _validate_inputs(session_id: str, query: str) -> Optional[str]:
