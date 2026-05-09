@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 
 from typing import Any
 
@@ -14,7 +15,13 @@ from a2a.types import (
     UnsupportedOperationError,
 )
 from a2a.utils.errors import ServerError
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    AsyncOpenAI,
+    RateLimitError,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -68,15 +75,49 @@ class OpenAIAgentExecutor(AgentExecutor):
             iteration += 1
 
             try:
-                # Make API call to OpenAI
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=openai_tools if openai_tools else None,
-                    tool_choice="auto" if openai_tools else None,
-                    temperature=0.1,
-                    max_tokens=4000,
-                )
+                response = None
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        response = await self.client.chat.completions.create(
+                            model=self.model,
+                            messages=messages,
+                            tools=openai_tools if openai_tools else None,
+                            tool_choice="auto" if openai_tools else None,
+                            temperature=0.1,
+                            max_tokens=4000,
+                        )
+                        break
+                    except RateLimitError as e:
+                        retry_after = None
+                        try:
+                            headers = (
+                                getattr(getattr(e, "response", None), "headers", None)
+                                or getattr(e, "headers", None)
+                                or {}
+                            )
+                            retry_after_raw = headers.get("Retry-After") or headers.get(
+                                "retry-after"
+                            )
+                            if retry_after_raw is not None:
+                                retry_after = float(retry_after_raw)
+                        except Exception:
+                            retry_after = None
+
+                        wait_seconds = retry_after if retry_after is not None else 2**attempt
+                        wait_seconds = min(wait_seconds, 30.0)
+
+                        if attempt >= max_attempts:
+                            raise
+                        await asyncio.sleep(wait_seconds)
+                    except (APITimeoutError, APIConnectionError, APIError):
+                        wait_seconds = min(2**attempt, 10)
+                        if attempt >= max_attempts:
+                            raise
+                        await asyncio.sleep(wait_seconds)
+
+                if response is None:
+                    raise RuntimeError("Failed to get LLM response after retries")
 
                 message = response.choices[0].message
 
@@ -152,6 +193,20 @@ class OpenAIAgentExecutor(AgentExecutor):
                     await task_updater.complete()
                 break
 
+            except RateLimitError as e:
+                logger.error(f"Rate limited by LLM provider: {e}")
+                error_parts = [
+                    TextPart(
+                        text=(
+                            "Sorry, the LLM provider is rate-limiting requests (HTTP 429). "
+                            "Please wait a bit and retry. If you're using an OpenRouter `:free` model, "
+                            "switch to a non-free model or add your own OpenRouter key to reduce rate limits."
+                        )
+                    )
+                ]
+                await task_updater.add_artifact(error_parts)
+                await task_updater.complete()
+                break
             except Exception as e:
                 logger.error(f"Error in OpenAI API call: {e}")
                 error_parts = [
