@@ -4,7 +4,7 @@ Router orchestrator service that coordinates all router operations.
 
 import logging
 from collections.abc import AsyncGenerator
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
 
 from router.src.core import (
     AgentRegistry,
@@ -14,10 +14,14 @@ from router.src.core import (
     AgentClient,
     AgentClientError,
     SessionHistoryService,
+    CacheService,
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
-from router.src.core.routing_engine import router
 from router.src.utils import truncate_agent_cards
+
+# Lazy import to avoid pulling in langchain at module load time
+if TYPE_CHECKING:
+    from router.src.core.routing_engine import router
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +29,22 @@ logger = logging.getLogger(__name__)
 class RouterOrchestrator:
     """Main orchestrator service for router operations."""
 
-    def __init__(self):
+    def __init__(self, cache: Optional[CacheService] = None):
         self.agent_registry = AgentRegistry()
         self.session_history_service = SessionHistoryService()
-        self.vector_store = VectorStoreService()
+        # Lazy init - only create when needed (during request processing)
+        self._vector_store = None
         self.agent_client = AgentClient()
+        # Cache is injected so the RequestManager owns the single instance.
+        # When used standalone (e.g. tests) a fresh CacheService is created.
+        self._cache: CacheService = cache if cache is not None else CacheService()
+
+    @property
+    def vector_store(self):
+        """Lazy-load vector store service to avoid langchain import at init time."""
+        if self._vector_store is None:
+            self._vector_store = VectorStoreService()
+        return self._vector_store
 
     async def process_request(
         self,
@@ -137,6 +152,9 @@ class RouterOrchestrator:
 
         # Step 5: Route selection using AI
         try:
+            # Lazy import to avoid loading langchain at module import time
+            from router.src.core.routing_engine import router
+            
             _, _, _, router_output = router(
                 request.query, conversation_history, truncated_agent_cards, vectorstore
             )
@@ -159,7 +177,7 @@ class RouterOrchestrator:
             yield self._router_response(error_msg, "", False, "")
             return
 
-        # Step 6: Get agent URL and send request
+        # Step 6: Get agent URL
         try:
             agent_url = await self._get_agent_url(agent_cards, agent_name)
             if not agent_url:
@@ -168,9 +186,36 @@ class RouterOrchestrator:
                 )
                 return
 
-            # Send request to selected agent
-            async for response in self._send_agent_request(
-                request, files, agent_url, token
+        except Exception as e:
+            error_msg = f"Failed to resolve agent URL: {str(e)}"
+            logger.error(error_msg)
+            yield self._router_response(error_msg, "", False, "")
+            return
+
+        # ----------------------------------------------------------------
+        # Step 7: Cache check — gateway checks cache BEFORE forwarding to agent
+        # This is the correct interception point: we know the exact agent name
+        # and the query, so the cache key is precise.
+        # Only cache text-only requests (files are non-deterministic).
+        # ----------------------------------------------------------------
+        if not files:
+            cached = await self._cache.get(agent_name, request.query)
+            if cached is not None:
+                logger.info(
+                    f"Cache HIT — serving cached response for "
+                    f"agent={agent_name}, query={request.query[:60]!r}"
+                )
+                yield self._router_response(
+                    "[cache] Serving cached response", agent_name, True, agent_url
+                )
+                for line in cached:
+                    yield line
+                return
+
+        # Step 8: Forward to agent and cache the response
+        try:
+            async for response in self._send_agent_request_and_cache(
+                request, files, agent_url, agent_name, token
             ):
                 yield response
 
@@ -179,14 +224,16 @@ class RouterOrchestrator:
             logger.error(error_msg)
             yield self._router_response(error_msg, "", False, agent_url)
 
-    async def _send_agent_request(
+    async def _send_agent_request_and_cache(
         self,
         request: UserRequest,
         files: List[Tuple[str, Tuple[str, bytes, str]]],
         agent_url: str,
+        agent_name: str,
         token: str,
     ) -> AsyncGenerator[str, None]:
-        """Send request to agent and yield response."""
+        """Send request to agent, yield response, and cache the final answer."""
+        final_lines: List[str] = []
 
         try:
             logger.info(f"Sending request to agent: {agent_url}")
@@ -194,19 +241,28 @@ class RouterOrchestrator:
                 "Sending user's query to agent...", "", False, agent_url
             )
 
-            # Send request to agent
             agent_data = await self.agent_client.send_request(
                 agent_url, request, files, token
             )
 
-            # Extract response content
             agent_response = self.agent_client.extract_response_content(agent_data)
 
             logger.info("Successfully received response from agent")
-            yield self._router_response(agent_response, "", False, agent_url)
+            final_line = self._router_response(agent_response, "", False, agent_url)
+            yield final_line
+            final_lines.append(final_line)
 
         except AgentClientError as e:
             yield self._router_response(str(e), "", False, agent_url)
+            return  # Don't cache error responses
+
+        # Cache the successful final response
+        if final_lines and not files:
+            await self._cache.set(agent_name, request.query, final_lines)
+            logger.info(
+                f"Cached response for agent={agent_name}, "
+                f"query={request.query[:60]!r}"
+            )
 
     async def _get_agent_url(
         self, agent_cards: List[Dict[str, str]], agent_name: str

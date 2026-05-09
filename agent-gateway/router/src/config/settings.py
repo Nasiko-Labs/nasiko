@@ -40,6 +40,29 @@ class RouterConfig(BaseSettings):
     REQUEST_TIMEOUT: float = 60.0
     MAX_CONCURRENT_REQUESTS: int = 10
 
+    # -----------------------------------------------------------------------
+    # Response Cache settings
+    # -----------------------------------------------------------------------
+    # Redis URL for the response cache.  Leave empty to use the in-process LRU.
+    # Example: redis://nasiko-cache-redis:6379/1
+    CACHE_REDIS_URL: Optional[str] = None
+    # How long (seconds) a cached response is considered fresh
+    CACHE_TTL_SECONDS: int = 300          # 5 minutes
+    # Maximum entries in the in-process LRU fallback cache
+    CACHE_MAX_SIZE: int = 512
+
+    # -----------------------------------------------------------------------
+    # Rate Limiter settings (per-agent token bucket)
+    # -----------------------------------------------------------------------
+    # Sustained request rate allowed per agent (tokens/second)
+    RATE_LIMIT_REQUESTS_PER_SECOND: float = 5.0
+    # Maximum burst size (tokens in a full bucket)
+    RATE_LIMIT_BURST_CAPACITY: int = 10
+    # Maximum number of requests that can wait in the queue per agent
+    RATE_LIMIT_QUEUE_SIZE: int = 20
+    # Seconds a queued request will wait before being rejected
+    RATE_LIMIT_QUEUE_TIMEOUT: float = 30.0
+
     # Server settings
     HOST: str = "0.0.0.0"
     PORT: int = 8000
