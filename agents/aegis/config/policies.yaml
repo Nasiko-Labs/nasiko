@@ -1,0 +1,14 @@
+blocked_tools:
+  - send_email
+  - delete_file
+
+approval_required:
+  - shell_exec
+  - extract_secrets
+
+allowed_domains:
+  - github.com
+  - arxiv.org
+  - api.openai.com
+
+max_risk_score: 0.8

@@ -1,0 +1,9 @@
+textual==0.61.1
+rich==13.7.1
+pyyaml==6.0.1
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp-proto-http==1.29.0
