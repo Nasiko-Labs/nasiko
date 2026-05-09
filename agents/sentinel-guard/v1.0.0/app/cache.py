@@ -330,7 +330,7 @@ class CacheLayer:
         if not self._mempalace:
             return None
         try:
-            return self._mempalace.search(query, agent, config.SIMILARITY_THRESHOLD)
+            return self._mempalace.search(query, agent)
         except Exception as exc:
             logger.debug(f"MemPalace lookup error: {exc}")
             return None
