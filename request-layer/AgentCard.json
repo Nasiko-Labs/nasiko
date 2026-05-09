@@ -1,0 +1,29 @@
+{
+  "name": "aria-request-layer",
+  "displayName": "ARIA Request Layer",
+  "description": "An adaptive request intelligence architecture for caching, rate limiting, and queue management.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "type": "service",
+  "protocol": "http",
+  "endpoints": {
+    "proxy": "/agents/{agent_name}/{path}",
+    "stats": "/stats",
+    "config": "/config/rate-limit",
+    "cache": "/cache/{agent_name}",
+    "health": "/health",
+    "dashboard": "/dashboard"
+  },
+  "capabilities": [
+    "caching",
+    "rate_limiting",
+    "traffic_management",
+    "queue_management",
+    "monitoring"
+  ],
+  "docker": {
+    "image": "aria-request-layer",
+    "port": 8000
+  },
+  "documentation": "https://github.com/your-repo/aria/blob/main/README.md"
+}

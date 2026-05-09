@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ARIA Dashboard — Adaptive Request Intelligence</title>
+  <meta name="description" content="Live monitoring dashboard for ARIA request intelligence layer">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+
+<!-- ERROR BANNER -->
+<div id="error-banner" class="error-banner">⚠ Cannot reach ARIA service — retrying...</div>
+
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <h1>ARIA</h1>
+    <p>Request Intelligence Layer</p>
+  </div>
+  <nav class="sidebar-nav">
+    <a href="#" class="active" onclick="navigateTo('overview');return false">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg> Overview</a>
+    <a href="#" onclick="navigateTo('analytics');return false">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Analytics</a>
+    <a href="#" onclick="navigateTo('configuration');return false">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Configuration</a>
+  </nav>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Agents</div>
+    <div id="sidebar-agents">
+      <div class="agent-item"><span class="agent-dot green"></span><span>loading...</span></div>
+    </div>
+  </div>
+  <div class="sidebar-footer">
+    <p>Uptime: <span id="sidebar-uptime">0h 00m 00s</span></p>
+    <p>Served: <span id="sidebar-total">0</span></p>
+    <p style="margin-top:8px;font-size:10px;opacity:.5">v1.0.0 — ARIA</p>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<div class="main">
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <h2>Overview</h2>
+    <span class="topbar-time" id="topbar-time"></span>
+    <div class="topbar-live">
+      <span class="live-dot"></span>
+      <span class="live-label">LIVE</span>
+      <span class="live-sub">Updates every 2s</span>
+    </div>
+  </div>
+
+  <div class="content">
+    <!-- KPI ROW -->
+    <div class="kpi-row" id="section-kpi">
+      <div class="kpi-card accent-green">
+        <div class="kpi-top">
+          <svg class="kpi-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <span class="kpi-label">Cache Hit Rate</span>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:4px">
+          <div class="kpi-value green" id="kpi-hitrate" data-cid="hr" data-current="0">0</div>
+          <span style="font-size:24px;font-weight:800;color:var(--success)">%</span>
+        </div>
+        <div class="kpi-trend neutral" id="trend-hitrate"><span>—</span> <span>waiting for data</span></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-top">
+          <svg class="kpi-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <span class="kpi-label">Requests Served</span>
+        </div>
+        <div class="kpi-value" id="kpi-served" data-cid="srv" data-current="0" style="color:var(--text)">0</div>
+        <div class="kpi-trend neutral" id="trend-served"><span>—</span> <span>waiting for data</span></div>
+      </div>
+      <div class="kpi-card accent-green">
+        <div class="kpi-top">
+          <svg class="kpi-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>
+          <span class="kpi-label">Compute Saved</span>
+        </div>
+        <div class="kpi-value green" id="kpi-saved" data-cid="svd" data-current="0">0</div>
+        <div class="kpi-trend up" id="trend-saved"><span>▲</span> <span>0% of total</span></div>
+      </div>
+      <div class="kpi-card accent-purple">
+        <div class="kpi-top">
+          <svg class="kpi-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span class="kpi-label">Overloads Prevented</span>
+        </div>
+        <div class="kpi-value purple" id="kpi-overloads" data-cid="ovl" data-current="0">0</div>
+        <div class="kpi-trend neutral"><span style="color:var(--primary);font-style:italic;font-size:11px">by predictive limiting</span></div>
+      </div>
+    </div>
+
+    <!-- CHARTS ROW -->
+    <div class="charts-row" id="section-charts">
+      <div class="chart-card">
+        <div class="chart-title">Request Volume — Last 60 Seconds</div>
+        <div style="height:240px"><canvas id="volume-canvas"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Cache Distribution</div>
+        <div class="donut-wrap">
+          <canvas id="donut-canvas"></canvas>
+          <div class="donut-center">
+            <div class="pct" id="donut-pct">0%</div>
+            <div class="lbl">cache efficiency</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AGENT CARDS -->
+    <div class="section-title">Per-Agent Status</div>
+    <div class="agents-row" id="agents-container"></div>
+
+    <!-- INSIGHTS + EVENTS -->
+    <div class="panels-row">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="chart-title">✨ ARIA Insights</div>
+        </div>
+        <div class="panel-sub">Auto-generated from live traffic patterns</div>
+        <div id="insights-container">
+          <div class="insight-card sev-green"><div class="insight-title">Monitoring active</div><div class="insight-desc">Waiting for traffic data...</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <div class="chart-title"><span class="live-dot" style="display:inline-block;width:6px;height:6px;margin-right:6px"></span>Live Events</div>
+        </div>
+        <div id="events-container">
+          <div class="event-item"><span class="event-dot" style="background:var(--primary)"></span><span class="event-time"></span><span class="event-text">Waiting for events...</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTROLS -->
+    <div class="controls-panel" id="section-controls">
+      <div class="chart-title">Global Controls</div>
+      <div class="controls-grid">
+        <div class="ctrl-group">
+          <h4>Cache Management</h4>
+          <button class="btn-danger" id="btn-clear-all" onclick="clearAllCaches()">Clear All Caches</button>
+          <div class="info-row" style="margin-top:10px">Cache TTL: <span>300s</span></div>
+          <div class="info-row">Similarity threshold: <span>0.92</span></div>
+        </div>
+        <div class="ctrl-group">
+          <h4>Rate Limit Presets</h4>
+          <button class="btn-preset" data-preset="conservative" onclick="applyPreset('conservative')">Conservative (5/s)</button>
+          <button class="btn-preset active" data-preset="balanced" onclick="applyPreset('balanced')">Balanced (10/s)</button>
+          <button class="btn-preset" data-preset="aggressive" onclick="applyPreset('aggressive')">Aggressive (20/s)</button>
+          <div style="margin-top:14px">
+            <button class="btn-preset" id="btn-demo" onclick="runDemo()" style="background:linear-gradient(135deg,#6c63ff,#00d4aa);color:#fff;border:none;padding:10px 20px;font-size:13px">▶ Run Demo</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <h4>System Info</h4>
+          <div class="info-row">Version: <span>v1.0.0</span></div>
+          <div class="info-row">Cache backend: <span>Redis</span></div>
+          <div class="info-row">Embedding model: <span>all-MiniLM-L6-v2</span></div>
+          <div class="info-row">Queue max: <span>50 per agent</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>
