@@ -16,16 +16,20 @@ class TargetResolver:
         except Exception:
             return self.memory.get(agent_id)
         if not payload:
+            self.memory.pop(agent_id, None)
+            return None
+        try:
+            target = AgentTarget(
+                agent_id=payload["agent_id"],
+                public_path=payload["public_path"],
+                upstream_url=payload["upstream_url"].rstrip("/"),
+                target_revision=payload["target_revision"],
+                source=payload["source"],
+                namespace=payload["namespace"],
+                updated_at=float(payload["updated_at"]),
+            )
+        except Exception:
             return self.memory.get(agent_id)
-        target = AgentTarget(
-            agent_id=payload["agent_id"],
-            public_path=payload["public_path"],
-            upstream_url=payload["upstream_url"].rstrip("/"),
-            target_revision=payload["target_revision"],
-            source=payload["source"],
-            namespace=payload["namespace"],
-            updated_at=float(payload["updated_at"]),
-        )
         self.memory[agent_id] = target
         return target
 
@@ -67,5 +71,11 @@ class LimitResolver:
         return AgentLimits(**data)
 
     async def update(self, agent_id: str, limits: AgentLimits) -> AgentLimits:
-        await self.redis.hset(redis_keys.limits(agent_id), mapping=limits.model_dump())
+        mapping = {}
+        for field, value in limits.model_dump().items():
+            if isinstance(value, bool):
+                mapping[field] = "true" if value else "false"
+            else:
+                mapping[field] = str(value)
+        await self.redis.hset(redis_keys.limits(agent_id), mapping=mapping)
         return limits
