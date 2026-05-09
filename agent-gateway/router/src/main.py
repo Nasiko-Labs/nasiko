@@ -123,14 +123,33 @@ async def process_request(
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
-    return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
-    }
+    """Get live RAL + router service metrics."""
+    try:
+        return await orchestrator.get_ral_snapshot()
+    except Exception as e:
+        logger.error(f"Metrics fetch error: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/ral/logs")
+async def get_ral_logs(limit: int = 50):
+    """Return recent request log entries collected by the RAL layer."""
+    try:
+        return {"logs": await orchestrator.get_ral_logs(limit)}
+    except Exception as e:
+        logger.error(f"RAL logs fetch error: {e}")
+        return {"logs": [], "error": str(e)}
+
+
+@app.post("/ral/cache/flush")
+async def flush_ral_cache():
+    """Flush the entire RAL response cache."""
+    try:
+        deleted = await orchestrator.flush_cache()
+        return {"deleted": deleted, "status": "ok"}
+    except Exception as e:
+        logger.error(f"RAL cache flush error: {e}")
+        return {"deleted": 0, "error": str(e)}
 
 
 def _validate_inputs(session_id: str, query: str) -> Optional[str]:

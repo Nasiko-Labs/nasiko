@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from app.pkg.config.config import settings
 from app.repository.repository import Repository
 from app.service.service import Service
+from app.service.ral_service import RalService
 from app.api.handlers import HandlerFactory
 from app.api.routes.router import create_router
 import logging
@@ -46,6 +47,13 @@ async def lifespan(app: FastAPI):
     service = Service(repo, logger)
     handlers = HandlerFactory(service, logger, {})
 
+    # Warm up RAL service Redis connection
+    try:
+        await handlers.ral.ral_service.connect()
+        logger.info("RAL service connected to Redis successfully")
+    except Exception as e:
+        logger.warning(f"RAL service Redis connection failed (metrics may be unavailable): {e}")
+
     # Initialize search service
     try:
         await handlers.search.initialize_search()
@@ -56,6 +64,7 @@ async def lifespan(app: FastAPI):
     app.include_router(create_router(handlers, logger), prefix="/api/v1")
     yield
     # Shutdown
+    await handlers.ral.ral_service.close()
     logger.info("shutting down application...")
 
 
