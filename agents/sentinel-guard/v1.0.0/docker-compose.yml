@@ -1,0 +1,34 @@
+version: "3.8"
+services:
+  sentinel-guard:
+    build: .
+    ports:
+      - "8500:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NASIKO_BASE_URL=http://kong-gateway:8000/agents
+      - CACHE_TTL_SECONDS=1800
+      - RATE_LIMIT_DEFAULT_RPM=60
+      - MAX_QUEUE_DEPTH=50
+      - SIMILARITY_THRESHOLD=0.92
+    depends_on:
+      - redis
+    networks:
+      - app-network
+      - agents-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true
+    name: app-network
+  agents-net:
+    external: true
+    name: agents-net

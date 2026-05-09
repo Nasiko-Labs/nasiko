@@ -123,13 +123,26 @@ async def process_request(
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get router service metrics."""
-    # TODO: Implement metrics collection
+    """Get router service metrics including sentinel-guard stats."""
+    sentinel_stats = await orchestrator.sentinel_guard.get_stats()
+    if sentinel_stats:
+        summary = sentinel_stats.get("summary", {})
+        return {
+            "requests_processed": summary.get("total_requests", 0),
+            "cache_hit_rate_pct": summary.get("cache_hit_rate_pct", 0),
+            "cache_hits": summary.get("total_cache_hits", 0),
+            "cache_misses": summary.get("total_cache_misses", 0),
+            "avg_cache_hit_latency_ms": summary.get("avg_cache_hit_latency_ms", 0),
+            "total_forwarded": summary.get("total_forwarded", 0),
+            "total_queued": summary.get("total_queued", 0),
+            "total_rejected": summary.get("total_rejected", 0),
+            "queue_depth": summary.get("total_queue_depth", 0),
+            "sentinel_guard": "connected",
+        }
     return {
         "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
+        "cache_hit_rate_pct": 0,
+        "sentinel_guard": "unreachable",
     }
 
 

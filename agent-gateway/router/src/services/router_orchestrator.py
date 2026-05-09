@@ -14,6 +14,7 @@ from router.src.core import (
     AgentClient,
     AgentClientError,
     SessionHistoryService,
+    SentinelGuardClient,
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
@@ -30,6 +31,7 @@ class RouterOrchestrator:
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.sentinel_guard = SentinelGuardClient()
 
     async def process_request(
         self,
@@ -186,8 +188,46 @@ class RouterOrchestrator:
         agent_url: str,
         token: str,
     ) -> AsyncGenerator[str, None]:
-        """Send request to agent and yield response."""
+        """Send request to agent with sentinel-guard caching and rate limiting."""
 
+        # Extract agent name from URL for sentinel-guard keying
+        agent_name = agent_url.rstrip("/").split("/")[-1].replace("agent-", "")
+
+        # ── Sentinel Guard: cache check ────────────────────────────────────
+        try:
+            cached = await self.sentinel_guard.check_cache(request.query, agent_name)
+            if cached is not None:
+                logger.info(f"Sentinel cache hit for agent={agent_name}")
+                yield self._router_response(
+                    "✓ Response served from cache (no recompute needed)",
+                    "", True, agent_url
+                )
+                # Extract text content from cached response
+                if isinstance(cached, dict):
+                    content = cached.get("result", cached.get("message", str(cached)))
+                    if isinstance(content, dict):
+                        content = self.agent_client.extract_response_content(content)
+                else:
+                    content = str(cached)
+                yield self._router_response(content, "", False, agent_url)
+                return
+        except Exception as e:
+            logger.debug(f"Sentinel cache check failed (continuing): {e}")
+
+        # ── Sentinel Guard: rate limit check ───────────────────────────────
+        try:
+            rate_status = await self.sentinel_guard.check_rate(agent_name)
+            if not rate_status.get("allowed", True):
+                retry_ms = rate_status.get("retry_after_ms", 5000)
+                logger.warning(f"Rate limited for agent={agent_name}, retry in {retry_ms}ms")
+                yield self._router_response(
+                    f"Agent is busy. Request queued (retry in {retry_ms}ms)",
+                    "", True, agent_url
+                )
+        except Exception as e:
+            logger.debug(f"Sentinel rate check failed (continuing): {e}")
+
+        # ── Forward to agent ───────────────────────────────────────────────
         try:
             logger.info(f"Sending request to agent: {agent_url}")
             yield self._router_response(
@@ -204,6 +244,14 @@ class RouterOrchestrator:
 
             logger.info("Successfully received response from agent")
             yield self._router_response(agent_response, "", False, agent_url)
+
+            # ── Sentinel Guard: cache store (fire-and-forget) ──────────────
+            try:
+                await self.sentinel_guard.store_cache(
+                    request.query, agent_data, agent_name
+                )
+            except Exception as e:
+                logger.debug(f"Sentinel cache store failed (non-critical): {e}")
 
         except AgentClientError as e:
             yield self._router_response(str(e), "", False, agent_url)
