@@ -1,0 +1,8 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+httpx==0.28.1
+redis==5.0.8
+pydantic==2.11.9
+pydantic-settings==2.10.1
+pytest==8.3.5
+pytest-asyncio==0.23.8
