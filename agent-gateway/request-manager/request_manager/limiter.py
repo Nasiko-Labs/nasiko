@@ -234,7 +234,11 @@ class RequestLimiter:
 
             return AcquireResult(acquired=False, queued=True, reason="queue-timeout", retry_after_seconds=1)
         finally:
-            await self._remove_from_queue(agent_id, request_id)
+            try:
+                await self._remove_from_queue(agent_id, request_id)
+            except RedisLimiterUnavailable:
+                # Do not switch to local fallback after Redis may have granted a distributed slot.
+                pass
 
     async def release(
         self,

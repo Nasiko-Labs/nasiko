@@ -16,7 +16,6 @@ from typing import List, Optional, Set
 
 import requests
 from fastapi import FastAPI, HTTPException
-from kubernetes import client, config
 from pydantic import BaseModel
 from pythonjsonlogger import jsonlogger
 import docker
@@ -109,6 +108,8 @@ def get_k8s_client():
         return None
     if k8s_client is None:
         try:
+            from kubernetes import client, config
+
             # Try in-cluster config first
             try:
                 config.load_incluster_config()
