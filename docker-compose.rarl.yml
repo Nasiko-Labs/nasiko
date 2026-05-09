@@ -1,0 +1,24 @@
+services:
+  rarl:
+    build:
+      context: ./rarl
+    container_name: nasiko-rarl
+    ports:
+      - "8010:8010"
+    environment:
+      REDIS_URL: redis://redis:6379/2
+      AGENT_BASE_URLS: '{"translator":"http://nasiko-backend:8000"}'
+      LOG_LEVEL: INFO
+      DEFAULT_RPS: "10"
+      DEFAULT_BURST: "20"
+      DEFAULT_MAX_INFLIGHT: "4"
+      DEFAULT_MAX_QUEUE: "100"
+    networks:
+      - app-network
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+networks:
+  app-network:
+    external: true

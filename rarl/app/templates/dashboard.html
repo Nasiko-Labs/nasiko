@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RARL — Resilient Agent Request Layer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 14px;
+      padding: 20px;
+    }
+    h1 {
+      font-size: 1.4rem;
+      color: #58a6ff;
+      margin-bottom: 6px;
+      letter-spacing: 0.05em;
+    }
+    .subtitle { color: #8b949e; font-size: 0.8rem; margin-bottom: 20px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .tile {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+    }
+    .tile .label { font-size: 0.72rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.08em; }
+    .tile .value { font-size: 2rem; font-weight: bold; color: #58a6ff; margin-top: 6px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    .chart-box {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .chart-box h3 { font-size: 0.8rem; color: #8b949e; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .bottom-row { display: grid; grid-template-columns: 1fr 1.5fr; gap: 12px; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    th { color: #8b949e; text-align: left; padding: 6px 8px; border-bottom: 1px solid #30363d; }
+    td { padding: 5px 8px; border-bottom: 1px solid #21262d; }
+    tr:hover td { background: #1c2128; }
+    .btn-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    button {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.82rem;
+      padding: 8px 18px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+      letter-spacing: 0.04em;
+    }
+    .btn-spike { background: #da3633; color: #fff; }
+    .btn-spike:hover { background: #b22a28; }
+    .btn-queue { background: #1f6feb; color: #fff; }
+    .btn-queue:hover { background: #1558c0; }
+    .btn-adaptive { background: #238636; color: #fff; }
+    .btn-adaptive:hover { background: #196129; }
+    .status-bar {
+      font-size: 0.72rem;
+      color: #8b949e;
+      margin-top: 4px;
+    }
+    #adaptive-status { display: inline; }
+    canvas { max-height: 220px; }
+  </style>
+</head>
+<body>
+  <h1>&#9889; RARL — Resilient Agent Request Layer</h1>
+  <div class="subtitle">Live metrics &bull; 500ms refresh &bull; Kong :9100 &#8594; RARL :8010 &#8594; Agents</div>
+
+  <div class="grid-4">
+    <div class="tile"><div class="label">Total Requests</div><div class="value" id="tile-total">0</div></div>
+    <div class="tile"><div class="label">Cache Hit Rate</div><div class="value" id="tile-hitrate">0%</div></div>
+    <div class="tile"><div class="label">Coalesced Calls</div><div class="value" id="tile-coalesced">0</div></div>
+    <div class="tile"><div class="label">Active Agents</div><div class="value" id="tile-agents">0</div></div>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn-spike" onclick="spikeTest(false)">&#128640; Spike Test — Cache Demo (200 req)</button>
+    <button class="btn-queue" onclick="spikeTest(true)">&#128229; Queue Demo (vary=true, 200 req)</button>
+    <button class="btn-adaptive" onclick="toggleAdaptive()">&#9881; Toggle Adaptive Mode</button>
+    <span class="status-bar">Adaptive: <span id="adaptive-status">unknown</span></span>
+  </div>
+
+  <div class="grid-2">
+    <div class="chart-box">
+      <h3>QPS: Incoming vs Upstream</h3>
+      <canvas id="chart-qps"></canvas>
+    </div>
+    <div class="chart-box">
+      <h3>p95 Latency — Client vs Agent (ms)</h3>
+      <canvas id="chart-latency"></canvas>
+    </div>
+  </div>
+
+  <div class="bottom-row">
+    <div class="chart-box">
+      <h3>Queue Depth per Agent</h3>
+      <canvas id="chart-queue"></canvas>
+    </div>
+    <div class="chart-box">
+      <h3>Agent Stats</h3>
+      <table>
+        <thead><tr><th>Agent</th><th>RPS</th><th>Served</th><th>Rejected</th><th>p95 ms</th></tr></thead>
+        <tbody id="agent-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const MAX_SAMPLES = 60;
+    const labels = Array(MAX_SAMPLES).fill('');
+
+    function makeChart(id, datasets, yLabel) {
+      const ctx = document.getElementById(id).getContext('2d');
+      return new Chart(ctx, {
+        type: 'line',
+        data: { labels: [...labels], datasets },
+        options: {
+          animation: false,
+          responsive: true,
+          plugins: { legend: { labels: { color: '#8b949e', font: { family: 'Courier New', size: 11 } } } },
+          scales: {
+            x: { display: false },
+            y: { ticks: { color: '#8b949e', font: { family: 'Courier New', size: 10 } }, grid: { color: '#21262d' }, title: { display: !!yLabel, text: yLabel, color: '#8b949e' } }
+          }
+        }
+      });
+    }
+
+    const qpsChart = makeChart('chart-qps', [
+      { label: 'QPS In', data: Array(MAX_SAMPLES).fill(0), borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.08)', tension: 0.3, fill: true },
+      { label: 'QPS Upstream', data: Array(MAX_SAMPLES).fill(0), borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.08)', tension: 0.3, fill: true },
+    ]);
+
+    const latencyChart = makeChart('chart-latency', [
+      { label: 'Client p95', data: Array(MAX_SAMPLES).fill(0), borderColor: '#d29922', backgroundColor: 'rgba(210,153,34,0.08)', tension: 0.3, fill: true },
+      { label: 'Agent p95', data: Array(MAX_SAMPLES).fill(0), borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.08)', tension: 0.3, fill: true },
+    ]);
+
+    let queueChart = null;
+
+    function pushSample(chart, dsIdx, value) {
+      const ds = chart.data.datasets[dsIdx];
+      ds.data.push(value);
+      if (ds.data.length > MAX_SAMPLES) ds.data.shift();
+    }
+
+    function update(data) {
+      document.getElementById('tile-total').textContent = data.total_requests ?? 0;
+      document.getElementById('tile-hitrate').textContent = ((data.hit_rate ?? 0) * 100).toFixed(1) + '%';
+      document.getElementById('tile-coalesced').textContent = data.coalesced_count ?? 0;
+      document.getElementById('tile-agents').textContent = (data.lanes ?? []).length;
+
+      const qpsIn = data.qps_in ?? [];
+      const qpsUp = data.qps_upstream ?? [];
+      const p95c = data.p95_client_ms ?? [];
+      const p95u = data.p95_upstream_ms ?? [];
+
+      pushSample(qpsChart, 0, qpsIn[qpsIn.length - 1] ?? 0);
+      pushSample(qpsChart, 1, qpsUp[qpsUp.length - 1] ?? 0);
+      qpsChart.update();
+
+      pushSample(latencyChart, 0, p95c[p95c.length - 1] ?? 0);
+      pushSample(latencyChart, 1, p95u[p95u.length - 1] ?? 0);
+      latencyChart.update();
+
+      const lanes = data.lanes ?? [];
+      if (lanes.length > 0) {
+        if (!queueChart) {
+          const ctx = document.getElementById('chart-queue').getContext('2d');
+          queueChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+              labels: lanes.map(l => l.agent_id),
+              datasets: [{ label: 'Queue Depth', data: lanes.map(l => l.queue_depth), backgroundColor: '#1f6feb' }]
+            },
+            options: {
+              animation: false,
+              responsive: true,
+              plugins: { legend: { display: false } },
+              scales: {
+                x: { ticks: { color: '#8b949e', font: { family: 'Courier New', size: 10 } }, grid: { color: '#21262d' } },
+                y: { ticks: { color: '#8b949e', font: { family: 'Courier New', size: 10 } }, grid: { color: '#21262d' } }
+              }
+            }
+          });
+        } else {
+          queueChart.data.labels = lanes.map(l => l.agent_id);
+          queueChart.data.datasets[0].data = lanes.map(l => l.queue_depth);
+          queueChart.update();
+        }
+
+        const tbody = document.getElementById('agent-table-body');
+        tbody.innerHTML = lanes.map(l =>
+          `<tr><td>${l.agent_id}</td><td>${l.rps}</td><td>${l.served}</td><td>${l.rejected}</td><td>${l.p95_ms}</td></tr>`
+        ).join('');
+      }
+    }
+
+    const es = new EventSource('/admin/stream');
+    es.addEventListener('snapshot', (e) => { try { update(JSON.parse(e.data)); } catch(err) { console.error(err); } });
+    es.onerror = () => console.warn('SSE connection lost, retrying...');
+
+    let adaptiveEnabled = false;
+
+    async function spikeTest(vary) {
+      const btn = vary ? document.querySelector('.btn-queue') : document.querySelector('.btn-spike');
+      btn.disabled = true;
+      btn.textContent = vary ? '⏳ Running queue demo...' : '⏳ Running cache demo...';
+      try {
+        const resp = await fetch('/admin/spike-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_id: 'translator', concurrency: 200, requests: 200, vary, endpoint: '/health', payload: {} })
+        });
+        const result = await resp.json();
+        alert(
+          `Done in ${result.duration_s}s\n` +
+          `Status: ${JSON.stringify(result.status_codes)}\n` +
+          `X-Cache: ${JSON.stringify(result.x_cache_breakdown)}\n` +
+          `p50: ${result.p50_ms}ms  p95: ${result.p95_ms}ms  max: ${result.max_ms}ms`
+        );
+      } catch(e) { alert('Spike test failed: ' + e); }
+      finally {
+        btn.disabled = false;
+        btn.textContent = vary ? '📥 Queue Demo (vary=true, 200 req)' : '🚀 Spike Test — Cache Demo (200 req)';
+      }
+    }
+
+    async function toggleAdaptive() {
+      adaptiveEnabled = !adaptiveEnabled;
+      try {
+        const resp = await fetch('/admin/adaptive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: adaptiveEnabled })
+        });
+        const result = await resp.json();
+        document.getElementById('adaptive-status').textContent = result.adaptive;
+      } catch(e) { alert('Failed: ' + e); }
+    }
+  </script>
+</body>
+</html>

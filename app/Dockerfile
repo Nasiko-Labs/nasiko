@@ -14,6 +14,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 COPY pyproject.toml .
 COPY uv.lock .
 
+# Pre-install all dependencies into the uv cache so startup is instant
+ENV UV_HTTP_TIMEOUT=120
+RUN uv sync --frozen --no-install-project
+
 # Copy only the app directory and necessary files
 COPY app/ ./app/
 # Copy any additional files needed at runtime (if any)
@@ -22,5 +26,5 @@ COPY app/ ./app/
 # Expose port
 EXPOSE 8000
 
-# Run the application (uv will handle dependency installation at runtime)
+# Run the application
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

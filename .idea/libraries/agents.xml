@@ -1,0 +1,11 @@
+<component name="libraryTable">
+  <library name="agents">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/nasiko/agents/a2a-compliance-checker.zip!/" />
+      <root url="jar://$PROJECT_DIR$/nasiko/agents/a2a-github-agent.zip!/" />
+      <root url="jar://$PROJECT_DIR$/nasiko/agents/a2a-translator.zip!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
