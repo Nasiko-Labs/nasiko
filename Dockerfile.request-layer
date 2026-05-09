@@ -1,0 +1,45 @@
+# Build for the Nasiko request management layer service.
+#
+# Mirrors Dockerfile.worker so the layer can also import from
+# ``app.utils.observability`` (the shared Phoenix tracing bootstrapper).
+
+FROM python:3.12-slim AS base
+
+WORKDIR /app
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the service code and the shared observability helpers.
+COPY agent-gateway/request_layer/ /app/request_layer/
+COPY app/utils/observability/ /app/app/utils/observability/
+
+# Minimal package shims so ``app.utils.observability`` imports cleanly when
+# the rest of the ``app`` package is not present in this image.
+RUN mkdir -p /app/app/utils && \
+    touch /app/app/__init__.py && \
+    touch /app/app/utils/__init__.py
+
+RUN pip install --no-cache-dir -r /app/request_layer/requirements.txt
+
+# Pre-warm the embedding model into the image so cold starts in the
+# docker-compose stack are reproducible. Failure here is non-fatal — the
+# model will simply download on first run instead.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" || \
+    echo "embedding model preload failed; will lazy-load at runtime"
+
+EXPOSE 8090
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl --fail --silent --max-time 5 http://localhost:8090/health || exit 1
+
+ENV PYTHONPATH=/app
+
+CMD ["uvicorn", "request_layer.src.main:app", "--host", "0.0.0.0", "--port", "8090"]

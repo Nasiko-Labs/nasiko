@@ -41,6 +41,26 @@ services:
       timeout: 10s
       retries: 3
 
+  # Dedicated Redis (Stack) for the request management layer.
+  # The layer needs RediSearch / VECTOR for the semantic-similarity
+  # response cache; the main ``redis`` above is the lightweight
+  # redis:7-alpine image and stays untouched so existing services see no
+  # behavior change.
+  request-layer-redis:
+    image: redis/redis-stack-server:latest
+    container_name: request-layer-redis
+    restart: unless-stopped
+    command: ["redis-stack-server", "--appendonly", "yes"]
+    volumes:
+      - request-layer-redis-data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # ============================================================================
   # CORE SERVICES LAYER (Backend)
   # ============================================================================
@@ -404,11 +424,55 @@ services:
       - agents-net
     command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
 
+  # ============================================================================
+  # REQUEST LAYER — Resilient Agent Request Management (opt-in)
+  # ============================================================================
+  # Sits between Kong and the agent fleet. Caches responses (exact + semantic),
+  # coalesces concurrent identical requests, applies per-agent rate limits
+  # with priority queueing, and exposes admin endpoints.
+  #
+  # Wire-up: by default Kong does NOT route through the layer — existing
+  # routes continue to point at the agent containers directly, so platform
+  # behavior is unchanged when ``nasiko-request-layer`` is stopped. To opt a
+  # route in, update its Kong upstream to ``http://nasiko-request-layer:8090``
+  # (see docs/request-layer.md).
+  nasiko-request-layer:
+    build:
+      context: .
+      dockerfile: Dockerfile.request-layer
+    container_name: nasiko-request-layer
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    depends_on:
+      request-layer-redis:
+        condition: service_healthy
+      nasiko-backend:
+        condition: service_started
+    environment:
+      REQUEST_LAYER_PORT: "8090"
+      REQUEST_LAYER_REDIS_URL: redis://request-layer-redis:6379/0
+      REQUEST_LAYER_NASIKO_REGISTRY_URL: http://nasiko-backend:8000
+      REQUEST_LAYER_KONG_ADMIN_URL: http://kong-gateway:8001
+      REQUEST_LAYER_KONG_PROXY_INTERNAL: http://kong-gateway:8000
+      REQUEST_LAYER_PHOENIX_ENDPOINT: http://phoenix-observability:4317
+      REQUEST_LAYER_PHOENIX_PROJECT: nasiko-request-layer
+      REQUEST_LAYER_TRACING_ENABLED: "true"
+      REQUEST_LAYER_ROUTER_CACHE_ENABLED: "false"
+      REQUEST_LAYER_SEMANTIC_THRESHOLD: "0.95"
+      REQUEST_LAYER_DEFAULT_RPS: "50"
+      REQUEST_LAYER_DEFAULT_COST_CAP_USD_PER_MIN: "1.0"
+      REQUEST_LAYER_LOG_LEVEL: INFO
+    networks:
+      - app-network
+      - agents-net
+
 volumes:
   mongodb-data:
   redis-data:
   kong-db-data:
   phoenix-data:
+  request-layer-redis-data:
 
 networks:
   app-network:
