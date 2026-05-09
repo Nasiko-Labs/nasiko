@@ -29,11 +29,18 @@ class RouterConfig(BaseSettings):
 
     # Vector store settings
     VECTOR_STORE_CACHE_TTL: int = 3600
-    EMBEDDING_PROVIDER: str = "openai"  # "openai" | "jina"
+    EMBEDDING_PROVIDER: str = "openai"  # "openai" | "jina" | "none"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     RERANKING_EMBEDDING_MODEL: str = "text-embedding-3-small"
     JINA_API_KEY: Optional[str] = None
     JINA_EMBEDDING_MODEL: str = "jina-embeddings-v3"
+
+    # Redis settings (for cache + rate limiter)
+    REDIS_URL: str = "redis://redis:6379"
+    CACHE_TTL_SECONDS: int = 300
+    RATE_LIMIT_REQUESTS: int = 10
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_QUEUE_TIMEOUT_SECONDS: int = 30
 
     # Request settings
     MAX_FILE_SIZE: int = 1073741824  # 1GB

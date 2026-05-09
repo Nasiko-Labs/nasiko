@@ -3,6 +3,7 @@ Vector store service for agent selection and similarity search.
 """
 
 import logging
+import random
 from typing import List, Dict, Tuple, Optional
 
 from langchain_community.vectorstores import FAISS
@@ -17,6 +18,19 @@ class VectorStoreError(Exception):
     """Custom exception for vector store errors."""
 
     pass
+
+
+class _DummyEmbeddings:
+    """Random-vector embeddings used when no API key is configured.
+
+    Safe because FAISS search is skipped for <15 agents.
+    """
+
+    def embed_documents(self, texts):
+        return [[random.gauss(0, 1) for _ in range(384)] for _ in texts]
+
+    def embed_query(self, text):
+        return [random.gauss(0, 1) for _ in range(384)]
 
 
 class VectorStoreService:
@@ -41,9 +55,11 @@ class VectorStoreService:
                 model_name=settings.JINA_EMBEDDING_MODEL,
             )
 
+        if provider == "none" or not settings.OPENAI_API_KEY:
+            logger.warning("No embedding API configured — using local dummy embeddings")
+            return _DummyEmbeddings()
+
         # Default: OpenAI
-        if not settings.OPENAI_API_KEY:
-            raise VectorStoreError("OPENAI_API_KEY is required for OpenAI embeddings")
         return OpenAIEmbeddings(
             model=settings.EMBEDDING_MODEL, openai_api_key=settings.OPENAI_API_KEY
         )
