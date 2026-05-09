@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi import FastAPI, HTTPException, Query, Body, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -144,7 +144,7 @@ async def lifespan(app: FastAPI):
         )
     
     # Start queue worker
-    asyncio.create_task(queue_mgr.process_queue(lambda q, a: forward_to_router(q, a)))
+    asyncio.create_task(queue_mgr.process_queue(lambda q, s, a: forward_to_router(q, s, a)))
     
     yield
     
@@ -167,13 +167,13 @@ def generate_cache_key(query: str, agent_hint: Optional[str] = None) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
-async def forward_to_router(query: str, agent_hint: Optional[str] = None) -> Dict[str, Any]:
+async def forward_to_router(query: str, session_id: Optional[str] = None, agent_hint: Optional[str] = None) -> Dict[str, Any]:
     """Forward request to Nasiko router via POST /router (multipart/form-data)"""
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Build multipart form data matching the router's expected schema
             form_data = {
-                "session_id": str(uuid.uuid4()),
+                "session_id": session_id or str(uuid.uuid4()),
                 "query": query,
             }
             if agent_hint:
@@ -245,6 +245,7 @@ async def health_check():
 
 class ProcessRequestBody(BaseModel):
     query: Optional[str] = None
+    session_id: Optional[str] = None
     agent_hint: Optional[str] = None
     priority: Optional[int] = None
 
@@ -252,9 +253,13 @@ class ProcessRequestBody(BaseModel):
 @app.post("/process")
 async def process_request(
     query: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
     agent_hint: Optional[str] = Query(None),
     priority: Optional[int] = Query(None),
     request_body: Optional[ProcessRequestBody] = Body(None),
+    f_query: Optional[str] = Form(None, alias="query"),
+    f_session_id: Optional[str] = Form(None, alias="session_id"),
+    f_agent_hint: Optional[str] = Form(None, alias="route"),
 ):
     """
     Main request processing endpoint with all intelligence layers.
@@ -269,8 +274,14 @@ async def process_request(
     """
     if request_body:
         query = query or request_body.query
+        session_id = session_id or request_body.session_id
         agent_hint = agent_hint or request_body.agent_hint
         priority = priority or request_body.priority
+    
+    # Also check Form data
+    query = query or f_query
+    session_id = session_id or f_session_id
+    agent_hint = agent_hint or f_agent_hint
 
     if not query:
         raise HTTPException(status_code=400, detail="query parameter is required")
@@ -318,6 +329,7 @@ async def process_request(
             metrics.record_queued()
             queue_entry = await queue_mgr.enqueue(
                 query=query,
+                session_id=session_id,
                 agent_hint=agent_hint,
                 priority=priority or AGENT_CONFIGS[agent_hint]["priority"],
                 pending_key=pending_key
@@ -336,7 +348,7 @@ async def process_request(
     
     # STEP 4: Forward to Router/Agent
     try:
-        agent_response = await forward_to_router(query, agent_hint)
+        agent_response = await forward_to_router(query, session_id, agent_hint)
         
         # STEP 5: Cache the result
         await cache.store(query, agent_response, agent_hint)
@@ -363,45 +375,62 @@ async def process_request(
 @app.post("/router")
 async def router_post_alias(
     query: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
     agent_hint: Optional[str] = Query(None),
     priority: Optional[int] = Query(None),
     request_body: Optional[ProcessRequestBody] = Body(None),
+    f_query: Optional[str] = Form(None, alias="query"),
+    f_session_id: Optional[str] = Form(None, alias="session_id"),
+    f_agent_hint: Optional[str] = Form(None, alias="route"),
 ):
     """Compatibility alias for /router to preserve existing Nasiko routing semantics."""
-    if request_body:
-        query = query or request_body.query
-        agent_hint = agent_hint or request_body.agent_hint
-        priority = priority or request_body.priority
-    return await process_request(query=query, agent_hint=agent_hint, priority=priority)
+    return await process_request(
+        query=query, 
+        session_id=session_id, 
+        agent_hint=agent_hint, 
+        priority=priority, 
+        request_body=request_body,
+        f_query=f_query,
+        f_session_id=f_session_id,
+        f_agent_hint=f_agent_hint
+    )
 
 
 @app.get("/router/route")
 async def router_get_route(
     query: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
     agent_hint: Optional[str] = Query(None),
     priority: Optional[int] = Query(None),
 ):
     """Compatibility alias for legacy GET router route calls."""
     if not query:
         raise HTTPException(status_code=400, detail="query parameter is required")
-    return await process_request(query=query, agent_hint=agent_hint, priority=priority)
+    return await process_request(query=query, session_id=session_id, agent_hint=agent_hint, priority=priority)
 
 
 @app.post("/router/route")
 async def router_post_route(
     query: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
     agent_hint: Optional[str] = Query(None),
     priority: Optional[int] = Query(None),
     request_body: Optional[ProcessRequestBody] = Body(None),
+    f_query: Optional[str] = Form(None, alias="query"),
+    f_session_id: Optional[str] = Form(None, alias="session_id"),
+    f_agent_hint: Optional[str] = Form(None, alias="route"),
 ):
     """Compatibility alias for legacy router route POST calls."""
-    if request_body:
-        query = query or request_body.query
-        agent_hint = agent_hint or request_body.agent_hint
-        priority = priority or request_body.priority
-    if not query:
-        raise HTTPException(status_code=400, detail="query parameter is required")
-    return await process_request(query=query, agent_hint=agent_hint, priority=priority)
+    return await process_request(
+        query=query, 
+        session_id=session_id, 
+        agent_hint=agent_hint, 
+        priority=priority, 
+        request_body=request_body,
+        f_query=f_query,
+        f_session_id=f_session_id,
+        f_agent_hint=f_agent_hint
+    )
 
 
 @app.get("/metrics")

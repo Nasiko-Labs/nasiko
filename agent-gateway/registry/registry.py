@@ -331,7 +331,8 @@ def register_service_in_kong(service: ServiceInfo) -> bool:
     """Register a service and route in Kong."""
     try:
         # Create service in Kong
-        service_url = f"http://{service.host}:{service.port}"
+        # All Nasiko agents use /router as their main intelligence endpoint
+        service_url = f"http://{service.host}:{service.port}/router"
 
         service_data = {
             "name": service.name,
@@ -620,7 +621,7 @@ def register_static_proxies():
             "paths": ["/router"],
             "upstream_path": "/process",
             "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-            "strip_path": False,
+            "strip_path": True,
             "preserve_host": False,
             "middlewares": [
                 "cors",

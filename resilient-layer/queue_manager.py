@@ -72,6 +72,7 @@ class QueueManager:
     async def enqueue(
         self,
         query: str,
+        session_id: Optional[str],
         agent_hint: Optional[str],
         priority: int = 1,
         pending_key: Optional[str] = None
@@ -83,6 +84,7 @@ class QueueManager:
         return await self.queue.enqueue(
             item={
                 "query": query,
+                "session_id": session_id,
                 "agent_hint": agent_hint,
                 "pending_key": pending_key,
                 "priority": priority
@@ -112,6 +114,7 @@ class QueueManager:
         try:
             result = await processor(
                 item["query"],
+                item.get("session_id"),
                 item.get("agent_hint")
             )
             
