@@ -289,7 +289,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/health').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/router/health').raise_for_status()\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

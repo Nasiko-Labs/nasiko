@@ -48,6 +48,21 @@ orchestrator = RouterOrchestrator()
 app.include_router(build_admin_router(orchestrator.resilient_executor))
 
 
+@app.get("/")
+async def root():
+    """Operational entrypoint for local demos and health probes."""
+    return {
+        "service": "Nasiko Router Service",
+        "status": "ok",
+        "endpoints": {
+            "health": "/router/health",
+            "admin_stats": "/admin/stats/runtime",
+            "metrics": "/metrics",
+            "docs": "/docs",
+        },
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
