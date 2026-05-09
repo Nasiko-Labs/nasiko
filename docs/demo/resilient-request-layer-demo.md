@@ -259,6 +259,90 @@ docker --context rancher-desktop exec kong-service-registry \
 
 ## Live Demo Script
 
+### Demo 0: Real AI Agent Through Nasiko UI
+
+This is the strongest product demo because it uses a real OpenAI-backed Nasiko A2A translator agent from the web UI, while Request Manager protects the `/agents/*` execution path behind the scenes.
+
+Start the real translator container:
+
+```bash
+docker --context rancher-desktop build \
+  -t nasiko-real-a2a-translator ./agents/a2a-translator
+
+docker --context rancher-desktop run -d \
+  --name agent-a2a-translator \
+  --network agents-net \
+  --env-file /Users/himanshu.sin/Personal/goals/nashiko-hackathon/.nasiko-local.env \
+  nasiko-real-a2a-translator
+
+docker --context rancher-desktop exec kong-service-registry \
+  curl -sS -X POST http://localhost:8080/sync
+```
+
+To make this manually started local agent visible in the Nasiko UI, add matching local registry metadata and owner permission for the superuser:
+
+```bash
+docker --context rancher-desktop exec mongodb mongosh --quiet \
+  -u admin -p password --authenticationDatabase admin --eval '
+const db=db.getSiblingDB("nasiko");
+const user=db.users.findOne({is_super_user:true});
+const now=new Date();
+db.registry.updateOne(
+  { id: "agent-a2a-translator" },
+  { $set: {
+    protocolVersion: "0.2.9",
+    id: "agent-a2a-translator",
+    name: "Real A2A Translator",
+    description: "OpenAI-backed A2A translator agent used to demonstrate Request Manager caching, queueing, and runtime stats on a real AI response.",
+    url: "http://localhost:9100/agents/agent-a2a-translator/",
+    preferredTransport: "JSONRPC",
+    version: "1.0.0",
+    capabilities: { streaming: true, pushNotifications: false, stateTransitionHistory: false, chat_agent: false },
+    securitySchemes: {},
+    security: [],
+    defaultInputModes: ["application/json", "text/plain"],
+    defaultOutputModes: ["application/json", "text/plain"],
+    skills: [{ id: "translator_agent", name: "Translator Agent", description: "Translate text and web content between different languages", tags: ["translation", "language", "text"], examples: ["Translate Hello world to Spanish"] }],
+    tags: ["translation", "language", "text"],
+    owner_id: user._id,
+    updated_at: now,
+    created_at: now,
+    version_history: [{ version: "1.0.0", status: "active", created_at: now, notes: "Manual local demo registration" }]
+  } },
+  { upsert: true }
+);
+print(user._id);
+'
+```
+
+Then create the permission using the printed superuser id:
+
+```bash
+curl -sS -X POST \
+  "http://localhost:8082/auth/agents/agent-a2a-translator/permissions?owner_id=<SUPERUSER_ID>"
+```
+
+UI flow:
+
+1. Open `http://localhost:9100/app/home`.
+2. Sign in using `orchestrator/superuser_credentials.json`.
+3. Confirm the `Real A2A Translator` card is visible.
+4. Click `Start session`.
+5. Ask: `Translate 'Request Manager makes repeated agent calls fast' to Spanish`.
+6. Ask the same query again.
+7. Open `http://localhost:8090/` or inspect `/control/agents/agent-a2a-translator/stats`.
+
+What to say:
+
+The first UI request goes through the full real path: Nasiko Web UI -> Kong -> Request Manager -> real A2A translator -> OpenAI. The repeated UI request is served by Request Manager cache. In my validation, `cache_hits` increased while `upstream_requests` stayed flat on the repeated request.
+
+KPI proved:
+
+- Real product usage, not only a synthetic script.
+- Faster repeated responses on a real AI-backed agent.
+- Reduced duplicate agent execution.
+- Operational visibility from Request Manager stats.
+
 ### Demo 1: Faster Repeated Responses
 
 Run:
