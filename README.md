@@ -1,755 +1,538 @@
-# Nasiko
+# Nasiko: Resilient AI Request Orchestration Middleware
 
-<div align="center">
+Nasiko is a FastAPI-based infrastructure middleware for resilient AI agent request handling. It demonstrates how an AI system can stay responsive during burst traffic by combining async request processing, intelligent caching, request coalescing, per-agent rate limiting, queue-based overload smoothing, and real-time observability.
 
-**AI Agent Developer Control Plane**
+The project is intentionally lightweight and hackathon-friendly. It uses in-memory components and Python `asyncio` so reviewers can understand the architecture quickly, run the demo locally, and see the resilience behavior without Redis, Kafka, databases, Docker orchestration, or external monitoring stacks.
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
-[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://docker.com/)
+## Project Overview
 
-**Centralized management, intelligent routing, and observability for AI agents**
+AI agent applications often fail in predictable ways:
 
-[🚀 Quick Start](#-quick-start) •
-[📚 Documentation](docs/) •
-[🏗️ Architecture](#️-architecture) •
-[🛠️ CLI Tool](#️-cli-tool) •
-[📦 Agent Development](#-agent-development)
+- Burst traffic overwhelms individual agents.
+- Repeated prompts waste expensive model or tool compute.
+- Concurrent identical cache misses trigger duplicate processing.
+- Overload is hard to explain without clear operational metrics.
+- Traffic spikes can cascade into slower responses, rejected requests, or unstable demos.
 
-</div>
+Nasiko acts as a traffic orchestration layer in front of AI agents. It protects agent capacity, avoids unnecessary recomputation, buffers overload, and exposes the system behavior through reviewer-friendly APIs.
 
----
+## Problem Statement
 
-## 🌟 What is Nasiko?
+Modern AI systems need more than a simple request/response route. As traffic increases, a naive backend can suffer from:
 
-Nasiko is a developer control plane that transforms how you build, deploy, and manage AI agents at scale. Built with modern microservices architecture, Nasiko provides everything needed to run production AI agent ecosystems.
+- Duplicate computation: repeated or simultaneous identical requests are processed multiple times.
+- Cache stampedes: concurrent cache misses all call the same expensive agent before the first response is cached.
+- Overloaded agents: one popular agent can receive more requests than it can process safely.
+- Cascading failures: aggressive rejection or slow processing can degrade the whole API experience.
+- Poor traffic visibility: without metrics, judges, maintainers, and operators cannot see why the system is stable or overloaded.
 
-### 🎯 Core Capabilities
+Nasiko focuses on these backend resilience concerns while keeping the implementation small enough to audit in a pull request.
 
-**Agent Lifecycle Management:**
-- **📦 Centralized Registry** - Version-controlled agent storage with metadata management
-- **🚀 Automated Deployment** - Docker-based containerization with Kubernetes orchestration
-- **📝 AgentCard System** - Structured capability definitions for intelligent routing
-- **🔄 Hot Deployment** - Zero-downtime agent updates and rollbacks
+## Solution Architecture
 
-**Intelligent Operations:**
-- **🧠 LangChain-Powered Routing** - AI-driven query analysis and agent selection
-- **⚖️ Load Balancing** - Automatic traffic distribution across agent replicas
-- **🎯 Capability Matching** - Semantic matching of queries to agent expertise
-- **📊 Confidence Scoring** - Probabilistic agent selection with fallback handling
+The middleware follows a modular request pipeline:
 
-**Production Infrastructure:**
-- **🌐 Kong API Gateway** - Enterprise-grade API management with plugins
-- **🔐 Multi-Auth Support** - GitHub OAuth, JWT tokens, and custom authentication
-- **💬 Conversation Logging** - Complete chat history and interaction tracking
-- **🔍 Service Discovery** - Automatic agent registration and health monitoring
+1. Validate the request and target agent.
+2. Check the cache before consuming agent capacity.
+3. Use per-cache-key async locks to coalesce duplicate cache misses.
+4. Apply per-agent sliding-window rate limits.
+5. Process allowed cache misses immediately.
+6. Queue overloaded cache misses instead of failing aggressively.
+7. Drain queued requests in a background async worker.
+8. Store successful results in cache.
+9. Update structured observability metrics.
 
-**Developer Experience:**
-- **⚡ One-Command Setup** - `docker compose up -d` to full platform
-- **🛠️ Rich CLI Tool** - Complete agent management from command line
-- **🌐 Web Dashboard** - Browser-based interface accessible via Kong Gateway (/app/)
-- **🖥️ Desktop Application** - Native desktop app for enhanced user experience
-- **🔗 REST APIs** - Comprehensive programmatic access with OpenAPI docs
+Core design principles:
 
-**Enterprise Observability:**
-- **📈 Integrated Observability Dashboard** - Built-in monitoring within the web UI
-- **📋 Request Tracing** - End-to-end visibility across microservices via Arize Phoenix
-- **🚨 Health Monitoring** - Automatic agent health checks and alerting
-- **📊 Usage Analytics** - Real-time metrics on agent performance and utilization
-- **💡 LLM-Native Monitoring** - Specialized observability for AI agent interactions
+- Cache first: repeated prompts should be fast and should not consume rate-limit capacity.
+- Coalesce duplicate work: simultaneous identical misses should wait for the first result.
+- Limit per agent: noisy traffic to one agent should not overload every agent.
+- Queue overload: spikes should be smoothed when possible.
+- Observe everything: cache, limiter, queue, latency, and agent behavior should be visible.
 
-## 🏗️ Architecture
+## Architecture Diagram
 
-Nasiko implements a cloud-native microservices architecture designed for enterprise AI agent orchestration:
-
-```
-                           ┌─────────────────────────────────────┐
-                           │            User Interfaces          │
-                           └─────────────────┬───────────────────┘
-                                             │
-                     ┌─────────────────┬─────────────────┬
-                     │                 │                 │                 
-                ┌────▼────┐       ┌────▼────┐       ┌────▼────┐
-                │Web UI   │       │CLI Tool │       │Desktop  │
-                │(/app/)  │       │(Python) │       │App      │
-                └─────────┘       └─────────┘       └─────────┘
-                │                 │                 │
-                └─────────────────┼─────────────────┘
-                                  │
-                              ┌─────────────▼───────────────┐
-                              │      Kong API Gateway       │
-                              │         (Port 9100)         │
-                              │                             │
-                              │ Routes:                     │
-                              │ • /agents/{name}/ → Agents │
-                              │ • /api/ → Backend API       │
-                              │ • /router/ → Router Service │
-                              │ • /auth/ → Auth Service     │
-                              │ • /app/ → Web Interface     │
-                              │ • /n8n/ → N8N Workflows     │
-                              │ • / → Landing (→ /app/)     │
-                              └─────────────┬───────────────┘
-                                            │
-              ┌─────────────────────────────┼─────────────────────────────┐
-              │                             │                             │
-    ┌─────────▼─────────┐         ┌─────────▼─────────┐         ┌─────────▼─────────┐
-    │   Core Platform   │         │  Intelligence     │         │    AI Agents      │
-    │    Services       │         │    Services       │         │   (Dynamic)       │
-    └─────────┬─────────┘         └─────────┬─────────┘         └─────────┬─────────┘
-              │                             │                             │
-    ┌─────────▼─────────┐         ┌─────────▼─────────┐         ┌─────────▼─────────┐
-    │FastAPI Backend    │         │Router Service     │         │compliance-checker │
-    │Port: 8000         │         │Port: 8081         │         │github-agent      │
-    │                   │         │                   │         │translator         │
-    │• Agent Registry   │         │• LangChain Engine │         │crewai-workflows   │
-    │• Upload System    │         │• Query Analysis   │         │langgraph-flows    │
-    │• Kubernetes Orch. │         │• Capability Match │         │custom-agents      │
-    │• GitHub OAuth     │         │• Confidence Score │         │... (auto-deployed)│
-    │• Build Pipeline   │         │• Fallback Logic   │         │                   │
-    │• Health Monitoring│         │• Model Selection  │         │• Health Endpoints │
-    └───────────────────┘         └───────────────────┘         │• Auto-Scaling     │
-              │                             │                   │• Phoenix Tracing  │
-              │                             │                   └───────────────────┘
-    ┌─────────▼─────────┐         ┌─────────▼─────────┐                   │
-    │Auth Service       │         │Chat History       │                   │
-    │Port: 8082         │         │Port: 8083         │                   │
-    │                   │         │                   │                   │
-    │• JWT Management   │         │• Conversation Log │                   │
-    │• GitHub OAuth     │         │• Chat Persistence │                   │
-    │• User Sessions    │         │• Retrieval APIs   │                   │
-    │• Role-Based Auth  │         │• Search & Filter  │                   │
-    └───────────────────┘         └───────────────────┘                   │
-              │                             │                             │
-    ┌─────────▼─────────┐                   │                             │
-    │Kong Registry      │                   │                             │
-    │Port: 8080         │                   │                             │
-    │                   │                   │                             │
-    │• Service Discovery│                   │                             │
-    │• Auto-Registration│                   │                             │
-    │• Health Checks    │                   │                             │
-    │• Route Management │                   │                             │
-    └───────────────────┘                   │                             │
-              │                             │                             │
-              └─────────────────────────────┼─────────────────────────────┘
-                                            │
-                              ┌─────────────▼───────────────┐
-                              │     Infrastructure &        │
-                              │      Observability          │
-                              └─────────────┬───────────────┘
-                                            │
-        ┌─────────────────┬─────────────────┼─────────────────┬─────────────────┐
-        │                 │                 │                 │                 │
-   ┌────▼────┐       ┌────▼────┐       ┌────▼────┐       ┌────▼────┐       ┌────▼────┐
-   │MongoDB  │       │Redis    │       │Phoenix  │       │Kong DB  │       │BuildKit │
-   │:27017   │       │:6379    │       │:6006    │       │(PostgSQL│       │(K8s)    │
-   │         │       │         │       │         │       │:5432)   │       │         │
-   │• Agent  │       │• Session│       │• LLM    │       │• Gateway│       │• Image  │
-   │  Storage│       │  Cache  │       │  Traces │       │  Config │       │  Builds │
-   │• Users  │       │• Queues │       │• Request│       │• Routes │       │• Multi- │
-   │• Chat   │       │• Pub/Sub│       │  Flows  │       │• Plugins│       │  Arch   │
-   │  History│       │• Locks  │       │• Metrics│       │• Rate   │       │• Registry│
-   └─────────┘       └─────────┘       └─────────┘       │  Limits │       │  Push   │
-                                                         └─────────┘       └─────────┘
+```text
+Users
+  |
+  v
+Gateway
+  |
+  v
+Resilient Request Layer
+  |
+  +-- Cache
+  |     +-- In-memory response cache
+  |     +-- Cache-key async locks
+  |
+  +-- Rate Limiter
+  |     +-- Per-agent sliding windows
+  |     +-- Remaining capacity and retry estimates
+  |
+  +-- Queue System
+  |     +-- asyncio.Queue overload buffer
+  |     +-- Background worker
+  |
+  +-- Metrics
+        +-- Traffic, cache, queue, performance, and agent stats
+  |
+  v
+AI Agents
+  |
+  +-- translator
+  +-- coder
+  +-- search
+  +-- math
 ```
 
-### 🔄 Data Flow Patterns
+## Request Lifecycle
 
-**Agent Deployment Flow:**
+```text
+Request
+  |
+  v
+Validation
+  |
+  v
+Cache Lookup
+  |-- hit --> Return cached response
+  |
+  v
+Acquire cache-key lock
+  |
+  v
+Re-check cache
+  |-- hit --> Return cached response
+  |
+  v
+Rate Limiter Check
+  |-- allowed --> Agent Processing --> Store Cache --> Metrics --> Response
+  |
+  v
+Queue Request
+  |
+  v
+Return queued response
+  |
+  v
+Background Worker
+  |
+  v
+Agent Processing --> Store Cache --> Metrics
 ```
-CLI/Web → Backend API → Redis Stream → Build System → Container Registry → K8s Deployment → Kong Registration
+
+## Features
+
+- Async request handling with FastAPI.
+- Intelligent in-memory cache for repeated prompts.
+- Cache stampede prevention with per-key `asyncio.Lock` request coalescing.
+- Configurable per-agent rate limiting.
+- Queue-based resilience for over-limit requests.
+- Background worker for gradual queue draining.
+- Real-time metrics for traffic, cache, queue, performance, and agents.
+- Health endpoint with warnings, bottlenecks, and recommendations.
+- Modular services that can later map to Redis, distributed limiters, durable queues, or external metrics systems.
+
+## Tech Stack
+
+- FastAPI for the HTTP API.
+- Python `asyncio` for non-blocking route and worker behavior.
+- Pydantic models for request and response validation.
+- In-memory cache for demo-friendly response reuse.
+- In-memory sliding-window rate limiter.
+- `asyncio.Queue` for lightweight overload buffering.
+- Modular service files for maintainable backend architecture.
+
+## Project Structure
+
+```text
+main.py           FastAPI app, request pipeline, lifecycle, and endpoints
+agents.py         Async fake AI agents and agent registry
+cache.py          In-memory cache plus request coalescing locks
+limiter.py        Per-agent sliding-window rate limiter
+queue_manager.py  asyncio.Queue manager and background worker infrastructure
+stats.py          Centralized observability, metrics, and health evaluation
+models.py         Pydantic API schemas
+README.md         Project documentation and demo guide
 ```
 
-**Query Routing Flow:**  
-```  
-User Query → Kong Gateway → Router Service → LangChain Analysis → Agent Selection → Kong Proxy → Agent Response
-```
+## Setup
 
-**Observability Flow:**
-```
-Agent Request → Phoenix SDK → Trace Collection → Nasiko Web UI + Phoenix Dashboard → Performance Analytics
-```
-
-### Supported LLM Providers
-
-Nasiko supports multiple LLM providers for both the routing engine and agent execution:
-
-| Provider | API Key Env Var | Base URL | Models |
-|----------|----------------|----------|--------|
-| OpenAI (default) | `OPENAI_API_KEY` | Default OpenAI endpoint | gpt-4o, gpt-4o-mini |
-| [MiniMax](https://platform.minimax.io) | `MINIMAX_API_KEY` | `https://api.minimax.io/v1` (global) / `https://api.minimaxi.com/v1` (China) | MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed |
-| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | Various models |
-
-To switch the router's LLM provider, set `ROUTER_LLM_PROVIDER` and `ROUTER_LLM_MODEL` in your environment configuration. See [Environment Configuration](#-environment-configuration).
-
-### Key Components
-
-- **Kong Gateway** (9100) - API routing, load balancing, service discovery
-- **FastAPI Backend** (8000) - Agent registry, orchestration, agent upload system
-- **Auth Service** (8082) - User authentication, GitHub OAuth, JWT token management
-- **Router Service** (8081) - LangChain-powered intelligent query routing
-- **Chat History** (8083) - Conversation logging and retrieval service
-- **Kong Registry** (8080) - Automatic agent service discovery and registration
-- **Web Interface** (4000) - Browser dashboard accessible via Kong Gateway (/app/)
-- **Agent Network** - Auto-deployed containerized agents with observability
-- **CLI Tool** - Complete command-line management interface
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Docker & Docker Compose
-- Python 3.12+
-- 4GB+ RAM recommended
-
-### Local Development Setup
+Install the minimal runtime dependencies:
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/Nasiko-Labs/nasiko.git
-cd nasiko
-
-# 2. Create environment configuration
-cp .nasiko-local.env.example .nasiko-local.env
-
-# 3. Edit .nasiko-local.env with your API keys:
-# Generate a secure base64-encoded encryption key
-# Example: 5kfdxaT7WRoseTKqksUY4gR2idR4FuBBEIQk5Cpzlek=
-# USER_CREDENTIALS_ENCRYPTION_KEY=5kfdxaT7WRoseTKqksUY4gR2idR4FuBBEIQk5Cpzlek=
-
-# (optional but recommended)
-# OPENAI_API_KEY=<sk-your-openai-key>
-# GITHUB_CLIENT_ID=<your-github-oauth-id>
-# GITHUB_CLIENT_SECRET=<your-github-oauth-secret>
-
-# 4. Install Python dependencies (for CLI)
-pip install uv
-uv sync
-
-# 5. Start the entire platform
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d
-
-# 6. Access the web interface via Kong Gateway
-open http://localhost:9100/app/
+pip install fastapi uvicorn
 ```
 
-### Verify Installation
+Start the API:
 
 ```bash
-# Check all services are healthy
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env ps
-
-# Test the API
-curl http://localhost:8000/api/v1/healthcheck
-
-# Test Kong gateway
-curl http://localhost:9100/health
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-**🎉 Success!** Access Nasiko at http://localhost:9100/app/
+Open the interactive API docs:
 
-## 📚 Documentation
+```text
+http://localhost:8000/docs
+```
 
-For comprehensive guides and detailed instructions:
+## API Documentation
 
-- **[Getting Started Guide](docs/getting-started.md)** - First login, deploying your first agent, and testing it 
-- **[API Reference](http://localhost:8000/docs)** - Full REST API documentation (after startup)
+### Core Endpoints
 
-### Quick Links
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/request` | Submit a request through cache, limiter, queue, agent processing, and metrics |
+| `GET` | `/stats` | Full structured observability snapshot |
+| `GET` | `/health` | Health status, warnings, bottlenecks, and recommendations |
+| `GET` | `/metrics/summary` | Compact dashboard-friendly metrics summary |
+| `GET` | `/limits` | Current per-agent limits, usage, retry windows, and remaining capacity |
+| `GET` | `/queue/status` | Queue depth, worker state, processed count, and estimated wait time |
+| `POST` | `/cache/clear` | Clear the in-memory response cache |
+| `POST` | `/stats/reset` | Reset in-memory metrics without clearing cache, limiter, or queue state |
 
-- **📖 First Login & Agent Deploy**: After setup, follow the [Getting Started Guide](docs/getting-started.md) to sign in and deploy your first agent
-- **🔑 Login Credentials**: Generated automatically at `orchestrator/superuser_credentials.json`
-- **🤖 Test Agent**: Use `agents/a2a-translator.zip` for your first agent upload
+### Agent and Debug Endpoints
 
-## 🛠️ CLI Tool
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/agents` | List available fake agents |
+| `GET` | `/agents/status` | Per-agent operational metrics |
+| `GET` | `/agents/{agent_name}` | Agent metadata and request count |
+| `GET` | `/debug/cache` | Cache internals for local review |
+| `GET` | `/debug/limiter` | Rate limiter internals for local review |
+| `GET` | `/debug/queue` | Queue internals for local review |
+| `GET` | `/debug/agents` | Agent registry internals for local review |
 
-The Nasiko CLI provides complete platform management:
+## Example Requests and Responses
 
-### Installation & Authentication
+### 1. Submit an AI Request
 
 ```bash
-# Install CLI (uv sync at the repo root installs all dependencies including the CLI)
-pip install uv
-uv sync
-
-# Or install the CLI standalone
-# cd cli && pip install -e .
-
-# Configure API endpoint
-export NASIKO_API_URL=http://localhost:9100
-
-# Authenticate with your access key and secret
-# a superuser is automatically created during setup and can be found at nasiko/orchestrator/superuser_credentials.json.
-nasiko login
-
-# Check status
-nasiko status
+curl -X POST http://localhost:8000/request \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coder","query":"Generate a Python loop"}'
 ```
 
-### Agent Management
+Example response:
 
-```bash
-# Upload agent from directory
-nasiko agent upload-directory ./my-agent --name my-agent
-
-# Upload from GitHub repository (clone and upload in one step)
-nasiko github clone owner/repo --branch main
-
-# Upload ZIP file
-nasiko agent upload-zip agent.zip --name packaged-agent
-
-# Manage registry
-nasiko agent list
-nasiko agent get --name my-agent
-```
-
-### Monitoring & Operations
-
-```bash
-# Platform monitoring
-nasiko status
-nasiko observability sessions
-
-# Repository operations
-nasiko github repos
-nasiko github clone owner/repo --branch feature-branch
-
-# Infrastructure (K8s)
-nasiko setup bootstrap --provider digitalocean --region nyc3
-```
-
-## 📦 Agent Development
-
-### Agent Structure
-
-Every agent must follow this structure:
-
-```
-my-agent/
-├── AgentCard.json          # Required: Agent capabilities
-├── Dockerfile              # Container definition
-├── pyproject.toml          # Python dependencies
-├── docker-compose.yml      # Local development (optional)
-├── src/                    # Source code
-│   ├── main.py            # FastAPI entry point
-│   └── ...                # Agent logic
-└── README.md              # Documentation
-```
-
-### Example Agent
-
-**AgentCard.json** (Required):
 ```json
 {
-  "name": "document-analyzer",
-  "description": "AI agent for document analysis and extraction",
-  "capabilities": [
-    "document_analysis",
-    "pdf_extraction", 
-    "text_summarization"
-  ],
-  "tags": ["nlp", "documents", "analysis"],
-  "examples": [
-    "analyze this contract",
-    "extract data from PDF",
-    "summarize document"
-  ],
-  "input_mode": "text",
-  "output_mode": "json",
-  "agent_protocol_version": "a2a-v1",
-  "endpoints": {
-    "/analyze": "Analyze document content",
-    "/extract": "Extract structured data",
-    "/health": "Health check endpoint"
+  "agent": "coder",
+  "response": "[CODER] Generated code:\n```python\nfor i in range(10):\n    print(i)\n```",
+  "cached": false,
+  "processing_time": 0.703
+}
+```
+
+### 2. Repeat the Same Request
+
+```bash
+curl -X POST http://localhost:8000/request \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coder","query":"Generate a Python loop"}'
+```
+
+Example cached response:
+
+```json
+{
+  "agent": "coder",
+  "response": "[CODER] Generated code:\n```python\nfor i in range(10):\n    print(i)\n```",
+  "cached": true,
+  "processing_time": 0.0
+}
+```
+
+### 3. Trigger Queue-Based Overload
+
+Use unique prompts so the cache does not bypass the rate limiter:
+
+```bash
+for i in $(seq 1 8); do
+  curl -s -X POST http://localhost:8000/request \
+    -H "Content-Type: application/json" \
+    -d "{\"agent\":\"coder\",\"query\":\"overload demo request $i\"}" &
+done
+wait
+```
+
+Example queued response:
+
+```json
+{
+  "status": "queued",
+  "request_id": "2bbda6dd-8a30-4c53-9505-cd2d5e6fb2b3",
+  "agent": "coder",
+  "queue_position": 2,
+  "estimated_wait_time": 1.5,
+  "queue_size": 2,
+  "message": "Request accepted into the resilience queue.",
+  "agent_limit_info": {
+    "allowed": false,
+    "agent": "coder",
+    "limit": 3,
+    "window_seconds": 10,
+    "requests_in_window": 3,
+    "remaining_requests": 0,
+    "retry_after": 8.9
   }
 }
 ```
 
-**src/main.py**:
-```python
-from fastapi import FastAPI
-from pydantic import BaseModel
+### 4. Inspect Metrics
 
-app = FastAPI()
+```bash
+curl http://localhost:8000/stats
+```
 
-class AnalysisRequest(BaseModel):
-    text: str
-    options: dict = {}
+Example structure:
 
-@app.post("/analyze")
-async def analyze_document(request: AnalysisRequest):
-    # Your agent logic here
-    return {
-        "summary": f"Analysis of: {request.text[:100]}...",
-        "entities": ["entity1", "entity2"],
-        "sentiment": "neutral"
+```json
+{
+  "traffic": {
+    "total_requests": 12,
+    "processed_requests": 4,
+    "active_requests": 0,
+    "queued_requests": 5,
+    "processed_from_queue": 3,
+    "rate_limited_requests": 5
+  },
+  "cache": {
+    "cache_hits": 2,
+    "cache_misses": 10,
+    "cache_hit_ratio": 16.67
+  },
+  "queue": {
+    "current_queue_size": 2,
+    "max_queue_size": 100,
+    "queue_overflow_count": 0,
+    "average_queue_wait_time": 1.25
+  },
+  "performance": {
+    "average_response_time": 0.61,
+    "fastest_response_time": 0.0,
+    "slowest_response_time": 0.91,
+    "total_processing_time": 3.05
+  },
+  "agents": {
+    "coder": {
+      "request_count": 8,
+      "cache_hits": 1,
+      "rate_limited_count": 5,
+      "average_processing_time": 0.7
     }
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "service": "document-analyzer"}
+  }
+}
 ```
 
-**Dockerfile**:
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-# Your agent's pyproject.toml should list its own dependencies (fastapi, uvicorn, etc.)
-# See agents/a2a-translator/ for a working example.
-COPY pyproject.toml .
-RUN pip install -e .
-
-COPY src/ ./src/
-EXPOSE 8000
-
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-### Testing Agents Locally
+### 5. Inspect Rate Limits
 
 ```bash
-# Test agent directly
-cd my-agent
-docker compose up -d
-
-# Deploy to Nasiko
-nasiko agent upload-directory . --name my-agent
-
-# Test via Kong gateway
-curl -X POST http://localhost:9100/agents/my-agent/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Sample document content"}'
-
-# Test via intelligent routing through Kong
-curl "http://localhost:9100/router/route?query=analyze this document"
+curl http://localhost:8000/limits
 ```
 
-## 🔄 Intelligent Routing System
+Example response:
 
-The router service automatically selects the best agent for each query:
+```json
+{
+  "limits": {
+    "coder": {
+      "limit": 3,
+      "window_seconds": 10,
+      "requests_in_window": 3,
+      "remaining_requests": 0,
+      "retry_after": 8.9,
+      "allowed": false,
+      "agent": "coder"
+    }
+  }
+}
+```
 
-### How It Works
-
-1. **Query Analysis** - LangChain analyzes user intent and requirements
-2. **Capability Matching** - Compares query against AgentCard.json capabilities  
-3. **Confidence Scoring** - Ranks agents by suitability
-4. **Best Match Selection** - Returns optimal agent URL with confidence score
-
-### Usage Examples
+### 6. Inspect Queue Status
 
 ```bash
-# Router automatically selects best agent
-curl "http://localhost:9100/router/route?query=translate this to French"
-# Returns: {"agent_url": "http://localhost:9100/agents/translator", "confidence": 0.95}
-
-curl "http://localhost:9100/router/route?query=check code compliance"  
-# Returns: {"agent_url": "http://localhost:9100/agents/compliance-checker", "confidence": 0.89}
-
-# Fallback handling
-curl "http://localhost:9100/router/route?query=unknown task"
-# Returns: {"agent_url": "http://localhost:9100/agents/general-agent", "confidence": 0.45}
+curl http://localhost:8000/queue/status
 ```
 
-## 📊 Observability & Monitoring
+Example response:
 
-### Automatic Instrumentation
+```json
+{
+  "queue_size": 2,
+  "current_queue_size": 2,
+  "max_queue_size": 100,
+  "processing_count": 1,
+  "worker_status": "running",
+  "worker_running": true,
+  "processed_queue_count": 3,
+  "processed_from_queue": 3,
+  "failed_queue_count": 0,
+  "queue_overflow_count": 0,
+  "estimated_wait_time": 1.5
+}
+```
 
-All agents automatically receive:
-- **Arize Phoenix SDK** injection for LLM observability
-- **Automatic instrumentation** for request/response tracing  
-- **Chat logging** via Kong plugins with conversation persistence
-- **Health monitoring** with automatic restarts and failover
-
-### Monitoring Dashboards
-
-- **Nasiko Web UI**: http://localhost:9100/app/ - Integrated observability dashboard via Kong Gateway
-- **Arize Phoenix UI**: http://localhost:6006 - Direct access to detailed traces and performance metrics
-- **Kong Manager**: http://localhost:9102 - API gateway analytics and configuration
-- **Agent Registry**: http://localhost:8000/docs - REST API documentation and testing
-
-### Health Checks
+### 7. Clear the Cache
 
 ```bash
-# Service health
-curl http://localhost:8000/api/v1/healthcheck   # Backend
-curl http://localhost:8081/health               # Router
-curl http://localhost:9100/health               # Kong
-
-# Agent health via Kong Gateway
-curl http://localhost:9100/agents/my-agent/health
-
-# Comprehensive status
-nasiko status
+curl -X POST http://localhost:8000/cache/clear
 ```
 
-## 🌐 Environment Configuration
+Example response:
 
-### Required Environment Variables
-
-```bash
-# .nasiko-local.env
-
-# API Keys (Optional but recommended)
-OPENAI_API_KEY=<sk-your-openai-api-key>
-MINIMAX_API_KEY=<your-minimax-api-key>
-GITHUB_CLIENT_ID=<your-github-oauth-client-id>
-GITHUB_CLIENT_SECRET=<your-github-oauth-secret>
-
-# Router LLM Provider (Optional - defaults to openai)
-# Supported: "openai", "openrouter", "minimax"
-# ROUTER_LLM_PROVIDER=openai
-# ROUTER_LLM_MODEL=gpt-4o-mini
-
-# Security (Change in production)
-JWT_SECRET=<your-jwt-signing-secret>
-USER_CREDENTIALS_ENCRYPTION_KEY=<base64-encoded-key>
-
-# Database Credentials
-MONGO_ROOT_PASSWORD=secure-mongo-password
-KONG_DB_PASSWORD=secure-kong-password
-
-# Default Admin Account
-SUPERUSER_EMAIL=admin@example.com
-SUPERUSER_USERNAME=admin
-SUPERUSER_PASSWORD=changeme123
-
-# Port Configuration (Optional - defaults shown)
-NASIKO_PORT_BACKEND=8000
-NASIKO_PORT_WEB=4000
-NASIKO_PORT_KONG=9100
-NASIKO_PORT_ROUTER=8081
-NASIKO_PORT_PHOENIX=6006
+```json
+{
+  "status": "success",
+  "message": "Cache cleared. Removed 4 entries.",
+  "cache_size_before": 4,
+  "cache_size_after": 0
+}
 ```
 
-### Service Ports
+## Demo Flow
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| Web Interface | 4000 | Browser dashboard (access via Kong Gateway at /app/) |
-| Backend API | 8000 | REST API and documentation |
-| Auth Service | 8082 | User authentication and GitHub OAuth |
-| Router Service | 8081 | Intelligent query routing |
-| Chat History | 8083 | Conversation logging and retrieval |
-| Kong Gateway | 9100 | Agent access point |
-| Kong Admin | 9101 | Gateway configuration |
-| Kong Manager | 9102 | Gateway web UI |
-| Kong Registry | 8080 | Service discovery and registration |
-| Arize Phoenix | 6006 | Observability and LLM tracing |
-| MongoDB | 27017 | Primary database |
-| Redis | 6379 | Caching and sessions |
+This sequence is designed for hackathon judges and pull request reviewers.
 
-## ☁️ Production Deployment
-
-### Cloud Setup (One Command)
-
-```bash
-# DigitalOcean Kubernetes
-uv run cli/main.py setup bootstrap \
-  --provider digitalocean \
-  --registry-name nasiko-images \
-  --region nyc3 \
-  --openai-key sk-proj-your-key
-
-# AWS Kubernetes  
-uv run cli/main.py setup bootstrap \
-  --provider aws \
-  --registry-name nasiko-images \
-  --region us-west-2 \
-  --openai-key sk-proj-your-key
-```
-
-This command automatically:
-1. ✅ Provisions Kubernetes cluster with Terraform
-2. ✅ Sets up container registry with credentials
-3. ✅ Deploys BuildKit for remote image building
-4. ✅ Installs Nasiko platform with Helm
-5. ✅ Configures ingress and networking
-
-### Manual Setup Steps
-
-```bash
-# 1. Provision cluster
-uv run cli/main.py setup k8s deploy --provider digitalocean
-
-# 2. Configure registry
-uv run cli/main.py setup registry deploy --provider digitalocean
-
-# 3. Deploy BuildKit
-uv run cli/main.py setup buildkit deploy
-
-# 4. Deploy core platform
-uv run cli/main.py setup core deploy
-```
-
-### Production Architecture
-
-- **Load Balancing**: Kong gateway with multiple replicas
-- **Auto-scaling**: Kubernetes HPA for agents
-- **Storage**: Persistent volumes for databases
-- **Registry**: Cloud container registries (ECR, DigitalOcean)
-- **Building**: Remote BuildKit with registry integration
-- **Monitoring**: Arize Phoenix + cloud observability
-
-## 📚 Sample Agents
-
-Nasiko includes several example agents:
-
-### Available Agents
-
-- **`agents/a2a-compliance-checker/`** - Document policy compliance analysis
-- **`agents/a2a-github-agent/`** - GitHub repository operations
-- **`agents/a2a-translator/`** - Multi-language translation service
-
-### Deploy Sample Agents
-
-```bash
-# Deploy compliance checker
-nasiko agent upload-directory ./agents/a2a-compliance-checker --name compliance
-
-# Deploy GitHub agent
-nasiko agent upload-directory ./agents/a2a-github-agent --name github
-
-# Test deployed agents via Kong Gateway
-curl "http://localhost:9100/router/route?query=check document compliance"
-curl "http://localhost:9100/router/route?query=create GitHub issue"
-```
-
-## 🔧 Development Workflow
-
-### Local Development Commands
-
-```bash
-# Start all services
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d
-
-# View logs
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env logs -f
-
-# Restart specific services
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart nasiko-backend
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart nasiko-router
-
-# Stop all services
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env down
-
-# Clean restart (removes data)
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env down -v
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d
-```
-
-### Alternative Makefile Commands
-
-The Makefile provides an alternative workflow for running orchestrator components directly on the host (outside Docker) using `uv`. This is useful when iterating on orchestrator code without rebuilding containers.
-
-```bash
-make start-nasiko        # Clean volumes + run orchestrator and redis listener on host
-make orchestrator        # Run orchestrator only (via uv)
-make redis-listener      # Run Redis stream processor (via uv)
-make clean-all          # Nuclear cleanup — stops all containers, removes volumes and images
-make backend-app        # Restart backend services
-```
-
-## 🚨 Important Notes
-
-### Critical Dependencies
-
-1. **Redis Stream Listener** - Agent uploads are processed by the `nasiko-redis-listener` service, which starts automatically with Docker Compose. If agent uploads are failing, check that it's healthy:
+1. Start the server.
 
    ```bash
-   docker logs nasiko-redis-listener
-   docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart nasiko-redis-listener
+   uvicorn main:app --host 0.0.0.0 --port 8000
    ```
 
-2. **Docker Networks** - Required networks created automatically:
-   - `app-network` - Core services communication
-   - `agents-net` - Agent-to-agent communication
+2. Send the first request.
 
-3. **AgentCard.json** - Mandatory for all agents, defines capabilities for routing
+   The first request is a cache miss. The fake agent simulates processing latency, and `/stats` records a cache miss plus processing time.
 
-4. **BuildKit** - Required for Kubernetes agent deployments
+3. Send the exact same request again.
 
-### Access Patterns
+   The response returns from cache with `"cached": true`. This demonstrates compute savings and faster repeated requests.
 
-**Kong Gateway Routes** (http://localhost:9100):
-- **`/agents/{agent-name}/`** - Dynamic agent access (auto-registered)
-- **`/api/`** - Backend API with authentication
-- **`/router/`** - Intelligent query routing service  
-- **`/auth/`** - Authentication endpoints
-- **`/app/`** - Web application interface
-- **`/n8n/`** - N8N workflow automation
-- **`/`** - Landing page (redirects to /app/)
+4. Send several identical requests concurrently.
 
-**Direct Service Access** (for development only):
-- **Backend API**: `http://localhost:8000/api/v1/`
-- **Web Interface**: `http://localhost:4000` (use Kong Gateway `/app/` for production)
-- **Router Service**: `http://localhost:8081` (use Kong Gateway `/router` for production)
+   Request coalescing ensures only the first cache miss performs agent work. Waiting requests reuse the cached response once it is written.
 
-## 🔍 Troubleshooting
+5. Send many unique requests to `coder`.
 
-### Common Issues
+   The `coder` agent has a deliberately low default limit, so excessive unique traffic is queued instead of aggressively rejected.
 
-**Agent won't deploy:**
+6. Watch the queue stabilize.
+
+   ```bash
+   curl http://localhost:8000/queue/status
+   curl http://localhost:8000/stats
+   curl http://localhost:8000/health
+   ```
+
+   Queue size, processed queue count, rate-limited requests, cache metrics, active requests, and health recommendations update in real time.
+
+## Copy-Paste Demo Script
+
+Run this sequence after starting the server. It demonstrates the first slow request, the cached repeat, overload queueing, and live metrics.
+
 ```bash
-# Check Redis stream listener is running
-docker logs nasiko-redis-listener
+# Reset demo-visible state.
+curl -s -X POST http://localhost:8000/stats/reset
+curl -s -X POST http://localhost:8000/cache/clear
 
-# Restart the listener if needed
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart nasiko-redis-listener
+# Demo 1: first request is processed by the fake agent.
+curl -s -X POST http://localhost:8000/request \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"translator","query":"hello"}'
 
-# Check Docker daemon
-docker info
+# Demo 2: identical request returns from cache.
+curl -s -X POST http://localhost:8000/request \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"translator","query":"hello"}'
 
-# Check logs
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env logs nasiko-backend
+# Demo 3: unique coder requests exceed the per-agent limit and enter the queue.
+for i in $(seq 1 6); do
+  curl -s -X POST http://localhost:8000/request \
+    -H "Content-Type: application/json" \
+    -d "{\"agent\":\"coder\",\"query\":\"demo spike $i\"}" &
+done
+wait
+
+# Demo 4: observe queue, limiter, and metrics behavior.
+curl -s http://localhost:8000/queue/status
+curl -s http://localhost:8000/limits
+curl -s http://localhost:8000/stats
+curl -s http://localhost:8000/health
 ```
 
-**Connection refused:**
-```bash
-# Check services are running
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env ps
+## Default Rate Limits
 
-# Check ports
-lsof -i :8000
-lsof -i :9100
+| Agent | Limit |
+| --- | --- |
+| `translator` | 5 requests per 10 seconds |
+| `coder` | 3 requests per 10 seconds |
+| `search` | 8 requests per 10 seconds |
+| `math` | 10 requests per 10 seconds |
 
-# Restart services
-docker compose -f docker-compose.local.yml --env-file .nasiko-local.env restart
-```
+These values make overload behavior easy to demonstrate locally while keeping the implementation simple.
 
-**Routing not working:**
-```bash
-# Verify router service
-curl http://localhost:8081/health
+## Observability Model
 
-# Check agent registration
-curl http://localhost:8000/api/v1/registries
+Metrics are grouped for API consumers and future dashboard integrations:
 
-# Verify AgentCard.json exists in agent directory
-```
+- Traffic: total requests, processed requests, active requests, queued requests, processed queue work, and rate-limited requests.
+- Cache: hits, misses, and hit ratio.
+- Queue: current size, max size, overflow count, and average wait estimate.
+- Performance: average, fastest, slowest, and total processing time.
+- Agents: per-agent request counts, cache hits, limiter pressure, and average processing time.
 
-## 🤝 Contributing
+The `/health` endpoint converts those signals into a simple state:
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes
-4. Test locally: `docker compose -f docker-compose.local.yml --env-file .nasiko-local.env up -d`
-5. Commit changes: `git commit -m 'Add amazing feature'`
-6. Push to branch: `git push origin feature/amazing-feature`
-7. Open a Pull Request
+- `healthy`: low pressure and no major bottlenecks.
+- `warning`: queue or active request pressure is building.
+- `overloaded`: queue capacity, active request count, or overflow signals indicate high pressure.
 
-## 📄 License
+## Hackathon Narrative
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Nasiko is production-inspired backend engineering in a compact demo:
 
-## 🆘 Support
+- It treats AI agents as constrained resources.
+- It prevents repeated work before reaching the agent layer.
+- It smooths bursts with queue-based resilience.
+- It explains system behavior with observability-first APIs.
+- It uses clean module boundaries that reviewers can map to real infrastructure later.
 
-- **Issues**: [GitHub Issues](https://github.com/Nasiko-Labs/nasiko/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Nasiko-Labs/nasiko/discussions)
-- **Documentation**: This README covers the complete system
+The result is not just a fake AI endpoint. It is a traffic management layer for AI workloads.
 
----
+## Scalability Path
 
-<div align="center">
-<strong>Built with ❤️ for the AI agent community</strong>
-</div>
+The current implementation is intentionally in-memory. The architecture is modular so production-grade infrastructure can replace each component with minimal route changes:
+
+- Redis cache: share cached responses across multiple API instances.
+- Distributed limiter: move per-agent admission control to Redis or another atomic shared store.
+- Kafka, RabbitMQ, Redis Streams, or Celery: replace `asyncio.Queue` with a durable queue and independent workers.
+- Prometheus and Grafana: export `stats.py` metrics to production dashboards.
+- Horizontal scaling: run multiple FastAPI instances behind a gateway once cache, limiter, and queue state are externalized.
+- Persistent job status: store queued request status in a database or durable queue backend.
+- Real agents: replace fake agents with LLM, tool, workflow, or LangChain-backed implementations.
+
+## Contributor Notes
+
+This repository intentionally avoids advanced infrastructure in the MVP. The goal is to make the resilience architecture visible and easy to review:
+
+- Keep cache, limiter, queue, and stats logic isolated in their modules.
+- Keep routes thin and focused on orchestration.
+- Prefer async-friendly primitives.
+- Avoid adding Redis, Kafka, databases, auth, or dashboards unless the project scope changes.
+- Preserve demo clarity: cache hits, queue growth, limiter pressure, and health status should be easy to trigger locally.
+
+## Future Improvements
+
+- Environment-based configuration for limits, queue size, and cache size.
+- TTL and LRU eviction for cache entries.
+- Request status lookup for queued jobs.
+- Retry policy and dead-letter handling for failed queued work.
+- Structured logging with correlation IDs.
+- Percentile latency metrics.
+- Per-agent queue priorities.
+- Authentication around debug and reset endpoints.
+- External metrics exporter for Prometheus or OpenTelemetry.
+
+## Summary
+
+Nasiko demonstrates a practical resilience layer for AI systems: cache reusable work, coalesce duplicate requests, rate-limit constrained agents, queue overload, and expose operational behavior clearly. It is small enough for a hackathon demo and structured enough for maintainers to review, extend, and evolve.
