@@ -1,60 +1,24 @@
 # Nasiko Buildthon Demo: Resilient Agent Request Layer
 
-## One-Line Pitch
+## Problem Statement
 
-We built a unified traffic-control layer for Nasiko agents that makes repeated requests fast, prevents overloaded agents from destabilizing the platform, and gives operators live visibility and controls without changing the existing client contract.
+Modern AI platforms orchestrate many specialized agents concurrently. Without traffic controls, two failure modes appear quickly:
 
-## Judging Criteria Map
+- Repeated requests trigger duplicate agent computation even when the same answer could be reused.
+- Traffic spikes to one agent can overload that agent and cascade instability across the platform.
 
-| Judging criterion | What to emphasize |
-| --- | --- |
-| How well I understood the problem statement | This is not only a caching task and not only a rate-limiting task. It is a traffic-control problem for multi-agent systems: avoid duplicate compute, isolate overloaded agents, preserve predictable behavior, and expose operational controls. |
-| Understanding of Nasiko | The solution fits Nasiko's current architecture: Kong remains the gateway, the registry remains the source of agent discovery, the router keeps its existing contract, agents still speak A2A JSON-RPC `message/send`, and Redis is reused as the shared coordination layer. |
-| MVP quality | The MVP is conservative and correct: cache only safe text-only A2A requests, cache hits bypass agent work, cache misses use single-flight dedupe, per-agent concurrency/RPS limits, bounded queues, circuit breaker, runtime controls, and a dashboard. |
-| Project completion | The layer is implemented, wired into Docker Compose, routes `/agents/*` through Request Manager, exposes `/health`, `/control/stats`, `/control/limits`, `/control/cache`, and includes runnable demo scripts for each KPI. |
+The requirement is to build a unified request management layer between the gateway and the agent fleet. The layer must combine caching, adaptive traffic protection, queueing, and operational controls.
 
-## 60-Second Opening
+The solution target is not "just cache responses" or "just add rate limits." It is an agent traffic-control plane for Nasiko:
 
-Modern AI platforms like Nasiko can run many specialized agents at the same time. The risk is that the platform wastes compute by processing the same request repeatedly, and a traffic spike to one agent can cascade into failures for the whole system.
+- Serve safe repeated requests faster from cache.
+- Reduce duplicate processing using cache hits and single-flight dedupe.
+- Keep overloaded agents stable using per-agent limits and bounded queues.
+- Give operators live visibility and runtime controls.
 
-The requirement asks for a unified request management layer between the gateway and the agent fleet. I interpreted that as an infrastructure traffic-control layer, not as a router-only optimization.
+## Existing Design
 
-Our solution adds a Request Manager after Kong and before the agent fleet. Kong still handles public routing and middleware. The router still selects the best agent. Once a request targets a specific agent, Request Manager controls execution through caching, single-flight dedupe, per-agent limits, bounded queueing, circuit breaking, and live operational endpoints.
-
-## Problem Understanding
-
-The core problem has two failure modes:
-
-- Redundant compute: repeated identical requests cause repeated LLM/tool execution even though the answer could be reused.
-- Cascading overload: one slow or overloaded agent consumes resources and makes the platform less stable.
-
-The success criteria map naturally to four capabilities:
-
-- Faster repeated responses: response cache before agent execution.
-- Reduced duplicate processing: cache hits plus single-flight dedupe for concurrent identical misses.
-- Stable overload handling: per-agent concurrency/RPS limits plus bounded FIFO queues and circuit breaker.
-- Operational visibility: live stats, limit controls, cache controls, and dashboard.
-
-The key design choice is placement. Caching before routing is risky because we do not know which agent owns the answer. Putting it only inside the router misses direct `/agents/*` traffic. Putting it after Kong and before agents captures both router-driven calls and direct agent calls.
-
-## Understanding Of Nasiko
-
-Nasiko already has the right seams:
-
-- Kong is the public gateway on `9100`.
-- Dynamic agent routes use `/agents/{agent}`.
-- `agent-gateway/registry/registry.py` discovers agent containers and registers Kong routes.
-- The router chooses an agent, then calls the selected agent through Kong.
-- Agents use A2A JSON-RPC, especially `message/send`.
-- Redis already exists in the local stack and is suitable for shared state.
-
-So the MVP avoids disturbing the client or router contract. We reuse the registry for discovery and extend it to publish internal agent targets to Redis. Kong `/agents/*` routes point to Request Manager. Request Manager resolves the real internal target and proxies to the agent directly, avoiding a proxy loop.
-
-## Architecture
-
-### Before: Direct Gateway-To-Agent Execution
-
-Before this change, Kong was already the public entry point and the registry discovered agent containers. The missing piece was an execution-control layer between Kong and the agents. Once traffic reached an agent route, the request went directly to the agent container.
+Nasiko already had a clean gateway-driven architecture. Kong is the public entry point, the registry discovers agent containers, and the router can select an agent for a user request. Once traffic reached a dynamic `/agents/{agent}` route, however, it went directly from Kong to the target agent container.
 
 ```mermaid
 flowchart LR
@@ -64,28 +28,30 @@ flowchart LR
     DirectClient["Direct /agents/* caller"] --> KongAgent
     Registry["Service Registry"] --> KongAgent
     KongAgent --> Agent["Agent Container"]
-
     Agent --> Compute["LLM / Tool Execution"]
 
-    classDef risk fill:#fff4e6,stroke:#d97706,color:#7c2d12;
     classDef normal fill:#eef6ff,stroke:#2563eb,color:#172554;
     classDef agent fill:#f0fdf4,stroke:#16a34a,color:#14532d;
+    classDef risk fill:#fff4e6,stroke:#d97706,color:#7c2d12;
 
     class Client,DirectClient,Kong,Router,KongAgent,Registry normal;
     class Agent agent;
     class Compute risk;
 ```
 
-What this meant:
+### Existing Design Gaps
 
-- Repeated identical requests could repeatedly hit the same expensive agent computation.
-- There was no shared per-agent queue or concurrency gate after Kong.
-- Router-selected traffic and direct `/agents/*` traffic did not share one protection layer.
-- Operational visibility for cache hits, queue waits, and per-agent overload state was missing.
+- Repeated identical calls could still execute the same expensive agent workflow again.
+- There was no common per-agent queue after the gateway.
+- Router-driven calls and direct `/agents/*` calls did not share one protection layer.
+- Operators could not see cache hit rate, queue wait, per-agent limit state, or circuit state in one place.
+- If one agent became slow, request pressure could pile up without predictable backpressure.
 
-### After: Request Manager As The Agent Execution-Control Layer
+## Proposed Design
 
-Now Kong still owns public routing and middleware, and the router still owns agent selection. The change is that every dynamic `/agents/{agent}` route goes to Request Manager first. Request Manager checks cache, dedupes identical misses, applies per-agent limits, queues when possible, and then proxies to the internal agent target.
+The proposed design adds a new service: Request Manager. Kong remains the public gateway. The router keeps selecting agents exactly as before. The registry still discovers agents. The key change is that dynamic `/agents/{agent}` routes now go to Request Manager first.
+
+Request Manager then becomes the execution-control layer for each selected agent. It checks cache, dedupes identical misses, applies per-agent concurrency and RPS limits, queues briefly when possible, opens a circuit breaker when an agent is unhealthy, and proxies to the real internal agent target.
 
 ```mermaid
 flowchart LR
@@ -101,7 +67,7 @@ flowchart LR
     RM --> Cache{"Cache hit?"}
     Cache -- "yes" --> FastResponse["Return cached response"]
     Cache -- "no" --> SingleFlight["Single-flight dedupe"]
-    SingleFlight --> Limiter["Per-agent rate limit + queue"]
+    SingleFlight --> Limiter["Per-agent limit + bounded queue"]
     Limiter --> Circuit["Circuit breaker"]
     Circuit --> TargetLookup["Resolve internal target"]
     TargetLookup --> Agent["Agent Container"]
@@ -109,118 +75,110 @@ flowchart LR
     Agent --> RM
     RM --> Metrics["Stats + Dashboard"]
 
-    RM -. uses .-> RedisTargets
-    RM -. stores .-> RedisCache["Redis cache / counters / queues"]
+    RM -. reads .-> RedisTargets
+    RM -. stores .-> RedisState["Redis cache / counters / config"]
 
+    classDef normal fill:#eef6ff,stroke:#2563eb,color:#172554;
     classDef control fill:#ecfeff,stroke:#0891b2,color:#164e63;
     classDef redis fill:#f5f3ff,stroke:#7c3aed,color:#3b0764;
-    classDef normal fill:#eef6ff,stroke:#2563eb,color:#172554;
     classDef agent fill:#f0fdf4,stroke:#16a34a,color:#14532d;
     classDef fast fill:#ecfdf5,stroke:#059669,color:#064e3b;
 
     class Client,DirectClient,Kong,Router,KongAgent,Registry normal;
     class RM,Cache,SingleFlight,Limiter,Circuit,TargetLookup,Metrics control;
-    class RedisTargets,RedisCache redis;
+    class RedisTargets,RedisState redis;
     class Agent,Compute agent;
     class FastResponse fast;
 ```
 
-What changed:
+### Runtime Paths
 
-- Kong dynamic agent routes now point to Request Manager, not directly to agent containers.
-- Registry still owns discovery, but it also publishes internal agent targets to Redis.
-- Request Manager calls internal container URLs, so it avoids looping back through Kong.
-- Cache hits return before rate limit, queue, or agent execution.
-- Cache misses are protected by single-flight, per-agent concurrency, token-bucket RPS, bounded queueing, and circuit breaker.
-
-### Final Runtime Paths
-
-For routed requests:
+Routed request path:
 
 ```text
 Client -> Kong -> Router -> Kong /agents/{agent} -> Request Manager -> Agent
 ```
 
-For direct agent requests:
+Direct agent request path:
 
 ```text
 Client -> Kong /agents/{agent} -> Request Manager -> Agent
 ```
 
-Why this is the right MVP placement:
+Internal proxy path:
 
-- Kong stays the public front door for auth, CORS, and route matching.
-- Router does not need a contract change.
-- Direct `/agents/*` traffic is also protected.
-- Cache keys include selected `agent_id`, user scope, method, normalized text, and agent target revision.
-- Request Manager never calls public Kong `/agents/*`; it calls the internal container target from Redis.
+```text
+Request Manager -> Redis target table -> internal agent container URL
+```
 
-## Request Flow
+Request Manager does not call public Kong `/agents/*` URLs. That avoids a proxy loop and keeps the extra control layer focused on the final agent execution step.
+
+### Request Lifecycle
 
 1. Extract `agent_id` from `/agents/{agent}`.
-2. Resolve the internal upstream target from Redis.
-3. Decide if the request is cacheable.
-4. Check Redis response cache.
-5. If miss, single-flight dedupes identical concurrent misses.
+2. Resolve the real internal agent target published by the registry into Redis.
+3. Decide whether the A2A JSON-RPC request is safe to cache.
+4. Check Redis response cache before touching the agent.
+5. Use single-flight so concurrent identical misses share one upstream execution.
 6. Acquire per-agent capacity using concurrency and token-bucket RPS limits.
-7. Wait in bounded FIFO queue if capacity is temporarily unavailable.
-8. Proxy request to the internal agent.
-9. Cache safe successful JSON responses.
-10. Record metrics and return response headers for observability.
+7. Wait in a bounded FIFO queue when capacity is temporarily unavailable.
+8. Fail with controlled backpressure if the queue is full or the wait is too long.
+9. Proxy to the internal agent target.
+10. Cache safe successful JSON responses and emit runtime metrics.
 
-Important headers:
+## MVP: What Is Done
 
-- `X-Request-Layer-Agent`
-- `X-Request-Layer-Cache: HIT | MISS | BYPASS`
-- `X-Request-Layer-Queue-Wait-Ms`
-- `X-Request-Layer-Limit-State`
+### Request Manager Service
 
-## MVP Quality
+Implemented a new Request Manager service under `agent-gateway/request-manager`. It exposes the control layer for `/agents/{agent}` traffic and keeps the existing client and router contracts unchanged.
 
-Implemented MVP capabilities:
+### Kong And Registry Wiring
 
-- Safe response caching for text-only A2A `message/send`.
-- Cache bypass on `Cache-Control: no-cache`.
-- Cache keys scoped by agent, user, normalized text, method, and target revision.
-- Single-flight dedupe to prevent cache stampedes.
-- Per-agent concurrency limit.
-- Per-agent token-bucket sustained RPS and burst handling.
-- Bounded FIFO queue with max depth and max wait.
-- Per-agent circuit breaker for failing agents.
-- Redis-backed coordination for multi-replica readiness.
-- Degraded local limiter if Redis is temporarily unavailable.
-- Runtime operational endpoints.
-- Simple dashboard.
-- Demo scripts for cache latency, duplicate processing, and overload behavior.
+The service registry now points dynamic Kong agent routes to Request Manager. The registry also publishes the real internal agent container target into Redis so Request Manager can proxy to the agent directly.
 
-Conservative choices:
+### Safe Response Cache
 
-- No semantic cache in MVP because correctness matters more than a slightly higher hit rate.
-- No streaming response caching in MVP.
-- No side-effect agent caching by default.
-- No router/client API change.
+The cache is intentionally conservative. It caches text-only A2A JSON-RPC `message/send` responses, only for successful JSON responses, and only with a user/auth scope. It bypasses cache for `Cache-Control: no-cache`, non-text payloads, unsafe methods, uploads, and streams.
 
-## Operational Endpoints
+Cache keys include the agent, method, normalized text payload, subject/auth scope, and target revision. This keeps correctness higher than a query-only cache while still giving a strong repeated-request win.
 
-Request Manager runs on `8090`.
+### Single-Flight Dedupe
+
+Concurrent identical cache misses are deduped. One request performs the upstream agent call, and the other matching requests wait for the result and receive the same cached response. This prevents cache stampedes during bursts.
+
+### Per-Agent Rate Limit And Queue
+
+Each agent has its own concurrency cap, token-bucket sustained RPS, burst capacity, max queue depth, and max queue wait. This isolates agents from each other and gives predictable overload behavior.
+
+### Circuit Breaker
+
+Repeated upstream failures open a per-agent circuit breaker. While open, Request Manager fails fast instead of continuing to overload an unhealthy agent.
+
+### Operational Controls
+
+Request Manager exposes runtime stats, cache controls, per-agent limit updates, and a small dashboard.
 
 ```text
-GET    /health
-GET    /
-GET    /control/stats
-GET    /control/agents/{agent_id}/stats
-GET    /control/limits
-PUT    /control/limits/{agent_id}
-DELETE /control/cache
+GET    http://localhost:8090/
+GET    http://localhost:8090/health
+GET    http://localhost:8090/control/stats
+GET    http://localhost:8090/control/limits
+PUT    http://localhost:8090/control/limits/{agent_id}
+DELETE http://localhost:8090/control/cache
 ```
 
-Dashboard:
+### Demo Support
+
+The repo includes scripts to prove the important scenarios:
 
 ```text
-http://localhost:8090/
+scripts/request-layer/demo_cache_latency.py
+scripts/request-layer/demo_singleflight.py
+scripts/request-layer/demo_overload.py
+scripts/request-layer/mock_agent.py
 ```
 
-## Demo Setup
+## Live Demo Scenarios
 
 Use the request-layer worktree:
 
@@ -228,174 +186,142 @@ Use the request-layer worktree:
 cd /Users/himanshu.sin/Personal/goals/nashiko-hackathon/.worktrees/request-layer
 ```
 
-Start the Request Manager and registry against the existing local stack:
+### 1. Real Nasiko UI With A Real AI Agent
 
-```bash
-docker --context rancher-desktop compose \
-  -p nashiko-hackathon \
-  -f docker-compose.local.yml \
-  --env-file /Users/himanshu.sin/Personal/goals/nashiko-hackathon/.nasiko-local.env \
-  up -d --build nasiko-request-manager kong-service-registry
+Open the Nasiko app:
+
+```text
+http://localhost:9100/app/home
 ```
 
-For a deterministic demo agent, use the included mock A2A agent:
+Use the real `Real A2A Translator` agent and ask:
 
-```bash
-docker --context rancher-desktop run -d \
-  --name agent-demo-request-layer \
-  --network agents-net \
-  -v "$PWD/scripts/request-layer/mock_agent.py:/mock_agent.py:ro" \
-  python:3.11-slim python /mock_agent.py
+```text
+Translate 'Request Manager makes repeated agent calls fast' to Spanish
 ```
 
-If the mock container already exists, keep using the running one.
+Then ask the exact same thing again. The second request should be served through Request Manager cache while preserving the normal Nasiko UI flow.
 
-Force registry discovery:
-
-```bash
-docker --context rancher-desktop exec kong-service-registry \
-  curl -sS -X POST http://localhost:8080/sync
-```
-
-## Live Demo Script
-
-### Demo 0: Real AI Agent Through Nasiko UI
-
-This is the strongest product demo because it uses a real OpenAI-backed Nasiko A2A translator agent from the web UI, while Request Manager protects the `/agents/*` execution path behind the scenes.
-
-Start the real translator container:
+Show stats:
 
 ```bash
-docker --context rancher-desktop build \
-  -t nasiko-real-a2a-translator ./agents/a2a-translator
-
-docker --context rancher-desktop run -d \
-  --name agent-a2a-translator \
-  --network agents-net \
-  --env-file /Users/himanshu.sin/Personal/goals/nashiko-hackathon/.nasiko-local.env \
-  nasiko-real-a2a-translator
-
-docker --context rancher-desktop exec kong-service-registry \
-  curl -sS -X POST http://localhost:8080/sync
+curl -s http://localhost:8090/control/stats | jq
 ```
 
-To make this manually started local agent visible in the Nasiko UI, add matching local registry metadata and owner permission for the superuser:
+What this proves: the solution works through the actual Nasiko app path, not only through a mock script.
 
-```bash
-docker --context rancher-desktop exec mongodb mongosh --quiet \
-  -u admin -p password --authenticationDatabase admin --eval '
-const db=db.getSiblingDB("nasiko");
-const user=db.users.findOne({is_super_user:true});
-const now=new Date();
-db.registry.updateOne(
-  { id: "agent-a2a-translator" },
-  { $set: {
-    protocolVersion: "0.2.9",
-    id: "agent-a2a-translator",
-    name: "Real A2A Translator",
-    description: "OpenAI-backed A2A translator agent used to demonstrate Request Manager caching, queueing, and runtime stats on a real AI response.",
-    url: "http://localhost:9100/agents/agent-a2a-translator/",
-    preferredTransport: "JSONRPC",
-    version: "1.0.0",
-    capabilities: { streaming: true, pushNotifications: false, stateTransitionHistory: false, chat_agent: false },
-    securitySchemes: {},
-    security: [],
-    defaultInputModes: ["application/json", "text/plain"],
-    defaultOutputModes: ["application/json", "text/plain"],
-    skills: [{ id: "translator_agent", name: "Translator Agent", description: "Translate text and web content between different languages", tags: ["translation", "language", "text"], examples: ["Translate Hello world to Spanish"] }],
-    tags: ["translation", "language", "text"],
-    owner_id: user._id,
-    updated_at: now,
-    created_at: now,
-    version_history: [{ version: "1.0.0", status: "active", created_at: now, notes: "Manual local demo registration" }]
-  } },
-  { upsert: true }
-);
-print(user._id);
-'
-```
-
-Then create the permission using the printed superuser id:
-
-```bash
-curl -sS -X POST \
-  "http://localhost:8082/auth/agents/agent-a2a-translator/permissions?owner_id=<SUPERUSER_ID>"
-```
-
-UI flow:
-
-1. Open `http://localhost:9100/app/home`.
-2. Sign in using `orchestrator/superuser_credentials.json`.
-3. Confirm the `Real A2A Translator` card is visible.
-4. Click `Start session`.
-5. Ask: `Translate 'Request Manager makes repeated agent calls fast' to Spanish`.
-6. Ask the same query again.
-7. Open `http://localhost:8090/` or inspect `/control/agents/agent-a2a-translator/stats`.
-
-What to say:
-
-The first UI request goes through the full real path: Nasiko Web UI -> Kong -> Request Manager -> real A2A translator -> OpenAI. The repeated UI request is served by Request Manager cache. In my validation, `cache_hits` increased while `upstream_requests` stayed flat on the repeated request.
-
-KPI proved:
-
-- Real product usage, not only a synthetic script.
-- Faster repeated responses on a real AI-backed agent.
-- Reduced duplicate agent execution.
-- Operational visibility from Request Manager stats.
-
-### Demo 1: Faster Repeated Responses
+### 2. Faster Repeated Responses
 
 Run:
 
 ```bash
-python3 scripts/request-layer/demo_cache_latency.py
+python3 scripts/request-layer/demo_cache_latency.py --runs 4
 ```
 
-What to say:
+Observed sample:
 
-The first request is a cold miss and reaches the agent. The repeated request is served from Request Manager cache before the agent is called. In my smoke check through Kong, the first call was approximately `1274ms` and the repeated call was approximately `3.9ms`.
+```text
+Cache latency KPI
+run=1 status=200 cache=miss latency_ms=1272.7
+run=2 status=200 cache=hit latency_ms=7.9
+run=3 status=200 cache=hit latency_ms=3.7
+run=4 status=200 cache=hit latency_ms=3.2
+cold_ms=1272.7
+warm_avg_ms=4.9
+latency_reduction=99.6%
+cache_hit_rate=75.0%
+```
 
-KPI proved:
+What this proves: repeated requests avoid agent recomputation and return in milliseconds.
 
-- Faster repeated responses.
-- Reduced agent work for repeated queries.
+### 3. Reduced Duplicate Processing With Single-Flight
 
-### Demo 2: Reduced Duplicate Processing
+Clear cache and fire concurrent identical requests:
+
+```bash
+curl -s -X DELETE http://localhost:8090/control/cache | jq
+python3 scripts/request-layer/demo_singleflight.py \
+  --concurrency 8 \
+  --text "Translate single-flight real protection demo to French"
+```
+
+Observed sample:
+
+```text
+Single-flight KPI
+requests=8 cache_hits=7 cache_misses=1
+duplicate_processing_avoided~=7
+```
+
+What this proves: eight simultaneous identical misses produce one real upstream agent execution, not eight.
+
+### 4. Stable Overload Handling With Queueing
 
 Run:
 
 ```bash
-python3 scripts/request-layer/demo_singleflight.py
+python3 scripts/request-layer/demo_overload.py --requests 8 --concurrency 1
 ```
 
-What to say:
+Observed sample:
 
-This fires concurrent identical requests. Without single-flight, every request could hit the agent at the same time. With single-flight, one request computes and the others wait for the same cache result.
+```text
+Overload stability KPI
+requests=8 successes=8 failures=0 failure_rate=0.0%
+queue_wait_max_ms=8519
+```
 
-KPI proved:
+What this proves: when an agent is limited, Request Manager queues instead of immediately rejecting traffic.
 
-- Reduced duplicate processing.
-- Cache stampede protection.
+### 5. Queue Depth, Queue Timeout, And Backpressure
 
-### Demo 3: Stable Overload Handling
-
-Run:
+For the queue-boundary demo, temporarily set a very small queue:
 
 ```bash
-python3 scripts/request-layer/demo_overload.py
+curl -s -X PUT http://localhost:8090/control/limits/agent-demo-request-layer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "cache_enabled": true,
+    "cache_ttl_seconds": 600,
+    "max_concurrency": 1,
+    "sustained_rps": 1,
+    "burst_capacity": 1,
+    "max_queue_depth": 2,
+    "max_queue_wait_ms": 2000
+  }' | jq
 ```
 
-What to say:
+Fire six distinct no-cache requests concurrently. Observed sample:
 
-This lowers the demo agent limit and sends a burst. Request Manager queues excess traffic instead of immediately failing everything. The output shows successes/failures, queue wait times, and limit state.
+```text
+Queue overflow / bounded backpressure demo
+request=1 status=200 elapsed_ms=2430.4
+request=2 status=429 body={"error":"queue-timeout","agent_id":"agent-demo-request-layer"}
+request=3 status=429 body={"error":"queue-full","agent_id":"agent-demo-request-layer"}
+request=4 status=429 body={"error":"queue-full","agent_id":"agent-demo-request-layer"}
+request=5 status=200 elapsed_ms=1214.9
+request=6 status=429 body={"error":"queue-full","agent_id":"agent-demo-request-layer"}
+```
 
-KPI proved:
+Reset normal demo limits:
 
-- Stable overload handling.
-- Predictable queue behavior.
-- Per-agent isolation.
+```bash
+curl -s -X PUT http://localhost:8090/control/limits/agent-demo-request-layer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "cache_enabled": true,
+    "cache_ttl_seconds": 600,
+    "max_concurrency": 2,
+    "sustained_rps": 5,
+    "burst_capacity": 10,
+    "max_queue_depth": 20,
+    "max_queue_wait_ms": 10000
+  }' | jq
+```
 
-### Demo 4: Operational Visibility
+What this proves: the layer buffers where possible, but still applies predictable backpressure when the queue is full or the wait exceeds policy.
+
+### 6. Operational Visibility
 
 Open:
 
@@ -403,96 +329,95 @@ Open:
 http://localhost:8090/
 ```
 
-Or inspect JSON:
+Also show:
 
 ```bash
-curl http://localhost:8090/control/stats
+curl -s http://localhost:8090/control/stats | jq
+curl -s http://localhost:8090/control/limits | jq
 ```
 
-What to say:
-
-Operators can see cache hits/misses, upstream requests, queue waits, circuit state, and per-agent limits. They can also update limits at runtime and clear cache without restarting services.
-
-KPI proved:
-
-- Operational visibility.
-- Runtime control.
-
-## Exact KPI Mapping
-
-| KPI | How we prove it |
-| --- | --- |
-| Faster repeated responses | `demo_cache_latency.py` shows cold miss latency versus cache hit latency. Verified example: `MISS ~1274ms`, `HIT ~3.9ms` through Kong. |
-| Reduced duplicate processing | `demo_singleflight.py` fires concurrent identical requests; Request Manager collapses identical misses and records cache/single-flight metrics. |
-| Stable overload handling | `demo_overload.py` lowers capacity and sends a burst; excess requests wait in bounded queue with visible queue wait metadata. |
-| Operational visibility | Dashboard plus `/control/stats`, `/control/limits`, `/control/cache`, and per-agent stats endpoints. |
-
-## What Is Complete
-
-Code committed on branch:
-
-```text
-feature/resilient-agent-request-layer
-774ba92 feat: wire request manager runtime and demo
-```
-
-Completed implementation areas:
-
-- New Request Manager FastAPI service.
-- Docker Compose service wiring.
-- Registry discovery publishing to Redis.
-- Kong dynamic agent routes through Request Manager.
-- Internal target resolution.
-- Cache policy and Redis response cache.
-- Single-flight duplicate suppression.
-- Per-agent limiter and queue.
-- Circuit breaker.
-- Runtime stats and control endpoints.
-- Dashboard.
-- Demo scripts and mock agent.
+What this proves: operators can inspect runtime behavior and change per-agent policy without restarting the stack.
 
 ## What I Would Improve Next
 
-If this were production, the next steps would be:
+### Production-Grade Control Security
 
-- Add auth protection for control endpoints.
-- Add Prometheus/OpenTelemetry/Phoenix metrics export.
-- Add async job mode for very long-running queued workflows.
-- Add per-tenant fairness and priority queues.
-- Add agent-card-driven cacheability hints.
-- Add semantic cache only for explicitly safe read-only agents.
-- Refactor and expand tests around concurrency and failure cases.
+Add admin authentication, authorization, and audit logs for `/control/*` endpoints. The MVP is optimized for local demo speed; production controls should be protected.
 
-## Likely Judge Questions
+### Prometheus And Phoenix Integration
 
-### Why not put this inside the router?
+Expose Prometheus metrics and add Phoenix/OpenTelemetry span attributes such as `cache_hit`, `queue_wait_ms`, `limit_state`, and `circuit_state`. The MVP already tracks the data; the next step is deeper platform observability.
 
-Because router-only logic misses direct `/agents/*` calls. The problem asks for a layer between gateway and agent fleet. Request Manager after Kong protects both router-selected traffic and direct agent traffic.
+### Async Job Mode
 
-### Why not put this before Kong?
+The MVP uses a bounded synchronous queue and keeps the HTTP request open while waiting. That is simple and good for the demo. For long-running corporate workloads, I would add an async job mode: return a job ID, let the client poll or subscribe, and dispatch from Redis Streams or a durable broker.
 
-Before Kong, we would duplicate gateway responsibilities like route matching, auth, CORS, and existing middleware. Kong should stay the public gateway. Request Manager should control agent execution after Kong has identified an agent route.
+### Stronger Multi-Tenant Fairness
 
-### Why cache after routing?
+The MVP supports user/auth scoped cache keys and per-agent limits. Next I would add per-tenant and per-user fairness controls so one tenant cannot consume the full queue of a shared agent.
 
-The selected agent is part of correctness. The same query can produce different answers from different agents. Cache after routing lets the cache key include `agent_id` and agent revision.
+### AgentCard-Based Policies
 
-### How do you avoid caching unsafe actions?
+Move more cacheability and limit hints into AgentCard metadata, with ops overrides in Redis. That lets agent authors declare whether their agent is safe to cache while platform operators retain final control.
 
-MVP cache policy is conservative: only text-only A2A `message/send`, successful JSON responses, user-scoped keys, no uploads, no streams, no errors, no side-effect agents by default, and honor `Cache-Control: no-cache`.
+### Semantic Cache As A Safe Optional Layer
 
-### What happens under overload?
+Exact cache is safer and was the right MVP choice. Later, semantic cache could be introduced only for explicitly safe read-only agents, with a high similarity threshold and clear observability.
 
-Each agent has its own concurrency cap, token-bucket RPS limit, and bounded FIFO queue. One overloaded agent does not consume another agent's capacity. If the queue is full or wait timeout expires, Request Manager returns a controlled response with `Retry-After`.
+### Broader Load And Failure Testing
+
+Add sustained load tests, chaos tests for Redis/agent outages, and regression tests for queue limits, circuit behavior, and cache key safety.
+
+## Expected Judge Questions And Answers
+
+### Why place Request Manager after Kong instead of before Kong?
+
+Kong should remain the public gateway for routing, CORS, auth middleware, and gateway concerns. Request Manager is not replacing Kong. It controls the final agent execution step after the target agent is known.
+
+### Why not put this only inside the router?
+
+Router-only caching would miss direct `/agents/*` traffic. The problem statement asks for a layer between the gateway and the agent fleet, so the correct boundary is after Kong and before agents.
+
+### Why not cache before routing?
+
+Before routing, we do not yet know which agent owns the answer. The same user text could be answered differently by different agents. Caching after routing lets the key include `agent_id`, which protects correctness.
+
+### Why does the router still call Kong instead of calling Request Manager directly?
+
+The MVP preserves Nasiko's existing contract: the router already calls the selected agent through the public `/agents/{agent}` route. Kong forwards that route to Request Manager. A later optimization could let the router call Request Manager directly on the internal network, but that is not required for correctness.
+
+### How do you avoid unsafe caching?
+
+The MVP caches only conservative cases: text-only A2A `message/send`, successful JSON responses, and scoped user/auth requests. It bypasses cache for `Cache-Control: no-cache`, unsafe methods, streams, uploads, and missing user/auth scope.
+
+### How does this reduce duplicate processing?
+
+There are two layers. Cache hits skip the agent entirely. Single-flight dedupe handles the harder case where many identical requests arrive before the first one finishes, allowing only one upstream execution.
+
+### How does queueing prevent overload?
+
+Each agent has independent concurrency, RPS, queue depth, and queue wait limits. A hot agent can queue or reject its own excess traffic without consuming capacity for other agents.
+
+### What happens when the queue is full?
+
+Request Manager returns controlled backpressure such as `queue-full` or `queue-timeout`. This is better than unbounded waiting because callers get predictable behavior and the agent is protected.
 
 ### What happens if Redis is unavailable?
 
-Cache is bypassed, shared distributed coordination degrades, and Request Manager uses conservative local in-process limits. Health/status exposes degraded behavior instead of silently pretending everything is normal.
+The MVP degrades to local limiter behavior where possible and bypasses shared cache/state. The production improvement would define stricter fail-open/fail-closed policies per environment.
 
-### Why use a mock agent in demo?
+### Is this only a hackathon design, or would it work in a company?
 
-The mock agent is only for deterministic judging. It speaks the same basic A2A JSON shape and runs behind the same Kong -> Request Manager -> internal agent path. Real deployed agents use the same registry and routing flow.
+The architecture works in a corporate environment because it keeps clear boundaries: Kong for gateway, router for selection, Request Manager for execution control, Redis for shared coordination, agents for business capability. Production would add stronger auth, audit logs, durable queues, Prometheus/Phoenix, and multi-tenant fairness.
 
-## Closing Statement
+### Why use exact cache instead of semantic cache?
 
-This MVP demonstrates the core infrastructure pattern Nasiko needs: Kong remains the gateway, Router remains the intelligence layer, and Request Manager becomes the resilient execution-control layer for agents. It directly addresses redundant compute, overload isolation, queueing, and operator visibility while preserving the existing client contract.
+Exact cache is safer for an MVP because it avoids returning a response for a request that is only "similar." Semantic cache can be a later opt-in feature for read-only agents.
+
+### What about streaming responses?
+
+The cached object here is the upstream agent HTTP response handled by Request Manager, not the user-facing UI stream produced by the router. Streaming cache is intentionally deferred because buffering and replaying streams adds complexity and correctness risk.
+
+### What is the strongest proof that the MVP is complete?
+
+The same layer works for direct agent calls and the real Nasiko UI path. The demo shows cache latency reduction, single-flight duplicate avoidance, stable queueing under overload, bounded backpressure when queues are full, runtime limit changes, and live operational stats.
