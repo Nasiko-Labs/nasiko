@@ -5,6 +5,7 @@ Sliding window counter with Redis backing and in-memory fallback.
 
 import logging
 import time
+import uuid
 from collections import deque
 from typing import Optional
 
@@ -75,7 +76,7 @@ class RateLimiter:
 
         if agent:
             return _agent_stats(agent)
-        all_agents = set(list(rate_limits.keys()) | set(self._windows.keys()))
+        all_agents = set(rate_limits.keys()) | set(self._windows.keys())
         return {ag: _agent_stats(ag) for ag in all_agents}
 
     # ── Redis ──────────────────────────────────────────────────────────────
@@ -109,7 +110,7 @@ class RateLimiter:
     def _redis_record(self, agent, now):
         try:
             key = self._redis_key(agent)
-            self._redis.zadd(key, {f"{now}:{id(object())}": now})
+            self._redis.zadd(key, {f"{now}:{uuid.uuid4().hex[:8]}": now})
             self._redis.expire(key, config.RATE_LIMIT_WINDOW_SECONDS + 10)
         except Exception as exc:
             logger.debug(f"Redis rate record error: {exc}")
