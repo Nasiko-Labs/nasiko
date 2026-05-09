@@ -35,6 +35,11 @@ class RouterConfig(BaseSettings):
     JINA_API_KEY: Optional[str] = None
     JINA_EMBEDDING_MODEL: str = "jina-embeddings-v3"
 
+    # Routing decision cache (Redis)
+    REDIS_URL: Optional[str] = None
+    ROUTING_CACHE_TTL: int = 300  # seconds; 0 = disabled
+    ROUTING_CACHE_ENABLED: bool = True
+
     # Request settings
     MAX_FILE_SIZE: int = 1073741824  # 1GB
     REQUEST_TIMEOUT: float = 60.0

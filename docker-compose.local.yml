@@ -26,7 +26,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: redis
+    container_name: nasiko-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -218,6 +218,38 @@ services:
       timeout: 10s
       retries: 3
 
+  nasiko-request-manager:
+    build:
+      context: ./agent-gateway/request-manager
+      dockerfile: Dockerfile
+    container_name: nasiko-request-manager
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DEFAULT_RATE_LIMIT_RPM: "60"
+      RATE_LIMIT_WINDOW_SECONDS: "60"
+      QUEUE_MAX_DEPTH: "100"
+      QUEUE_TIMEOUT_SECONDS: "30"
+      DEFAULT_CACHE_TTL_SECONDS: "3600"
+      UPSTREAM_CONNECT_TIMEOUT: "10"
+      UPSTREAM_READ_TIMEOUT: "300"
+      LOG_LEVEL: "INFO"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://phoenix-observability:4317"
+      OTEL_SERVICE_NAME: "nasiko-request-manager"
+    ports:
+      - "8090:8090"
+    networks:
+      - app-network
+      - agents-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/manage/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   kong-service-registry:
     build:
       context: ./agent-gateway/registry
@@ -227,8 +259,11 @@ services:
     depends_on:
       kong-gateway:
         condition: service_healthy
+      nasiko-request-manager:
+        condition: service_healthy
     environment:
       KONG_ADMIN_URL: http://kong-gateway:8001
+      REQUEST_MANAGER_URL: "http://nasiko-request-manager:8090"
       DOCKER_SOCKET: /var/run/docker.sock
       REGISTRY_INTERVAL: 30
       AGENTS_NETWORK: agents-net
@@ -261,6 +296,7 @@ services:
     restart: unless-stopped
     depends_on:
       - nasiko-backend
+      - redis
     environment:
       OLLAMA_SERVER: http://ollama:11434
       NASIKO_BACKEND: http://nasiko-backend:8000/api/v1
@@ -274,6 +310,9 @@ services:
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       JINA_API_KEY: ${JINA_API_KEY:-}
       JINA_EMBEDDING_MODEL: ${JINA_EMBEDDING_MODEL:-jina-embeddings-v3}
+      REDIS_URL: redis://redis:6379/1
+      ROUTING_CACHE_TTL: "300"
+      ROUTING_CACHE_ENABLED: "true"
     ports:
       - "8081:8000"
     networks:

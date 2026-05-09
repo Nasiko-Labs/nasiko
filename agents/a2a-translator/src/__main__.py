@@ -29,7 +29,7 @@ logging.basicConfig()
 @click.option("--port", "port", default=5000)
 def main(host: str, port: int):
     base_url = None
-    model = "gpt-4o"
+    model = "gpt-4.1"
 
     if os.getenv("OPENROUTER_API_KEY"):
         api_key = os.getenv("OPENROUTER_API_KEY")

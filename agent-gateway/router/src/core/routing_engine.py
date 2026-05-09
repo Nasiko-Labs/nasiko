@@ -4,7 +4,7 @@ Routing engine service for AI-powered agent selection.
 
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -16,6 +16,7 @@ from langchain_community.vectorstores import FAISS
 
 from router.src.config import settings
 from router.src.entities import RouterOutput
+from router.src.core.route_cache import RouteCache
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class RoutingEngine:
         conversation_history: List[Dict[str, str]],
         agent_cards: List[Dict[str, Any]],
         vectorstore: FAISS,
+        route_cache: Optional["RouteCache"] = None,
     ) -> Tuple[List[str], List[float], List[str], RouterOutput]:
         """
         Route a user query to the most appropriate agent.
@@ -97,6 +99,7 @@ class RoutingEngine:
             conversation_history: User's conversation history in the current session
             agent_cards: List of available agent card dictionaries
             vectorstore: FAISS vector store for similarity search
+            route_cache: Optional RouteCache instance for caching routing decisions
 
         Returns:
             Tuple of (shortlisted_agents, router_output)
@@ -105,9 +108,18 @@ class RoutingEngine:
             RoutingEngineError: If routing fails
         """
         try:
+            agent_names = [a["name"] for a in agent_cards]
+
+            # Check routing decision cache before doing any expensive work
+            if route_cache is not None:
+                cached_agent = route_cache.get(message, agent_names)
+                if cached_agent is not None:
+                    dummy_output = RouterOutput(agent_name=cached_agent)
+                    return agent_names, [1.0] * len(agent_names), agent_names, dummy_output
+
             if len(agent_cards) < 15:
-                first_shortlist = [agent["name"] for agent in agent_cards]
-                second_shortlist = [agent["name"] for agent in agent_cards]
+                first_shortlist = agent_names
+                second_shortlist = agent_names
                 similarity_score = [1.0] * len(agent_cards)
                 shortlisted_agent_cards = agent_cards
             else:
@@ -120,10 +132,15 @@ class RoutingEngine:
                     message, conversation_history, agent_cards, vectorstore
                 )
 
-            # Then use LLM to make final selection
+            # Use LLM to make final selection
             router_output = self._llm_route(
                 message, conversation_history, shortlisted_agent_cards
             )
+
+            # Store the decision in cache for future identical queries
+            if route_cache is not None:
+                route_cache.set(message, agent_names, router_output.agent_name)
+
             return first_shortlist, similarity_score, second_shortlist, router_output
 
         except Exception as e:
@@ -335,6 +352,7 @@ def router(
     conversation_history: List[Dict[str, str]],
     agent_cards: List[Dict[str, Any]],
     vectorstore: FAISS,
+    route_cache: Optional["RouteCache"] = None,
 ) -> Tuple[List[str], List[float], List[str], RouterOutput]:
     """
     Route a user query to the most appropriate agent.
@@ -347,11 +365,12 @@ def router(
         conversation_history: User's conversation history in the current session
         agent_cards: List of available agent card dictionaries
         vectorstore: FAISS vector store for similarity search
+        route_cache: Optional RouteCache for caching routing decisions
 
     Returns:
         Tuple of (shortlisted_agents, router_output)
     """
     routing_engine = RoutingEngine()
     return routing_engine.route_query(
-        message, conversation_history, agent_cards, vectorstore
+        message, conversation_history, agent_cards, vectorstore, route_cache
     )
