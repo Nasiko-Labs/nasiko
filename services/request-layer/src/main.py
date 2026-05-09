@@ -261,11 +261,13 @@ _port_cache: dict[str, int] = {}
 
 
 def _port_from_kong(agent_name: str) -> int | None:
-    """Try to resolve the agent port from Kong service config."""
+    """Try to resolve the agent port from Kong service config.
+    agent_name already includes the 'agent-' prefix (e.g. 'agent-a2a-translator').
+    """
     try:
         import requests as sync_requests
         resp = sync_requests.get(
-            f"{settings.KONG_ADMIN_URL}/services/agent-{agent_name}",
+            f"{settings.KONG_ADMIN_URL}/services/{agent_name}",
             timeout=3,
         )
         if resp.status_code == 200:
@@ -317,6 +319,9 @@ async def _probe_and_cache_port(agent_name: str, client: httpx.AsyncClient) -> i
 
 
 def _extract_input_text(body: bytes, request: Request) -> str | None:
+    """Extract the user's input text from request body for cache keying.
+    Supports A2A JSON-RPC (params.message.parts[].text), plain JSON, and text/plain.
+    """
     content_type = request.headers.get("content-type", "")
     if not body:
         return None
@@ -324,10 +329,21 @@ def _extract_input_text(body: bytes, request: Request) -> str | None:
         import json
         try:
             data = json.loads(body)
-            for field in ("message", "query", "text", "input", "content", "params"):
+            # A2A JSON-RPC format: {"params": {"message": {"parts": [{"kind": "text", "text": "..."}]}}}
+            params = data.get("params")
+            if isinstance(params, dict):
+                msg = params.get("message")
+                if isinstance(msg, dict):
+                    parts = msg.get("parts", [])
+                    if isinstance(parts, list):
+                        texts = [p["text"] for p in parts if isinstance(p, dict) and p.get("kind") == "text" and "text" in p]
+                        if texts:
+                            return " ".join(texts)
+            # Fallback: simple top-level string fields
+            for field in ("message", "query", "text", "input", "content"):
                 if isinstance(data.get(field), str):
                     return data[field]
-            return str(data)
+            return None
         except Exception:
             return None
     if "text/plain" in content_type:

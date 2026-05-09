@@ -69,8 +69,13 @@ async def update_slots(
 ):
     if body.max_slots < 1:
         raise HTTPException(status_code=400, detail="max_slots must be >= 1")
+    old_max = int(await redis.get(f"config:{agent_name}:max_slots") or body.max_slots)
+    old_available = int(await redis.get(f"slots:{agent_name}") or old_max)
+    in_use = max(0, old_max - old_available)
+    new_available = max(0, body.max_slots - in_use)
     await redis.set(f"config:{agent_name}:max_slots", body.max_slots)
-    return {"agent": agent_name, "max_slots": body.max_slots}
+    await redis.set(f"slots:{agent_name}", new_available)
+    return {"agent": agent_name, "max_slots": body.max_slots, "available": new_available, "in_use": in_use}
 
 
 @router.get("/fleet/state")

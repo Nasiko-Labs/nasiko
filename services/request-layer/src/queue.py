@@ -16,24 +16,48 @@ _DRAIN_POLL_INTERVAL = 0.1
 async def init_slots(redis: aioredis.Redis, agent_name: str, max_slots: int = _DEFAULT_MAX_SLOTS) -> None:
     slot_key = f"slots:{agent_name}"
     config_key = f"config:{agent_name}:max_slots"
-    existing = await redis.get(config_key)
-    if existing is None:
+    existing_config = await redis.get(config_key)
+    if existing_config is None:
         await redis.set(config_key, max_slots)
         await redis.set(slot_key, max_slots)
         logger.info(f"slots init: {agent_name} max={max_slots}")
+    else:
+        # Ensure slot counter key exists even if config was set independently
+        slot_exists = await redis.exists(slot_key)
+        if not slot_exists:
+            await redis.set(slot_key, int(existing_config))
+            logger.info(f"slots counter restored: {agent_name} = {existing_config}")
 
 
 async def claim_slot(redis: aioredis.Redis, agent_name: str) -> bool:
+    """Atomically claim a slot using a Lua script to prevent race conditions."""
     slot_key = f"slots:{agent_name}"
-    new_val = await redis.decr(slot_key)
-    if new_val < 0:
-        await redis.incr(slot_key)
-        return False
-    return True
+    # Atomic: only decrement if current value > 0
+    lua = """
+    local val = tonumber(redis.call('GET', KEYS[1]) or '0')
+    if val > 0 then
+        redis.call('DECR', KEYS[1])
+        return 1
+    end
+    return 0
+    """
+    result = await redis.eval(lua, 1, slot_key)
+    return result == 1
 
 
 async def release_slot(redis: aioredis.Redis, agent_name: str) -> None:
-    await redis.incr(f"slots:{agent_name}")
+    """Release a slot, capped at max_slots to prevent counter inflation."""
+    slot_key = f"slots:{agent_name}"
+    config_key = f"config:{agent_name}:max_slots"
+    lua = """
+    local max = tonumber(redis.call('GET', KEYS[2]) or '5')
+    local val = tonumber(redis.call('GET', KEYS[1]) or '0')
+    if val < max then
+        redis.call('INCR', KEYS[1])
+    end
+    return 1
+    """
+    await redis.eval(lua, 2, slot_key, config_key)
 
 
 async def get_slot_status(redis: aioredis.Redis, agent_name: str) -> dict[str, int]:
