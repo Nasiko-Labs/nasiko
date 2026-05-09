@@ -48,6 +48,12 @@ if not K8S_ENABLED:
 else:
     logger.info("K8S_ENABLED=true; Using Kubernetes service discovery")
 
+# When set, all agent traffic is routed through the request manager for
+# caching, rate limiting, and queueing. Set to "" to bypass.
+REQUEST_MANAGER_URL = os.environ.get(
+    "REQUEST_MANAGER_URL", "http://nasiko-request-manager:8090"
+).rstrip("/")
+
 # FastAPI app for health checks and status
 app = FastAPI(
     title="Kong Service Registry",
@@ -280,6 +286,8 @@ def get_docker_services() -> List[ServiceInfo]:
                     "nasiko-router",
                     "nasiko-auth-service",
                     "nasiko-chat-history",
+                    "nasiko-request-manager",
+                    "nasiko-redis",
                     "redis",
                     "mongodb",
                     "phoenix-observability",
@@ -331,7 +339,10 @@ def register_service_in_kong(service: ServiceInfo) -> bool:
     """Register a service and route in Kong."""
     try:
         # Create service in Kong
-        service_url = f"http://{service.host}:{service.port}"
+        if REQUEST_MANAGER_URL:
+            service_url = f"{REQUEST_MANAGER_URL}/proxy/{service.host}/{service.port}"
+        else:
+            service_url = f"http://{service.host}:{service.port}"
 
         service_data = {
             "name": service.name,
