@@ -296,6 +296,7 @@ services:
     restart: unless-stopped
     depends_on:
       - nasiko-backend
+      - redis
     environment:
       OLLAMA_SERVER: http://ollama:11434
       NASIKO_BACKEND: http://nasiko-backend:8000/api/v1
@@ -309,6 +310,9 @@ services:
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       JINA_API_KEY: ${JINA_API_KEY:-}
       JINA_EMBEDDING_MODEL: ${JINA_EMBEDDING_MODEL:-jina-embeddings-v3}
+      REDIS_URL: redis://redis:6379/1
+      ROUTING_CACHE_TTL: "300"
+      ROUTING_CACHE_ENABLED: "true"
     ports:
       - "8081:8000"
     networks:

@@ -92,6 +92,23 @@ async def _proxy_upstream(upstream_url: str, body: dict, headers: dict) -> dict:
             return resp.json()
 
 
+def _is_error_response(data: dict) -> bool:
+    """Return True if the agent response body indicates a failure.
+
+    Covers two cases:
+    - JSON-RPC error object: {"error": {...}}
+    - A2A task with a failed/error terminal state: {"result": {"status": {"state": "failed"|"error"}}}
+    """
+    if "error" in data:
+        return True
+    state = (
+        data.get("result", {})
+        .get("status", {})
+        .get("state", "")
+    )
+    return state in ("failed", "error", "rejected")
+
+
 def _safe_headers(request: Request) -> dict:
     hop_by_hop = {
         "host", "connection", "keep-alive", "transfer-encoding",
@@ -199,14 +216,20 @@ async def proxy(request: Request, agent_host: str, port: int, path: str) -> Resp
                 logger.error("upstream error", extra={"agent": agent_name, "error": str(exc)})
                 raise HTTPException(status_code=502, detail="Bad Gateway")
 
-            ttl = await _cache.get_ttl_for_agent(agent_name)
             response_str = json.dumps(data)
-            await _cache.set(cache_key, agent_name, response_str, ttl)
             latency_ms = (time.monotonic() - t_start) * 1000
-            span.set_attribute("cache.stored", True)
-            span.set_attribute("cache.ttl", ttl)
+            is_err = _is_error_response(data)
+            if not is_err:
+                ttl = await _cache.get_ttl_for_agent(agent_name)
+                await _cache.set(cache_key, agent_name, response_str, ttl)
+                span.set_attribute("cache.stored", True)
+                span.set_attribute("cache.ttl", ttl)
+            else:
+                span.set_attribute("cache.stored", False)
+                span.set_attribute("cache.skip_reason", "error_response")
+                logger.info("skipping cache — error response", extra={"agent": agent_name})
             span.set_attribute("latency_ms", round(latency_ms, 1))
-            await _req_log.log(agent_name, query, "MISS", latency_ms, method=method)
+            await _req_log.log(agent_name, query, "MISS", latency_ms, error=is_err, method=method)
             return Response(content=response_str, status_code=200,
                             media_type="application/json",
                             headers={"X-Cache": "MISS"})
@@ -225,12 +248,16 @@ async def proxy(request: Request, agent_host: str, port: int, path: str) -> Resp
                 proxy_fn=_proxy_upstream,
             )
             _stats["queued"] += 1
-            ttl = await _cache.get_ttl_for_agent(agent_name)
             response_str = json.dumps(data)
-            await _cache.set(cache_key, agent_name, response_str, ttl)
             latency_ms = (time.monotonic() - t_start) * 1000
+            is_err = _is_error_response(data)
+            if not is_err:
+                ttl = await _cache.get_ttl_for_agent(agent_name)
+                await _cache.set(cache_key, agent_name, response_str, ttl)
+            else:
+                logger.info("skipping cache — error response (queued)", extra={"agent": agent_name})
             span.set_attribute("latency_ms", round(latency_ms, 1))
-            await _req_log.log(agent_name, query, "MISS", latency_ms, queued=True, method=method)
+            await _req_log.log(agent_name, query, "MISS", latency_ms, queued=True, error=is_err, method=method)
             return Response(content=response_str, status_code=200,
                             media_type="application/json",
                             headers={"X-Cache": "MISS", "X-Queued": "true"})

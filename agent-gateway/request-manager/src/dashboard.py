@@ -4,9 +4,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Request Manager · Nasiko</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -20,7 +17,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   --r:8px;
 }
 html{font-size:14px}
-body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
+body{font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
 .layout{display:flex;min-height:100vh}
 
 /* sidebar */
@@ -170,6 +167,15 @@ input::placeholder{color:var(--dim)}
         <div class="card">
           <div class="sh"><span class="sh-t">Rate limit events</span></div>
           <div id="ov-rl"><div class="empty">No traffic yet</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sh"><span class="sh-t">Router decision cache</span><span class="sh-s">Caches which agent to route each query to — skips LLM selection on repeat queries</span></div>
+        <div class="g4" style="margin-bottom:0" id="rc-stats">
+          <div><div class="card-title">Hits</div><div class="kv cg" id="rc-hits">—</div></div>
+          <div><div class="card-title">Misses</div><div class="kv cy" id="rc-miss">—</div></div>
+          <div><div class="card-title">Hit Rate</div><div class="kv cp" id="rc-hr">—</div></div>
+          <div><div class="card-title">Cached Decisions</div><div class="kv cb" id="rc-stored">—</div><div class="ks" id="rc-ttl"></div></div>
         </div>
       </div>
     </div>
@@ -397,9 +403,22 @@ function fetchAll() {
     fetch('/manage/cache/stats').then(function(r){return r.json()}).catch(function(){return {}}),
     fetch('/manage/rate-limits').then(function(r){return r.json()}).catch(function(){return {}}),
     fetch('/manage/requests?limit=50').then(function(r){return r.json()}).catch(function(){return []}),
-    fetch('/manage/health').then(function(r){return r.json()}).catch(function(){return {}})
+    fetch('/manage/health').then(function(r){return r.json()}).catch(function(){return {}}),
+    fetch('http://127.0.0.1:8081/route-cache/stats').then(function(r){return r.json()}).catch(function(){return null})
   ]).then(function(results) {
-    var statsR = results[0], cacheR = results[1], limitsR = results[2], reqsR = results[3], healthR = results[4];
+    var statsR = results[0], cacheR = results[1], limitsR = results[2], reqsR = results[3], healthR = results[4], rcR = results[5];
+
+    /* router decision cache */
+    if (rcR && rcR.enabled !== false) {
+      document.getElementById('rc-hits').textContent   = fmt(rcR.hits);
+      document.getElementById('rc-miss').textContent   = fmt(rcR.misses);
+      document.getElementById('rc-hr').textContent     = rcR.total_lookups ? (rcR.hit_rate*100).toFixed(1)+'%' : '—';
+      document.getElementById('rc-stored').textContent = fmt(rcR.cached_decisions);
+      document.getElementById('rc-ttl').textContent    = 'TTL '+rcR.ttl_seconds+'s';
+    } else {
+      ['rc-hits','rc-miss','rc-hr','rc-stored'].forEach(function(id){document.getElementById(id).textContent='—'});
+      document.getElementById('rc-ttl').textContent = rcR ? 'disabled' : 'router unreachable';
+    }
 
     /* health */
     var ok = healthR.status === 'healthy';

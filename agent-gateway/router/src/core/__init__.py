@@ -6,6 +6,7 @@ from .agent_registry import AgentRegistry, AgentRegistryError
 from .vector_store import VectorStoreService, VectorStoreError
 from .agent_client import AgentClient, AgentClientError
 from .session_history import SessionHistoryService, SessionHistoryError
+from .route_cache import RouteCache
 
 __all__ = [
     "AgentRegistry",
@@ -16,4 +17,5 @@ __all__ = [
     "AgentClientError",
     "SessionHistoryService",
     "SessionHistoryError",
+    "RouteCache",
 ]

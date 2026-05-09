@@ -14,6 +14,7 @@ from router.src.core import (
     AgentClient,
     AgentClientError,
     SessionHistoryService,
+    RouteCache,
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
@@ -30,6 +31,7 @@ class RouterOrchestrator:
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.route_cache = RouteCache()
 
     async def process_request(
         self,
@@ -135,10 +137,11 @@ class RouterOrchestrator:
             yield self._router_response(error_msg, "", False, "")
             return
 
-        # Step 5: Route selection using AI
+        # Step 5: Route selection using AI (with cache)
         try:
             _, _, _, router_output = router(
-                request.query, conversation_history, truncated_agent_cards, vectorstore
+                request.query, conversation_history, truncated_agent_cards, vectorstore,
+                self.route_cache,
             )
 
             logger.info(f"Router selected agent: {router_output}")

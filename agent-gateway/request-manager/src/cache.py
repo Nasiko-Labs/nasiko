@@ -28,6 +28,7 @@ def _normalize_body(body: dict) -> str:
     params = normalized.get("params", {})
     message = params.get("message", {})
     message.pop("messageId", None)
+    message.pop("contextId", None)
     for part in message.get("parts", []):
         if "text" in part:
             part["text"] = part["text"].strip().lower()

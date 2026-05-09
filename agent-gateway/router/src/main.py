@@ -121,6 +121,12 @@ async def process_request(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.get("/route-cache/stats")
+async def route_cache_stats():
+    """Routing decision cache statistics."""
+    return orchestrator.route_cache.stats()
+
+
 @app.get("/metrics")
 async def get_metrics():
     """Get router service metrics."""
