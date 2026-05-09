@@ -52,13 +52,88 @@ So the MVP avoids disturbing the client or router contract. We reuse the registr
 
 ## Architecture
 
-```text
-Client / Router
-  -> Kong Gateway
-      -> Request Manager
-          -> Redis
-          -> Internal Agent Container
+### Before: Direct Gateway-To-Agent Execution
+
+Before this change, Kong was already the public entry point and the registry discovered agent containers. The missing piece was an execution-control layer between Kong and the agents. Once traffic reached an agent route, the request went directly to the agent container.
+
+```mermaid
+flowchart LR
+    Client["Client / Web UI"] --> Kong["Kong Gateway"]
+    Kong --> Router["Router Service"]
+    Router --> KongAgent["Kong /agents/{agent} route"]
+    DirectClient["Direct /agents/* caller"] --> KongAgent
+    Registry["Service Registry"] --> KongAgent
+    KongAgent --> Agent["Agent Container"]
+
+    Agent --> Compute["LLM / Tool Execution"]
+
+    classDef risk fill:#fff4e6,stroke:#d97706,color:#7c2d12;
+    classDef normal fill:#eef6ff,stroke:#2563eb,color:#172554;
+    classDef agent fill:#f0fdf4,stroke:#16a34a,color:#14532d;
+
+    class Client,DirectClient,Kong,Router,KongAgent,Registry normal;
+    class Agent agent;
+    class Compute risk;
 ```
+
+What this meant:
+
+- Repeated identical requests could repeatedly hit the same expensive agent computation.
+- There was no shared per-agent queue or concurrency gate after Kong.
+- Router-selected traffic and direct `/agents/*` traffic did not share one protection layer.
+- Operational visibility for cache hits, queue waits, and per-agent overload state was missing.
+
+### After: Request Manager As The Agent Execution-Control Layer
+
+Now Kong still owns public routing and middleware, and the router still owns agent selection. The change is that every dynamic `/agents/{agent}` route goes to Request Manager first. Request Manager checks cache, dedupes identical misses, applies per-agent limits, queues when possible, and then proxies to the internal agent target.
+
+```mermaid
+flowchart LR
+    Client["Client / Web UI"] --> Kong["Kong Gateway"]
+    Kong --> Router["Router Service"]
+    Router --> KongAgent["Kong /agents/{agent} route"]
+    DirectClient["Direct /agents/* caller"] --> KongAgent
+
+    Registry["Service Registry"] --> KongAgent
+    Registry --> RedisTargets["Redis target table"]
+
+    KongAgent --> RM["Request Manager"]
+    RM --> Cache{"Cache hit?"}
+    Cache -- "yes" --> FastResponse["Return cached response"]
+    Cache -- "no" --> SingleFlight["Single-flight dedupe"]
+    SingleFlight --> Limiter["Per-agent rate limit + queue"]
+    Limiter --> Circuit["Circuit breaker"]
+    Circuit --> TargetLookup["Resolve internal target"]
+    TargetLookup --> Agent["Agent Container"]
+    Agent --> Compute["LLM / Tool Execution"]
+    Agent --> RM
+    RM --> Metrics["Stats + Dashboard"]
+
+    RM -. uses .-> RedisTargets
+    RM -. stores .-> RedisCache["Redis cache / counters / queues"]
+
+    classDef control fill:#ecfeff,stroke:#0891b2,color:#164e63;
+    classDef redis fill:#f5f3ff,stroke:#7c3aed,color:#3b0764;
+    classDef normal fill:#eef6ff,stroke:#2563eb,color:#172554;
+    classDef agent fill:#f0fdf4,stroke:#16a34a,color:#14532d;
+    classDef fast fill:#ecfdf5,stroke:#059669,color:#064e3b;
+
+    class Client,DirectClient,Kong,Router,KongAgent,Registry normal;
+    class RM,Cache,SingleFlight,Limiter,Circuit,TargetLookup,Metrics control;
+    class RedisTargets,RedisCache redis;
+    class Agent,Compute agent;
+    class FastResponse fast;
+```
+
+What changed:
+
+- Kong dynamic agent routes now point to Request Manager, not directly to agent containers.
+- Registry still owns discovery, but it also publishes internal agent targets to Redis.
+- Request Manager calls internal container URLs, so it avoids looping back through Kong.
+- Cache hits return before rate limit, queue, or agent execution.
+- Cache misses are protected by single-flight, per-agent concurrency, token-bucket RPS, bounded queueing, and circuit breaker.
+
+### Final Runtime Paths
 
 For routed requests:
 
