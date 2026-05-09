@@ -17,7 +17,14 @@ from router.src.core import (
 )
 from router.src.entities import UserRequest, RouterResponse, RouterOutput
 from router.src.core.routing_engine import router
+from router.src.config import settings
 from router.src.utils import truncate_agent_cards
+from router.src.resilience import (
+    CacheConfig,
+    LimitConfig,
+    ResilienceError,
+    ResilientAgentExecutor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +37,22 @@ class RouterOrchestrator:
         self.session_history_service = SessionHistoryService()
         self.vector_store = VectorStoreService()
         self.agent_client = AgentClient()
+        self.resilient_executor = ResilientAgentExecutor(
+            cache_config=CacheConfig(
+                ttl_seconds=settings.RESILIENCE_CACHE_TTL_SECONDS,
+                redis_url=settings.REDIS_URL,
+                semantic_enabled=settings.RESILIENCE_SEMANTIC_ENABLED,
+                semantic_threshold=settings.RESILIENCE_SEMANTIC_THRESHOLD,
+            ),
+            limit_config=LimitConfig(
+                base_rps=settings.RESILIENCE_DEFAULT_AGENT_RPS,
+                min_rps=settings.RESILIENCE_MIN_AGENT_RPS,
+                burst=settings.RESILIENCE_BURST,
+                max_queue_depth=settings.RESILIENCE_MAX_QUEUE_DEPTH,
+                max_queue_wait_seconds=settings.RESILIENCE_MAX_QUEUE_WAIT_SECONDS,
+                target_latency_seconds=settings.RESILIENCE_TARGET_LATENCY_SECONDS,
+            ),
+        )
 
     async def process_request(
         self,
@@ -194,16 +217,28 @@ class RouterOrchestrator:
                 "Sending user's query to agent...", "", False, agent_url
             )
 
-            # Send request to agent
-            agent_data = await self.agent_client.send_request(
-                agent_url, request, files, token
-            )
+            async def call_agent() -> str:
+                agent_data = await self.agent_client.send_request(
+                    agent_url, request, files, token
+                )
+                return self.agent_client.extract_response_content(agent_data)
 
-            # Extract response content
-            agent_response = self.agent_client.extract_response_content(agent_data)
+            if settings.RESILIENCE_ENABLED:
+                agent_response = await self.resilient_executor.execute(
+                    agent_id=agent_url,
+                    request=request,
+                    files=files,
+                    token=token,
+                    call_agent=call_agent,
+                )
+            else:
+                agent_response = await call_agent()
 
             logger.info("Successfully received response from agent")
             yield self._router_response(agent_response, "", False, agent_url)
+
+        except ResilienceError as e:
+            yield self._router_response(str(e), "", False, agent_url)
 
         except AgentClientError as e:
             yield self._router_response(str(e), "", False, agent_url)

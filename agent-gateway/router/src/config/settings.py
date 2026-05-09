@@ -40,6 +40,20 @@ class RouterConfig(BaseSettings):
     REQUEST_TIMEOUT: float = 60.0
     MAX_CONCURRENT_REQUESTS: int = 10
 
+    # Resilient request layer settings
+    RESILIENCE_ENABLED: bool = True
+    RESILIENCE_CACHE_TTL_SECONDS: float = 3600.0
+    RESILIENCE_SEMANTIC_ENABLED: bool = False
+    RESILIENCE_SEMANTIC_THRESHOLD: float = 0.92
+    RESILIENCE_DEFAULT_AGENT_RPS: float = 5.0
+    RESILIENCE_MIN_AGENT_RPS: float = 0.25
+    RESILIENCE_BURST: int = 5
+    RESILIENCE_MAX_QUEUE_DEPTH: int = 50
+    RESILIENCE_MAX_QUEUE_WAIT_SECONDS: float = 10.0
+    RESILIENCE_TARGET_LATENCY_SECONDS: float = 2.0
+    RESILIENCE_ADMIN_API_KEY: Optional[str] = None
+    REDIS_URL: Optional[str] = None
+
     # Server settings
     HOST: str = "0.0.0.0"
     PORT: int = 8000
