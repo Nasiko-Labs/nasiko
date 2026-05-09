@@ -39,6 +39,10 @@ class RouterConfig(BaseSettings):
     MAX_FILE_SIZE: int = 1073741824  # 1GB
     REQUEST_TIMEOUT: float = 60.0
     MAX_CONCURRENT_REQUESTS: int = 10
+    
+    # Cache settings
+    AGENT_RESPONSE_CACHE_TTL: int = 3600  # 1 hour
+    AGENT_RESPONSE_CACHE_MAX_SIZE: int = 1000
 
     # Server settings
     HOST: str = "0.0.0.0"
