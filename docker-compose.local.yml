@@ -227,6 +227,8 @@ services:
     depends_on:
       kong-gateway:
         condition: service_healthy
+      nasiko-log-dashboard:
+        condition: service_started
     environment:
       KONG_ADMIN_URL: http://kong-gateway:8001
       DOCKER_SOCKET: /var/run/docker.sock
@@ -236,6 +238,7 @@ services:
       KONG_AUTH_HOST: nasiko-auth-service
       KONG_BACKEND_HOST: nasiko-backend
       KONG_WEB_HOST: nasiko-web
+      KONG_LOG_DASHBOARD_HOST: nasiko-log-dashboard
       KONG_ROUTER_HOST: nasiko-router
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -345,6 +348,26 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:4000"]
       interval: 30s
       timeout: 10s
+      retries: 3
+
+  # Buildathon Challenge 1 — platform logs dashboard (React)
+  nasiko-log-dashboard:
+    build:
+      context: ./web-dashboard
+      dockerfile: Dockerfile
+      args:
+        VITE_BASE_PATH: ./
+    container_name: nasiko-log-dashboard
+    restart: unless-stopped
+    # Reachable via Kong at http://localhost:9100/logs/ (optional direct port: NASIKO_PORT_LOG_DASHBOARD)
+    ports:
+      - "${NASIKO_PORT_LOG_DASHBOARD:-3001}:80"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
       retries: 3
 
   # ============================================================================

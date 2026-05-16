@@ -109,4 +109,19 @@ def create_observability_routes(handlers: HandlerFactory) -> APIRouter:
             agent_id, start_time
         )
 
+    @router.get("/agent/{agent_id}/metrics/timeseries")
+    async def get_agent_metrics_timeseries(
+        agent_id: str,
+        hours: int = Query(24, ge=1, le=168, description="Hours of history (default 24)"),
+        _user_id: str = Depends(get_user_id_from_token),
+    ) -> Dict[str, Any]:
+        """
+        Hourly agent metrics for charts: traces, sessions, cost, tokens, latency.
+
+        Aggregates Phoenix sessions into per-hour buckets for the last N hours.
+        """
+        return await handlers.observability.get_agent_metrics_timeseries(
+            agent_id, hours
+        )
+
     return router

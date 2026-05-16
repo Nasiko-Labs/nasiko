@@ -16,6 +16,7 @@ from .traces_handler import TracesHandler
 from .search_handler import SearchHandler
 from .observability_handler import ObservabilityHandler
 from .nanda_handler import NANDAHandler
+from .platform_logs_handler import PlatformLogsHandler
 
 
 class HandlerFactory:
@@ -41,6 +42,7 @@ class HandlerFactory:
         self.chat_history = ChatHistoryHandler(service, logger)
         self.observability = ObservabilityHandler(service, logger)
         self.nanda = NANDAHandler(service, logger)
+        self.platform_logs = PlatformLogsHandler(service, logger)
 
 
 __all__ = [

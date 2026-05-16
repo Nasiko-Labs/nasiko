@@ -36,3 +36,11 @@ class ObservabilityHandler(BaseHandler):
         return await self.observability_service.get_agent_project_stats(
             agent_id, start_time
         )
+
+    async def get_agent_metrics_timeseries(
+        self, agent_id: str, hours: int = 24
+    ) -> dict[str, Any]:
+        """Hourly metrics buckets for charts (last N hours)."""
+        return await self.observability_service.get_agent_metrics_timeseries(
+            agent_id, hours
+        )

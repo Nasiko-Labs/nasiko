@@ -3,6 +3,7 @@ from app.entity.entity import RegistryBase, RegistryInDB
 from datetime import datetime, timezone
 from typing import List, Optional, Dict
 from app.service.k8s_service import K8sService
+from app.service.platform_logs_service import PlatformLogsService
 from app.pkg.redisclient.redisclient import (
     get_github_access_token,
 )
@@ -41,6 +42,7 @@ class Service:
         self.repo = repo
         self.logger = logger
         self.k8s_service = K8sService(logger)  # Initialize K8s Service
+        self.platform_logs = PlatformLogsService(repo.platform_logs, logger)
 
     ## Agent Registry Service Methods
 

@@ -10,6 +10,7 @@ from .chat_repository import ChatRepository
 from .n8n_repository import N8NRepository
 from .github_repository import GitHubRepository
 from .agent_operations_repository import AgentOperationsRepository
+from .platform_logs_repository import PlatformLogsRepository
 
 
 class Repository:
@@ -26,6 +27,7 @@ class Repository:
         self.n8n = N8NRepository(db, logger)
         self.github = GitHubRepository(db, logger)
         self.agent_operations = AgentOperationsRepository(db, logger)
+        self.platform_logs = PlatformLogsRepository(db, logger)
 
     async def ensure_collections(self):
         """Ensure all collections exist and have proper indexes"""
@@ -37,6 +39,7 @@ class Repository:
             await self.n8n.ensure_indexes()
             await self.github.ensure_indexes()
             await self.agent_operations.ensure_indexes()
+            await self.platform_logs.ensure_indexes()
 
             self.logger.info(
                 "Database collections and indexes initialized successfully"
