@@ -65,7 +65,7 @@ services:
       MONGO_NASIKO_DATABASE: nasiko
       REDIS_HOST: redis
       REDIS_URL: redis://redis:6379
-      USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY}
+      USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY:-gka2lB4ATxGdFDVM0AcwZP1ZKioe0UuZ-iiImlj-hTA=}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
@@ -81,7 +81,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthcheck').read()\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

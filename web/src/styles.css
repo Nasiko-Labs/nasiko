@@ -112,6 +112,21 @@ p {
   text-transform: uppercase;
 }
 
+.source-line {
+  max-width: min(720px, 74vw);
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--amber);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-line.live {
+  color: var(--green);
+}
+
 h1 {
   margin-bottom: 0;
   color: var(--text);
@@ -444,6 +459,18 @@ button[aria-expanded="true"] {
 
 .message-cell small {
   color: #9dccff;
+}
+
+.message-cell em {
+  display: block;
+  max-height: 80px;
+  margin-top: 7px;
+  overflow: auto;
+  color: #ffb4ad;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  font-style: normal;
+  white-space: pre-wrap;
 }
 
 .latency-cell {

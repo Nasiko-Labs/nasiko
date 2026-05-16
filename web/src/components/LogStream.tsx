@@ -71,6 +71,7 @@ export function LogStream({ copiedKey, expandedLogId, logs, onCopy, onToggle }: 
 
                 <span className="message-cell" data-label="Message" role="cell">
                   <strong>{log.message}</strong>
+                  {log.exception ? <em>{log.exception}</em> : null}
                   <small>{log.route}</small>
                 </span>
 

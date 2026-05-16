@@ -7,6 +7,7 @@ from app.repository.repository import Repository
 from app.service.service import Service
 from app.api.handlers import HandlerFactory
 from app.api.routes.router import create_router
+from app.utils.log_buffer import install_platform_log_handler
 import logging
 import secrets
 
@@ -23,6 +24,7 @@ logging.getLogger("pymongo").setLevel(logging.WARNING)
 # Set specific logger levels for app modules
 logging.getLogger("app").setLevel(logging.INFO)
 logging.getLogger("app.api.handlers").setLevel(logging.INFO)
+install_platform_log_handler()
 
 logger = logging.getLogger(__name__)
 logger.info("Logger initialized successfully")

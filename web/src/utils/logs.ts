@@ -1,4 +1,14 @@
-import { LOG_LEVELS, type LevelFilter, type LogLevel, type LogStats, type ParsedQuery, type PlatformLog, type QuickFilter, type TimeWindow } from "../types";
+import {
+  LOG_LEVELS,
+  type LevelFilter,
+  type LogLevel,
+  type LogStats,
+  type ParsedQuery,
+  type PlatformLog,
+  type PlatformLogApiItem,
+  type QuickFilter,
+  type TimeWindow
+} from "../types";
 
 export const TIME_WINDOW_MS: Record<TimeWindow, number> = {
   "15m": 15 * 60 * 1000,
@@ -42,11 +52,42 @@ export function formatFullTimestamp(value: string) {
 }
 
 export function getLatestTimestamp(logs: PlatformLog[]) {
+  if (logs.length === 0) {
+    return Date.now();
+  }
+
   return Math.max(...logs.map((log) => new Date(log.timestamp).getTime()));
 }
 
 export function getServices(logs: PlatformLog[]) {
   return Array.from(new Set(logs.map((log) => log.service))).sort();
+}
+
+export function normalizeApiLogs(items: PlatformLogApiItem[]): PlatformLog[] {
+  return items.map((item, index) => {
+    const id = item.id ?? `api-log-${index}`;
+    const logger = item.logger ?? item.service ?? "platform";
+    const service = item.service ?? serviceFromLogger(logger);
+    const traceId = item.traceId ?? item.trace_id ?? id;
+    const requestId = item.requestId ?? item.request_id ?? id;
+
+    return {
+      id,
+      timestamp: item.timestamp,
+      level: item.level,
+      logger,
+      service,
+      route: item.route ?? logger,
+      message: item.message,
+      exception: item.exception,
+      traceId,
+      requestId,
+      latencyMs: item.latencyMs ?? item.latency_ms ?? 0,
+      pod: item.pod ?? service,
+      source: item.source ?? logger,
+      commit: item.commit ?? "runtime"
+    };
+  });
 }
 
 export function getLogStats(logs: PlatformLog[]): LogStats {
@@ -215,8 +256,10 @@ function matchesParsedQuery(log: PlatformLog, parsedQuery: ParsedQuery) {
     log.timestamp,
     log.level,
     log.service,
+    log.logger,
     log.route,
     log.message,
+    log.exception,
     log.traceId,
     log.requestId,
     log.pod,
@@ -241,6 +284,15 @@ function percentile(values: number[], probability: number) {
 
 function isQueryFieldAlias(value: string): value is QueryFieldAlias {
   return value in QUERY_FIELD_ALIASES;
+}
+
+function serviceFromLogger(loggerName: string) {
+  const parts = loggerName.split(".");
+  if (parts[0] === "app" && parts[1]) {
+    return parts[1];
+  }
+
+  return parts[0] || "platform";
 }
 
 export function levelCount(logs: PlatformLog[], level: LogLevel) {

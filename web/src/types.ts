@@ -11,15 +11,44 @@ export type PlatformLog = {
   id: string;
   timestamp: string;
   level: LogLevel;
+  logger?: string;
   service: string;
   route: string;
   message: string;
+  exception?: string;
   traceId: string;
   requestId: string;
   latencyMs: number;
   pod: string;
   source: string;
   commit: string;
+};
+
+export type PlatformLogApiItem = {
+  id?: string;
+  timestamp: string;
+  level: LogLevel;
+  logger?: string;
+  service?: string;
+  route?: string;
+  message: string;
+  exception?: string;
+  trace_id?: string;
+  traceId?: string;
+  request_id?: string;
+  requestId?: string;
+  latency_ms?: number;
+  latencyMs?: number;
+  pod?: string;
+  source?: string;
+  commit?: string;
+};
+
+export type PlatformLogsResponse = {
+  items: PlatformLogApiItem[];
+  levels: LogLevel[];
+  count: number;
+  limit: number;
 };
 
 export type ParsedQuery = {

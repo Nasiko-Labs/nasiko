@@ -1,12 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CommandBar } from "./components/CommandBar";
 import { LogStream } from "./components/LogStream";
 import { TopBar } from "./components/TopBar";
 import { platformLogs } from "./data/platformLogs";
-import type { LevelFilter, TimeWindow } from "./types";
-import { filterLogs, getLogStats, getServices } from "./utils/logs";
+import type { LevelFilter, PlatformLog, PlatformLogsResponse, TimeWindow } from "./types";
+import { filterLogs, getLogStats, getServices, normalizeApiLogs } from "./utils/logs";
 
 export function App() {
+  const [logs, setLogs] = useState<PlatformLog[]>(platformLogs);
+  const [dataSource, setDataSource] = useState<"live" | "sample">("sample");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedLevel, setSelectedLevel] = useState<LevelFilter>("ALL");
   const [selectedService, setSelectedService] = useState("ALL");
@@ -14,19 +18,57 @@ export function App() {
   const [expandedLogId, setExpandedLogId] = useState<string | undefined>(platformLogs[0]?.id);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const services = useMemo(() => getServices(platformLogs), []);
-  const stats = useMemo(() => getLogStats(platformLogs), []);
+  useEffect(() => {
+    void loadPlatformLogs();
+    const interval = window.setInterval(() => void loadPlatformLogs(), 15000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const services = useMemo(() => getServices(logs), [logs]);
+  const stats = useMemo(() => getLogStats(logs), [logs]);
   const visibleLogs = useMemo(
     () =>
-      filterLogs(platformLogs, {
+      filterLogs(logs, {
         level: selectedLevel,
         query,
         quickFilter: "all",
         service: selectedService,
         timeWindow
       }),
-    [query, selectedLevel, selectedService, timeWindow]
+    [logs, query, selectedLevel, selectedService, timeWindow]
   );
+
+  async function loadPlatformLogs() {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const response = await fetch("/api/v1/platform/logs?limit=200", {
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(`Log API returned ${response.status}`);
+      }
+
+      const data = (await response.json()) as PlatformLogsResponse;
+      const liveLogs = normalizeApiLogs(data.items);
+
+      if (liveLogs.length > 0) {
+        setLogs(liveLogs);
+        setExpandedLogId((current) => current ?? liveLogs[0]?.id);
+      }
+
+      setDataSource("live");
+      setLoadError(null);
+      setLastUpdated(new Date());
+    } catch (error) {
+      setDataSource("sample");
+      setLoadError(error instanceof Error ? error.message : "Unable to load platform logs");
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }
 
   async function handleCopy(key: string, value: string) {
     try {
@@ -40,9 +82,15 @@ export function App() {
 
   return (
     <main className="app-shell">
-      <TopBar commit={platformLogs[0]?.commit ?? "local"} stats={stats} />
+      <TopBar
+        commit={logs[0]?.commit ?? "local"}
+        dataSource={dataSource}
+        lastUpdated={lastUpdated}
+        loadError={loadError}
+        stats={stats}
+      />
       <CommandBar
-        logs={platformLogs}
+        logs={logs}
         onLevelChange={setSelectedLevel}
         onQueryChange={setQuery}
         onRefresh={() => window.location.reload()}
