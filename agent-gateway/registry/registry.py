@@ -452,6 +452,7 @@ def cleanup_stale_services(current_service_names: Set[str]) -> None:
             "auth-proxy",
             "nasiko-router",
             "landing-page",
+            "agent-metrics-proxy",
             "n8n",
             "gateway-status",
             "gateway-health",
@@ -547,6 +548,11 @@ def register_static_proxies():
         local_service="n8n",
         env_var="KONG_N8N_HOST",
     )
+    metrics_host = _resolve_service_host(
+        k8s_service="nasiko-agent-metrics",
+        local_service="nasiko-agent-metrics",
+        env_var="KONG_METRICS_HOST",
+    )
 
     static_services = [
         # Backend API proxy - auth only, no chat logging
@@ -570,6 +576,17 @@ def register_static_proxies():
             "strip_path": True,
             "preserve_host": False,
             "middlewares": ["cors"],  # CORS only
+        },
+        # Agent metrics dashboard (Challenge 2)
+        {
+            "name": "agent-metrics-proxy",
+            "host": metrics_host,
+            "port": 4010,
+            "paths": ["/metrics"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            "strip_path": True,
+            "preserve_host": False,
+            "middlewares": ["cors"],
         },
         # Auth service proxy - auth only
         {

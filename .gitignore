@@ -1,6 +1,12 @@
 
 # Environment files
 .env
+.nasiko-local.env
+
+# Node (agent metrics dashboard)
+web/agent-metrics/node_modules/
+web/agent-metrics/dist/
+web/agent-metrics/tsconfig.tsbuildinfo
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

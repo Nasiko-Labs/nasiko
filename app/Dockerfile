@@ -10,17 +10,12 @@ RUN apt-get update && apt-get install -y \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Copy dependency files
-COPY pyproject.toml .
-COPY uv.lock .
-
-# Copy only the app directory and necessary files
+# Install dependencies at image build time (not on every container start)
+COPY pyproject.toml uv.lock README.md ./
 COPY app/ ./app/
-# Copy any additional files needed at runtime (if any)
-# COPY README.md .
+RUN uv sync --no-dev
 
 # Expose port
 EXPOSE 8000
 
-# Run the application (uv will handle dependency installation at runtime)
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
