@@ -108,6 +108,9 @@ export function App() {
     );
   }, [logs]);
 
+  const activeFilterLabel =
+    level === "ALL" ? "All platform logs" : `${level} logs only`;
+
   function handleLevelChange(nextLevel: LevelFilter) {
     setLevel(nextLevel);
     void loadLogs(nextLevel);
@@ -119,12 +122,22 @@ export function App() {
         <div>
           <p className="eyebrow">Nasiko Platform</p>
           <h1>Recent Logs</h1>
+          <p className="lede">
+            Current platform events from backend services and agent operations.
+          </p>
         </div>
         <div className="topbarActions">
-          <span className="updated">
-            {lastUpdated ? `Updated ${formatTimestamp(lastUpdated.toISOString())}` : "Waiting"}
+          <span className="liveBadge">Live</span>
+          <span className="updated" aria-live="polite">
+            {lastUpdated
+              ? `Updated ${formatTimestamp(lastUpdated.toISOString())}`
+              : "Waiting"}
           </span>
-          <button className="refreshButton" onClick={() => void loadLogs()} disabled={loading}>
+          <button
+            className="refreshButton"
+            onClick={() => void loadLogs()}
+            disabled={loading}
+          >
             Refresh
           </button>
         </div>
@@ -150,32 +163,53 @@ export function App() {
       </section>
 
       <section className="toolbar" aria-label="Log filters">
-        <div className="segmentedControl">
-          {levelOptions.map((option) => (
-            <button
-              key={option}
-              className={level === option ? "active" : ""}
-              onClick={() => handleLevelChange(option)}
-            >
-              {option}
-            </button>
-          ))}
+        <div>
+          <p className="toolbarLabel">{activeFilterLabel}</p>
+          <div className="segmentedControl">
+            {levelOptions.map((option) => (
+              <button
+                key={option}
+                className={level === option ? "active" : ""}
+                onClick={() => handleLevelChange(option)}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
         </div>
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search message or logger"
-          aria-label="Search logs"
-        />
+        <label className="searchBox">
+          <span>Search</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Message or logger"
+            aria-label="Search logs"
+          />
+        </label>
       </section>
 
       <section className="tableWrap">
+        <div className="tableHeader">
+          <div>
+            <h2>Log Events</h2>
+            <p>
+              Showing {filteredLogs.length} of {logs.length} captured events
+            </p>
+          </div>
+          <span className={`filterPill ${level.toLowerCase()}`}>{level}</span>
+        </div>
         {error ? <div className="state errorState">{error}</div> : null}
         {!error && loading && logs.length === 0 ? (
-          <div className="state">Loading logs...</div>
+          <div className="state">
+            <span className="spinner" />
+            Loading logs...
+          </div>
         ) : null}
         {!error && !loading && filteredLogs.length === 0 ? (
-          <div className="state">No logs match the current filters.</div>
+          <div className="state emptyState">
+            <strong>No matching logs</strong>
+            <span>Adjust the level filter or search text.</span>
+          </div>
         ) : null}
         {filteredLogs.length > 0 ? (
           <table>
