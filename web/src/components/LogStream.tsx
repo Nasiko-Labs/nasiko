@@ -1,6 +1,12 @@
 import { Copy, FileJson2, Info, TerminalSquare, TriangleAlert, XCircle } from "lucide-react";
 import type { LogLevel, PlatformLog } from "../types";
-import { createEventJson, createKubectlCommand, formatClock, formatFullTimestamp } from "../utils/logs";
+import {
+  createEventJson,
+  createKubectlCommand,
+  createReplayCommand,
+  formatClock,
+  formatFullTimestamp
+} from "../utils/logs";
 
 type LogStreamProps = {
   copiedKey: string | null;
@@ -42,9 +48,14 @@ export function LogStream({ copiedKey, expandedLogId, logs, onCopy, onToggle }: 
           const Icon = levelIcons[log.level];
           const eventJson = createEventJson(log);
           const kubectlCommand = createKubectlCommand(log);
+          const replayCommand = createReplayCommand(log);
 
           return (
-            <article className={`log-entry ${log.level.toLowerCase()}`} key={log.id}>
+            <article
+              className={`log-entry ${log.level.toLowerCase()}`}
+              data-log-row="true"
+              key={log.id}
+            >
               <button
                 aria-expanded={isExpanded}
                 className="log-row"
@@ -75,8 +86,13 @@ export function LogStream({ copiedKey, expandedLogId, logs, onCopy, onToggle }: 
                   <small>{log.route}</small>
                 </span>
 
-                <span className={log.latencyMs >= 1000 ? "latency-cell slow" : "latency-cell"} data-label="Latency" role="cell">
+                <span
+                  className={log.latencyMs >= 1000 ? "latency-cell slow" : "latency-cell"}
+                  data-label="Latency"
+                  role="cell"
+                >
                   {log.latencyMs}ms
+                  {log.statusCode ? <small>{log.statusCode}</small> : null}
                 </span>
 
                 <span className="trace-cell" data-label="Trace" role="cell">
@@ -87,14 +103,25 @@ export function LogStream({ copiedKey, expandedLogId, logs, onCopy, onToggle }: 
 
               {isExpanded ? (
                 <div className="log-detail">
-                  <div className="detail-grid">
+                  <dl className="detail-grid">
                     <Detail label="Pod" value={log.pod} />
                     <Detail label="Source" value={log.source} />
                     <Detail label="Commit" value={log.commit} />
+                    <Detail
+                      label="HTTP"
+                      value={log.statusCode ? String(log.statusCode) : "n/a"}
+                    />
                     <Detail label="Trace" value={log.traceId} />
-                  </div>
+                  </dl>
 
                   <div className="copy-row">
+                    <CopyBlock
+                      icon={<TerminalSquare size={14} />}
+                      isCopied={copiedKey === `replay-${log.id}`}
+                      label="replay curl"
+                      onCopy={() => onCopy(`replay-${log.id}`, replayCommand)}
+                      value={replayCommand}
+                    />
                     <CopyBlock
                       icon={<TerminalSquare size={14} />}
                       isCopied={copiedKey === `kubectl-${log.id}`}

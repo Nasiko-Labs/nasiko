@@ -19,6 +19,7 @@ export type PlatformLog = {
   traceId: string;
   requestId: string;
   latencyMs: number;
+  statusCode?: number;
   pod: string;
   source: string;
   commit: string;
@@ -39,6 +40,8 @@ export type PlatformLogApiItem = {
   requestId?: string;
   latency_ms?: number;
   latencyMs?: number;
+  status_code?: number;
+  statusCode?: number;
   pod?: string;
   source?: string;
   commit?: string;
@@ -49,6 +52,7 @@ export type PlatformLogsResponse = {
   levels: LogLevel[];
   count: number;
   limit: number;
+  generated_at?: string;
 };
 
 export type ParsedQuery = {

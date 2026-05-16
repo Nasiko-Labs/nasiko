@@ -4,12 +4,35 @@ import type { LogStats } from "../types";
 type TopBarProps = {
   commit: string;
   dataSource: "live" | "sample";
+  isRefreshing: boolean;
   lastUpdated: Date | null;
   loadError: string | null;
   stats: LogStats;
 };
 
-export function TopBar({ commit, dataSource, lastUpdated, loadError, stats }: TopBarProps) {
+export function TopBar({
+  commit,
+  dataSource,
+  isRefreshing,
+  lastUpdated,
+  loadError,
+  stats
+}: TopBarProps) {
+  const sourceStatus =
+    dataSource === "live"
+      ? [
+          "Live API",
+          isRefreshing
+            ? "syncing"
+            : lastUpdated
+              ? `updated ${lastUpdated.toLocaleTimeString()}`
+              : "",
+          loadError ? `retrying after ${loadError}` : ""
+        ]
+          .filter(Boolean)
+          .join(" / ")
+      : `Sample fallback${loadError ? ` / ${loadError}` : ""}`;
+
   return (
     <header className="topbar" aria-labelledby="logs-title">
       <div className="product-lockup">
@@ -20,9 +43,7 @@ export function TopBar({ commit, dataSource, lastUpdated, loadError, stats }: To
           <p className="eyebrow">Nasiko observability</p>
           <h1 id="logs-title">Platform Logs</h1>
           <p className={dataSource === "live" ? "source-line live" : "source-line"}>
-            {dataSource === "live"
-              ? `Live API${lastUpdated ? ` / updated ${lastUpdated.toLocaleTimeString()}` : ""}`
-              : `Sample fallback${loadError ? ` / ${loadError}` : ""}`}
+            {sourceStatus}
           </p>
         </div>
       </div>

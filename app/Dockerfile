@@ -19,8 +19,11 @@ COPY app/ ./app/
 # Copy any additional files needed at runtime (if any)
 # COPY README.md .
 
+# Install dependencies at build time so the backend starts quickly in demos.
+RUN uv run --no-dev python -c "import uvicorn"
+
 # Expose port
 EXPOSE 8000
 
-# Run the application (uv will handle dependency installation at runtime)
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run without syncing so container startup is not blocked by dependency installs.
+CMD ["uv", "run", "--no-sync", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

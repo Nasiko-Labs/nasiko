@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Query
@@ -22,6 +23,9 @@ def create_platform_logs_routes(handlers) -> APIRouter:
             "levels": list(LOG_LEVELS),
             "count": len(logs),
             "limit": limit,
+            "generated_at": datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
         }
 
     return router

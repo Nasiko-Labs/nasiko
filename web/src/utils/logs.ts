@@ -83,6 +83,7 @@ export function normalizeApiLogs(items: PlatformLogApiItem[]): PlatformLog[] {
       traceId,
       requestId,
       latencyMs: item.latencyMs ?? item.latency_ms ?? 0,
+      statusCode: item.statusCode ?? item.status_code,
       pod: item.pod ?? service,
       source: item.source ?? logger,
       commit: item.commit ?? "runtime"
@@ -180,6 +181,7 @@ export function createEventJson(log: PlatformLog) {
       trace_id: log.traceId,
       request_id: log.requestId,
       latency_ms: log.latencyMs,
+      status_code: log.statusCode,
       pod: log.pod,
       source: log.source,
       commit: log.commit
@@ -194,7 +196,9 @@ export function createKubectlCommand(log: PlatformLog) {
 }
 
 export function createReplayCommand(log: PlatformLog) {
-  const [method = "GET", path = "/"] = log.route.split(" ");
+  const routeMatch = log.route.match(/^([A-Z]+)\s+(\S+)/);
+  const method = routeMatch?.[1] ?? "GET";
+  const path = routeMatch?.[2] ?? "/";
   const normalizedPath = path.startsWith("/") ? path : "/";
 
   return [
@@ -264,7 +268,8 @@ function matchesParsedQuery(log: PlatformLog, parsedQuery: ParsedQuery) {
     log.requestId,
     log.pod,
     log.source,
-    log.commit
+    log.commit,
+    log.statusCode
   ]
     .join(" ")
     .toLowerCase();

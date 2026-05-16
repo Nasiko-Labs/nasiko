@@ -1,14 +1,23 @@
 import { CheckCircle2, Info, RefreshCw, Search, TriangleAlert, XCircle } from "lucide-react";
-import { LEVEL_FILTERS, TIME_WINDOWS, type LevelFilter, type PlatformLog, type TimeWindow } from "../types";
+import {
+  LEVEL_FILTERS,
+  TIME_WINDOWS,
+  type LevelFilter,
+  type PlatformLog,
+  type TimeWindow
+} from "../types";
 import { levelCount } from "../utils/logs";
 
 type CommandBarProps = {
+  autoRefresh: boolean;
+  isRefreshing: boolean;
   logs: PlatformLog[];
   query: string;
   selectedLevel: LevelFilter;
   selectedService: string;
   services: string[];
   timeWindow: TimeWindow;
+  onAutoRefreshChange: (enabled: boolean) => void;
   onLevelChange: (level: LevelFilter) => void;
   onQueryChange: (query: string) => void;
   onRefresh: () => void;
@@ -24,7 +33,10 @@ const levelIcons = {
 };
 
 export function CommandBar({
+  autoRefresh,
+  isRefreshing,
   logs,
+  onAutoRefreshChange,
   onLevelChange,
   onQueryChange,
   onRefresh,
@@ -94,7 +106,22 @@ export function CommandBar({
         ))}
       </div>
 
-      <button className="icon-button" onClick={onRefresh} title="Refresh" type="button">
+      <label className="auto-refresh-toggle">
+        <input
+          checked={autoRefresh}
+          onChange={(event) => onAutoRefreshChange(event.target.checked)}
+          type="checkbox"
+        />
+        <span>Live tail</span>
+      </label>
+
+      <button
+        className={isRefreshing ? "icon-button is-refreshing" : "icon-button"}
+        disabled={isRefreshing}
+        onClick={onRefresh}
+        title="Refresh"
+        type="button"
+      >
         <RefreshCw size={15} aria-hidden="true" />
       </button>
     </section>

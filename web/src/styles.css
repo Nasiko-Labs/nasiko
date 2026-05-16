@@ -184,7 +184,7 @@ h1 {
 
 .command-bar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto minmax(170px, auto) auto 38px;
+  grid-template-columns: minmax(260px, 1fr) auto minmax(170px, auto) auto auto 38px;
   gap: 8px;
   align-items: center;
   margin-bottom: 10px;
@@ -195,6 +195,7 @@ h1 {
 .level-tabs button,
 .time-tabs button,
 .service-select,
+.auto-refresh-toggle,
 .icon-button,
 .log-row,
 .copy-block button {
@@ -296,9 +297,40 @@ h1 {
   color: #101418;
 }
 
+.auto-refresh-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.auto-refresh-toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--green);
+}
+
+.auto-refresh-toggle span {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
 .icon-button {
   width: 38px;
   padding: 0;
+}
+
+button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.icon-button.is-refreshing svg {
+  animation: spin 0.8s linear infinite;
 }
 
 button:hover,
@@ -413,6 +445,13 @@ button[aria-expanded="true"] {
   margin-top: 5px;
   color: var(--muted);
   font-size: 0.72rem;
+}
+
+.latency-cell small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .level-pill {
@@ -530,7 +569,7 @@ button[aria-expanded="true"] {
 
 .copy-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
 }
 
@@ -672,5 +711,11 @@ button[aria-expanded="true"] {
 
   h1 {
     font-size: 1.45rem;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
