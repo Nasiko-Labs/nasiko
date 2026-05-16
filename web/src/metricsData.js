@@ -159,6 +159,7 @@ function summarizeAgent(agent, hourly) {
   };
 }
 
-window.NASIKO_AGENT_METRICS = BASE_AGENTS.map((agent, index) =>
+window.NASIKO_DEMO_AGENT_METRICS = BASE_AGENTS.map((agent, index) =>
   summarizeAgent(agent, buildHourlySeries(agent, index))
 );
+window.NASIKO_AGENT_METRICS = window.NASIKO_DEMO_AGENT_METRICS;

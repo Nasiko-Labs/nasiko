@@ -1,6 +1,7 @@
 const { useEffect, useMemo, useRef, useState } = React;
 
-const agents = window.NASIKO_AGENT_METRICS;
+const demoAgents = window.NASIKO_DEMO_AGENT_METRICS || window.NASIKO_AGENT_METRICS || [];
+const LIVE_AGENT_COLORS = ["#157a6e", "#5c5ff0", "#c47a14", "#cc4052", "#2563eb", "#7c3aed"];
 
 function numberFormat(value) {
   return new Intl.NumberFormat().format(value);
@@ -18,6 +19,294 @@ function average(values) {
   return values.reduce((total, value) => total + value, 0) / Math.max(1, values.length);
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function parseStoredToken(rawValue) {
+  if (!rawValue) return "";
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (typeof parsed === "string") return parsed;
+    return parsed.token || parsed.access_token || parsed.jwt_token || parsed.jwt || "";
+  } catch (_error) {
+    return rawValue;
+  }
+}
+
+function getAuthHeader() {
+  const tokenKeys = [
+    "nasiko_token",
+    "nasiko_jwt",
+    "jwt_token",
+    "auth_token",
+    "authToken",
+    "access_token",
+    "token",
+  ];
+
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    for (const key of tokenKeys) {
+      const token = parseStoredToken(storage.getItem(key));
+      if (token) {
+        return token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}`;
+      }
+    }
+  }
+
+  return "";
+}
+
+function getApiBaseCandidates() {
+  const configuredBase =
+    window.NASIKO_METRICS_CONFIG?.apiBaseUrl ||
+    window.localStorage.getItem("nasiko_api_base_url") ||
+    "";
+  const originBase = `${window.location.origin}/api/v1`;
+  const candidates = [
+    configuredBase,
+    originBase,
+    "http://localhost:9100/api/v1",
+    "http://127.0.0.1:9100/api/v1",
+    "http://localhost:8000/api/v1",
+    "http://127.0.0.1:8000/api/v1",
+  ];
+
+  return [...new Set(candidates.map((candidate) => candidate.replace(/\/$/, "")).filter(Boolean))];
+}
+
+function readNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return 0;
+}
+
+function prettifyAgentName(agentId) {
+  return String(agentId || "agent")
+    .replace(/^agent[-_]/, "")
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function sessionHasError(session) {
+  const textParts = [];
+  const annotations = session.session_annotations || [];
+  const summaries = session.session_annotation_summaries || [];
+
+  annotations.forEach((annotation) => {
+    textParts.push(annotation.label, annotation.name);
+    if (Number(annotation.score) <= 0) textParts.push("error");
+  });
+
+  summaries.forEach((summary) => {
+    textParts.push(summary.name);
+    (summary.label_fractions || []).forEach((fraction) => textParts.push(fraction.label));
+  });
+
+  const text = textParts.filter(Boolean).join(" ").toLowerCase();
+  return /error|failed|failure|exception|timeout|critical/.test(text);
+}
+
+function getSessionErrorCount(session, traces) {
+  const summaries = session.session_annotation_summaries || [];
+  let errorFraction = 0;
+
+  summaries.forEach((summary) => {
+    (summary.label_fractions || []).forEach((fraction) => {
+      const label = String(fraction.label || "").toLowerCase();
+      if (/error|failed|failure|exception|timeout|critical/.test(label)) {
+        errorFraction += Number(fraction.fraction) || 0;
+      }
+    });
+  });
+
+  if (errorFraction > 0) return Math.max(1, Math.round(traces * Math.min(1, errorFraction)));
+  return sessionHasError(session) ? Math.max(1, Math.round(traces * 0.25)) : 0;
+}
+
+function buildEmptyHourlyBuckets() {
+  const now = new Date();
+  const start = new Date(now);
+  start.setMinutes(0, 0, 0);
+  start.setHours(start.getHours() - 23);
+
+  return Array.from({ length: 24 }, (_, index) => {
+    const timestamp = new Date(start);
+    timestamp.setHours(start.getHours() + index);
+    return {
+      timestamp,
+      hour: timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      responseMsTotal: 0,
+      p95ResponseMsTotal: 0,
+      latencyWeight: 0,
+      successCount: 0,
+      errorCount: 0,
+      uptime: 100,
+      saturation: 0,
+    };
+  });
+}
+
+function summarizeLiveAgent(agent, hourly) {
+  const maxTraffic = Math.max(...hourly.map((point) => point.successCount + point.errorCount), 1);
+  const normalizedHourly = hourly.map((point) => {
+    const requestCount = point.successCount + point.errorCount;
+    const responseMs = point.latencyWeight
+      ? Math.round(point.responseMsTotal / point.latencyWeight)
+      : agent.avgResponseMs || 0;
+    const p95ResponseMs = point.latencyWeight
+      ? Math.round(point.p95ResponseMsTotal / point.latencyWeight)
+      : Math.round(responseMs * 1.25);
+    const uptime = requestCount
+      ? Number((((point.successCount / requestCount) * 100)).toFixed(2))
+      : 100;
+
+    return {
+      hour: point.hour,
+      responseMs,
+      p95ResponseMs,
+      successCount: point.successCount,
+      errorCount: point.errorCount,
+      uptime,
+      saturation: Math.round((requestCount / maxTraffic) * 100),
+    };
+  });
+
+  const totals = normalizedHourly.reduce(
+    (acc, point) => {
+      acc.responseMs += point.responseMs * Math.max(1, point.successCount + point.errorCount);
+      acc.p95ResponseMs += point.p95ResponseMs * Math.max(1, point.successCount + point.errorCount);
+      acc.weight += Math.max(1, point.successCount + point.errorCount);
+      acc.successCount += point.successCount;
+      acc.errorCount += point.errorCount;
+      acc.saturation += point.saturation;
+      return acc;
+    },
+    { responseMs: 0, p95ResponseMs: 0, weight: 0, successCount: 0, errorCount: 0, saturation: 0 }
+  );
+  const totalRequests = totals.successCount + totals.errorCount;
+  const avgResponseMs = Math.round(totals.responseMs / Math.max(1, totals.weight));
+  const errorRate = Number(((totals.errorCount / Math.max(1, totalRequests)) * 100).toFixed(2));
+  const uptime = Number((((totals.successCount / Math.max(1, totalRequests)) * 100)).toFixed(2));
+  const recentResponse = average(normalizedHourly.slice(-6).map((point) => point.responseMs));
+  const previousResponse = average(normalizedHourly.slice(-12, -6).map((point) => point.responseMs));
+
+  return {
+    ...agent,
+    avgResponseMs,
+    p95ResponseMs: Math.round(totals.p95ResponseMs / Math.max(1, totals.weight)),
+    successCount: totals.successCount,
+    errorCount: totals.errorCount,
+    totalRequests,
+    errorRate,
+    uptime: totalRequests ? uptime : 100,
+    saturation: Math.round(totals.saturation / normalizedHourly.length),
+    responseTrendMs: Math.round(recentResponse - previousResponse),
+    reliabilityScore: clamp(Math.round((totalRequests ? uptime : 100) - errorRate * 1.8 - avgResponseMs / 1200), 0, 100),
+    hourly: normalizedHourly,
+  };
+}
+
+function transformSessionsToAgents(sessions) {
+  const grouped = new Map();
+  const knownAgents = new Map(demoAgents.map((agent) => [agent.id, agent]));
+
+  sessions.forEach((session, index) => {
+    const agentId = session.agent_id || session.project_name || session.project_id || "unknown-agent";
+    const knownAgent = knownAgents.get(agentId);
+    const group =
+      grouped.get(agentId) ||
+      {
+        id: agentId,
+        name: knownAgent?.name || prettifyAgentName(agentId),
+        lane: knownAgent?.lane || "Live",
+        mission: knownAgent?.mission || "Observed from Nasiko traces",
+        owner: knownAgent?.owner || "Nasiko",
+        region: knownAgent?.region || "live",
+        version: knownAgent?.version || "live",
+        color: knownAgent?.color || LIVE_AGENT_COLORS[grouped.size % LIVE_AGENT_COLORS.length],
+        hourly: buildEmptyHourlyBuckets(),
+        avgResponseMs: 0,
+      };
+
+    const traces = Math.max(1, Math.round(readNumber(session.num_traces, session.trace_count, 1)));
+    const errorCount = Math.min(traces, getSessionErrorCount(session, traces));
+    const successCount = Math.max(0, traces - errorCount);
+    const responseMs = Math.round(readNumber(session.trace_latency_ms_p50, session.latency_p50, session.latency_ms_p50, 0));
+    const p95ResponseMs = Math.round(readNumber(session.trace_latency_ms_p99, session.latency_ms_p99, responseMs * 1.25));
+    const startTime = new Date(session.start_time || session.created_at || Date.now());
+    const bucketIndex = group.hourly.findIndex((bucket) => {
+      const nextHour = new Date(bucket.timestamp);
+      nextHour.setHours(bucket.timestamp.getHours() + 1);
+      return startTime >= bucket.timestamp && startTime < nextHour;
+    });
+    const bucket = group.hourly[bucketIndex >= 0 ? bucketIndex : group.hourly.length - 1];
+    const latency = responseMs || 0;
+    const p95 = p95ResponseMs || Math.round(latency * 1.25);
+
+    bucket.successCount += successCount;
+    bucket.errorCount += errorCount;
+    bucket.responseMsTotal += latency * traces;
+    bucket.p95ResponseMsTotal += p95 * traces;
+    bucket.latencyWeight += traces;
+
+    grouped.set(agentId, group);
+  });
+
+  return [...grouped.values()]
+    .map((agent) => summarizeLiveAgent(agent, agent.hourly))
+    .filter((agent) => agent.totalRequests > 0);
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function loadLiveTelemetry() {
+  const authHeader = getAuthHeader();
+  if (!authHeader) {
+    return { mode: "demo", agents: demoAgents, reason: "No auth token found for live observability API." };
+  }
+
+  const startTime = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const headers = { Accept: "application/json", Authorization: authHeader };
+
+  for (const apiBase of getApiBaseCandidates()) {
+    try {
+      const url = `${apiBase}/observability/session/list?start_time=${encodeURIComponent(startTime)}`;
+      const payload = await fetchJsonWithTimeout(url, { headers, credentials: "include" });
+      const sessions = payload?.data?.sessions || [];
+      const liveAgents = Array.isArray(sessions) ? transformSessionsToAgents(sessions) : [];
+
+      if (liveAgents.length > 0) {
+        return {
+          mode: "live",
+          agents: liveAgents,
+          reason: `Loaded ${sessions.length} sessions from ${apiBase}.`,
+        };
+      }
+    } catch (_error) {
+      // Try the next likely Nasiko API base and keep the dashboard usable.
+    }
+  }
+
+  return { mode: "demo", agents: demoAgents, reason: "Live API unavailable or returned no sessions." };
+}
+
 function getReliability(agent) {
   const errorRate = agent.errorRate ?? (agent.errorCount / Math.max(1, agent.totalRequests)) * 100;
   if (agent.uptime < 98.5 || errorRate >= 6) return { className: "risk", label: "Risk" };
@@ -32,7 +321,9 @@ function trendCopy(value) {
 }
 
 function aggregateHourly(selectedAgents) {
-  return agents[0].hourly.map((point, index) => {
+  if (!selectedAgents.length) return [];
+
+  return selectedAgents[0].hourly.map((point, index) => {
     const row = selectedAgents.reduce(
       (acc, agent) => {
         const hour = agent.hourly[index];
@@ -66,6 +357,23 @@ function aggregateHourly(selectedAgents) {
 }
 
 function aggregateSummary(selectedAgents, hourly) {
+  if (!selectedAgents.length || !hourly.length) {
+    return {
+      avgResponseMs: 0,
+      p95ResponseMs: 0,
+      successCount: 0,
+      errorCount: 0,
+      totalRequests: 0,
+      errorRate: 0,
+      uptime: 0,
+      saturation: 0,
+      reliabilityScore: 0,
+      activeAgents: 0,
+      responseTrendMs: 0,
+      hottestHour: { hour: "N/A", successCount: 0, errorCount: 0 },
+    };
+  }
+
   const totals = selectedAgents.reduce(
     (acc, agent) => {
       acc.avgResponseMs += agent.avgResponseMs;
@@ -187,8 +495,9 @@ function SparkBars({ points, color }) {
   );
 }
 
-function FleetHero({ summary, activeLabel }) {
+function FleetHero({ summary, activeLabel, telemetry }) {
   const responseTone = summary.responseTrendMs <= 0 ? "good" : "bad";
+  const telemetryLabel = telemetry.mode === "live" ? "Live telemetry" : "Demo telemetry";
 
   return (
     <section className="command-panel">
@@ -198,15 +507,28 @@ function FleetHero({ summary, activeLabel }) {
         <p>Last 24 hours across response latency, request outcomes, uptime, and fleet pressure.</p>
       </div>
 
-      <div className="command-score" style={{ "--score": `${summary.reliabilityScore}%` }}>
-        <div className="score-ring">
-          <strong>{summary.reliabilityScore}</strong>
-          <span>Score</span>
+      <div className="command-score">
+        <div className="score-ring" aria-label={`Reliability score ${percentFormat(summary.reliabilityScore)}`}>
+          <svg className="score-ring-chart" viewBox="0 0 120 120" aria-hidden="true" focusable="false">
+            <circle className="score-ring-track" cx="60" cy="60" r="48" pathLength="100" />
+            <circle
+              className="score-ring-value"
+              cx="60"
+              cy="60"
+              r="48"
+              pathLength="100"
+              style={{ "--score-offset": 100 - summary.reliabilityScore }}
+            />
+          </svg>
+          <span className="score-ring-copy">
+            <strong>{summary.reliabilityScore}<small>%</small></strong>
+            <span>Score</span>
+          </span>
         </div>
         <div className="score-copy">
-          <span className="freshness">
+          <span className={`freshness ${telemetry.mode}`}>
             <span className="pulse" />
-            Demo telemetry
+            {telemetryLabel}
           </span>
           <strong>{activeLabel}</strong>
           <small>{summary.activeAgents} agent view</small>
@@ -235,7 +557,7 @@ function FleetHero({ summary, activeLabel }) {
   );
 }
 
-function ExecutiveReadout({ summary, activeAgent }) {
+function ExecutiveReadout({ summary, activeAgent, agents }) {
   const fastestAgent = [...agents].sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
   const trafficLeader = [...agents].sort((a, b) => b.totalRequests - a.totalRequests)[0];
   const attentionAgent =
@@ -515,7 +837,7 @@ function PressureChart({ hourly }) {
   return <ChartCanvas config={config} className="chart-shell" />;
 }
 
-function InsightPanel({ summary, activeAgent }) {
+function InsightPanel({ summary, activeAgent, agents }) {
   const watchedAgents = [...agents].sort((a, b) => a.reliabilityScore - b.reliabilityScore).slice(0, 3);
   const bestAgent = [...agents].sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
   const focusedAgent = activeAgent || watchedAgents[0];
@@ -568,7 +890,7 @@ function InsightPanel({ summary, activeAgent }) {
   );
 }
 
-function HeatmapPanel() {
+function HeatmapPanel({ agents }) {
   return (
     <section className="panel heatmap-panel">
       <div className="panel-heading">
@@ -603,7 +925,7 @@ function HeatmapPanel() {
   );
 }
 
-function AgentTable({ selectedAgentId, onSelect }) {
+function AgentTable({ agents, selectedAgentId, onSelect }) {
   return (
     <section className="panel table-panel">
       <div className="panel-heading">
@@ -658,20 +980,49 @@ function AgentTable({ selectedAgentId, onSelect }) {
 
 function App() {
   const [selectedAgentId, setSelectedAgentId] = useState("all");
+  const [telemetry, setTelemetry] = useState({
+    mode: "demo",
+    agents: demoAgents,
+    reason: "Using bundled demo telemetry while checking for live data.",
+  });
+
+  useEffect(() => {
+    let isActive = true;
+
+    loadLiveTelemetry().then((result) => {
+      if (isActive) setTelemetry(result);
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  const agents = telemetry.agents.length ? telemetry.agents : demoAgents;
+
+  useEffect(() => {
+    if (selectedAgentId !== "all" && !agents.some((agent) => agent.id === selectedAgentId)) {
+      setSelectedAgentId("all");
+    }
+  }, [agents, selectedAgentId]);
 
   const selectedAgents = useMemo(() => {
     if (selectedAgentId === "all") return agents;
-    return agents.filter((agent) => agent.id === selectedAgentId);
-  }, [selectedAgentId]);
+    const matchingAgents = agents.filter((agent) => agent.id === selectedAgentId);
+    return matchingAgents.length ? matchingAgents : agents;
+  }, [agents, selectedAgentId]);
 
-  const activeAgent = selectedAgentId === "all" ? null : selectedAgents[0];
+  const activeAgent =
+    selectedAgentId === "all"
+      ? null
+      : agents.find((agent) => agent.id === selectedAgentId) || null;
   const hourly = useMemo(() => aggregateHourly(selectedAgents), [selectedAgents]);
   const summary = useMemo(() => aggregateSummary(selectedAgents, hourly), [selectedAgents, hourly]);
   const activeLabel = activeAgent ? activeAgent.name : "All agents";
 
   return (
     <main className="page-shell">
-      <FleetHero summary={summary} activeLabel={activeLabel} />
+      <FleetHero summary={summary} activeLabel={activeLabel} telemetry={telemetry} />
 
       <section className="toolbar" aria-label="Agent filter">
         <button
@@ -704,7 +1055,9 @@ function App() {
         </StatTile>
       </section>
 
-      <ExecutiveReadout summary={summary} activeAgent={activeAgent} />
+      <p className={`telemetry-note ${telemetry.mode}`}>{telemetry.reason}</p>
+
+      <ExecutiveReadout summary={summary} activeAgent={activeAgent} agents={agents} />
 
       <section className="agent-grid">
         {agents.map((agent) => (
@@ -729,7 +1082,7 @@ function App() {
           <ResponseChart selectedAgents={selectedAgents} hourly={hourly} />
         </section>
 
-        <InsightPanel summary={summary} activeAgent={activeAgent} />
+        <InsightPanel summary={summary} activeAgent={activeAgent} agents={agents} />
 
         <section className="panel">
           <div className="panel-heading">
@@ -762,8 +1115,8 @@ function App() {
         </section>
       </section>
 
-      <HeatmapPanel />
-      <AgentTable selectedAgentId={selectedAgentId} onSelect={setSelectedAgentId} />
+      <HeatmapPanel agents={agents} />
+      <AgentTable agents={agents} selectedAgentId={selectedAgentId} onSelect={setSelectedAgentId} />
     </main>
   );
 }
