@@ -236,6 +236,7 @@ services:
       KONG_AUTH_HOST: nasiko-auth-service
       KONG_BACKEND_HOST: nasiko-backend
       KONG_WEB_HOST: nasiko-web
+      KONG_LOGS_WEB_HOST: nasiko-logs-web
       KONG_ROUTER_HOST: nasiko-router
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -343,6 +344,25 @@ services:
       - app-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nasiko-logs-web:
+    build:
+      context: ./web/logs-dashboard
+      dockerfile: Dockerfile
+    container_name: nasiko-logs-web
+    restart: unless-stopped
+    depends_on:
+      kong-gateway:
+        condition: service_healthy
+    ports:
+      - "4001:4001"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4001"]
       interval: 30s
       timeout: 10s
       retries: 3

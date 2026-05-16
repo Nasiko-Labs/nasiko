@@ -529,9 +529,16 @@ def register_static_proxies():
         local_service="nasiko-web",
         env_var="KONG_WEB_HOST",
     )
+    logs_web_host = _resolve_service_host(
+        k8s_service="nasiko-logs-web",
+        local_service="nasiko-logs-web",
+        env_var="KONG_LOGS_WEB_HOST",
+    )
     web_path = os.getenv("KONG_WEB_PATH", "/app").strip() or "/app"
     if not web_path.startswith("/"):
         web_path = f"/{web_path}"
+    if web_path != "/":
+        web_path = web_path.rstrip("/")
     auth_host = _resolve_service_host(
         k8s_service="nasiko-auth",
         local_service="nasiko-auth-service-oss",
@@ -559,6 +566,17 @@ def register_static_proxies():
             "strip_path": False,  # /api/v1/users → /api/v1/users
             "preserve_host": False,
             "middlewares": ["cors", "nasiko-auth"],  # CORS + Auth, no chat logging
+        },
+        # React logs dashboard mounted under the existing web app path.
+        {
+            "name": "logs-dashboard-proxy",
+            "host": logs_web_host,
+            "port": 4001,
+            "paths": [f"{web_path}/logs"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            "strip_path": True,
+            "preserve_host": False,
+            "middlewares": ["cors"],
         },
         # Web app proxy - no middleware
         {
