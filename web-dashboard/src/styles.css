@@ -104,11 +104,46 @@ body {
   flex-shrink: 0;
 }
 
+.topbar-nav {
+  display: flex;
+  gap: 0.25rem;
+  margin-left: 0.25rem;
+}
+
+.nav-link {
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.nav-link:hover {
+  color: var(--text-secondary);
+  background: var(--surface);
+}
+
+.nav-link.active {
+  color: #fff;
+  background: var(--nasiko-primary);
+}
+
 .topbar-page {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--nasiko-slate-light);
   white-space: nowrap;
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .topbar-page {
+    display: inline;
+  }
 }
 
 .topbar-actions {
@@ -470,4 +505,140 @@ code {
   color: var(--muted);
   padding: 3rem 1rem;
   font-size: 0.875rem;
+}
+
+/* Agent metrics (Challenge 2) */
+.metrics-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding: 1rem 1.25rem;
+}
+
+.agent-select-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 200px;
+  max-width: 420px;
+}
+
+.agent-select {
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.agent-select:focus {
+  outline: none;
+  border-color: var(--nasiko-primary);
+  box-shadow: 0 0 0 3px var(--nasiko-primary-muted);
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.1rem;
+  box-shadow: var(--shadow);
+}
+
+.stat-label {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.stat-value {
+  display: block;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.stat-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1rem 0.75rem;
+  box-shadow: var(--shadow);
+}
+
+.chart-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.chart-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 140px;
+  padding-top: 0.25rem;
+}
+
+.chart-bar-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+}
+
+.chart-bar {
+  width: 100%;
+  max-width: 24px;
+  border-radius: 3px 3px 0 0;
+  margin-top: auto;
+  transition: height 0.2s ease;
+}
+
+.chart-bar-label {
+  font-size: 0.5625rem;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  margin-top: 0.35rem;
+  transform: rotate(-45deg);
+  transform-origin: top center;
+  white-space: nowrap;
+  height: 28px;
 }

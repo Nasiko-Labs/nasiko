@@ -1,16 +1,22 @@
-# Nasiko Platform Logs Dashboard (Challenge 1)
+# Nasiko Web Dashboard (Challenges 1 & 2)
 
-React + TypeScript dashboard for **Buildathon Challenge 1**: view platform logs in a table with timestamps and filter by `INFO`, `WARNING`, or `ERROR`.
+React + TypeScript dashboards for the Nasiko buildathon:
+
+| Challenge | Route | Feature |
+|-----------|--------|---------|
+| 1 | `/logs/` | Platform logs table + level filters |
+| 2 | `/metrics/` | Per-agent stats + 24h charts |
 
 ## View in Nasiko (recommended)
 
-With the full stack running, open:
+With the full stack running:
 
-**http://localhost:9100/logs/**
+- **Logs:** http://localhost:9100/logs/
+- **Metrics:** http://localhost:9100/metrics/
 
-This is served through Kong on the same gateway as the main web UI (`/app/`). API calls use `/api` and `/auth` on the same origin.
+Same Kong host as the main app (`/app/`). Use the top nav to switch between Logs and Metrics.
 
-Link back to the main Nasiko app: **http://localhost:9100/app/**
+**Requires:** Phoenix observability running and agent traffic for metrics charts.
 
 ## Prerequisites
 
@@ -66,4 +72,6 @@ Both should print `200`. Direct container access: http://localhost:3001/
 
 ## Notes for reviewers
 
-The shipped Nasiko web UI (`nasiko-web`) is a compiled Flutter bundle without React source in this repo. Challenge 1 adds a **React/TypeScript page** integrated at **`/logs`** on the Kong gateway alongside **`/app`**.
+The shipped Nasiko web UI (`nasiko-web`) is a compiled Flutter bundle without React source in this repo. Challenges 1–2 add **React/TypeScript pages** at **`/logs`** and **`/metrics`** on the Kong gateway.
+
+**Challenge 2 PR tip:** If Challenge 1 is not merged yet, either stack this branch on `feat/challenge-1-logging-dashboard` or rebase onto `main` after C1 merges.

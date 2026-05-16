@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const base = process.env.VITE_BASE_PATH ?? "/";
+// Relative base so /logs/ and /metrics/ both resolve assets under their Kong prefix.
+const base = process.env.VITE_BASE_PATH ?? "./";
 
 export default defineConfig({
   base,

@@ -356,7 +356,7 @@ services:
       context: ./web-dashboard
       dockerfile: Dockerfile
       args:
-        VITE_BASE_PATH: /logs/
+        VITE_BASE_PATH: ./
     container_name: nasiko-log-dashboard
     restart: unless-stopped
     # Reachable via Kong at http://localhost:9100/logs/ (optional direct port: NASIKO_PORT_LOG_DASHBOARD)

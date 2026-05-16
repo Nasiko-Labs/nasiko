@@ -2,8 +2,9 @@ from fastapi import HTTPException, status
 from app.pkg.config.config import settings
 import requests
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import re
+from datetime import datetime, timedelta, timezone
 
 
 class ObservabilityService:
@@ -1279,3 +1280,161 @@ class ObservabilityService:
                 f"Failed to transform span response: {str(e)}, returning raw response"
             )
             return self._convert_keys_to_snake_case(raw_response)
+
+    def _parse_iso_datetime(self, value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        normalized = value.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    async def _get_project_sessions_with_limit(
+        self,
+        project_id: str,
+        agent_id: str,
+        start_time: str,
+        first: int = 250,
+    ) -> List[Dict[str, Any]]:
+        """Fetch project sessions for metrics aggregation (higher limit than UI list)."""
+        query = """
+            query ProjectMetricsSessionsQuery($id: ID!, $timeRange: TimeRange!, $first: Int!) {
+                project: node(id: $id) {
+                    __typename
+                    ... on Project {
+                        sessions(
+                            first: $first,
+                            sort: {col: startTime, dir: desc},
+                            timeRange: $timeRange
+                        ) {
+                            edges {
+                                session: node {
+                                    sessionId
+                                    numTraces
+                                    startTime
+                                    tokenUsage { total }
+                                    traceLatencyMsP50: traceLatencyMsQuantile(probability: 0.5)
+                                    costSummary { total { cost } }
+                                }
+                            }
+                        }
+                    }
+                    id
+                }
+            }
+        """
+        variables = {
+            "id": project_id,
+            "timeRange": {"start": start_time},
+            "first": first,
+        }
+        raw_response = await self._execute_graphql_query(query, variables)
+        project_data = raw_response.get("data", {}).get("project", {})
+        edges = project_data.get("sessions", {}).get("edges", [])
+        sessions = []
+        for edge in edges:
+            session_data = edge.get("session", {})
+            if session_data:
+                session_snake = self._convert_keys_to_snake_case(session_data)
+                session_snake["agent_id"] = agent_id
+                sessions.append(session_snake)
+        return sessions
+
+    async def get_agent_metrics_timeseries(
+        self, agent_id: str, hours: int = 24
+    ) -> Dict[str, Any]:
+        """Aggregate session metrics into hourly buckets for charting."""
+        hours = max(1, min(hours, 168))
+        now = datetime.now(timezone.utc)
+        start_dt = now - timedelta(hours=hours)
+        start_time = start_dt.isoformat().replace("+00:00", "Z")
+
+        project_id = await self._get_project_id(agent_id)
+        if not project_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found for agent '{agent_id}'",
+            )
+
+        sessions = await self._get_project_sessions_with_limit(
+            project_id, agent_id, start_time, first=500
+        )
+
+        buckets: Dict[str, Dict[str, Any]] = {}
+        for i in range(hours):
+            hour_start = (start_dt + timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            key = hour_start.strftime("%Y-%m-%dT%H:00:00Z")
+            buckets[key] = {
+                "hour": key,
+                "label": hour_start.strftime("%H:%M"),
+                "trace_count": 0,
+                "session_count": 0,
+                "total_cost": 0.0,
+                "total_tokens": 0,
+                "latency_ms_sum": 0.0,
+                "latency_ms_count": 0,
+            }
+
+        for session in sessions:
+            session_start = self._parse_iso_datetime(session.get("start_time"))
+            if not session_start:
+                continue
+            hour_key = session_start.replace(
+                minute=0, second=0, microsecond=0
+            ).strftime("%Y-%m-%dT%H:00:00Z")
+            if hour_key not in buckets:
+                continue
+
+            bucket = buckets[hour_key]
+            traces = int(session.get("num_traces") or 0)
+            bucket["trace_count"] += traces
+            bucket["session_count"] += 1
+
+            cost = session.get("cost_summary", {}).get("total", {}).get("cost")
+            if cost is not None:
+                bucket["total_cost"] += float(cost)
+
+            tokens = session.get("token_usage", {}).get("total")
+            if tokens is not None:
+                bucket["total_tokens"] += int(tokens)
+
+            latency = session.get("trace_latency_ms_p50")
+            if latency is not None:
+                bucket["latency_ms_sum"] += float(latency)
+                bucket["latency_ms_count"] += 1
+
+        series = []
+        for key in sorted(buckets.keys()):
+            bucket = buckets[key]
+            count = bucket.pop("latency_ms_count")
+            bucket["avg_latency_ms"] = (
+                round(bucket.pop("latency_ms_sum") / count, 2) if count else None
+            )
+            bucket["total_cost"] = round(bucket["total_cost"], 6)
+            series.append(bucket)
+
+        summary_stats = await self.get_agent_project_stats(agent_id, start_time)
+        project = summary_stats.get("data", {}).get("project", {})
+
+        return {
+            "data": {
+                "agent_id": agent_id,
+                "hours": hours,
+                "start_time": start_time,
+                "end_time": now.isoformat().replace("+00:00", "Z"),
+                "series": series,
+                "summary": {
+                    "trace_count": project.get("trace_count", 0),
+                    "latency_ms_p50": project.get("latency_ms_p50"),
+                    "latency_ms_p99": project.get("latency_ms_p99"),
+                    "cost_summary": project.get("cost_summary"),
+                    "sessions_in_range": len(sessions),
+                },
+            }
+        }
