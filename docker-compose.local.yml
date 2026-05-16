@@ -65,7 +65,7 @@ services:
       MONGO_NASIKO_DATABASE: nasiko
       REDIS_HOST: redis
       REDIS_URL: redis://redis:6379
-      USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY}
+      USER_CREDENTIALS_ENCRYPTION_KEY: ${USER_CREDENTIALS_ENCRYPTION_KEY:-gka2lB4ATxGdFDVM0AcwZP1ZKioe0UuZ-iiImlj-hTA=}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
@@ -81,7 +81,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthcheck').read()\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -314,7 +314,10 @@ services:
   # WEB FRONTEND LAYER
   # ============================================================================
   nasiko-web:
-    image: docker.io/karannasiko/nasiko-web:oss
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: nasiko-web:local
     platform: linux/amd64
     container_name: nasiko-web
     restart: unless-stopped
@@ -331,14 +334,6 @@ services:
       AUTH_BASE_URL: ""
       AGENTS_BASE_URL: /agents
       IS_DEVELOPMENT: "false"
-    # The compiled Flutter bundle has https://nasiko.dev hardcoded. Patch it at
-    # startup so local deployments route through Kong instead of the production host.
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        KONG_URL="http://localhost:${NASIKO_PORT_KONG:-9100}"
-        sed -i "s|https://nasiko.dev|$$KONG_URL|g" /usr/share/nginx/html/main.dart.js
-        exec /docker-entrypoint.sh nginx -g 'daemon off;'
     networks:
       - app-network
     healthcheck:
