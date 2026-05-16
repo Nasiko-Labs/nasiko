@@ -452,6 +452,7 @@ def cleanup_stale_services(current_service_names: Set[str]) -> None:
             "auth-proxy",
             "nasiko-router",
             "landing-page",
+            "platform-logs-dashboard",
             "n8n",
             "gateway-status",
             "gateway-health",
@@ -547,6 +548,11 @@ def register_static_proxies():
         local_service="n8n",
         env_var="KONG_N8N_HOST",
     )
+    log_dashboard_host = _resolve_service_host(
+        k8s_service="nasiko-log-dashboard",
+        local_service="nasiko-log-dashboard",
+        env_var="KONG_LOG_DASHBOARD_HOST",
+    )
 
     static_services = [
         # Backend API proxy - auth only, no chat logging
@@ -570,6 +576,17 @@ def register_static_proxies():
             "strip_path": True,
             "preserve_host": False,
             "middlewares": ["cors"],  # CORS only
+        },
+        # Platform logs dashboard (React) — Buildathon Challenge 1
+        {
+            "name": "platform-logs-dashboard",
+            "host": log_dashboard_host,
+            "port": 80,
+            "paths": ["/logs"],
+            "methods": ["GET", "HEAD", "OPTIONS"],
+            "strip_path": True,
+            "preserve_host": False,
+            "middlewares": ["cors"],
         },
         # Auth service proxy - auth only
         {
@@ -611,12 +628,12 @@ def register_static_proxies():
                 "chat-logger",
             ],  # Full middleware with CORS
         },
-        # Static landing page - forward to web app
+        # Static landing page - exact root only (not prefix /logs, /api, etc.)
         {
             "name": "landing-page",
             "host": web_host,
             "port": 4000,
-            "paths": ["/"],
+            "paths": ["~/^/$"],
             "upstream_path": "/app/",
             "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
             "strip_path": False,
@@ -674,24 +691,25 @@ def register_proxy_service_in_kong(service_config):
     try:
         logger.info(f"Starting registration of proxy service: {service_config['name']}")
 
-        # Create service URL
-        if service_config.get("upstream_path"):
-            service_url = f"http://{service_config['host']}:{service_config['port']}{service_config['upstream_path']}"
-        else:
-            service_url = f"http://{service_config['host']}:{service_config['port']}"
-
-        logger.info(f"Service URL for {service_config['name']}: {service_url}")
-
-        # Create service in Kong
+        # Use host/port (not url) so Kong re-resolves Docker DNS after container restarts.
         service_data = {
             "name": service_config["name"],
-            "url": service_url,
+            "host": service_config["host"],
+            "port": service_config["port"],
+            "protocol": "http",
             "connect_timeout": 60000,
             "write_timeout": 300000,
             "read_timeout": 300000,
             "retries": 3,
-            "protocol": "http",
         }
+        if service_config.get("upstream_path"):
+            service_data["path"] = service_config["upstream_path"]
+
+        logger.info(
+            f"Service target for {service_config['name']}: "
+            f"{service_data['protocol']}://{service_data['host']}:{service_data['port']}"
+            f"{service_data.get('path', '')}"
+        )
 
         logger.info(f"Service data for {service_config['name']}: {service_data}")
 

@@ -7,8 +7,18 @@ from app.repository.repository import Repository
 from app.service.service import Service
 from app.api.handlers import HandlerFactory
 from app.api.routes.router import create_router
+import asyncio
 import logging
 import secrets
+
+from starlette.requests import Request
+from starlette.responses import Response
+
+from app.pkg.platform_logging import (
+    setup_platform_logging,
+    start_log_worker,
+    stop_log_worker,
+)
 
 # Setup logging
 logging.basicConfig(
@@ -46,6 +56,13 @@ async def lifespan(app: FastAPI):
     service = Service(repo, logger)
     handlers = HandlerFactory(service, logger, {})
 
+    log_queue: asyncio.Queue = asyncio.Queue()
+    await start_log_worker(repo.platform_logs, log_queue)
+    setup_platform_logging(log_queue, service_name="nasiko-backend")
+    seeded = await service.platform_logs.seed_if_empty()
+    if seeded:
+        logger.info(f"Seeded {seeded} sample platform log entries")
+
     # Initialize search service
     try:
         await handlers.search.initialize_search()
@@ -54,8 +71,11 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize search service: {e}")
 
     app.include_router(create_router(handlers, logger), prefix="/api/v1")
+    app.state.platform_log_queue = log_queue
+
     yield
     # Shutdown
+    await stop_log_worker()
     logger.info("shutting down application...")
 
 
@@ -79,6 +99,25 @@ app.add_middleware(
 )
 
 # CORS is handled by Kong gateway, removed service-level CORS to avoid conflicts
+
+
+@app.middleware("http")
+async def platform_request_logging_middleware(request: Request, call_next):
+    """Record API requests as platform INFO logs (skips health/docs noise)."""
+    path = request.url.path
+    skip = path in ("/api/v1/healthcheck", "/docs", "/redoc", "/openapi.json")
+    response: Response = await call_next(request)
+    if not skip and path.startswith("/api/"):
+        queue = getattr(request.app.state, "platform_log_queue", None)
+        if queue is not None:
+            entry = {
+                "level": "ERROR" if response.status_code >= 500 else "INFO",
+                "message": f"{request.method} {path} -> {response.status_code}",
+                "service": "nasiko-backend",
+                "logger": "app.http",
+            }
+            await queue.put(entry)
+    return response
 
 # # Add explicit OPTIONS handler for preflight requests
 # @app.options("/{full_path:path}")
