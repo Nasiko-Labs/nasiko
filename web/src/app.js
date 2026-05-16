@@ -224,18 +224,56 @@ function FleetHero(_ref6) {
     className: "freshness"
   }, React.createElement("span", {
     className: "pulse"
-  }), "Updated just now"), React.createElement("strong", null, activeLabel), React.createElement("small", null, summary.activeAgents, " agent view"))), React.createElement("div", {
+  }), "Demo telemetry"), React.createElement("strong", null, activeLabel), React.createElement("small", null, summary.activeAgents, " agent view"))), React.createElement("div", {
     className: "command-brief"
   }, React.createElement("span", null, React.createElement("small", null, "P95 latency"), React.createElement("strong", null, msFormat(summary.p95ResponseMs))), React.createElement("span", null, React.createElement("small", null, "Error rate"), React.createElement("strong", null, percentFormat(summary.errorRate))), React.createElement("span", null, React.createElement("small", null, "Capacity"), React.createElement("strong", null, summary.saturation, "%")), React.createElement("span", {
     className: `brief-trend ${responseTone}`
   }, React.createElement("small", null, "Latency movement"), React.createElement("strong", null, trendCopy(summary.responseTrendMs)))));
 }
-function AgentCard(_ref7) {
+function ExecutiveReadout(_ref7) {
+  let {
+    summary,
+    activeAgent
+  } = _ref7;
+  const fastestAgent = [...agents].sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
+  const trafficLeader = [...agents].sort((a, b) => b.totalRequests - a.totalRequests)[0];
+  const attentionAgent = activeAgent || [...agents].sort((a, b) => a.reliabilityScore - b.reliabilityScore)[0];
+  const posture = summary.reliabilityScore >= 93 ? "Inside SLO" : "Needs watch";
+  const items = [{
+    tone: "green",
+    label: "Fleet posture",
+    value: posture,
+    detail: `${percentFormat(summary.uptime)} uptime across ${summary.activeAgents} agents`
+  }, {
+    tone: "blue",
+    label: "Fastest agent",
+    value: fastestAgent.name,
+    detail: `${msFormat(fastestAgent.avgResponseMs)} average response`
+  }, {
+    tone: "amber",
+    label: "Attention point",
+    value: attentionAgent.name,
+    detail: `${msFormat(attentionAgent.p95ResponseMs)} P95 - ${percentFormat(attentionAgent.errorRate)} errors`
+  }, {
+    tone: "violet",
+    label: "Traffic leader",
+    value: trafficLeader.name,
+    detail: `${numberFormat(trafficLeader.totalRequests)} requests completed`
+  }];
+  return React.createElement("section", {
+    className: "readout-grid",
+    "aria-label": "Executive telemetry readout"
+  }, items.map(item => React.createElement("article", {
+    className: `readout-card ${item.tone}`,
+    key: item.label
+  }, React.createElement("span", null, item.label), React.createElement("strong", null, item.value), React.createElement("small", null, item.detail))));
+}
+function AgentCard(_ref8) {
   let {
     agent,
     isActive,
     onSelect
-  } = _ref7;
+  } = _ref8;
   const reliability = getReliability(agent);
   return React.createElement("button", {
     className: `agent-card ${isActive ? "active" : ""}`,
@@ -257,11 +295,11 @@ function AgentCard(_ref7) {
     className: "agent-card-footer"
   }, React.createElement("span", null, agent.owner), React.createElement("span", null, agent.region), React.createElement("span", null, agent.version)));
 }
-function ResponseChart(_ref8) {
+function ResponseChart(_ref9) {
   let {
     selectedAgents,
     hourly
-  } = _ref8;
+  } = _ref9;
   const config = useMemo(() => {
     const grid = cssVar("--grid-line");
     const text = cssVar("--muted-text");
@@ -333,10 +371,10 @@ function ResponseChart(_ref8) {
     className: "chart-shell tall"
   });
 }
-function TrafficChart(_ref9) {
+function TrafficChart(_ref10) {
   let {
     hourly
-  } = _ref9;
+  } = _ref10;
   const config = useMemo(() => {
     const grid = cssVar("--grid-line");
     const text = cssVar("--muted-text");
@@ -403,10 +441,10 @@ function TrafficChart(_ref9) {
     className: "chart-shell"
   });
 }
-function UptimeChart(_ref10) {
+function UptimeChart(_ref11) {
   let {
     hourly
-  } = _ref10;
+  } = _ref11;
   const config = useMemo(() => {
     const grid = cssVar("--grid-line");
     const text = cssVar("--muted-text");
@@ -470,10 +508,10 @@ function UptimeChart(_ref10) {
     className: "chart-shell"
   });
 }
-function PressureChart(_ref11) {
+function PressureChart(_ref12) {
   let {
     hourly
-  } = _ref11;
+  } = _ref12;
   const config = useMemo(() => {
     const grid = cssVar("--grid-line");
     const text = cssVar("--muted-text");
@@ -551,11 +589,11 @@ function PressureChart(_ref11) {
     className: "chart-shell"
   });
 }
-function InsightPanel(_ref12) {
+function InsightPanel(_ref13) {
   let {
     summary,
     activeAgent
-  } = _ref12;
+  } = _ref13;
   const watchedAgents = [...agents].sort((a, b) => a.reliabilityScore - b.reliabilityScore).slice(0, 3);
   const bestAgent = [...agents].sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
   const focusedAgent = activeAgent || watchedAgents[0];
@@ -624,11 +662,11 @@ function HeatmapPanel() {
     });
   }))))));
 }
-function AgentTable(_ref13) {
+function AgentTable(_ref14) {
   let {
     selectedAgentId,
     onSelect
-  } = _ref13;
+  } = _ref14;
   return React.createElement("section", {
     className: "panel table-panel"
   }, React.createElement("div", {
@@ -704,7 +742,10 @@ function App() {
   }, React.createElement(ProgressBar, {
     value: summary.uptime,
     color: "#c47a14"
-  }))), React.createElement("section", {
+  }))), React.createElement(ExecutiveReadout, {
+    summary: summary,
+    activeAgent: activeAgent
+  }), React.createElement("section", {
     className: "agent-grid"
   }, agents.map(agent => React.createElement(AgentCard, {
     key: agent.id,

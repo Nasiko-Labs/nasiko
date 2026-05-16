@@ -206,7 +206,7 @@ function FleetHero({ summary, activeLabel }) {
         <div className="score-copy">
           <span className="freshness">
             <span className="pulse" />
-            Updated just now
+            Demo telemetry
           </span>
           <strong>{activeLabel}</strong>
           <small>{summary.activeAgents} agent view</small>
@@ -231,6 +231,53 @@ function FleetHero({ summary, activeLabel }) {
           <strong>{trendCopy(summary.responseTrendMs)}</strong>
         </span>
       </div>
+    </section>
+  );
+}
+
+function ExecutiveReadout({ summary, activeAgent }) {
+  const fastestAgent = [...agents].sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
+  const trafficLeader = [...agents].sort((a, b) => b.totalRequests - a.totalRequests)[0];
+  const attentionAgent =
+    activeAgent || [...agents].sort((a, b) => a.reliabilityScore - b.reliabilityScore)[0];
+  const posture = summary.reliabilityScore >= 93 ? "Inside SLO" : "Needs watch";
+
+  const items = [
+    {
+      tone: "green",
+      label: "Fleet posture",
+      value: posture,
+      detail: `${percentFormat(summary.uptime)} uptime across ${summary.activeAgents} agents`,
+    },
+    {
+      tone: "blue",
+      label: "Fastest agent",
+      value: fastestAgent.name,
+      detail: `${msFormat(fastestAgent.avgResponseMs)} average response`,
+    },
+    {
+      tone: "amber",
+      label: "Attention point",
+      value: attentionAgent.name,
+      detail: `${msFormat(attentionAgent.p95ResponseMs)} P95 - ${percentFormat(attentionAgent.errorRate)} errors`,
+    },
+    {
+      tone: "violet",
+      label: "Traffic leader",
+      value: trafficLeader.name,
+      detail: `${numberFormat(trafficLeader.totalRequests)} requests completed`,
+    },
+  ];
+
+  return (
+    <section className="readout-grid" aria-label="Executive telemetry readout">
+      {items.map((item) => (
+        <article className={`readout-card ${item.tone}`} key={item.label}>
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+          <small>{item.detail}</small>
+        </article>
+      ))}
     </section>
   );
 }
@@ -656,6 +703,8 @@ function App() {
           <ProgressBar value={summary.uptime} color="#c47a14" />
         </StatTile>
       </section>
+
+      <ExecutiveReadout summary={summary} activeAgent={activeAgent} />
 
       <section className="agent-grid">
         {agents.map((agent) => (

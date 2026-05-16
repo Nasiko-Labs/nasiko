@@ -52,6 +52,8 @@ button {
 }
 
 .command-panel {
+  position: relative;
+  isolation: isolate;
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.42fr);
   gap: 18px;
@@ -66,6 +68,25 @@ button {
   padding: 26px;
   box-shadow: var(--shadow);
   overflow: hidden;
+  animation: lift-in 520ms ease both;
+}
+
+.command-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    linear-gradient(115deg, transparent 0 38%, rgba(255, 255, 255, 0.14) 45%, transparent 54%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 120px);
+  opacity: 0.55;
+  transform: translateX(-70%);
+  animation: command-sweep 7s ease-in-out infinite;
+}
+
+.command-panel > * {
+  position: relative;
+  z-index: 1;
 }
 
 .command-copy {
@@ -129,6 +150,7 @@ h2 {
   background:
     radial-gradient(circle at center, #111827 0 58%, transparent 59%),
     conic-gradient(#35d4ba var(--score), rgba(255, 255, 255, 0.16) 0);
+  animation: score-pop 680ms ease both;
 }
 
 .score-ring strong {
@@ -182,6 +204,7 @@ h2 {
   border-radius: 999px;
   background: #35d4ba;
   box-shadow: 0 0 0 4px rgba(53, 212, 186, 0.18);
+  animation: pulse-glow 1.8s ease-in-out infinite;
 }
 
 .command-brief {
@@ -269,6 +292,7 @@ h2 {
   background: var(--panel-bg);
   padding: 18px;
   box-shadow: 0 10px 28px rgba(17, 24, 39, 0.04);
+  animation: lift-in 520ms ease both;
 }
 
 .stat-tile span,
@@ -343,6 +367,83 @@ h2 {
   display: block;
   height: 100%;
   border-radius: inherit;
+  transition: width 380ms ease;
+}
+
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.readout-card {
+  position: relative;
+  min-height: 118px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.72)),
+    var(--panel-bg);
+  padding: 16px;
+  box-shadow: 0 12px 30px rgba(17, 24, 39, 0.05);
+  overflow: hidden;
+  animation: lift-in 520ms ease both;
+}
+
+.readout-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--accent);
+}
+
+.readout-card.green::before {
+  background: var(--success);
+}
+
+.readout-card.blue::before {
+  background: var(--blue);
+}
+
+.readout-card.amber::before {
+  background: var(--warning);
+}
+
+.readout-card.violet::before {
+  background: var(--violet);
+}
+
+.readout-card span,
+.readout-card small {
+  display: block;
+  color: var(--muted-text);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.readout-card strong {
+  display: block;
+  margin: 11px 0 7px;
+  font-size: 1.34rem;
+  line-height: 1.08;
+}
+
+.readout-card.green strong {
+  color: var(--success);
+}
+
+.readout-card.blue strong {
+  color: var(--blue);
+}
+
+.readout-card.amber strong {
+  color: var(--warning);
+}
+
+.readout-card.violet strong {
+  color: var(--violet);
 }
 
 .agent-grid {
@@ -362,6 +463,7 @@ h2 {
   color: var(--text);
   text-align: left;
   transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  animation: lift-in 520ms ease both;
 }
 
 .agent-card:hover,
@@ -488,6 +590,7 @@ h2 {
   background: var(--panel-bg);
   padding: 18px;
   box-shadow: 0 10px 28px rgba(17, 24, 39, 0.04);
+  animation: lift-in 520ms ease both;
 }
 
 .response-panel {
@@ -709,6 +812,7 @@ tbody tr.selected {
   }
 
   .stats-grid,
+  .readout-grid,
   .agent-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -757,6 +861,7 @@ tbody tr.selected {
 
   .command-brief,
   .stats-grid,
+  .readout-grid,
   .agent-grid {
     grid-template-columns: 1fr;
   }
@@ -812,5 +917,58 @@ tbody tr.selected {
 
   .heatmap-cells span {
     min-height: 22px;
+  }
+}
+
+@keyframes command-sweep {
+  0% {
+    transform: translateX(-75%);
+  }
+  45%,
+  100% {
+    transform: translateX(75%);
+  }
+}
+
+@keyframes lift-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes score-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px rgba(53, 212, 186, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(53, 212, 186, 0.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
