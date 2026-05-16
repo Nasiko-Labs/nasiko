@@ -7,6 +7,7 @@ import redis
 import json
 import logging
 import asyncio
+import re
 import signal
 import sys
 import aiohttp
@@ -22,6 +23,14 @@ from agent_builder import AgentBuilder
 sys.path.insert(0, "/app")
 from app.utils.observability.injector import TracingInjector
 from app.utils.observability.config import ObservabilityConfig
+
+
+def _docker_safe_image_name(agent_name: str) -> str:
+    """Normalize agent name for Docker image tags (repository names must be lowercase)."""
+    safe = agent_name.lower()
+    safe = re.sub(r"[^a-z0-9._-]", "-", safe)
+    safe = re.sub(r"-+", "-", safe).strip("-")
+    return safe or "agent"
 
 
 class RedisStreamListener:
@@ -672,8 +681,8 @@ class RedisStreamListener:
             # Inject observability (like existing agent_builder.py does)
             await self._inject_observability(temp_dir / "agent", agent_name)
 
-            # Build Docker image
-            image_tag = f"local-agent-{agent_name}:latest"
+            # Build Docker image (Docker requires lowercase image repository names)
+            image_tag = f"local-agent-{_docker_safe_image_name(agent_name)}:latest"
 
             build_cmd = ["docker", "build", "-t", image_tag, str(temp_dir / "agent")]
 

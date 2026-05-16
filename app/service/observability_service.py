@@ -2,7 +2,9 @@ from fastapi import HTTPException, status
 from app.pkg.config.config import settings
 import requests
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 import re
 
 
@@ -181,8 +183,8 @@ class ObservabilityService:
             raw_response = await self._execute_graphql_query(query, variables)
 
             # Transform response to snake_case
-            project_data = raw_response.get("data", {}).get("project", {})
-            sessions_data = project_data.get("sessions", {}).get("edges", [])
+            project_data = (raw_response.get("data") or {}).get("project") or {}
+            sessions_data = (project_data.get("sessions") or {}).get("edges", [])
 
             sessions = []
             for edge in sessions_data:
@@ -1279,3 +1281,322 @@ class ObservabilityService:
                 f"Failed to transform span response: {str(e)}, returning raw response"
             )
             return self._convert_keys_to_snake_case(raw_response)
+
+    def _is_trace_success(self, status_code: Any) -> bool:
+        """Classify Phoenix/OpenTelemetry trace status as success."""
+        if status_code is None:
+            return True
+        if isinstance(status_code, (int, float)):
+            return int(status_code) not in (2,)
+        normalized = str(status_code).upper()
+        if normalized in ("ERROR", "ERR", "FAILED", "FAILURE"):
+            return False
+        return True
+
+    def _parse_trace_start_time(self, start_time: Optional[str]) -> Optional[datetime]:
+        if not start_time:
+            return None
+        try:
+            normalized = start_time.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+    def _build_hourly_buckets(
+        self, window_start: datetime, hours: int
+    ) -> List[Dict[str, str]]:
+        buckets = []
+        for offset in range(hours):
+            bucket_start = window_start + timedelta(hours=offset)
+            buckets.append(
+                {
+                    "hour": bucket_start.replace(minute=0, second=0, microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                }
+            )
+        return buckets
+
+    async def _get_project_sessions_for_metrics(
+        self, project_id: str, start_time: str, first: int = 100
+    ) -> List[Dict[str, Any]]:
+        """List project sessions for metrics (project-level traces query is unsupported)."""
+        query = """
+        query ProjectMetricsSessionsQuery(
+          $id: ID!
+          $timeRange: TimeRange!
+          $first: Int!
+        ) {
+          project: node(id: $id) {
+            __typename
+            ... on Project {
+              sessions(
+                first: $first
+                sort: {col: startTime, dir: desc}
+                timeRange: $timeRange
+              ) {
+                edges {
+                  session: node {
+                    id
+                    sessionId
+                    numTraces
+                    startTime
+                  }
+                }
+              }
+            }
+            id
+          }
+        }
+        """
+
+        variables = {
+            "id": project_id,
+            "timeRange": {"start": start_time},
+            "first": first,
+        }
+
+        raw_response = await self._execute_graphql_query(query, variables)
+        if raw_response.get("errors"):
+            self.logger.warning(
+                f"Phoenix sessions query returned errors: {raw_response.get('errors')}"
+            )
+
+        project_data = (raw_response.get("data") or {}).get("project") or {}
+        session_edges = (project_data.get("sessions") or {}).get("edges", [])
+
+        sessions = []
+        for edge in session_edges:
+            session_data = edge.get("session", {})
+            if session_data:
+                sessions.append(self._convert_keys_to_snake_case(session_data))
+        return sessions
+
+    async def _get_session_traces_for_metrics(
+        self, session_node_id: str, first: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Fetch traces for a single session."""
+        query = """
+        query ProjectMetricsSessionTracesQuery($id: ID!, $first: Int!) {
+          session: node(id: $id) {
+            __typename
+            ... on ProjectSession {
+              traces(first: $first) {
+                edges {
+                  trace: node {
+                    traceId
+                    startTime
+                    latencyMs
+                    rootSpan {
+                      statusCode
+                    }
+                  }
+                }
+              }
+            }
+            id
+          }
+        }
+        """
+
+        variables = {"id": session_node_id, "first": first}
+        raw_response = await self._execute_graphql_query(query, variables)
+        if raw_response.get("errors"):
+            self.logger.warning(
+                f"Phoenix session traces query returned errors: {raw_response.get('errors')}"
+            )
+
+        session_data = (raw_response.get("data") or {}).get("session") or {}
+        trace_edges = (session_data.get("traces") or {}).get("edges", [])
+
+        traces = []
+        for edge in trace_edges:
+            trace_data = edge.get("trace", {})
+            if trace_data:
+                traces.append(self._convert_keys_to_snake_case(trace_data))
+        return traces
+
+    async def _get_project_traces_for_metrics(
+        self, project_id: str, start_time: str, first: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent traces for metrics via sessions (project-level traces fail on Phoenix)."""
+        sessions = await self._get_project_sessions_for_metrics(
+            project_id, start_time, first=min(first, 100)
+        )
+
+        traces: List[Dict[str, Any]] = []
+        for session in sessions:
+            session_node_id = session.get("id")
+            if not session_node_id:
+                continue
+
+            session_trace_limit = max(int(session.get("num_traces") or 1), 1)
+            session_traces = await self._get_session_traces_for_metrics(
+                session_node_id, first=min(session_trace_limit, 100)
+            )
+            traces.extend(session_traces)
+            if len(traces) >= first:
+                break
+
+        return traces[:first]
+
+    async def _compute_agent_metrics(
+        self, agent_id: str, start_time: str, hours: int
+    ) -> Dict[str, Any]:
+        """Compute metrics for a single agent from Phoenix traces."""
+        window_start = datetime.now(timezone.utc) - timedelta(hours=hours)
+        hourly_template = self._build_hourly_buckets(window_start, hours)
+        hourly_index = {
+            bucket["hour"]: {
+                **bucket,
+                "requests": 0,
+                "errors": 0,
+                "latency_total_ms": 0.0,
+                "avg_latency_ms": 0.0,
+            }
+            for bucket in hourly_template
+        }
+
+        project_id = await self._get_project_id(agent_id)
+        if not project_id:
+            empty_hourly = [
+                {**bucket, "requests": 0, "errors": 0, "avg_latency_ms": 0.0}
+                for bucket in hourly_template
+            ]
+            return {
+                "agent_id": agent_id,
+                "has_observability": False,
+                "avg_response_time_ms": 0.0,
+                "success_count": 0,
+                "error_count": 0,
+                "total_requests": 0,
+                "uptime_percent": 0.0,
+                "hourly": empty_hourly,
+            }
+
+        traces = await self._get_project_traces_for_metrics(project_id, start_time)
+        success_count = 0
+        error_count = 0
+        latency_values: List[float] = []
+
+        for trace in traces:
+            root_span = trace.get("root_span") or {}
+            status_code = root_span.get("status_code")
+            is_success = self._is_trace_success(status_code)
+            if is_success:
+                success_count += 1
+            else:
+                error_count += 1
+
+            latency_ms = trace.get("latency_ms")
+            if latency_ms is not None:
+                latency_values.append(float(latency_ms))
+
+            parsed_start = self._parse_trace_start_time(trace.get("start_time"))
+            if parsed_start:
+                bucket_key = (
+                    parsed_start.replace(minute=0, second=0, microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                if bucket_key in hourly_index:
+                    hourly_index[bucket_key]["requests"] += 1
+                    if not is_success:
+                        hourly_index[bucket_key]["errors"] += 1
+                    if latency_ms is not None:
+                        hourly_index[bucket_key]["latency_total_ms"] += float(
+                            latency_ms
+                        )
+
+        for bucket in hourly_index.values():
+            if bucket["requests"] > 0:
+                bucket["avg_latency_ms"] = round(
+                    bucket["latency_total_ms"] / bucket["requests"], 2
+                )
+            del bucket["latency_total_ms"]
+
+        active_hours = sum(1 for bucket in hourly_index.values() if bucket["requests"] > 0)
+        uptime_percent = round((active_hours / hours) * 100, 1) if hours else 0.0
+        avg_response_time_ms = (
+            round(sum(latency_values) / len(latency_values), 2) if latency_values else 0.0
+        )
+
+        return {
+            "agent_id": agent_id,
+            "has_observability": True,
+            "avg_response_time_ms": avg_response_time_ms,
+            "success_count": success_count,
+            "error_count": error_count,
+            "total_requests": success_count + error_count,
+            "uptime_percent": uptime_percent,
+            "hourly": list(hourly_index.values()),
+        }
+
+    async def get_agents_metrics(
+        self, user_id: str, auth_header: str, hours: int = 24
+    ) -> Dict[str, Any]:
+        """Aggregate per-agent performance metrics for the authenticated user."""
+        from app.pkg.auth import AuthClient
+
+        hours = max(1, min(hours, 168))
+        window_start = datetime.now(timezone.utc) - timedelta(hours=hours)
+        start_time = window_start.isoformat().replace("+00:00", "Z")
+
+        auth_client = AuthClient()
+        accessible_agent_ids = await auth_client.get_user_accessible_agents(auth_header)
+
+        if not accessible_agent_ids:
+            return {
+                "data": {
+                    "period_hours": hours,
+                    "start_time": start_time,
+                    "agents": [],
+                }
+            }
+
+        agents_metrics = []
+        for agent_id in accessible_agent_ids:
+            try:
+                agent_metrics = await self._compute_agent_metrics(
+                    agent_id, start_time, hours
+                )
+                agents_metrics.append(agent_metrics)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to compute metrics for agent {agent_id}: {e}"
+                )
+                empty_hourly = [
+                    {
+                        **bucket,
+                        "requests": 0,
+                        "errors": 0,
+                        "avg_latency_ms": 0.0,
+                    }
+                    for bucket in self._build_hourly_buckets(window_start, hours)
+                ]
+                agents_metrics.append(
+                    {
+                        "agent_id": agent_id,
+                        "has_observability": False,
+                        "avg_response_time_ms": 0.0,
+                        "success_count": 0,
+                        "error_count": 0,
+                        "total_requests": 0,
+                        "uptime_percent": 0.0,
+                        "hourly": empty_hourly,
+                        "error": str(e),
+                    }
+                )
+
+        agents_metrics.sort(key=lambda item: item.get("agent_id", ""))
+
+        return {
+            "data": {
+                "period_hours": hours,
+                "start_time": start_time,
+                "agents": agents_metrics,
+            }
+        }

@@ -51,7 +51,7 @@ services:
     container_name: nasiko-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${NASIKO_PORT_BACKEND:-8008}:8000"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -236,6 +236,7 @@ services:
       KONG_AUTH_HOST: nasiko-auth-service
       KONG_BACKEND_HOST: nasiko-backend
       KONG_WEB_HOST: nasiko-web
+      KONG_METRICS_HOST: nasiko-agent-metrics
       KONG_ROUTER_HOST: nasiko-router
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -343,6 +344,25 @@ services:
       - app-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nasiko-agent-metrics:
+    build:
+      context: ./web/agent-metrics
+      dockerfile: Dockerfile
+    container_name: nasiko-agent-metrics
+    restart: unless-stopped
+    depends_on:
+      kong-gateway:
+        condition: service_healthy
+    ports:
+      - "4010:4010"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4010/"]
       interval: 30s
       timeout: 10s
       retries: 3
