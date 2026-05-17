@@ -1,0 +1,14 @@
+services:
+  metrics-agent-bridge:
+    build: .
+    container_name: nasiko-metrics-cursor-agent
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      CURSOR_API_KEY: ${CURSOR_API_KEY}
+      CURSOR_MODEL: ${CURSOR_MODEL:-composer-2}
+      CURSOR_AGENT_CWD: /workspace
+      PORT: 8787
+    volumes:
+      - ../..:/workspace:ro
