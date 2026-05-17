@@ -32,4 +32,4 @@ If Phoenix is unavailable for one agent, the API keeps that agent in the respons
 2. Deploy `agents/a2a-translator.zip` from the app.
 3. Start a translator session and send a few prompts.
 4. Open `http://localhost:9100/metrics`.
-5. Paste the bearer token from `/auth/users/login` if the dashboard cannot discover it from browser storage.
+5. The dashboard signs in with `orchestrator/superuser_credentials.json` automatically and refreshes the metric data.

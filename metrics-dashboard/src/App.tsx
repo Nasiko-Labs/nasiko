@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import './App.css'
 import {
   aggregateBuckets,
@@ -8,38 +17,109 @@ import {
   formatPercent,
   formatTime,
   getTokenFromStorage,
+  readSuperuserCredentials,
 } from './metrics'
 import type { AgentMetric, HourlyBucket, MetricsResponse } from './types'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
 
 const API_PATH = '/api/v1/observability/agent-metrics?window_hours=24'
+const LOGIN_PATH = '/auth/users/login'
+const CREDENTIALS_PATH = `${import.meta.env.BASE_URL}superuser_credentials.json`
 
-function Sparkline({ buckets }: { buckets: HourlyBucket[] }) {
-  const max = Math.max(...buckets.map((bucket) => bucket.requests), 1)
-  const width = 220
-  const height = 72
-  const step = buckets.length > 1 ? width / (buckets.length - 1) : width
-  const points = buckets
-    .map((bucket, index) => {
-      const x = index * step
-      const y = height - (bucket.requests / max) * (height - 10) - 5
-      return `${x},${y}`
-    })
-    .join(' ')
+function formatChartTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function MetricChart({
+  buckets,
+  compact = false,
+}: {
+  buckets: HourlyBucket[]
+  compact?: boolean
+}) {
+  const data = buckets.map((bucket) => ({
+    ...bucket,
+    label: formatChartTime(bucket.time),
+  }))
+  const height = compact ? 130 : 260
 
   return (
-    <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-      <polyline points={points} />
-      {buckets.map((bucket, index) => (
-        <circle
-          key={`${bucket.time}-${index}`}
-          cx={index * step}
-          cy={height - (bucket.requests / max) * (height - 10) - 5}
-          r={bucket.requests > 0 ? 3 : 1.8}
-        />
-      ))}
-    </svg>
+    <div className={compact ? 'metric-chart compact' : 'metric-chart'}>
+      <ResponsiveContainer width="100%" height={height}>
+        <LineChart
+          data={data}
+          margin={{ top: 12, right: compact ? 4 : 18, bottom: 8, left: 0 }}
+        >
+          <CartesianGrid stroke="rgba(177,255,229,0.12)" strokeDasharray="3 3" />
+          <XAxis
+            dataKey="label"
+            minTickGap={compact ? 28 : 18}
+            tick={{ fill: 'var(--muted)', fontSize: 11 }}
+            tickLine={false}
+          />
+          <YAxis
+            yAxisId="requests"
+            allowDecimals={false}
+            tick={{ fill: 'var(--muted)', fontSize: 11 }}
+            tickLine={false}
+            width={compact ? 24 : 40}
+          />
+          <YAxis
+            yAxisId="latency"
+            orientation="right"
+            tick={{ fill: 'var(--muted)', fontSize: 11 }}
+            tickFormatter={(value) => `${Math.round(value)}ms`}
+            tickLine={false}
+            width={compact ? 36 : 52}
+          />
+          <Tooltip
+            contentStyle={{
+              background: '#081411',
+              border: '1px solid rgba(177,255,229,0.22)',
+              borderRadius: 14,
+              color: 'var(--text-h)',
+            }}
+            formatter={(value, name) => {
+              const numericValue = Number(value)
+              if (name === 'average_latency_ms') {
+                return [formatLatency(numericValue), 'Avg latency']
+              }
+
+              return [formatNumber(numericValue), 'Requests']
+            }}
+            labelFormatter={(label) => `Hour ${label}`}
+          />
+          <Line
+            yAxisId="requests"
+            type="monotone"
+            dataKey="requests"
+            name="Requests"
+            stroke="var(--accent)"
+            strokeWidth={compact ? 2 : 3}
+            dot={compact ? false : { r: 3 }}
+            activeDot={{ r: 5 }}
+          />
+          <Line
+            yAxisId="latency"
+            type="monotone"
+            dataKey="average_latency_ms"
+            name="Avg latency"
+            stroke="#8fb7ff"
+            strokeWidth={compact ? 2 : 3}
+            dot={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -62,6 +142,7 @@ function StatusPill({ status }: { status: AgentMetric['status'] }) {
 
 function App() {
   const [token, setToken] = useState(() => getTokenFromStorage())
+  const [manualToken, setManualToken] = useState('')
   const [state, setState] = useState<LoadState>('idle')
   const [error, setError] = useState('')
   const [metrics, setMetrics] = useState<MetricsResponse['data'] | null>(null)
@@ -99,18 +180,74 @@ function App() {
     }
   }, [])
 
+  const signInWithGeneratedCredentials = useCallback(async () => {
+    setState('loading')
+    setError('')
+
+    try {
+      const credentialsResponse = await fetch(CREDENTIALS_PATH, {
+        cache: 'no-store',
+      })
+      if (!credentialsResponse.ok) {
+        throw new Error(
+          'Generated superuser credentials are not available yet. Start the local stack and wait for orchestrator/superuser_credentials.json.',
+        )
+      }
+
+      const credentials = readSuperuserCredentials(
+        await credentialsResponse.json(),
+      )
+      if (!credentials) {
+        throw new Error('Generated superuser credentials are incomplete.')
+      }
+
+      const loginResponse = await fetch(LOGIN_PATH, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          access_key: credentials.accessKey,
+          access_secret: credentials.accessSecret,
+        }),
+      })
+
+      if (!loginResponse.ok) {
+        throw new Error(`Superuser sign-in returned ${loginResponse.status}`)
+      }
+
+      const loginPayload = (await loginResponse.json()) as {
+        token?: string
+        access_token?: string
+      }
+      const nextToken = loginPayload.token ?? loginPayload.access_token ?? ''
+      if (!nextToken) {
+        throw new Error('Superuser sign-in did not return a token.')
+      }
+
+      window.localStorage.setItem('nasiko_auth', JSON.stringify({ token: nextToken }))
+      setToken(nextToken)
+      await loadMetrics(nextToken)
+    } catch (err) {
+      setState('error')
+      setError(err instanceof Error ? err.message : 'Unable to sign in')
+    }
+  }, [loadMetrics])
+
   useEffect(() => {
-    if (!token || hasAutoLoaded.current) {
+    if (hasAutoLoaded.current) {
       return
     }
 
     hasAutoLoaded.current = true
     const timeout = window.setTimeout(() => {
-      void loadMetrics(token)
+      if (token) {
+        void loadMetrics(token)
+      } else {
+        void signInWithGeneratedCredentials()
+      }
     }, 0)
 
     return () => window.clearTimeout(timeout)
-  }, [loadMetrics, token])
+  }, [loadMetrics, signInWithGeneratedCredentials, token])
 
   const agents = useMemo(() => metrics?.agents ?? [], [metrics])
   const summary = metrics?.summary ?? buildFallbackSummary(agents)
@@ -129,26 +266,48 @@ function App() {
           </p>
         </div>
         <div className="auth-card">
-          <label htmlFor="token">Bearer token</label>
+          <label>Local superuser session</label>
           <div className="token-row">
-            <input
-              id="token"
-              value={token}
-              type="password"
-              placeholder="Paste token from /auth/users/login"
-              onChange={(event) => setToken(event.target.value)}
-            />
-            <button type="button" onClick={() => void loadMetrics(token)}>
-              {state === 'loading' ? 'Loading' : 'Refresh'}
+            <button
+              type="button"
+              onClick={() => void signInWithGeneratedCredentials()}
+            >
+              {state === 'loading' ? 'Signing in…' : 'Sign in & refresh'}
             </button>
+            {token && <span className="session-pill">Session ready</span>}
           </div>
           <span>
-            Opens at <code>/metrics</code> and calls <code>{API_PATH}</code>.
+            Auto-loads <code>orchestrator/superuser_credentials.json</code>.
           </span>
         </div>
       </section>
 
-      {state === 'error' && <div className="notice error">{error}</div>}
+      {state === 'error' && (
+        <div className="notice error">
+          <p>{error}</p>
+          <div className="token-row" style={{ marginTop: 12 }}>
+            <input
+              type="password"
+              placeholder="Paste bearer token manually"
+              value={manualToken}
+              onChange={(e) => setManualToken(e.target.value)}
+            />
+            <button
+              type="button"
+              disabled={!manualToken}
+              onClick={() => {
+                setToken(manualToken)
+                void loadMetrics(manualToken)
+              }}
+            >
+              Load
+            </button>
+          </div>
+          <small style={{ color: 'var(--muted)', fontSize: 12 }}>
+            Get a token from: <code>cat orchestrator/superuser_credentials.json</code> → sign in at <code>/auth/users/login</code>
+          </small>
+        </div>
+      )}
       {errorAgents.length > 0 && (
         <div className="notice warning">
           {errorAgents.length} agent{errorAgents.length > 1 ? 's' : ''} could
@@ -182,9 +341,13 @@ function App() {
       <section className="trend-panel">
         <div>
           <p className="eyebrow">24-hour traffic</p>
-          <h2>Aggregate request pulse</h2>
+          <h2>Requests and latency by hour</h2>
+          <p>
+            Recharts line chart with request volume and weighted average
+            latency on separate axes.
+          </p>
         </div>
-        <Sparkline buckets={aggregateTrend} />
+        <MetricChart buckets={aggregateTrend} />
       </section>
 
       <section className="agent-table-card">
@@ -237,7 +400,7 @@ function App() {
                   <strong>{formatTime(agent.last_activity_at)}</strong>
                   <small>{formatPercent(agent.uptime_percentage)} uptime</small>
                 </div>
-                <Sparkline buckets={agent.hourly} />
+                <MetricChart buckets={agent.hourly} compact />
               </article>
             ))}
           </div>

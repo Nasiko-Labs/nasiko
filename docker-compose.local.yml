@@ -81,7 +81,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v1/healthcheck || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -361,10 +361,12 @@ services:
         condition: service_healthy
     ports:
       - "4001:4001"
+    volumes:
+      - ./orchestrator:/run/nasiko:ro
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4001/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4001/health"]
       interval: 30s
       timeout: 10s
       retries: 3

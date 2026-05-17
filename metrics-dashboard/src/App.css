@@ -80,6 +80,7 @@
 }
 
 .token-row {
+  align-items: center;
   display: flex;
   gap: 10px;
   margin-bottom: 10px;
@@ -106,6 +107,15 @@ button {
   cursor: pointer;
   font-weight: 800;
   padding: 11px 16px;
+}
+
+.session-pill {
+  border: 1px solid rgba(0, 255, 198, 0.25);
+  border-radius: 999px;
+  color: var(--good);
+  font-family: var(--mono);
+  padding: 8px 10px;
+  white-space: nowrap;
 }
 
 .notice {
@@ -144,31 +154,31 @@ button {
 }
 
 .trend-panel {
-  align-items: center;
+  align-items: stretch;
   border-radius: 24px;
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(260px, 0.42fr) minmax(0, 1fr);
   padding: 24px;
 }
 
-.sparkline {
-  height: 72px;
-  max-width: 240px;
-  overflow: visible;
+.trend-panel p:not(.eyebrow) {
+  color: var(--muted);
+  max-width: 420px;
+}
+
+.metric-chart {
+  min-height: 260px;
+  min-width: 0;
+}
+
+.metric-chart.compact {
+  min-height: 130px;
   width: 100%;
 }
 
-.sparkline polyline {
-  fill: none;
-  stroke: var(--accent);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 4;
-}
-
-.sparkline circle {
-  fill: var(--accent);
-  opacity: 0.9;
+.recharts-cartesian-axis-line {
+  stroke: rgba(177, 255, 229, 0.16);
 }
 
 .agent-table-card {
@@ -196,7 +206,7 @@ button {
   border-radius: 20px;
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(280px, 1.6fr) repeat(3, minmax(120px, 0.7fr)) minmax(160px, 0.8fr);
+  grid-template-columns: minmax(280px, 1.4fr) repeat(3, minmax(120px, 0.55fr)) minmax(280px, 1fr);
   padding: 18px;
 }
 

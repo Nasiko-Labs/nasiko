@@ -1,11 +1,20 @@
 import type { AgentMetric, HourlyBucket, MetricsSummary } from './types'
 
+export type SuperuserCredentials = {
+  accessKey: string
+  accessSecret: string
+}
+
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat('en-US').format(value)
 }
 
 export function formatLatency(value: number | null): string {
-  if (!value) {
+  if (value === null || Number.isNaN(value)) {
+    return '—'
+  }
+
+  if (value === 0) {
     return '0 ms'
   }
 
@@ -14,6 +23,33 @@ export function formatLatency(value: number | null): string {
   }
 
   return `${Math.round(value)} ms`
+}
+
+function tokenFromJson(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (!value || typeof value !== 'object') {
+    return ''
+  }
+
+  const record = value as Record<string, unknown>
+  for (const key of ['token', 'access_token', 'authToken', 'nasiko_token']) {
+    const token = record[key]
+    if (typeof token === 'string' && token.length > 0) {
+      return token
+    }
+  }
+
+  for (const child of Object.values(record)) {
+    const token = tokenFromJson(child)
+    if (token) {
+      return token
+    }
+  }
+
+  return ''
 }
 
 export function formatPercent(value: number): string {
@@ -39,13 +75,28 @@ export function formatTime(value: string | null): string {
 }
 
 export function getTokenFromStorage(): string {
-  const keys = ['token', 'access_token', 'authToken', 'nasiko_token']
+  const keys = [
+    'nasiko_auth',
+    'nasiko_token',
+    'token',
+    'access_token',
+    'authToken',
+  ]
 
   for (const storage of [window.localStorage, window.sessionStorage]) {
     for (const key of keys) {
       const value = storage.getItem(key)
-      if (value) {
-        return value
+      if (!value) {
+        continue
+      }
+
+      try {
+        const token = tokenFromJson(JSON.parse(value))
+        if (token) {
+          return token
+        }
+      } catch {
+        return value.replace(/^"|"$/g, '')
       }
     }
 
@@ -61,6 +112,28 @@ export function getTokenFromStorage(): string {
   }
 
   return ''
+}
+
+export function readSuperuserCredentials(
+  value: unknown,
+): SuperuserCredentials | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const record = value as Record<string, unknown>
+  const accessKey = record.access_key ?? record.accessKey
+  const accessSecret = record.access_secret ?? record.accessSecret
+
+  if (typeof accessKey !== 'string' || typeof accessSecret !== 'string') {
+    return null
+  }
+
+  if (!accessKey || !accessSecret) {
+    return null
+  }
+
+  return { accessKey, accessSecret }
 }
 
 export function aggregateBuckets(agents: AgentMetric[]): HourlyBucket[] {

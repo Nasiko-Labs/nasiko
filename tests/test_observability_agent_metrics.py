@@ -140,6 +140,7 @@ class AgentMetricsTestCase(unittest.TestCase):
         self.assertEqual(translator["p99_latency_ms"], 2500)
         self.assertEqual(translator["last_activity_at"], "2026-05-17T01:45:00.000Z")
         self.assertEqual(len(translator["hourly"]), 24)
+        self.assertEqual(translator["hourly"][-3]["requests"], 2)
         self.assertEqual(translator["hourly"][-2]["requests"], 1)
         self.assertEqual(translator["hourly"][-1]["requests"], 0)
 
@@ -163,6 +164,27 @@ class AgentMetricsTestCase(unittest.TestCase):
         self.assertEqual(summarizer["error_count"], 0)
         self.assertEqual(summarizer["uptime_percentage"], 0.0)
         self.assertEqual(summarizer["error"], "Phoenix is unavailable")
+
+    def test_hourly_buckets_keep_traces_from_first_partial_hour(self):
+        service = AgentMetricsService()
+        start = service._parse_iso_datetime("2026-05-17T13:45:00.000Z")
+
+        buckets = service._build_hourly_buckets(
+            [
+                {
+                    "latency_ms": 800,
+                    "start_time": "2026-05-17T13:50:00.000Z",
+                    "status_code": "OK",
+                }
+            ],
+            start,
+            2,
+        )
+
+        self.assertEqual(buckets[0]["time"], "2026-05-17T13:00:00.000Z")
+        self.assertEqual(buckets[0]["requests"], 1)
+        self.assertEqual(buckets[0]["success_count"], 1)
+        self.assertEqual(buckets[0]["average_latency_ms"], 800.0)
 
 
 if __name__ == "__main__":

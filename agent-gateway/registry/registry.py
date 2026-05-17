@@ -584,7 +584,7 @@ def register_static_proxies():
             "host": metrics_host,
             "port": 4001,
             "paths": ["/metrics"],
-            "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            "methods": ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
             "strip_path": True,
             "preserve_host": False,
             "middlewares": ["cors"],

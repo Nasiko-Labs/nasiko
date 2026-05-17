@@ -358,9 +358,7 @@ class ObservabilityService:
     def _build_hourly_buckets(
         self, traces: List[Dict[str, Any]], start: datetime, window_hours: int
     ) -> List[Dict[str, Any]]:
-        first_bucket = start.replace(minute=0, second=0, microsecond=0) + timedelta(
-            hours=1
-        )
+        first_bucket = start.replace(minute=0, second=0, microsecond=0)
         buckets = []
         for index in range(window_hours):
             bucket_start = first_bucket + timedelta(hours=index)
