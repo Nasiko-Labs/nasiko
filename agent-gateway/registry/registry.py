@@ -277,6 +277,7 @@ def get_docker_services() -> List[ServiceInfo]:
                     "kong-service-registry",
                     "nasiko-backend",
                     "nasiko-web",
+            "nasiko-metrics-dashboard",
                     "nasiko-router",
                     "nasiko-auth-service",
                     "nasiko-chat-history",
@@ -450,6 +451,7 @@ def cleanup_stale_services(current_service_names: Set[str]) -> None:
             "backend-api-proxy",
             "web-app-proxy",
             "auth-proxy",
+            "metrics-dashboard",
             "nasiko-router",
             "landing-page",
             "n8n",
@@ -529,6 +531,11 @@ def register_static_proxies():
         local_service="nasiko-web",
         env_var="KONG_WEB_HOST",
     )
+    metrics_host = _resolve_service_host(
+        k8s_service="nasiko-metrics-dashboard",
+        local_service="nasiko-metrics-dashboard",
+        env_var="KONG_METRICS_HOST",
+    )
     web_path = os.getenv("KONG_WEB_PATH", "/app").strip() or "/app"
     if not web_path.startswith("/"):
         web_path = f"/{web_path}"
@@ -570,6 +577,17 @@ def register_static_proxies():
             "strip_path": True,
             "preserve_host": False,
             "middlewares": ["cors"],  # CORS only
+        },
+        # Titan metrics dashboard - standalone UI for the builder challenge.
+        {
+            "name": "metrics-dashboard",
+            "host": metrics_host,
+            "port": 4001,
+            "paths": ["/metrics"],
+            "methods": ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            "strip_path": True,
+            "preserve_host": False,
+            "middlewares": ["cors"],
         },
         # Auth service proxy - auth only
         {

@@ -109,4 +109,23 @@ def create_observability_routes(handlers: HandlerFactory) -> APIRouter:
             agent_id, start_time
         )
 
+    @router.get("/agent-metrics")
+    async def get_agent_performance_metrics(
+        request: Request,
+        user_id: str = Depends(get_user_id_from_token),
+        window_hours: int = Query(
+            24, ge=1, le=168, description="Rolling window size in hours"
+        ),
+    ) -> Dict[str, Any]:
+        """
+        Get dashboard-ready performance metrics for all user-accessible agents.
+        """
+        auth_header = request.headers.get("authorization")
+        if not auth_header:
+            raise HTTPException(status_code=401, detail="Authorization header required")
+
+        return await handlers.observability.get_agent_performance_metrics(
+            user_id, auth_header, window_hours
+        )
+
     return router

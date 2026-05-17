@@ -464,6 +464,7 @@ All agents automatically receive:
 ### Monitoring Dashboards
 
 - **Nasiko Web UI**: http://localhost:9100/app/ - Integrated observability dashboard via Kong Gateway
+- **Titan Metrics Dashboard**: http://localhost:9100/metrics - Per-agent 24h response time, success/error count, uptime, and traffic charts
 - **Arize Phoenix UI**: http://localhost:6006 - Direct access to detailed traces and performance metrics
 - **Kong Manager**: http://localhost:9102 - API gateway analytics and configuration
 - **Agent Registry**: http://localhost:8000/docs - REST API documentation and testing

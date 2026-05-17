@@ -81,7 +81,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v1/healthcheck || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -236,6 +236,7 @@ services:
       KONG_AUTH_HOST: nasiko-auth-service
       KONG_BACKEND_HOST: nasiko-backend
       KONG_WEB_HOST: nasiko-web
+      KONG_METRICS_HOST: nasiko-metrics-dashboard
       KONG_ROUTER_HOST: nasiko-router
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -343,6 +344,29 @@ services:
       - app-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nasiko-metrics-dashboard:
+    build:
+      context: ./metrics-dashboard
+      dockerfile: Dockerfile
+    container_name: nasiko-metrics-dashboard
+    restart: unless-stopped
+    depends_on:
+      kong-gateway:
+        condition: service_healthy
+      nasiko-backend:
+        condition: service_healthy
+    ports:
+      - "4001:4001"
+    volumes:
+      - ./orchestrator:/run/nasiko:ro
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
