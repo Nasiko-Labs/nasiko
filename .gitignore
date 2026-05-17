@@ -19,6 +19,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!web/metrics-dashboard/lib/
 lib64/
 parts/
 sdist/
@@ -158,6 +159,7 @@ cython_debug/
 
 # macOS files
 .DS_Store
+*.dmg
 
 # Sensitive credentials
 superuser_credentials.json
