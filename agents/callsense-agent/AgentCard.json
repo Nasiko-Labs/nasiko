@@ -1,0 +1,65 @@
+{
+  "protocolVersion": "0.2.9",
+  "id": "callsense-agent",
+  "name": "CallSense Voice Processing Agent",
+  "description": "Voice middleware agent for CallSense. Accepts inbound audio stream payloads, transcribes via VALSEA real-time transcription, and forwards final transcripts to the CallSense Next.js backend for intent routing and response synthesis.",
+  "url": "http://localhost:8000/",
+  "preferredTransport": "HTTP",
+  "provider": {
+    "organization": "CallSense / Cursor Buildathon",
+    "url": "https://github.com/Decipher369/CursorBuildathon"
+  },
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:8000/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "chat_agent": false
+  },
+  "endpoints": {
+    "/process-audio": "Internal routing endpoint for inbound audio stream payloads (chunked or base64); runs VALSEA RTT and forwards transcript.final to CallSense backend",
+    "/health": "Health check endpoint"
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "application/json",
+    "audio/pcm",
+    "audio/wav",
+    "multipart/form-data"
+  ],
+  "defaultOutputModes": [
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "process-audio",
+      "name": "Process Inbound Audio Stream",
+      "description": "Receives streaming or batched audio payloads on /process-audio, transcribes with VALSEA regional speech-to-text, and POSTs final transcript to CallSense /api/calls/process",
+      "tags": [
+        "voice",
+        "audio",
+        "streaming",
+        "transcription",
+        "valsea",
+        "callsense",
+        "telephony"
+      ],
+      "examples": [
+        "Process this inbound call audio stream for business_id abc and caller +6591234567",
+        "Transcribe streamed PCM chunks and route to CallSense backend"
+      ],
+      "inputModes": [
+        "application/json",
+        "audio/pcm",
+        "multipart/form-data"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
