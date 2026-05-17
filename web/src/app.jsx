@@ -2,6 +2,7 @@ const { useEffect, useMemo, useRef, useState } = React;
 
 const demoAgents = window.NASIKO_DEMO_AGENT_METRICS || window.NASIKO_AGENT_METRICS || [];
 const LIVE_AGENT_COLORS = ["#157a6e", "#5c5ff0", "#c47a14", "#cc4052", "#2563eb", "#7c3aed"];
+const DEFAULT_CURSOR_AGENT_ENDPOINT = "http://127.0.0.1:8787/metrics-agent";
 
 function numberFormat(value) {
   return new Intl.NumberFormat().format(value);
@@ -276,6 +277,72 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 6000) {
   }
 }
 
+function getCursorAgentEndpoint() {
+  return (
+    window.NASIKO_METRICS_CONFIG?.cursorAgentEndpoint ||
+    window.localStorage.getItem("nasiko_cursor_agent_endpoint") ||
+    DEFAULT_CURSOR_AGENT_ENDPOINT
+  ).trim();
+}
+
+function getCursorAgentHealthEndpoint(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    url.pathname = "/health";
+    url.search = "";
+    return url.toString();
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function checkCursorAgentBridge(endpoint) {
+  const healthEndpoint = getCursorAgentHealthEndpoint(endpoint);
+  if (!healthEndpoint) return false;
+
+  try {
+    const health = await fetchJsonWithTimeout(healthEndpoint, { method: "GET" }, 1800);
+    return health?.status === "ready";
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function askCursorAgent(question, context, endpoint = getCursorAgentEndpoint()) {
+  if (!endpoint) return null;
+
+  const authHeader = getAuthHeader();
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (authHeader) headers.Authorization = authHeader;
+
+  const payload = await fetchJsonWithTimeout(
+    endpoint,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        question,
+        context,
+        source: "nasiko-challenge-2-metrics",
+      }),
+    },
+    10000
+  );
+
+  return (
+    payload?.answer ||
+    payload?.message ||
+    payload?.response ||
+    payload?.text ||
+    payload?.data?.answer ||
+    payload?.choices?.[0]?.message?.content ||
+    null
+  );
+}
+
 async function loadLiveTelemetry() {
   const authHeader = getAuthHeader();
   if (!authHeader) {
@@ -305,6 +372,10 @@ async function loadLiveTelemetry() {
   }
 
   return { mode: "demo", agents: demoAgents, reason: "Live API unavailable or returned no sessions." };
+}
+
+function agentErrorRate(agent) {
+  return agent.errorRate ?? Number(((agent.errorCount / Math.max(1, agent.totalRequests)) * 100).toFixed(2));
 }
 
 function getReliability(agent) {
@@ -426,6 +497,133 @@ function aggregateSummary(selectedAgents, hourly) {
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function describeAgent(agent) {
+  if (!agent) return "No agent is selected.";
+
+  return `${agent.name}: ${msFormat(agent.avgResponseMs)} average response, ${msFormat(agent.p95ResponseMs)} P95, ${numberFormat(agent.successCount)} successes, ${numberFormat(agent.errorCount)} errors, ${percentFormat(agent.uptime)} uptime, and ${agent.saturation}% capacity.`;
+}
+
+function findMentionedAgent(question, agents) {
+  const normalizedQuestion = question.toLowerCase();
+  return agents.find((agent) => {
+    const name = agent.name.toLowerCase();
+    const id = agent.id.toLowerCase();
+    return normalizedQuestion.includes(name) || normalizedQuestion.includes(id);
+  });
+}
+
+function buildMetricsChatContext(summary, activeAgent, activeLabel, agents, telemetry) {
+  const fastestAgent = [...agents].sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
+  const slowestAgent = [...agents].sort((a, b) => b.avgResponseMs - a.avgResponseMs)[0];
+  const mostErrorsAgent = [...agents].sort((a, b) => b.errorCount - a.errorCount)[0];
+  const lowestUptimeAgent = [...agents].sort((a, b) => a.uptime - b.uptime)[0];
+  const highestPressureAgent = [...agents].sort((a, b) => b.saturation - a.saturation)[0];
+  const attentionAgent = [...agents].sort((a, b) => a.reliabilityScore - b.reliabilityScore)[0];
+
+  return {
+    telemetryMode: telemetry.mode,
+    telemetryReason: telemetry.reason,
+    activeLabel,
+    summary,
+    activeAgent,
+    fastestAgent,
+    slowestAgent,
+    mostErrorsAgent,
+    lowestUptimeAgent,
+    highestPressureAgent,
+    attentionAgent,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      lane: agent.lane,
+      mission: agent.mission,
+      avgResponseMs: agent.avgResponseMs,
+      p95ResponseMs: agent.p95ResponseMs,
+      successCount: agent.successCount,
+      errorCount: agent.errorCount,
+      errorRate: agentErrorRate(agent),
+      uptime: agent.uptime,
+      saturation: agent.saturation,
+      reliabilityScore: agent.reliabilityScore,
+      responseTrendMs: agent.responseTrendMs,
+    })),
+  };
+}
+
+function createLocalMetricsAnswer(question, context) {
+  const q = question.toLowerCase();
+  const mentionedAgent = findMentionedAgent(question, context.agents);
+  const summaryLine = `${context.activeLabel} currently shows ${msFormat(context.summary.avgResponseMs)} average response, ${numberFormat(context.summary.successCount)} successes, ${numberFormat(context.summary.errorCount)} errors, ${percentFormat(context.summary.uptime)} uptime, and ${percentFormat(context.summary.errorRate)} error rate.`;
+
+  if (/^(hi|hello|hey|yo|sup|good morning|good afternoon|good evening)\b/.test(q)) {
+    return "Hi, I am the Nasiko assistant for this dashboard. You can ask me about Nasiko, the current agent metrics, uptime, errors, latency, or what to highlight in your demo.";
+  }
+
+  if (/thank|thanks|appreciate/.test(q)) {
+    return "You are welcome. I can keep helping with the Nasiko dashboard, Challenge 2 talking points, or any quick explanation you need.";
+  }
+
+  if (/who are you|what are you|your role|representative/.test(q)) {
+    return "I am acting as Nasiko's dashboard representative here. I explain the platform in simple terms and answer questions using the current Challenge 2 metrics shown on this page.";
+  }
+
+  if (mentionedAgent) {
+    return `${describeAgent(mentionedAgent)} ${getReliability(mentionedAgent).label} status is based on uptime and error rate.`;
+  }
+
+  if (/nasiko|platform|project/.test(q)) {
+    return "Nasiko is an AI agent platform for building, deploying, routing, and observing agents. In this Challenge 2 page, Nasiko observability is shown through response time, success count, error count, uptime, capacity, and 24-hour charts.";
+  }
+
+  if (/live|demo|telemetry|data|backend|api/.test(q)) {
+    return `This dashboard is using ${context.telemetryMode === "live" ? "Live telemetry" : "Demo telemetry"}. ${context.telemetryReason} The chatbot answers from the same metrics currently shown on the page.`;
+  }
+
+  if (/best|fastest|quickest/.test(q)) {
+    return `${context.fastestAgent.name} is the fastest agent right now with ${msFormat(context.fastestAgent.avgResponseMs)} average response and ${percentFormat(context.fastestAgent.uptime)} uptime.`;
+  }
+
+  if (/slow|latency|response|p95/.test(q)) {
+    return `${context.slowestAgent.name} has the highest average response at ${msFormat(context.slowestAgent.avgResponseMs)}. For the selected view, P95 latency is ${msFormat(context.summary.p95ResponseMs)} and latency movement is ${trendCopy(context.summary.responseTrendMs)}.`;
+  }
+
+  if (/error|fail|failure|risk/.test(q)) {
+    return `${context.mostErrorsAgent.name} has the most errors with ${numberFormat(context.mostErrorsAgent.errorCount)} errors and ${percentFormat(agentErrorRate(context.mostErrorsAgent))} error rate. The selected view has ${numberFormat(context.summary.errorCount)} total errors.`;
+  }
+
+  if (/success|request|traffic|volume/.test(q)) {
+    const trafficLeader = [...context.agents].sort((a, b) => b.successCount - a.successCount)[0];
+    return `${trafficLeader.name} leads successful requests with ${numberFormat(trafficLeader.successCount)} successes. The selected view has ${numberFormat(context.summary.successCount)} successful requests in the last 24 hours.`;
+  }
+
+  if (/uptime|availability|available/.test(q)) {
+    return `${context.lowestUptimeAgent.name} has the lowest uptime at ${percentFormat(context.lowestUptimeAgent.uptime)}. The selected view uptime is ${percentFormat(context.summary.uptime)} across ${context.summary.activeAgents} active agent${context.summary.activeAgents === 1 ? "" : "s"}.`;
+  }
+
+  if (/capacity|pressure|load|saturation/.test(q)) {
+    return `${context.highestPressureAgent.name} is carrying the highest pressure at ${context.highestPressureAgent.saturation}% capacity. The selected view is at ${context.summary.saturation}% capacity.`;
+  }
+
+  if (/attention|watch|improve|problem|issue/.test(q)) {
+    return `${context.attentionAgent.name} needs the most attention. It has a ${context.attentionAgent.reliabilityScore}% score, ${percentFormat(agentErrorRate(context.attentionAgent))} error rate, ${percentFormat(context.attentionAgent.uptime)} uptime, and ${msFormat(context.attentionAgent.p95ResponseMs)} P95 latency.`;
+  }
+
+  if (/score|slo|health|healthy/.test(q)) {
+    const posture = context.summary.reliabilityScore >= 93 ? "inside SLO" : "needs watch";
+    return `The selected view has a ${context.summary.reliabilityScore}% reliability score, so it is ${posture}. ${summaryLine}`;
+  }
+
+  if (/judge|challenge|show|video|demo/.test(q)) {
+    return "For judges, show the agent filter, the four required stats, the 24-hour charts, the Live/Demo telemetry label, and the mobile responsive layout. That proves the page meets Challenge 2 and is review-ready.";
+  }
+
+  if (/help|what can you do|commands|ask/.test(q)) {
+    return "You can ask me normal questions, but I am strongest on Nasiko and this dashboard. Try asking: which agent is risky, why uptime matters, what Demo telemetry means, or what to show judges.";
+  }
+
+  return `I can help with that from a Nasiko dashboard point of view. ${summaryLine} You can also ask me normal follow-up questions, or ask specifically about agents, latency, errors, uptime, capacity, live data, or the Challenge 2 demo.`;
 }
 
 function ChartCanvas({ config, className }) {
@@ -978,6 +1176,157 @@ function AgentTable({ agents, selectedAgentId, onSelect }) {
   );
 }
 
+function MetricsChatbot({ summary, activeAgent, activeLabel, agents, telemetry }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [input, setInput] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const [bridgeStatus, setBridgeStatus] = useState("checking");
+  const [messages, setMessages] = useState([
+    {
+      role: "assistant",
+      content:
+        "Hi, I represent Nasiko on this dashboard. Ask me about Nasiko, these metrics, agents, uptime, errors, latency, or what to show judges.",
+    },
+  ]);
+  const messagesRef = useRef(null);
+  const context = useMemo(
+    () => buildMetricsChatContext(summary, activeAgent, activeLabel, agents, telemetry),
+    [summary, activeAgent, activeLabel, agents, telemetry]
+  );
+  const cursorEndpoint = getCursorAgentEndpoint();
+  const bridgeLabel =
+    bridgeStatus === "ready"
+      ? "Cursor bridge ready"
+      : bridgeStatus === "checking"
+        ? "Checking Cursor bridge"
+        : "Local metrics context";
+  const suggestions = [
+    "What is Nasiko?",
+    "Which agent needs attention?",
+    "What should I show judges?",
+  ];
+
+  useEffect(() => {
+    if (!isOpen || !messagesRef.current) return;
+    messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+  }, [messages, isThinking, isOpen]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    setBridgeStatus("checking");
+    checkCursorAgentBridge(cursorEndpoint).then((isReady) => {
+      if (isActive) setBridgeStatus(isReady ? "ready" : "local");
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [cursorEndpoint]);
+
+  async function askQuestion(rawQuestion) {
+    const question = rawQuestion.trim();
+    if (!question || isThinking) return;
+
+    setInput("");
+    setIsOpen(true);
+    setMessages((current) => [...current, { role: "user", content: question }]);
+    setIsThinking(true);
+
+    try {
+      const cursorAnswer =
+        bridgeStatus === "ready" ? await askCursorAgent(question, context, cursorEndpoint) : null;
+      const answer = cursorAnswer || createLocalMetricsAnswer(question, context);
+      setMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          content: answer,
+          source: cursorAnswer ? "Cursor SDK" : "Metrics context",
+        },
+      ]);
+    } catch (_error) {
+      setMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          content: createLocalMetricsAnswer(question, context),
+          source: "Metrics context",
+        },
+      ]);
+    } finally {
+      setIsThinking(false);
+    }
+  }
+
+  function handleSubmit(event) {
+    event.preventDefault();
+    askQuestion(input);
+  }
+
+  return (
+    <aside className={`metrics-chatbot ${isOpen ? "open" : ""}`} aria-label="Nasiko assistant chatbot">
+      {isOpen ? (
+        <section className="chatbot-panel">
+          <header className="chatbot-header">
+            <span>
+              <small>Nasiko representative</small>
+              <strong>Nasiko Assistant</strong>
+            </span>
+            <button type="button" onClick={() => setIsOpen(false)} aria-label="Close metrics chatbot">
+              x
+            </button>
+          </header>
+
+          <div className="chatbot-status">
+            <span className={bridgeStatus === "ready" ? "live" : "demo"} />
+            {bridgeLabel}
+          </div>
+
+          <div className="chatbot-messages" ref={messagesRef}>
+            {messages.map((message, index) => (
+              <div className={`chatbot-message ${message.role}`} key={`${message.role}-${index}`}>
+                <p>{message.content}</p>
+                {message.source && <small>{message.source}</small>}
+              </div>
+            ))}
+            {isThinking && (
+              <div className="chatbot-message assistant thinking">
+                <p>Reading the current metrics...</p>
+              </div>
+            )}
+          </div>
+
+          <div className="chatbot-prompts">
+            {suggestions.map((suggestion) => (
+              <button type="button" key={suggestion} onClick={() => askQuestion(suggestion)}>
+                {suggestion}
+              </button>
+            ))}
+          </div>
+
+          <form className="chatbot-form" onSubmit={handleSubmit}>
+            <input
+              aria-label="Ask the Nasiko assistant"
+              placeholder="Ask Nasiko anything..."
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+            />
+            <button type="submit" disabled={!input.trim() || isThinking}>
+              Send
+            </button>
+          </form>
+        </section>
+      ) : (
+        <button className="chatbot-toggle" type="button" onClick={() => setIsOpen(true)}>
+          <span>AI</span>
+          Ask metrics
+        </button>
+      )}
+    </aside>
+  );
+}
+
 function App() {
   const [selectedAgentId, setSelectedAgentId] = useState("all");
   const [telemetry, setTelemetry] = useState({
@@ -1117,6 +1466,13 @@ function App() {
 
       <HeatmapPanel agents={agents} />
       <AgentTable agents={agents} selectedAgentId={selectedAgentId} onSelect={setSelectedAgentId} />
+      <MetricsChatbot
+        summary={summary}
+        activeAgent={activeAgent}
+        activeLabel={activeLabel}
+        agents={agents}
+        telemetry={telemetry}
+      />
     </main>
   );
 }
