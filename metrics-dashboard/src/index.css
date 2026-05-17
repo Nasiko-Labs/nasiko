@@ -1,0 +1,96 @@
+:root {
+  --text: #a8b5b0;
+  --text-h: #f4fff9;
+  --muted: #6f837d;
+  --bg: #06100e;
+  --panel: rgba(11, 25, 22, 0.86);
+  --row: rgba(255, 255, 255, 0.035);
+  --input: rgba(255, 255, 255, 0.06);
+  --border: rgba(177, 255, 229, 0.14);
+  --ring: rgba(177, 255, 229, 0.1);
+  --code-bg: rgba(255, 255, 255, 0.08);
+  --accent: #00ffc6;
+  --good: #00ffc6;
+  --bad: #ff5656;
+  --shadow:
+    rgba(0, 0, 0, 0.38) 0 24px 80px -28px,
+    rgba(0, 255, 198, 0.06) 0 1px 0 inset;
+
+  --sans: Avenir Next, Avenir, Helvetica Neue, sans-serif;
+  --heading: Avenir Next, Avenir, Helvetica Neue, sans-serif;
+  --mono: SFMono-Regular, Menlo, Consolas, monospace;
+
+  font: 16px/145% var(--sans);
+  letter-spacing: 0.1px;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  @media (max-width: 1024px) {
+    font-size: 16px;
+  }
+}
+
+#root {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  min-height: 100svh;
+  box-sizing: border-box;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(0, 255, 198, 0.13), transparent 30vw),
+    radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.07), transparent 26vw),
+    linear-gradient(135deg, #020605 0%, #071512 44%, #0a1615 100%);
+  margin: 0;
+}
+
+h1,
+h2 {
+  font-family: var(--heading);
+  font-weight: 800;
+  color: var(--text-h);
+}
+
+h1 {
+  font-size: clamp(44px, 7vw, 92px);
+  letter-spacing: -0.075em;
+  line-height: 0.92;
+  margin: 0 0 22px;
+  @media (max-width: 1024px) {
+    font-size: 36px;
+    margin: 20px 0;
+  }
+}
+h2 {
+  font-size: 24px;
+  line-height: 118%;
+  letter-spacing: -0.24px;
+  margin: 0 0 8px;
+  @media (max-width: 1024px) {
+    font-size: 20px;
+  }
+}
+p {
+  margin: 0;
+}
+
+code,
+button {
+  font-family: var(--mono);
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+code {
+  font-size: 15px;
+  line-height: 135%;
+  padding: 4px 8px;
+  background: var(--code-bg);
+}

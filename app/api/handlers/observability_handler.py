@@ -7,7 +7,7 @@ from app.service.observability_service import ObservabilityService
 class ObservabilityHandler(BaseHandler):
     def __init__(self, service, logger):
         super().__init__(service, logger)
-        self.observability_service = ObservabilityService(logger)
+        self.observability_service = ObservabilityService(logger, service)
 
     async def get_session_details(self, session_id: str) -> dict[str, Any]:
         """Get session details from Phoenix GraphQL API"""
@@ -35,4 +35,12 @@ class ObservabilityHandler(BaseHandler):
         """Get project statistics for an agent from Phoenix GraphQL API"""
         return await self.observability_service.get_agent_project_stats(
             agent_id, start_time
+        )
+
+    async def get_agent_performance_metrics(
+        self, user_id: str, auth_header: str, window_hours: int = 24
+    ) -> dict[str, Any]:
+        """Get dashboard-ready performance metrics for all accessible agents"""
+        return await self.observability_service.get_agent_performance_metrics(
+            user_id, auth_header, window_hours
         )

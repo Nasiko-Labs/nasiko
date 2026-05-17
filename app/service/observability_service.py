@@ -2,13 +2,15 @@ from fastapi import HTTPException, status
 from app.pkg.config.config import settings
 import requests
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import re
+from datetime import datetime, timedelta, timezone
 
 
 class ObservabilityService:
-    def __init__(self, logger):
+    def __init__(self, logger, service=None):
         self.logger = logger
+        self.service = service
 
     def _camel_to_snake(self, name: str) -> str:
         """Convert camelCase to snake_case"""
@@ -96,6 +98,331 @@ class ObservabilityService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to retrieve sessions: {str(e)}",
             )
+
+    async def get_agent_performance_metrics(
+        self,
+        user_id: str,
+        auth_header: str,
+        window_hours: int = 24,
+        now_iso: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate user-accessible agent performance metrics for dashboard use."""
+        if window_hours < 1 or window_hours > 168:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="window_hours must be between 1 and 168",
+            )
+
+        now = self._parse_iso_datetime(now_iso) if now_iso else datetime.now(timezone.utc)
+        start = now - timedelta(hours=window_hours)
+        start_time = self._format_iso_datetime(start)
+
+        agent_ids = await self._get_accessible_agent_ids(auth_header)
+        registry_summaries = await self._get_agent_registry_summaries(agent_ids)
+        registry_by_id = {agent["id"]: agent for agent in registry_summaries}
+
+        agents = []
+        for agent_id in agent_ids:
+            agent_info = registry_by_id.get(
+                agent_id,
+                {"id": agent_id, "name": agent_id, "description": ""},
+            )
+            agents.append(
+                await self._build_agent_metric_row(
+                    agent_id=agent_id,
+                    agent_info=agent_info,
+                    start_time=start_time,
+                    start=start,
+                    now=now,
+                    window_hours=window_hours,
+                )
+            )
+
+        summary = self._build_metrics_summary(agents)
+        generated_at = self._format_iso_datetime(now)
+
+        return {
+            "data": {
+                "window": {
+                    "hours": window_hours,
+                    "start_time": start_time,
+                    "end_time": generated_at,
+                },
+                "summary": summary,
+                "agents": agents,
+                "generated_at": generated_at,
+                "user_id": user_id,
+            }
+        }
+
+    async def _get_accessible_agent_ids(self, auth_header: str) -> List[str]:
+        from app.pkg.auth import AuthClient
+
+        auth_client = AuthClient()
+        return await auth_client.get_user_accessible_agents(auth_header)
+
+    async def _get_agent_registry_summaries(
+        self, agent_ids: List[str]
+    ) -> List[Dict[str, Any]]:
+        agents = []
+        for agent_id in agent_ids:
+            registry = None
+            try:
+                if self.service:
+                    registry = await self.service.get_registry_by_agent_id(agent_id)
+            except Exception as e:
+                self.logger.warning(f"Failed to load registry for {agent_id}: {e}")
+
+            agents.append(
+                {
+                    "id": agent_id,
+                    "name": getattr(registry, "name", agent_id) if registry else agent_id,
+                    "description": (
+                        getattr(registry, "description", "") if registry else ""
+                    ),
+                }
+            )
+        return agents
+
+    async def _build_agent_metric_row(
+        self,
+        agent_id: str,
+        agent_info: Dict[str, Any],
+        start_time: str,
+        start: datetime,
+        now: datetime,
+        window_hours: int,
+    ) -> Dict[str, Any]:
+        try:
+            stats_response = await self.get_agent_project_stats(agent_id, start_time)
+            project_id = await self._get_project_id(agent_id)
+            sessions = await self._get_project_sessions_for_aggregation(
+                project_id, agent_id, start_time
+            )
+            traces = self._extract_metric_traces(sessions)
+            stats = stats_response.get("data", {}).get("project", {})
+            return self._compose_agent_metric_row(
+                agent_id=agent_id,
+                agent_info=agent_info,
+                stats=stats,
+                traces=traces,
+                start=start,
+                now=now,
+                window_hours=window_hours,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to build metrics for agent {agent_id}: {e}")
+            return self._empty_agent_metric_row(
+                agent_id=agent_id,
+                agent_info=agent_info,
+                start=start,
+                window_hours=window_hours,
+                status="unavailable",
+                error=str(e),
+            )
+
+    def _compose_agent_metric_row(
+        self,
+        agent_id: str,
+        agent_info: Dict[str, Any],
+        stats: Dict[str, Any],
+        traces: List[Dict[str, Any]],
+        start: datetime,
+        now: datetime,
+        window_hours: int,
+    ) -> Dict[str, Any]:
+        trace_count = int(stats.get("trace_count") or len(traces) or 0)
+        error_count = sum(1 for trace in traces if self._is_error_status(trace))
+        success_count = max(trace_count - error_count, 0)
+        latencies = [
+            trace["latency_ms"]
+            for trace in traces
+            if isinstance(trace.get("latency_ms"), (int, float))
+        ]
+        average_latency = (
+            sum(latencies) / len(latencies)
+            if latencies
+            else float(stats.get("latency_ms_p50") or 0)
+        )
+        uptime = (success_count / trace_count * 100) if trace_count else 0.0
+        hourly = self._build_hourly_buckets(traces, start, window_hours)
+        last_activity = stats.get("streaming_last_updated_at") or self._latest_trace_time(
+            traces
+        )
+
+        return {
+            "agent_id": agent_id,
+            "agent_name": agent_info.get("name") or agent_id,
+            "description": agent_info.get("description") or "",
+            "status": "active" if trace_count else "idle",
+            "requests": trace_count,
+            "success_count": success_count,
+            "error_count": error_count,
+            "uptime_percentage": round(uptime, 2),
+            "average_latency_ms": round(float(average_latency), 2),
+            "p50_latency_ms": stats.get("latency_ms_p50"),
+            "p99_latency_ms": stats.get("latency_ms_p99"),
+            "last_activity_at": last_activity,
+            "hourly": hourly,
+            "error": None,
+        }
+
+    def _extract_metric_traces(self, sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        traces = []
+        for session in sessions:
+            session_traces = session.get("traces") or []
+            if session_traces:
+                for trace in session_traces:
+                    root_span = trace.get("root_span") or trace.get("rootSpan") or {}
+                    traces.append(
+                        {
+                            "trace_id": trace.get("trace_id") or trace.get("traceId"),
+                            "latency_ms": root_span.get("latency_ms")
+                            or root_span.get("latencyMs")
+                            or session.get("trace_latency_ms_p50"),
+                            "start_time": root_span.get("start_time")
+                            or root_span.get("startTime")
+                            or session.get("start_time"),
+                            "status_code": root_span.get("status_code")
+                            or root_span.get("statusCode")
+                            or "OK",
+                        }
+                    )
+            else:
+                traces.extend(self._traces_from_session_summary(session))
+        return traces
+
+    def _traces_from_session_summary(
+        self, session: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        count = int(session.get("num_traces") or 0)
+        latency = session.get("trace_latency_ms_p50")
+        start_time = session.get("start_time")
+        return [
+            {
+                "trace_id": f"{session.get('session_id', 'session')}-{index}",
+                "latency_ms": latency,
+                "start_time": start_time,
+                "status_code": "OK",
+            }
+            for index in range(count)
+        ]
+
+    def _empty_agent_metric_row(
+        self,
+        agent_id: str,
+        agent_info: Dict[str, Any],
+        start: datetime,
+        window_hours: int,
+        status: str = "idle",
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "agent_id": agent_id,
+            "agent_name": agent_info.get("name") or agent_id,
+            "description": agent_info.get("description") or "",
+            "status": status,
+            "requests": 0,
+            "success_count": 0,
+            "error_count": 0,
+            "uptime_percentage": 0.0,
+            "average_latency_ms": 0.0,
+            "p50_latency_ms": None,
+            "p99_latency_ms": None,
+            "last_activity_at": None,
+            "hourly": self._build_hourly_buckets([], start, window_hours),
+            "error": error,
+        }
+
+    def _build_metrics_summary(self, agents: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total_requests = sum(agent["requests"] for agent in agents)
+        success_count = sum(agent["success_count"] for agent in agents)
+        error_count = sum(agent["error_count"] for agent in agents)
+        active_agents = sum(1 for agent in agents if agent["status"] == "active")
+        weighted_latency = sum(
+            agent["average_latency_ms"] * agent["requests"] for agent in agents
+        )
+        average_latency = weighted_latency / total_requests if total_requests else 0.0
+        error_rate = (error_count / total_requests * 100) if total_requests else 0.0
+
+        return {
+            "total_agents": len(agents),
+            "active_agents": active_agents,
+            "total_requests": total_requests,
+            "success_count": success_count,
+            "error_count": error_count,
+            "error_rate": round(error_rate, 2),
+            "average_latency_ms": round(average_latency, 2),
+        }
+
+    def _build_hourly_buckets(
+        self, traces: List[Dict[str, Any]], start: datetime, window_hours: int
+    ) -> List[Dict[str, Any]]:
+        first_bucket = start.replace(minute=0, second=0, microsecond=0) + timedelta(
+            hours=1
+        )
+        buckets = []
+        for index in range(window_hours):
+            bucket_start = first_bucket + timedelta(hours=index)
+            buckets.append(
+                {
+                    "time": self._format_iso_datetime(bucket_start),
+                    "requests": 0,
+                    "success_count": 0,
+                    "error_count": 0,
+                    "average_latency_ms": 0.0,
+                }
+            )
+
+        for trace in traces:
+            trace_time = self._parse_iso_datetime(trace.get("start_time"))
+            if not trace_time:
+                continue
+            bucket_index = int((trace_time - first_bucket).total_seconds() // 3600)
+            if bucket_index < 0 or bucket_index >= window_hours:
+                continue
+            bucket = buckets[bucket_index]
+            previous_requests = bucket["requests"]
+            latency = trace.get("latency_ms") or 0
+            bucket["requests"] += 1
+            if self._is_error_status(trace):
+                bucket["error_count"] += 1
+            else:
+                bucket["success_count"] += 1
+            bucket["average_latency_ms"] = round(
+                (
+                    (bucket["average_latency_ms"] * previous_requests)
+                    + float(latency or 0)
+                )
+                / bucket["requests"],
+                2,
+            )
+        return buckets
+
+    def _is_error_status(self, trace: Dict[str, Any]) -> bool:
+        status_code = str(trace.get("status_code") or "").upper()
+        return status_code in {"ERROR", "STATUS_CODE_ERROR", "FAILED", "FAILURE"}
+
+    def _latest_trace_time(self, traces: List[Dict[str, Any]]) -> Optional[str]:
+        times = [trace.get("start_time") for trace in traces if trace.get("start_time")]
+        return max(times) if times else None
+
+    def _parse_iso_datetime(self, value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            normalized = value.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    def _format_iso_datetime(self, value: datetime) -> str:
+        return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        )
 
     async def _get_project_sessions_for_aggregation(
         self, project_id: str, agent_id: str, start_time: str = None
