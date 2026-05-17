@@ -1,0 +1,22 @@
+services:
+  callsense-agent:
+    build: .
+    container_name: callsense-agent
+    env_file:
+      - .env
+    environment:
+      - CALLSENSE_BACKEND_URL=${CALLSENSE_BACKEND_URL:-https://cursor-buildathon-pi.vercel.app}
+      - CALLSENSE_PROCESS_PATH=${CALLSENSE_PROCESS_PATH:-/api/calls/process}
+      - CALLSENSE_HTTP_TIMEOUT=${CALLSENSE_HTTP_TIMEOUT:-60}
+      - VALSEA_API_KEY=${VALSEA_API_KEY}
+      - VALSA_API_KEY=${VALSA_API_KEY:-${VALSEA_API_KEY}}
+      - VALSEA_API_URL=${VALSEA_API_URL:-https://api.valsea.ai}
+      - VALSEA_LANGUAGE=${VALSEA_LANGUAGE:-singlish}
+    ports:
+      - "8008:8000"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

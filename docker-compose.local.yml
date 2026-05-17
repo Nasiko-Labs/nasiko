@@ -347,6 +347,22 @@ services:
       timeout: 10s
       retries: 3
 
+  # Titan Challenge 2 — Agent Performance Metrics (React/TypeScript source in ./web)
+  nasiko-metrics-web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: nasiko-metrics-web
+    restart: unless-stopped
+    depends_on:
+      - nasiko-backend
+    ports:
+      - "${NASIKO_PORT_METRICS:-4001}:4001"
+    environment:
+      NASIKO_API_URL: http://nasiko-backend:8000/api/v1
+    networks:
+      - app-network
+
   # ============================================================================
   # SUPERUSER CREATION JOB
   # ============================================================================

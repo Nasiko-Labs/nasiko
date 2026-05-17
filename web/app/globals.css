@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0c1638;
+  --foreground: #ffffff;
+}
+
+html,
+body {
+  background: #0c1638;
+  color: var(--foreground);
+  min-height: 100vh;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 55% 95% at 6% 50%, rgba(37, 65, 150, 0.55) 0%, transparent 62%),
+    radial-gradient(ellipse 70% 55% at 0% 0%, rgba(30, 58, 138, 0.75) 0%, transparent 65%),
+    linear-gradient(165deg, #122252 0%, #0e1b48 38%, #0a1430 72%, #08102a 100%);
+  pointer-events: none;
+}
+
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+.card-premium {
+  background: rgba(12, 16, 42, 0.82);
+  backdrop-filter: blur(20px);
+  border-radius: 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.chart-panel {
+  position: relative;
+  overflow: hidden;
+  border-radius: 24px;
+  padding: 1.5rem;
+  background: rgba(12, 16, 42, 0.82);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
