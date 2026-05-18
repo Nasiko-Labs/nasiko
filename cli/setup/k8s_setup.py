@@ -11,14 +11,21 @@ Remote Backend Support:
 - See config.py for all backend configuration options
 """
 
+import json
 import os
 import enum
+import shutil
 import typer
 import subprocess
 from pathlib import Path
 from typing import Optional
 from rich.console import Console
-from .utils import ensure_terraform, ensure_kubectl, setup_terraform_modules
+from .utils import (
+    ensure_terraform,
+    ensure_kubectl,
+    ensure_nebius_cli,
+    setup_terraform_modules,
+)
 from .config import print_state_info
 from .terraform_state import (
     setup_working_directory,
@@ -31,7 +38,7 @@ from .terraform_state import (
 DEFAULT_CLUSTER_NAME = "nasiko"
 
 app = typer.Typer(
-    help="Setup and manage Kubernetes clusters on AWS or DigitalOcean.",
+    help="Setup and manage Kubernetes clusters on AWS, DigitalOcean, or Nebius.",
     no_args_is_help=True,
 )
 
@@ -43,6 +50,60 @@ class Provider(str, enum.Enum):
 
     aws = "aws"
     digitalocean = "digitalocean"
+    nebius = "nebius"
+
+
+def _nebius_cli_query(args: list[str]) -> Optional[str]:
+    """Run a `nebius ...` CLI command and return stripped stdout, or None on failure."""
+    nebius_bin = shutil.which("nebius") or str(Path.home() / ".nebius" / "bin" / "nebius")
+    if not Path(nebius_bin).exists():
+        return None
+    try:
+        result = subprocess.run(
+            [nebius_bin, *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def _resolve_nebius_project_id() -> Optional[str]:
+    """Resolve the Nebius project ID from env or the active CLI profile."""
+    pid = os.environ.get("NB_PROJECT_ID") or os.environ.get("NEBIUS_PROJECT_ID")
+    if pid:
+        return pid
+    return _nebius_cli_query(["config", "get", "parent-id"])
+
+
+def _resolve_nebius_subnet_id(project_id: str) -> Optional[str]:
+    """Resolve a Nebius VPC subnet ID, defaulting to the first subnet in the project."""
+    sid = os.environ.get("NB_SUBNET_ID") or os.environ.get("NEBIUS_SUBNET_ID")
+    if sid:
+        return sid
+    raw = _nebius_cli_query(
+        ["vpc", "subnet", "list", "--parent-id", project_id, "--format", "json"]
+    )
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        items = data.get("items") or []
+        if items:
+            return items[0].get("metadata", {}).get("id")
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+def _resolve_nebius_token() -> Optional[str]:
+    """Resolve a Nebius IAM access token from env or `nebius iam get-access-token`."""
+    token = os.environ.get("NEBIUS_IAM_TOKEN")
+    if token:
+        return token
+    return _nebius_cli_query(["iam", "get-access-token"])
 
 
 def _run_command(
@@ -207,6 +268,49 @@ def _prepare_tf_vars(
             os.environ["DIGITALOCEAN_ACCESS_TOKEN"] = do_token
             os.environ["DO_TOKEN"] = do_token
 
+    elif provider == Provider.nebius:
+        # Region is informational (Nebius region is derived from the subnet).
+        if region:
+            tf_vars["TF_VAR_nb_region"] = region
+        # The existing --node-size flag maps to the Nebius compute preset
+        # (e.g. "8vcpu-32gb"). Use the module's default when not provided.
+        if node_size:
+            tf_vars["TF_VAR_node_preset"] = node_size
+
+        # 1. Resolve and export the IAM token (the Nebius Terraform provider
+        #    reads NEBIUS_IAM_TOKEN from the environment).
+        token = _resolve_nebius_token()
+        if not token:
+            console.print(
+                "[bold red]Nebius IAM token not found.[/]\n"
+                "Run [cyan]nebius profile create[/] to set up a profile, then retry. "
+                "Alternatively, export [cyan]NEBIUS_IAM_TOKEN[/]."
+            )
+            raise typer.Exit(1)
+        os.environ["NEBIUS_IAM_TOKEN"] = token
+        tf_vars["TF_VAR_nb_token"] = token
+
+        # 2. Resolve the project ID (parent_id of the cluster).
+        project_id = _resolve_nebius_project_id()
+        if not project_id:
+            console.print(
+                "[bold red]Nebius project ID not found.[/]\n"
+                "Set [cyan]NB_PROJECT_ID[/] or run "
+                "[cyan]nebius config set parent-id <project-id>[/]."
+            )
+            raise typer.Exit(1)
+        tf_vars["TF_VAR_nb_project_id"] = project_id
+
+        # 3. Resolve the subnet ID (control plane + node group).
+        subnet_id = _resolve_nebius_subnet_id(project_id)
+        if not subnet_id:
+            console.print(
+                "[bold red]No Nebius VPC subnet found in the project.[/]\n"
+                "Create a subnet first or set [cyan]NB_SUBNET_ID[/]."
+            )
+            raise typer.Exit(1)
+        tf_vars["TF_VAR_nb_subnet_id"] = subnet_id
+
     return tf_vars
 
 
@@ -216,16 +320,17 @@ def _prepare_tf_vars(
 @app.command()
 def create(
     provider: Provider = typer.Argument(
-        ..., help="Cloud provider to use (aws or digitalocean)."
+        ..., help="Cloud provider to use (aws, digitalocean, or nebius)."
     ),
     cluster_name: str = typer.Option(
         DEFAULT_CLUSTER_NAME, "--name", "-n", help="Name for the Kubernetes cluster."
     ),
     region: str = typer.Option(
-        None, help="Region for the cluster (e.g., 'us-east-1', 'nyc3')."
+        None, help="Region for the cluster (e.g., 'us-east-1', 'nyc3', 'us-central1')."
     ),
     node_size: str = typer.Option(
-        None, help="Instance type for nodes (e.g., 't3.medium', 's-2vcpu-4gb')."
+        None,
+        help="Instance type for nodes (e.g., 't3.medium', 's-2vcpu-4gb', '8vcpu-32gb').",
     ),
     auto_approve: bool = typer.Option(
         False, "--yes", "-y", help="Auto-approve Terraform apply."
@@ -257,6 +362,8 @@ def create(
     # 1. Ensure required tools are installed
     ensure_terraform()
     ensure_kubectl()
+    if provider == Provider.nebius:
+        ensure_nebius_cli()
 
     console.print(f"[green]Starting cluster creation for: [bold]{provider.value}[/][/]")
     console.print(f"[dim]Cluster name: {cluster_name}[/]")
@@ -385,10 +492,51 @@ def create(
                 # Set proper permissions on kubeconfig (600 = rw-------)
                 Path(kubeconfig_path).chmod(0o600)
 
+        elif provider == Provider.nebius:
+            cluster_id = get_tf_output(work_dir, "cluster_id", env_vars)
+            public_endpoint = get_tf_output(work_dir, "public_endpoint", env_vars)
+            if not cluster_id:
+                console.print("[red]❌ Could not read cluster_id from Terraform outputs[/]")
+                raise typer.Exit(1)
+
+            console.print(
+                f"[dim]Generating kubeconfig via Nebius CLI for {actual_cluster_name}...[/]"
+            )
+            # `nebius mk8s cluster get-credentials --external` writes a
+            # kubeconfig pointing at the public load-balanced API endpoint.
+            # KUBECONFIG controls the output file path.
+            cred_env = {**os.environ, "KUBECONFIG": kubeconfig_path}
+            # Ensure the target file exists so the CLI merges into it cleanly.
+            Path(kubeconfig_path).touch(mode=0o600, exist_ok=True)
+            subprocess.run(
+                [
+                    "nebius",
+                    "mk8s",
+                    "cluster",
+                    "get-credentials",
+                    "--id",
+                    cluster_id,
+                    "--external",
+                ],
+                check=True,
+                env=cred_env,
+                capture_output=True,
+                text=True,
+            )
+            Path(kubeconfig_path).chmod(0o600)
+
+            if public_endpoint:
+                console.print(
+                    f"[green]✅ Public Kubernetes API: [bold]{public_endpoint}[/][/]"
+                )
+
         os.environ["KUBECONFIG"] = kubeconfig_path
 
         console.print(f"[green]✅ Kubeconfig saved: [bold]{kubeconfig_path}[/][/]")
         console.print(f"[green]✅ Active KUBECONFIG: [bold]{kubeconfig_path}[/][/]")
+        console.print(
+            f"[dim]Connect: [cyan]export KUBECONFIG={kubeconfig_path} && kubectl get nodes[/][/]"
+        )
 
     except subprocess.CalledProcessError as e:
         console.print(f"[red]❌ Failed to configure kubeconfig: {e}[/]")
@@ -426,7 +574,7 @@ def create(
 @app.command()
 def destroy(
     provider: Provider = typer.Argument(
-        ..., help="Cloud provider to destroy (aws or digitalocean)."
+        ..., help="Cloud provider to destroy (aws, digitalocean, or nebius)."
     ),
     cluster_name: str = typer.Option(
         DEFAULT_CLUSTER_NAME, "--name", "-n", help="Name of the cluster to destroy."
@@ -462,6 +610,8 @@ def destroy(
     """
     ensure_terraform()
     ensure_kubectl()
+    if provider == Provider.nebius:
+        ensure_nebius_cli()
 
     console.print(
         f"[red]Starting cluster destruction for: [bold]{provider.value}/{cluster_name}[/][/]"
@@ -651,6 +801,7 @@ def init_modules(
     do_exists = (modules_dir / "digitalocean" / "doks.tf").exists() or (
         modules_dir / "digitalocean" / "main.tf"
     ).exists()
+    nebius_exists = (modules_dir / "nebius" / "mk8s.tf").exists()
 
     console.print("\n[bold cyan]Module Status:[/]")
     console.print(
@@ -659,9 +810,12 @@ def init_modules(
     console.print(
         f"  DigitalOcean: {'[green]✓ Available[/]' if do_exists else '[red]✗ Not found[/]'}"
     )
+    console.print(
+        f"  Nebius: {'[green]✓ Available[/]' if nebius_exists else '[red]✗ Not found[/]'}"
+    )
     console.print(f"\n  Location: [cyan]{modules_dir}[/]")
 
-    if not aws_exists or not do_exists:
+    if not aws_exists or not do_exists or not nebius_exists:
         console.print("\n[yellow]Some modules are missing. Provide the source path:[/]")
         console.print(
             "[dim]  nasiko setup k8s init-modules --source /path/to/terraform[/]"

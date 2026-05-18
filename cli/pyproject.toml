@@ -52,11 +52,12 @@ Issues = "https://github.com/arithmic/nasiko/issues"
 
 [tool.setuptools]
 py-modules = ["main"]
-packages = ["setup", "setup.terraform", "setup.terraform.aws", "setup.terraform.digitalocean", "groups", "auth", "commands", "core", "utils", "k8s"]
+packages = ["setup", "setup.terraform", "setup.terraform.aws", "setup.terraform.digitalocean", "setup.terraform.nebius", "groups", "auth", "commands", "core", "utils", "k8s"]
 
 [tool.setuptools.package-data]
 "setup.terraform.aws" = ["*.tf"]
 "setup.terraform.digitalocean" = ["*.tf"]
+"setup.terraform.nebius" = ["*.tf"]
 "k8s" = ["**/*.yaml", "**/*.yml"]
 
 [tool.black]

@@ -557,6 +557,43 @@ uv run cli/main.py setup bootstrap \
   --registry-name nasiko-images \
   --region us-west-2 \
   --openai-key sk-proj-your-key
+
+# Nebius AI Cloud (Managed Kubernetes)
+# Prereqs: `nebius profile create` (one-time auth setup).
+# Creates an HA control plane with a public API endpoint and 3 worker
+# nodes (cpu-d3 / 8vcpu-32gb) in us-central1 by default.
+uv run cli/main.py setup k8s create nebius \
+  --name nasiko \
+  --region us-central1 \
+  --node-size 8vcpu-32gb \
+  --yes
+```
+
+#### Nebius configuration
+
+The Nebius provider reads credentials and project context from the active
+Nebius CLI profile by default:
+
+| Source                              | Value                                  |
+| ----------------------------------- | -------------------------------------- |
+| `nebius iam get-access-token`       | API access token (auto-refreshed)      |
+| `nebius config get parent-id`       | Project ID (`parent_id`)               |
+| `nebius vpc subnet list` (first)    | Subnet for control plane + node group  |
+
+You can override any of them with environment variables:
+
+```bash
+export NEBIUS_IAM_TOKEN=<access-token>     # bypass `nebius iam get-access-token`
+export NB_PROJECT_ID=project-e00...        # override the active project
+export NB_SUBNET_ID=vpcsubnet-e00...       # override the auto-picked subnet
+```
+
+When `create` finishes it prints the public Kubernetes API endpoint and the
+kubeconfig path. To use the cluster:
+
+```bash
+export KUBECONFIG=~/.nasiko/state/nebius/nasiko/nasiko-kubeconfig.yaml
+kubectl get nodes
 ```
 
 This command automatically:

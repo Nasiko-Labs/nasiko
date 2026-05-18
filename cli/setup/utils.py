@@ -359,6 +359,66 @@ def ensure_aws_cli():
         sys.exit(1)
 
 
+def ensure_nebius_cli():
+    """
+    Ensures the Nebius AI Cloud CLI is available.
+
+    Detection order:
+    1. `nebius` already on PATH (system-wide install).
+    2. The official Nebius CLI install location at ~/.nebius/bin/nebius
+       (added to PATH for this session).
+    3. Run the official install script which installs into ~/.nebius/bin/.
+
+    The install script is interactive-friendly but works in non-interactive
+    shells too; it places the binary at ~/.nebius/bin/nebius.
+    """
+    if shutil.which("nebius"):
+        return
+
+    # The official installer always lands the binary here, regardless of
+    # whether tools_dir is on PATH. Detect and adopt it.
+    nebius_home_bin = Path.home() / ".nebius" / "bin"
+    nebius_bin = nebius_home_bin / "nebius"
+    if nebius_bin.exists():
+        _add_to_path(str(nebius_home_bin))
+        return
+
+    if platform.system().lower() == "windows":
+        print(
+            "❌ Nebius CLI not found. On Windows, install it manually from "
+            "https://docs.nebius.com/cli."
+        )
+        sys.exit(1)
+
+    print("⚙️  Nebius CLI not found. Installing via the official installer...")
+    print(
+        "   curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash"
+    )
+    try:
+        subprocess.run(
+            "curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash",
+            shell=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to install Nebius CLI: {e}")
+        print("   Install manually from https://docs.nebius.com/cli, then retry.")
+        sys.exit(1)
+
+    if not nebius_bin.exists():
+        print(
+            "❌ Nebius CLI install script completed but no binary was found at "
+            f"{nebius_bin}. Install manually from https://docs.nebius.com/cli."
+        )
+        sys.exit(1)
+
+    _add_to_path(str(nebius_home_bin))
+    print(f"✅ Nebius CLI installed to {nebius_home_bin}")
+    print(
+        "   If this is your first time, run [bold]nebius profile create[/] to authenticate."
+    )
+
+
 def setup_terraform_modules(source: str = None, force: bool = False) -> Path:
     """
     Set up Terraform modules in ~/.nasiko/terraform/.
@@ -383,8 +443,9 @@ def setup_terraform_modules(source: str = None, force: bool = False) -> Path:
     # Check if modules already exist
     aws_exists = (dest / "aws" / "main.tf").exists()
     do_exists = (dest / "digitalocean" / "doks.tf").exists()
+    nebius_exists = (dest / "nebius" / "mk8s.tf").exists()
 
-    if aws_exists and do_exists and not force:
+    if aws_exists and do_exists and nebius_exists and not force:
         return dest
 
     # Use custom source if provided
@@ -405,6 +466,7 @@ def _extract_bundled_modules(dest: Path, force: bool = False) -> Path:
     providers = {
         "aws": "setup.terraform.aws",
         "digitalocean": "setup.terraform.digitalocean",
+        "nebius": "setup.terraform.nebius",
     }
 
     for provider, package in providers.items():
@@ -443,6 +505,8 @@ def _extract_bundled_modules(dest: Path, force: bool = False) -> Path:
         raise FileNotFoundError("AWS modules not extracted correctly")
     if not (dest / "digitalocean" / "doks.tf").exists():
         raise FileNotFoundError("DigitalOcean modules not extracted correctly")
+    if not (dest / "nebius" / "mk8s.tf").exists():
+        raise FileNotFoundError("Nebius modules not extracted correctly")
 
     print(f"✅ Terraform modules ready: {dest}")
     return dest
@@ -450,7 +514,7 @@ def _extract_bundled_modules(dest: Path, force: bool = False) -> Path:
 
 def _copy_terraform_from_source(source: Path, dest: Path, force: bool = False) -> Path:
     """Copy Terraform modules from a custom source directory."""
-    providers = ["aws", "digitalocean"]
+    providers = ["aws", "digitalocean", "nebius"]
 
     for provider in providers:
         provider_src = source / provider
