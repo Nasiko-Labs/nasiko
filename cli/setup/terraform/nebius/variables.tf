@@ -47,8 +47,8 @@ variable "node_platform" {
 
 variable "node_preset" {
   type        = string
-  description = "Compute preset for worker nodes (e.g. 8vcpu-32gb)."
-  default     = "8vcpu-32gb"
+  description = "Compute preset for worker nodes (e.g. 4vcpu-16gb)."
+  default     = "4vcpu-16gb"
 }
 
 variable "boot_disk_gib" {
@@ -60,7 +60,7 @@ variable "boot_disk_gib" {
 variable "etcd_size" {
   type        = number
   description = "Number of etcd nodes in the control plane (3 = HA, 1 = single-instance)."
-  default     = 3
+  default     = 1
 }
 
 variable "service_cidr" {

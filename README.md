@@ -560,12 +560,13 @@ uv run cli/main.py setup bootstrap \
 
 # Nebius AI Cloud (Managed Kubernetes)
 # Prereqs: `nebius profile create` (one-time auth setup).
-# Creates an HA control plane with a public API endpoint and 3 worker
-# nodes (cpu-d3 / 8vcpu-32gb) in us-central1 by default.
+# Creates a single-etcd control plane with a public API endpoint and 3
+# worker nodes (cpu-d3 / 4vcpu-16gb) in us-central1 by default. Override
+# `--node-size` or set `TF_VAR_etcd_size=3` for an HA control plane.
 uv run cli/main.py setup k8s create nebius \
   --name nasiko \
   --region us-central1 \
-  --node-size 8vcpu-32gb \
+  --node-size 4vcpu-16gb \
   --yes
 ```
 

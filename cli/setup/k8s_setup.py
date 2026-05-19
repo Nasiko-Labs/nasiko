@@ -273,7 +273,7 @@ def _prepare_tf_vars(
         if region:
             tf_vars["TF_VAR_nb_region"] = region
         # The existing --node-size flag maps to the Nebius compute preset
-        # (e.g. "8vcpu-32gb"). Use the module's default when not provided.
+        # (e.g. "4vcpu-16gb"). Use the module's default when not provided.
         if node_size:
             tf_vars["TF_VAR_node_preset"] = node_size
 
@@ -330,7 +330,7 @@ def create(
     ),
     node_size: str = typer.Option(
         None,
-        help="Instance type for nodes (e.g., 't3.medium', 's-2vcpu-4gb', '8vcpu-32gb').",
+        help="Instance type for nodes (e.g., 't3.medium', 's-2vcpu-4gb', '4vcpu-16gb').",
     ),
     auto_approve: bool = typer.Option(
         False, "--yes", "-y", help="Auto-approve Terraform apply."
