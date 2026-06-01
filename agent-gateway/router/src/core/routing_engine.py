@@ -44,7 +44,7 @@ class RoutingEngine:
 
         if provider == "minimax":
             return ChatOpenAI(
-                model=model or "MiniMax-M2.7",
+                model=model or "MiniMax-M3",
                 temperature=1.0,
                 api_key=settings.MINIMAX_API_KEY,
                 base_url=settings.MINIMAX_BASE_URL,
