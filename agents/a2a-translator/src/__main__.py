@@ -38,7 +38,7 @@ def main(host: str, port: int):
     elif os.getenv("MINIMAX_API_KEY"):
         api_key = os.getenv("MINIMAX_API_KEY")
         base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
-        model = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
+        model = os.getenv("MINIMAX_MODEL", "MiniMax-M3")
     else:
         api_key = os.getenv("OPENAI_API_KEY")
 

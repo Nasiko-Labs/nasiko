@@ -177,7 +177,7 @@ Nasiko supports multiple LLM providers for both the routing engine and agent exe
 | Provider | API Key Env Var | Base URL | Models |
 |----------|----------------|----------|--------|
 | OpenAI (default) | `OPENAI_API_KEY` | Default OpenAI endpoint | gpt-4o, gpt-4o-mini |
-| [MiniMax](https://platform.minimax.io) | `MINIMAX_API_KEY` | `https://api.minimax.io/v1` (global) / `https://api.minimaxi.com/v1` (China) | MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed |
+| [MiniMax](https://platform.minimax.io) | `MINIMAX_API_KEY` | `https://api.minimax.io/v1` (global) / `https://api.minimaxi.com/v1` (China) | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed |
 | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | Various models |
 
 To switch the router's LLM provider, set `ROUTER_LLM_PROVIDER` and `ROUTER_LLM_MODEL` in your environment configuration. See [Environment Configuration](#-environment-configuration).
