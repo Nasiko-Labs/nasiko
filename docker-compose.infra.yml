@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nasiko
+      POSTGRES_PASSWORD: nasiko
+      POSTGRES_DB: nasiko_dev
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nasiko"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    command: server /data --address :9000
+    environment:
+      RUSTFS_ROOT_USER: nasiko
+      RUSTFS_ROOT_PASSWORD: nasiko123
+    ports:
+      - "9000:9000"
+
+  jaeger:
+    image: docker.io/jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "4317:4317"
+      - "16686:16686"
