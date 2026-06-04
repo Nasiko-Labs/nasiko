@@ -1,0 +1,12 @@
+target/
+!target/x86_64-unknown-linux-musl/release/nasiko-cp
+!target/x86_64-unknown-linux-musl/release/nasiko-cp-cloud
+!target/x86_64-unknown-linux-musl/release/nasiko-registry
+!target/x86_64-unknown-linux-musl/release/nasiko-docs-agent
+!target/x86_64-unknown-linux-musl/release/nasiko-nutrition-agent
+!target/x86_64-unknown-linux-musl/release/nasiko-paper-agent
+.git/
+agents/
+registry/
+docs/
+*.zip
