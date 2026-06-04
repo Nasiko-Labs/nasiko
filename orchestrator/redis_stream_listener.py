@@ -46,6 +46,22 @@ class RedisStreamListener:
         self.observability_config = ObservabilityConfig()
         self.logger.info("Initialized observability components successfully")
 
+    def _find_agentcard_path(self, agent_path: Path) -> Path | None:
+        """Return the preferred AgentCard path, with legacy casing fallback."""
+        preferred_path = agent_path / "AgentCard.json"
+        if preferred_path.exists():
+            return preferred_path
+
+        legacy_path = agent_path / "Agentcard.json"
+        if legacy_path.exists():
+            self.logger.warning(
+                f"Found legacy AgentCard filename casing at {legacy_path}; "
+                "prefer AgentCard.json"
+            )
+            return legacy_path
+
+        return None
+
     def connect_redis(self):
         """Connect to Redis server"""
         try:
@@ -478,13 +494,13 @@ class RedisStreamListener:
 
             # Verify required files exist
             dockerfile_path = agent_source_path / "Dockerfile"
-            agentcard_path = agent_source_path / "Agentcard.json"
+            agentcard_path = self._find_agentcard_path(agent_source_path)
 
             if not dockerfile_path.exists():
                 raise ValueError(f"Dockerfile not found in {agent_source_path}")
 
-            if not agentcard_path.exists():
-                self.logger.warning(f"Agentcard.json not found in {agent_source_path}")
+            if not agentcard_path:
+                self.logger.warning(f"AgentCard.json not found in {agent_source_path}")
 
             # Step 2: Stop existing agent if updating
             if command == "update_agent":
@@ -608,13 +624,13 @@ class RedisStreamListener:
 
         # Verify required files exist
         dockerfile_path = agent_path / "Dockerfile"
-        agentcard_path = agent_path / "Agentcard.json"
+        agentcard_path = self._find_agentcard_path(agent_path)
 
         if not dockerfile_path.exists():
             raise ValueError(f"Dockerfile not found in {agent_path}")
 
-        if not agentcard_path.exists():
-            self.logger.warning(f"Agentcard.json not found in {agent_path}")
+        if not agentcard_path:
+            self.logger.warning(f"AgentCard.json not found in {agent_path}")
 
         return agent_path
 
@@ -876,22 +892,21 @@ class RedisStreamListener:
         Mimics the K8s worker's fetch_agentcard_from_backend but reads from local filesystem.
         """
         try:
-            # Look for Agentcard.json in the agent directory
-            agentcard_path = agent_path / "Agentcard.json"
+            agentcard_path = self._find_agentcard_path(agent_path)
 
-            if agentcard_path.exists():
-                self.logger.info(f"Found Agentcard.json for {agent_name}")
+            if agentcard_path:
+                self.logger.info(f"Found AgentCard.json for {agent_name}")
                 with open(agentcard_path, "r") as f:
                     return json.load(f)
             else:
                 self.logger.warning(
-                    f"Agentcard.json not found for {agent_name}, attempting to generate"
+                    f"AgentCard.json not found for {agent_name}, attempting to generate"
                 )
                 return await self.generate_agentcard(str(agent_path), agent_name)
 
         except Exception as e:
             self.logger.error(
-                f"Error fetching/generating Agentcard for {agent_name}: {e}"
+                f"Error fetching/generating AgentCard for {agent_name}: {e}"
             )
             return None
 
