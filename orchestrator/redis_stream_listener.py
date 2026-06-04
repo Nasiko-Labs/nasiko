@@ -49,11 +49,11 @@ class RedisStreamListener:
     def _find_agentcard_path(self, agent_path: Path) -> Path | None:
         """Return the preferred AgentCard path, with legacy casing fallback."""
         preferred_path = agent_path / "AgentCard.json"
-        if preferred_path.exists():
+        if preferred_path.is_file():
             return preferred_path
 
         legacy_path = agent_path / "Agentcard.json"
-        if legacy_path.exists():
+        if legacy_path.is_file():
             self.logger.warning(
                 f"Found legacy AgentCard filename casing at {legacy_path}; "
                 "prefer AgentCard.json"
