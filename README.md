@@ -178,6 +178,7 @@ Nasiko supports multiple LLM providers for both the routing engine and agent exe
 |----------|----------------|----------|--------|
 | OpenAI (default) | `OPENAI_API_KEY` | Default OpenAI endpoint | gpt-4o, gpt-4o-mini |
 | [MiniMax](https://platform.minimax.io) | `MINIMAX_API_KEY` | `https://api.minimax.io/v1` (global) / `https://api.minimaxi.com/v1` (China) | MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed |
+| [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=nasiko) | `ATLASCLOUD_API_KEY` | `https://api.atlascloud.ai/v1` | deepseek-ai/DeepSeek-V3-0324, deepseek-ai/DeepSeek-V3.1, deepseek-ai/deepseek-v3.2 |
 | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | Various models |
 
 To switch the router's LLM provider, set `ROUTER_LLM_PROVIDER` and `ROUTER_LLM_MODEL` in your environment configuration. See [Environment Configuration](#-environment-configuration).
@@ -493,11 +494,12 @@ nasiko status
 # API Keys (Optional but recommended)
 OPENAI_API_KEY=<sk-your-openai-api-key>
 MINIMAX_API_KEY=<your-minimax-api-key>
+ATLASCLOUD_API_KEY=<your-atlascloud-api-key>
 GITHUB_CLIENT_ID=<your-github-oauth-client-id>
 GITHUB_CLIENT_SECRET=<your-github-oauth-secret>
 
 # Router LLM Provider (Optional - defaults to openai)
-# Supported: "openai", "openrouter", "minimax"
+# Supported: "openai", "openrouter", "minimax", "atlascloud"
 # ROUTER_LLM_PROVIDER=openai
 # ROUTER_LLM_MODEL=gpt-4o-mini
 

@@ -200,7 +200,7 @@ curl -s -X POST http://localhost:9100/router \
 
 ### Router LLM (picks which agent to use)
 
-Configured via `ROUTER_LLM_PROVIDER` and `ROUTER_LLM_MODEL` in `.nasiko-local.env`. Supported providers: `openai`, `openrouter`, `minimax`.
+Configured via `ROUTER_LLM_PROVIDER` and `ROUTER_LLM_MODEL` in `.nasiko-local.env`. Supported providers: `openai`, `openrouter`, `minimax`, `atlascloud`.
 
 Recommended free setup:
 ```env
@@ -208,7 +208,14 @@ ROUTER_LLM_PROVIDER=openrouter
 ROUTER_LLM_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
-> The router uses LangChain's `.with_structured_output()` which sends `response_format: json_schema` to the provider. Not all free models support this — pick one that does. Nemotron works.
+Atlas Cloud (OpenAI-compatible, single key for many open models):
+```env
+ROUTER_LLM_PROVIDER=atlascloud
+ROUTER_LLM_MODEL=deepseek-ai/DeepSeek-V3-0324
+ATLASCLOUD_API_KEY=your-atlascloud-api-key
+```
+
+> The router uses LangChain's `.with_structured_output()` which sends `response_format: json_schema` to the provider. Not all free models support this — pick one that does. Nemotron and DeepSeek-V3-0324 work.
 
 ### Embeddings (for 15+ agents only)
 
