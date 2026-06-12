@@ -38,6 +38,7 @@ class RoutingEngine:
         - "openai": Uses OpenAI API (default)
         - "openrouter": Uses OpenRouter API
         - "minimax": Uses MiniMax OpenAI-compatible API
+        - "atlascloud": Uses Atlas Cloud OpenAI-compatible API
         """
         provider = settings.ROUTER_LLM_PROVIDER.lower()
         model = settings.ROUTER_LLM_MODEL
@@ -48,6 +49,17 @@ class RoutingEngine:
                 temperature=1.0,
                 api_key=settings.MINIMAX_API_KEY,
                 base_url=settings.MINIMAX_BASE_URL,
+            ).with_structured_output(RouterOutput)
+        elif provider == "atlascloud":
+            # deepseek-v4-pro is a reasoning model: give it enough max_tokens
+            # (>= 512) so the structured-output response is not exhausted by the
+            # chain-of-thought (otherwise finish_reason=length, empty content).
+            return ChatOpenAI(
+                model=model or "deepseek-ai/deepseek-v4-pro",
+                temperature=0,
+                max_tokens=512,
+                api_key=settings.ATLASCLOUD_API_KEY,
+                base_url=settings.ATLASCLOUD_BASE_URL,
             ).with_structured_output(RouterOutput)
         elif provider == "openrouter":
             return ChatOpenAI(
