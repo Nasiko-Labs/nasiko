@@ -95,9 +95,12 @@ class TestRoutingEngineAtlasCloud:
         assert kwargs["base_url"] == "https://api.atlascloud.ai/v1"
         assert kwargs["api_key"] == "test-key"
         assert kwargs["temperature"] == 0
+        # deepseek-v4-pro is a reasoning model; the branch must pass a
+        # generous max_tokens so structured output is not truncated.
+        assert kwargs["max_tokens"] >= 512
 
     def test_atlascloud_default_model_fallback(self):
-        """Empty model should fall back to deepseek-ai/DeepSeek-V3-0324."""
+        """Empty model should fall back to the default deepseek-ai/deepseek-v4-pro."""
         mock_chat_openai = self._build_engine_with_patches(
             {
                 "ROUTER_LLM_PROVIDER": "atlascloud",
@@ -107,7 +110,8 @@ class TestRoutingEngineAtlasCloud:
         )
 
         _, kwargs = mock_chat_openai.call_args
-        assert kwargs["model"] == "deepseek-ai/DeepSeek-V3-0324"
+        assert kwargs["model"] == "deepseek-ai/deepseek-v4-pro"
+        assert kwargs["max_tokens"] >= 512
 
     def test_atlascloud_provider_is_case_insensitive(self):
         """Provider matching lower-cases the value, so 'AtlasCloud' must work."""

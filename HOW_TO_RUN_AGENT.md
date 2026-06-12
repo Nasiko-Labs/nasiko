@@ -211,11 +211,11 @@ ROUTER_LLM_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 Atlas Cloud (OpenAI-compatible, single key for many open models):
 ```env
 ROUTER_LLM_PROVIDER=atlascloud
-ROUTER_LLM_MODEL=deepseek-ai/DeepSeek-V3-0324
+ROUTER_LLM_MODEL=deepseek-ai/deepseek-v4-pro
 ATLASCLOUD_API_KEY=your-atlascloud-api-key
 ```
 
-> The router uses LangChain's `.with_structured_output()` which sends `response_format: json_schema` to the provider. Not all free models support this — pick one that does. Nemotron and DeepSeek-V3-0324 work.
+> The router uses LangChain's `.with_structured_output()` which sends `response_format: json_schema` to the provider. Not all free models support this — pick one that does. Nemotron and `deepseek-ai/deepseek-v4-pro` work. `deepseek-v4-pro` is a reasoning model, so the router gives it `max_tokens=512`; if you swap in another reasoning model keep `max_tokens` generous, otherwise the structured-output response can be truncated.
 
 ### Embeddings (for 15+ agents only)
 

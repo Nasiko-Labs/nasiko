@@ -51,9 +51,13 @@ class RoutingEngine:
                 base_url=settings.MINIMAX_BASE_URL,
             ).with_structured_output(RouterOutput)
         elif provider == "atlascloud":
+            # deepseek-v4-pro is a reasoning model: give it enough max_tokens
+            # (>= 512) so the structured-output response is not exhausted by the
+            # chain-of-thought (otherwise finish_reason=length, empty content).
             return ChatOpenAI(
-                model=model or "deepseek-ai/DeepSeek-V3-0324",
+                model=model or "deepseek-ai/deepseek-v4-pro",
                 temperature=0,
+                max_tokens=512,
                 api_key=settings.ATLASCLOUD_API_KEY,
                 base_url=settings.ATLASCLOUD_BASE_URL,
             ).with_structured_output(RouterOutput)

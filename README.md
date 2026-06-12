@@ -21,6 +21,42 @@
 
 ---
 
+<p align="center">
+  <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=nasiko">
+    <img src="docs/img/atlas-cloud-logo.png" alt="Atlas Cloud" width="200">
+  </a>
+</p>
+
+> 🎁 **[Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=nasiko)** is a full-modal, **OpenAI-compatible** AI inference platform — plug it into Nasiko's router (`ROUTER_LLM_PROVIDER=atlascloud`) as a drop-in decision LLM and reach DeepSeek, Qwen, GLM, Kimi, MiniMax and more open models through a single key, often at lower cost than hosted-only options. Budget-friendly: [coding plan](https://www.atlascloud.ai/console/coding-plan).
+>
+> ```env
+> ROUTER_LLM_PROVIDER=atlascloud
+> ATLASCLOUD_BASE_URL=https://api.atlascloud.ai/v1
+> ROUTER_LLM_MODEL=deepseek-ai/deepseek-v4-pro
+> ATLASCLOUD_API_KEY=<your-atlascloud-api-key>
+> ```
+>
+> `deepseek-ai/deepseek-v4-pro` is a reasoning model — the router gives it `max_tokens=512` so structured-output routing decisions are not truncated.
+
+<details>
+<summary><a name="atlas-cloud-models"></a>All Atlas Cloud chat models (59)</summary>
+
+Official Atlas LLM list, synced with `atlascloud.ai/models`:
+
+- **Anthropic (Claude):** `anthropic/claude-haiku-4.5-20251001`, `anthropic/claude-opus-4.8`, `anthropic/claude-sonnet-4.6`
+- **OpenAI (GPT):** `openai/gpt-5.4`, `openai/gpt-5.5`
+- **Google (Gemini):** `google/gemini-3.1-flash-lite`, `google/gemini-3.1-pro-preview`, `google/gemini-3.5-flash`
+- **Alibaba (Qwen):** `qwen/qwen2.5-7b-instruct`, `Qwen/Qwen3-235B-A22B-Instruct-2507`, `qwen/qwen3-235b-a22b-thinking-2507`, `qwen/qwen3-30b-a3b`, `Qwen/Qwen3-30B-A3B-Instruct-2507`, `qwen/qwen3-30b-a3b-thinking-2507`, `qwen/qwen3-32b`, `qwen/qwen3-8b`, `Qwen/Qwen3-Coder`, `qwen/qwen3-coder-next`, `qwen/qwen3-max-2026-01-23`, `Qwen/Qwen3-Next-80B-A3B-Instruct`, `Qwen/Qwen3-Next-80B-A3B-Thinking`, `Qwen/Qwen3-VL-235B-A22B-Instruct`, `qwen/qwen3-vl-235b-a22b-thinking`, `qwen/qwen3-vl-30b-a3b-instruct`, `qwen/qwen3-vl-30b-a3b-thinking`, `qwen/qwen3-vl-8b-instruct`, `qwen/qwen3.5-122b-a10b`, `qwen/qwen3.5-27b`, `qwen/qwen3.5-35b-a3b`, `qwen/qwen3.5-397b-a17b`, `qwen/qwen3.6-35b-a3b`, `qwen/qwen3.6-plus`
+- **DeepSeek:** `deepseek-ai/deepseek-ocr`, `deepseek-ai/deepseek-r1-0528`, `deepseek-ai/DeepSeek-V3-0324`, `deepseek-ai/DeepSeek-V3.1`, `deepseek-ai/DeepSeek-V3.1-Terminus`, `deepseek-ai/deepseek-v3.2`, `deepseek-ai/DeepSeek-V3.2-Exp`, `deepseek-ai/deepseek-v4-flash`, `deepseek-ai/deepseek-v4-pro`
+- **Moonshot (Kimi):** `moonshotai/Kimi-K2-Instruct`, `moonshotai/Kimi-K2-Instruct-0905`, `moonshotai/Kimi-K2-Thinking`, `moonshotai/kimi-k2.5`, `moonshotai/kimi-k2.6`
+- **Zhipu (GLM):** `zai-org/GLM-4.6`, `zai-org/glm-4.7`, `zai-org/glm-5`, `zai-org/glm-5-turbo`, `zai-org/glm-5.1`, `zai-org/glm-5v-turbo`
+- **MiniMax:** `MiniMaxAI/MiniMax-M2`, `minimaxai/minimax-m2.1`, `minimaxai/minimax-m2.5`, `minimaxai/minimax-m2.7`
+- **xAI:** `xai/grok-4.3`
+- **Kuaishou (KAT):** `kwaipilot/kat-coder-pro-v2`
+- **Other:** `owl`
+
+</details>
+
 ## 🌟 What is Nasiko?
 
 Nasiko is a developer control plane that transforms how you build, deploy, and manage AI agents at scale. Built with modern microservices architecture, Nasiko provides everything needed to run production AI agent ecosystems.
@@ -178,7 +214,7 @@ Nasiko supports multiple LLM providers for both the routing engine and agent exe
 |----------|----------------|----------|--------|
 | OpenAI (default) | `OPENAI_API_KEY` | Default OpenAI endpoint | gpt-4o, gpt-4o-mini |
 | [MiniMax](https://platform.minimax.io) | `MINIMAX_API_KEY` | `https://api.minimax.io/v1` (global) / `https://api.minimaxi.com/v1` (China) | MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed |
-| [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=nasiko) | `ATLASCLOUD_API_KEY` | `https://api.atlascloud.ai/v1` | deepseek-ai/DeepSeek-V3-0324, deepseek-ai/DeepSeek-V3.1, deepseek-ai/deepseek-v3.2 |
+| [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=nasiko) | `ATLASCLOUD_API_KEY` | `https://api.atlascloud.ai/v1` | deepseek-ai/deepseek-v4-pro (default), deepseek-ai/deepseek-v4-flash, Qwen/Qwen3-Coder, zai-org/glm-5 — [full list](#atlas-cloud-models) |
 | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | Various models |
 
 To switch the router's LLM provider, set `ROUTER_LLM_PROVIDER` and `ROUTER_LLM_MODEL` in your environment configuration. See [Environment Configuration](#-environment-configuration).
