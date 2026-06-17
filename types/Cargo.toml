@@ -1,0 +1,11 @@
+[package]
+name = "nasiko-types"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+a2a = { git = "https://github.com/a2aproject/a2a-rs", package = "a2a-lf" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

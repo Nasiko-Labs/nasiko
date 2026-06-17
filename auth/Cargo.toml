@@ -1,0 +1,8 @@
+[package]
+name = "nasiko-auth"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

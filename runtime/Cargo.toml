@@ -1,0 +1,18 @@
+[package]
+name = "nasiko-runtime"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = "0.1"
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+bollard = { version = "0.17", optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[features]
+default = ["docker"]
+docker = ["dep:bollard", "dep:futures-util"]

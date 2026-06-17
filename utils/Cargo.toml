@@ -1,0 +1,10 @@
+[package]
+name = "nasiko-utils"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true

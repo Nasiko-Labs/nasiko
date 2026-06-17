@@ -1,0 +1,8 @@
+[package]
+name = "nasiko-config"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+nasiko-utils = { path = "../utils" }
+anyhow = { workspace = true }

@@ -1,0 +1,39 @@
+[package]
+name = "nasiko-gateway"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "nasiko-gateway"
+path = "src/main.rs"
+
+[dependencies]
+nasiko-auth = { path = "../auth" }
+nasiko-config = { path = "../config" }
+nasiko-observability = { path = "../observability" }
+
+# Pingora
+pingora = { version = "0.8", features = ["proxy", "lb", "openssl"] }
+pingora-core = "0.8"
+pingora-proxy = "0.8"
+pingora-http = "0.8"
+pingora-limits = "0.8"
+
+# Serialization & config
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utilities
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+async-trait = "0.1"
+arc-swap = "1"
+
+# Static file serving (embedded UI)
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"

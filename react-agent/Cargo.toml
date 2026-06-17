@@ -1,0 +1,35 @@
+[package]
+name = "nasiko-react-agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# LLM orchestration
+rig-core = { version = "0.11", default-features = false, features = ["derive"] }
+
+# Async & streaming
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# HTTP client (for A2A calls)
+reqwest = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[example]]
+name = "test_tools"
+path = "examples/test_tools.rs"

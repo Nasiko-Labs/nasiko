@@ -1,0 +1,654 @@
+use std::sync::Arc;
+
+use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
+use rig::providers::openai;
+use rig::tool::{ToolDyn, ToolSet};
+use tokio::sync::mpsc;
+
+use crate::a2a::A2aClient;
+use crate::context::{ContextConfig, ContextManager};
+use crate::error::OrchestratorError;
+use crate::events::OrchestratorEvent;
+use crate::guard::CallGuard;
+use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
+use crate::tool::A2aTool;
+
+/// Configuration for the orchestrator.
+#[derive(Debug, Clone)]
+pub struct OrchestratorConfig {
+    pub max_turns: usize,
+    pub model: String,
+    pub preamble: Option<String>,
+    pub context: ContextConfig,
+    pub temperature: Option<f64>,
+    /// OpenAI-compatible base URL. If None, uses OPENAI_BASE_URL env var.
+    pub base_url: Option<String>,
+    /// API key. If None, uses OPENAI_API_KEY env var.
+    pub api_key: Option<String>,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            max_turns: 15,
+            model: "gpt-5.5".to_string(),
+            preamble: None,
+            context: ContextConfig::default(),
+            temperature: Some(0.2),
+            base_url: None,
+            api_key: None,
+        }
+    }
+}
+
+/// Trace of a single ReAct turn for observability.
+#[derive(Debug, Clone)]
+pub struct TurnTrace {
+    pub turn: usize,
+    pub tool_calls: Vec<ToolCallTrace>,
+    pub text_response: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCallTrace {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub result: Result<String, String>,
+}
+
+/// Result returned from a completed orchestration.
+#[derive(Debug, Clone)]
+pub struct OrchestrationResult {
+    pub response: String,
+    pub turns: Vec<TurnTrace>,
+    pub context_compacted: bool,
+}
+
+/// The ReAct orchestrator. Holds the registry, context, and LLM config.
+pub struct Orchestrator {
+    config: OrchestratorConfig,
+    registry: AgentRegistry,
+    a2a_client: Arc<A2aClient>,
+    context: ContextManager,
+    guard: Option<Arc<dyn CallGuard>>,
+}
+
+impl Orchestrator {
+    pub fn new(config: OrchestratorConfig, registry_source: RegistrySource) -> Self {
+        let a2a_client = Arc::new(A2aClient::new());
+        let registry = AgentRegistry::new(registry_source);
+        let context = ContextManager::new(config.context.clone());
+        Self {
+            config,
+            registry,
+            a2a_client,
+            context,
+            guard: None,
+        }
+    }
+
+    pub fn with_a2a_client(mut self, client: A2aClient) -> Self {
+        self.a2a_client = Arc::new(client);
+        self
+    }
+
+    pub fn with_guard(mut self, guard: Arc<dyn CallGuard>) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
+    /// Discover agents from the registry. Call before `run()`.
+    pub async fn init(&self) -> Result<Vec<AgentInfo>, OrchestratorError> {
+        let agents = self
+            .registry
+            .discover()
+            .await
+            .map_err(|e| OrchestratorError::Registry(e.to_string()))?;
+
+        tracing::info!(count = agents.len(), "agents discovered");
+        for a in &agents {
+            tracing::debug!(name = %a.name, endpoint = %a.endpoint, "registered agent");
+        }
+        Ok(agents)
+    }
+
+    /// Run the ReAct loop for a user query.
+    pub async fn run(&mut self, user_query: &str) -> Result<OrchestrationResult, OrchestratorError> {
+        self.context.push_user(user_query);
+
+        if self.context.needs_compaction() {
+            self.context.compact_simple();
+            tracing::info!(tokens = self.context.estimated_tokens(), "context compacted");
+        }
+
+        let agents = self.registry.agents().await;
+        if agents.is_empty() {
+            return Err(OrchestratorError::NoAgents);
+        }
+
+        let model = self.build_model()?;
+        let (toolset, tool_defs) = self.build_tools(&agents).await;
+        let preamble = self.build_preamble(&agents);
+
+        let mut turns = Vec::new();
+        let mut context_compacted = false;
+
+        // Preamble is STABLE across turns — provider can cache this prefix.
+        // All dynamic context goes into user messages instead.
+        for turn_idx in 0..self.config.max_turns {
+            let window = self.context.window();
+
+            // Build the user prompt with context embedded (changes each turn)
+            let user_prompt = if turn_idx == 0 && window.summary.is_none() {
+                user_query.to_string()
+            } else {
+                let ctx = window.format_for_prompt();
+                format!(
+                    "{ctx}\n\nCurrent request: {user_query}\n\n\
+                     Based on the above context and tool results, continue. \
+                     If you have enough information, respond with your final answer (no tool call)."
+                )
+            };
+
+            let mut req = model
+                .completion_request(Message::user(&user_prompt))
+                .preamble(preamble.clone())
+                .tools(tool_defs.clone());
+
+            if let Some(temp) = self.config.temperature {
+                req = req.temperature(temp);
+            }
+
+            let response = req
+                .send()
+                .await
+                .map_err(|e| OrchestratorError::Completion(e.to_string()))?;
+
+            // Partition the response into text and tool calls
+            let mut text_parts = Vec::new();
+            let mut tool_calls = Vec::new();
+
+            for content in response.choice.iter() {
+                match content {
+                    AssistantContent::Text(t) => text_parts.push(t.text.clone()),
+                    AssistantContent::ToolCall(tc) => tool_calls.push(tc.clone()),
+                }
+            }
+
+            // If there are tool calls, execute them all
+            if !tool_calls.is_empty() {
+                let mut trace = TurnTrace {
+                    turn: turn_idx + 1,
+                    tool_calls: Vec::new(),
+                    text_response: if text_parts.is_empty() {
+                        None
+                    } else {
+                        Some(text_parts.join("\n"))
+                    },
+                };
+
+                let mut results_for_context = Vec::new();
+
+                for tc in &tool_calls {
+                    let name = &tc.function.name;
+                    let args_str = tc.function.arguments.to_string();
+
+                    let agent_display = name
+                        .strip_prefix("call_agent_")
+                        .unwrap_or(name)
+                        .replace('_', "-");
+
+                    // Enforce call guard
+                    if let Some(g) = &self.guard {
+                        if let Err(reason) = g.before_call(&agent_display).await {
+                            tracing::warn!(tool = %name, %reason, "call guard blocked");
+                            trace.tool_calls.push(ToolCallTrace {
+                                tool_name: name.clone(),
+                                arguments: tc.function.arguments.clone(),
+                                result: Err(format!("blocked: {}", reason)),
+                            });
+                            results_for_context.push(format!("[{}] Blocked: {}", name, reason));
+                            continue;
+                        }
+                    }
+
+                    tracing::info!(turn = turn_idx + 1, tool = %name, "executing tool");
+
+                    let result = toolset.call(name, args_str).await;
+
+                    let call_trace = ToolCallTrace {
+                        tool_name: name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                        result: result.as_ref().map(|s| s.clone()).map_err(|e| e.to_string()),
+                    };
+                    trace.tool_calls.push(call_trace);
+
+                    match result {
+                        Ok(output) => {
+                            if let Some(g) = &self.guard {
+                                g.after_call(&agent_display, 0).await;
+                            }
+                            results_for_context
+                                .push(format!("[{}] Result: {}", name, output));
+                        }
+                        Err(e) => {
+                            tracing::warn!(tool = %name, error = %e, "tool failed");
+                            results_for_context
+                                .push(format!("[{}] Error: {}", name, e));
+                        }
+                    }
+                }
+
+                // Push combined tool results as a single observation
+                let combined = results_for_context.join("\n\n");
+                self.context.push_tool_result(
+                    &tool_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    &combined,
+                );
+
+                turns.push(trace);
+            } else {
+                // No tool calls — this is the final text response
+                let final_text = text_parts.join("\n");
+                self.context.push_assistant(&final_text);
+
+                turns.push(TurnTrace {
+                    turn: turn_idx + 1,
+                    tool_calls: Vec::new(),
+                    text_response: Some(final_text.clone()),
+                });
+
+                return Ok(OrchestrationResult {
+                    response: final_text,
+                    turns,
+                    context_compacted,
+                });
+            }
+
+            // Mid-loop compaction check
+            if self.context.needs_compaction() {
+                self.context.compact_simple();
+                context_compacted = true;
+                tracing::info!(tokens = self.context.estimated_tokens(), "mid-loop compaction");
+            }
+        }
+
+        Err(OrchestratorError::MaxTurnsExceeded(self.config.max_turns))
+    }
+
+    /// Run the ReAct loop, streaming events to the caller via a channel.
+    /// Returns a receiver; the orchestration runs in the background.
+    pub fn run_stream(
+        &mut self,
+        user_query: &str,
+    ) -> mpsc::Receiver<OrchestratorEvent> {
+        let (tx, rx) = mpsc::channel(64);
+        let query = user_query.to_string();
+
+        // Clone what we need for the spawned task
+        let config = self.config.clone();
+        let registry = self.registry.clone();
+        let a2a_client = self.a2a_client.clone();
+        let mut context = self.context.clone();
+        let guard = self.guard.clone();
+
+        tokio::spawn(async move {
+            let _ = run_stream_inner(&config, &registry, &a2a_client, &mut context, &query, &tx, guard.as_deref()).await;
+        });
+
+        rx
+    }
+
+    /// Reset the context for a new conversation.
+    pub fn reset_context(&mut self) {
+        self.context = ContextManager::new(self.config.context.clone());
+    }
+
+    fn build_model(
+        &self,
+    ) -> Result<openai::CompletionModel, OrchestratorError> {
+        let api_key = self
+            .config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .ok_or_else(|| OrchestratorError::LlmConfig("OPENAI_API_KEY not set".into()))?;
+
+        let base_url = self
+            .config
+            .base_url
+            .clone()
+            .or_else(|| std::env::var("OPENAI_BASE_URL").ok());
+
+        let client = if let Some(url) = base_url {
+            openai::Client::from_url(&api_key, &url)
+        } else {
+            openai::Client::new(&api_key)
+        };
+
+        Ok(client.completion_model(&self.config.model))
+    }
+
+    async fn build_tools(&self, agents: &[AgentInfo]) -> (ToolSet, Vec<ToolDefinition>) {
+        let mut builder = ToolSet::builder();
+        let mut defs = Vec::new();
+
+        for agent in agents {
+            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone());
+            defs.push(ToolDyn::definition(&tool, String::new()).await);
+            builder = builder.static_tool(tool);
+        }
+
+        (builder.build(), defs)
+    }
+
+    fn build_preamble(&self, agents: &[AgentInfo]) -> String {
+        let custom = self.config.preamble.as_deref().unwrap_or("");
+
+        let agent_list: String = agents
+            .iter()
+            .map(|a| {
+                let skills = a
+                    .skills
+                    .iter()
+                    .map(|s| format!("    - {}: {}", s.name, s.description))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "  • {} (tool: `{}`)\n    {}\n{}",
+                    a.name,
+                    A2aTool::tool_name(&a.name),
+                    a.description,
+                    skills
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        format!(
+            r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
+
+{custom}
+
+## Available Agents
+
+{agent_list}
+
+## Protocol
+
+1. Analyze the user's request. Determine which agent(s) can help.
+2. Call the appropriate agent tool with a clear, specific message.
+3. If the task requires multiple agents, call them sequentially — use earlier results to inform later calls.
+4. Once you have enough information, respond with a complete answer as plain text (no tool call).
+5. If an agent fails, reason about alternatives or inform the user.
+
+## Rules
+
+- Only relay facts from agent responses. Never fabricate.
+- Prefer the most specific agent for each sub-task.
+- If no agent fits, tell the user directly."#
+        )
+    }
+}
+
+/// Inner streaming implementation. Sends events to the channel as orchestration progresses.
+async fn run_stream_inner(
+    config: &OrchestratorConfig,
+    registry: &AgentRegistry,
+    a2a_client: &Arc<A2aClient>,
+    context: &mut ContextManager,
+    user_query: &str,
+    tx: &mpsc::Sender<OrchestratorEvent>,
+    guard: Option<&dyn CallGuard>,
+) -> Result<(), OrchestratorError> {
+    context.push_user(user_query);
+
+    if context.needs_compaction() {
+        context.compact_simple();
+    }
+
+    let agents = registry.agents().await;
+    if agents.is_empty() {
+        let _ = tx.send(OrchestratorEvent::Error {
+            message: "no agents available".into(),
+        }).await;
+        return Err(OrchestratorError::NoAgents);
+    }
+
+    let api_key = config
+        .api_key
+        .clone()
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .ok_or_else(|| OrchestratorError::LlmConfig("OPENAI_API_KEY not set".into()))?;
+
+    let base_url = config
+        .base_url
+        .clone()
+        .or_else(|| std::env::var("OPENAI_BASE_URL").ok());
+
+    let client = if let Some(url) = base_url {
+        openai::Client::from_url(&api_key, &url)
+    } else {
+        openai::Client::new(&api_key)
+    };
+    let model = client.completion_model(&config.model);
+
+    // Build tools from agents
+    let mut builder = ToolSet::builder();
+    let mut tool_defs = Vec::new();
+    for agent in &agents {
+        let tool = A2aTool::new(agent.clone(), a2a_client.clone());
+        tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
+        builder = builder.static_tool(tool);
+    }
+    let toolset = builder.build();
+
+    // Build preamble
+    let custom = config.preamble.as_deref().unwrap_or("");
+    let agent_list: String = agents
+        .iter()
+        .map(|a| {
+            let skills = a
+                .skills
+                .iter()
+                .map(|s| format!("    - {}: {}", s.name, s.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "  • {} (tool: `{}`)\n    {}\n{}",
+                a.name,
+                A2aTool::tool_name(&a.name),
+                a.description,
+                skills
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let preamble = format!(
+        r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
+
+{custom}
+
+## Available Agents
+
+{agent_list}
+
+## Protocol
+
+1. Analyze the user's request. Determine which agent(s) can help.
+2. Call the appropriate agent tool with a clear, specific message.
+3. If the task requires multiple agents, call them sequentially — use earlier results to inform later calls.
+4. Once you have enough information, respond with a complete answer as plain text (no tool call).
+5. If an agent fails, reason about alternatives or inform the user.
+
+## Rules
+
+- Only relay facts from agent responses. Never fabricate.
+- Prefer the most specific agent for each sub-task.
+- If no agent fits, tell the user directly."#
+    );
+
+    let mut context_compacted = false;
+
+    for turn_idx in 0..config.max_turns {
+        let window = context.window();
+
+        let user_prompt = if turn_idx == 0 && window.summary.is_none() {
+            user_query.to_string()
+        } else {
+            let ctx = window.format_for_prompt();
+            format!(
+                "{ctx}\n\nCurrent request: {user_query}\n\n\
+                 Based on the above context and tool results, continue. \
+                 If you have enough information, respond with your final answer (no tool call)."
+            )
+        };
+
+        let mut req = model
+            .completion_request(Message::user(&user_prompt))
+            .preamble(preamble.clone())
+            .tools(tool_defs.clone());
+
+        if let Some(temp) = config.temperature {
+            req = req.temperature(temp);
+        }
+
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = tx.send(OrchestratorEvent::Error {
+                    message: e.to_string(),
+                }).await;
+                return Err(OrchestratorError::Completion(e.to_string()));
+            }
+        };
+
+        let mut text_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+
+        for content in response.choice.iter() {
+            match content {
+                AssistantContent::Text(t) => text_parts.push(t.text.clone()),
+                AssistantContent::ToolCall(tc) => tool_calls.push(tc.clone()),
+            }
+        }
+
+        if !tool_calls.is_empty() {
+            // Emit thinking if there's reasoning text alongside tool calls
+            if !text_parts.is_empty() {
+                let _ = tx.send(OrchestratorEvent::Thinking {
+                    content: text_parts.join("\n"),
+                }).await;
+            }
+
+            let mut results_for_context = Vec::new();
+
+            for tc in &tool_calls {
+                let name = &tc.function.name;
+                let args_str = tc.function.arguments.to_string();
+
+                // Parse the message from args for the event
+                let msg = tc.function.arguments
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Derive agent name from tool name (call_agent_X → X with underscores back to dashes)
+                let agent_display = name
+                    .strip_prefix("call_agent_")
+                    .unwrap_or(name)
+                    .replace('_', "-");
+
+                // Enforce call guard (ACL, flow limits, cycle detection)
+                if let Some(g) = guard {
+                    if let Err(reason) = g.before_call(&agent_display).await {
+                        let _ = tx.send(OrchestratorEvent::PolicyRejected {
+                            agent: agent_display.clone(),
+                            reason: reason.clone(),
+                            turn: turn_idx + 1,
+                        }).await;
+                        results_for_context.push(format!(
+                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+                            name, reason
+                        ));
+                        continue;
+                    }
+                }
+
+                let _ = tx.send(OrchestratorEvent::ToolCall {
+                    agent: agent_display.clone(),
+                    message: msg,
+                    turn: turn_idx + 1,
+                }).await;
+
+                let result = toolset.call(name, args_str).await;
+
+                match &result {
+                    Ok(output) => {
+                        if let Some(g) = guard {
+                            g.after_call(&agent_display, 0).await;
+                        }
+                        let _ = tx.send(OrchestratorEvent::ToolResult {
+                            agent: agent_display,
+                            result: output.clone(),
+                            success: true,
+                            turn: turn_idx + 1,
+                        }).await;
+                        results_for_context.push(format!("[{}] Result: {}", name, output));
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        let _ = tx.send(OrchestratorEvent::ToolResult {
+                            agent: agent_display,
+                            result: err_str.clone(),
+                            success: false,
+                            turn: turn_idx + 1,
+                        }).await;
+                        results_for_context.push(format!("[{}] Error: {}", name, err_str));
+                    }
+                }
+            }
+
+            let combined = results_for_context.join("\n\n");
+            context.push_tool_result(
+                &tool_calls
+                    .iter()
+                    .map(|tc| tc.function.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("+"),
+                &combined,
+            );
+        } else {
+            // Final answer — emit as content event
+            let final_text = text_parts.join("\n");
+            context.push_assistant(&final_text);
+
+            let _ = tx.send(OrchestratorEvent::Content {
+                content: final_text,
+            }).await;
+
+            let _ = tx.send(OrchestratorEvent::Done {
+                turns: turn_idx + 1,
+                context_compacted,
+            }).await;
+
+            return Ok(());
+        }
+
+        if context.needs_compaction() {
+            context.compact_simple();
+            context_compacted = true;
+        }
+    }
+
+    let _ = tx.send(OrchestratorEvent::Error {
+        message: format!("max turns ({}) exceeded", config.max_turns),
+    }).await;
+    Err(OrchestratorError::MaxTurnsExceeded(config.max_turns))
+}

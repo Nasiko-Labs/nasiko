@@ -1,0 +1,112 @@
+[workspace]
+resolver = "3"
+members = [
+    "auth",
+    "config",
+    "secrets",
+    "observability",
+    "runtime",
+    "react-agent",
+    "types",
+    "utils",
+    "server",
+    # TODO: add these once their code is moved
+    # "oci",
+    # "gateway",
+    # "registry",
+    # "cli",
+    # "agents/coding",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+# Internal crates
+nasiko-auth = { path = "auth" }
+nasiko-config = { path = "config" }
+nasiko-secrets = { path = "secrets" }
+nasiko-observability = { path = "observability" }
+nasiko-runtime = { path = "runtime" }
+nasiko-react-agent = { path = "react-agent" }
+nasiko-types = { path = "types" }
+nasiko-utils = { path = "utils" }
+nasiko-oci = { path = "oci" }
+nasiko-server = { path = "server" }
+
+# Async runtime & web
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["json", "query", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database & state
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate"] }
+redis = { version = "0.27", features = ["tokio-comp", "aio"] }
+rust_decimal = { version = "1.36", features = ["serde", "db-postgres"] }
+
+# Auth
+jsonwebtoken = "9"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# A2A protocol
+a2a = { git = "https://github.com/a2aproject/a2a-rs", package = "a2a-lf" }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+ureq = { version = "3", features = ["json"] }
+dialoguer = "0.11"
+indicatif = "0.17"
+dirs = "6"
+tar = "0.4"
+flate2 = "1"
+include_dir = "0.7"
+ratatui = "0.29"
+crossterm = "0.29"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# AWS
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# Crypto
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.9"
+
+# Concurrency
+dashmap = "6"
+bytes = "1"
+
+# Streaming
+futures = "0.3"
+tokio-stream = "0.1"
+async-stream = "0.3"
+
+# Common utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+anyhow = "1"
+base64 = "0.22"
+dotenvy = "0.15"
+http = "1"
+
+# Embedding / registry
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
+pgvector = { version = "0.4", features = ["sqlx"] }
+bcrypt = "0.15"
+
+[profile.release]
+strip = true

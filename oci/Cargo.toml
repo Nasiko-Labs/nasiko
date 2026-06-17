@@ -1,0 +1,26 @@
+[package]
+name = "nasiko-oci"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "nasiko_oci"
+path = "src/lib.rs"
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+aws-sdk-s3.workspace = true
+aws-config.workspace = true
+dashmap.workspace = true
+bytes.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "nasiko-server"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nasiko-server"
+path = "src/main.rs"
+
+[dependencies]
+nasiko-auth = { path = "../auth" }
+nasiko-config = { path = "../config" }
+nasiko-secrets = { path = "../secrets" }
+nasiko-runtime = { path = "../runtime" }
+nasiko-observability = { path = "../observability" }
+nasiko-types = { path = "../types" }
+nasiko-utils = { path = "../utils" }
+nasiko-react-agent = { path = "../react-agent" }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
