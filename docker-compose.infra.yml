@@ -37,5 +37,6 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
-      - "4317:4317"
-      - "16686:16686"
+      - "9411:4317"   # OTLP gRPC
+      - "9412:4318"   # OTLP HTTP (agents use this with http/protobuf protocol)
+      - "16686:16686" # Jaeger UI

@@ -193,8 +193,19 @@ async fn execute_build(
         }
 
         // Verify Dockerfile exists
-        if !tmp_dir.join("Dockerfile").exists() {
+        let dockerfile_path = tmp_dir.join("Dockerfile");
+        if !dockerfile_path.exists() {
             return Err("no Dockerfile found in source".into());
+        }
+
+        // Patch Dockerfile to inject OTel auto-instrumentation (zero-code change for the agent).
+        let original = tokio::fs::read_to_string(&dockerfile_path).await
+            .map_err(|e| format!("read Dockerfile: {e}"))?;
+        let patched = nasiko_observability::patch_dockerfile_for_otel(&original);
+        if patched != original {
+            tokio::fs::write(&dockerfile_path, &patched).await
+                .map_err(|e| format!("write patched Dockerfile: {e}"))?;
+            tracing::info!(build_id = %build_id, "patched Dockerfile with OTel instrumentation");
         }
 
         // Build image
@@ -226,7 +237,7 @@ async fn execute_build(
             }
 
             if let Some(ref key) = source_key {
-                auto_generate_capabilities(
+                auto_generate_capabilities_pub(
                     &db, &oci_storage, &http_client, key, &agent_name,
                 ).await;
             }
@@ -438,7 +449,7 @@ async fn list_builds(
 
 // ─── Auto-generate capabilities after build ─────────────────────────────────
 
-async fn auto_generate_capabilities(
+pub async fn auto_generate_capabilities_pub(
     db: &sqlx::PgPool,
     oci_storage: &nasiko_oci::storage::S3Storage,
     http_client: &reqwest::Client,

@@ -4,7 +4,7 @@ use nasiko_auth::{AclChecker, AuthProvider};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 
-use crate::config::Config;
+use nasiko_config::Config;
 use crate::flow::{FlowConfig, FlowEventBus, FlowGuard};
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;

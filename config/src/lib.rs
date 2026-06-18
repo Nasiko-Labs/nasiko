@@ -68,8 +68,8 @@ impl Config {
             otel_service_name: env_or("OTEL_SERVICE_NAME", "nasiko-cp"),
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
             otel_collector_endpoint: env_or(
-                "OTEL_EXPORTER_OTLP_ENDPOINT",
-                "http://otel-collector.nasiko-infra:4318",
+                "OTEL_COLLECTOR_ENDPOINT",
+                "http://host.docker.internal:4317",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",

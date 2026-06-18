@@ -40,11 +40,11 @@ async fn main() {
         acl: Arc::new(nasiko_auth::NoopAuthorizer),
     };
 
-    let config = nasiko_server::config::Config::from_env().expect("invalid config");
+    let config = nasiko_config::Config::from_env().expect("invalid config");
     let bind = config.bind.clone();
 
     let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = Arc::new(
-        nasiko_runtime::DockerRuntime::new(nasiko_runtime::DockerRuntimeConfig::default())
+        nasiko_server::runtime::build_docker_runtime(&config)
             .await
             .expect("failed to create Docker runtime"),
     );

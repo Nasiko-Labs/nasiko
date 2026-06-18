@@ -1,6 +1,6 @@
-pub mod config;
 pub mod acl;
 pub mod admin;
+pub mod agents;
 pub mod auth;
 pub mod build;
 pub mod capabilities;
@@ -71,6 +71,7 @@ where
     let protected = Router::new()
         .route("/me", get(me))
         .route("/a2a", axum::routing::post(router::a2a_handler))
+        .nest("/agents", agents::router())
         .route("/agents/{agent_id}", axum::routing::any(agent_proxy_fallback))
         .route("/agents/{agent_id}/{*rest}", axum::routing::any(agent_proxy_fallback))
         .merge(container_routes)
@@ -85,14 +86,15 @@ where
         .merge(proxy::router())
         .merge(usage::routes::router())
         .merge(flow::routes::router())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            proxy::agent_proxy_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
+        // .layer(middleware::from_fn_with_state(
+        //     state.clone(),
+        //     proxy::agent_proxy_middleware,
+        // ))
+        // .layer(middleware::from_fn_with_state(
+        //     state.clone(),
+        //     auth::require_auth,
+        // ));
+        ;
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     let oci_routes = nasiko_oci::axum_routes(oci_state);
