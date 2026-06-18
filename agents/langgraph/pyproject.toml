@@ -1,0 +1,29 @@
+[project]
+name = "deep-analyst-agent"
+version = "1.0.0"
+description = "Deep analyst agent — stateful multi-step reasoning with LangGraph (→ DeepSeek)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+    "click>=8.1.8",
+    "httpx>=0.28.1",
+    "langgraph>=0.3.18",
+    "langchain-openai>=0.1.0",
+    "pydantic>=2.10.6",
+    "python-dotenv>=1.1.0",
+    "uvicorn>=0.34.2",
+    "sse-starlette>=2.3.6",
+    "starlette>=0.46.2",
+    "a2a-sdk>=0.3.0,<1.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

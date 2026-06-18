@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko Registry — Skills</title>
+
+    <meta name="nav-title" content="Skills" />
+    <meta name="nav-order" content="2" />
+
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <link rel="stylesheet" href="/registry.css" />
+
+    <script src="/navigation-service.js"></script>
+    <script src="/services/artifacts-service.js"></script>
+    <script type="module" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/app-badge.js"></script>
+    <script type="module" src="/common/components/app-loading-bar.js"></script>
+    <script type="module" src="/common/components/smart-table.js"></script>
+    <script type="module" src="/components/skills-page.js"></script>
+  </head>
+  <body>
+    <app-loading-bar></app-loading-bar>
+    <app-header brand-title="Nasiko Registry"></app-header>
+    <main>
+      <skills-page></skills-page>
+    </main>
+  </body>
+</html>

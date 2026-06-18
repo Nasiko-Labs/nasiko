@@ -8,6 +8,33 @@ mod docker;
 pub use error::{Result, RuntimeError};
 pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState};
 
+// ─── Legacy type aliases (used by server during transition from old orchestrator) ─────
+pub type ContainerSpec = DeploymentSpec;
+pub type ContainerStatus = DeploymentStatus;
+pub type ContainerState = RuntimeState;
+
+/// Stub — pool scaling is EE-only now. Server code references this during transition.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PoolScalingPolicy {
+    pub min_nodes: u32,
+    pub max_nodes: u32,
+}
+
+/// Stub — scaling events are EE-only.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScaleEvent {
+    pub from: u32,
+    pub to: u32,
+    pub reason: String,
+}
+
+/// Stub — node info is EE-only.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeInfo {
+    pub id: String,
+    pub status: String,
+}
+
 #[cfg(feature = "docker")]
 pub use docker::{DockerRuntime, DockerRuntimeConfig};
 

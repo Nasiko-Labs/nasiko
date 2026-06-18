@@ -1,0 +1,14 @@
+services:
+  langchain:
+    build: .
+    container_name: langchain
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "10007:10007"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

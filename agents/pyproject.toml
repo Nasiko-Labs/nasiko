@@ -1,0 +1,14 @@
+[project]
+name = "nasiko-seed-agents"
+version = "1.0.0"
+description = "Lightweight seed agents for testing A2A protocol"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[http-server]==1.1.0",
+    "starlette==1.2.0",
+    "python-dotenv==1.2.2",
+    "uvicorn==0.48.0",
+    "click==8.4.1",
+    "httpx==0.28.1",
+    "openai==1.82.0",
+]

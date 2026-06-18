@@ -1,0 +1,14 @@
+[project]
+name = "a2a-samples-image-gen"
+version = "0.1.0"
+description = "Generate or modify images using A2A and CrewAI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+    "crewai[tools]>=0.95.0",
+    "a2a-sdk>=0.3.0,<1.0.0",
+]

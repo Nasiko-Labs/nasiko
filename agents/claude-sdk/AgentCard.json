@@ -1,0 +1,48 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "claude-sdk-research-agent",
+  "description": "Answers questions by searching Wikipedia, built with the Anthropic Python SDK.",
+  "url": "http://localhost:10002/",
+  "agentFramework": "claude-sdk",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "wikipedia_research",
+      "name": "Wikipedia Research",
+      "description": "Answers questions by searching Wikipedia for relevant information.",
+      "tags": [
+        "research",
+        "wikipedia",
+        "qa"
+      ],
+      "examples": [
+        "What is quantum computing?",
+        "Tell me about the Eiffel Tower"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

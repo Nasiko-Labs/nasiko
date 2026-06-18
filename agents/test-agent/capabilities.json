@@ -1,0 +1,11 @@
+{
+  "name": "test",
+  "version": "0.1.0",
+  "description": "this is a test agent",
+  "author": "akhil",
+  "capabilities": [
+    "answer questions",
+    "process text"
+  ],
+  "tags": []
+}

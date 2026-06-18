@@ -7,10 +7,11 @@ version.workspace = true
 name = "nasiko-gateway"
 path = "src/main.rs"
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
-nasiko-auth = { path = "../auth" }
-nasiko-config = { path = "../config" }
-nasiko-observability = { path = "../observability" }
+nasiko-auth.workspace = true
 
 # Pingora
 pingora = { version = "0.8", features = ["proxy", "lb", "openssl"] }
@@ -32,8 +33,6 @@ dashmap = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 async-trait = "0.1"
-arc-swap = "1"
 
-# Static file serving (embedded UI)
-rust-embed = { version = "8", features = ["mime-guess"] }
-mime_guess = "2"
+[dev-dependencies]
+tokio = { workspace = true }

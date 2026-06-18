@@ -1,0 +1,259 @@
+use std::fs;
+use std::path::Path;
+
+use anyhow::Result;
+use dialoguer::{Confirm, Input};
+
+use crate::util;
+
+pub fn card(directory: &str) -> Result<()> {
+    let root = Path::new(directory).canonicalize().unwrap_or_else(|_| Path::new(directory).to_path_buf());
+    let card_path = root.join("AgentCard.json");
+
+    println!("Agent Card Generator\n");
+
+    // Try LLM generation via CP
+    if try_generate_via_cp(&root, &card_path) {
+        return Ok(());
+    }
+
+    // Fallback: static generation
+    println!("CP not available — using static generation.\n");
+    generate_static(&root, &card_path)
+}
+
+fn try_generate_via_cp(root: &Path, card_path: &Path) -> bool {
+    let client = match crate::api::Client::from_active_cluster() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let source = match collect_source(root) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let agent_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+    let body = serde_json::json!({
+        "source_code": source,
+        "agent_name": agent_name,
+    });
+
+    let resp: Result<serde_json::Value, _> = client.post_json("/capabilities/generate", &body);
+    match resp {
+        Ok(resp) => {
+            if let Some(card) = resp.get("card") {
+                let json = serde_json::to_string_pretty(card).unwrap_or_default();
+                if fs::write(card_path, &json).is_ok() {
+                    let tokens = resp.get("tokens_used").and_then(|t| t.as_i64()).unwrap_or(0);
+                    println!("✓ Wrote AgentCard.json (LLM, {} tokens)", tokens);
+                    return true;
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+fn collect_source(root: &Path) -> Option<String> {
+    let mut source = String::new();
+
+    // Collect Python sources
+    let src_dir = root.join("src");
+    if src_dir.is_dir() {
+        collect_dir_sources(&src_dir, &mut source);
+    }
+
+    // Collect Go sources
+    let cmd_dir = root.join("cmd");
+    if cmd_dir.is_dir() {
+        collect_dir_sources(&cmd_dir, &mut source);
+    }
+
+    // Main file in root
+    for name in &["main.go", "main.py", "agent.py"] {
+        if let Ok(content) = fs::read_to_string(root.join(name)) {
+            source.push_str(&format!("// --- {name} ---\n"));
+            source.push_str(&content);
+            source.push('\n');
+        }
+    }
+
+    if source.is_empty() { None } else { Some(source) }
+}
+
+fn collect_dir_sources(dir: &Path, out: &mut String) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let ext = path.extension().unwrap_or_default().to_string_lossy();
+            if matches!(ext.as_ref(), "py" | "go") {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if let Ok(content) = fs::read_to_string(&path) {
+                    out.push_str(&format!("// --- {name} ---\n"));
+                    out.push_str(&content);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+}
+
+fn generate_static(root: &Path, card_path: &Path) -> Result<()> {
+    let existing = load_existing_card(card_path);
+
+    let dir_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+    let name: String = Input::new()
+        .with_prompt("Agent name")
+        .default(existing_str(&existing, "name").unwrap_or(dir_name))
+        .interact_text()?;
+
+    let description: String = Input::new()
+        .with_prompt("Description")
+        .default(existing_str(&existing, "description").unwrap_or_default())
+        .interact_text()?;
+
+    let version: String = Input::new()
+        .with_prompt("Version")
+        .default(existing_str(&existing, "version").unwrap_or_else(|| "0.1.0".into()))
+        .interact_text()?;
+
+    let url: String = Input::new()
+        .with_prompt("Agent URL")
+        .default(existing_str(&existing, "url").unwrap_or_else(|| "http://localhost:8000/".into()))
+        .interact_text()?;
+
+    let streaming = Confirm::new()
+        .with_prompt("Supports streaming?")
+        .default(existing_bool(&existing, &["capabilities", "streaming"]))
+        .interact()?;
+
+    let framework = detect_framework(root)
+        .or_else(|| existing_str(&existing, "agentFramework"))
+        .unwrap_or_default();
+    if !framework.is_empty() {
+        println!("  Detected framework: {framework}");
+    }
+
+    let skills = detect_skills(root);
+    if skills.is_empty() {
+        println!("  No skills auto-detected — add them manually to AgentCard.json");
+    } else {
+        println!("  Detected {} skill(s)", skills.len());
+    }
+
+    let card = serde_json::json!({
+        "protocolVersion": "0.2.9",
+        "name": name,
+        "description": description,
+        "url": if url.ends_with('/') { url.clone() } else { format!("{url}/") },
+        "agentFramework": framework,
+        "preferredTransport": "JSONRPC",
+        "provider": {
+            "organization": "Nasiko",
+            "url": "https://nasiko.com"
+        },
+        "version": version,
+        "capabilities": {
+            "streaming": streaming,
+            "pushNotifications": false,
+            "stateTransitionHistory": false
+        },
+        "securitySchemes": {},
+        "security": [],
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": skills
+    });
+
+    fs::write(card_path, serde_json::to_string_pretty(&card)?)?;
+    println!("\n✓ Wrote AgentCard.json");
+    println!("  Connect to a cluster for LLM-powered generation.");
+
+    Ok(())
+}
+
+fn detect_framework(root: &Path) -> Option<String> {
+    let agent_py = root.join("src/agent.py");
+    let source = if agent_py.exists() {
+        fs::read_to_string(&agent_py).ok()?
+    } else if root.join("go.mod").exists() {
+        return Some("a2a-go".into());
+    } else {
+        return None;
+    };
+
+    let lower = source.to_lowercase();
+    if lower.contains("crewai") { return Some("crewai".into()); }
+    if lower.contains("langgraph") { return Some("langgraph".into()); }
+    if lower.contains("langchain") { return Some("langchain".into()); }
+    if lower.contains("autogen") { return Some("autogen".into()); }
+    if lower.contains("anthropic") { return Some("claude-sdk".into()); }
+    if lower.contains("google.adk") || lower.contains("google-adk") { return Some("google-adk".into()); }
+    if lower.contains("google.generativeai") || lower.contains("genai") { return Some("gemini".into()); }
+    if lower.contains("openai") { return Some("openai".into()); }
+    None
+}
+
+fn detect_skills(root: &Path) -> Vec<serde_json::Value> {
+    let agent_py = root.join("src/agent.py");
+    let source = match fs::read_to_string(&agent_py) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let mut skills = Vec::new();
+
+    // Look for @tool or @function_tool decorated functions
+    let mut prev_is_decorator = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("@tool") || trimmed.starts_with("@function_tool") {
+            prev_is_decorator = true;
+            continue;
+        }
+        if prev_is_decorator && trimmed.starts_with("def ") {
+            if let Some(name) = trimmed.strip_prefix("def ").and_then(|s| s.split('(').next()) {
+                let name = name.trim();
+                skills.push(serde_json::json!({
+                    "id": name,
+                    "name": util::title_case(&name.replace('_', " ")),
+                    "description": "",
+                    "tags": [],
+                    "examples": [],
+                    "inputModes": ["text/plain"],
+                    "outputModes": ["text/plain"]
+                }));
+            }
+            prev_is_decorator = false;
+        } else {
+            prev_is_decorator = false;
+        }
+    }
+
+    skills
+}
+
+fn load_existing_card(path: &Path) -> Option<serde_json::Value> {
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn existing_str(card: &Option<serde_json::Value>, field: &str) -> Option<String> {
+    card.as_ref()?.get(field)?.as_str().map(String::from)
+}
+
+fn existing_bool(card: &Option<serde_json::Value>, path: &[&str]) -> bool {
+    let mut val = card.as_ref().cloned();
+    for &key in path {
+        val = val.and_then(|v| v.get(key).cloned());
+    }
+    val.and_then(|v| v.as_bool()).unwrap_or(false)
+}

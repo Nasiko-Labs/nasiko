@@ -1,0 +1,14 @@
+services:
+  claude-sdk:
+    build: .
+    container_name: claude-sdk
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    ports:
+      - "10002:10002"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

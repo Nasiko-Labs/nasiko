@@ -1,0 +1,21 @@
+services:
+  weather:
+    build:
+      context: .
+      dockerfile: Dockerfile.weather
+    ports:
+      - "5001:5001"
+
+  books:
+    build:
+      context: .
+      dockerfile: Dockerfile.books
+    ports:
+      - "5002:5002"
+
+  hackernews:
+    build:
+      context: .
+      dockerfile: Dockerfile.hackernews
+    ports:
+      - "5003:5003"

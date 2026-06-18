@@ -1,0 +1,29 @@
+[package]
+name = "nasiko"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "nasiko"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+dialoguer.workspace = true
+indicatif.workspace = true
+dirs.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+include_dir.workspace = true
+base64.workspace = true
+uuid.workspace = true
+nasiko-types.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+chrono.workspace = true

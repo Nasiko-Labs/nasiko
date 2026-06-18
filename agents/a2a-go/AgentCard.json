@@ -1,0 +1,45 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "a2a-go-agent",
+  "description": "Template Go agent using the A2A Go SDK",
+  "url": "http://localhost:8000/",
+  "agentFramework": "a2a-go",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "weather",
+      "name": "Weather Lookup",
+      "description": "Get current weather for a location",
+      "tags": [
+        "weather"
+      ],
+      "examples": [
+        "What's the weather in Tokyo?"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

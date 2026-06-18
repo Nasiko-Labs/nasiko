@@ -1,0 +1,64 @@
+/* Icon button — 28×28 compact, transparent, hover bg */
+.btn-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+/* Touch-sized icon button — 44×44 for mobile/touch targets */
+.btn-icon-lg {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+/* Outlined button with optional SVG icon */
+.btn-outline {
+  display: inline-flex; align-items: center; gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  background: var(--color-bg-surface); color: var(--color-text-muted);
+  font-size: var(--font-size-sm); font-weight: 500; cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+
+  & svg { width: 13px; height: 13px; flex-shrink: 0; }
+  &:hover:not(:disabled) { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+}
+
+.btn-ghost {
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+
+  &:hover {
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+  }
+}

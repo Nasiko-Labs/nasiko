@@ -4,5 +4,5 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-nasiko-utils = { path = "../utils" }
+nasiko-utils.workspace = true
 anyhow = { workspace = true }

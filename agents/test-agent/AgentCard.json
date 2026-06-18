@@ -1,0 +1,60 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "test",
+  "description": "this is a test agent",
+  "url": "http://localhost:8000/",
+  "agentFramework": "",
+  "preferredTransport": "HTTP+JSON",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "iconUrl": "http://localhost:8000/icon.png",
+  "version": "0.1.0",
+  "documentationUrl": "http://localhost:8000/docs",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "application/json",
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "answer-questions",
+      "name": "Answer Questions",
+      "description": "answer questions",
+      "tags": [],
+      "examples": [],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "process-text",
+      "name": "Process Text",
+      "description": "process text",
+      "tags": [],
+      "examples": [],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

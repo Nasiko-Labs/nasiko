@@ -17,7 +17,9 @@ pub enum Role {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub user_id: String,
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub is_superuser: bool,
     #[serde(default)]
     pub team_id: Option<String>,
@@ -25,6 +27,13 @@ pub struct Identity {
     pub department_id: Option<String>,
     #[serde(default)]
     pub role: Option<Role>,
+    // Legacy JWT-style fields (used by server auth middleware during transition)
+    #[serde(default)]
+    pub sub: String,
+    #[serde(default)]
+    pub exp: u64,
+    #[serde(default)]
+    pub iat: u64,
 }
 
 /// Authentication: validate a token and extract identity.
@@ -67,6 +76,9 @@ impl AuthProvider for SingleUserAuth {
     fn validate_token(&self, _token: &str) -> Result<Identity, AuthError> {
         Ok(Identity {
             user_id: "00000000-0000-0000-0000-000000000000".to_string(),
+            sub: "00000000-0000-0000-0000-000000000000".to_string(),
+            exp: u64::MAX,
+            iat: 0,
             username: "admin".to_string(),
             is_superuser: true,
             team_id: None,
@@ -104,3 +116,20 @@ impl Authorizer for NoopAuthorizer {
         true
     }
 }
+
+// ─── Backwards-compatible aliases (used by server during transition) ─────────
+
+/// Legacy re-export — server code uses Claims; will be migrated to Identity.
+pub type Claims = Identity;
+
+impl Identity {
+    // Legacy accessors for server code that reads JWT-style fields
+    pub fn sub(&self) -> &str { &self.user_id }
+}
+
+/// Legacy alias — server code uses AclChecker; will be migrated to Authorizer.
+pub trait AclChecker: Authorizer {}
+impl<T: Authorizer> AclChecker for T {}
+
+/// Legacy alias — NoopAcl is the old name for NoopAuthorizer.
+pub type NoopAcl = NoopAuthorizer;

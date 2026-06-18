@@ -1,0 +1,14 @@
+services:
+  openai:
+    build: .
+    container_name: openai
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "10003:10003"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

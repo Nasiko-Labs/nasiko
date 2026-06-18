@@ -1,0 +1,22 @@
+[package]
+name = "nasiko-coding-agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+a2a-server = { workspace = true }
+a2a = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+axum = { workspace = true }
+walkdir = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

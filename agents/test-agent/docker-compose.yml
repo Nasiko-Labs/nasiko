@@ -1,0 +1,9 @@
+version: "3.9"
+services:
+  test:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env.example
+    restart: unless-stopped

@@ -11,18 +11,50 @@ name = "nasiko-server"
 path = "src/main.rs"
 
 [dependencies]
-nasiko-auth = { path = "../auth" }
-nasiko-config = { path = "../config" }
-nasiko-secrets = { path = "../secrets" }
-nasiko-runtime = { path = "../runtime" }
-nasiko-observability = { path = "../observability" }
-nasiko-types = { path = "../types" }
-nasiko-utils = { path = "../utils" }
-nasiko-react-agent = { path = "../react-agent" }
+nasiko-auth.workspace = true
+nasiko-utils.workspace = true
+nasiko-oci.workspace = true
+nasiko-runtime = { workspace = true, features = ["docker"] }
+nasiko-react-agent.workspace = true
+nasiko-types.workspace = true
 
 tokio = { workspace = true }
 axum = { workspace = true }
-tracing = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+jsonwebtoken = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
 anyhow = { workspace = true }
+bytes = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+tokio-stream = { workspace = true }
+reqwest = { workspace = true, features = ["json", "stream"] }
+http-body-util = "0.1"
+rust_decimal = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = { workspace = true }
+tar = { workspace = true }
+aes-gcm = "0.10"
+base64 = { workspace = true }
+bcrypt = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+
+# OpenTelemetry
+opentelemetry = { version = "0.28", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "metrics", "trace"] }
+opentelemetry-semantic-conventions = "0.28"
+tracing-opentelemetry = "0.29"
+tonic = "0.12"

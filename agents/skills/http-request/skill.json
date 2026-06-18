@@ -1,0 +1,37 @@
+{
+  "apiVersion": "nasiko.dev/v1",
+  "kind": "Skill",
+  "metadata": {
+    "name": "http-request",
+    "version": "1.0.0",
+    "description": "Make HTTP requests to any URL",
+    "tags": ["http", "api", "network", "utility"],
+    "author": "nasiko"
+  },
+  "interface": {
+    "function": "http_request",
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "Target URL" },
+        "method": { "type": "string", "description": "HTTP method: GET, POST, PUT, DELETE, PATCH", "default": "GET" },
+        "body": { "type": "string", "description": "Request body (for POST/PUT/PATCH)", "default": "" }
+      },
+      "required": ["url"]
+    },
+    "output": { "type": "string", "description": "HTTP status code and response body (truncated to 3000 chars)" }
+  },
+  "runtime": {
+    "language": "python",
+    "entrypoint": "impl.py",
+    "dependencies": ["httpx>=0.27.0"],
+    "env_vars": []
+  },
+  "frameworks": {
+    "openai": { "decorator": "function_tool", "import_from": "agents" },
+    "claude-sdk": { "style": "tool_definition" },
+    "langgraph": { "decorator": "tool", "import_from": "langchain_core.tools" },
+    "crewai": { "decorator": "tool", "import_from": "crewai.tools" },
+    "a2a-go": { "style": "handler" }
+  }
+}

@@ -1,0 +1,651 @@
+@layer base;
+
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500&family=Google+Sans+Mono&display=swap');
+
+@layer base {
+
+/* 1. Design Tokens (The API) */
+:root {
+  color-scheme: light dark;
+
+  /* Colors - Using modern light-dark() function */
+  --color-primary: hsl(42 85% 50%);
+  --color-primary-hover: color-mix(in srgb, var(--color-primary) 82%, black);
+  --color-primary-muted: light-dark(color-mix(in srgb, var(--color-primary) 60%, white), color-mix(in srgb, var(--color-primary) 60%, black));
+  --color-primary-subtle: light-dark(color-mix(in srgb, var(--color-primary) 10%, white), color-mix(in srgb, var(--color-primary) 15%, black));
+  --color-primary-ring: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  --color-on-primary: white;
+
+  --color-success: light-dark(#059669, #10b981);
+  --color-success-bg: light-dark(#d1fae5, #064e3b);
+  --color-success-border: light-dark(#6ee7b7, #065f46);
+
+  --color-warning: light-dark(#f59e0b, #fbbf24);
+  --color-warning-bg: light-dark(#fef3c7, #78350f);
+  --color-warning-border: light-dark(#fbbf24, #92400e);
+
+  --color-error: light-dark(#dc2626, #ef4444);
+  --color-error-bg: light-dark(#fee2e2, #7f1d1d);
+  --color-error-border: light-dark(#fca5a5, #991b1b);
+
+  --color-info: light-dark(#0891b2, #67e8f9);
+  --color-info-bg: light-dark(#e0f2fe, #164e63);
+  --color-info-border: light-dark(#7dd3fc, #155e75);
+
+  --color-neutral: light-dark(#71717a, #a1a1aa);
+  --color-neutral-bg: light-dark(#f4f4f5, #18181b);
+  --color-neutral-border: light-dark(#d4d4d8, #27272a);
+
+  --color-bg-base: light-dark(#fafafa, #09090b);
+  --color-bg-surface: light-dark(#ffffff, #18181b);
+  --color-text-main: light-dark(#09090b, #fafafa);
+  --color-text-prose: light-dark(#3f3f46, #d4d4d8);
+  --color-text-muted: light-dark(#71717a, #a1a1aa);
+  --color-border: light-dark(#e4e4e7, #27272a);
+
+  /* Spacing Scale - Fluid spacing */
+  --space-xs: clamp(0.375rem, 0.75vw, 0.5rem);
+  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
+  --space-md: clamp(0.75rem, 1.5vw, 1rem);
+  --space-lg: clamp(1rem, 2vw, 1.5rem);
+  --space-xl: clamp(1.5rem, 2.5vw, 2rem);
+  --space-2xl: clamp(2rem, 4vw, 3rem);
+
+  /* Borders */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Shadows - Using light-dark() */
+  --shadow-sm: light-dark(0 1px 2px 0 rgba(0, 0, 0, 0.05),
+      0 1px 2px 0 rgba(0, 0, 0, 0.3));
+  --shadow-md: light-dark(0 4px 6px -1px rgba(0, 0, 0, 0.1),
+      0 4px 6px -1px rgba(0, 0, 0, 0.4));
+  --shadow-lg: light-dark(0 10px 15px -3px rgba(0, 0, 0, 0.1),
+      0 10px 15px -3px rgba(0, 0, 0, 0.5));
+  --shadow-xl: light-dark(0 20px 25px -5px rgba(0, 0, 0, 0.1),
+      0 20px 25px -5px rgba(0, 0, 0, 0.5));
+
+  /* Typography - Fluid sizing with clamp() */
+  --font-size-xs: clamp(0.7rem, 0.9vw, 0.75rem);
+  --font-size-sm: clamp(0.8rem, 1vw, 0.875rem);
+  --font-size-base: clamp(0.9rem, 1.2vw, 1rem);
+  --font-size-lg: clamp(1rem, 1.3vw, 1.125rem);
+  --font-size-xl: clamp(1.1rem, 1.5vw, 1.25rem);
+  --font-size-2xl: clamp(1.25rem, 2vw, 1.5rem);
+  --font-size-3xl: clamp(1.5rem, 2.5vw, 1.875rem);
+  --font-size-4xl: clamp(1.75rem, 3vw, 2.25rem);
+
+  /* Font stacks */
+  --font-sans: 'Google Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Google Sans Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+
+  /* Transitions */
+  --transition-fast: 150ms ease-in-out;
+  --transition-base: 200ms ease-in-out;
+  --transition-slow: 300ms ease-in-out;
+
+  /* Layout */
+  --app-header-height: 48px;
+  --app-sidebar-width: 180px;
+  --page-max-width: 75rem;
+}
+
+/* 2. Base Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scrollbar-gutter: stable;
+  -webkit-text-size-adjust: 100%;
+  overflow-x: clip;
+}
+
+body {
+  background-color: var(--color-bg-base);
+  color: var(--color-text-main);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  font-size: var(--font-size-base);
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+main {
+  width: min(100% - 2 * var(--space-lg), var(--page-max-width));
+  margin: 0 auto;
+  padding: var(--space-md) 0;
+}
+
+/* Full-viewport app-shell layout — no centering, panes scroll independently */
+main.app-shell {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  height: calc(100dvh - var(--app-header-height));
+  overflow: hidden;
+}
+
+@media (min-width: 1024px) {
+  body, .app-layout {
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  body > main, .app-layout > main {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    max-width: var(--page-max-width);
+    margin-inline: auto;
+  }
+
+  body > main.app-shell, .app-layout > main.app-shell {
+    max-width: none;
+    margin: 0;
+    height: 100dvh;
+  }
+
+  main {
+    width: min(100% - 2 * var(--space-lg), var(--page-max-width));
+    margin: 0 auto;
+    padding: var(--space-md) 0;
+  }
+
+  main.app-shell {
+    height: 100dvh;
+  }
+}
+
+/* Prevent media from overflowing their containers */
+img,
+picture,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* Inherit fonts for form controls */
+input,
+button,
+textarea,
+select {
+  font: inherit;
+}
+
+/* Opinionated resets for elements with notable browser defaults */
+figure {
+  margin: 0;
+}
+
+fieldset {
+  border: none;
+  min-width: 0;
+}
+
+legend {
+  padding: 0;
+}
+
+address {
+  font-style: inherit;
+}
+
+/* Ensure the hidden attribute works across all browsers */
+[hidden] {
+  display: none !important;
+}
+
+/* Accessibility utility — visually hidden but available to screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* h1 inside sectioning elements gets a reduced size in Chrome/Firefox;
+   keep it consistent with our type scale */
+:is(article, section, aside, nav) h1 {
+  font-size: var(--font-size-4xl);
+}
+
+/* 3. Typography */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin-bottom: var(--space-md);
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-text-main);
+}
+
+h1 {
+  font-size: var(--font-size-4xl);
+}
+
+h2 {
+  font-size: var(--font-size-3xl);
+}
+
+h3 {
+  font-size: var(--font-size-2xl);
+}
+
+h4 {
+  font-size: var(--font-size-xl);
+}
+
+h5 {
+  font-size: var(--font-size-lg);
+}
+
+h6 {
+  font-size: var(--font-size-base);
+}
+
+/* Top-level page title inside <main> — use on the <h1> of content pages */
+.page-heading {
+  font-size: var(--font-size-3xl);
+  margin: 0 0 var(--space-lg);
+}
+
+p {
+  margin: 0 0 var(--space-md) 0;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--color-primary-hover);
+}
+
+/* 4. Form Elements */
+label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  margin-bottom: var(--space-xs);
+  color: var(--color-text-main);
+}
+
+:is(input[type="text"], input[type="email"], input[type="password"],
+  input[type="search"], input[type="url"], input[type="tel"],
+  input[type="number"], input[type="date"], input[type="time"],
+  input[type="datetime-local"], textarea, select) {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-base);
+  background: var(--color-bg-surface);
+  color: var(--color-text-main);
+  line-height: 1.5;
+
+  &:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-ring);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--color-bg-base);
+  }
+}
+
+:is(input, textarea)::placeholder {
+  color: var(--color-text-muted);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+select {
+  cursor: pointer;
+}
+
+input[type="file"] {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-base);
+  background: var(--color-bg-surface);
+  color: var(--color-text-main);
+  cursor: pointer;
+
+  &:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-ring);
+  }
+
+  &::file-selector-button {
+    margin-right: var(--space-sm);
+    padding: 4px var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+  }
+}
+
+/* Checkbox and Radio */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  margin-right: var(--space-xs);
+  cursor: pointer;
+}
+
+/* Range Slider */
+input[type="range"] {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-border);
+  outline: none;
+  cursor: pointer;
+}
+
+/* Button bare reset — variants live in <app-button> or assets/styles/btn.css */
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 5. Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  margin: var(--space-md) 0;
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+thead {
+  background: var(--color-bg-base);
+}
+
+th {
+  text-align: left;
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+
+td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover {
+  background: var(--color-bg-base);
+}
+
+/* 6. Lists */
+ul,
+ol {
+  margin: 0 0 var(--space-md) 0;
+  padding-left: var(--space-lg);
+}
+
+ul ul,
+ol ol,
+ul ol,
+ol ul {
+  margin-bottom: 0;
+}
+
+li {
+  margin-bottom: var(--space-xs);
+}
+
+/* 7. Code */
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-bg-base);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-main);
+}
+
+pre {
+  font-family: var(--font-mono);
+  background: var(--color-bg-base);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  margin: var(--space-md) 0;
+  border: 1px solid var(--color-border);
+}
+
+pre code {
+  background: none;
+  padding: 0;
+}
+
+/* 8. Blockquote */
+blockquote {
+  margin: var(--space-md) 0;
+  padding-left: var(--space-lg);
+  border-left: 4px solid var(--color-primary);
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* 9. Horizontal Rule */
+hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: var(--space-lg) 0;
+}
+
+/* 10. Details/Summary */
+details {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin: var(--space-md) 0;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+  user-select: none;
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  margin-right: var(--space-xs);
+  vertical-align: 1px;
+  flex-shrink: 0;
+}
+
+details[open] summary::before {
+  transform: rotate(45deg);
+  vertical-align: -1px;
+}
+
+details[open] {
+  padding-bottom: var(--space-md);
+}
+
+/* 12. Dialog */
+dialog {
+  border: none;
+  border-radius: var(--radius-lg);
+  padding: 0;
+  box-shadow: var(--shadow-xl);
+  background: var(--color-bg-surface);
+  color: var(--color-text-main);
+  max-width: 90vw;
+  max-height: 90vh;
+  margin: auto;
+}
+
+dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+}
+
+} /* end @layer base */
+
+/* ─── app-header pre-upgrade placeholder ─────────────────────────────────────
+   Shown instantly (pure CSS, no JS) while app-header.js is still loading.
+   Mirrors the real header's bar geometry so the page doesn't shift on upgrade.
+   Uses ::before (brand pill) + ::after (one nav-link skeleton) as the placeholder.
+──────────────────────────────────────────────────────────────────────────── */
+@keyframes app-header-skel-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ─── MPA View Transitions ───────────────────────────────────────────────────
+   Opt-in to cross-document view transitions. The header is frozen via
+   animation: none in app-header.css regardless of motion preference.
+   Animation rules in app-header.css are gated on prefers-reduced-motion.
+──────────────────────────────────────────────────────────────────────────── */
+@view-transition {
+  navigation: auto;
+}
+
+/* nav-active view-transition rules live in app-header.css (outside @scope)
+   to keep them co-located with the component that owns them. */
+
+app-header:not(:defined) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 0 var(--space-md);
+  height: var(--app-header-height);
+  background: var(--color-bg-base);
+  border-bottom: none;
+  box-shadow: var(--shadow-sm);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    display: block;
+    width: 96px;
+    height: 20px;
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-base);
+    flex-shrink: 0;
+    animation: app-header-skel-pulse 1.4s ease-in-out infinite;
+  }
+
+  &::after {
+    content: '';
+    display: block;
+    margin-left: auto;
+    width: 140px;
+    height: 20px;
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-base);
+    flex-shrink: 0;
+    animation: app-header-skel-pulse 1.4s ease-in-out infinite 0.2s;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+
+    &::before,
+    &::after {
+      animation: none;
+      opacity: 0.4;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: var(--app-sidebar-width);
+    height: 100dvh;
+    flex-direction: column;
+    align-items: stretch;
+    padding: var(--space-md) 0;
+    border-bottom: none;
+
+    &::before {
+      margin: 0 var(--space-md) var(--space-sm);
+    }
+
+    &::after {
+      margin: var(--space-xs) var(--space-md) 0;
+      width: auto;
+    }
+  }
+}
