@@ -11,6 +11,7 @@ pub mod pool;
 pub mod proxy;
 pub mod catalog;
 pub mod router;
+pub mod runtime;
 pub mod secrets;
 pub mod seed;
 pub mod settings;

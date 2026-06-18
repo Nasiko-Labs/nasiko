@@ -17,6 +17,8 @@ nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
 nasiko-react-agent.workspace = true
 nasiko-types.workspace = true
+nasiko-config.workspace = true
+nasiko-observability.workspace = true
 
 tokio = { workspace = true }
 axum = { workspace = true }

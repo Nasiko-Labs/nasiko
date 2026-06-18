@@ -12,3 +12,10 @@ opentelemetry-otlp = { version = "0.28", default-features = false, features = ["
 opentelemetry-semantic-conventions = "0.28"
 tracing-opentelemetry = "0.29"
 tonic = "0.12"
+reqwest = { workspace = true }
+async-trait = "0.1"
+chrono = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+nasiko-runtime = { workspace = true }

@@ -28,6 +28,10 @@ pub struct Config {
     pub otel_headers: Option<String>,
     pub otel_service_name: String,
     pub otel_sample_ratio: String,
+    pub otel_collector_endpoint: String,
+    pub otel_capture_content: bool,
+    pub tempo_url: String,
+    pub loki_url: String,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -63,6 +67,23 @@ impl Config {
             otel_headers: std::env::var("OTEL_EXPORTER_OTLP_HEADERS").ok(),
             otel_service_name: env_or("OTEL_SERVICE_NAME", "nasiko-cp"),
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
+            otel_collector_endpoint: env_or(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "http://otel-collector.nasiko-infra:4318",
+            ),
+            otel_capture_content: std::env::var(
+                "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+            )
+            .map(|v| v == "true")
+            .unwrap_or(false),
+            tempo_url: env_or(
+                "TEMPO_URL",
+                "http://tempo.nasiko-infra.svc.cluster.local:3200",
+            ),
+            loki_url: env_or(
+                "LOKI_URL",
+                "http://loki.nasiko-infra.svc.cluster.local:3100",
+            ),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
