@@ -32,11 +32,41 @@ services:
     ports:
       - "9000:9000"
 
-  jaeger:
-    image: docker.io/jaegertracing/all-in-one:latest
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+  # ─── Observability stack ────────────────────────────────────────────────────
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
-      - "9411:4317"   # OTLP gRPC
-      - "9412:4318"   # OTLP HTTP (agents use this with http/protobuf protocol)
-      - "16686:16686" # Jaeger UI
+      - "9411:4317"   # OTLP gRPC  (avoids Docker Desktop port conflict)
+      - "9412:4318"   # OTLP HTTP  (agents export here via http/protobuf)
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./infra/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "13200:3200"  # Tempo HTTP query API
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "13100:3100"  # Loki HTTP API
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "13000:3000"  # http://localhost:13000
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    depends_on:
+      - tempo
+      - loki
