@@ -4,11 +4,10 @@ mod types;
 #[cfg(feature = "docker")]
 mod docker;
 
-#[cfg(feature = "k8s")]
-mod kube_backend;
 
 pub use error::{Result, RuntimeError};
 pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState};
+pub use types::validate_build_inputs;
 
 // ─── Legacy type aliases (used by server during transition from old orchestrator) ─────
 pub type ContainerSpec = DeploymentSpec;
@@ -39,9 +38,6 @@ pub struct NodeInfo {
 
 #[cfg(feature = "docker")]
 pub use docker::{DockerRuntime, DockerRuntimeConfig};
-
-#[cfg(feature = "k8s")]
-pub use kube_backend::{KubeRuntime, KubeRuntimeConfig};
 
 
 use async_trait::async_trait;

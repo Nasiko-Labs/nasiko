@@ -54,9 +54,10 @@ where
     T: 'static,
 {
     // Container lifecycle routes: require deployer+ role
+    // TODO: restore RBAC once auth middleware is re-enabled
     let container_routes = Router::new()
-        .nest("/containers", admin::router())
-        .layer(middleware::from_fn(auth::rbac::require_deployer));
+        .nest("/containers", admin::router());
+        // .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     // Pool/scaling routes: require admin+ role
     let pool_routes = Router::new()

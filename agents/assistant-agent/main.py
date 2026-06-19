@@ -224,6 +224,7 @@ If no agent fits, respond with []. Do NOT delegate to yourself (Assistant)."""},
 
         stream = await self.llm.chat.completions.create(
             model=self.model, messages=messages, stream=True,
+            stream_options={"include_usage": True},
         )
         async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None

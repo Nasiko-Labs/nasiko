@@ -37,7 +37,7 @@ impl ContainerId {
 
     /// Validate this ID's format. Called by [`DeploymentSpec::validate`] and backend
     /// methods that accept a raw `ContainerId` to prevent label-selector injection.
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         Self::check(&self.0)
     }
 
@@ -335,7 +335,7 @@ pub struct DeploymentStatus {
 /// Called at the top of every backend's `build()` implementation, matching
 /// the pattern of `spec.validate()` in `deploy()` and `container_id.validate()`
 /// in all other methods.
-pub(crate) fn validate_build_inputs(tar_context: &[u8], image_tag: &str) -> Result<()> {
+pub fn validate_build_inputs(tar_context: &[u8], image_tag: &str) -> Result<()> {
     if tar_context.is_empty() {
         return Err(RuntimeError::InvalidSpec(
             "tar_context must not be empty".to_owned(),
