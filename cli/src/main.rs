@@ -22,12 +22,13 @@ const HELP_TEXT: &str = "\
 \x1b[33mUsage:\x1b[0m nasiko <COMMAND>
 
 \x1b[33mSetup:\x1b[0m
-  up         Start local Nasiko cluster
+  up         Start local Nasiko cluster (agent devs)
   down       Stop local Nasiko cluster
   connect    Register a CP by URL
   use        Switch active cluster
   clusters   List configured control planes
   auth       Authentication (login/status/logout)
+  dev        Start infra only (contributors)
 
 \x1b[33mCreate:\x1b[0m
   new        Scaffold a new agent project
@@ -87,6 +88,7 @@ enum Commands {
 #[command(next_help_heading = "Create")]
 enum AgentDevCommands {
     /// Scaffold a new agent project
+    #[command(after_help = "Creates: AgentCard.json, Dockerfile, src/")]
     New {
         /// Template name (e.g., openai, claude-sdk). Omit for interactive mode.
         template: Option<String>,
@@ -94,6 +96,7 @@ enum AgentDevCommands {
         name: Option<String>,
     },
     /// Build agent Docker image
+    #[command(after_help = "Reads: Dockerfile, AgentCard.json (for image tag)")]
     Build {
         /// Agent directory
         #[arg(default_value = ".")]
@@ -114,12 +117,14 @@ enum AgentDevCommands {
         port: u16,
     },
     /// Validate agent directory structure
+    #[command(after_help = "Checks: AgentCard.json, Dockerfile, src/")]
     Validate {
         /// Agent directory
         #[arg(default_value = ".")]
         directory: String,
     },
     /// Generate or update AgentCard.json
+    #[command(after_help = "Writes: AgentCard.json")]
     Card {
         /// Describe what your agent does (used for LLM generation)
         description: Option<String>,
@@ -138,6 +143,7 @@ enum AgentDevCommands {
 #[command(next_help_heading = "Operate")]
 enum AgentOpsCommands {
     /// Build + push + deploy to active cluster
+    #[command(after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)")]
     Deploy {
         /// Local Docker image or agent directory
         image: String,
@@ -300,14 +306,19 @@ enum GithubCommands {
 #[derive(Subcommand)]
 #[command(next_help_heading = "Setup")]
 enum CpCommands {
-    /// Start local Nasiko cluster
-    Up {
-        #[command(subcommand)]
-        command: Option<UpCommands>,
-    },
+    /// Start local Nasiko cluster (pulls CP image from DockerHub)
+    #[command(after_help = "Config: ~/.nasiko/dev.env")]
+    Up,
     /// Stop local Nasiko cluster
     Down,
+    /// Start infra for local development (contributors only)
+    #[command(after_help = "Config: ~/.nasiko/dev.env\nThen run: cargo run -p nasiko-server")]
+    Dev {
+        #[command(subcommand)]
+        command: Option<DevCommands>,
+    },
     /// Register a CP by URL
+    #[command(after_help = "Config: ~/.nasiko/config.json")]
     Connect {
         /// Control plane URL
         url: String,
@@ -321,11 +332,13 @@ enum CpCommands {
     /// Control plane health + metrics
     Status,
     /// Authentication commands
+    #[command(after_help = "Config: ~/.nasiko/config.json")]
     Auth {
         #[command(subcommand)]
         command: AuthCommands,
     },
     /// Manage encrypted secrets
+    #[command(after_help = "Secrets are stored on the active cluster (encrypted at rest)")]
     Secrets {
         #[command(subcommand)]
         command: SecretsCommands,
@@ -392,9 +405,9 @@ enum RegistrySubCommands {
 }
 
 #[derive(Subcommand)]
-enum UpCommands {
-    /// Start infrastructure only (Postgres, Redis, RustFS), skip CP binary
-    Infra,
+enum DevCommands {
+    /// Stop dev infrastructure
+    Stop,
     /// Generate or show the dev.env configuration file
     Env,
 }
@@ -559,12 +572,13 @@ fn main() -> Result<()> {
             },
         },
         Commands::Cp(cmd) => match cmd {
-            CpCommands::Up { command } => match command {
-                None => commands::dev::start(false),
-                Some(UpCommands::Infra) => commands::dev::start(true),
-                Some(UpCommands::Env) => commands::dev::env_template(),
-            },
+            CpCommands::Up => commands::dev::start(false),
             CpCommands::Down => commands::dev::stop(),
+            CpCommands::Dev { command } => match command {
+                None => commands::dev::start(true),
+                Some(DevCommands::Stop) => commands::dev::stop(),
+                Some(DevCommands::Env) => commands::dev::env_template(),
+            },
             CpCommands::Connect { url, name } => commands::cluster::connect(&url, name.as_deref()),
             CpCommands::Use { name } => commands::cluster::use_cluster(&name),
             CpCommands::Clusters => commands::cluster::list(),
