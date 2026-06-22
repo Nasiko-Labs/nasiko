@@ -71,7 +71,7 @@ async fn set_secret(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let crypto = SecretsCrypto::from_env();
+    let crypto = SecretsCrypto::for_agent(agent_id);
     let encrypted = crypto.encrypt(&body.value);
 
     let result = sqlx::query(
@@ -165,7 +165,7 @@ pub async fn resolve_agent_env(db: &sqlx::PgPool, agent_id: Uuid) -> HashMap<Str
         return HashMap::new();
     }
 
-    let crypto = SecretsCrypto::from_env();
+    let crypto = SecretsCrypto::for_agent(agent_id);
     obj.into_iter()
         .filter_map(|(k, v)| {
             let encrypted = v.as_str()?;
@@ -176,6 +176,10 @@ pub async fn resolve_agent_env(db: &sqlx::PgPool, agent_id: Uuid) -> HashMap<Str
 }
 
 /// Import user secrets into an agent's secrets_env.
+///
+/// User secrets are encrypted with a user-scoped key; agent secrets use an
+/// agent-scoped key.  This function decrypts each value with the user key and
+/// re-encrypts it with the agent key before writing to `agents.secrets_env`.
 pub async fn import_user_secrets(
     db: &sqlx::PgPool,
     user_id: Uuid,
@@ -191,7 +195,15 @@ pub async fn import_user_secrets(
     .await
     .map_err(|e| e.to_string())?;
 
-    for (name, encrypted_value) in &rows {
+    let user_crypto  = SecretsCrypto::for_user(user_id);
+    let agent_crypto = SecretsCrypto::for_agent(agent_id);
+
+    for (name, user_ciphertext) in &rows {
+        let plaintext = user_crypto
+            .decrypt(user_ciphertext)
+            .map_err(|e| format!("failed to decrypt user secret '{}': {}", name, e))?;
+        let agent_ciphertext = agent_crypto.encrypt(&plaintext);
+
         sqlx::query(
             r#"UPDATE agents
                SET secrets_env = jsonb_set(COALESCE(secrets_env, '{}'), array[$2], to_jsonb($3::text)),
@@ -200,7 +212,7 @@ pub async fn import_user_secrets(
         )
         .bind(agent_id)
         .bind(name)
-        .bind(encrypted_value)
+        .bind(&agent_ciphertext)
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;

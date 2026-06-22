@@ -10,14 +10,48 @@ use nasiko_react_agent::CallGuard;
 
 use crate::flow::{FlowContext, FlowGuard};
 
-/// Check whether a user owns or is a team member of the agent's owning team.
-/// Used for ownership gates on update/delete/proxy.
+/// Check whether a user can access an agent.
+///
+/// Access is granted if any of the following are true:
+/// 1. The user is the agent's owner (`agents.owner_id`).
+/// 2. The user is a member of the agent's owning team (`team_members` via `owner_team_id`).
+/// 3. The agent is public (`agents.is_public = TRUE`).
+/// 4. A matching `agent_grants` row exists:
+///    - `grant_type = 'public'` (sentinel `*`)
+///    - `grant_type = 'user'`   with `grantee_id = user_id`
+///    - `grant_type = 'team'`   with `grantee_id` in any team the user belongs to
+///    - `grant_type = 'department'` with `grantee_id` matching the user's department
+///
+/// Soft-deleted agents (`deleted_at IS NOT NULL`) are always denied.
 pub async fn user_can_access_agent(db: &PgPool, user_id: Uuid, agent_id: Uuid) -> bool {
     sqlx::query_scalar::<_, bool>(
         r#"SELECT EXISTS(
             SELECT 1 FROM agents a
-            LEFT JOIN team_members tm ON tm.team_id = a.owner_team_id AND tm.user_id = $1
-            WHERE a.id = $2 AND (a.owner_id = $1 OR tm.user_id IS NOT NULL)
+            LEFT JOIN team_members tm
+                ON tm.team_id = a.owner_team_id AND tm.user_id = $1
+            WHERE a.id = $2
+              AND a.deleted_at IS NULL
+              AND (
+                  a.owner_id = $1
+                  OR tm.user_id IS NOT NULL
+                  OR a.is_public = TRUE
+                  OR EXISTS (
+                      SELECT 1 FROM agent_grants ag
+                      WHERE ag.agent_id = a.id
+                        AND (
+                            (ag.grant_type = 'public'     AND ag.grantee_id = '*')
+                         OR (ag.grant_type = 'user'       AND ag.grantee_id = $1::text)
+                         OR (ag.grant_type = 'team'       AND ag.grantee_id IN (
+                                SELECT tm2.team_id::text
+                                FROM team_members tm2
+                                WHERE tm2.user_id = $1))
+                         OR (ag.grant_type = 'department' AND ag.grantee_id IN (
+                                SELECT u.department_id::text
+                                FROM users u
+                                WHERE u.id = $1 AND u.department_id IS NOT NULL))
+                        )
+                  )
+              )
         )"#,
     )
     .bind(user_id)

@@ -75,7 +75,7 @@ async fn create_secret(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let crypto = SecretsCrypto::from_env();
+    let crypto = SecretsCrypto::for_user(user_id);
     let encrypted = crypto.encrypt(&body.value);
 
     let result = sqlx::query_as::<_, SecretEntry>(
@@ -118,7 +118,7 @@ async fn get_secret(
 
     match encrypted {
         Some(enc) => {
-            let crypto = SecretsCrypto::from_env();
+            let crypto = SecretsCrypto::for_user(user_id);
             match crypto.decrypt(&enc) {
                 Ok(value) => Json(SecretValue { name, value }).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -139,7 +139,7 @@ async fn update_secret(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let crypto = SecretsCrypto::from_env();
+    let crypto = SecretsCrypto::for_user(user_id);
     let encrypted = crypto.encrypt(&body.value);
 
     let result = sqlx::query(

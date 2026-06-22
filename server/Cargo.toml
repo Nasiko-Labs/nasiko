@@ -17,8 +17,6 @@ nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
 nasiko-react-agent.workspace = true
 nasiko-types.workspace = true
-nasiko-config.workspace = true
-nasiko-observability.workspace = true
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -46,6 +44,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = { workspace = true }
 tar = { workspace = true }
 aes-gcm = "0.10"
+hkdf = { workspace = true }
+sha2 = { workspace = true }
 base64 = { workspace = true }
 bcrypt = { workspace = true }
 aws-sdk-s3 = { workspace = true }
