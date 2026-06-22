@@ -248,7 +248,7 @@ pub fn env_template() -> Result<()> {
         println!("{} already exists.", path.display());
     }
     println!("Edit it to configure your local platform, then run:");
-    println!("  nasiko dev");
+    println!("  nasiko up");
     Ok(())
 }
 

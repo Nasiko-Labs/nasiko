@@ -22,10 +22,11 @@ const HELP_TEXT: &str = "\
 \x1b[33mUsage:\x1b[0m nasiko <COMMAND>
 
 \x1b[33mSetup:\x1b[0m
-  dev        Start local platform (infra + CP)
+  up         Start local Nasiko cluster
+  down       Stop local Nasiko cluster
   connect    Register a CP by URL
   use        Switch active cluster
-  cps        List configured control planes
+  clusters   List configured control planes
   auth       Authentication (login/status/logout)
 
 \x1b[33mCreate:\x1b[0m
@@ -46,10 +47,17 @@ const HELP_TEXT: &str = "\
   ps         List running agents
   logs       Stream agent container logs
   stop       Stop agent container
+  start      Start a stopped agent
   restart    Restart agent container
   rm         Terminate + deregister agent
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
+
+\x1b[33mAgents:\x1b[0m
+  agents     Manage and browse agents (ls/get/deploy/search/info/frameworks/list-uploaded/chat)
+
+\x1b[33mIntegrations:\x1b[0m
+  github     GitHub integration (status/repos/connect/disconnect/clone)
 
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
@@ -113,9 +121,11 @@ enum AgentDevCommands {
     },
     /// Generate or update AgentCard.json
     Card {
+        /// Describe what your agent does (used for LLM generation)
+        description: Option<String>,
         /// Agent directory
-        #[arg(default_value = ".")]
-        directory: String,
+        #[arg(long, default_value = ".")]
+        dir: String,
     },
     /// Manage agent skills (tools)
     Skill {
@@ -169,7 +179,9 @@ enum AgentOpsCommands {
     },
     /// Stop agent container
     Stop { agent: String },
-    /// Restart agent container
+    /// Start a stopped agent
+    Start { agent: String },
+    /// Restart agent container (picks up new secrets/env)
     Restart { agent: String },
     /// Terminate + deregister agent
     Rm {
@@ -196,16 +208,105 @@ enum AgentOpsCommands {
         #[arg(long)]
         endpoint: Option<String>,
     },
+    /// GitHub integration
+    Github {
+        #[command(subcommand)]
+        command: GithubCommands,
+    },
+    /// Manage and browse agents
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentsCommands {
+    /// List all deployed agents
+    #[command(alias = "list")]
+    Ls,
+    /// Get details for a specific agent by name or ID
+    Get {
+        #[arg(long = "agent-id")]
+        agent_id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, short = 'f', default_value = "details")]
+        format: String,
+    },
+    /// Deploy an agent from a .zip file or directory
+    Deploy {
+        source: String,
+        #[arg(long, short = 'n')]
+        name: Option<String>,
+    },
+    /// Search the public Nasiko Artifact Registry
+    Search {
+        query: Option<String>,
+        #[arg(long, short = 't')]
+        artifact_type: Option<String>,
+        #[arg(long, short = 'f')]
+        framework: Option<String>,
+        #[arg(long)]
+        tags: Option<String>,
+        #[arg(long, short = 'o')]
+        owner: Option<String>,
+        #[arg(long, short = 'l', default_value = "50")]
+        limit: usize,
+    },
+    /// Get details for a specific artifact from the registry
+    Info {
+        name: String,
+        #[arg(long, short = 'o', default_value = "nasiko")]
+        owner: String,
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+    },
+    /// List available frameworks in the artifact registry
+    Frameworks,
+    /// List agents uploaded by the current user
+    #[command(name = "list-uploaded")]
+    ListUploaded,
+    /// Chat directly with a locally running agent
+    Chat {
+        #[arg(long, short = 'u', default_value = "http://localhost:5000")]
+        url: String,
+        message: Option<String>,
+        #[arg(long, short = 's')]
+        session_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GithubCommands {
+    /// Show GitHub connection status
+    Status,
+    /// List accessible GitHub repositories
+    Repos,
+    /// Connect GitHub account via OAuth
+    Connect,
+    /// Disconnect GitHub
+    Disconnect,
+    /// Clone a GitHub repo and deploy as an agent
+    Clone {
+        /// Repository (owner/repo). Omit for interactive picker.
+        repo: Option<String>,
+        /// Branch to clone
+        #[arg(long, default_value = "main")]
+        branch: String,
+    },
 }
 
 #[derive(Subcommand)]
 #[command(next_help_heading = "Setup")]
 enum CpCommands {
-    /// Start local platform (infra + CP)
-    Dev {
+    /// Start local Nasiko cluster
+    Up {
         #[command(subcommand)]
-        command: Option<DevCommands>,
+        command: Option<UpCommands>,
     },
+    /// Stop local Nasiko cluster
+    Down,
     /// Register a CP by URL
     Connect {
         /// Control plane URL
@@ -216,7 +317,7 @@ enum CpCommands {
     /// Switch active control plane
     Use { name: String },
     /// List configured control planes
-    Cps,
+    Clusters,
     /// Control plane health + metrics
     Status,
     /// Authentication commands
@@ -291,9 +392,7 @@ enum RegistrySubCommands {
 }
 
 #[derive(Subcommand)]
-enum DevCommands {
-    /// Stop local platform containers
-    Stop,
+enum UpCommands {
     /// Start infrastructure only (Postgres, Redis, RustFS), skip CP binary
     Infra,
     /// Generate or show the dev.env configuration file
@@ -312,10 +411,34 @@ enum AuthCommands {
 
 #[derive(Subcommand)]
 enum SecretsCommands {
-    Set { key: String, value: String },
-    Get { key: String },
-    Ls,
-    Rm { key: String },
+    /// Set a secret (vault-wide, or agent-specific with --agent)
+    Set {
+        key: String,
+        value: String,
+        /// Target a specific agent (otherwise sets in your vault)
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Get a secret value
+    Get {
+        key: String,
+        /// Target a specific agent
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// List secrets
+    Ls {
+        /// Target a specific agent (otherwise lists your vault)
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Remove a secret
+    Rm {
+        key: String,
+        /// Target a specific agent
+        #[arg(long)]
+        agent: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -371,7 +494,7 @@ fn main() -> Result<()> {
             }
             AgentDevCommands::Run { path, port } => commands::dev::run(&path, port),
             AgentDevCommands::Validate { directory } => commands::validate::validate(&directory),
-            AgentDevCommands::Card { directory } => commands::card::card(&directory),
+            AgentDevCommands::Card { description, dir } => commands::card::card(&dir, description.as_deref()),
             AgentDevCommands::Skill { command } => match command {
                 SkillCommands::Add { name, dir } => commands::skill::add(&name, &dir),
                 SkillCommands::Remove { name, dir } => commands::skill::remove(&name, &dir),
@@ -389,11 +512,12 @@ fn main() -> Result<()> {
             AgentOpsCommands::Push { image, name } => {
                 commands::push::push(&image, name.as_deref())
             }
-            AgentOpsCommands::Ps { json } => commands::lifecycle::ps(json),
-            AgentOpsCommands::Logs { agent, tail, follow } => commands::lifecycle::logs(&agent, tail, follow),
-            AgentOpsCommands::Stop { agent } => commands::lifecycle::stop(&agent),
-            AgentOpsCommands::Restart { agent } => commands::lifecycle::restart(&agent),
-            AgentOpsCommands::Rm { agent, force } => commands::lifecycle::rm(&agent, force),
+            AgentOpsCommands::Ps { json } => commands::agents::ps(json),
+            AgentOpsCommands::Logs { agent, tail, follow } => commands::agents::logs(&agent, tail, follow),
+            AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
+            AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
+            AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
+            AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
             AgentOpsCommands::Chat { url, message, tui, resume } => {
                 if tui || resume.is_some() {
                     commands::tui::run_tui(&url, resume.as_deref())
@@ -404,17 +528,46 @@ fn main() -> Result<()> {
             AgentOpsCommands::Sessions { endpoint } => {
                 commands::tui::list_sessions(endpoint.as_deref())
             }
+            AgentOpsCommands::Agents { command } => match command {
+                AgentsCommands::Ls => commands::agents::cmd_ls(),
+                AgentsCommands::Get { agent_id, name, format } => {
+                    commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format)
+                }
+                AgentsCommands::Deploy { source, name } => {
+                    commands::agents::cmd_deploy(&source, name.as_deref())
+                }
+                AgentsCommands::Search { query, artifact_type, framework, tags, owner, limit } => {
+                    commands::agents::cmd_search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), tags.as_deref(), owner.as_deref(), limit)
+                }
+                AgentsCommands::Info { name, owner, version } => {
+                    commands::agents::cmd_info(&name, &owner, version.as_deref())
+                }
+                AgentsCommands::Frameworks => commands::agents::cmd_frameworks(),
+                AgentsCommands::ListUploaded => commands::agents::cmd_list_uploaded(),
+                AgentsCommands::Chat { url, message, session_id } => {
+                    commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref())
+                }
+            },
+            AgentOpsCommands::Github { command } => match command {
+                GithubCommands::Status => commands::github::status(),
+                GithubCommands::Repos => commands::github::repos(),
+                GithubCommands::Connect => commands::github::connect(),
+                GithubCommands::Disconnect => commands::github::disconnect(),
+                GithubCommands::Clone { repo, branch } => {
+                    commands::github::clone(repo.as_deref(), Some(branch.as_str()))
+                }
+            },
         },
         Commands::Cp(cmd) => match cmd {
-            CpCommands::Dev { command } => match command {
+            CpCommands::Up { command } => match command {
                 None => commands::dev::start(false),
-                Some(DevCommands::Infra) => commands::dev::start(true),
-                Some(DevCommands::Stop) => commands::dev::stop(),
-                Some(DevCommands::Env) => commands::dev::env_template(),
+                Some(UpCommands::Infra) => commands::dev::start(true),
+                Some(UpCommands::Env) => commands::dev::env_template(),
             },
+            CpCommands::Down => commands::dev::stop(),
             CpCommands::Connect { url, name } => commands::cluster::connect(&url, name.as_deref()),
             CpCommands::Use { name } => commands::cluster::use_cluster(&name),
-            CpCommands::Cps => commands::cluster::list(),
+            CpCommands::Clusters => commands::cluster::list(),
             CpCommands::Status => commands::status::status(),
             CpCommands::Auth { command } => match command {
                 AuthCommands::Login => commands::auth::login(),
@@ -422,10 +575,10 @@ fn main() -> Result<()> {
                 AuthCommands::Logout => commands::auth::logout(),
             },
             CpCommands::Secrets { command } => match command {
-                SecretsCommands::Set { key, value } => commands::secrets::set(&key, &value),
-                SecretsCommands::Get { key } => commands::secrets::get(&key),
-                SecretsCommands::Ls => commands::secrets::ls(),
-                SecretsCommands::Rm { key } => commands::secrets::rm(&key),
+                SecretsCommands::Set { key, value, agent } => commands::secrets::set(&key, &value, agent.as_deref()),
+                SecretsCommands::Get { key, agent } => commands::secrets::get(&key, agent.as_deref()),
+                SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
+                SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
             },
         },
         Commands::Reg(cmd) => match cmd {

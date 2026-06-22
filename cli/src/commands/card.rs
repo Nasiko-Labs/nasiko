@@ -6,39 +6,44 @@ use dialoguer::{Confirm, Input};
 
 use crate::util;
 
-pub fn card(directory: &str) -> Result<()> {
+pub fn card(directory: &str, description: Option<&str>) -> Result<()> {
     let root = Path::new(directory).canonicalize().unwrap_or_else(|_| Path::new(directory).to_path_buf());
     let card_path = root.join("AgentCard.json");
 
     println!("Agent Card Generator\n");
 
     // Try LLM generation via CP
-    if try_generate_via_cp(&root, &card_path) {
+    if try_generate_via_cp(&root, &card_path, description) {
         return Ok(());
     }
 
     // Fallback: static generation
     println!("CP not available — using static generation.\n");
-    generate_static(&root, &card_path)
+    generate_static(&root, &card_path, description)
 }
 
-fn try_generate_via_cp(root: &Path, card_path: &Path) -> bool {
+fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>) -> bool {
     let client = match crate::api::Client::from_active_cluster() {
         Ok(c) => c,
         Err(_) => return false,
     };
 
-    let source = match collect_source(root) {
-        Some(s) => s,
-        None => return false,
-    };
+    let source = collect_source(root);
+    if source.is_none() && description.is_none() {
+        return false;
+    }
 
     let agent_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-    let body = serde_json::json!({
-        "source_code": source,
+    let mut body = serde_json::json!({
         "agent_name": agent_name,
     });
+    if let Some(src) = &source {
+        body["source_code"] = serde_json::Value::String(src.clone());
+    }
+    if let Some(desc) = description {
+        body["description"] = serde_json::Value::String(desc.to_string());
+    }
 
     let resp: Result<serde_json::Value, _> = client.post_json("/capabilities/generate", &body);
     match resp {
@@ -105,7 +110,7 @@ fn collect_dir_sources(dir: &Path, out: &mut String) {
     }
 }
 
-fn generate_static(root: &Path, card_path: &Path) -> Result<()> {
+fn generate_static(root: &Path, card_path: &Path, user_description: Option<&str>) -> Result<()> {
     let existing = load_existing_card(card_path);
 
     let dir_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -115,9 +120,13 @@ fn generate_static(root: &Path, card_path: &Path) -> Result<()> {
         .default(existing_str(&existing, "name").unwrap_or(dir_name))
         .interact_text()?;
 
+    let desc_default = user_description.map(String::from)
+        .or_else(|| existing_str(&existing, "description"))
+        .unwrap_or_default();
+
     let description: String = Input::new()
         .with_prompt("Description")
-        .default(existing_str(&existing, "description").unwrap_or_default())
+        .default(desc_default)
         .interact_text()?;
 
     let version: String = Input::new()

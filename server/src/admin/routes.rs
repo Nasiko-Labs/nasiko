@@ -8,6 +8,7 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::auth::Claims;
 use crate::catalog::agent_secrets;
 use crate::state::AppState;
 use nasiko_runtime::{ContainerId, DeploymentSpec};
@@ -18,6 +19,9 @@ pub fn router() -> Router<AppState> {
         .route("/", get(list))
         .route("/{name}", get(status))
         .route("/{name}", delete(destroy))
+        .route("/{name}/stop", post(stop))
+        .route("/{name}/start", post(start))
+        .route("/{name}/restart", post(restart))
         .route("/{name}/scale", post(scale))
         .route("/{name}/logs", get(logs))
 }
@@ -36,15 +40,20 @@ struct DeployRequest {
 
 async fn deploy(
     State(state): State<AppState>,
+    claims: Claims,
     Json(req): Json<DeployRequest>,
 ) -> impl IntoResponse {
     let container_id = ContainerId::new(&req.name);
 
-    // Resolve agent secrets into env if this agent exists in the catalog
+    // Start with env from request (inline -e flags)
     let mut env = req.env;
+
+    // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
     if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
-        let secrets = agent_secrets::resolve_agent_env(&state.db, agent_id).await;
-        for (k, v) in secrets {
+        let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
+        let resolved = resolve_full_env(&state.db, owner_id, agent_id).await;
+        // resolved secrets are base; request env overrides
+        for (k, v) in resolved {
             env.entry(k).or_insert(v);
         }
     }
@@ -136,6 +145,76 @@ async fn destroy(
     }
 }
 
+async fn stop(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let id = ContainerId::new(&name);
+    match state.runtime.scale(&id, 0).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn start(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let id = ContainerId::new(&name);
+    match state.runtime.scale(&id, 1).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn restart(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Look up agent record to get image and owner
+    let agent: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT id, owner_id, image FROM agents WHERE name = $1",
+    )
+    .bind(&name)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((agent_id, owner_id, image)) = agent else {
+        // No agent record — fall back to simple container restart
+        let id = ContainerId::new(&name);
+        return match state.runtime.restart(&id).await {
+            Ok(()) => StatusCode::OK.into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        };
+    };
+
+    // Resolve env: vault (base) + agent secrets (override)
+    let env = resolve_full_env(&state.db, owner_id, agent_id).await;
+
+    let container_id = ContainerId::new(&name);
+
+    // Destroy and redeploy with fresh env
+    let _ = state.runtime.destroy(&container_id).await;
+
+    let spec = DeploymentSpec {
+        container_id,
+        name: name.clone(),
+        image,
+        ports: vec![8000],
+        env_vars: env,
+        min_replicas: 1,
+        max_replicas: 1,
+        resources: None,
+    };
+
+    match state.runtime.deploy(&spec).await {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct ScaleRequest {
     replicas: u32,
@@ -179,4 +258,39 @@ async fn resolve_agent_id_by_name(state: &AppState, name: &str) -> Option<Uuid> 
         .await
         .ok()
         .flatten()
+}
+
+/// Resolve the full env for an agent: vault secrets (base) + agent secrets (override).
+async fn resolve_full_env(
+    db: &sqlx::PgPool,
+    owner_id: Uuid,
+    agent_id: Uuid,
+) -> std::collections::HashMap<String, String> {
+    use crate::secrets::crypto::SecretsCrypto;
+
+    let crypto = SecretsCrypto::from_env();
+    let mut env = std::collections::HashMap::new();
+
+    // 1. Vault secrets (user-level, lower precedence)
+    let vault_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, encrypted_value FROM user_secrets WHERE user_id = $1",
+    )
+    .bind(owner_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    for (name, encrypted) in vault_rows {
+        if let Ok(value) = crypto.decrypt(&encrypted) {
+            env.insert(name, value);
+        }
+    }
+
+    // 2. Agent secrets (higher precedence — overrides vault)
+    let agent_secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
+    for (k, v) in agent_secrets {
+        env.insert(k, v);
+    }
+
+    env
 }

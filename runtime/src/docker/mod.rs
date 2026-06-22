@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
-    RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
+    RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
 };
 use bollard::image::BuildImageOptions;
 use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
@@ -555,6 +555,29 @@ impl ContainerRuntime for DockerRuntime {
             .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
             .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
         }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn restart(&self, container_id: &ContainerId) -> Result<()> {
+        container_id.validate()?;
+        let name = DockerRuntime::container_name(container_id);
+        let timeout = self.config.operation_timeout;
+
+        tokio::time::timeout(
+            timeout,
+            self.client.restart_container(&name, None::<RestartContainerOptions>),
+        )
+        .await
+        .map_err(|_| RuntimeError::Timeout("restart_container".to_owned()))?
+        .map_err(|e| {
+            if is_not_found(&e) {
+                RuntimeError::ContainerNotFound(container_id.clone())
+            } else {
+                map_bollard_err(e)
+            }
+        })?;
 
         Ok(())
     }
