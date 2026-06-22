@@ -14,13 +14,15 @@ impl GatewayAuth {
         Self { provider }
     }
 
-    pub fn extract_and_validate(&self, header: &RequestHeader) -> Result<Identity, AuthError> {
+    pub async fn extract_and_validate(&self, header: &RequestHeader) -> Result<Identity, AuthError> {
         let token = self.extract_token(header)?;
         self.provider
             .validate_token(&token)
+            .await
             .map_err(|e| match e {
                 nasiko_auth::AuthError::MissingToken => AuthError::MissingToken,
                 nasiko_auth::AuthError::Expired => AuthError::Expired,
+                nasiko_auth::AuthError::Revoked => AuthError::Expired, // treat as expired for gateway
                 nasiko_auth::AuthError::InvalidToken(msg) => AuthError::InvalidToken(msg),
             })
     }
@@ -82,15 +84,15 @@ mod tests {
     use super::*;
     use nasiko_auth::SingleUserAuth;
 
-    #[test]
-    fn single_user_auth_always_passes() {
+    #[tokio::test]
+    async fn single_user_auth_always_passes() {
         let auth = GatewayAuth::new(Arc::new(SingleUserAuth));
         let mut header = RequestHeader::build("GET", b"/", None).unwrap();
         header
             .insert_header("authorization", "Bearer any-token".to_string())
             .unwrap();
 
-        let result = auth.extract_and_validate(&header);
+        let result = auth.extract_and_validate(&header).await;
         assert!(result.is_ok());
         let identity = result.unwrap();
         assert!(identity.is_superuser);

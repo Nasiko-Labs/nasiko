@@ -91,11 +91,10 @@ where
         //     state.clone(),
         //     proxy::agent_proxy_middleware,
         // ))
-        // .layer(middleware::from_fn_with_state(
-        //     state.clone(),
-        //     auth::require_auth,
-        // ));
-        ;
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     let oci_routes = nasiko_oci::axum_routes(oci_state);
@@ -107,6 +106,7 @@ where
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
+        .merge(auth::login::router())  // public: no auth required
         .merge(a2a_public)
         .nest("/api", protected)
         .with_state(state)

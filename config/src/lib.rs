@@ -36,6 +36,8 @@ pub struct Config {
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
     pub flow_timeout_secs: i32,
+    pub github_client_id: Option<String>,
+    pub github_client_secret: Option<String>,
 }
 
 impl Config {
@@ -88,6 +90,8 @@ impl Config {
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
+            github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
+            github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
         })
     }
 }

@@ -6,6 +6,7 @@ use opentelemetry_sdk::{
     trace::{SdkTracerProvider, Sampler},
     Resource,
 };
+use tonic::metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -100,12 +101,12 @@ pub fn init_telemetry(config: &TelemetryConfig) {
     }
 }
 
-fn build_metadata(headers: &[(String, String)]) -> tonic::metadata::MetadataMap {
-    let mut map = tonic::metadata::MetadataMap::new();
+fn build_metadata(headers: &[(String, String)]) -> MetadataMap {
+    let mut map = MetadataMap::new();
     for (key, value) in headers {
         if let (Ok(k), Ok(v)) = (
-            key.parse::<tonic::metadata::MetadataKey<tonic::metadata::Ascii>>(),
-            value.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>(),
+            key.parse::<MetadataKey<Ascii>>(),
+            value.parse::<MetadataValue<Ascii>>(),
         ) {
             map.insert(k, v);
         }

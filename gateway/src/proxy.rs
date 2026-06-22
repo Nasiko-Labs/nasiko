@@ -5,6 +5,11 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 use std::sync::Arc;
 
+use nasiko_auth::{
+    Identity, HEADER_USER_ID, HEADER_USERNAME, HEADER_IS_SUPERUSER, HEADER_USER_ROLE,
+    HEADER_TEAM_ID, HEADER_DEPT_ID, TRUST_HEADERS,
+};
+
 use crate::auth::{AuthError, GatewayAuth};
 use crate::config::GatewayConfig;
 use crate::rate_limit::RateLimiter;
@@ -15,7 +20,7 @@ use crate::translation::Translator;
 pub struct GatewayCtx {
     pub route_match: Option<RouteMatch>,
     pub client_ip: Option<String>,
-    pub user_id: Option<String>,
+    pub identity: Option<Identity>,
 }
 
 /// The main gateway service implementing Pingora's ProxyHttp trait.
@@ -67,7 +72,7 @@ impl ProxyHttp for GatewayProxy {
         GatewayCtx {
             route_match: None,
             client_ip: None,
-            user_id: None,
+            identity: None,
         }
     }
 
@@ -76,6 +81,11 @@ impl ProxyHttp for GatewayProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<bool> {
+        // Strip trust headers from client requests — gateway is the only one that sets these
+        for trust_header in TRUST_HEADERS {
+            session.req_header_mut().remove_header(*trust_header);
+        }
+
         let header = session.req_header();
 
         // Extract client IP
@@ -129,7 +139,7 @@ impl ProxyHttp for GatewayProxy {
 
         // Auth check
         if route_match.require_auth {
-            match self.auth.extract_and_validate(header) {
+            match self.auth.extract_and_validate(header).await {
                 Ok(identity) => {
                     // User-based rate limiting
                     if self.rate_limiter.check_user(&identity.user_id).is_limited() {
@@ -148,7 +158,7 @@ impl ProxyHttp for GatewayProxy {
                         }
                     }
 
-                    ctx.user_id = Some(identity.user_id);
+                    ctx.identity = Some(identity);
                 }
                 Err(AuthError::MissingToken) | Err(AuthError::Expired) | Err(AuthError::InvalidToken(_)) => {
                     let resp = ResponseHeader::build(401, None)?;
@@ -212,9 +222,29 @@ impl ProxyHttp for GatewayProxy {
         self.translator
             .translate_request(upstream_request, ctx.client_ip.as_deref());
 
-        // Forward user identity to backend
-        if let Some(ref user_id) = ctx.user_id {
-            upstream_request.insert_header("X-User-Id", user_id)?;
+        // Forward full identity to backend server
+        if let Some(ref identity) = ctx.identity {
+            upstream_request.insert_header(HEADER_USER_ID, identity.user_id.as_str())?;
+            upstream_request.insert_header(HEADER_USERNAME, identity.username.as_str())?;
+            upstream_request.insert_header(
+                HEADER_IS_SUPERUSER,
+                if identity.is_superuser { "true" } else { "false" },
+            )?;
+            if let Some(ref role) = identity.role {
+                let role_str = serde_json::to_value(role)
+                    .ok()
+                    .and_then(|v| v.as_str().map(|s| s.to_owned()))
+                    .unwrap_or_default();
+                if !role_str.is_empty() {
+                    upstream_request.insert_header(HEADER_USER_ROLE, role_str.as_str())?;
+                }
+            }
+            if let Some(ref team_id) = identity.team_id {
+                upstream_request.insert_header(HEADER_TEAM_ID, team_id.as_str())?;
+            }
+            if let Some(ref dept_id) = identity.department_id {
+                upstream_request.insert_header(HEADER_DEPT_ID, dept_id.as_str())?;
+            }
         }
 
         Ok(())

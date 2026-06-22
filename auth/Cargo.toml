@@ -4,5 +4,14 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 serde.workspace = true
+serde_json = { workspace = true }
 thiserror.workspace = true
+jsonwebtoken = { workspace = true }
+bcrypt = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+rand = { workspace = true }

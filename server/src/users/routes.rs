@@ -10,16 +10,24 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use crate::auth::Claims;
 use crate::state::AppState;
 use crate::Paginated;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        // Static sub-paths MUST come before /{id} to avoid being captured as IDs.
+        .route("/users/admins", get(list_admins))
+        .route("/users/me/accessible-agents", get(my_accessible_agents))
         .route("/users", get(list_users))
         .route("/users", post(create_user))
         .route("/users/{id}", get(get_user))
         .route("/users/{id}", put(update_user))
         .route("/users/{id}", delete(delete_user))
+        .route("/users/{id}/deactivate", post(deactivate))
+        .route("/users/{id}/reinstate", post(reinstate))
+        .route("/users/{id}/regenerate-credentials", post(regenerate_credentials))
+        .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -122,9 +130,7 @@ async fn get_user(
 struct CreateUser {
     username: String,
     email: String,
-    password: String,
     display_name: Option<String>,
-    #[allow(dead_code)]
     role: Option<String>,
 }
 
@@ -132,30 +138,53 @@ async fn create_user(
     State(state): State<AppState>,
     Json(body): Json<CreateUser>,
 ) -> impl IntoResponse {
-    if body.password.len() < 8 {
-        return (StatusCode::BAD_REQUEST, "password must be at least 8 characters").into_response();
-    }
-
-    let password_hash = match bcrypt::hash(&body.password, bcrypt::DEFAULT_COST) {
+    let access_key = nasiko_auth::generate_access_key();
+    let access_secret = nasiko_auth::generate_access_secret();
+    let access_secret_hash = match nasiko_auth::hash_password(&access_secret) {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
+    let role = body.role.as_deref().unwrap_or("member");
     let id = Uuid::new_v4();
     let result = sqlx::query(
-        r#"INSERT INTO users (id, username, email, password_hash, display_name, is_superuser, is_active)
-           VALUES ($1, $2, $3, $4, $5, false, true)"#,
+        r#"INSERT INTO users (id, username, email, display_name, is_superuser, is_active, role)
+           VALUES ($1, $2, $3, $4, false, true, $5::user_role)"#,
     )
     .bind(id)
     .bind(&body.username)
     .bind(&body.email)
-    .bind(&password_hash)
     .bind(&body.display_name)
+    .bind(role)
     .execute(&state.db)
     .await;
 
     match result {
-        Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))).into_response(),
+        Ok(_) => {
+            let cred_result = sqlx::query(
+                r#"INSERT INTO user_credentials (user_id, access_key, access_secret_hash)
+                   VALUES ($1, $2, $3)"#,
+            )
+            .bind(id)
+            .bind(&access_key)
+            .bind(&access_secret_hash)
+            .execute(&state.db)
+            .await;
+
+            match cred_result {
+                Ok(_) => (
+                    StatusCode::CREATED,
+                    Json(serde_json::json!({
+                        "id": id,
+                        "username": body.username,
+                        "access_key": access_key,
+                        "access_secret": access_secret,
+                        "message": "Store access_secret securely — it won't be shown again.",
+                    })),
+                ).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
         Err(e) => {
             if e.to_string().contains("duplicate key") {
                 (StatusCode::CONFLICT, "username or email already exists").into_response()
@@ -197,7 +226,7 @@ async fn update_user(
 
     // Hash password if provided
     let password_hash = match &body.password {
-        Some(p) => match bcrypt::hash(p, bcrypt::DEFAULT_COST) {
+        Some(p) => match nasiko_auth::hash_password(p) {
             Ok(h) => Some(h),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
@@ -259,6 +288,170 @@ async fn delete_user(
     {
         Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, "user not found").into_response(),
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ─── POST /users/{id}/deactivate ────────────────────────────────────────────
+
+async fn deactivate(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    match sqlx::query(
+        "UPDATE users SET is_active = false WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ─── POST /users/{id}/reinstate ─────────────────────────────────────────────
+
+async fn reinstate(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    match sqlx::query(
+        "UPDATE users SET is_active = true WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ─── POST /users/{id}/regenerate-credentials ────────────────────────────────
+
+async fn regenerate_credentials(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let access_key = nasiko_auth::generate_access_key();
+    let access_secret = nasiko_auth::generate_access_secret();
+    let access_secret_hash = match nasiko_auth::hash_password(&access_secret) {
+        Ok(h) => h,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    match sqlx::query(
+        r#"INSERT INTO user_credentials (user_id, access_key, access_secret_hash)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id) DO UPDATE
+           SET access_key = EXCLUDED.access_key,
+               access_secret_hash = EXCLUDED.access_secret_hash,
+               updated_at = now()"#,
+    )
+    .bind(id)
+    .bind(&access_key)
+    .bind(&access_secret_hash)
+    .execute(&state.db)
+    .await
+    {
+        Ok(_) => {
+            let _ = sqlx::query(
+                "UPDATE auth_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL"
+            )
+            .bind(id)
+            .execute(&state.db)
+            .await;
+
+            (StatusCode::OK, Json(serde_json::json!({
+                "access_key": access_key,
+                "access_secret": access_secret,
+                "message": "Store access_secret securely — it won't be shown again.",
+            }))).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ─── GET /users/admins ───────────────────────────────────────────────────────
+
+async fn list_admins(State(state): State<AppState>) -> impl IntoResponse {
+    #[derive(Serialize, FromRow)]
+    struct AdminUser {
+        id: Uuid,
+        username: String,
+        email: Option<String>,
+        is_active: bool,
+        created_at: DateTime<Utc>,
+    }
+    match sqlx::query_as::<_, AdminUser>(
+        "SELECT id, username, email, is_active, created_at FROM users WHERE role = 'admin' AND deleted_at IS NULL ORDER BY username",
+    )
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(data) => Json(Paginated::new(data)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ─── GET /users/{id}/accessible-agents ──────────────────────────────────────
+
+async fn accessible_agents_for_user(
+    State(state): State<AppState>,
+    Path(user_id): Path<Uuid>,
+) -> impl IntoResponse {
+    accessible_agents_impl(&state.db, user_id).await
+}
+
+// ─── GET /users/me/accessible-agents ────────────────────────────────────────
+
+async fn my_accessible_agents(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    accessible_agents_impl(&state.db, user_id).await
+}
+
+// ─── shared helper ──────────────────────────────────────────────────────────
+
+#[derive(Serialize, FromRow)]
+struct AccessibleAgent {
+    id: Uuid,
+    name: String,
+    description: Option<String>,
+    status: Option<String>,
+    owner_id: Option<Uuid>,
+}
+
+async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::response::Response {
+    let rows = sqlx::query_as::<_, AccessibleAgent>(
+        r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id
+           FROM agents a
+           WHERE a.deleted_at IS NULL
+             AND (
+               a.owner_id = $1
+               OR a.is_public = true
+               OR EXISTS (
+                   SELECT 1 FROM agent_grants ag
+                   WHERE ag.agent_id = a.id
+                     AND (ag.grant_type = 'public' OR (ag.grant_type = 'user' AND ag.grantee_id = $1::text))
+               )
+             )
+           ORDER BY a.name"#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await;
+
+    match rows {
+        Ok(data) => Json(Paginated::new(data)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

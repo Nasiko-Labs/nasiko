@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nasiko_auth::{AclChecker, AuthProvider};
+use nasiko_auth::{AclChecker, AuthProvider, TokenService, UserAuthService};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 
@@ -16,6 +16,8 @@ use crate::usage::UsageTracker;
 pub struct Providers {
     pub auth: Arc<dyn AuthProvider>,
     pub acl: Arc<dyn AclChecker>,
+    pub user_auth: Arc<dyn UserAuthService>,
+    pub token_svc: Arc<dyn TokenService>,
 }
 
 #[derive(Clone)]
@@ -42,7 +44,15 @@ impl AppState {
         let db = PgPool::connect(&config.database_url)
             .await
             .expect("failed to connect to postgres");
+        Self::from_config_with_db(config, providers, runtime, db).await
+    }
 
+    pub async fn from_config_with_db(
+        config: Config,
+        providers: Providers,
+        runtime: Arc<dyn ContainerRuntime>,
+        db: PgPool,
+    ) -> Self {
         // TODO: restore strict migration check; use ignore_missing so EE migrations (v10+)
         // already applied to the DB don't cause the OSS migrator to panic.
         let _ = sqlx::migrate!("../migrations").set_ignore_missing(true).run(&db).await;
