@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use nasiko_runtime::{ContainerId, DeploymentSpec};
 
+use crate::build::BuildStatus;
 use crate::build::routes::extract_zip_to_dir;
 use crate::state::AppState;
 
@@ -228,7 +229,7 @@ async fn execute_upload_and_deploy(
 
 #[derive(Debug, sqlx::FromRow)]
 struct BuildStatusRow {
-    status: String,
+    status: BuildStatus,
 }
 
 async fn deploy_status_sse(
@@ -238,7 +239,7 @@ async fn deploy_status_sse(
     let db = state.db.clone();
 
     let stream = async_stream::stream! {
-        let mut last_status = String::new();
+        let mut last_status: Option<BuildStatus> = None;
 
         loop {
             let row: Option<BuildStatusRow> = sqlx::query_as(
@@ -257,8 +258,8 @@ async fn deploy_status_sse(
                 break;
             };
 
-            if row.status != last_status {
-                last_status = row.status.clone();
+            if Some(row.status) != last_status {
+                last_status = Some(row.status);
                 yield Ok(Event::default().data(
                     serde_json::json!({
                         "status": row.status,
@@ -268,7 +269,7 @@ async fn deploy_status_sse(
                 ));
             }
 
-            if row.status == "success" || row.status == "failed" {
+            if matches!(row.status, BuildStatus::Success | BuildStatus::Failed) {
                 break;
             }
 
