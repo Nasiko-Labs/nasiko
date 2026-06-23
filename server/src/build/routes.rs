@@ -29,6 +29,20 @@ pub fn router() -> Router<AppState> {
 
 // ─── Models ─────────────────────────────────────────────────────────────────
 
+/// Mirrors the Postgres `build_status` enum (migration 010 §11). Deriving
+/// `sqlx::Type` lets sqlx encode/decode it directly instead of treating the
+/// column as TEXT; serde keeps the JSON wire shape identical to the old TEXT
+/// column ("queued"/"building"/"success"/"failed") so the UI/CLI are unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "build_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+enum BuildStatus {
+    Queued,
+    Building,
+    Success,
+    Failed,
+}
+
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 struct BuildRecord {
     id: Uuid,
@@ -37,7 +51,7 @@ struct BuildRecord {
     commit_hash: Option<String>,
     version_tag: String,
     image_reference: String,
-    status: String,
+    status: BuildStatus,
     logs_url: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -166,7 +180,7 @@ async fn execute_build(
     oci_storage: nasiko_oci::storage::S3Storage,
     http_client: reqwest::Client,
 ) {
-    update_status(&db, build_id, "building").await;
+    update_status(&db, build_id, BuildStatus::Building).await;
 
     let image_tag = format!("{agent_name}:{version_tag}");
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-build-{build_id}"));
@@ -223,7 +237,7 @@ async fn execute_build(
 
     match result {
         Ok(()) => {
-            update_status(&db, build_id, "success").await;
+            update_status(&db, build_id, BuildStatus::Success).await;
 
             if let Err(e) = sqlx::query(
                 r#"INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active)
@@ -245,7 +259,7 @@ async fn execute_build(
         }
         Err(e) => {
             tracing::error!(build_id = %build_id, %e, "build failed");
-            update_status(&db, build_id, "failed").await;
+            update_status(&db, build_id, BuildStatus::Failed).await;
         }
     }
 }
@@ -271,14 +285,14 @@ pub fn extract_zip_to_dir(data: &[u8], dest: &std::path::Path) -> std::result::R
     Ok(())
 }
 
-async fn update_status(db: &sqlx::PgPool, build_id: Uuid, status: &str) {
+async fn update_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus) {
     if let Err(e) = sqlx::query("UPDATE agent_builds SET status = $2, updated_at = now() WHERE id = $1")
         .bind(build_id)
         .bind(status)
         .execute(db)
         .await
     {
-        tracing::error!(build_id = %build_id, %status, %e, "failed to update build status");
+        tracing::error!(build_id = %build_id, ?status, %e, "failed to update build status");
     }
 }
 
@@ -308,7 +322,7 @@ async fn build_progress_sse(
     let db = state.db.clone();
 
     let stream = async_stream::stream! {
-        let mut last_status = String::new();
+        let mut last_status: Option<BuildStatus> = None;
 
         loop {
             let record: Option<BuildRecord> = sqlx::query_as(
@@ -327,8 +341,8 @@ async fn build_progress_sse(
                 break;
             };
 
-            if record.status != last_status {
-                last_status = record.status.clone();
+            if Some(record.status) != last_status {
+                last_status = Some(record.status);
                 yield Ok(Event::default().data(
                     serde_json::json!({
                         "status": record.status,
@@ -337,7 +351,7 @@ async fn build_progress_sse(
                 ));
             }
 
-            if record.status == "success" || record.status == "failed" {
+            if matches!(record.status, BuildStatus::Success | BuildStatus::Failed) {
                 break;
             }
 
@@ -393,7 +407,7 @@ async fn list_all_builds(
         sqlx::query_as::<_, BuildRecord>(
             r#"SELECT b.* FROM agent_builds b
                LEFT JOIN agents a ON a.id = b.agent_id
-               WHERE ($1::text IS NULL OR b.status = $1)
+               WHERE ($1::text IS NULL OR b.status::text = $1)
                  AND ($2::text IS NULL OR a.name ILIKE '%' || $2 || '%' OR b.version_tag ILIKE '%' || $2 || '%')
                ORDER BY b.created_at DESC
                LIMIT $3 OFFSET $4"#,
@@ -409,7 +423,7 @@ async fn list_all_builds(
             r#"SELECT b.* FROM agent_builds b
                JOIN agents a ON a.id = b.agent_id
                WHERE a.owner_id = $5
-                 AND ($1::text IS NULL OR b.status = $1)
+                 AND ($1::text IS NULL OR b.status::text = $1)
                  AND ($2::text IS NULL OR a.name ILIKE '%' || $2 || '%' OR b.version_tag ILIKE '%' || $2 || '%')
                ORDER BY b.created_at DESC
                LIMIT $3 OFFSET $4"#,
