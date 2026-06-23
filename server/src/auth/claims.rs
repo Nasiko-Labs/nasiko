@@ -17,6 +17,8 @@ pub struct Claims {
     #[serde(default)]
     pub team_id: Option<String>,
     #[serde(default)]
+    pub department_id: Option<String>,
+    #[serde(default)]
     pub role: Option<Role>,
 }
 
@@ -29,6 +31,7 @@ impl From<nasiko_auth::Claims> for Claims {
             username: c.username,
             is_superuser: c.is_superuser,
             team_id: c.team_id,
+            department_id: c.department_id,
             role: c.role,
         }
     }
@@ -44,7 +47,7 @@ impl From<Claims> for nasiko_auth::Claims {
             username: c.username,
             is_superuser: c.is_superuser,
             team_id: c.team_id,
-            department_id: None,
+            department_id: c.department_id,
             role: c.role,
         }
     }

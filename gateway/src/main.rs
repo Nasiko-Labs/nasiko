@@ -3,7 +3,7 @@ use std::sync::Arc;
 use pingora_core::prelude::*;
 use pingora_proxy::http_proxy_service;
 
-use nasiko_auth::SingleUserAuth;
+
 use nasiko_gateway::config::GatewayConfig;
 use nasiko_gateway::proxy::GatewayProxy;
 use nasiko_gateway::tls::build_tls_settings;
@@ -30,8 +30,11 @@ fn main() {
         "Starting nasiko gateway (OSS)"
     );
 
-    // OSS: SingleUserAuth — no real auth, everything is superuser
-    let auth_provider: Arc<dyn nasiko_auth::AuthProvider> = Arc::new(SingleUserAuth);
+    let auth_provider: Arc<dyn nasiko_auth::AuthProvider> =
+        Arc::new(nasiko_auth::SimpleJwtAuth {
+            secret: config.jwt_secret.clone(),
+            expiry_secs: nasiko_auth::jwt::DEFAULT_EXPIRY_SECS,
+        });
 
     let mut server = Server::new(None).unwrap();
     server.bootstrap();

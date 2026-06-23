@@ -87,6 +87,7 @@ where
         .merge(proxy::router())
         .merge(usage::routes::router())
         .merge(flow::routes::router())
+        .merge(auth::login::protected_router())
         // .layer(middleware::from_fn_with_state(
         //     state.clone(),
         //     proxy::agent_proxy_middleware,
@@ -106,7 +107,7 @@ where
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
-        .merge(auth::login::router())  // public: no auth required
+        .merge(auth::login::public_router())  // public: login + initialize-admin only
         .merge(a2a_public)
         .nest("/api", protected)
         .with_state(state)

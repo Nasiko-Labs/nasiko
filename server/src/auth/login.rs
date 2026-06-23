@@ -11,13 +11,19 @@ use crate::state::AppState;
 
 const COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
 
-pub fn router() -> Router<AppState> {
+/// Public routes — no auth required (merged outside the protected router).
+pub fn public_router() -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", post(login))
-        .route("/api/auth/logout", post(logout))
         .route("/api/auth/initialize-admin", post(initialize_admin))
-        .route("/api/auth/tokens/validate", post(token_validate))
-        .route("/api/auth/system/users-for-search", get(users_for_search))
+}
+
+/// Protected auth routes — go through require_auth middleware (nested under /api).
+pub fn protected_router() -> Router<AppState> {
+    Router::new()
+        .route("/auth/logout", post(logout))
+        .route("/auth/tokens/validate", post(token_validate))
+        .route("/auth/system/users-for-search", get(users_for_search))
 }
 
 #[derive(Deserialize)]
@@ -34,6 +40,8 @@ struct LoginResponse {
     is_superuser: bool,
     role: String,
     expires_in: u64,
+    department_id: Option<String>,
+    team_id: Option<String>,
 }
 
 fn set_token_cookie(token: &str) -> header::HeaderValue {
@@ -60,6 +68,8 @@ async fn login(
                     is_superuser: result.is_superuser,
                     role: result.role,
                     expires_in: result.expires_in,
+                    department_id: result.department_id,
+                    team_id: result.team_id,
                 }),
             ).into_response()
         }

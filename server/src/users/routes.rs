@@ -39,6 +39,8 @@ struct UserRow {
     is_superuser: bool,
     is_active: bool,
     role: Option<String>,
+    department_id: Option<Uuid>,
+    team_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     last_login: Option<DateTime<Utc>>,
 }
@@ -65,10 +67,11 @@ async fn list_users(
         let pattern = format!("%{}%", search);
         sqlx::query_as::<_, UserRow>(
             r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
-                      u.is_active, tm.role::text as role, u.created_at, u.last_login
+                      u.is_active, u.role::text as role, u.department_id, u.team_id,
+                      u.created_at, u.last_login
                FROM users u
-               LEFT JOIN team_members tm ON tm.user_id = u.id
-               WHERE u.username ILIKE $1 OR u.email ILIKE $1 OR u.display_name ILIKE $1
+               WHERE deleted_at IS NULL
+                 AND (u.username ILIKE $1 OR u.email ILIKE $1 OR u.display_name ILIKE $1)
                ORDER BY u.created_at DESC
                LIMIT $2 OFFSET $3"#,
         )
@@ -80,9 +83,10 @@ async fn list_users(
     } else {
         sqlx::query_as::<_, UserRow>(
             r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
-                      u.is_active, tm.role::text as role, u.created_at, u.last_login
+                      u.is_active, u.role::text as role, u.department_id, u.team_id,
+                      u.created_at, u.last_login
                FROM users u
-               LEFT JOIN team_members tm ON tm.user_id = u.id
+               WHERE u.deleted_at IS NULL
                ORDER BY u.created_at DESC
                LIMIT $1 OFFSET $2"#,
         )
@@ -110,10 +114,10 @@ async fn get_user(
 ) -> impl IntoResponse {
     let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
         r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
-                  u.is_active, tm.role::text as role, u.created_at, u.last_login
+                  u.is_active, u.role::text as role, u.department_id, u.team_id,
+                  u.created_at, u.last_login
            FROM users u
-           LEFT JOIN team_members tm ON tm.user_id = u.id
-           WHERE u.id = $1"#,
+           WHERE u.id = $1 AND u.deleted_at IS NULL"#,
     )
     .bind(id)
     .fetch_optional(&state.db)
