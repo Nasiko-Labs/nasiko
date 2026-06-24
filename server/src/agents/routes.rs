@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use nasiko_runtime::{ContainerId, DeploymentSpec};
 
+use crate::auth::Claims;
 use crate::build::BuildStatus;
 use crate::build::routes::extract_zip_to_dir;
 use crate::state::AppState;
@@ -42,12 +43,13 @@ pub struct UploadAndDeployResponse {
 
 async fn upload_and_deploy(
     State(state): State<AppState>,
+    claims: Claims,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    // TODO: restore claims extraction once auth middleware is re-enabled
-    // let claims: Claims = ...;
-    // let owner_id: Uuid = claims.sub.parse()...;
-    let _owner_id: Uuid = Uuid::nil();
+    let owner_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
 
     let mut name: Option<String> = None;
     let mut version_tag: Option<String> = None;
@@ -93,16 +95,71 @@ async fn upload_and_deploy(
         None => return (StatusCode::BAD_REQUEST, "source zip is required").into_response(),
     };
 
-    // TODO: restore catalog upsert + build record once DB is wired back in
-    // let agent_id = sqlx::query_scalar!(...).fetch_one(&state.db).await?;
-    // let build_id = sqlx::query_scalar!(...).fetch_one(&state.db).await?;
-    // let source_key = format!("sources/{agent_id}/{version_tag}.zip");
-    // state.oci_storage.put_blob(&source_key, ...).await?;
-    let agent_id = Uuid::new_v4();
-    let build_id = Uuid::new_v4();
     let image_tag = format!("{name}:{version_tag}");
 
+    // Upsert the agent. Agent names are not globally unique (migration 006 dropped
+    // the unique constraint), so scope the lookup to this owner instead of
+    // relying on ON CONFLICT (name).
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agents WHERE owner_id = $1 AND name = $2 LIMIT 1",
+    )
+    .bind(owner_id)
+    .bind(&name)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let agent_id = if let Some(id) = existing {
+        let _ = sqlx::query(
+            "UPDATE agents SET version = $2, image = $3, status = 'deploying', updated_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&version_tag)
+        .bind(&image_tag)
+        .execute(&state.db)
+        .await;
+        id
+    } else {
+        match sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO agents (name, owner_id, version, image, status) \
+             VALUES ($1, $2, $3, $4, 'deploying') RETURNING id",
+        )
+        .bind(&name)
+        .bind(owner_id)
+        .bind(&version_tag)
+        .bind(&image_tag)
+        .fetch_one(&state.db)
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}"))
+                    .into_response();
+            }
+        }
+    };
+
+    // Persist a build record (status defaults to 'queued').
+    let build_id = match sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
+         VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(&version_tag)
+    .bind(&image_tag)
+    .fetch_one(&state.db)
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("create build record: {e}"))
+                .into_response();
+        }
+    };
+
     let runtime = state.runtime.clone();
+    let db = state.db.clone();
     let name_clone = name.clone();
     let image_tag_clone = image_tag.clone();
     let ports_clone = if ports.is_empty() { vec![8000] } else { ports };
@@ -110,6 +167,7 @@ async fn upload_and_deploy(
     tokio::spawn(async move {
         execute_upload_and_deploy(
             runtime,
+            db,
             build_id,
             agent_id,
             name_clone,
@@ -137,6 +195,7 @@ async fn upload_and_deploy(
 #[allow(clippy::too_many_arguments)]
 async fn execute_upload_and_deploy(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
+    db: sqlx::PgPool,
     build_id: Uuid,
     agent_id: Uuid,
     name: String,
@@ -145,8 +204,7 @@ async fn execute_upload_and_deploy(
     ports: Vec<u16>,
     env: HashMap<String, String>,
 ) {
-    // TODO: restore DB status tracking once wired back in
-    // set_build_status(&db, build_id, "building").await;
+    set_build_status(&db, build_id, BuildStatus::Building).await;
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
@@ -204,28 +262,49 @@ async fn execute_upload_and_deploy(
 
     match result {
         Ok(()) => {
+            set_build_status(&db, build_id, BuildStatus::Success).await;
+            // Record the built version (idempotent on agent_id+version).
+            let _ = sqlx::query(
+                "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
+                 SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
+                 ON CONFLICT (agent_id, version) DO UPDATE \
+                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag",
+            )
+            .bind(build_id)
+            .execute(&db)
+            .await;
+            let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
+                .bind(agent_id)
+                .execute(&db)
+                .await;
             tracing::info!(build_id = %build_id, agent_id = %agent_id, "upload-and-deploy succeeded");
-            // TODO: update agent status to 'running' and record agent_version in DB
         }
         Err(e) => {
+            set_build_status(&db, build_id, BuildStatus::Failed).await;
+            let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
+                .bind(agent_id)
+                .execute(&db)
+                .await;
             tracing::error!(build_id = %build_id, %e, "upload-and-deploy failed");
-            // TODO: set build status to 'failed' in DB
         }
     }
 }
 
-// TODO: restore once DB is wired back in
-// async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: &str) {
-//     let _ = sqlx::query("UPDATE agent_builds SET status = $2, updated_at = now() WHERE id = $1")
-//         .bind(build_id)
-//         .bind(status)
-//         .execute(db)
-//         .await;
-// }
+async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus) {
+    if let Err(e) =
+        sqlx::query("UPDATE agent_builds SET status = $2, updated_at = now() WHERE id = $1")
+            .bind(build_id)
+            .bind(status)
+            .execute(db)
+            .await
+    {
+        tracing::error!(build_id = %build_id, ?status, %e, "failed to update build status");
+    }
+}
 
 // ─── GET /deploy-status/{build_id} (SSE) ─────────────────────────────────────
-// TODO: restore once DB is wired back in — currently returns not_found immediately
-// since build records are not persisted without the DB calls above.
+// Streams the build's status (persisted by execute_upload_and_deploy) until it
+// reaches a terminal state. Emits {"status":"not_found"} for unknown build ids.
 
 #[derive(Debug, sqlx::FromRow)]
 struct BuildStatusRow {
