@@ -485,7 +485,7 @@ pub async fn auto_generate_capabilities_pub(
             let input_modes = serde_json::to_value(&card.default_input_modes).unwrap_or_default();
             let output_modes = serde_json::to_value(&card.default_output_modes).unwrap_or_default();
 
-            if let Err(e) = sqlx::query(
+            let updated_ids: Vec<uuid::Uuid> = match sqlx::query_scalar::<_, uuid::Uuid>(
                 r#"UPDATE agents
                    SET description = COALESCE(NULLIF(description, ''), $2),
                        skills = $3,
@@ -494,7 +494,8 @@ pub async fn auto_generate_capabilities_pub(
                        default_input_modes = $6,
                        default_output_modes = $7,
                        updated_at = now()
-                   WHERE name = $1"#,
+                   WHERE name = $1
+                   RETURNING id"#,
             )
             .bind(agent_name)
             .bind(&card.description)
@@ -503,11 +504,19 @@ pub async fn auto_generate_capabilities_pub(
             .bind(&caps_json)
             .bind(&input_modes)
             .bind(&output_modes)
-            .execute(db)
+            .fetch_all(db)
             .await
             {
-                tracing::error!("capability gen: failed to update agent '{agent_name}': {e}");
-                return;
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::error!("capability gen: failed to update agent '{agent_name}': {e}");
+                    return;
+                }
+            };
+
+            // Keep the normalized agent_skills projection in sync (best-effort).
+            for id in updated_ids {
+                crate::catalog::skills::sync_agent_skills_json(db, id, &skills_json).await;
             }
 
             tracing::info!("capability gen: updated card for agent '{agent_name}'");

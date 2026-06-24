@@ -23,6 +23,72 @@ pub fn router() -> Router<AppState> {
         .route("/agents/{id}", axum::routing::delete(delete))
         .route("/agents/{id}/versions", get(list_versions))
         .route("/agents/search", get(search))
+        .route("/agents/by-skill", get(by_skill))
+}
+
+#[derive(Deserialize)]
+struct BySkillQuery {
+    tag: String,
+    #[serde(default = "default_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+/// Discover agents that have a skill tagged `tag`. Owner-scoped like `list`
+/// (superuser → all; otherwise own). Uses the GIN `idx_agent_skills_tags` via
+/// the `@>` containment operator and `EXISTS` (no join fan-out / DISTINCT).
+async fn by_skill(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(q): Query<BySkillQuery>,
+) -> impl IntoResponse {
+    let tag = q.tag.trim();
+    if tag.is_empty() {
+        return (StatusCode::BAD_REQUEST, "tag is required").into_response();
+    }
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
+    let user_id: Uuid = claims.sub.parse().unwrap_or_default();
+
+    let agents = if claims.is_superuser {
+        sqlx::query_as::<_, Agent>(
+            r#"SELECT * FROM agents a
+               WHERE EXISTS (
+                   SELECT 1 FROM agent_skills s
+                   WHERE s.agent_id = a.id AND s.tags @> ARRAY[$1]::text[]
+               )
+               ORDER BY a.created_at DESC
+               LIMIT $2 OFFSET $3"#,
+        )
+        .bind(tag)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as::<_, Agent>(
+            r#"SELECT * FROM agents a
+               WHERE a.owner_id = $4
+                 AND EXISTS (
+                     SELECT 1 FROM agent_skills s
+                     WHERE s.agent_id = a.id AND s.tags @> ARRAY[$1]::text[]
+                 )
+               ORDER BY a.created_at DESC
+               LIMIT $2 OFFSET $3"#,
+        )
+        .bind(tag)
+        .bind(limit)
+        .bind(offset)
+        .bind(user_id)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match agents {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn create(
@@ -41,6 +107,11 @@ async fn create(
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
     let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
 
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
     let result = sqlx::query_as::<_, Agent>(
         r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata)
            VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12)
@@ -58,13 +129,23 @@ async fn create(
     .bind(skills)
     .bind(&tags)
     .bind(meta)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await;
 
-    match result {
-        Ok(agent) => (StatusCode::CREATED, Json(agent)).into_response(),
-        Err(e) => (StatusCode::CONFLICT, e.to_string()).into_response(),
+    let agent = match result {
+        Ok(a) => a,
+        Err(e) => return (StatusCode::CONFLICT, e.to_string()).into_response(),
+    };
+
+    // Sync the normalized skills projection atomically with the agent row.
+    if let Err(e) = super::skills::sync_agent_skills(&mut tx, agent.id, &agent.skills.0).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")).into_response();
     }
+    if let Err(e) = tx.commit().await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("commit: {e}")).into_response();
+    }
+
+    (StatusCode::CREATED, Json(agent)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -164,6 +245,11 @@ async fn update(
             return StatusCode::FORBIDDEN.into_response();
         }
 
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
     let result = sqlx::query_as::<_, Agent>(
         r#"UPDATE agents SET
              display_name = COALESCE($2, display_name),
@@ -195,12 +281,21 @@ async fn update(
     .bind(&body.metadata)
     .bind(&body.status)
     .bind(&body.image)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await;
 
-    match result {
-        Ok(Some(agent)) => Json(agent).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+    let agent = match result {
+        Ok(Some(agent)) => agent,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Re-sync the normalized skills projection from the (possibly updated) JSONB.
+    if let Err(e) = super::skills::sync_agent_skills(&mut tx, agent.id, &agent.skills.0).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")).into_response();
+    }
+    match tx.commit().await {
+        Ok(()) => Json(agent).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

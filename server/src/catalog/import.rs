@@ -92,6 +92,9 @@ async fn build_and_deploy(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?;
 
+    // Keep the normalized agent_skills projection in sync (best-effort).
+    crate::catalog::skills::sync_agent_skills_json(&state.db, agent_id, &meta.skills).await;
+
     // Create build record
     let build_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO agent_builds (agent_id, version_tag, image_reference, status)

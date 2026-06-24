@@ -2,6 +2,7 @@ pub mod agent_secrets;
 pub mod import;
 pub mod models;
 pub mod routes;
+pub mod skills;
 
 use axum::Router;
 

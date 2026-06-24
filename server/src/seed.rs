@@ -186,5 +186,10 @@ async fn fetch_and_apply_agent_card(state: &AppState, agent_id: Uuid, agent_url:
     .execute(&state.db)
     .await;
 
+    // Keep the normalized agent_skills projection in sync (best-effort).
+    if let Some(skills_json) = card.get("skills") {
+        crate::catalog::skills::sync_agent_skills_json(&state.db, agent_id, skills_json).await;
+    }
+
     true
 }
