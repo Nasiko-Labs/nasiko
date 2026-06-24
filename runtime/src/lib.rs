@@ -155,6 +155,9 @@ pub trait ContainerRuntime: Send + Sync {
     /// - Docker: streams tar to the Docker daemon via bollard, drains `BuildInfo` output.
     ///   Timeout is `DockerRuntimeConfig::build_timeout` (default 30 min), separate from
     ///   `operation_timeout`.
-    /// - K8s: returns `RuntimeError::Internal` — BuildKit support is planned.
+    /// - K8s: uploads the tar context to object storage and runs a BuildKit build
+    ///   Job (`buildctl` against a shared `buildkitd`), polling the Job to completion
+    ///   and pushing the image to the registry. Timeout is
+    ///   `KubeRuntimeConfig::build_timeout` (default 30 min).
     async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String>;
 }
