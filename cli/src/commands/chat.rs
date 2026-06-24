@@ -30,7 +30,7 @@ pub fn chat(url: &str, message: Option<&str>) -> Result<()> {
                 if input.trim() == "/quit" || input.trim() == "/exit" {
                     break;
                 }
-                print!("\n");
+                println!();
                 match send_message(endpoint, &input) {
                     Ok(_) => println!("\n"),
                     Err(e) => eprintln!("  error: {e}\n"),
@@ -254,20 +254,15 @@ fn handle_status_update_jsonrpc(result: &serde_json::Value) {
         .and_then(|s| s.as_str())
         .unwrap_or("");
 
-    match state {
-        "failed" => {
-            if let Some(msg) = result.pointer("/status/message/parts") {
-                if let Some(parts) = msg.as_array() {
-                    for part in parts {
-                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                            eprintln!("  \x1b[31merror: {text}\x1b[0m");
-                        }
+    if state == "failed"
+        && let Some(msg) = result.pointer("/status/message/parts")
+            && let Some(parts) = msg.as_array() {
+                for part in parts {
+                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                        eprintln!("  \x1b[31merror: {text}\x1b[0m");
                     }
                 }
             }
-        }
-        _ => {}
-    }
 }
 
 fn is_terminal_state(event: &serde_json::Value) -> bool {

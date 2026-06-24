@@ -102,12 +102,11 @@ async fn list(
         .await
     } else {
         sqlx::query_as::<_, Agent>(
-            r#"SELECT DISTINCT a.* FROM agents a
-               LEFT JOIN team_members tm ON tm.team_id = a.owner_team_id AND tm.user_id = $5
-               WHERE (a.owner_id = $5 OR tm.user_id IS NOT NULL)
-                 AND ($1::uuid IS NULL OR a.owner_id = $1)
-                 AND ($2::text IS NULL OR a.status = $2)
-               ORDER BY a.created_at DESC
+            r#"SELECT * FROM agents
+               WHERE owner_id = $5
+                 AND ($1::uuid IS NULL OR owner_id = $1)
+                 AND ($2::text IS NULL OR status = $2)
+               ORDER BY created_at DESC
                LIMIT $3 OFFSET $4"#,
         )
         .bind(q.owner)
@@ -160,11 +159,10 @@ async fn update(
     let user_id: Uuid = claims.sub.parse().unwrap_or_default();
 
     // Superusers can update any agent; others must own it or be on the team
-    if !claims.is_superuser {
-        if !user_can_access_agent(&state.db, user_id, id).await {
+    if !claims.is_superuser
+        && !user_can_access_agent(&state.db, user_id, id).await {
             return StatusCode::FORBIDDEN.into_response();
         }
-    }
 
     let result = sqlx::query_as::<_, Agent>(
         r#"UPDATE agents SET
@@ -214,11 +212,10 @@ async fn delete(
 ) -> impl IntoResponse {
     let user_id: Uuid = claims.sub.parse().unwrap_or_default();
 
-    if !claims.is_superuser {
-        if !user_can_access_agent(&state.db, user_id, id).await {
+    if !claims.is_superuser
+        && !user_can_access_agent(&state.db, user_id, id).await {
             return StatusCode::FORBIDDEN.into_response();
         }
-    }
 
     let result = sqlx::query("DELETE FROM agents WHERE id = $1")
         .bind(id)

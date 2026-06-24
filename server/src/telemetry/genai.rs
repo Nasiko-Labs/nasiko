@@ -38,6 +38,12 @@ pub struct GenAiMetrics {
     pub cascade_rejections: Counter<u64>,
 }
 
+impl Default for GenAiMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GenAiMetrics {
     pub fn new() -> Self {
         let meter = global::meter("nasiko.cp");

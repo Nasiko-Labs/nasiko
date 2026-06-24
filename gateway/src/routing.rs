@@ -48,13 +48,12 @@ impl Router {
         // Longest-prefix match
         let mut best: Option<&ResolvedRoute> = None;
         for route in &self.routes {
-            if path.starts_with(&route.path_prefix) {
-                if best.is_none()
-                    || route.path_prefix.len() > best.unwrap().path_prefix.len()
+            if path.starts_with(&route.path_prefix)
+                && (best.is_none()
+                    || route.path_prefix.len() > best.unwrap().path_prefix.len())
                 {
                     best = Some(route);
                 }
-            }
         }
 
         best.map(|route| {

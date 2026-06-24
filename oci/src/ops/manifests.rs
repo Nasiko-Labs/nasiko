@@ -78,8 +78,8 @@ pub async fn put_manifest(
     .await?;
 
     // Referrers API: if manifest has a "subject" field, index it
-    if let Some(subject) = content.get("subject") {
-        if let Some(subject_digest) = subject.get("digest").and_then(|v| v.as_str()) {
+    if let Some(subject) = content.get("subject")
+        && let Some(subject_digest) = subject.get("digest").and_then(|v| v.as_str()) {
             let artifact_type = content
                 .get("artifactType")
                 .and_then(|v| v.as_str())
@@ -101,7 +101,6 @@ pub async fn put_manifest(
             .execute(&state.pool)
             .await;
         }
-    }
 
     Ok(PutManifestResult { digest })
 }

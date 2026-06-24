@@ -14,20 +14,32 @@ use crate::auth::Claims;
 use crate::state::AppState;
 use crate::Paginated;
 
+/// Full user router — list, get, and all management routes.
+/// Used by the OSS server.
 pub fn router() -> Router<AppState> {
     Router::new()
+        .merge(management_router())
         // Static sub-paths MUST come before /{id} to avoid being captured as IDs.
-        .route("/users/admins", get(list_admins))
-        .route("/users/me/accessible-agents", get(my_accessible_agents))
         .route("/users", get(list_users))
-        .route("/users", post(create_user))
         .route("/users/{id}", get(get_user))
+        // OSS accessible-agents: owner + public only (no grant table).
+        // EE overrides these in ee/server/src/users.rs with the full grant check.
+        .route("/users/me/accessible-agents", get(my_accessible_agents))
+        .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
+}
+
+/// Management-only router — all routes except list/get users and accessible-agents.
+/// EE server merges this and provides its own org-aware list/get and grant-aware
+/// accessible-agents handlers.
+pub fn management_router() -> Router<AppState> {
+    Router::new()
+        .route("/users/admins", get(list_admins))
+        .route("/users", post(create_user))
         .route("/users/{id}", put(update_user))
         .route("/users/{id}", delete(delete_user))
         .route("/users/{id}/deactivate", post(deactivate))
         .route("/users/{id}/reinstate", post(reinstate))
         .route("/users/{id}/regenerate-credentials", post(regenerate_credentials))
-        .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -39,8 +51,6 @@ struct UserRow {
     is_superuser: bool,
     is_active: bool,
     role: Option<String>,
-    department_id: Option<Uuid>,
-    team_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     last_login: Option<DateTime<Utc>>,
 }
@@ -67,10 +77,10 @@ async fn list_users(
         let pattern = format!("%{}%", search);
         sqlx::query_as::<_, UserRow>(
             r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
-                      u.is_active, u.role::text as role, u.department_id, u.team_id,
+                      u.is_active, u.role::text as role,
                       u.created_at, u.last_login
                FROM users u
-               WHERE deleted_at IS NULL
+               WHERE u.deleted_at IS NULL
                  AND (u.username ILIKE $1 OR u.email ILIKE $1 OR u.display_name ILIKE $1)
                ORDER BY u.created_at DESC
                LIMIT $2 OFFSET $3"#,
@@ -83,7 +93,7 @@ async fn list_users(
     } else {
         sqlx::query_as::<_, UserRow>(
             r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
-                      u.is_active, u.role::text as role, u.department_id, u.team_id,
+                      u.is_active, u.role::text as role,
                       u.created_at, u.last_login
                FROM users u
                WHERE u.deleted_at IS NULL
@@ -114,7 +124,7 @@ async fn get_user(
 ) -> impl IntoResponse {
     let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
         r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
-                  u.is_active, u.role::text as role, u.department_id, u.team_id,
+                  u.is_active, u.role::text as role,
                   u.created_at, u.last_login
            FROM users u
            WHERE u.id = $1 AND u.deleted_at IS NULL"#,
@@ -222,11 +232,10 @@ async fn update_user(
     if body.email.as_deref() == Some("") {
         return (StatusCode::BAD_REQUEST, "email cannot be empty").into_response();
     }
-    if let Some(ref p) = body.password {
-        if p.len() < 8 {
+    if let Some(ref p) = body.password
+        && p.len() < 8 {
             return (StatusCode::BAD_REQUEST, "password must be at least 8 characters").into_response();
         }
-    }
 
     // Hash password if provided
     let password_hash = match &body.password {
@@ -435,6 +444,8 @@ struct AccessibleAgent {
 }
 
 async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::response::Response {
+    // OSS: owner, public, or a direct user grant.
+    // EE overrides this in ee/server/src/users.rs to also check team and department grants.
     let rows = sqlx::query_as::<_, AccessibleAgent>(
         r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id
            FROM agents a
@@ -445,7 +456,7 @@ async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::respo
                OR EXISTS (
                    SELECT 1 FROM agent_grants ag
                    WHERE ag.agent_id = a.id
-                     AND (ag.grant_type = 'public' OR (ag.grant_type = 'user' AND ag.grantee_id = $1::text))
+                     AND ag.grant_type = 'user' AND ag.grantee_id = $1::text
                )
              )
            ORDER BY a.name"#,

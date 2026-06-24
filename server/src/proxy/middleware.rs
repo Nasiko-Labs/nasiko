@@ -58,11 +58,10 @@ pub async fn agent_proxy_middleware(
 
     // 1. Access control
     let caller_id: Uuid = claims.sub.parse().map_err(|_| ProxyError::AccessDenied)?;
-    if !claims.is_superuser {
-        if !crate::acl::user_can_access_agent(&state.db, caller_id, agent_id).await {
+    if !claims.is_superuser
+        && !crate::acl::user_can_access_agent(&state.db, caller_id, agent_id).await {
             return Err(ProxyError::AccessDenied);
         }
-    }
 
     // 2. Extract flow context from traceparent header (auto-propagated by OTel)
     let flow_ctx = FlowContext::from_headers(req.headers())
@@ -114,11 +113,10 @@ pub async fn agent_proxy_middleware(
     let mut forwarded_req = state.http_client.request(parts.method.clone(), &target_url);
 
     for (name, value) in parts.headers.iter() {
-        if name != "host" && name != "content-length" {
-            if let Ok(val_str) = value.to_str() {
+        if name != "host" && name != "content-length"
+            && let Ok(val_str) = value.to_str() {
                 forwarded_req = forwarded_req.header(name.as_str(), val_str);
             }
-        }
     }
 
     if !body_bytes.is_empty() {
@@ -220,8 +218,8 @@ async fn resolve_agent_endpoint(state: &AppState, agent_id: Uuid) -> Result<(Str
     }
 
     // Use stored URL if available (works in Docker where container names resolve)
-    if let Some(ref url) = agent.url {
-        if !url.is_empty() {
+    if let Some(ref url) = agent.url
+        && !url.is_empty() {
             let stripped = url.trim_start_matches("http://").trim_start_matches("https://");
             let host_port = stripped.split('/').next().unwrap_or(stripped);
             let (host, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
@@ -231,7 +229,6 @@ async fn resolve_agent_endpoint(state: &AppState, agent_id: Uuid) -> Result<(Str
             };
             return Ok((host, port, agent.name));
         }
-    }
 
     // Fallback: ask runtime for the endpoint (works in dev where CP runs on host)
     let container_id = nasiko_runtime::ContainerId::new(agent.name.clone());

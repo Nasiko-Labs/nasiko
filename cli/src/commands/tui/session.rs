@@ -79,13 +79,11 @@ pub fn list_local_sessions() -> Result<Vec<LocalSession>> {
     for entry in std::fs::read_dir(&dir).context("reading sessions dir")? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str::<LocalSession>(&content) {
+        if path.extension().is_some_and(|e| e == "json")
+            && let Ok(content) = std::fs::read_to_string(&path)
+                && let Ok(session) = serde_json::from_str::<LocalSession>(&content) {
                     sessions.push(session);
                 }
-            }
-        }
     }
     sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(sessions)

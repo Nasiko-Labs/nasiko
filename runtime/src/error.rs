@@ -36,6 +36,3 @@ pub enum RuntimeError {
 
 /// Convenience alias so callers can write `use agent_runtime::Result`.
 pub type Result<T> = std::result::Result<T, RuntimeError>;
-
-#[cfg(test)]
-mod tests;

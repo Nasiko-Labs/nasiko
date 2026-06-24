@@ -25,11 +25,9 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     let openai_base = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
     let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_default();
 
-    let mut port: u16 = 5000;
-    for image in images.split_whitespace() {
+    for (idx, image) in images.split_whitespace().enumerate() {
         let agent_name = extract_name(image);
-        let agent_port = port;
-        port += 1;
+        let agent_port = 5000u16 + idx as u16;
 
         let exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM agents WHERE name = $1)",
@@ -150,14 +148,12 @@ async fn fetch_and_apply_agent_card(state: &AppState, agent_id: Uuid, agent_url:
 
     let mut card: Option<serde_json::Value> = None;
     for url in &urls {
-        if let Ok(resp) = state.http_client.get(url).send().await {
-            if resp.status().is_success() {
-                if let Ok(v) = resp.json::<serde_json::Value>().await {
+        if let Ok(resp) = state.http_client.get(url).send().await
+            && resp.status().is_success()
+                && let Ok(v) = resp.json::<serde_json::Value>().await {
                     card = Some(v);
                     break;
                 }
-            }
-        }
     }
 
     let card = match card {

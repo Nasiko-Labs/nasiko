@@ -163,13 +163,11 @@ async fn import_upload(
 
     let mut package_data: Option<Vec<u8>> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
-        if field.name() == Some("package") {
-            if let Ok(data) = field.bytes().await {
-                if !data.is_empty() {
+        if field.name() == Some("package")
+            && let Ok(data) = field.bytes().await
+                && !data.is_empty() {
                     package_data = Some(data.to_vec());
                 }
-            }
-        }
     }
 
     let data = match package_data {

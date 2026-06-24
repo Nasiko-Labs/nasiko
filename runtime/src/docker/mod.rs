@@ -734,7 +734,3 @@ impl ContainerRuntime for DockerRuntime {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests;

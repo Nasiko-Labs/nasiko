@@ -81,8 +81,8 @@ impl AgentSelector {
             .map_err(|e| SelectorError::ParseError(e.to_string()))?;
 
         // Validate agent exists in list
-        if !agents.iter().any(|a| a.id == selection.agent_id) {
-            if let Some(first) = agents.first() {
+        if !agents.iter().any(|a| a.id == selection.agent_id)
+            && let Some(first) = agents.first() {
                 return Ok((
                     AgentSelection {
                         agent_id: first.id,
@@ -95,7 +95,6 @@ impl AgentSelector {
                     result,
                 ));
             }
-        }
 
         Ok((selection, result))
     }

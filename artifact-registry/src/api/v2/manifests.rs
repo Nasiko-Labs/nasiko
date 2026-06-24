@@ -97,8 +97,8 @@ pub async fn put_manifest(
 
     // If this manifest has a "subject" field, record it in oci_referrers so
     // GET /v2/{name}/referrers/{subject_digest} can return this manifest.
-    if let Some(subject) = content.get("subject") {
-        if let Some(subject_digest) = subject.get("digest").and_then(|v| v.as_str()) {
+    if let Some(subject) = content.get("subject")
+        && let Some(subject_digest) = subject.get("digest").and_then(|v| v.as_str()) {
             let artifact_type = content
                 .get("artifactType")
                 .and_then(|v| v.as_str())
@@ -120,7 +120,6 @@ pub async fn put_manifest(
             .execute(&state.pool)
             .await?;
         }
-    }
 
     // Index into artifacts table for V1 metadata API discoverability
     index_artifact(&state, &name, &reference, &digest, size_bytes, &content).await;

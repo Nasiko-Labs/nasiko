@@ -19,7 +19,7 @@ pub fn ps(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<24} {:<10} {:<40} {:<6} {}", "NAME", "STATE", "IMAGE", "PORT", "NODE");
+    println!("{:<24} {:<10} {:<40} {:<6} NODE", "NAME", "STATE", "IMAGE", "PORT");
     for c in &containers {
         println!("{:<24} {:<10} {:<40} {:<6} {}", c.name, c.state, c.image, c.port, c.node_id);
     }

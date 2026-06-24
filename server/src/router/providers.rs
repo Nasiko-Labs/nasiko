@@ -201,11 +201,10 @@ impl CompletionResult {
             if let Some(reasoning) = details.reasoning_tokens {
                 builder = builder.reasoning_tokens(reasoning);
             }
-            if let Some(accepted) = details.accepted_prediction_tokens {
-                if let Some(rejected) = details.rejected_prediction_tokens {
+            if let Some(accepted) = details.accepted_prediction_tokens
+                && let Some(rejected) = details.rejected_prediction_tokens {
                     builder = builder.predicted_tokens(accepted, rejected);
                 }
-            }
         }
 
         if let Some(reason) = &self.finish_reason {

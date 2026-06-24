@@ -147,11 +147,10 @@ pub fn build_stream_request_with_metadata(
     metadata: serde_json::Value,
 ) -> JsonRpcRequest {
     let mut req = build_request("message/stream", text, context_id);
-    if let Some(params) = req.params.as_mut() {
-        if let Some(obj) = params.as_object_mut() {
+    if let Some(params) = req.params.as_mut()
+        && let Some(obj) = params.as_object_mut() {
             obj.insert("metadata".to_string(), metadata);
         }
-    }
     req
 }
 

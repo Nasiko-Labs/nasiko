@@ -236,6 +236,8 @@ impl Authorizer for NoopAuthorizer {
 pub type Claims = Identity;
 
 impl Identity {
+    /// JWT subject claim — by design equal to `user_id`.
+    #[allow(clippy::misnamed_getters)]
     pub fn sub(&self) -> &str { &self.user_id }
 }
 

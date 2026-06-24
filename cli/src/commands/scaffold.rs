@@ -117,15 +117,14 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
         .interact_text()?;
     let dest = PathBuf::from(&out_dir);
 
-    if dest.exists() && fs::read_dir(&dest)?.next().is_some() {
-        if !Confirm::new()
+    if dest.exists() && fs::read_dir(&dest)?.next().is_some()
+        && !Confirm::new()
             .with_prompt(format!("{} already exists and is non-empty. Overwrite?", dest.display()))
             .default(false)
             .interact()?
         {
             anyhow::bail!("aborted");
         }
-    }
 
     if let Some(ref artifact) = use_artifact {
         // Pull the specific artifact from registry
@@ -234,11 +233,10 @@ fn extract_template(template: &str, dest: &Path) -> Result<()> {
         .with_context(|| {
             let mut available: Vec<String> = Vec::new();
             // Try registry for the canonical list
-            if let Some(client) = crate::api::RegistryClient::new() {
-                if let Ok(templates) = client.list_templates() {
+            if let Some(client) = crate::api::RegistryClient::new()
+                && let Ok(templates) = client.list_templates() {
                     available = templates.iter().map(|a| a.name.clone()).collect();
                 }
-            }
             // Fallback to embedded template names
             if available.is_empty() {
                 available = FRAMEWORKS.iter().map(|f| f.key.to_string()).collect();

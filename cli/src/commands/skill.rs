@@ -110,9 +110,9 @@ pub fn list(directory: &str) -> Result<()> {
 
 pub fn search(query: Option<&str>, framework: Option<&str>) -> Result<()> {
     // Try registry API first (fast, no blob pulls)
-    if let Some(client) = crate::api::RegistryClient::new() {
-        if let Ok(results) = client.search(query, Some("skill"), framework) {
-            if !results.is_empty() {
+    if let Some(client) = crate::api::RegistryClient::new()
+        && let Ok(results) = client.search(query, Some("skill"), framework)
+            && !results.is_empty() {
                 println!("Available skills (registry):");
                 for artifact in &results {
                     let desc = artifact.description.as_deref().unwrap_or("");
@@ -125,8 +125,6 @@ pub fn search(query: Option<&str>, framework: Option<&str>) -> Result<()> {
                 print_embedded_only(query, &results);
                 return Ok(());
             }
-        }
-    }
 
     // Fallback: embedded skills only
     let available = skill::list_available_skills();

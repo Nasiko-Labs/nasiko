@@ -30,6 +30,12 @@ pub struct FlowEventBus {
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<FlowEvent>>>>,
 }
 
+impl Default for FlowEventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FlowEventBus {
     pub fn new() -> Self {
         Self {

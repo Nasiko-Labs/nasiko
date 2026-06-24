@@ -199,8 +199,8 @@ impl Orchestrator {
                         .replace('_', "-");
 
                     // Enforce call guard
-                    if let Some(g) = &self.guard {
-                        if let Err(reason) = g.before_call(&agent_display).await {
+                    if let Some(g) = &self.guard
+                        && let Err(reason) = g.before_call(&agent_display).await {
                             tracing::warn!(tool = %name, %reason, "call guard blocked");
                             trace.tool_calls.push(ToolCallTrace {
                                 tool_name: name.clone(),
@@ -210,7 +210,6 @@ impl Orchestrator {
                             results_for_context.push(format!("[{}] Blocked: {}", name, reason));
                             continue;
                         }
-                    }
 
                     tracing::info!(turn = turn_idx + 1, tool = %name, "executing tool");
 
@@ -566,8 +565,8 @@ async fn run_stream_inner(
                     .replace('_', "-");
 
                 // Enforce call guard (ACL, flow limits, cycle detection)
-                if let Some(g) = guard {
-                    if let Err(reason) = g.before_call(&agent_display).await {
+                if let Some(g) = guard
+                    && let Err(reason) = g.before_call(&agent_display).await {
                         let _ = tx.send(OrchestratorEvent::PolicyRejected {
                             agent: agent_display.clone(),
                             reason: reason.clone(),
@@ -579,7 +578,6 @@ async fn run_stream_inner(
                         ));
                         continue;
                     }
-                }
 
                 let _ = tx.send(OrchestratorEvent::ToolCall {
                     agent: agent_display.clone(),

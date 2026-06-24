@@ -212,11 +212,10 @@ fn otlp_attr_to_json(v: &OtlpAttributeValue) -> Value {
         if let Some(n) = i.as_u64() {
             return Value::Number(n.into());
         }
-        if let Some(s) = i.as_str() {
-            if let Ok(n) = s.parse::<u64>() {
+        if let Some(s) = i.as_str()
+            && let Ok(n) = s.parse::<u64>() {
                 return Value::Number(n.into());
             }
-        }
         return i.clone();
     }
     if let Some(b) = v.bool_value {

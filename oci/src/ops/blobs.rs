@@ -113,13 +113,12 @@ pub async fn complete_upload(
     hasher.update(&data);
     let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
 
-    if let Some(expected) = expected_digest {
-        if expected != computed {
+    if let Some(expected) = expected_digest
+        && expected != computed {
             return Err(OciError::BadRequest(format!(
                 "digest mismatch: expected {expected}, got {computed}"
             )));
         }
-    }
 
     state.storage.put_blob(&computed, data).await?;
 

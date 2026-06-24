@@ -30,7 +30,7 @@ pub fn list() -> Result<()> {
         println!("No clusters configured. Run `nasiko connect <url>`.");
         return Ok(());
     }
-    println!("{:<8} {:<16} {}", "ACTIVE", "NAME", "URL");
+    println!("{:<8} {:<16} URL", "ACTIVE", "NAME");
     for (name, entry) in &cfg.clusters {
         let marker = if cfg.active.as_deref() == Some(name.as_str()) {
             "*"

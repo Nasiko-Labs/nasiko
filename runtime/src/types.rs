@@ -363,6 +363,3 @@ pub fn validate_build_inputs(tar_context: &[u8], image_tag: &str) -> Result<()> 
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

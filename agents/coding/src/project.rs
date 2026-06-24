@@ -54,11 +54,10 @@ pub async fn detect(sandbox: &dyn Sandbox) -> Language {
 
 /// Resolve the test command for the current project: caller override, else detected default.
 pub async fn test_command(sandbox: &dyn Sandbox, override_cmd: Option<&str>) -> Result<String, String> {
-    if let Some(cmd) = override_cmd {
-        if !cmd.trim().is_empty() {
+    if let Some(cmd) = override_cmd
+        && !cmd.trim().is_empty() {
             return Ok(cmd.to_string());
         }
-    }
     detect(sandbox)
         .await
         .default_test_command()

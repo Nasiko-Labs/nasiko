@@ -50,13 +50,11 @@ impl EventLoop {
         let tick_tx = tx.clone();
         let tick_handle = thread::spawn(move || {
             loop {
-                if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                    if let Ok(CrosstermEvent::Key(key)) = event::read() {
-                        if tick_tx.send(AppEvent::Key(key)).is_err() {
+                if event::poll(Duration::from_millis(50)).unwrap_or(false)
+                    && let Ok(CrosstermEvent::Key(key)) = event::read()
+                        && tick_tx.send(AppEvent::Key(key)).is_err() {
                             break;
                         }
-                    }
-                }
                 if tick_tx.send(AppEvent::Tick).is_err() {
                     break;
                 }

@@ -255,7 +255,7 @@ async fn main() {
         default_output_modes: vec!["text/plain".to_string()],
         supported_interfaces: vec![
             AgentInterface::new(
-                &format!("http://0.0.0.0:{port}/jsonrpc"),
+                format!("http://0.0.0.0:{port}/jsonrpc"),
                 TRANSPORT_PROTOCOL_JSONRPC,
             ),
         ],

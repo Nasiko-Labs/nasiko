@@ -25,6 +25,12 @@ pub struct A2aJsonRpcError {
     pub data: Option<serde_json::Value>,
 }
 
+impl Default for A2aClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl A2aClient {
     pub fn new() -> Self {
         Self {
@@ -86,11 +92,10 @@ impl A2aClient {
             }
         });
 
-        if let Some(ref metadata) = self.request_metadata {
-            if let Some(params) = body.get_mut("params") {
+        if let Some(ref metadata) = self.request_metadata
+            && let Some(params) = body.get_mut("params") {
                 params.as_object_mut().map(|p| p.insert("metadata".to_string(), metadata.clone()));
             }
-        }
 
         let mut req = self
             .http

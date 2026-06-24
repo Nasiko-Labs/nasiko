@@ -130,7 +130,7 @@ impl FlowGuard {
         // 2. Cycle detection — checks if target is in the ACTIVE call stack.
         // The stack represents currently executing agents (pushed on invoke, popped on return).
         // This prevents A→B→A recursion but allows or→A, or→A (sequential reuse).
-        if call_chain.iter().any(|&a| a == target_agent_id) {
+        if call_chain.contains(&target_agent_id) {
             return Err(FlowRejection::CycleDetected {
                 agent_id: target_agent_id.to_string(),
                 chain: call_chain.iter().map(|s| s.to_string()).collect(),
@@ -154,8 +154,8 @@ impl FlowGuard {
         }
 
         // 5. Timeout check
-        if let Some(started_str) = started_at {
-            if let Ok(started) = chrono::DateTime::parse_from_rfc3339(&started_str) {
+        if let Some(started_str) = started_at
+            && let Ok(started) = chrono::DateTime::parse_from_rfc3339(&started_str) {
                 let elapsed = chrono::Utc::now().signed_duration_since(started).num_seconds() as u64;
                 if elapsed > self.config.flow_timeout_secs {
                     return Err(FlowRejection::FlowTimeout {
@@ -164,7 +164,6 @@ impl FlowGuard {
                     });
                 }
             }
-        }
 
         Ok(())
     }

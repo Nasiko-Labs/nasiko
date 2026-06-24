@@ -154,6 +154,7 @@ async fn create_build(
     (StatusCode::CREATED, Json(build)).into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_build(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
     db: sqlx::PgPool,
@@ -407,8 +408,7 @@ async fn list_all_builds(
         sqlx::query_as::<_, BuildRecord>(
             r#"SELECT b.* FROM agent_builds b
                JOIN agents a ON a.id = b.agent_id
-               LEFT JOIN team_members tm ON tm.team_id = a.owner_team_id AND tm.user_id = $5
-               WHERE (a.owner_id = $5 OR tm.user_id IS NOT NULL)
+               WHERE a.owner_id = $5
                  AND ($1::text IS NULL OR b.status = $1)
                  AND ($2::text IS NULL OR a.name ILIKE '%' || $2 || '%' OR b.version_tag ILIKE '%' || $2 || '%')
                ORDER BY b.created_at DESC

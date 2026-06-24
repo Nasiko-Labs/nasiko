@@ -19,7 +19,7 @@ pub fn login() -> Result<()> {
     let resp = http
         .post(&url)
         .header("Content-Type", "application/json")
-        .send_json(&serde_json::json!({
+        .send_json(serde_json::json!({
             "username": username,
             "password": password,
         }))

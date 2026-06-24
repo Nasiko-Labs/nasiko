@@ -105,27 +105,25 @@ impl ProxyHttp for GatewayProxy {
         // Handle CORS preflight
         if header.method == http::Method::OPTIONS {
             let mut resp = ResponseHeader::build(204, None)?;
-            if let Some(origin) = header.headers.get("origin").and_then(|v| v.to_str().ok()) {
-                if self.cors.origin_allowed(origin) {
+            if let Some(origin) = header.headers.get("origin").and_then(|v| v.to_str().ok())
+                && self.cors.origin_allowed(origin) {
                     resp.insert_header("Access-Control-Allow-Origin", origin)?;
                     resp.insert_header("Access-Control-Allow-Methods", &self.cors.allowed_methods)?;
                     resp.insert_header("Access-Control-Allow-Headers", &self.cors.allowed_headers)?;
                     resp.insert_header("Access-Control-Max-Age", "86400")?;
                 }
-            }
             session.write_response_header(Box::new(resp), true).await?;
             return Ok(true);
         }
 
         // IP-based rate limiting
-        if let Some(ref ip) = ctx.client_ip {
-            if self.rate_limiter.check_ip(ip).is_limited() {
+        if let Some(ref ip) = ctx.client_ip
+            && self.rate_limiter.check_ip(ip).is_limited() {
                 tracing::warn!(ip = %ip, "IP rate limited");
                 let resp = ResponseHeader::build(429, None)?;
                 session.write_response_header(Box::new(resp), true).await?;
                 return Ok(true);
             }
-        }
 
         // Route resolution
         let route_match = match self.router.resolve(path) {
@@ -150,13 +148,12 @@ impl ProxyHttp for GatewayProxy {
                     }
 
                     // Role check
-                    if let Some(ref required_role) = route_match.required_role {
-                        if !GatewayAuth::check_role(&identity, required_role) {
+                    if let Some(ref required_role) = route_match.required_role
+                        && !GatewayAuth::check_role(&identity, required_role) {
                             let resp = ResponseHeader::build(403, None)?;
                             session.write_response_header(Box::new(resp), true).await?;
                             return Ok(true);
                         }
-                    }
 
                     ctx.identity = Some(identity);
                 }
@@ -202,8 +199,8 @@ impl ProxyHttp for GatewayProxy {
         ctx: &mut Self::CTX,
     ) -> Result<()> {
         // Rewrite path if needed
-        if let Some(ref route) = ctx.route_match {
-            if upstream_request.uri.path() != route.rewritten_path {
+        if let Some(ref route) = ctx.route_match
+            && upstream_request.uri.path() != route.rewritten_path {
                 let new_uri = http::Uri::builder()
                     .path_and_query(route.rewritten_path.as_str())
                     .build()
@@ -216,7 +213,6 @@ impl ProxyHttp for GatewayProxy {
                     })?;
                 upstream_request.set_uri(new_uri);
             }
-        }
 
         // Apply translation rules
         self.translator
@@ -262,11 +258,9 @@ impl ProxyHttp for GatewayProxy {
             .headers
             .get("origin")
             .and_then(|v| v.to_str().ok())
-        {
-            if self.cors.origin_allowed(origin) {
+            && self.cors.origin_allowed(origin) {
                 upstream_response.insert_header("Access-Control-Allow-Origin", origin)?;
             }
-        }
 
         // Security headers
         upstream_response.insert_header("X-Content-Type-Options", "nosniff")?;

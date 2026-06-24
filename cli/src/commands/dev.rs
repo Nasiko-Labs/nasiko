@@ -217,13 +217,12 @@ pub fn start(infra_only: bool) -> Result<()> {
     let mut healthy = false;
     for _ in 0..30 {
         thread::sleep(Duration::from_secs(1));
-        if let Ok(resp) = http.get("http://localhost:8080/health").call() {
-            if resp.status().as_u16() == 200 {
+        if let Ok(resp) = http.get("http://localhost:8080/health").call()
+            && resp.status().as_u16() == 200 {
                 println!(" ok");
                 healthy = true;
                 break;
             }
-        }
         print!(".");
     }
     if !healthy {
@@ -281,12 +280,11 @@ pub fn stop() -> Result<()> {
     // Stop CP process
     let pid_file = pid_file_path()?;
     if pid_file.exists() {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<u32>() {
                 println!("Stopping CP (pid {pid})...");
                 let _ = Command::new("kill").arg(pid.to_string()).status();
             }
-        }
         let _ = std::fs::remove_file(&pid_file);
     }
 

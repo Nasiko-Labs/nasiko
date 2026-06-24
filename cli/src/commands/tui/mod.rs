@@ -113,14 +113,14 @@ fn handle_scroll_key(app: &mut App, key: crossterm::event::KeyEvent) {
 // ─── Sessions list command ──────────────────────────────────────────────────
 
 pub fn list_sessions(endpoint: Option<&str>) -> Result<()> {
-    if let Some(endpoint) = endpoint {
-        if let Some((base_url, token)) = session::cp_credentials(endpoint) {
+    if let Some(endpoint) = endpoint
+        && let Some((base_url, token)) = session::cp_credentials(endpoint) {
             let sessions = session::list_cp_sessions(&base_url, &token)?;
             if sessions.is_empty() {
                 println!("No sessions found.");
                 return Ok(());
             }
-            println!("{:<36} {:<20} {:<24} {}", "ID", "AGENT", "UPDATED", "TITLE");
+            println!("{:<36} {:<20} {:<24} TITLE", "ID", "AGENT", "UPDATED");
             for s in sessions {
                 println!(
                     "{:<36} {:<20} {:<24} {}",
@@ -132,14 +132,13 @@ pub fn list_sessions(endpoint: Option<&str>) -> Result<()> {
             }
             return Ok(());
         }
-    }
 
     let sessions = session::list_local_sessions()?;
     if sessions.is_empty() {
         println!("No local sessions found.");
         return Ok(());
     }
-    println!("{:<36} {:<40} {:<24} {}", "ID", "ENDPOINT", "CREATED", "TITLE");
+    println!("{:<36} {:<40} {:<24} TITLE", "ID", "ENDPOINT", "CREATED");
     for s in sessions {
         println!(
             "{:<36} {:<40} {:<24} {}",

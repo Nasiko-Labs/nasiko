@@ -29,24 +29,21 @@ impl GatewayAuth {
 
     fn extract_token(&self, header: &RequestHeader) -> Result<String, AuthError> {
         // Try Authorization: Bearer <token>
-        if let Some(auth) = header.headers.get("authorization") {
-            if let Ok(value) = auth.to_str() {
-                if let Some(token) = value.strip_prefix("Bearer ") {
+        if let Some(auth) = header.headers.get("authorization")
+            && let Ok(value) = auth.to_str()
+                && let Some(token) = value.strip_prefix("Bearer ") {
                     return Ok(token.to_string());
                 }
-            }
-        }
 
         // Try cookie
-        if let Some(cookie) = header.headers.get("cookie") {
-            if let Ok(value) = cookie.to_str() {
+        if let Some(cookie) = header.headers.get("cookie")
+            && let Ok(value) = cookie.to_str() {
                 for part in value.split(';') {
                     if let Some(token) = part.trim().strip_prefix("access_token=") {
                         return Ok(token.to_string());
                     }
                 }
             }
-        }
 
         Err(AuthError::MissingToken)
     }
@@ -143,6 +140,9 @@ mod tests {
             team_id: None,
             department_id: None,
             role: None,
+            sub: "u1".into(),
+            exp: 0,
+            iat: 0,
         };
         assert!(GatewayAuth::check_role(&identity, "admin"));
         assert!(GatewayAuth::check_role(&identity, "department_manager"));
@@ -157,6 +157,9 @@ mod tests {
             team_id: None,
             department_id: None,
             role: Some(Role::TeamMember),
+            sub: "u1".into(),
+            exp: 0,
+            iat: 0,
         };
         assert!(GatewayAuth::check_role(&member, "member"));
         assert!(GatewayAuth::check_role(&member, "team_member"));

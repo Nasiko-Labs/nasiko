@@ -73,11 +73,10 @@ async fn upload_and_deploy(
                 }
             }
             "env" => {
-                if let Ok(text) = field.text().await {
-                    if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&text) {
+                if let Ok(text) = field.text().await
+                    && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&text) {
                         env = map;
                     }
-                }
             }
             _ => {}
         }
@@ -134,6 +133,7 @@ async fn upload_and_deploy(
         .into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_upload_and_deploy(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
     build_id: Uuid,

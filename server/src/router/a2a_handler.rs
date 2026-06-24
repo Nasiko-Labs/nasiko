@@ -340,7 +340,7 @@ async fn agent_stream(
 
     let endpoint = resolve_endpoint(state, &agent.name)
         .await
-        .map_err(|e| A2aHandlerError::Internal(e))?;
+        .map_err(A2aHandlerError::Internal)?;
 
     // Create a flow context and set traceparent so OTel propagates it
     let flow_ctx = FlowContext::new_root();
@@ -510,12 +510,11 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     .map_err(|e| format!("db lookup: {e}"))?
     .flatten();
 
-    if let Some(ref url) = stored_url {
-        if !url.is_empty() {
+    if let Some(ref url) = stored_url
+        && !url.is_empty() {
             let u = url.trim_end_matches('/');
             return Ok(format!("{u}/"));
         }
-    }
 
     // Fallback: ask runtime for the endpoint (works in dev where CP runs on host)
     let container_id = nasiko_runtime::ContainerId::new(agent_name);

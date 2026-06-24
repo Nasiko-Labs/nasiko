@@ -47,15 +47,13 @@ pub fn build(directory: &str, tag: Option<&str>, platform: Option<&str>) -> Resu
 
 fn default_tag(root: &Path) -> String {
     let card_path = root.join("AgentCard.json");
-    if card_path.exists() {
-        if let Ok(content) = fs::read_to_string(&card_path) {
-            if let Ok(card) = serde_json::from_str::<serde_json::Value>(&content) {
+    if card_path.exists()
+        && let Ok(content) = fs::read_to_string(&card_path)
+            && let Ok(card) = serde_json::from_str::<serde_json::Value>(&content) {
                 let name = card.get("name").and_then(|n| n.as_str()).unwrap_or("agent");
                 let version = card.get("version").and_then(|v| v.as_str()).unwrap_or("latest");
                 return format!("{name}:{version}");
             }
-        }
-    }
     let dir_name = root.file_name().unwrap_or_default().to_string_lossy();
     format!("{dir_name}:latest")
 }
