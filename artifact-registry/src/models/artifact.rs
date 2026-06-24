@@ -72,6 +72,11 @@ pub struct Artifact {
     pub license: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Semantic relevance score (cosine similarity, 0..1) when returned from discovery.
+    /// Absent for browse/list results that aren't ranked by a query embedding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub score: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -41,6 +41,8 @@ pub async fn publish(
     if let Some(api_key) = state.config.openai_api_key.clone() {
         let pool = state.pool.clone();
         let id = artifact.id;
+        let base_url = state.config.openai_base_url.clone();
+        let model = state.config.embedding_model.clone();
         let text = format!(
             "{} {} {}",
             artifact.name,
@@ -48,7 +50,7 @@ pub async fn publish(
             artifact.tags.join(" ")
         );
         tokio::spawn(async move {
-            match embeddings::generate(&api_key, &text).await {
+            match embeddings::generate(&api_key, &base_url, &model, &text).await {
                 Ok(vec) => {
                     if let Err(e) = queries::update_artifact_embedding(&pool, id, vec).await {
                         tracing::warn!("failed to store embedding for {id}: {e}");

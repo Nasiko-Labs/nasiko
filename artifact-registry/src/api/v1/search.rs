@@ -16,10 +16,17 @@ pub async fn search(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<serde_json::Value>> {
+    // Embed the query when a provider is configured. If embedding fails (or no provider),
+    // search_artifacts falls back to full-text keyword ranking.
     let query_embedding = match (&state.config.openai_api_key, &params.q) {
-        (Some(key), Some(q)) if !q.is_empty() => {
-            embeddings::generate(key, q).await.ok()
-        }
+        (Some(key), Some(q)) if !q.is_empty() => embeddings::generate(
+            key,
+            &state.config.openai_base_url,
+            &state.config.embedding_model,
+            q,
+        )
+        .await
+        .ok(),
         _ => None,
     };
 

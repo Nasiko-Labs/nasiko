@@ -322,6 +322,46 @@ impl OciClient {
     }
 }
 
+/// Minimal percent-encoding for query-string values (RFC 3986 unreserved kept as-is).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Build the `/v1/search` request path (incl. query string) for a discovery request.
+/// Pure function — separated from the HTTP call so it can be unit-tested.
+fn search_query(
+    query: Option<&str>,
+    artifact_type: Option<&str>,
+    framework: Option<&str>,
+    limit: u32,
+    min_score: Option<f32>,
+) -> String {
+    let mut params = Vec::new();
+    if let Some(q) = query {
+        params.push(format!("q={}", urlencode(q)));
+    }
+    if let Some(t) = artifact_type {
+        params.push(format!("type={}", urlencode(t)));
+    }
+    if let Some(fw) = framework {
+        params.push(format!("framework={}", urlencode(fw)));
+    }
+    if let Some(ms) = min_score {
+        params.push(format!("min_score={ms}"));
+    }
+    params.push(format!("limit={limit}"));
+    format!("/v1/search?{}", params.join("&"))
+}
+
 // ─── Artifact Registry V1 Client ───────────────────────────────────────────
 
 pub use nasiko_types::registry::{Artifact, SearchResponse};
@@ -341,19 +381,19 @@ impl RegistryClient {
     }
 
     pub fn search(&self, query: Option<&str>, artifact_type: Option<&str>, framework: Option<&str>) -> Result<Vec<Artifact>> {
-        let mut params = Vec::new();
-        if let Some(q) = query {
-            params.push(format!("q={q}"));
-        }
-        if let Some(t) = artifact_type {
-            params.push(format!("type={t}"));
-        }
-        if let Some(fw) = framework {
-            params.push(format!("framework={fw}"));
-        }
-        params.push("limit=100".to_string());
-        let qs = params.join("&");
-        let url = format!("{}/v1/search?{qs}", self.base_url);
+        self.search_opts(query, artifact_type, framework, 100, None)
+    }
+
+    pub fn search_opts(
+        &self,
+        query: Option<&str>,
+        artifact_type: Option<&str>,
+        framework: Option<&str>,
+        limit: u32,
+        min_score: Option<f32>,
+    ) -> Result<Vec<Artifact>> {
+        let path = search_query(query, artifact_type, framework, limit, min_score);
+        let url = format!("{}{path}", self.base_url);
         let mut resp = self.agent.get(&url).call().context("registry search failed")?;
         if resp.status().as_u16() >= 400 {
             bail!("registry search: HTTP {}", resp.status().as_u16());
@@ -392,4 +432,61 @@ pub struct DeploySpec {
     pub port: Option<u16>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub env: std::collections::HashMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urlencode_escapes_query_text() {
+        assert_eq!(urlencode("nutrition planning"), "nutrition%20planning");
+        assert_eq!(urlencode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(urlencode("safe-_.~"), "safe-_.~");
+    }
+
+    #[test]
+    fn artifact_parses_relevance_score() {
+        let json = r#"{
+            "id": "1", "owner": "acme", "name": "nutrition", "version": "1.0.0",
+            "artifact_type": "skill", "status": "stable", "score": 0.873
+        }"#;
+        let a: Artifact = serde_json::from_str(json).unwrap();
+        assert_eq!(a.score, Some(0.873));
+    }
+
+    #[test]
+    fn artifact_score_absent_is_none() {
+        let json = r#"{
+            "id": "1", "owner": "acme", "name": "nutrition", "version": "1.0.0",
+            "artifact_type": "skill", "status": "stable"
+        }"#;
+        let a: Artifact = serde_json::from_str(json).unwrap();
+        assert_eq!(a.score, None);
+    }
+
+    #[test]
+    fn search_query_encodes_and_orders_params() {
+        let p = search_query(Some("healthy eating"), Some("skill"), Some("a2a"), 10, Some(0.3));
+        assert_eq!(p, "/v1/search?q=healthy%20eating&type=skill&framework=a2a&min_score=0.3&limit=10");
+    }
+
+    #[test]
+    fn search_query_omits_absent_filters() {
+        let p = search_query(Some("taxes"), None, None, 100, None);
+        assert_eq!(p, "/v1/search?q=taxes&limit=100");
+    }
+
+    #[test]
+    fn search_query_browse_has_no_query_param() {
+        // `nasiko registry list` path: no query, no score.
+        let p = search_query(None, Some("agent"), None, 100, None);
+        assert_eq!(p, "/v1/search?type=agent&limit=100");
+    }
+
+    #[test]
+    fn search_query_escapes_special_chars() {
+        let p = search_query(Some("a & b?c"), None, None, 5, None);
+        assert_eq!(p, "/v1/search?q=a%20%26%20b%3Fc&limit=5");
+    }
 }

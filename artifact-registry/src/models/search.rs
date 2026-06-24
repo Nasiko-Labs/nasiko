@@ -10,6 +10,9 @@ pub struct SearchParams {
     pub tags: Option<String>,
     pub framework: Option<String>,
     pub status: Option<String>,
+    /// Minimum cosine-similarity score (0..1) for semantic results. Trims weak matches.
+    /// Ignored on the keyword-fallback path.
+    pub min_score: Option<f32>,
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]

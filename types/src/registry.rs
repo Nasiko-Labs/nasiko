@@ -24,6 +24,9 @@ pub struct Artifact {
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+    /// Semantic relevance score (cosine similarity, 0..1) on discovery results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

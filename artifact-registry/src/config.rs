@@ -17,6 +17,11 @@ pub struct Config {
     pub port: u16,
     pub public_base_url: String,
     pub openai_api_key: Option<String>,
+    /// Base URL for the embeddings API (OpenAI-compatible). Lets discovery point at a
+    /// self-hosted or proxied embedder instead of api.openai.com.
+    pub openai_base_url: String,
+    /// Embedding model used for artifact discovery (must match the embedding column dimension).
+    pub embedding_model: String,
 }
 
 impl Config {
@@ -43,6 +48,12 @@ impl Config {
             public_base_url: env::var("PUBLIC_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".into()),
             openai_api_key: env::var("OPENAI_API_KEY").ok(),
+            openai_base_url: env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com/v1".into())
+                .trim_end_matches('/')
+                .to_string(),
+            embedding_model: env::var("EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "text-embedding-3-small".into()),
         })
     }
 }

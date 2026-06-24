@@ -255,24 +255,31 @@ enum RegistrySubCommands {
     Disconnect,
     /// Show connected registry
     Status,
-    /// Search the registry
+    /// Semantically discover artifacts by natural-language query
+    #[command(alias = "discover")]
     Search {
-        /// Search query
+        /// Natural-language query (e.g. "nutrition planning")
         query: Option<String>,
-        /// Filter by type (agent, skill)
-        #[arg(short = 't', long, name = "type")]
+        /// Filter by type (agent, skill, tool)
+        #[arg(short = 't', long = "type")]
         artifact_type: Option<String>,
         /// Filter by framework
         #[arg(short = 'f', long)]
         framework: Option<String>,
+        /// Max results to return
+        #[arg(long, default_value_t = 10)]
+        top: u32,
+        /// Minimum relevance score (0.0–1.0) for semantic matches
+        #[arg(long)]
+        min_score: Option<f32>,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
     },
     /// List all artifacts in the registry
     List {
-        /// Filter by type (agent, skill)
-        #[arg(short = 't', long, name = "type")]
+        /// Filter by type (agent, skill, tool)
+        #[arg(short = 't', long = "type")]
         artifact_type: Option<String>,
         /// Output as JSON
         #[arg(short = 'j', long)]
@@ -423,8 +430,8 @@ fn main() -> Result<()> {
                 RegistrySubCommands::Connect { url } => commands::registry::connect(&url),
                 RegistrySubCommands::Disconnect => commands::registry::disconnect(),
                 RegistrySubCommands::Status => commands::registry::status(),
-                RegistrySubCommands::Search { query, artifact_type, framework, json } => {
-                    commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), json)
+                RegistrySubCommands::Search { query, artifact_type, framework, top, min_score, json } => {
+                    commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), top, min_score, json)
                 }
                 RegistrySubCommands::List { artifact_type, json } => {
                     commands::registry::list(artifact_type.as_deref(), json)
