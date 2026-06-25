@@ -12,7 +12,7 @@ use crate::acl::user_can_access_agent;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-use super::models::{Agent, AgentVersion, CreateAgent, UpdateAgent};
+use super::models::{Agent, AgentSummary, AgentVersion, CreateAgent, UpdateAgent};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -49,45 +49,41 @@ async fn by_skill(
     }
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
-    let user_id: Uuid = claims.sub.parse().unwrap_or_default();
 
-    let agents = if claims.is_superuser {
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents a
-               WHERE EXISTS (
-                   SELECT 1 FROM agent_skills s
-                   WHERE s.agent_id = a.id AND s.tags @> ARRAY[$1]::text[]
-               )
-               ORDER BY a.created_at DESC
-               LIMIT $2 OFFSET $3"#,
-        )
-        .bind(tag)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
+    let owner_filter: Option<Uuid> = if claims.is_superuser {
+        None
     } else {
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents a
-               WHERE a.owner_id = $4
-                 AND EXISTS (
-                     SELECT 1 FROM agent_skills s
-                     WHERE s.agent_id = a.id AND s.tags @> ARRAY[$1]::text[]
-                 )
-               ORDER BY a.created_at DESC
-               LIMIT $2 OFFSET $3"#,
-        )
-        .bind(tag)
-        .bind(limit)
-        .bind(offset)
-        .bind(user_id)
-        .fetch_all(&state.db)
-        .await
+        match claims.sub.parse() {
+            Ok(id) => Some(id),
+            Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        }
     };
 
-    match agents {
+    let result = sqlx::query_as::<_, AgentSummary>(
+        r#"SELECT a.id, a.name, a.display_name, a.description, a.url, a.icon_url,
+                  a.version, a.status, a.tags, a.created_at
+           FROM agents a
+           WHERE ($4::uuid IS NULL OR a.owner_id = $4)
+             AND EXISTS (
+                 SELECT 1 FROM agent_skills s
+                 WHERE s.agent_id = a.id AND s.tags @> ARRAY[$1]::text[]
+             )
+           ORDER BY a.created_at DESC
+           LIMIT $2 OFFSET $3"#,
+    )
+    .bind(tag)
+    .bind(limit)
+    .bind(offset)
+    .bind(owner_filter)
+    .fetch_all(&state.db)
+    .await;
+
+    match result {
         Ok(list) => Json(list).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "by_skill: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
     }
 }
 
@@ -105,11 +101,17 @@ async fn create(
     let skills = serde_json::to_value(body.skills.unwrap_or_default()).unwrap_or_default();
     let tags = body.tags.unwrap_or_default();
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
-    let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let owner_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
 
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "create agent: begin tx");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
     };
 
     let result = sqlx::query_as::<_, Agent>(
@@ -134,15 +136,27 @@ async fn create(
 
     let agent = match result {
         Ok(a) => a,
-        Err(e) => return (StatusCode::CONFLICT, e.to_string()).into_response(),
+        Err(e) => {
+            let is_conflict = e.as_database_error()
+                .and_then(|d| d.code())
+                .map(|c| c == "23505")
+                .unwrap_or(false);
+            if is_conflict {
+                return (StatusCode::CONFLICT, "agent name already exists").into_response();
+            }
+            tracing::error!(%e, "create agent: insert failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
     };
 
     // Sync the normalized skills projection atomically with the agent row.
     if let Err(e) = super::skills::sync_agent_skills(&mut tx, agent.id, &agent.skills.0).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")).into_response();
+        tracing::error!(%e, agent_id = %agent.id, "create agent: sync skills failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
     }
     if let Err(e) = tx.commit().await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("commit: {e}")).into_response();
+        tracing::error!(%e, "create agent: commit failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
     }
 
     (StatusCode::CREATED, Json(agent)).into_response()
@@ -164,44 +178,40 @@ async fn list(
     claims: Claims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
 
-    // Superusers see all agents; others see own agents + team agents
-    let agents = if claims.is_superuser {
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents
-               WHERE ($1::uuid IS NULL OR owner_id = $1)
-                 AND ($2::text IS NULL OR status = $2)
-               ORDER BY created_at DESC
-               LIMIT $3 OFFSET $4"#,
-        )
-        .bind(q.owner)
-        .bind(&q.status)
-        .bind(q.limit)
-        .bind(q.offset)
-        .fetch_all(&state.db)
-        .await
+    let owner_filter: Option<Uuid> = if claims.is_superuser {
+        None
     } else {
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents
-               WHERE owner_id = $5
-                 AND ($1::uuid IS NULL OR owner_id = $1)
-                 AND ($2::text IS NULL OR status = $2)
-               ORDER BY created_at DESC
-               LIMIT $3 OFFSET $4"#,
-        )
-        .bind(q.owner)
-        .bind(&q.status)
-        .bind(q.limit)
-        .bind(q.offset)
-        .bind(user_id)
-        .fetch_all(&state.db)
-        .await
+        match claims.sub.parse() {
+            Ok(id) => Some(id),
+            Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        }
     };
+
+    let agents = sqlx::query_as::<_, Agent>(
+        r#"SELECT * FROM agents
+           WHERE ($1::uuid IS NULL OR owner_id = $1)
+             AND ($3::uuid IS NULL OR owner_id = $3)
+             AND ($2::text IS NULL OR status = $2)
+           ORDER BY created_at DESC
+           LIMIT $4 OFFSET $5"#,
+    )
+    .bind(q.owner)
+    .bind(&q.status)
+    .bind(owner_filter)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await;
 
     match agents {
         Ok(list) => Json(list).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list agents: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
     }
 }
 
@@ -237,17 +247,25 @@ async fn update(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateAgent>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
 
-    // Superusers can update any agent; others must own it or be on the team
+    // Superusers can update any agent; others must own it or be on the team.
     if !claims.is_superuser
         && !user_can_access_agent(&state.db, user_id, id).await {
             return StatusCode::FORBIDDEN.into_response();
         }
 
+    let skills_changed = body.skills.is_some();
+
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "update agent: begin tx");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
     };
 
     let result = sqlx::query_as::<_, Agent>(
@@ -287,16 +305,24 @@ async fn update(
     let agent = match result {
         Ok(Some(agent)) => agent,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "update agent: db error");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
     };
 
-    // Re-sync the normalized skills projection from the (possibly updated) JSONB.
-    if let Err(e) = super::skills::sync_agent_skills(&mut tx, agent.id, &agent.skills.0).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")).into_response();
+    // Only re-sync the skills projection when skills were actually in the request body.
+    if skills_changed
+        && let Err(e) = super::skills::sync_agent_skills(&mut tx, agent.id, &agent.skills.0).await {
+        tracing::error!(%e, agent_id = %agent.id, "update agent: sync skills failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
     }
     match tx.commit().await {
         Ok(()) => Json(agent).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "update agent: commit failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
     }
 }
 
@@ -305,7 +331,10 @@ async fn delete(
     claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
 
     if !claims.is_superuser
         && !user_can_access_agent(&state.db, user_id, id).await {
@@ -320,7 +349,10 @@ async fn delete(
     match result {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "delete agent: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
     }
 }
 

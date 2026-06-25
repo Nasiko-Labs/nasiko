@@ -40,6 +40,21 @@ pub struct Skill {
     pub examples: Vec<serde_json::Value>,
 }
 
+/// Lightweight projection returned by the by-skill discovery endpoint.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AgentSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    pub url: Option<String>,
+    pub icon_url: Option<String>,
+    pub version: String,
+    pub status: String,
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capabilities {
     #[serde(default)]

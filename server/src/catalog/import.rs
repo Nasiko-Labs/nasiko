@@ -73,7 +73,10 @@ async fn build_and_deploy(
         return Err((StatusCode::BAD_REQUEST, "no Dockerfile found in source".into()));
     }
 
-    // Register agent in catalog first (build record needs the FK)
+    // Register agent in catalog and sync skills projection atomically.
+    let mut tx = state.db.begin().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("begin tx: {e}")))?;
+
     let agent_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -88,12 +91,16 @@ async fn build_and_deploy(
     .bind(&image_tag)
     .bind(&meta.skills)
     .bind(&meta.capabilities)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?;
 
-    // Keep the normalized agent_skills projection in sync (best-effort).
-    crate::catalog::skills::sync_agent_skills_json(&state.db, agent_id, &meta.skills).await;
+    let skills: Vec<crate::catalog::models::Skill> =
+        serde_json::from_value(meta.skills.clone()).unwrap_or_default();
+    crate::catalog::skills::sync_agent_skills(&mut tx, agent_id, &skills).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")))?;
+    tx.commit().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit: {e}")))?;
 
     // Create build record
     let build_id: Uuid = sqlx::query_scalar(

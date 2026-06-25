@@ -515,6 +515,13 @@ pub async fn auto_generate_capabilities_pub(
             };
 
             // Keep the normalized agent_skills projection in sync (best-effort).
+            // agents.name is non-unique (migration 006); warn if more than one matched.
+            if updated_ids.len() > 1 {
+                tracing::warn!(
+                    "capability gen: name '{agent_name}' matched {} agents — capabilities overwritten for all",
+                    updated_ids.len()
+                );
+            }
             for id in updated_ids {
                 crate::catalog::skills::sync_agent_skills_json(db, id, &skills_json).await;
             }

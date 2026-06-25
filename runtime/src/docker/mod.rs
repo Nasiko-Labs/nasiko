@@ -367,7 +367,7 @@ async fn inspect_to_status(
             .as_ref()
             .and_then(|ns| ns.ports.as_ref())
             .and_then(extract_host_port)
-            .map(|hp| format!("localhost:{hp}"))
+            .map(|hp| format!("http://localhost:{hp}"))
     } else {
         None
     };
@@ -643,7 +643,7 @@ impl ContainerRuntime for DockerRuntime {
                 ))
             })?;
 
-        Ok(format!("localhost:{host_port}"))
+        Ok(format!("http://localhost:{host_port}"))
     }
 
     #[instrument(skip(self))]

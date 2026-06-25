@@ -1,10 +1,4 @@
-//! Normalized `agent_skills` projection.
-//!
-//! `agents.skills` (JSONB) is the source of truth (it serializes into the agent
-//! card). `agent_skills` is a derived, queryable projection (GIN index on `tags`)
-//! kept in sync here so agents can be discovered by skill tag.
-
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -12,12 +6,6 @@ use uuid::Uuid;
 
 use super::models::Skill;
 
-/// Replace the `agent_skills` rows for `agent_id` from `skills`.
-///
-/// Runs on a caller-supplied connection so it can join the caller's transaction
-/// (atomic with the `agents` write). Delete-then-insert drops removed skills.
-/// Input is deduplicated by `skill_key` (last wins) so the set-based insert can't
-/// affect the same row twice; `ON CONFLICT` guards the rare concurrent-write case.
 pub async fn sync_agent_skills(
     conn: &mut sqlx::PgConnection,
     agent_id: Uuid,
@@ -32,13 +20,17 @@ pub async fn sync_agent_skills(
         return Ok(());
     }
 
-    let mut by_key: HashMap<&str, &Skill> = HashMap::with_capacity(skills.len());
-    for s in skills {
-        by_key.insert(s.id.as_str(), s);
+    // Deduplicate by skill id (first occurrence wins, deterministic). Postgres
+    // raises an error if the same key appears twice in one INSERT batch.
+    let mut seen: HashSet<&str> = HashSet::with_capacity(skills.len());
+    let unique: Vec<&Skill> = skills.iter().filter(|s| seen.insert(s.id.as_str())).collect();
+    if unique.len() < skills.len() {
+        tracing::warn!(%agent_id, dupes = skills.len() - unique.len(), "sync_agent_skills: duplicate skill ids dropped");
     }
+
     let payload = Value::Array(
-        by_key
-            .values()
+        unique
+            .into_iter()
             .map(|s| {
                 json!({
                     "skill_key": s.id,
@@ -51,8 +43,7 @@ pub async fn sync_agent_skills(
             .collect(),
     );
 
-    // One round-trip regardless of skill count. jsonb_to_recordset expands the
-    // payload server-side, including per-row `tags text[]` and `examples jsonb`.
+    // One round-trip regardless of skill count.
     sqlx::query(
         r#"INSERT INTO agent_skills (agent_id, skill_key, name, description, tags, examples)
            SELECT $1, x.skill_key, x.name, x.description,
@@ -74,9 +65,9 @@ pub async fn sync_agent_skills(
     Ok(())
 }
 
-/// Best-effort sync for background/auto paths that only hold `agents.skills` as
-/// JSON (capability generation, seeding, import). Never propagates errors —
-/// those call sites are fire-and-forget and `agents.skills` stays authoritative.
+/// Best-effort sync for background/auto paths. Wraps DELETE+INSERT in its own
+/// transaction so a crash between the two statements cannot leave an empty
+/// projection. Never propagates errors — `agents.skills` stays authoritative.
 pub async fn sync_agent_skills_json(pool: &PgPool, agent_id: Uuid, skills_json: &Value) {
     let skills: Vec<Skill> = match serde_json::from_value(skills_json.clone()) {
         Ok(s) => s,
@@ -85,12 +76,16 @@ pub async fn sync_agent_skills_json(pool: &PgPool, agent_id: Uuid, skills_json: 
             return;
         }
     };
-    match pool.acquire().await {
-        Ok(mut conn) => {
-            if let Err(e) = sync_agent_skills(&mut conn, agent_id, &skills).await {
+    match pool.begin().await {
+        Ok(mut tx) => {
+            if let Err(e) = sync_agent_skills(&mut tx, agent_id, &skills).await {
                 tracing::warn!(%agent_id, %e, "sync_agent_skills_json: db error");
+                return;
+            }
+            if let Err(e) = tx.commit().await {
+                tracing::warn!(%agent_id, %e, "sync_agent_skills_json: commit error");
             }
         }
-        Err(e) => tracing::warn!(%agent_id, %e, "sync_agent_skills_json: acquire connection"),
+        Err(e) => tracing::warn!(%agent_id, %e, "sync_agent_skills_json: begin tx"),
     }
 }
