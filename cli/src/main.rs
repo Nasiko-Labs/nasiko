@@ -51,6 +51,9 @@ const HELP_TEXT: &str = "\
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
 
+\x1b[33mIntegrations:\x1b[0m
+  github     GitHub integration (status/repos/connect/disconnect/clone)
+
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
   publish    Publish to the artifact registry
@@ -193,6 +196,31 @@ enum AgentOpsCommands {
         #[arg(long)]
         endpoint: Option<String>,
     },
+    /// GitHub integration
+    Github {
+        #[command(subcommand)]
+        command: GithubCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum GithubCommands {
+    /// Show GitHub connection status
+    Status,
+    /// List accessible GitHub repositories
+    Repos,
+    /// Connect GitHub account via OAuth
+    Connect,
+    /// Disconnect GitHub
+    Disconnect,
+    /// Clone a GitHub repo and deploy as an agent
+    Clone {
+        /// Repository (owner/repo). Omit for interactive picker.
+        repo: Option<String>,
+        /// Branch to clone
+        #[arg(long, default_value = "main")]
+        branch: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -255,31 +283,24 @@ enum RegistrySubCommands {
     Disconnect,
     /// Show connected registry
     Status,
-    /// Semantically discover artifacts by natural-language query
-    #[command(alias = "discover")]
+    /// Search the registry
     Search {
-        /// Natural-language query (e.g. "nutrition planning")
+        /// Search query
         query: Option<String>,
-        /// Filter by type (agent, skill, tool)
-        #[arg(short = 't', long = "type")]
+        /// Filter by type (agent, skill)
+        #[arg(short = 't', long, name = "type")]
         artifact_type: Option<String>,
         /// Filter by framework
         #[arg(short = 'f', long)]
         framework: Option<String>,
-        /// Max results to return
-        #[arg(long, default_value_t = 10)]
-        top: u32,
-        /// Minimum relevance score (0.0–1.0) for semantic matches
-        #[arg(long)]
-        min_score: Option<f32>,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
     },
     /// List all artifacts in the registry
     List {
-        /// Filter by type (agent, skill, tool)
-        #[arg(short = 't', long = "type")]
+        /// Filter by type (agent, skill)
+        #[arg(short = 't', long, name = "type")]
         artifact_type: Option<String>,
         /// Output as JSON
         #[arg(short = 'j', long)]
@@ -401,6 +422,15 @@ fn main() -> Result<()> {
             AgentOpsCommands::Sessions { endpoint } => {
                 commands::tui::list_sessions(endpoint.as_deref())
             }
+            AgentOpsCommands::Github { command } => match command {
+                GithubCommands::Status => commands::github::status(),
+                GithubCommands::Repos => commands::github::repos(),
+                GithubCommands::Connect => commands::github::connect(),
+                GithubCommands::Disconnect => commands::github::disconnect(),
+                GithubCommands::Clone { repo, branch } => {
+                    commands::github::clone(repo.as_deref(), Some(branch.as_str()))
+                }
+            },
         },
         Commands::Cp(cmd) => match cmd {
             CpCommands::Dev { command } => match command {
@@ -430,8 +460,8 @@ fn main() -> Result<()> {
                 RegistrySubCommands::Connect { url } => commands::registry::connect(&url),
                 RegistrySubCommands::Disconnect => commands::registry::disconnect(),
                 RegistrySubCommands::Status => commands::registry::status(),
-                RegistrySubCommands::Search { query, artifact_type, framework, top, min_score, json } => {
-                    commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), top, min_score, json)
+                RegistrySubCommands::Search { query, artifact_type, framework, json } => {
+                    commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), json)
                 }
                 RegistrySubCommands::List { artifact_type, json } => {
                     commands::registry::list(artifact_type.as_deref(), json)

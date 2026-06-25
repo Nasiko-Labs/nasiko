@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod build;
+pub mod github;
 pub mod card;
 pub mod chat;
 pub mod cluster;
