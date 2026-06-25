@@ -138,8 +138,8 @@ async fn orchestrator_stream(
                 .enumerate()
                 .map(|(i, s)| OrcAgentSkill {
                     id: format!("{}-skill-{}", summary.name, i),
-                    name: s.clone(),
-                    description: s.clone(),
+                    name: s.name.clone(),
+                    description: s.description.clone(),
                     tags: summary.tags.clone(),
                 })
                 .collect(),
