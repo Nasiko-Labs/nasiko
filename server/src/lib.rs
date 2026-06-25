@@ -53,11 +53,25 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    // Container lifecycle routes: require deployer+ role
-    // TODO: restore RBAC once auth middleware is re-enabled
+    build_app_with_user_router(state.clone(), fallback, users::router())
+}
+
+/// Build the full control plane Axum application with a custom user router.
+/// EE server passes its own org-aware user router (which merges management_router
+/// and provides EE list/get handlers); OSS `build_app` passes `users::router()`.
+pub fn build_app_with_user_router<F, T>(
+    state: AppState,
+    fallback: F,
+    user_router: Router<AppState>,
+) -> Router
+where
+    F: Handler<T, ()> + Clone + Send + 'static,
+    T: 'static,
+{
+    // Container lifecycle routes: deployer+ only
     let container_routes = Router::new()
-        .nest("/containers", admin::router());
-        // .layer(middleware::from_fn(auth::rbac::require_deployer));
+        .nest("/containers", admin::router())
+        .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     // Pool/scaling routes: require admin+ role
     let pool_routes = Router::new()
@@ -65,21 +79,31 @@ where
         .layer(middleware::from_fn(auth::rbac::require_admin));
 
     // User management: superuser only
-    let user_routes = Router::new()
-        .merge(users::router())
+    let user_routes = user_router
         .layer(middleware::from_fn(auth::rbac::require_superuser));
+
+    // Agent deploy routes (upload-and-deploy, deploy-status): deployer+ only.
+    // Agent proxy routes (/agents/{id}/*) are separate and require only auth.
+    let agent_deploy_routes = Router::new()
+        .nest("/agents", agents::router())
+        .layer(middleware::from_fn(auth::rbac::require_deployer));
+
+    // Build routes (trigger builds, view build history): deployer+ only
+    let build_routes = Router::new()
+        .nest("/build", build::router())
+        .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     let protected = Router::new()
         .route("/me", get(me))
         .route("/a2a", axum::routing::post(router::a2a_handler))
-        .nest("/agents", agents::router())
+        .merge(agent_deploy_routes)
         .route("/agents/{agent_id}", axum::routing::any(agent_proxy_fallback))
         .route("/agents/{agent_id}/{*rest}", axum::routing::any(agent_proxy_fallback))
         .merge(container_routes)
         .merge(pool_routes)
         .merge(user_routes)
         .nest("/catalog", catalog::router())
-        .nest("/build", build::router())
+        .merge(build_routes)
         .merge(chat::router())
         .merge(secrets::router())
         .merge(settings::router())

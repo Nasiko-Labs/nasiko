@@ -434,8 +434,30 @@ async fn list_all_builds(
 
 async fn list_builds(
     State(state): State<AppState>,
+    claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    // Superusers see all; others must own the agent.
+    if !claims.is_superuser {
+        let owned: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND owner_id = $2)",
+        )
+        .bind(agent_id)
+        .bind(user_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(false);
+
+        if !owned {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+
     match sqlx::query_as::<_, BuildRecord>(
         "SELECT * FROM agent_builds WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 20",
     )
