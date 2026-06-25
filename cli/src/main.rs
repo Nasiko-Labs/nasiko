@@ -51,6 +51,9 @@ const HELP_TEXT: &str = "\
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
 
+\x1b[33mAgents:\x1b[0m
+  agents     Manage and browse agents (ls/get/deploy/search/info/frameworks/list-uploaded/chat)
+
 \x1b[33mIntegrations:\x1b[0m
   github     GitHub integration (status/repos/connect/disconnect/clone)
 
@@ -200,6 +203,68 @@ enum AgentOpsCommands {
     Github {
         #[command(subcommand)]
         command: GithubCommands,
+    },
+    /// Manage and browse agents
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentsCommands {
+    /// List all deployed agents
+    #[command(alias = "list")]
+    Ls,
+    /// Get details for a specific agent by name or ID
+    Get {
+        #[arg(long = "agent-id")]
+        agent_id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, short = 'f', default_value = "details")]
+        format: String,
+    },
+    /// Deploy an agent from a .zip file or directory
+    Deploy {
+        source: String,
+        #[arg(long, short = 'n')]
+        name: Option<String>,
+    },
+    /// Search the public Nasiko Artifact Registry
+    Search {
+        query: Option<String>,
+        #[arg(long, short = 't')]
+        artifact_type: Option<String>,
+        #[arg(long, short = 'f')]
+        framework: Option<String>,
+        #[arg(long)]
+        tags: Option<String>,
+        #[arg(long, short = 'o')]
+        owner: Option<String>,
+        #[arg(long, short = 'l', default_value = "50")]
+        limit: usize,
+    },
+    /// Get details for a specific artifact from the registry
+    Info {
+        name: String,
+        #[arg(long, short = 'o', default_value = "nasiko")]
+        owner: String,
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+    },
+    /// List available frameworks in the artifact registry
+    Frameworks,
+    /// List agents uploaded by the current user
+    #[command(name = "list-uploaded")]
+    ListUploaded,
+    /// Chat directly with a locally running agent
+    Chat {
+        #[arg(long, short = 'u', default_value = "http://localhost:5000")]
+        url: String,
+        message: Option<String>,
+        #[arg(long, short = 's')]
+        session_id: Option<String>,
     },
 }
 
@@ -422,6 +487,26 @@ fn main() -> Result<()> {
             AgentOpsCommands::Sessions { endpoint } => {
                 commands::tui::list_sessions(endpoint.as_deref())
             }
+            AgentOpsCommands::Agents { command } => match command {
+                AgentsCommands::Ls => commands::agents::cmd_ls(),
+                AgentsCommands::Get { agent_id, name, format } => {
+                    commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format)
+                }
+                AgentsCommands::Deploy { source, name } => {
+                    commands::agents::cmd_deploy(&source, name.as_deref())
+                }
+                AgentsCommands::Search { query, artifact_type, framework, tags, owner, limit } => {
+                    commands::agents::cmd_search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), tags.as_deref(), owner.as_deref(), limit)
+                }
+                AgentsCommands::Info { name, owner, version } => {
+                    commands::agents::cmd_info(&name, &owner, version.as_deref())
+                }
+                AgentsCommands::Frameworks => commands::agents::cmd_frameworks(),
+                AgentsCommands::ListUploaded => commands::agents::cmd_list_uploaded(),
+                AgentsCommands::Chat { url, message, session_id } => {
+                    commands::agents::cmd_chat(&url, message.as_deref(), session_id.as_deref())
+                }
+            },
             AgentOpsCommands::Github { command } => match command {
                 GithubCommands::Status => commands::github::status(),
                 GithubCommands::Repos => commands::github::repos(),
