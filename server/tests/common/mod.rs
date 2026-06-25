@@ -91,9 +91,15 @@ impl TestServer {
 }
 
 fn test_config(db_url: String) -> Config {
-    // JWT_SECRET must be set in env for SimpleJwtAuth::from_env()
-    // SAFETY: tests run serially via #[serial], so no concurrent env mutation
-    unsafe { std::env::set_var("JWT_SECRET", "test-secret-for-nasiko-tests") };
+    // S3Storage::from_env() and SimpleJwtAuth::from_env() read env vars at call time.
+    // SAFETY: tests run serially via #[serial], so no concurrent env mutation.
+    unsafe {
+        std::env::set_var("JWT_SECRET", "test-secret-for-nasiko-tests");
+        std::env::set_var("S3_ENDPOINT", S3_ENDPOINT);
+        std::env::set_var("S3_ACCESS_KEY", "nasiko");
+        std::env::set_var("S3_SECRET_KEY", "nasiko123");
+        std::env::set_var("S3_REGION", "us-east-1");
+    }
 
     Config {
         bind: "127.0.0.1:0".into(),

@@ -99,10 +99,8 @@ async fn build_and_deploy(
         serde_json::from_value(meta.skills.clone()).unwrap_or_default();
     crate::catalog::skills::sync_agent_skills(&mut tx, agent_id, &skills).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")))?;
-    tx.commit().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit: {e}")))?;
-
-    // Create build record
+    // FIX: create the build record inside the same transaction so the agent row
+    // and its first build record are always committed together.
     let build_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO agent_builds (agent_id, version_tag, image_reference, status)
            VALUES ($1, $2, $3, 'building')
@@ -111,9 +109,12 @@ async fn build_and_deploy(
     .bind(agent_id)
     .bind(&meta.version)
     .bind(&image_tag)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create build record: {e}")))?;
+
+    tx.commit().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit: {e}")))?;
 
     // Build image
     // TODO: migrate to new runtime API — build() now takes tar bytes, not a directory path.
@@ -169,7 +170,10 @@ async fn import_upload(
     claims: Claims,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let owner_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
 
     let mut package_data: Option<Vec<u8>> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -220,7 +224,10 @@ async fn import_github(
     claims: Claims,
     Json(req): Json<GithubImportRequest>,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let owner_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
 
     // Get user's GitHub token
     let gh_token: Option<(serde_json::Value,)> = sqlx::query_as(
@@ -290,7 +297,10 @@ async fn import_registry(
     claims: Claims,
     Json(req): Json<RegistryImportRequest>,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let owner_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
 
     // Parse OCI reference: "registry.host/owner/name:tag"
     let (repo_with_host, tag) = match req.reference.rsplit_once(':') {

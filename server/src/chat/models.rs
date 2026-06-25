@@ -36,6 +36,7 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub file_parts: Option<sqlx::types::Json<serde_json::Value>>,
+    pub has_file_parts: bool,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -51,9 +52,22 @@ pub struct UpdateSession {
     pub title: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ChatMessageFile {
+    pub id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub session_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub storage_uri: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SendMessage {
     pub role: String,
     pub content: String,
     pub file_parts: Option<serde_json::Value>,
+    pub file_ids: Option<Vec<Uuid>>,
 }
