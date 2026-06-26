@@ -12,3 +12,4 @@ opentelemetry-instrumentation-fastapi>=0.57b0
 opentelemetry-exporter-otlp-proto-http>=1.36.0
 arize-phoenix>=5.16.0
 arize-phoenix-evals>=3.0.0
+pymongo>=4.6.0

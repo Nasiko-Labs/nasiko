@@ -10,6 +10,7 @@ import asyncio
 import signal
 import sys
 import aiohttp
+import re
 from typing import Dict, Any, Optional
 from datetime import datetime, UTC
 from pathlib import Path
@@ -557,7 +558,7 @@ class RedisStreamListener:
             # Step 6: Final status update
             # Use Kong gateway URL for external access
             container_name = deployment_result.get(
-                "container_name", f"agent-{agent_name}"
+                "container_name", f"agent-{self._sanitize_docker_name(agent_name)}"
             )
             external_url = f"{Config.KONG_GATEWAY_URL}/agents/{container_name}"
 
@@ -654,6 +655,10 @@ class RedisStreamListener:
             agent_name, base_url, status, progress, message, additional_data
         )
 
+    def _sanitize_docker_name(self, name: str) -> str:
+        """Sanitize agent name for use as Docker image tag / container name."""
+        return re.sub(r'[^a-z0-9._-]', '-', name.lower()).strip('-')
+
     async def _build_local_docker_image(
         self, source_path: Path, agent_name: str
     ) -> str:
@@ -673,7 +678,7 @@ class RedisStreamListener:
             await self._inject_observability(temp_dir / "agent", agent_name)
 
             # Build Docker image
-            image_tag = f"local-agent-{agent_name}:latest"
+            image_tag = f"local-agent-{self._sanitize_docker_name(agent_name)}:latest"
 
             build_cmd = ["docker", "build", "-t", image_tag, str(temp_dir / "agent")]
 
@@ -769,7 +774,7 @@ class RedisStreamListener:
         # Stop and remove existing container if it exists
         await self._cleanup_existing_container(agent_name)
 
-        container_name = f"agent-{agent_name}"
+        container_name = f"agent-{self._sanitize_docker_name(agent_name)}"
 
         # Prepare environment variables like K8s worker
         env_vars = {

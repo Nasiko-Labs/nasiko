@@ -8,6 +8,7 @@ import time
 import logging
 import requests
 import json
+import pymongo
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -101,10 +102,26 @@ class SuperuserManager:
                 # User might already exist
                 error_text = response.text
                 if "already exists" in error_text.lower():
-                    logger.info("Superuser already exists, checking for user_id...")
-                    # Since we can't get the ID easily, let's return a placeholder and handle it in the orchestrator
-                    # The orchestrator should still work even without the exact user_id for existing users
-                    return "existing_user"
+                    logger.info("Superuser already exists, deleting from database to regenerate credentials...")
+                    # Delete directly from MongoDB since we can't authenticate to the auth service
+                    try:
+                        mongo_url = os.getenv("MONGO_URL", "mongodb://admin:password@mongodb:27017")
+                        auth_db_name = os.getenv("AUTH_DB_NAME", "nasiko")
+                        client = pymongo.MongoClient(mongo_url)
+                        db = client[auth_db_name]
+                        result = db.users.delete_one({"username": self.superuser_username})
+                        logger.info(f"Deleted existing superuser record: {result.deleted_count} deleted.")
+                        
+                        # Retry creation
+                        if result.deleted_count > 0:
+                            logger.info("Retrying superuser creation after deletion...")
+                            return self.create_superuser()
+                        else:
+                            logger.warning("No existing user found to delete, returning placeholder")
+                            return "existing_user"
+                    except Exception as e:
+                        logger.error(f"Failed to delete existing superuser from DB: {e}")
+                        return "existing_user"
                 else:
                     logger.error(f"Failed to create superuser: {response.status_code}")
                     logger.error(f"Response: {response.text}")
