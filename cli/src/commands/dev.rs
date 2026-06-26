@@ -239,19 +239,6 @@ pub fn start(infra_only: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn env_template() -> Result<()> {
-    let path = dev_env_path();
-    let created = ensure_dev_env_file()?;
-    if created {
-        println!("Created {}", path.display());
-    } else {
-        println!("{} already exists.", path.display());
-    }
-    println!("Edit it to configure your local platform, then run:");
-    println!("  nasiko up");
-    Ok(())
-}
-
 fn ensure_dev_env_file() -> Result<bool> {
     let path = dev_env_path();
     if path.exists() {

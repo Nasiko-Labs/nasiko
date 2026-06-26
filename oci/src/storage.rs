@@ -125,6 +125,19 @@ impl S3Storage {
             .is_ok()
     }
 
+    pub async fn blob_size(&self, digest: &str) -> Result<i64> {
+        let key = Self::blob_key(digest);
+        let resp = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .map_err(|e| OciError::NotFound(e.to_string()))?;
+        Ok(resp.content_length.unwrap_or(0))
+    }
+
     pub async fn ensure_bucket(&self, skip_create: bool) -> std::result::Result<(), anyhow::Error> {
         let exists = self
             .client

@@ -28,7 +28,6 @@ const HELP_TEXT: &str = "\
   use        Switch active cluster
   clusters   List configured control planes
   auth       Authentication (login/status/logout)
-  dev        Start infra only (contributors)
 
 \x1b[33mCreate:\x1b[0m
   new        Scaffold a new agent project
@@ -311,12 +310,6 @@ enum CpCommands {
     Up,
     /// Stop local Nasiko cluster
     Down,
-    /// Start infra for local development (contributors only)
-    #[command(after_help = "Config: ~/.nasiko/dev.env\nThen run: cargo run -p nasiko-server")]
-    Dev {
-        #[command(subcommand)]
-        command: Option<DevCommands>,
-    },
     /// Register a CP by URL
     #[command(after_help = "Config: ~/.nasiko/config.json")]
     Connect {
@@ -404,13 +397,6 @@ enum RegistrySubCommands {
     },
 }
 
-#[derive(Subcommand)]
-enum DevCommands {
-    /// Stop dev infrastructure
-    Stop,
-    /// Generate or show the dev.env configuration file
-    Env,
-}
 
 #[derive(Subcommand)]
 enum AuthCommands {
@@ -574,11 +560,6 @@ fn main() -> Result<()> {
         Commands::Cp(cmd) => match cmd {
             CpCommands::Up => commands::dev::start(false),
             CpCommands::Down => commands::dev::stop(),
-            CpCommands::Dev { command } => match command {
-                None => commands::dev::start(true),
-                Some(DevCommands::Stop) => commands::dev::stop(),
-                Some(DevCommands::Env) => commands::dev::env_template(),
-            },
             CpCommands::Connect { url, name } => commands::cluster::connect(&url, name.as_deref()),
             CpCommands::Use { name } => commands::cluster::use_cluster(&name),
             CpCommands::Clusters => commands::cluster::list(),

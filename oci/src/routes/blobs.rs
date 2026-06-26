@@ -15,14 +15,14 @@ pub async fn head_blob(
     State(state): State<OciState>,
     Path((_owner, _repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    if !ops::blob_exists(&state, &digest).await {
-        return Err(OciError::NotFound(format!("blob {digest} not found")));
-    }
+    let size = state.storage.blob_size(&digest).await?;
+    let size_str = size.to_string();
     Ok((
         StatusCode::OK,
         [
+            ("Content-Length", size_str.as_str()),
             ("Docker-Content-Digest", digest.as_str()),
-            ("Content-Length", "0"),
+            ("Content-Type", "application/octet-stream"),
         ],
         "",
     )
