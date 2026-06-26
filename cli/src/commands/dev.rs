@@ -131,7 +131,7 @@ impl DevEnv {
 
     fn save_to_file(&self) -> Result<()> {
         let path = dev_env_path();
-        let mut content = String::from("# ~/.nasiko/dev.env — local development configuration\n");
+        let mut content = String::from("# ~/.nasiko/.env — nasiko configuration\n");
         content.push_str("# Shell env vars take precedence over this file.\n\n");
 
         for ev in DEV_ENV_VARS {
@@ -245,7 +245,7 @@ fn ensure_dev_env_file() -> Result<bool> {
         return Ok(false);
     }
 
-    let mut content = String::from("# ~/.nasiko/dev.env — local development configuration\n");
+    let mut content = String::from("# ~/.nasiko/.env — nasiko configuration\n");
     content.push_str("# Shell env vars take precedence over this file.\n\n");
 
     for ev in DEV_ENV_VARS {
@@ -380,7 +380,7 @@ fn dev_env_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".nasiko")
-        .join("dev.env")
+        .join(".env")
 }
 
 fn load_env_file(path: &std::path::Path) -> HashMap<String, String> {

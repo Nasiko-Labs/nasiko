@@ -136,7 +136,7 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
         env: env.clone(),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
-    println!("  {} → {} (port {})", agent_name, status.state, status.port);
+    println!("  {} → {}", agent_name, status.state);
     println!("\n✓ Deployed {agent_name}:{version} (id: {agent_id})");
     Ok(())
 }
@@ -172,7 +172,7 @@ fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &
         env: env.clone(),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
-    println!("  {} → {} (port {})", agent_name, status.state, status.port);
+    println!("  {} → {}", agent_name, status.state);
     println!("\n✓ Deployed {agent_name}:{version}");
     Ok(())
 }
