@@ -2,7 +2,66 @@ use anyhow::{Result, bail};
 use std::path::Path;
 use std::process::Command;
 
-use crate::api::{AgentRecord, Client, UploadedAgent};
+use crate::api::{AgentRecord, Client, ContainerStatus, UploadedAgent};
+
+// ─── Lifecycle ────────────────────────────────────────────────────────────────
+
+pub fn ps(json: bool) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    if json {
+        let raw: serde_json::Value = client.get_json("/containers")?;
+        println!("{}", serde_json::to_string_pretty(&raw)?);
+        return Ok(());
+    }
+    let containers: Vec<ContainerStatus> = client.get_json("/containers")?;
+    if containers.is_empty() {
+        println!("No agents running.");
+        return Ok(());
+    }
+    println!("{:<24} {:<10} {:<40} {:<6} NODE", "NAME", "STATE", "IMAGE", "PORT");
+    for c in &containers {
+        println!("{:<24} {:<10} {:<40} {:<6} {}", c.name, c.state, c.image, c.port, c.node_id);
+    }
+    Ok(())
+}
+
+pub fn logs(agent: &str, tail: u32) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    let logs = client.get_text(&format!("/containers/{agent}/logs?tail={tail}"))?;
+    print!("{logs}");
+    Ok(())
+}
+
+pub fn stop(agent: &str) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    let _: serde_json::Value = client.post_empty(&format!("/containers/{agent}/stop"))?;
+    println!("Stopped: {agent}");
+    Ok(())
+}
+
+pub fn restart(agent: &str) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    let _: serde_json::Value = client.post_empty(&format!("/containers/{agent}/restart"))?;
+    println!("Restarted: {agent}");
+    Ok(())
+}
+
+pub fn rm(agent: &str, force: bool) -> Result<()> {
+    if !force {
+        let confirm = dialoguer::Confirm::new()
+            .with_prompt(format!("Terminate '{agent}' and deregister?"))
+            .default(false)
+            .interact()?;
+        if !confirm {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    let client = Client::from_active_cluster()?;
+    client.delete(&format!("/containers/{agent}"))?;
+    println!("Removed: {agent}");
+    Ok(())
+}
 
 const PUBLIC_REGISTRY_URL: &str = "https://registry.nasiko.dev";
 
@@ -256,64 +315,3 @@ pub fn cmd_list_uploaded() -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
-    let base = url.trim_end_matches('/');
-
-    let agent_name = ureq::get(&format!("{}/.well-known/agent.json", base))
-        .call().ok()
-        .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
-        .and_then(|card| card.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
-        .unwrap_or_else(|| "Agent".to_string());
-
-    println!("Chatting with '{}' at {}", agent_name, base);
-    if let Some(sid) = session_id { println!("Session: {}", sid); }
-    println!("Type 'exit' to quit.\n");
-
-    let send_msg = |msg: &str, ctx_id: Option<String>| -> Result<Option<String>> {
-        let msg_id = format!("{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
-        let mut payload = serde_json::json!({
-            "jsonrpc": "2.0", "method": "message/send", "id": &msg_id,
-            "params": { "message": {
-                "role": "user", "parts": [{ "kind": "text", "text": msg }],
-                "messageId": &msg_id, "kind": "message",
-            }}
-        });
-        if let Some(ref cid) = ctx_id {
-            payload["params"]["message"]["contextId"] = serde_json::Value::String(cid.clone());
-        }
-        let mut resp = ureq::post(&format!("{}/", base))
-            .header("Content-Type", "application/json")
-            .send_json(&payload)
-            .map_err(|e| anyhow::anyhow!("failed to reach agent: {}", e))?;
-        let raw: serde_json::Value = resp.body_mut().read_json()?;
-        let result = raw.get("result").cloned().unwrap_or_default();
-        let new_ctx = result.get("contextId").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let text = result.get("artifacts").and_then(|a| a.as_array()).and_then(|a| a.first())
-            .and_then(|a| a.get("parts")).and_then(|p| p.as_array())
-            .and_then(|p| p.iter().find(|x| x.get("kind").and_then(|k| k.as_str()) == Some("text")))
-            .and_then(|p| p.get("text")).and_then(|t| t.as_str())
-            .or_else(|| result.get("status").and_then(|s| s.get("message"))
-                .and_then(|m| m.get("parts")).and_then(|p| p.as_array())
-                .and_then(|p| p.first()).and_then(|p| p.get("text")).and_then(|t| t.as_str()))
-            .unwrap_or("(no response)");
-        println!("Agent: {}\n", text);
-        Ok(new_ctx.or(ctx_id))
-    };
-
-    let initial_ctx = session_id.map(|s| s.to_string());
-    if let Some(msg) = message {
-        send_msg(msg, initial_ctx)?;
-        return Ok(());
-    }
-
-    let mut ctx_id: Option<String> = initial_ctx;
-    loop {
-        let input: String = dialoguer::Input::new().with_prompt("You").allow_empty(true).interact_text()?;
-        let input = input.trim();
-        if input.is_empty() { continue; }
-        if input == "exit" || input == "quit" { println!("Goodbye."); break; }
-        ctx_id = send_msg(input, ctx_id)?;
-    }
-    Ok(())
-}

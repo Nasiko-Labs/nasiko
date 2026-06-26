@@ -290,3 +290,66 @@ fn handle_artifact_update(event: &serde_json::Value) {
         }
     }
 }
+
+/// Chat directly with a locally running agent via A2A JSON-RPC (used by `nasiko agents chat`).
+pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
+    let base = url.trim_end_matches('/');
+
+    let agent_name = ureq::get(&format!("{}/.well-known/agent.json", base))
+        .call().ok()
+        .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
+        .and_then(|card| card.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "Agent".to_string());
+
+    println!("Chatting with '{}' at {}", agent_name, base);
+    if let Some(sid) = session_id { println!("Session: {}", sid); }
+    println!("Type 'exit' to quit.\n");
+
+    let send_msg = |msg: &str, ctx_id: Option<String>| -> Result<Option<String>> {
+        let msg_id = format!("{:x}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let mut payload = serde_json::json!({
+            "jsonrpc": "2.0", "method": "message/send", "id": &msg_id,
+            "params": { "message": {
+                "role": "user", "parts": [{ "kind": "text", "text": msg }],
+                "messageId": &msg_id, "kind": "message",
+            }}
+        });
+        if let Some(ref cid) = ctx_id {
+            payload["params"]["message"]["contextId"] = serde_json::Value::String(cid.clone());
+        }
+        let mut resp = ureq::post(&format!("{}/", base))
+            .header("Content-Type", "application/json")
+            .send_json(&payload)
+            .map_err(|e| anyhow::anyhow!("failed to reach agent: {}", e))?;
+        let raw: serde_json::Value = resp.body_mut().read_json()?;
+        let result = raw.get("result").cloned().unwrap_or_default();
+        let new_ctx = result.get("contextId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let text = result.get("artifacts").and_then(|a| a.as_array()).and_then(|a| a.first())
+            .and_then(|a| a.get("parts")).and_then(|p| p.as_array())
+            .and_then(|p| p.iter().find(|x| x.get("kind").and_then(|k| k.as_str()) == Some("text")))
+            .and_then(|p| p.get("text")).and_then(|t| t.as_str())
+            .or_else(|| result.get("status").and_then(|s| s.get("message"))
+                .and_then(|m| m.get("parts")).and_then(|p| p.as_array())
+                .and_then(|p| p.first()).and_then(|p| p.get("text")).and_then(|t| t.as_str()))
+            .unwrap_or("(no response)");
+        println!("Agent: {}\n", text);
+        Ok(new_ctx.or(ctx_id))
+    };
+
+    let initial_ctx = session_id.map(|s| s.to_string());
+    if let Some(msg) = message {
+        send_msg(msg, initial_ctx)?;
+        return Ok(());
+    }
+
+    let mut ctx_id: Option<String> = initial_ctx;
+    loop {
+        let input: String = dialoguer::Input::new().with_prompt("You").allow_empty(true).interact_text()?;
+        let input = input.trim();
+        if input.is_empty() { continue; }
+        if input == "exit" || input == "quit" { println!("Goodbye."); break; }
+        ctx_id = send_msg(input, ctx_id)?;
+    }
+    Ok(())
+}

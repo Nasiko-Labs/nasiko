@@ -472,11 +472,11 @@ fn main() -> Result<()> {
             AgentOpsCommands::Push { image, name } => {
                 commands::push::push(&image, name.as_deref())
             }
-            AgentOpsCommands::Ps { json } => commands::lifecycle::ps(json),
-            AgentOpsCommands::Logs { agent, tail } => commands::lifecycle::logs(&agent, tail),
-            AgentOpsCommands::Stop { agent } => commands::lifecycle::stop(&agent),
-            AgentOpsCommands::Restart { agent } => commands::lifecycle::restart(&agent),
-            AgentOpsCommands::Rm { agent, force } => commands::lifecycle::rm(&agent, force),
+            AgentOpsCommands::Ps { json } => commands::agents::ps(json),
+            AgentOpsCommands::Logs { agent, tail } => commands::agents::logs(&agent, tail),
+            AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
+            AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
+            AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
             AgentOpsCommands::Chat { url, message, tui, resume } => {
                 if tui || resume.is_some() {
                     commands::tui::run_tui(&url, resume.as_deref())
@@ -504,7 +504,7 @@ fn main() -> Result<()> {
                 AgentsCommands::Frameworks => commands::agents::cmd_frameworks(),
                 AgentsCommands::ListUploaded => commands::agents::cmd_list_uploaded(),
                 AgentsCommands::Chat { url, message, session_id } => {
-                    commands::agents::cmd_chat(&url, message.as_deref(), session_id.as_deref())
+                    commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref())
                 }
             },
             AgentOpsCommands::Github { command } => match command {
