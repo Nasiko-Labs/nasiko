@@ -63,9 +63,10 @@ pub async fn agent_proxy_middleware(
             return Err(ProxyError::AccessDenied);
         }
 
-    // 2. Extract flow context from traceparent header (auto-propagated by OTel)
+    // 2. Extract flow context from traceparent (OTel) or start a new root trace
+    //    for direct calls that don't carry W3C trace propagation.
     let flow_ctx = FlowContext::from_headers(req.headers())
-        .ok_or(ProxyError::MissingFlowContext)?;
+        .unwrap_or_else(FlowContext::new_root);
 
     let agent_id_str = agent_id.to_string();
 
@@ -100,7 +101,9 @@ pub async fn agent_proxy_middleware(
         },
     ).await;
 
-    // 6. Forward request with traceparent (already present in headers — OTel propagates)
+    // 6. Forward request — skip incoming traceparent and inject our own so that
+    //    downstream hops always share the same flow_id regardless of whether the
+    //    original caller had OTel instrumentation.
     let target_url = format!("http://{}:{}{}", node_ip, port, forwarded_path);
     let (parts, body) = req.into_parts();
 
@@ -113,11 +116,14 @@ pub async fn agent_proxy_middleware(
     let mut forwarded_req = state.http_client.request(parts.method.clone(), &target_url);
 
     for (name, value) in parts.headers.iter() {
-        if name != "host" && name != "content-length"
+        if name != "host" && name != "content-length" && name != "traceparent"
             && let Ok(val_str) = value.to_str() {
                 forwarded_req = forwarded_req.header(name.as_str(), val_str);
             }
     }
+    // Inject child traceparent — preserves the flow_id so cascade depth/fan-out
+    // counters accumulate correctly across hops.
+    forwarded_req = forwarded_req.header("traceparent", flow_ctx.to_traceparent());
 
     if !body_bytes.is_empty() {
         forwarded_req = forwarded_req.body(body_bytes.to_vec());
@@ -284,7 +290,6 @@ pub enum ProxyError {
     AgentNotFound,
     AgentNotRunning,
     AccessDenied,
-    MissingFlowContext,
     CascadeRejected(String),
     UpstreamError(String),
     DatabaseError(String),
@@ -297,7 +302,6 @@ impl IntoResponse for ProxyError {
             ProxyError::AgentNotFound => (StatusCode::NOT_FOUND, "Agent not found".to_string()),
             ProxyError::AgentNotRunning => (StatusCode::SERVICE_UNAVAILABLE, "Agent not running".to_string()),
             ProxyError::AccessDenied => (StatusCode::FORBIDDEN, "Access denied".to_string()),
-            ProxyError::MissingFlowContext => (StatusCode::BAD_REQUEST, "Missing traceparent header — agents must have OTel instrumentation enabled".to_string()),
             ProxyError::CascadeRejected(reason) => (StatusCode::LOOP_DETECTED, format!("Cascade rejected: {}", reason)),
             ProxyError::UpstreamError(e) => (StatusCode::BAD_GATEWAY, format!("Upstream error: {}", e)),
             ProxyError::DatabaseError(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)),

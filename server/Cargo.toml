@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 nasiko-auth.workspace = true
+nasiko-github = { workspace = true, features = ["routes"] }
 nasiko-utils.workspace = true
 nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }

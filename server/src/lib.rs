@@ -6,6 +6,7 @@ pub mod build;
 pub mod capabilities;
 pub mod chat;
 pub mod flow;
+pub mod github;
 pub mod observability;
 pub mod pool;
 pub mod proxy;
@@ -111,11 +112,12 @@ where
         .merge(proxy::router())
         .merge(usage::routes::router())
         .merge(flow::routes::router())
+        .merge(github::router())
         .merge(auth::login::protected_router())
-        // .layer(middleware::from_fn_with_state(
-        //     state.clone(),
-        //     proxy::agent_proxy_middleware,
-        // ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            proxy::agent_proxy_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,

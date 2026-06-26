@@ -16,6 +16,9 @@ const S3_ENDPOINT: &str = "http://localhost:9000";
 pub struct TestServer {
     pub base_url: String,
     pub client: reqwest::Client,
+    /// Direct pool access for tests that need to seed or verify DB state.
+    #[allow(dead_code)]
+    pub db: PgPool,
     db_name: String,
 }
 
@@ -54,7 +57,7 @@ impl TestServer {
                 .expect("docker runtime"),
         );
 
-        let state = AppState::from_config_with_db(config, providers, runtime, db).await;
+        let state = AppState::from_config_with_db(config, providers, runtime, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -73,6 +76,7 @@ impl TestServer {
         TestServer {
             base_url: format!("http://127.0.0.1:{port}"),
             client: reqwest::Client::new(),
+            db: db.clone(),
             db_name,
         }
     }
@@ -99,6 +103,8 @@ fn test_config(db_url: String) -> Config {
         std::env::set_var("S3_ACCESS_KEY", "nasiko");
         std::env::set_var("S3_SECRET_KEY", "nasiko123");
         std::env::set_var("S3_REGION", "us-east-1");
+        // 32 bytes of 0x41 ('A'), base64-encoded — required by SecretsCrypto::load_master_key()
+        std::env::set_var("SECRETS_ENCRYPTION_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=");
     }
 
     Config {

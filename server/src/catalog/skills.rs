@@ -44,18 +44,14 @@ pub async fn sync_agent_skills(
     );
 
     // One round-trip regardless of skill count.
+    // No ON CONFLICT needed — the DELETE above removed all rows for this agent.
     sqlx::query(
         r#"INSERT INTO agent_skills (agent_id, skill_key, name, description, tags, examples)
            SELECT $1, x.skill_key, x.name, x.description,
                   COALESCE(x.tags, '{}'::text[]), COALESCE(x.examples, '[]'::jsonb)
            FROM jsonb_to_recordset($2::jsonb) AS x(
                skill_key text, name text, description text, tags text[], examples jsonb
-           )
-           ON CONFLICT (agent_id, skill_key) DO UPDATE
-             SET name = EXCLUDED.name,
-                 description = EXCLUDED.description,
-                 tags = EXCLUDED.tags,
-                 examples = EXCLUDED.examples"#,
+           )"#,
     )
     .bind(agent_id)
     .bind(&payload)

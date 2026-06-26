@@ -71,3 +71,72 @@ impl FlowContext {
         bytes[..8].iter().map(|b| format!("{:02x}", b)).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn new_root_produces_valid_trace_and_span_ids() {
+        let ctx = FlowContext::new_root();
+        assert_eq!(ctx.flow_id.len(), 32, "trace_id must be 32 hex chars");
+        assert_eq!(ctx.parent_span_id.len(), 16, "span_id must be 16 hex chars");
+        assert!(ctx.flow_id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(ctx.parent_span_id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn new_root_ids_are_unique_across_calls() {
+        let a = FlowContext::new_root();
+        let b = FlowContext::new_root();
+        assert_ne!(a.flow_id, b.flow_id);
+    }
+
+    #[test]
+    fn from_traceparent_parses_valid_header() {
+        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let ctx = FlowContext::from_traceparent(Some(header)).unwrap();
+        assert_eq!(ctx.flow_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(ctx.parent_span_id, "00f067aa0ba902b7");
+    }
+
+    #[test]
+    fn from_traceparent_returns_none_for_missing_header() {
+        assert!(FlowContext::from_traceparent(None).is_none());
+    }
+
+    #[test]
+    fn from_traceparent_returns_none_for_malformed_header() {
+        assert!(FlowContext::from_traceparent(Some("not-a-traceparent")).is_none());
+        assert!(FlowContext::from_traceparent(Some("00-short-short-01")).is_none());
+    }
+
+    #[test]
+    fn from_headers_returns_none_when_traceparent_absent() {
+        let headers = HeaderMap::new();
+        assert!(FlowContext::from_headers(&headers).is_none());
+    }
+
+    #[test]
+    fn from_headers_parses_traceparent_when_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                .parse()
+                .unwrap(),
+        );
+        let ctx = FlowContext::from_headers(&headers).unwrap();
+        assert_eq!(ctx.flow_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+    }
+
+    #[test]
+    fn middleware_fallback_pattern_produces_root_context_when_header_missing() {
+        // Regression: proxy middleware used to error on missing traceparent.
+        // It now falls back to new_root() so direct calls without OTel work.
+        let headers = HeaderMap::new();
+        let ctx = FlowContext::from_headers(&headers).unwrap_or_else(FlowContext::new_root);
+        assert_eq!(ctx.flow_id.len(), 32, "fallback root trace must have valid trace_id");
+    }
+}

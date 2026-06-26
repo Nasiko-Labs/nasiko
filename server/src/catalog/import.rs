@@ -80,7 +80,9 @@ async fn build_and_deploy(
     let agent_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (name) DO UPDATE SET version = $5, image = $6, updated_at = now()
+           ON CONFLICT (name) DO UPDATE
+             SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
+             WHERE agents.owner_id = EXCLUDED.owner_id
            RETURNING id"#,
     )
     .bind(&meta.name)
@@ -91,12 +93,14 @@ async fn build_and_deploy(
     .bind(&image_tag)
     .bind(&meta.skills)
     .bind(&meta.capabilities)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?;
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?
+    .ok_or_else(|| (StatusCode::CONFLICT, "agent name already in use by another owner".into()))?;
 
     let skills: Vec<crate::catalog::models::Skill> =
-        serde_json::from_value(meta.skills.clone()).unwrap_or_default();
+        serde_json::from_value(meta.skills.clone())
+            .map_err(|_| (StatusCode::BAD_REQUEST, "skills must be an array of skill objects".into()))?;
     crate::catalog::skills::sync_agent_skills(&mut tx, agent_id, &skills).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")))?;
     // FIX: create the build record inside the same transaction so the agent row
@@ -175,13 +179,19 @@ async fn import_upload(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
+    const MAX_UPLOAD_BYTES: usize = 200 * 1024 * 1024;
     let mut package_data: Option<Vec<u8>> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
-        if field.name() == Some("package")
-            && let Ok(data) = field.bytes().await
-                && !data.is_empty() {
-                    package_data = Some(data.to_vec());
-                }
+        if field.name() == Some("package") {
+            let data = match field.bytes().await {
+                Ok(d) if !d.is_empty() => d,
+                _ => continue,
+            };
+            if data.len() > MAX_UPLOAD_BYTES {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 200 MB limit").into_response();
+            }
+            package_data = Some(data.to_vec());
+        }
     }
 
     let data = match package_data {
@@ -229,44 +239,82 @@ async fn import_github(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    // Get user's GitHub token
-    let gh_token: Option<(serde_json::Value,)> = sqlx::query_as(
-        "SELECT provider_metadata FROM user_identities WHERE user_id = $1::uuid AND provider = 'github'",
-    )
-    .bind(&claims.sub)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    // Validate repository name: must be "owner/repo" with safe characters only.
+    // Prevents path traversal and ensures git-clone-equivalent safety.
+    if !is_valid_repo_name(&req.repository) {
+        return (StatusCode::BAD_REQUEST, "invalid repository format — expected 'owner/repo'").into_response();
+    }
 
-    let access_token = match gh_token {
-        Some((meta,)) => match meta.get("access_token").and_then(|t| t.as_str()) {
-            Some(t) => t.to_string(),
-            None => return (StatusCode::FORBIDDEN, "GitHub not connected").into_response(),
-        },
+    // Load and decrypt the user's stored GitHub access token.
+    let access_token = match crate::github::load_github_token(&state, owner_id).await {
+        Some(t) => t,
         None => return (StatusCode::FORBIDDEN, "GitHub not connected — visit /add-agent.html to connect").into_response(),
     };
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-github-{}", Uuid::new_v4()));
-    let clone_url = format!("https://{}@github.com/{}.git", access_token, req.repository);
 
-    let clone_result = tokio::process::Command::new("git")
-        .args(["clone", "--depth=1", &clone_url, tmp_dir.to_str().unwrap_or(".")])
-        .output()
-        .await;
+    // Download via GitHub API tarball endpoint — token stays in the Authorization
+    // header, never in the URL or any process argument.
+    let tarball_url = format!("https://api.github.com/repos/{}/tarball/HEAD", req.repository);
+    let response = match state.http_client
+        .get(&tarball_url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("User-Agent", "nasiko-cp")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            let status = r.status();
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("GitHub returned {status} for repository"),
+            ).into_response();
+        }
+        Err(_) => return (StatusCode::BAD_GATEWAY, "failed to reach GitHub").into_response(),
+    };
 
-    match clone_result {
-        Ok(output) if !output.status.success() => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return (StatusCode::BAD_REQUEST, format!("git clone failed: {stderr}")).into_response();
+    // Stream with a per-chunk byte budget — enforces the 100 MB cap even when the
+    // GitHub→S3 redirect drops Content-Length (chunked transfer encoding).
+    let tarball_bytes = {
+        use futures::StreamExt;
+        use bytes::BufMut;
+        const MAX_TARBALL_BYTES: usize = 100 * 1024 * 1024;
+        let mut buf = bytes::BytesMut::with_capacity(64 * 1024);
+        let mut stream = response.bytes_stream();
+        loop {
+            match stream.next().await {
+                None => break,
+                Some(Err(_)) => return (StatusCode::BAD_GATEWAY, "failed to download repository archive").into_response(),
+                Some(Ok(chunk)) => {
+                    if buf.len() + chunk.len() > MAX_TARBALL_BYTES {
+                        return (StatusCode::BAD_REQUEST, "repository archive exceeds 100 MB limit").into_response();
+                    }
+                    buf.put(chunk);
+                }
+            }
         }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("git clone error: {e}")).into_response();
-        }
-        _ => {}
+        buf.freeze()
+    };
+
+    // Use in-process extraction — the tar crate validates that no entry escapes
+    // tmp_dir via path traversal (e.g. ../../etc), unlike the subprocess approach.
+    // GitHub archives have a single top-level directory; find it after extraction.
+    if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
+        tracing::warn!(%e, "failed to create extraction directory");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    if let Err(e) = extract_tar_gzip(&tarball_bytes, &tmp_dir) {
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+        return (StatusCode::BAD_REQUEST, format!("failed to extract repository archive: {e}")).into_response();
+    }
+    let actual_root = match tokio::fs::read_dir(&tmp_dir).await {
+        Ok(mut rd) => rd.next_entry().await.ok().flatten().map(|e| e.path()),
+        Err(_) => None,
+    }
+    .unwrap_or_else(|| tmp_dir.clone());
 
-    let meta = match read_agent_card(&tmp_dir) {
+    let meta = match read_agent_card(&actual_root) {
         Ok(m) => m,
         Err(e) => {
             let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -274,13 +322,27 @@ async fn import_github(
         }
     };
 
-    let result = build_and_deploy(&tmp_dir, &meta, owner_id, &state).await;
+    let result = build_and_deploy(&actual_root, &meta, owner_id, &state).await;
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     match result {
         Ok(r) => (StatusCode::CREATED, Json(r)).into_response(),
         Err((code, msg)) => (code, msg).into_response(),
     }
+}
+
+/// Validates `owner/repo` format: both segments must be non-empty, ≤100 chars,
+/// and contain only ASCII alphanumerics, hyphens, dots, or underscores.
+fn is_valid_repo_name(repo: &str) -> bool {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return false;
+    };
+    let is_safe_segment = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 100
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+    };
+    is_safe_segment(owner) && is_safe_segment(name)
 }
 
 // ─── POST /import/registry ──────────────────────────────────────────────────
@@ -366,9 +428,25 @@ async fn import_registry(
             Err(e) => return (StatusCode::BAD_GATEWAY, format!("blob fetch error: {e}")).into_response(),
         };
 
-        let blob_data = match blob_res.bytes().await {
-            Ok(b) => b,
-            Err(e) => return (StatusCode::BAD_GATEWAY, format!("blob read error: {e}")).into_response(),
+        let blob_data = {
+            use futures::StreamExt;
+            use bytes::BufMut;
+            const MAX_BLOB_BYTES: usize = 100 * 1024 * 1024;
+            let mut buf = bytes::BytesMut::with_capacity(64 * 1024);
+            let mut stream = blob_res.bytes_stream();
+            loop {
+                match stream.next().await {
+                    None => break,
+                    Some(Err(e)) => return (StatusCode::BAD_GATEWAY, format!("blob read error: {e}")).into_response(),
+                    Some(Ok(chunk)) => {
+                        if buf.len() + chunk.len() > MAX_BLOB_BYTES {
+                            return (StatusCode::BAD_REQUEST, "registry blob exceeds 100 MB limit").into_response();
+                        }
+                        buf.put(chunk);
+                    }
+                }
+            }
+            buf.freeze()
         };
 
         // Decompress gzip then extract tar
@@ -417,21 +495,24 @@ async fn import_registry(
         // Derive agent name from repo
         let agent_name = repo.rsplit('/').next().unwrap_or("agent").to_string();
 
-        // Register agent in catalog
+        // Register agent in catalog — only update if this caller owns the existing entry.
         let agent_id: Uuid = match sqlx::query_scalar(
             r#"INSERT INTO agents (name, display_name, owner_id, version, image)
                VALUES ($1, $1, $2, $3, $4)
-               ON CONFLICT (name) DO UPDATE SET version = $3, image = $4, updated_at = now()
+               ON CONFLICT (name) DO UPDATE
+                 SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
+                 WHERE agents.owner_id = EXCLUDED.owner_id
                RETURNING id"#,
         )
         .bind(&agent_name)
         .bind(owner_id)
         .bind(&tag)
         .bind(&image_with_tag)
-        .fetch_one(&state.db)
+        .fetch_optional(&state.db)
         .await
         {
-            Ok(id) => id,
+            Ok(Some(id)) => id,
+            Ok(None) => return (StatusCode::CONFLICT, "agent name already in use by another owner").into_response(),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")).into_response(),
         };
 
@@ -473,4 +554,28 @@ fn extract_tar_gzip(data: &[u8], dest: &std::path::Path) -> Result<(), String> {
     let mut archive = Archive::new(decoder);
     archive.unpack(dest).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_repo_name;
+
+    #[test]
+    fn valid_repo_names_accepted() {
+        assert!(is_valid_repo_name("owner/repo"));
+        assert!(is_valid_repo_name("my-org/my-repo.v2"));
+        assert!(is_valid_repo_name("user_123/agent_sdk"));
+    }
+
+    #[test]
+    fn invalid_repo_names_rejected() {
+        assert!(!is_valid_repo_name("no-slash"));
+        assert!(!is_valid_repo_name("../etc/passwd"));
+        assert!(!is_valid_repo_name("owner/repo/extra"));
+        assert!(!is_valid_repo_name("owner/ repo"));
+        assert!(!is_valid_repo_name("owner/"));
+        assert!(!is_valid_repo_name("/repo"));
+        assert!(!is_valid_repo_name("owner/repo;rm -rf /"));
+        assert!(!is_valid_repo_name(&format!("a/{}", "x".repeat(101))));
+    }
 }

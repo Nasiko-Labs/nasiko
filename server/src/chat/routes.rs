@@ -218,33 +218,42 @@ async fn delete_session(
         }
     }
 
-    // Collect S3 keys and clean up storage before removing DB rows.
-    let uris: Vec<String> = sqlx::query_scalar(
+    // Collect S3 keys — propagate DB errors so we never silently orphan file rows.
+    let uris: Vec<String> = match sqlx::query_scalar(
         "SELECT storage_uri FROM chat_message_files WHERE session_id = $1",
     )
     .bind(&session_id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    {
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
-    for uri in &uris {
-        if let Err(e) = state.oci_storage.delete_blob(uri).await {
-            tracing::warn!(session_id, uri, %e, "failed to delete chat file from S3");
+    if !uris.is_empty() {
+        // DB-first: match cleanup_uploaded — if DB delete fails we abort before
+        // touching S3, so no file rows survive pointing to deleted storage keys.
+        if let Err(e) = sqlx::query("DELETE FROM chat_message_files WHERE session_id = $1")
+            .bind(&session_id)
+            .execute(&state.db)
+            .await
+        {
+            tracing::warn!(%e, session_id, "failed to delete file records — aborting to preserve S3");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        for uri in &uris {
+            if let Err(e) = state.oci_storage.delete_blob(uri).await {
+                tracing::warn!(session_id, uri, %e, "failed to delete chat file from S3");
+            }
         }
     }
 
-    if !uris.is_empty() {
-        let _ = sqlx::query("DELETE FROM chat_message_files WHERE session_id = $1")
-            .bind(&session_id)
-            .execute(&state.db)
-            .await;
-    }
-
     let result = sqlx::query(
-        "DELETE FROM chat_sessions WHERE session_id = $1 AND user_id = $2",
+        "DELETE FROM chat_sessions WHERE session_id = $1 AND (user_id = $2 OR $3::bool)",
     )
     .bind(&session_id)
     .bind(user_id)
+    .bind(claims.is_superuser)
     .execute(&state.db)
     .await;
 
@@ -274,14 +283,17 @@ async fn list_messages(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let owns = sqlx::query_scalar::<_, bool>(
+    let owns = match sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
     )
     .bind(&session_id)
     .bind(user_id)
     .fetch_one(&state.db)
     .await
-    .unwrap_or(false);
+    {
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
     if !owns {
         return StatusCode::NOT_FOUND.into_response();
@@ -331,14 +343,17 @@ async fn send_message(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let owns = sqlx::query_scalar::<_, bool>(
+    let owns = match sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
     )
     .bind(&session_id)
     .bind(user_id)
     .fetch_one(&state.db)
     .await
-    .unwrap_or(false);
+    {
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
     if !owns {
         return StatusCode::NOT_FOUND.into_response();
@@ -426,6 +441,23 @@ async fn send_message(
 
 // ─── File upload ─────────────────────────────────────────────────────────────
 
+/// Roll back all successfully uploaded files on a partial failure.
+/// DB row is deleted first: if the DB delete succeeds and S3 delete later
+/// fails, the object is unreachable but leaves no phantom DB reference.
+/// If the DB delete itself fails, S3 is left untouched (consistent state).
+async fn cleanup_uploaded(state: &AppState, uploaded: &[ChatMessageFile]) {
+    for f in uploaded {
+        if sqlx::query("DELETE FROM chat_message_files WHERE id = $1")
+            .bind(f.id)
+            .execute(&state.db)
+            .await
+            .is_ok()
+        {
+            let _ = state.oci_storage.delete_blob(&f.storage_uri).await;
+        }
+    }
+}
+
 async fn upload_files(
     State(state): State<AppState>,
     claims: Claims,
@@ -437,14 +469,17 @@ async fn upload_files(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let owns = sqlx::query_scalar::<_, bool>(
+    let owns = match sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
     )
     .bind(&session_id)
     .bind(user_id)
     .fetch_one(&state.db)
     .await
-    .unwrap_or(false);
+    {
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
     if !owns {
         return StatusCode::NOT_FOUND.into_response();
@@ -456,6 +491,7 @@ async fn upload_files(
     while let Ok(Some(field)) = multipart.next_field().await {
         field_count += 1;
         if field_count > MAX_FILES_PER_UPLOAD {
+            cleanup_uploaded(&state, &uploaded).await;
             return (StatusCode::BAD_REQUEST, "too many files (max 10)").into_response();
         }
 
@@ -465,9 +501,6 @@ async fn upload_files(
             .unwrap_or("application/octet-stream")
             .to_string();
 
-        // FIX: stream chunks with a running byte counter instead of buffering
-        // the entire field — rejects oversized uploads after at most one chunk
-        // past the limit rather than after reading the full body into RAM.
         let mut buf = bytes::BytesMut::new();
         let mut field = field;
         loop {
@@ -475,6 +508,7 @@ async fn upload_files(
                 Ok(Some(chunk)) => {
                     buf.extend_from_slice(&chunk);
                     if buf.len() > MAX_FILE_BYTES {
+                        cleanup_uploaded(&state, &uploaded).await;
                         return (
                             StatusCode::PAYLOAD_TOO_LARGE,
                             format!("file '{filename}' exceeds 50 MB limit"),
@@ -483,7 +517,10 @@ async fn upload_files(
                     }
                 }
                 Ok(None) => break,
-                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+                Err(_) => {
+                    cleanup_uploaded(&state, &uploaded).await;
+                    return StatusCode::BAD_REQUEST.into_response();
+                }
             }
         }
         let data = buf.freeze();
@@ -493,11 +530,11 @@ async fn upload_files(
         let size_bytes = data.len() as i64;
 
         if let Err(e) = state.oci_storage.put_blob(&storage_key, data).await {
-            tracing::warn!(file_id = %file_id, %e, "S3 put_blob failed during chat file upload");
+            tracing::warn!(file_id = %file_id, %e, "S3 put_blob failed; rolling back previous uploads");
+            cleanup_uploaded(&state, &uploaded).await;
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
 
-        // FIX: clean up the S3 object if the DB insert fails to avoid orphaned blobs.
         let record = sqlx::query_as::<_, ChatMessageFile>(
             r#"INSERT INTO chat_message_files (id, session_id, filename, mime_type, size_bytes, storage_uri)
                VALUES ($1, $2, $3, $4, $5, $6)
@@ -515,8 +552,9 @@ async fn upload_files(
         match record {
             Ok(r) => uploaded.push(r),
             Err(e) => {
-                tracing::warn!(file_id = %file_id, %e, "DB insert failed; deleting orphaned S3 object");
+                tracing::warn!(file_id = %file_id, %e, "DB insert failed; rolling back S3 object and previous uploads");
                 let _ = state.oci_storage.delete_blob(&storage_key).await;
+                cleanup_uploaded(&state, &uploaded).await;
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         }
@@ -647,25 +685,22 @@ async fn delete_file(
         tracing::warn!(file_id = %file_id, %e, "S3 delete failed after DB row removed (orphaned object)");
     }
 
-    // FIX: only clear has_file_parts if the message also has no inline file_parts.
+    // Clear has_file_parts atomically: only when no other files reference this
+    // message AND the message has no inline file_parts JSONB. The EXISTS
+    // sub-query and the UPDATE run in a single statement, eliminating the
+    // COUNT then UPDATE race that existed when these were two separate queries.
     if let Some(msg_id) = file.message_id {
-        let remaining: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM chat_message_files WHERE message_id = $1",
+        let _ = sqlx::query(
+            "UPDATE chat_messages SET has_file_parts = false
+             WHERE id = $1
+               AND file_parts IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM chat_message_files WHERE message_id = $1
+               )",
         )
         .bind(msg_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
-
-        if remaining == 0 {
-            let _ = sqlx::query(
-                "UPDATE chat_messages SET has_file_parts = false
-                 WHERE id = $1 AND file_parts IS NULL",
-            )
-            .bind(msg_id)
-            .execute(&state.db)
-            .await;
-        }
+        .execute(&state.db)
+        .await;
     }
 
     StatusCode::NO_CONTENT.into_response()

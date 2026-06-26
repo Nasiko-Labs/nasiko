@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use nasiko_auth::{AclChecker, AuthProvider, TokenService, UserAuthService};
+use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 
@@ -33,6 +34,8 @@ pub struct AppState {
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
+    /// Shared GitHubService instance — None if GitHub OAuth is not configured.
+    pub github_svc: Option<Arc<GitHubService>>,
 }
 
 impl AppState {
@@ -81,6 +84,23 @@ impl AppState {
         let flow_events = FlowEventBus::new();
         let genai_metrics = GenAiMetrics::new();
 
+        let github_svc = config.github_client_id.as_ref()
+            .zip(config.github_client_secret.as_ref())
+            .and_then(|(id, sec)| {
+                let signing = std::env::var("OAUTH_STATE_SIGNING_KEY")
+                    .unwrap_or_else(|_| sec.clone());
+                let cfg = GitHubConfig {
+                    client_id: id.clone(),
+                    client_secret: sec.clone(),
+                    oauth_state_secret: signing,
+                    callback_url: String::new(),
+                    central_callback_url: None,
+                    clone_timeout_secs: 300,
+                    clone_max_size_bytes: 500 * 1024 * 1024,
+                };
+                GitHubService::new(cfg).ok().map(Arc::new)
+            });
+
         let state = Self {
             runtime,
             db,
@@ -93,6 +113,7 @@ impl AppState {
             flow_events,
             genai_metrics,
             config: Arc::new(config),
+            github_svc,
         };
 
         crate::seed::seed_agents_if_configured(&state).await;
