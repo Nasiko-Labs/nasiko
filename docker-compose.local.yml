@@ -36,7 +36,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -81,7 +81,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1"]
+      test: [ "CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/api/v1/healthcheck').raise_for_status()\" || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -111,7 +111,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8001/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -132,7 +132,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "kong"]
+      test: [ "CMD", "pg_isready", "-U", "kong" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -178,20 +178,19 @@ services:
       KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8003
       KONG_ADMIN_GUI_URL: http://localhost:9102
       KONG_PLUGINS: bundled,chat-logger
-      KONG_LUA_PATH: /opt/kong/custom-plugins/?.lua;;
       KONG_LUA_PACKAGE_PATH: /opt/kong/custom-plugins/?.lua;;
     volumes:
       - ./agent-gateway/plugins:/opt/kong/custom-plugins/kong/plugins
     ports:
-      - "9100:8000"       # Kong proxy port
-      - "9101:8001"       # Kong admin API port
-      - "9102:8003"       # Kong Manager (GUI)
-      - "9443:8443"       # Kong proxy SSL port
+      - "9100:8000" # Kong proxy port
+      - "9101:8001" # Kong admin API port
+      - "9102:8003" # Kong Manager (GUI)
+      - "9443:8443" # Kong proxy SSL port
     networks:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD", "kong", "health"]
+      test: [ "CMD", "kong", "health" ]
       interval: 30s
       timeout: 30s
       retries: 3
@@ -213,7 +212,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8002/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -245,7 +244,7 @@ services:
       - app-network
       - agents-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -279,7 +278,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/health').raise_for_status()\" || exit 1"]
+      test: [ "CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/health').raise_for_status()\" || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -292,9 +291,9 @@ services:
     container_name: phoenix-observability
     restart: unless-stopped
     ports:
-      - "${NASIKO_PORT_PHOENIX:-6006}:6006"   # Phoenix Web UI
-      - "${NASIKO_PORT_PHOENIX_GRPC:-4317}:4317"  # OTLP gRPC
-      - "${NASIKO_PORT_PHOENIX_HTTP:-4318}:4318"  # OTLP HTTP
+      - "${NASIKO_PORT_PHOENIX:-6006}:6006" # Phoenix Web UI
+      - "${NASIKO_PORT_PHOENIX_GRPC:-4317}:4317" # OTLP gRPC
+      - "${NASIKO_PORT_PHOENIX_HTTP:-4318}:4318" # OTLP HTTP
     environment:
       PHOENIX_HOST: "0.0.0.0"
       PHOENIX_PORT: "6006"
@@ -305,7 +304,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6006/"]
+      test: [ "CMD", "curl", "-f", "http://localhost:6006/" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -333,7 +332,7 @@ services:
       IS_DEVELOPMENT: "false"
     # The compiled Flutter bundle has https://nasiko.dev hardcoded. Patch it at
     # startup so local deployments route through Kong instead of the production host.
-    entrypoint: ["/bin/sh", "-c"]
+    entrypoint: [ "/bin/sh", "-c" ]
     command:
       - |
         KONG_URL="http://localhost:${NASIKO_PORT_KONG:-9100}"
@@ -342,7 +341,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000"]
+      test: [ "CMD", "curl", "-f", "http://localhost:4000" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -353,7 +352,7 @@ services:
   nasiko-superuser-init:
     build:
       context: .
-      dockerfile: Dockerfile.worker  
+      dockerfile: Dockerfile.worker
     container_name: nasiko-superuser-init
     depends_on:
       - nasiko-auth-service
@@ -368,8 +367,8 @@ services:
     volumes:
       - ./orchestrator:/app/orchestrator
       - ./superuser_init.py:/app/superuser_init.py:ro
-    entrypoint: ["python"]
-    command: ["/app/superuser_init.py"]
+    entrypoint: [ "python" ]
+    command: [ "/app/superuser_init.py" ]
     restart: "no"
 
   # ============================================================================
@@ -402,7 +401,7 @@ services:
     networks:
       - app-network
       - agents-net
-    command: ["python", "-u", "/app/orchestrator/redis_stream_listener.py"]
+    command: [ "python", "-u", "/app/orchestrator/redis_stream_listener.py" ]
 
 volumes:
   mongodb-data:

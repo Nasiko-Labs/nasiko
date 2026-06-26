@@ -71,15 +71,11 @@ class AuthManager:
             else:
                 # Check for NASIKO_CLUSTER_NAME env var
                 default_cluster = os.environ.get("NASIKO_CLUSTER_NAME")
-                if default_cluster:
-                    url = get_cluster_api_url(default_cluster)
-                    if url:
-                        self.base_url = url.rstrip("/")
-                    else:
-                        self.base_url = "http://localhost:8000"
-                else:
-                    # Fallback 2: Default to localhost
-                    self.base_url = "http://localhost:8000"
+            # Default to localhost API Gateway if not configured
+            # Note: Port 9100 is the Kong API Gateway which routes to auth service
+            self.base_url = os.getenv("NASIKO_API_URL", "http://localhost:9100").rstrip(
+                "/"
+            )
 
         self.auth_url = self.base_url  # Auth service is at base URL
 

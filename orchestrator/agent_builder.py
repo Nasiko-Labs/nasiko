@@ -8,6 +8,7 @@ import shutil
 import yaml
 import logging
 import asyncio
+import re
 from pathlib import Path
 from docker_utils import run_cmd
 from registry_manager import RegistryManager
@@ -25,6 +26,10 @@ class AgentBuilder:
         self.registry_manager = RegistryManager()
         self.injector = InstrumentationInjector()
         self.logger = logger or logging.getLogger(__name__)
+
+    def _sanitize_docker_name(self, name: str) -> str:
+        """Sanitize agent name for use as Docker image tag / container name."""
+        return re.sub(r'[^a-z0-9._-]', '-', name.lower()).strip('-')
 
     def instrument_and_build_agents(self, owner_id=None):
         """Instrument and build all agents"""
@@ -281,7 +286,7 @@ class AgentBuilder:
 
         try:
             # Check if image already exists locally (optimization for re-deployments)
-            image_tag = f"{agent_folder_name}_instrumented"
+            image_tag = f"{self._sanitize_docker_name(agent_folder_name)}_instrumented"
             result = run_cmd(["docker", "image", "inspect", image_tag], check=False)
 
             if result.returncode == 0:
@@ -293,7 +298,7 @@ class AgentBuilder:
             logger.info(f"Building new instrumented image for {agent_folder_name}")
 
             # Check if image already exists locally (optimization for re-deployments)
-            image_tag = f"{agent_folder_name}_instrumented"
+            image_tag = f"{self._sanitize_docker_name(agent_folder_name)}_instrumented"
             result = run_cmd(["docker", "image", "inspect", image_tag], check=False)
 
             if result.returncode == 0:
@@ -336,7 +341,7 @@ class AgentBuilder:
             dockerfile_path.write_text(dockerfile_content)
 
             # Build instrumented image with real-time output
-            image_tag = f"{agent_folder_name}_instrumented"
+            image_tag = f"{self._sanitize_docker_name(agent_folder_name)}_instrumented"
             logger.info(f"Building Docker image: {image_tag}")
 
             # Use subprocess directly for real-time output
@@ -421,7 +426,7 @@ class AgentBuilder:
                     svc_def["networks"].append(DOCKER_NETWORK)
 
             # Update services to use pre-built instrumented image and inject API keys
-            image_tag = f"{agent_folder_name}_instrumented"
+            image_tag = f"{self._sanitize_docker_name(agent_folder_name)}_instrumented"
             api_key_env = {
                 "OPENAI_API_KEY": Config.OPENAI_API_KEY,
                 "OPENROUTER_API_KEY": Config.OPENROUTER_API_KEY,
