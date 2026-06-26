@@ -24,7 +24,7 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/upload-and-deploy", post(upload_and_deploy))
+        .route("/upload-and-deploy",        post(upload_and_deploy))
         .route("/deploy-status/{build_id}", get(deploy_status_sse))
 }
 

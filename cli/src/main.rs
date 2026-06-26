@@ -51,12 +51,6 @@ const HELP_TEXT: &str = "\
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
 
-\x1b[33mAgents:\x1b[0m
-  agents     Manage and browse agents (ls/get/deploy/search/info/frameworks/list-uploaded/chat)
-
-\x1b[33mIntegrations:\x1b[0m
-  github     GitHub integration (status/repos/connect/disconnect/clone)
-
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
   publish    Publish to the artifact registry
@@ -169,6 +163,9 @@ enum AgentOpsCommands {
         agent: String,
         #[arg(short = 'n', long, default_value = "50")]
         tail: u32,
+        /// Live-tail: stream new log lines as they arrive (SSE)
+        #[arg(short = 'f', long)]
+        follow: bool,
     },
     /// Stop agent container
     Stop { agent: String },
@@ -198,93 +195,6 @@ enum AgentOpsCommands {
         /// A2A endpoint URL (uses active cluster if omitted)
         #[arg(long)]
         endpoint: Option<String>,
-    },
-    /// GitHub integration
-    Github {
-        #[command(subcommand)]
-        command: GithubCommands,
-    },
-    /// Manage and browse agents
-    Agents {
-        #[command(subcommand)]
-        command: AgentsCommands,
-    },
-}
-
-#[derive(Subcommand)]
-enum AgentsCommands {
-    /// List all deployed agents
-    #[command(alias = "list")]
-    Ls,
-    /// Get details for a specific agent by name or ID
-    Get {
-        #[arg(long = "agent-id")]
-        agent_id: Option<String>,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long, short = 'f', default_value = "details")]
-        format: String,
-    },
-    /// Deploy an agent from a .zip file or directory
-    Deploy {
-        source: String,
-        #[arg(long, short = 'n')]
-        name: Option<String>,
-    },
-    /// Search the public Nasiko Artifact Registry
-    Search {
-        query: Option<String>,
-        #[arg(long, short = 't')]
-        artifact_type: Option<String>,
-        #[arg(long, short = 'f')]
-        framework: Option<String>,
-        #[arg(long)]
-        tags: Option<String>,
-        #[arg(long, short = 'o')]
-        owner: Option<String>,
-        #[arg(long, short = 'l', default_value = "50")]
-        limit: usize,
-    },
-    /// Get details for a specific artifact from the registry
-    Info {
-        name: String,
-        #[arg(long, short = 'o', default_value = "nasiko")]
-        owner: String,
-        #[arg(long, short = 'v')]
-        version: Option<String>,
-    },
-    /// List available frameworks in the artifact registry
-    Frameworks,
-    /// List agents uploaded by the current user
-    #[command(name = "list-uploaded")]
-    ListUploaded,
-    /// Chat directly with a locally running agent
-    Chat {
-        #[arg(long, short = 'u', default_value = "http://localhost:5000")]
-        url: String,
-        message: Option<String>,
-        #[arg(long, short = 's')]
-        session_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum GithubCommands {
-    /// Show GitHub connection status
-    Status,
-    /// List accessible GitHub repositories
-    Repos,
-    /// Connect GitHub account via OAuth
-    Connect,
-    /// Disconnect GitHub
-    Disconnect,
-    /// Clone a GitHub repo and deploy as an agent
-    Clone {
-        /// Repository (owner/repo). Omit for interactive picker.
-        repo: Option<String>,
-        /// Branch to clone
-        #[arg(long, default_value = "main")]
-        branch: String,
     },
 }
 
@@ -348,24 +258,31 @@ enum RegistrySubCommands {
     Disconnect,
     /// Show connected registry
     Status,
-    /// Search the registry
+    /// Semantically discover artifacts by natural-language query
+    #[command(alias = "discover")]
     Search {
-        /// Search query
+        /// Natural-language query (e.g. "nutrition planning")
         query: Option<String>,
-        /// Filter by type (agent, skill)
-        #[arg(short = 't', long, name = "type")]
+        /// Filter by type (agent, skill, tool)
+        #[arg(short = 't', long = "type")]
         artifact_type: Option<String>,
         /// Filter by framework
         #[arg(short = 'f', long)]
         framework: Option<String>,
+        /// Max results to return
+        #[arg(long, default_value_t = 10)]
+        top: u32,
+        /// Minimum relevance score (0.0–1.0) for semantic matches
+        #[arg(long)]
+        min_score: Option<f32>,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
     },
     /// List all artifacts in the registry
     List {
-        /// Filter by type (agent, skill)
-        #[arg(short = 't', long, name = "type")]
+        /// Filter by type (agent, skill, tool)
+        #[arg(short = 't', long = "type")]
         artifact_type: Option<String>,
         /// Output as JSON
         #[arg(short = 'j', long)]
@@ -472,11 +389,11 @@ fn main() -> Result<()> {
             AgentOpsCommands::Push { image, name } => {
                 commands::push::push(&image, name.as_deref())
             }
-            AgentOpsCommands::Ps { json } => commands::agents::ps(json),
-            AgentOpsCommands::Logs { agent, tail } => commands::agents::logs(&agent, tail),
-            AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
-            AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
-            AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
+            AgentOpsCommands::Ps { json } => commands::lifecycle::ps(json),
+            AgentOpsCommands::Logs { agent, tail, follow } => commands::lifecycle::logs(&agent, tail, follow),
+            AgentOpsCommands::Stop { agent } => commands::lifecycle::stop(&agent),
+            AgentOpsCommands::Restart { agent } => commands::lifecycle::restart(&agent),
+            AgentOpsCommands::Rm { agent, force } => commands::lifecycle::rm(&agent, force),
             AgentOpsCommands::Chat { url, message, tui, resume } => {
                 if tui || resume.is_some() {
                     commands::tui::run_tui(&url, resume.as_deref())
@@ -487,35 +404,6 @@ fn main() -> Result<()> {
             AgentOpsCommands::Sessions { endpoint } => {
                 commands::tui::list_sessions(endpoint.as_deref())
             }
-            AgentOpsCommands::Agents { command } => match command {
-                AgentsCommands::Ls => commands::agents::cmd_ls(),
-                AgentsCommands::Get { agent_id, name, format } => {
-                    commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format)
-                }
-                AgentsCommands::Deploy { source, name } => {
-                    commands::agents::cmd_deploy(&source, name.as_deref())
-                }
-                AgentsCommands::Search { query, artifact_type, framework, tags, owner, limit } => {
-                    commands::agents::cmd_search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), tags.as_deref(), owner.as_deref(), limit)
-                }
-                AgentsCommands::Info { name, owner, version } => {
-                    commands::agents::cmd_info(&name, &owner, version.as_deref())
-                }
-                AgentsCommands::Frameworks => commands::agents::cmd_frameworks(),
-                AgentsCommands::ListUploaded => commands::agents::cmd_list_uploaded(),
-                AgentsCommands::Chat { url, message, session_id } => {
-                    commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref())
-                }
-            },
-            AgentOpsCommands::Github { command } => match command {
-                GithubCommands::Status => commands::github::status(),
-                GithubCommands::Repos => commands::github::repos(),
-                GithubCommands::Connect => commands::github::connect(),
-                GithubCommands::Disconnect => commands::github::disconnect(),
-                GithubCommands::Clone { repo, branch } => {
-                    commands::github::clone(repo.as_deref(), Some(branch.as_str()))
-                }
-            },
         },
         Commands::Cp(cmd) => match cmd {
             CpCommands::Dev { command } => match command {
@@ -545,8 +433,8 @@ fn main() -> Result<()> {
                 RegistrySubCommands::Connect { url } => commands::registry::connect(&url),
                 RegistrySubCommands::Disconnect => commands::registry::disconnect(),
                 RegistrySubCommands::Status => commands::registry::status(),
-                RegistrySubCommands::Search { query, artifact_type, framework, json } => {
-                    commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), json)
+                RegistrySubCommands::Search { query, artifact_type, framework, top, min_score, json } => {
+                    commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), top, min_score, json)
                 }
                 RegistrySubCommands::List { artifact_type, json } => {
                     commands::registry::list(artifact_type.as_deref(), json)

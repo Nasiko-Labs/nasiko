@@ -42,12 +42,82 @@ impl TelemetryConfig {
     }
 }
 
-pub fn init_telemetry(_config: &TelemetryConfig) {
-    // TODO(BACKEND-18): full OpenTelemetry initialization (traces + metrics via OTLP)
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".parse().unwrap()),
-        )
-        .init();
+/// Initialize OpenTelemetry: OTLP trace + metric exporter when an endpoint is
+/// configured, falling back to a plain fmt subscriber for local development.
+///
+/// Call once at binary startup before any `tracing::` calls.
+pub fn init_telemetry(config: &TelemetryConfig) {
+    use opentelemetry::KeyValue;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_sdk::{
+        Resource,
+        metrics::{PeriodicReader, SdkMeterProvider},
+        trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
+    };
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".parse().unwrap());
+
+    if let Some(endpoint) = &config.otlp_endpoint {
+        let resource = Resource::builder_empty()
+            .with_attribute(KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                config.service_name.clone(),
+            ))
+            .build();
+
+        // ── Trace provider ────────────────────────────────────────────────
+        let trace_exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint.clone())
+            .build()
+            .expect("failed to build OTLP span exporter");
+
+        let sampler = if config.sample_ratio >= 1.0 {
+            Sampler::AlwaysOn
+        } else {
+            Sampler::TraceIdRatioBased(config.sample_ratio)
+        };
+
+        let tracer_provider = SdkTracerProvider::builder()
+            .with_batch_exporter(trace_exporter)
+            .with_sampler(sampler)
+            .with_id_generator(RandomIdGenerator::default())
+            .with_resource(resource.clone())
+            .build();
+
+        let otel_trace_layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer_provider.tracer(config.service_name.clone()));
+
+        // ── Metrics provider ──────────────────────────────────────────────
+        let metrics_exporter = opentelemetry_otlp::MetricExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint.clone())
+            .build()
+            .expect("failed to build OTLP metric exporter");
+
+        let reader = PeriodicReader::builder(metrics_exporter).build();
+
+        let _meter_provider = SdkMeterProvider::builder()
+            .with_reader(reader)
+            .with_resource(resource)
+            .build();
+
+        // Register as global so GenAiMetrics picks it up
+        opentelemetry::global::set_meter_provider(_meter_provider);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .with(otel_trace_layer)
+            .init();
+    } else {
+        // Local dev: structured fmt only, no OTLP
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 }

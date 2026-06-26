@@ -51,6 +51,18 @@ pub trait ObservabilityProvider: Send + Sync {
         agent_ids: &[String],
         start_time: Option<DateTime<Utc>>,
     ) -> Result<FinOpsDashboard, ObservabilityError>;
+
+    /// Query raw log lines for an agent by Loki service name.
+    ///
+    /// Returns `(timestamp, log_line)` pairs sorted ascending.
+    /// Used by the `/observe/agents/{id}/logs` endpoint to include Loki-sourced log lines.
+    async fn query_logs(
+        &self,
+        service_name: &str,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+        limit: usize,
+    ) -> Result<Vec<(DateTime<Utc>, String)>, ObservabilityError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +225,17 @@ impl ObservabilityProvider for TempoLokiProvider {
             error_rate,
             period_start: start_time,
         })
+    }
+
+    async fn query_logs(
+        &self,
+        service_name: &str,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+        limit: usize,
+    ) -> Result<Vec<(DateTime<Utc>, String)>, ObservabilityError> {
+        let query = format!(r#"{{service_name="{service_name}"}}"#);
+        self.loki.query_range(&query, start, end, limit).await
     }
 
     async fn get_finops_dashboard(
