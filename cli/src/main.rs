@@ -61,7 +61,6 @@ const HELP_TEXT: &str = "\
 
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
-  publish    Publish to the artifact registry
 
 \x1b[33mOptions:\x1b[0m
   -h, --help     Print help
@@ -306,7 +305,7 @@ enum GithubCommands {
 #[command(next_help_heading = "Setup")]
 enum CpCommands {
     /// Start local Nasiko cluster (pulls CP image from DockerHub)
-    #[command(after_help = "Config: ~/.nasiko/dev.env")]
+    #[command(after_help = "Config: ~/.nasiko/.env")]
     Up,
     /// Stop local Nasiko cluster
     Down,
@@ -345,15 +344,6 @@ enum RegistryCommands {
     Registry {
         #[command(subcommand)]
         command: RegistrySubCommands,
-    },
-    /// Publish to the artifact registry
-    Publish {
-        /// Directory containing AgentCard.json or skill.json
-        #[arg(default_value = ".")]
-        directory: String,
-        /// Owner/namespace in the registry
-        #[arg(long)]
-        owner: Option<String>,
     },
 }
 
@@ -588,9 +578,6 @@ fn main() -> Result<()> {
                     commands::registry::list(artifact_type.as_deref(), json)
                 }
             },
-            RegistryCommands::Publish { directory, owner } => {
-                commands::publish::publish(&directory, owner.as_deref())
-            }
         },
     }
 }

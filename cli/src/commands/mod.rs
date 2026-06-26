@@ -7,7 +7,6 @@ pub mod chat;
 pub mod cluster;
 pub mod deploy;
 pub mod dev;
-pub mod publish;
 pub mod push;
 pub mod registry;
 pub mod scaffold;

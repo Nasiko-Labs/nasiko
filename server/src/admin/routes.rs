@@ -171,9 +171,9 @@ async fn restart(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    // Look up agent record to get image and owner
-    let agent: Option<(Uuid, Uuid, String)> = sqlx::query_as(
-        "SELECT id, owner_id, image FROM agents WHERE name = $1",
+    // Look up agent record to get image, owner, and port
+    let agent: Option<(Uuid, Uuid, String, i32)> = sqlx::query_as(
+        "SELECT id, owner_id, image, port FROM agents WHERE name = $1",
     )
     .bind(&name)
     .fetch_optional(&state.db)
@@ -181,7 +181,7 @@ async fn restart(
     .ok()
     .flatten();
 
-    let Some((agent_id, owner_id, image)) = agent else {
+    let Some((agent_id, owner_id, image, port)) = agent else {
         // No agent record — fall back to simple container restart
         let id = ContainerId::new(&name);
         return match state.runtime.restart(&id).await {
@@ -202,7 +202,7 @@ async fn restart(
         container_id,
         name: name.clone(),
         image,
-        ports: vec![8000],
+        ports: vec![port as u16],
         env_vars: env,
         min_replicas: 1,
         max_replicas: 1,
@@ -268,7 +268,7 @@ async fn resolve_full_env(
 ) -> std::collections::HashMap<String, String> {
     use crate::secrets::crypto::SecretsCrypto;
 
-    let crypto = SecretsCrypto::from_env();
+    let crypto = SecretsCrypto::for_user(owner_id);
     let mut env = std::collections::HashMap::new();
 
     // 1. Vault secrets (user-level, lower precedence)

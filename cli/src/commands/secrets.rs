@@ -92,7 +92,7 @@ pub fn rm(key: &str, agent: Option<&str>) -> Result<()> {
 }
 
 fn resolve_agent_id(client: &Client, name: &str) -> Result<String> {
-    let agents: Vec<serde_json::Value> = client.get_json("/containers")?;
+    let agents: Vec<serde_json::Value> = client.get_json("/catalog/agents")?;
     for a in &agents {
         let agent_name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
         if agent_name == name {
@@ -101,5 +101,5 @@ fn resolve_agent_id(client: &Client, name: &str) -> Result<String> {
             }
         }
     }
-    anyhow::bail!("agent '{name}' not found — is it deployed? (check `nasiko ps`)")
+    anyhow::bail!("agent '{name}' not found — is it registered? (check `nasiko ps`)")
 }

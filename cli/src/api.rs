@@ -503,6 +503,7 @@ pub struct UploadedAgent {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ContainerStatus {
     pub container_id: String,
     pub state: String,
