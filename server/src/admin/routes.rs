@@ -40,13 +40,15 @@ async fn deploy(
 ) -> impl IntoResponse {
     let container_id = ContainerId::new(&req.name);
 
-    // Resolve agent secrets into env if this agent exists in the catalog
+    // Resolve agent secrets into env if this agent exists in the catalog, and wire its
+    // LLM SDK through the gateway (best-effort; skipped if the gateway isn't configured).
     let mut env = req.env;
-    if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
+    if let Some((agent_id, owner_id)) = resolve_agent_by_name(&state, &req.name).await {
         let secrets = agent_secrets::resolve_agent_env(&state.db, agent_id).await;
         for (k, v) in secrets {
             env.entry(k).or_insert(v);
         }
+        crate::llm_wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id)).await;
     }
 
     let spec = DeploymentSpec {
@@ -131,8 +133,8 @@ async fn logs(
     }
 }
 
-async fn resolve_agent_id_by_name(state: &AppState, name: &str) -> Option<Uuid> {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
+async fn resolve_agent_by_name(state: &AppState, name: &str) -> Option<(Uuid, Uuid)> {
+    sqlx::query_as::<_, (Uuid, Uuid)>("SELECT id, owner_id FROM agents WHERE name = $1")
         .bind(name)
         .fetch_optional(&state.db)
         .await

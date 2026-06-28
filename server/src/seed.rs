@@ -66,6 +66,10 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             .unwrap_or_else(|_| "http://host.docker.internal:8080".into());
         env.insert("A2A_DISCOVERY_URL".into(), discovery_url);
 
+        // Route the seed agent's LLM SDK through the gateway when configured; otherwise
+        // the direct OPENAI_API_KEY/BASE_URL set above remain (best-effort).
+        crate::llm_wiring::inject_agent_llm_env(&state.db, &mut env, agent.id, Some(OSS_USER_ID)).await;
+
         let spec = DeploymentSpec {
             container_id: ContainerId::new(agent_name.clone()),
             name: agent_name.clone(),

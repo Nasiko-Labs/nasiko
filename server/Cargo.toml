@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 nasiko-auth.workspace = true
-nasiko-github = { workspace = true, features = ["routes"] }
 nasiko-utils.workspace = true
 nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
@@ -20,6 +19,8 @@ nasiko-react-agent.workspace = true
 nasiko-types.workspace = true
 nasiko-config.workspace = true
 nasiko-observability.workspace = true
+nasiko-llm-router.workspace = true
+nasiko-secrets.workspace = true
 
 tokio = { workspace = true }
 axum = { workspace = true }

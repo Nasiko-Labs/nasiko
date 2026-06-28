@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use crate::secrets::crypto::SecretsCrypto;
+use nasiko_secrets::SecretsCrypto;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {

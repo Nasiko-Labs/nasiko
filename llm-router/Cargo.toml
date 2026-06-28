@@ -1,0 +1,53 @@
+[package]
+name = "nasiko-llm-router"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Optional standalone service (P2.9). The router normally runs in-process in
+# nasiko-server; this binary serves the same router(ctx) as its own process.
+[[bin]]
+name = "llm-router"
+path = "src/bin/llm-router.rs"
+
+[dependencies]
+# Internal — AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
+nasiko-secrets.workspace = true
+
+# Web / async
+axum = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Storage & outbound HTTP (the crate owns these via LlmRouterCtx — no nasiko-server dep)
+sqlx = { workspace = true }
+reqwest = { workspace = true, features = ["json", "stream"] }
+futures = { workspace = true }
+async-stream = { workspace = true }
+
+# Auth (agent-identity JWT verify)
+jsonwebtoken = { workspace = true }
+
+# Resolver cache + identifiers
+dashmap = { workspace = true }
+uuid = { workspace = true }
+
+# Errors / time / logging
+thiserror = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+# Used only by the standalone `llm-router` binary for log output.
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+serial_test = { workspace = true }
+base64 = { workspace = true }
+mockito = { workspace = true }

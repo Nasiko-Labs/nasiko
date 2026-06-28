@@ -118,6 +118,16 @@ impl GatewayConfig {
                     require_auth: false,
                     required_role: None,
                 },
+                // LLM router (OpenAI-compatible agent egress). Strip `/llm` so
+                // `/llm/v1/chat/completions` reaches the server as `/v1/...`. No edge
+                // auth: the agent-identity JWT is verified inside the LLM router.
+                RouteConfig {
+                    path_prefix: "/llm/".into(),
+                    upstream: "127.0.0.1:8080".into(),
+                    strip_prefix: true,
+                    require_auth: false,
+                    required_role: None,
+                },
             ],
             cors: CorsConfig::default(),
         }

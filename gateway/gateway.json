@@ -43,6 +43,12 @@
       "upstream": "server:8080",
       "strip_prefix": false,
       "require_auth": true
+    },
+    {
+      "path_prefix": "/llm/",
+      "upstream": "server:8080",
+      "strip_prefix": true,
+      "require_auth": false
     }
   ],
   "cors": {

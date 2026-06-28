@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-use super::crypto::SecretsCrypto;
+use nasiko_secrets::SecretsCrypto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
