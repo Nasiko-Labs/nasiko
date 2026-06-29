@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
+#[derive(Serialize)]
+pub struct CursorPage<T: Serialize> {
+    pub data: Vec<T>,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub prev_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ChatSession {
     pub id: Uuid,

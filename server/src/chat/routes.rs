@@ -5,6 +5,8 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -39,67 +41,130 @@ pub fn router() -> Router<AppState> {
         .route("/chat/files/{file_id}", axum::routing::delete(delete_file))
 }
 
+// ─── Cursor helpers ──────────────────────────────────────────────────────────
+
+fn encode_cursor(ts: DateTime<Utc>, id: &str) -> String {
+    let nanos = ts.timestamp_nanos_opt().unwrap_or(0);
+    URL_SAFE_NO_PAD.encode(format!("{nanos}:{id}"))
+}
+
+fn decode_cursor(s: &str) -> Option<(DateTime<Utc>, String)> {
+    let raw = URL_SAFE_NO_PAD.decode(s).ok()?;
+    let txt = std::str::from_utf8(&raw).ok()?;
+    let (nanos_str, id) = txt.split_once(':')?;
+    let nanos: i64 = nanos_str.parse().ok()?;
+    Some((DateTime::from_timestamp_nanos(nanos), id.to_owned()))
+}
+
 // ─── Sessions ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct ListParams {
-    limit: Option<i64>,
-    offset: Option<i64>,
+struct ListSessionsParams {
+    #[serde(default = "default_session_limit")]
+    limit: i64,
+    cursor: Option<String>,
     agent_id: Option<Uuid>,
 }
+fn default_session_limit() -> i64 { 50 }
 
 async fn list_sessions(
     State(state): State<AppState>,
     claims: Claims,
-    Query(params): Query<ListParams>,
+    Query(params): Query<ListSessionsParams>,
 ) -> impl IntoResponse {
     let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let limit = params.limit.unwrap_or(50).min(100);
-    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.clamp(1, 100);
+    let fetch = limit + 1;
 
-    let sessions = if let Some(agent_id) = params.agent_id {
-        sqlx::query_as::<_, ChatSessionView>(
-            r#"SELECT cs.*,
-                      a.name as agent_name,
-                      (SELECT content FROM chat_messages WHERE session_id = cs.session_id ORDER BY timestamp DESC LIMIT 1) as last_message
-               FROM chat_sessions cs
-               LEFT JOIN agents a ON a.id = cs.agent_id
-               WHERE cs.user_id = $1 AND cs.agent_id = $2
-               ORDER BY cs.updated_at DESC
-               LIMIT $3 OFFSET $4"#,
-        )
-        .bind(user_id)
-        .bind(agent_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-    } else {
-        sqlx::query_as::<_, ChatSessionView>(
+    // Decode cursor into (timestamp, session_id) keyset anchor.
+    let cursor_anchor = params.cursor.as_deref().and_then(decode_cursor);
+
+    let mut rows: Vec<ChatSessionView> = match (cursor_anchor, params.agent_id) {
+        (None, None) => sqlx::query_as::<_, ChatSessionView>(
             r#"SELECT cs.*,
                       a.name as agent_name,
                       (SELECT content FROM chat_messages WHERE session_id = cs.session_id ORDER BY timestamp DESC LIMIT 1) as last_message
                FROM chat_sessions cs
                LEFT JOIN agents a ON a.id = cs.agent_id
                WHERE cs.user_id = $1
-               ORDER BY cs.updated_at DESC
-               LIMIT $2 OFFSET $3"#,
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $2"#,
         )
         .bind(user_id)
-        .bind(limit)
-        .bind(offset)
+        .bind(fetch)
         .fetch_all(&state.db)
-        .await
-    };
+        .await,
 
-    match sessions {
-        Ok(s) => Json(s).into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        (None, Some(agent_id)) => sqlx::query_as::<_, ChatSessionView>(
+            r#"SELECT cs.*,
+                      a.name as agent_name,
+                      (SELECT content FROM chat_messages WHERE session_id = cs.session_id ORDER BY timestamp DESC LIMIT 1) as last_message
+               FROM chat_sessions cs
+               LEFT JOIN agents a ON a.id = cs.agent_id
+               WHERE cs.user_id = $1 AND cs.agent_id = $2
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $3"#,
+        )
+        .bind(user_id)
+        .bind(agent_id)
+        .bind(fetch)
+        .fetch_all(&state.db)
+        .await,
+
+        (Some((cursor_ts, cursor_sid)), None) => sqlx::query_as::<_, ChatSessionView>(
+            r#"SELECT cs.*,
+                      a.name as agent_name,
+                      (SELECT content FROM chat_messages WHERE session_id = cs.session_id ORDER BY timestamp DESC LIMIT 1) as last_message
+               FROM chat_sessions cs
+               LEFT JOIN agents a ON a.id = cs.agent_id
+               WHERE cs.user_id = $1
+                 AND (cs.updated_at < $2 OR (cs.updated_at = $2 AND cs.session_id < $3))
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $4"#,
+        )
+        .bind(user_id)
+        .bind(cursor_ts)
+        .bind(cursor_sid)
+        .bind(fetch)
+        .fetch_all(&state.db)
+        .await,
+
+        (Some((cursor_ts, cursor_sid)), Some(agent_id)) => sqlx::query_as::<_, ChatSessionView>(
+            r#"SELECT cs.*,
+                      a.name as agent_name,
+                      (SELECT content FROM chat_messages WHERE session_id = cs.session_id ORDER BY timestamp DESC LIMIT 1) as last_message
+               FROM chat_sessions cs
+               LEFT JOIN agents a ON a.id = cs.agent_id
+               WHERE cs.user_id = $1 AND cs.agent_id = $2
+                 AND (cs.updated_at < $3 OR (cs.updated_at = $3 AND cs.session_id < $4))
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $5"#,
+        )
+        .bind(user_id)
+        .bind(agent_id)
+        .bind(cursor_ts)
+        .bind(cursor_sid)
+        .bind(fetch)
+        .fetch_all(&state.db)
+        .await,
     }
+    .unwrap_or_else(|_| vec![]);
+
+    let has_more = rows.len() > limit as usize;
+    if has_more { rows.pop(); }
+
+    let next_cursor = if has_more {
+        rows.last().map(|r| encode_cursor(r.updated_at, &r.session_id))
+    } else {
+        None
+    };
+    let prev_cursor = rows.first().map(|r| encode_cursor(r.updated_at, &r.session_id));
+
+    Json(CursorPage { data: rows, has_more, next_cursor, prev_cursor }).into_response()
 }
 
 async fn create_session(
@@ -267,16 +332,21 @@ async fn delete_session(
 // ─── Messages ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct MessageParams {
-    limit: Option<i64>,
-    before: Option<chrono::DateTime<chrono::Utc>>,
+struct ListMessagesParams {
+    #[serde(default = "default_message_limit")]
+    limit: i64,
+    before: Option<DateTime<Utc>>,
+    after: Option<DateTime<Utc>>,
+    prev_cursor: Option<String>,
+    next_cursor: Option<String>,
 }
+fn default_message_limit() -> i64 { 100 }
 
 async fn list_messages(
     State(state): State<AppState>,
     claims: Claims,
     Path(session_id): Path<String>,
-    Query(params): Query<MessageParams>,
+    Query(params): Query<ListMessagesParams>,
 ) -> impl IntoResponse {
     let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
@@ -299,37 +369,89 @@ async fn list_messages(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let limit = params.limit.unwrap_or(100).min(500);
+    let limit = params.limit.clamp(1, 500);
+    let fetch = limit + 1;
 
-    let messages = if let Some(before) = params.before {
-        sqlx::query_as::<_, ChatMessage>(
-            r#"SELECT * FROM chat_messages
-               WHERE session_id = $1 AND timestamp < $2
-               ORDER BY timestamp ASC
-               LIMIT $3"#,
-        )
-        .bind(&session_id)
-        .bind(before)
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await
-    } else {
-        sqlx::query_as::<_, ChatMessage>(
-            r#"SELECT * FROM chat_messages
-               WHERE session_id = $1
-               ORDER BY timestamp ASC
-               LIMIT $2"#,
-        )
-        .bind(&session_id)
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await
+    // Cursor tokens take precedence over raw timestamps.
+    let before = params.prev_cursor.as_deref()
+        .and_then(|c| decode_cursor(c).map(|(ts, _)| ts))
+        .or(params.before);
+    let after = params.next_cursor.as_deref()
+        .and_then(|c| decode_cursor(c).map(|(ts, _)| ts))
+        .or(params.after);
+
+    // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
+    let (mut rows, fetched_asc): (Vec<ChatMessage>, bool) = match (before, after) {
+        (_, Some(after_ts)) => {
+            // Load newer messages going forward.
+            let r = sqlx::query_as::<_, ChatMessage>(
+                r#"SELECT * FROM chat_messages
+                   WHERE session_id = $1 AND timestamp > $2
+                   ORDER BY timestamp ASC
+                   LIMIT $3"#,
+            )
+            .bind(&session_id)
+            .bind(after_ts)
+            .bind(fetch)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+            (r, true)
+        }
+        (Some(before_ts), None) => {
+            // Load older messages going backward.
+            let r = sqlx::query_as::<_, ChatMessage>(
+                r#"SELECT * FROM chat_messages
+                   WHERE session_id = $1 AND timestamp < $2
+                   ORDER BY timestamp DESC
+                   LIMIT $3"#,
+            )
+            .bind(&session_id)
+            .bind(before_ts)
+            .bind(fetch)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+            (r, false)
+        }
+        (None, None) => {
+            // First load: most recent N messages.
+            let r = sqlx::query_as::<_, ChatMessage>(
+                r#"SELECT * FROM chat_messages
+                   WHERE session_id = $1
+                   ORDER BY timestamp DESC
+                   LIMIT $2"#,
+            )
+            .bind(&session_id)
+            .bind(fetch)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+            (r, false)
+        }
     };
 
-    match messages {
-        Ok(m) => Json(m).into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    let has_more = rows.len() > limit as usize;
+    if has_more { rows.pop(); }
+
+    // Always present to client in ASC (chronological) order.
+    if !fetched_asc { rows.reverse(); }
+
+    let out_prev_cursor = rows.first()
+        .map(|r| encode_cursor(r.timestamp, &r.id.to_string()));
+    let out_next_cursor = if has_more {
+        rows.last().map(|r| encode_cursor(r.timestamp, &r.id.to_string()))
+    } else {
+        None
+    };
+
+    Json(CursorPage {
+        data: rows,
+        has_more,
+        next_cursor: out_next_cursor,
+        prev_cursor: out_prev_cursor,
+    })
+    .into_response()
 }
 
 async fn send_message(

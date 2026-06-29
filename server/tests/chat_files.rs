@@ -589,7 +589,7 @@ async fn delete_last_file_clears_has_file_parts() {
         .json()
         .await
         .unwrap();
-    let updated = msgs.as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
+    let updated = msgs["data"].as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
     assert_eq!(updated["has_file_parts"], false, "has_file_parts cleared after last file deleted");
 
     server.cleanup().await;
@@ -653,7 +653,7 @@ async fn delete_file_keeps_has_file_parts_when_inline_parts_present() {
         .json()
         .await
         .unwrap();
-    let updated = msgs.as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
+    let updated = msgs["data"].as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
     assert_eq!(
         updated["has_file_parts"], true,
         "has_file_parts must stay true when inline file_parts still present"

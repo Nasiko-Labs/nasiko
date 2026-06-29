@@ -5,8 +5,10 @@ use axum::{
     response::IntoResponse,
     routing::{get, post, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use nasiko_runtime::ContainerId;
 
 use crate::acl::user_can_access_agent;
 use crate::auth::Claims;
@@ -326,6 +328,14 @@ async fn update(
     }
 }
 
+#[derive(Serialize)]
+struct DeletedAgent {
+    deleted: bool,
+    agent_id: Uuid,
+    containers_stopped: usize,
+    runtime_errors: Vec<String>,
+}
+
 async fn delete(
     State(state): State<AppState>,
     claims: Claims,
@@ -341,13 +351,56 @@ async fn delete(
             return StatusCode::FORBIDDEN.into_response();
         }
 
-    // Stop any active deployments first so the FK RESTRICT on agent_deployments doesn't block.
-    let _ = sqlx::query(
-        "UPDATE agent_deployments SET status = 'stopped' WHERE agent_id = $1 AND status != 'stopped'",
+    // Fetch agent name early — gives a clean 404 before touching the runtime,
+    // and provides the primary container name needed for teardown.
+    let name: String = match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(n)) => n,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "delete agent: fetch name");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
+    };
+
+    // Collect all non-stopped deployment container names for this agent.
+    // Collect distinct K8s workload names from non-stopped deployment rows.
+    // k8s_deployment_name is the actual workload/container identifier; namespace is
+    // the K8s namespace (e.g. 'nasiko-agents') and must not be used as a container ID.
+    // In Docker OSS, k8s_deployment_name is NULL so no extra entries are added and
+    // teardown falls through to the agent name only.
+    let k8s_names: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
+         WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
     )
     .bind(id)
-    .execute(&state.db)
-    .await;
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let mut containers_to_stop: Vec<String> = vec![name.clone()];
+    for kn in k8s_names {
+        if !containers_to_stop.contains(&kn) {
+            containers_to_stop.push(kn);
+        }
+    }
+
+    // Tear down all identified containers before deleting DB records (best-effort).
+    let mut containers_stopped = 0usize;
+    let mut runtime_errors: Vec<String> = vec![];
+    for container_name in &containers_to_stop {
+        match state.runtime.destroy(&ContainerId::new(container_name)).await {
+            Ok(()) => containers_stopped += 1,
+            Err(e) => {
+                // Absent/already-stopped containers are expected; log but don't fail.
+                tracing::debug!(%e, %id, container_name, "delete agent: runtime.destroy — absent or already stopped");
+                runtime_errors.push(format!("{container_name}: {e}"));
+            }
+        }
+    }
 
     let result = sqlx::query("DELETE FROM agents WHERE id = $1")
         .bind(id)
@@ -355,7 +408,16 @@ async fn delete(
         .await;
 
     match result {
-        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(r) if r.rows_affected() > 0 => (
+            StatusCode::OK,
+            Json(DeletedAgent {
+                deleted: true,
+                agent_id: id,
+                containers_stopped,
+                runtime_errors,
+            }),
+        )
+            .into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %id, "delete agent: db error");
