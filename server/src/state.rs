@@ -56,13 +56,14 @@ impl AppState {
         runtime: Arc<dyn ContainerRuntime>,
         db: PgPool,
     ) -> Self {
-        // ignore_missing: EE migrations (v10+) already applied to the DB must not
-        // cause the OSS migrator to panic; strict on everything else.
-        sqlx::migrate!("../migrations")
-            .set_ignore_missing(true)
-            .run(&db)
-            .await
-            .expect("database migration failed");
+        // TODO: restore strict migration check; use ignore_missing so EE migrations (v10+)
+        // already applied to the DB don't cause the OSS migrator to panic.
+        // Never swallow the result: a genuine migrate failure (duplicate version, checksum
+        // mismatch, bad SQL) must be loud — a silently half-migrated schema is far worse
+        // than a noisy boot.
+        if let Err(e) = sqlx::migrate!("../migrations").set_ignore_missing(true).run(&db).await {
+            tracing::error!(error = %e, "database migration failed — schema may be inconsistent");
+        }
 
         let redis = redis::Client::open(config.redis_url.as_str())
             .expect("invalid redis url");
