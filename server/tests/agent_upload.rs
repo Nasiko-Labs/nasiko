@@ -12,7 +12,6 @@
 
 mod common;
 
-use std::io::Write;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -33,21 +32,6 @@ async fn init_admin(server: &common::TestServer) -> Value {
         .unwrap()
 }
 
-/// Build an in-memory zip from (path, contents) entries.
-fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    {
-        let mut zw = zip::ZipWriter::new(&mut cursor);
-        let opts = zip::write::SimpleFileOptions::default();
-        for (name, data) in entries {
-            zw.start_file(*name, opts).unwrap();
-            zw.write_all(data).unwrap();
-        }
-        zw.finish().unwrap();
-    }
-    cursor.into_inner()
-}
-
 /// POST a multipart upload-and-deploy request as the given superuser.
 async fn upload(
     server: &common::TestServer,
@@ -60,10 +44,7 @@ async fn upload(
         form = form.text(k, v);
     }
     if let Some(zip) = source {
-        form = form.part(
-            "source",
-            reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
-        );
+        form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
     }
     server
         .client
@@ -122,7 +103,7 @@ async fn upload_requires_name() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let zip = make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
+    let zip = common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
     let res = upload(&server, uid, vec![("version_tag", "v1".into())], Some(zip)).await;
 
     assert_eq!(res.status(), 400);
@@ -149,7 +130,7 @@ async fn upload_without_identity_returns_401() {
     let _ = init_admin(&server).await;
 
     // No x-user-id header → require_auth rejects before the handler.
-    let zip = make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
+    let zip = common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
     let form = reqwest::multipart::Form::new()
         .text("name", "demo")
         .text("version_tag", "v1")
@@ -175,7 +156,7 @@ async fn upload_persists_agent_and_build_record() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let zip = make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
+    let zip = common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
     let res = upload(
         &server,
         uid,
@@ -234,7 +215,7 @@ async fn upload_reuses_agent_on_repeat_name() {
         &server,
         uid,
         vec![("name", "repeat".into()), ("version_tag", "v1".into())],
-        Some(make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
+        Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
     )
     .await
     .json()
@@ -245,7 +226,7 @@ async fn upload_reuses_agent_on_repeat_name() {
         &server,
         uid,
         vec![("name", "repeat".into()), ("version_tag", "v2".into())],
-        Some(make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
+        Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
     )
     .await
     .json()
@@ -272,7 +253,7 @@ async fn upload_marks_build_failed_without_dockerfile() {
         &server,
         uid,
         vec![("name", "nodockerfile".into()), ("version_tag", "v1".into())],
-        Some(make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
+        Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
     )
     .await
     .json()

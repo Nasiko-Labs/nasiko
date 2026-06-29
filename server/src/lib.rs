@@ -95,12 +95,21 @@ where
         .nest("/build", build::router())
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
+    // Proxy fallback routes carry the proxy middleware themselves so management routes
+    // under /agents/{id}/* (deployment, acl, update, rollback) are never intercepted.
+    let agent_proxy_routes = Router::new()
+        .route("/agents/{agent_id}", axum::routing::any(agent_proxy_fallback))
+        .route("/agents/{agent_id}/{*rest}", axum::routing::any(agent_proxy_fallback))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            proxy::agent_proxy_middleware,
+        ));
+
     let protected = Router::new()
         .route("/me", get(me))
         .route("/a2a", axum::routing::post(router::a2a_handler))
         .merge(agent_deploy_routes)
-        .route("/agents/{agent_id}", axum::routing::any(agent_proxy_fallback))
-        .route("/agents/{agent_id}/{*rest}", axum::routing::any(agent_proxy_fallback))
+        .merge(agent_proxy_routes)
         .merge(container_routes)
         .merge(pool_routes)
         .merge(user_routes)
@@ -115,10 +124,6 @@ where
         .merge(flow::routes::router())
         .merge(github::router())
         .merge(auth::login::protected_router())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            proxy::agent_proxy_middleware,
-        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -148,8 +153,8 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// Catch-all for /agents/{id}/* — the proxy middleware handles the actual forwarding.
-/// This route exists solely to make axum route into the protected router so middleware fires.
+/// Catch-all for /agents/{id}/* — the proxy middleware (layered on agent_proxy_routes)
+/// handles actual forwarding; this handler is only reached on proxy error.
 async fn agent_proxy_fallback() -> axum::http::StatusCode {
     axum::http::StatusCode::BAD_GATEWAY
 }

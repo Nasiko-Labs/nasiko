@@ -150,3 +150,20 @@ fn test_config(db_url: String) -> Config {
 async fn fallback() -> axum::http::StatusCode {
     axum::http::StatusCode::NOT_FOUND
 }
+
+/// Build an in-memory zip archive from `(path, bytes)` pairs.
+#[allow(dead_code)]
+pub fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut cursor);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, data) in entries {
+            zw.start_file(*name, opts).unwrap();
+            zw.write_all(data).unwrap();
+        }
+        zw.finish().unwrap();
+    }
+    cursor.into_inner()
+}
