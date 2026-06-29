@@ -83,7 +83,7 @@ async fn list_sessions(
     // Decode cursor into (timestamp, session_id) keyset anchor.
     let cursor_anchor = params.cursor.as_deref().and_then(decode_cursor);
 
-    let mut rows: Vec<ChatSessionView> = match (cursor_anchor, params.agent_id) {
+    let query_result: Result<Vec<ChatSessionView>, _> = match (cursor_anchor, params.agent_id) {
         (None, None) => sqlx::query_as::<_, ChatSessionView>(
             r#"SELECT cs.*,
                       a.name as agent_name,
@@ -151,8 +151,14 @@ async fn list_sessions(
         .bind(fetch)
         .fetch_all(&state.db)
         .await,
-    }
-    .unwrap_or_else(|_| vec![]);
+    };
+    let mut rows = match query_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%e, "list_sessions: db error");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     let has_more = rows.len() > limit as usize;
     if has_more { rows.pop(); }
@@ -381,9 +387,8 @@ async fn list_messages(
         .or(params.after);
 
     // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
-    let (mut rows, fetched_asc): (Vec<ChatMessage>, bool) = match (before, after) {
+    let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) = match (before, after) {
         (_, Some(after_ts)) => {
-            // Load newer messages going forward.
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
                    WHERE session_id = $1 AND timestamp > $2
@@ -394,12 +399,10 @@ async fn list_messages(
             .bind(after_ts)
             .bind(fetch)
             .fetch_all(&state.db)
-            .await
-            .unwrap_or_default();
+            .await;
             (r, true)
         }
         (Some(before_ts), None) => {
-            // Load older messages going backward.
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
                    WHERE session_id = $1 AND timestamp < $2
@@ -410,12 +413,10 @@ async fn list_messages(
             .bind(before_ts)
             .bind(fetch)
             .fetch_all(&state.db)
-            .await
-            .unwrap_or_default();
+            .await;
             (r, false)
         }
         (None, None) => {
-            // First load: most recent N messages.
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
                    WHERE session_id = $1
@@ -425,9 +426,15 @@ async fn list_messages(
             .bind(&session_id)
             .bind(fetch)
             .fetch_all(&state.db)
-            .await
-            .unwrap_or_default();
+            .await;
             (r, false)
+        }
+    };
+    let mut rows = match msg_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%e, session_id, "list_messages: db error");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
 
