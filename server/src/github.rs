@@ -5,11 +5,12 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get},
 };
-use sqlx::PgPool;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::{auth::Claims, secrets::crypto::SecretsCrypto, state::AppState};
+use nasiko_secrets::SecretsCrypto;
+
+use crate::{auth::Claims, state::AppState};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -20,13 +21,13 @@ pub fn router() -> Router<AppState> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-pub(crate) async fn load_github_token(db: &PgPool, user_id: Uuid) -> Option<String> {
+pub(crate) async fn load_github_token(state: &AppState, user_id: Uuid) -> Option<String> {
     let row: Option<(serde_json::Value,)> = match sqlx::query_as(
         "SELECT provider_metadata FROM user_identities \
          WHERE user_id = $1 AND provider = 'github'",
     )
     .bind(user_id)
-    .fetch_optional(db)
+    .fetch_optional(&state.db)
     .await
     {
         Ok(r) => r,
@@ -67,7 +68,7 @@ async fn github_status(State(state): State<AppState>, claims: Claims) -> impl In
             .into_response();
     };
 
-    let Some(token) = load_github_token(&state.db, user_id).await else {
+    let Some(token) = load_github_token(&state, user_id).await else {
         return (
             StatusCode::OK,
             Json(serde_json::json!({"connected": false, "valid": false})),
@@ -93,7 +94,7 @@ async fn github_repos(State(state): State<AppState>, claims: Claims) -> impl Int
         Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
     };
 
-    let Some(token) = load_github_token(&state.db, user_id).await else {
+    let Some(token) = load_github_token(&state, user_id).await else {
         return (StatusCode::FORBIDDEN, "GitHub not connected — visit /add-agent.html to connect")
             .into_response();
     };
