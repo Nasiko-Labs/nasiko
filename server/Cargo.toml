@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 nasiko-auth.workspace = true
+nasiko-github = { workspace = true, features = ["routes"] }
 nasiko-utils.workspace = true
 nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
@@ -19,8 +20,6 @@ nasiko-react-agent.workspace = true
 nasiko-types.workspace = true
 nasiko-config.workspace = true
 nasiko-observability.workspace = true
-nasiko-llm-router.workspace = true
-nasiko-secrets.workspace = true
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -45,6 +44,7 @@ reqwest = { workspace = true, features = ["json", "stream"] }
 http-body-util = "0.1"
 rust_decimal = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+semver = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 aes-gcm = "0.10"

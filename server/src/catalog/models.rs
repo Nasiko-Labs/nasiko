@@ -106,5 +106,9 @@ pub struct AgentVersion {
     pub version: String,
     pub image_tag: String,
     pub changelog: Option<String>,
+    pub is_active: bool,
+    pub can_rollback: bool,
+    pub previous_version: Option<String>,
+    pub status: String,
     pub created_at: DateTime<Utc>,
 }
