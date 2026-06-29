@@ -575,14 +575,17 @@ async fn list_message_files(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let owns = sqlx::query_scalar::<_, bool>(
+    let owns = match sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
     )
     .bind(&session_id)
     .bind(user_id)
     .fetch_one(&state.db)
     .await
-    .unwrap_or(false);
+    {
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
     if !owns {
         return StatusCode::NOT_FOUND.into_response();

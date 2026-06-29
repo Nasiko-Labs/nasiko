@@ -40,15 +40,13 @@ async fn deploy(
 ) -> impl IntoResponse {
     let container_id = ContainerId::new(&req.name);
 
-    // Resolve agent secrets into env if this agent exists in the catalog, and wire its
-    // LLM SDK through the gateway (best-effort; skipped if the gateway isn't configured).
+    // Resolve agent secrets into env if this agent exists in the catalog
     let mut env = req.env;
-    if let Some((agent_id, owner_id)) = resolve_agent_by_name(&state, &req.name).await {
+    if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
         let secrets = agent_secrets::resolve_agent_env(&state.db, agent_id).await;
         for (k, v) in secrets {
             env.entry(k).or_insert(v);
         }
-        crate::llm_wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id)).await;
     }
 
     let spec = DeploymentSpec {
@@ -63,7 +61,34 @@ async fn deploy(
     };
 
     match state.runtime.deploy(&spec).await {
-        Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
+        Ok(status) => {
+            // Record the deployment (fire-and-forget — don't fail the request if this write fails).
+            if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
+                let db = state.db.clone();
+                tokio::spawn(async move {
+                    let build_id: Option<Uuid> = sqlx::query_scalar(
+                        "SELECT id FROM agent_builds WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+                    )
+                    .bind(agent_id)
+                    .fetch_optional(&db)
+                    .await
+                    .ok()
+                    .flatten();
+
+                    if let Some(build_id) = build_id {
+                        let _ = sqlx::query(
+                            "INSERT INTO agent_deployments (agent_id, build_id, status)
+                             VALUES ($1, $2, 'running')",
+                        )
+                        .bind(agent_id)
+                        .bind(build_id)
+                        .execute(&db)
+                        .await;
+                    }
+                });
+            }
+            (StatusCode::CREATED, Json(status)).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -92,7 +117,21 @@ async fn destroy(
 ) -> impl IntoResponse {
     let id = ContainerId::new(&name);
     match state.runtime.destroy(&id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            if let Some(agent_id) = resolve_agent_id_by_name(&state, &name).await {
+                let db = state.db.clone();
+                tokio::spawn(async move {
+                    let _ = sqlx::query(
+                        "UPDATE agent_deployments SET status = 'stopped', updated_at = now()
+                         WHERE agent_id = $1 AND status != 'stopped'",
+                    )
+                    .bind(agent_id)
+                    .execute(&db)
+                    .await;
+                });
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -133,8 +172,8 @@ async fn logs(
     }
 }
 
-async fn resolve_agent_by_name(state: &AppState, name: &str) -> Option<(Uuid, Uuid)> {
-    sqlx::query_as::<_, (Uuid, Uuid)>("SELECT id, owner_id FROM agents WHERE name = $1")
+async fn resolve_agent_id_by_name(state: &AppState, name: &str) -> Option<Uuid> {
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
         .bind(name)
         .fetch_optional(&state.db)
         .await

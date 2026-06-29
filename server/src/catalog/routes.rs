@@ -341,6 +341,14 @@ async fn delete(
             return StatusCode::FORBIDDEN.into_response();
         }
 
+    // Stop any active deployments first so the FK RESTRICT on agent_deployments doesn't block.
+    let _ = sqlx::query(
+        "UPDATE agent_deployments SET status = 'stopped' WHERE agent_id = $1 AND status != 'stopped'",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await;
+
     let result = sqlx::query("DELETE FROM agents WHERE id = $1")
         .bind(id)
         .execute(&state.db)

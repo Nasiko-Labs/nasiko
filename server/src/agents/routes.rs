@@ -9,60 +9,41 @@ use axum::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::convert::Infallible;
 use uuid::Uuid;
 
 use nasiko_runtime::{ContainerId, DeploymentSpec};
 
+use crate::acl::{allowed_targets, user_can_access_agent};
 use crate::auth::Claims;
 use crate::build::BuildStatus;
 use crate::build::routes::extract_zip_to_dir;
+use crate::catalog::agent_secrets;
 use crate::state::AppState;
-
-/// Outbound providers the LLM router can translate to, and the inbound SDK formats it
-/// can parse — used to validate `llm-config` writes.
-const SUPPORTED_PROVIDERS: [&str; 3] = ["openai", "anthropic", "gemini"];
-const SUPPORTED_INBOUND_FORMATS: [&str; 3] = ["openai", "anthropic", "gemini"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/upload-and-deploy", post(upload_and_deploy))
         .route("/deploy-status/{build_id}", get(deploy_status_sse))
-        .route(
-            "/{id}/llm-config",
-            get(get_llm_config).patch(update_llm_config),
-        )
+        .route("/upload-status/{upload_id}", get(get_upload_status))
+        .route("/deployments", get(list_deployments))
+        .route("/deployment/{deployment_id}/restart", post(restart_deployment))
+        .route("/{id}/deployment", get(get_agent_deployment))
+        .route("/{id}/acl", get(get_agent_acl))
+        .route("/{id}/acl", post(add_agent_acl))
+        .route("/{id}/acl/{target_id}", delete(remove_agent_acl))
 }
 
-/// Resolve the agent's owner, enforcing owner-only (superuser override) access for
-/// llm-config read/write. `Err` is a ready-to-return response (404 unknown / 403 not owner).
-async fn agent_owner_or_reject(
-    db: &sqlx::PgPool,
-    agent_id: Uuid,
-    user_id: Uuid,
-    is_superuser: bool,
-) -> Result<Uuid, axum::response::Response> {
-    let owner: Option<Uuid> =
-        sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL")
-            .bind(agent_id)
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
-    match owner {
-        None => Err((StatusCode::NOT_FOUND, "agent not found").into_response()),
-        Some(o) if o != user_id && !is_superuser => {
-            Err((StatusCode::FORBIDDEN, "not the agent owner").into_response())
-        }
-        Some(o) => Ok(o),
-    }
+/// Routes nested under /user in lib.rs (not under /agents).
+pub fn user_routes() -> Router<AppState> {
+    Router::new()
+        .route("/upload-agents", get(list_upload_agents))
 }
 
-// ─── Response ────────────────────────────────────────────────────────────────
+// ─── Response types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct UploadAndDeployResponse {
@@ -73,175 +54,42 @@ pub struct UploadAndDeployResponse {
     pub status: &'static str,
 }
 
-// ─── PATCH /{id}/llm-config ──────────────────────────────────────────────────
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct UploadStatusRow {
+    id: Uuid,
+    upload_id: String,
+    agent_id: Option<Uuid>,
+    agent_name: String,
+    status: String,
+    owner_id: Option<Uuid>,
+    error_message: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
 
-/// Self-service LLM routing config for an agent (P2.6). Sets the `agents.llm_config`
-/// JSONB (provider/model/fallbacks/tuning/secret) and, optionally, `inbound_format`.
-/// Owner-only (or superuser); the gateway routes off this on the next request (≤ cache TTL).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct DeploymentRow {
+    id: Uuid,
+    agent_id: Uuid,
+    build_id: Uuid,
+    namespace: String,
+    replicas: i16,
+    status: String,
+    service_url: Option<String>,
+    owner_id: Option<Uuid>,
+    agent_name: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct AclResponse {
+    unrestricted: bool,
+    allowed: Vec<Uuid>,
+}
+
 #[derive(Debug, Deserialize)]
-pub struct UpdateLlmConfigRequest {
-    pub provider: String,
-    pub model: String,
-    #[serde(default)]
-    pub fallback_models: Vec<String>,
-    #[serde(default)]
-    pub temperature: Option<f64>,
-    #[serde(default)]
-    pub max_tokens: Option<i64>,
-    /// Name of the caller's `user_secrets` row holding the provider API key. None ⇒ the
-    /// platform-key path (see resolver §6.5).
-    #[serde(default)]
-    pub api_key_secret_name: Option<String>,
-    /// Optionally also change which SDK the agent's code speaks (drives deploy injection).
-    #[serde(default)]
-    pub inbound_format: Option<String>,
-}
-
-/// Validate the provider/model/inbound_format fields (everything that doesn't need the DB).
-fn validate_llm_config(req: &UpdateLlmConfigRequest) -> Result<(), String> {
-    if !SUPPORTED_PROVIDERS.contains(&req.provider.as_str()) {
-        return Err(format!(
-            "unsupported provider '{}' (expected one of: {})",
-            req.provider,
-            SUPPORTED_PROVIDERS.join(", ")
-        ));
-    }
-    if req.model.trim().is_empty() {
-        return Err("model must not be empty".to_string());
-    }
-    if let Some(fmt) = &req.inbound_format
-        && !SUPPORTED_INBOUND_FORMATS.contains(&fmt.as_str())
-    {
-        return Err(format!(
-            "unsupported inbound_format '{fmt}' (expected one of: {})",
-            SUPPORTED_INBOUND_FORMATS.join(", ")
-        ));
-    }
-    Ok(())
-}
-
-/// `GET /{id}/llm-config` — current routing config + inbound format (owner/superuser).
-async fn get_llm_config(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(agent_id): Path<Uuid>,
-) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
-    };
-    if let Err(resp) = agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
-    {
-        return resp;
-    }
-
-    let row: Option<(Option<serde_json::Value>, String)> = sqlx::query_as(
-        "SELECT llm_config, inbound_format FROM agents WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
-
-    match row {
-        Some((llm_config, inbound_format)) => (
-            StatusCode::OK,
-            Json(json!({
-                "agent_id": agent_id,
-                "llm_config": llm_config,           // null ⇒ backward-compat defaults apply
-                "inbound_format": inbound_format,
-            })),
-        )
-            .into_response(),
-        None => (StatusCode::NOT_FOUND, "agent not found").into_response(),
-    }
-}
-
-async fn update_llm_config(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(agent_id): Path<Uuid>,
-    Json(req): Json<UpdateLlmConfigRequest>,
-) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
-    };
-
-    // Owner-only mutation (superuser may override). Read access (public/grant) is NOT
-    // enough to edit routing config.
-    let owner = match agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
-    {
-        Ok(owner) => owner,
-        Err(resp) => return resp,
-    };
-
-    if let Err(msg) = validate_llm_config(&req) {
-        return (StatusCode::BAD_REQUEST, msg).into_response();
-    }
-
-    // A referenced secret must exist for this owner (resolver would otherwise 400 at call
-    // time). Validate against the agent owner's secrets, not the (possibly superuser) caller.
-    if let Some(name) = req.api_key_secret_name.as_deref().filter(|s| !s.is_empty()) {
-        let exists: bool = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM user_secrets WHERE user_id = $1 AND name = $2)",
-        )
-        .bind(owner)
-        .bind(name)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(false);
-        if !exists {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("secret '{name}' not found for the agent owner"),
-            )
-                .into_response();
-        }
-    }
-
-    // Build the llm_config JSONB exactly as the resolver's LLMConfig deserializes it.
-    let llm_config = json!({
-        "provider": req.provider,
-        "model": req.model,
-        "fallback_models": req.fallback_models,
-        "temperature": req.temperature,
-        "max_tokens": req.max_tokens,
-        "api_key_secret_name": req.api_key_secret_name,
-    });
-
-    let result = if let Some(fmt) = &req.inbound_format {
-        sqlx::query(
-            "UPDATE agents SET llm_config = $2, inbound_format = $3, updated_at = now() WHERE id = $1",
-        )
-        .bind(agent_id)
-        .bind(&llm_config)
-        .bind(fmt)
-        .execute(&state.db)
-        .await
-    } else {
-        sqlx::query("UPDATE agents SET llm_config = $2, updated_at = now() WHERE id = $1")
-            .bind(agent_id)
-            .bind(&llm_config)
-            .execute(&state.db)
-            .await
-    };
-
-    match result {
-        Ok(_) => {
-            let mut body = json!({ "agent_id": agent_id, "llm_config": llm_config });
-            if let Some(fmt) = &req.inbound_format {
-                body["inbound_format"] = json!(fmt);
-            }
-            (StatusCode::OK, Json(body)).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to update llm_config: {e}"),
-        )
-            .into_response(),
-    }
+struct AddAclBody {
+    target_agent_id: Uuid,
 }
 
 // ─── POST /upload-and-deploy ─────────────────────────────────────────────────
@@ -261,14 +109,11 @@ async fn upload_and_deploy(
     let mut source_data: Option<Vec<u8>> = None;
     let mut ports: Vec<u16> = vec![];
     let mut env: HashMap<String, String> = HashMap::new();
-    // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
-    let mut inbound_format: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
             "name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
-            "inbound_format" => inbound_format = field.text().await.ok(),
             "source" => {
                 let data = field.bytes().await.unwrap_or_default();
                 if !data.is_empty() {
@@ -298,12 +143,6 @@ async fn upload_and_deploy(
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
     let version_tag = version_tag.unwrap_or_else(|| "latest".to_string());
-    // Accept only the supported SDK formats; anything else falls back to openai.
-    let inbound_format = match inbound_format.as_deref() {
-        Some("anthropic") => "anthropic",
-        Some("gemini") => "gemini",
-        _ => "openai",
-    };
     let source_data = match source_data {
         Some(d) => d,
         None => return (StatusCode::BAD_REQUEST, "source zip is required").into_response(),
@@ -326,25 +165,23 @@ async fn upload_and_deploy(
 
     let agent_id = if let Some(id) = existing {
         let _ = sqlx::query(
-            "UPDATE agents SET version = $2, image = $3, status = 'deploying', inbound_format = $4, updated_at = now() WHERE id = $1",
+            "UPDATE agents SET version = $2, image = $3, status = 'deploying', updated_at = now() WHERE id = $1",
         )
         .bind(id)
         .bind(&version_tag)
         .bind(&image_tag)
-        .bind(inbound_format)
         .execute(&state.db)
         .await;
         id
     } else {
         match sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5) RETURNING id",
+            "INSERT INTO agents (name, owner_id, version, image, status) \
+             VALUES ($1, $2, $3, $4, 'deploying') RETURNING id",
         )
         .bind(&name)
         .bind(owner_id)
         .bind(&version_tag)
         .bind(&image_tag)
-        .bind(inbound_format)
         .fetch_one(&state.db)
         .await
         {
@@ -374,17 +211,13 @@ async fn upload_and_deploy(
         }
     };
 
-    // Wire the agent's LLM SDK through the gateway (mint JWT + inject base-URL/key per the
-    // agent's inbound_format). Best-effort; skipped (with a warning) if the gateway isn't
-    // configured.
-    let mut env = env;
-    crate::llm_wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id)).await;
-
     let runtime = state.runtime.clone();
     let db = state.db.clone();
     let name_clone = name.clone();
     let image_tag_clone = image_tag.clone();
     let ports_clone = if ports.is_empty() { vec![8000] } else { ports };
+    // Use build_id as the upload_id so the client can poll both SSE and REST with the same ID.
+    let upload_id = build_id.to_string();
 
     tokio::spawn(async move {
         execute_upload_and_deploy(
@@ -392,6 +225,8 @@ async fn upload_and_deploy(
             db,
             build_id,
             agent_id,
+            owner_id,
+            upload_id,
             name_clone,
             source_data,
             image_tag_clone,
@@ -420,6 +255,8 @@ async fn execute_upload_and_deploy(
     db: sqlx::PgPool,
     build_id: Uuid,
     agent_id: Uuid,
+    owner_id: Uuid,
+    upload_id: String,
     name: String,
     source_data: Vec<u8>,
     image_tag: String,
@@ -427,12 +264,14 @@ async fn execute_upload_and_deploy(
     env: HashMap<String, String>,
 ) {
     set_build_status(&db, build_id, BuildStatus::Building).await;
+    set_upload_status(&db, &upload_id, &name, owner_id, "initiated", None, None).await;
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
     let result: Result<(), String> = async {
         // Extract zip.
         extract_zip_to_dir(&source_data, &tmp_dir)?;
+        set_upload_status(&db, &upload_id, &name, owner_id, "processing", None, None).await;
 
         let dockerfile_path = tmp_dir.join("Dockerfile");
         if !dockerfile_path.exists() {
@@ -459,6 +298,8 @@ async fn execute_upload_and_deploy(
             .await
             .map_err(|e| format!("docker build: {e}"))?;
 
+        set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
+
         // Deploy container.
         let container_id = ContainerId::new(&name);
         let spec = DeploymentSpec {
@@ -476,6 +317,8 @@ async fn execute_upload_and_deploy(
             .await
             .map_err(|e| format!("deploy: {e}"))?;
 
+        set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
+
         Ok(())
     }
     .await;
@@ -485,6 +328,7 @@ async fn execute_upload_and_deploy(
     match result {
         Ok(()) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
+            set_upload_status(&db, &upload_id, &name, owner_id, "completed", Some(agent_id), None).await;
             // Record the built version (idempotent on agent_id+version).
             let _ = sqlx::query(
                 "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
@@ -503,6 +347,7 @@ async fn execute_upload_and_deploy(
         }
         Err(e) => {
             set_build_status(&db, build_id, BuildStatus::Failed).await;
+            set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some(&e)).await;
             let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
                 .bind(agent_id)
                 .execute(&db)
@@ -524,9 +369,37 @@ async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus
     }
 }
 
+async fn set_upload_status(
+    db: &sqlx::PgPool,
+    upload_id: &str,
+    agent_name: &str,
+    owner_id: Uuid,
+    status: &str,
+    agent_id: Option<Uuid>,
+    error: Option<&str>,
+) {
+    if let Err(e) = sqlx::query(
+        "INSERT INTO upload_status (upload_id, agent_name, owner_id, status, agent_id, error_message)
+         VALUES ($1, $2, $3, $4::upload_pipeline_status, $5, $6)
+         ON CONFLICT (upload_id) DO UPDATE
+           SET status = EXCLUDED.status,
+               agent_id = COALESCE(EXCLUDED.agent_id, upload_status.agent_id),
+               error_message = EXCLUDED.error_message",
+    )
+    .bind(upload_id)
+    .bind(agent_name)
+    .bind(owner_id)
+    .bind(status)
+    .bind(agent_id)
+    .bind(error)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(%e, upload_id, "failed to update upload_status");
+    }
+}
+
 // ─── GET /deploy-status/{build_id} (SSE) ─────────────────────────────────────
-// Streams the build's status (persisted by execute_upload_and_deploy) until it
-// reaches a terminal state. Emits {"status":"not_found"} for unknown build ids.
 
 #[derive(Debug, sqlx::FromRow)]
 struct BuildStatusRow {
@@ -580,43 +453,348 @@ async fn deploy_status_sse(
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    fn req(provider: &str, model: &str, inbound: Option<&str>) -> UpdateLlmConfigRequest {
-        UpdateLlmConfigRequest {
-            provider: provider.into(),
-            model: model.into(),
-            fallback_models: vec![],
-            temperature: None,
-            max_tokens: None,
-            api_key_secret_name: None,
-            inbound_format: inbound.map(str::to_string),
+// ─── GET /upload-status/{upload_id} ─────────────────────────────────────────
+
+async fn get_upload_status(
+    State(state): State<AppState>,
+    Path(upload_id): Path<String>,
+) -> impl IntoResponse {
+    match sqlx::query_as::<_, UploadStatusRow>(
+        "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+         FROM upload_status WHERE upload_id = $1",
+    )
+    .bind(&upload_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(row)) => Json(row).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, upload_id, "get_upload_status db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+// ─── GET /user/upload-agents ─────────────────────────────────────────────────
+
+async fn list_upload_agents(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    let rows = if claims.is_superuser {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status ORDER BY created_at DESC LIMIT 50",
+        )
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 50",
+        )
+        .bind(user_id)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match rows {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list_upload_agents db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+// ─── Deployment routes ────────────────────────────────────────────────────────
+
+async fn list_deployments(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    let rows = if claims.is_superuser {
+        sqlx::query_as::<_, DeploymentRow>(
+            "SELECT d.id, d.agent_id, d.build_id, d.namespace, d.replicas,
+                    d.status::text as status, d.service_url, d.owner_id,
+                    a.name as agent_name, d.created_at
+             FROM agent_deployments d
+             LEFT JOIN agents a ON a.id = d.agent_id
+             ORDER BY d.created_at DESC LIMIT 50",
+        )
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as::<_, DeploymentRow>(
+            "SELECT d.id, d.agent_id, d.build_id, d.namespace, d.replicas,
+                    d.status::text as status, d.service_url, d.owner_id,
+                    a.name as agent_name, d.created_at
+             FROM agent_deployments d
+             LEFT JOIN agents a ON a.id = d.agent_id
+             WHERE d.owner_id = $1
+             ORDER BY d.created_at DESC LIMIT 50",
+        )
+        .bind(user_id)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match rows {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list_deployments db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn get_agent_deployment(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    match sqlx::query_as::<_, DeploymentRow>(
+        "SELECT d.id, d.agent_id, d.build_id, d.namespace, d.replicas,
+                d.status::text as status, d.service_url, d.owner_id,
+                a.name as agent_name, d.created_at
+         FROM agent_deployments d
+         LEFT JOIN agents a ON a.id = d.agent_id
+         WHERE d.agent_id = $1 AND d.status != 'stopped'
+         ORDER BY d.created_at DESC LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(row)) => Json(row).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "get_agent_deployment db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct AgentDeployInfo {
+    name: String,
+    image: String,
+    agent_id: Uuid,
+    build_id: Option<Uuid>,
+    owner_id: Option<Uuid>,
+}
+
+async fn restart_deployment(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(deployment_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    // Fetch deployment and agent info together.
+    let info = match sqlx::query_as::<_, AgentDeployInfo>(
+        "SELECT a.name, a.image, a.id as agent_id,
+                d.build_id, d.owner_id
+         FROM agent_deployments d
+         JOIN agents a ON a.id = d.agent_id
+         WHERE d.id = $1",
+    )
+    .bind(deployment_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(r)) => r,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %deployment_id, "restart_deployment: fetch error");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // Owner or superuser only.
+    if !claims.is_superuser {
+        let is_owner = info.owner_id.map(|o| o == user_id).unwrap_or(false);
+        if !is_owner && !user_can_access_agent(&state.db, user_id, info.agent_id).await {
+            return StatusCode::FORBIDDEN.into_response();
         }
     }
 
-    #[test]
-    fn accepts_supported_provider_and_format() {
-        assert!(validate_llm_config(&req("anthropic", "claude-3-5-sonnet-20241022", Some("gemini"))).is_ok());
-        assert!(validate_llm_config(&req("openai", "gpt-4o-mini", None)).is_ok());
+    let container_id = ContainerId::new(&info.name);
+
+    // Destroy current container (ignore failure — may already be stopped).
+    let _ = state.runtime.destroy(&container_id).await;
+
+    // Resolve agent secrets for environment.
+    let secrets = agent_secrets::resolve_agent_env(&state.db, info.agent_id).await;
+
+    let spec = DeploymentSpec {
+        container_id: ContainerId::new(&info.name),
+        name: info.name.clone(),
+        image: info.image.clone(),
+        ports: vec![8000],
+        env_vars: secrets,
+        min_replicas: 1,
+        max_replicas: 1,
+        resources: None,
+    };
+
+    if let Err(e) = state.runtime.deploy(&spec).await {
+        tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
     }
 
-    #[test]
-    fn rejects_unsupported_provider() {
-        let err = validate_llm_config(&req("cohere", "command-r", None)).unwrap_err();
-        assert!(err.contains("unsupported provider"));
+    // Mark old deployment stopped, record new one.
+    let _ = sqlx::query(
+        "UPDATE agent_deployments SET status = 'stopped', updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(deployment_id)
+    .execute(&state.db)
+    .await;
+
+    if let Some(build_id) = info.build_id {
+        let _ = sqlx::query(
+            "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id)
+             VALUES ($1, $2, 'running', $3)",
+        )
+        .bind(info.agent_id)
+        .bind(build_id)
+        .bind(info.owner_id)
+        .execute(&state.db)
+        .await;
     }
 
-    #[test]
-    fn rejects_empty_model() {
-        let err = validate_llm_config(&req("openai", "   ", None)).unwrap_err();
-        assert!(err.contains("model must not be empty"));
+    let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
+        .bind(info.agent_id)
+        .execute(&state.db)
+        .await;
+
+    StatusCode::OK.into_response()
+}
+
+// ─── ACL routes ──────────────────────────────────────────────────────────────
+
+async fn get_agent_acl(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
     }
 
-    #[test]
-    fn rejects_unsupported_inbound_format() {
-        let err = validate_llm_config(&req("openai", "gpt-4o", Some("crewai"))).unwrap_err();
-        assert!(err.contains("unsupported inbound_format"));
+    match allowed_targets(&state.db, agent_id).await {
+        Ok(None) => Json(AclResponse { unrestricted: true, allowed: vec![] }).into_response(),
+        Ok(Some(targets)) => Json(AclResponse { unrestricted: false, allowed: targets }).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "get_agent_acl db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn add_agent_acl(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+    Json(body): Json<AddAclBody>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // Verify target agent exists.
+    let target_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(body.target_agent_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
+
+    if !target_exists {
+        return (StatusCode::NOT_FOUND, "target agent not found").into_response();
+    }
+
+    match sqlx::query(
+        "INSERT INTO agent_acl (caller_agent_id, target_agent_id, granted_by)
+         VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(agent_id)
+    .bind(body.target_agent_id)
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    {
+        Ok(_) => StatusCode::CREATED.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "add_agent_acl db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn remove_agent_acl(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path((agent_id, target_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    match sqlx::query(
+        "DELETE FROM agent_acl WHERE caller_agent_id = $1 AND target_agent_id = $2",
+    )
+    .bind(agent_id)
+    .bind(target_id)
+    .execute(&state.db)
+    .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, %target_id, "remove_agent_acl db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
