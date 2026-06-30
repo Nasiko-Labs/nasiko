@@ -202,17 +202,15 @@ async fn restart_deployment(
     .execute(&state.db)
     .await;
 
-    if let Some(build_id) = info.build_id {
-        let _ = sqlx::query(
-            "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id)
-             VALUES ($1, $2, 'running', $3)",
-        )
-        .bind(info.agent_id)
-        .bind(build_id)
-        .bind(info.owner_id)
-        .execute(&state.db)
-        .await;
-    }
+    let _ = sqlx::query(
+        "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id)
+         VALUES ($1, $2, 'running', $3)",
+    )
+    .bind(info.agent_id)
+    .bind(info.build_id)
+    .bind(info.owner_id)
+    .execute(&state.db)
+    .await;
 
     let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
         .bind(info.agent_id)

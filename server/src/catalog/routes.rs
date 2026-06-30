@@ -100,8 +100,17 @@ async fn create(
         "stateTransitionHistory": false,
         "chat_agent": false
     }));
-    let skills = serde_json::to_value(body.skills.unwrap_or_default()).unwrap_or_default();
-    let tags = body.tags.unwrap_or_default();
+    let skills_vec = body.skills.unwrap_or_default();
+    let mut tags = body.tags.unwrap_or_default();
+    // Merge unique tags declared on each skill into the agent's tag set.
+    for skill in &skills_vec {
+        for tag in &skill.tags {
+            if !tags.contains(tag) {
+                tags.push(tag.clone());
+            }
+        }
+    }
+    let skills = serde_json::to_value(&skills_vec).unwrap_or_default();
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
     let owner_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
@@ -219,8 +228,14 @@ async fn list(
 
 async fn get_one(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
+
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
             sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
@@ -236,11 +251,17 @@ async fn get_one(
         }
     };
 
-    match result {
-        Ok(Some(agent)) => Json(agent).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    let agent = match result {
+        Ok(Some(a)) => a,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent.id).await {
+        return StatusCode::FORBIDDEN.into_response();
     }
+
+    Json(agent).into_response()
 }
 
 async fn update(
@@ -261,6 +282,22 @@ async fn update(
         }
 
     let skills_changed = body.skills.is_some();
+
+    // When skills are being updated, merge their tags into the provided tag list so
+    // the COALESCE write carries all skill-derived tags alongside any explicit ones.
+    let merged_tags = if let Some(ref skill_list) = body.skills {
+        let mut tags = body.tags.clone().unwrap_or_default();
+        for skill in skill_list {
+            for tag in &skill.tags {
+                if !tags.contains(tag) {
+                    tags.push(tag.clone());
+                }
+            }
+        }
+        Some(tags)
+    } else {
+        body.tags.clone()
+    };
 
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
@@ -297,7 +334,7 @@ async fn update(
     .bind(&body.documentation_url)
     .bind(&body.capabilities)
     .bind(body.skills.as_ref().and_then(|s| serde_json::to_value(s).ok()))
-    .bind(&body.tags)
+    .bind(&merged_tags)
     .bind(&body.metadata)
     .bind(&body.status)
     .bind(&body.image)
@@ -428,8 +465,18 @@ async fn delete(
 
 async fn list_versions(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(uid) => uid,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let result = sqlx::query_as::<_, AgentVersion>(
         "SELECT * FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC",
     )
@@ -452,18 +499,30 @@ struct SearchQuery {
 
 async fn search(
     State(state): State<AppState>,
+    claims: Claims,
     Query(sq): Query<SearchQuery>,
 ) -> impl IntoResponse {
+    let owner_filter: Option<Uuid> = if claims.is_superuser {
+        None
+    } else {
+        match claims.sub.parse() {
+            Ok(id) => Some(id),
+            Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        }
+    };
+
     let result = sqlx::query_as::<_, Agent>(
         r#"SELECT * FROM agents
-           WHERE name ILIKE '%' || $1 || '%'
-              OR display_name ILIKE '%' || $1 || '%'
-              OR description ILIKE '%' || $1 || '%'
+           WHERE ($3::uuid IS NULL OR owner_id = $3)
+             AND (name ILIKE '%' || $1 || '%'
+               OR display_name ILIKE '%' || $1 || '%'
+               OR description ILIKE '%' || $1 || '%')
            ORDER BY similarity(name, $1) DESC
            LIMIT $2"#,
     )
     .bind(&sq.q)
     .bind(sq.limit)
+    .bind(owner_filter)
     .fetch_all(&state.db)
     .await;
 
