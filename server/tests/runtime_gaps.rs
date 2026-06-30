@@ -676,6 +676,44 @@ async fn restart_crashed_agent_does_not_409() {
 
 #[tokio::test]
 #[serial]
+async fn restart_running_agent_returns_409() {
+    // DB-based 409 guard: a 'running' agent must be rejected without touching Docker.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let (_, dep_id) =
+        seed_deployment(&server.db, owner_id, "running-restart-ng", "running", None, None, None)
+            .await;
+
+    let res = call_restart(&server, uid, dep_id).await;
+    assert_eq!(res.status(), 409, "running agent must return 409");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn restart_starting_agent_returns_409() {
+    // DB-based 409 guard: a 'starting' agent is also considered live and must be rejected.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let (_, dep_id) =
+        seed_deployment(&server.db, owner_id, "starting-restart-ng", "starting", None, None, None)
+            .await;
+
+    let res = call_restart(&server, uid, dep_id).await;
+    assert_eq!(res.status(), 409, "starting agent must return 409");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn restart_spec_ports_stored_and_read() {
     // Verify that spec_ports in agent_deployments is correctly persisted after upload.
     // The restart handler reads spec_ports from this column.

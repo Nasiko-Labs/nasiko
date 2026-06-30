@@ -48,6 +48,8 @@ struct AgentDeployInfo {
     agent_id: Uuid,
     build_id: Option<Uuid>,
     owner_id: Option<Uuid>,
+    /// DB-recorded deployment status — used to guard restart against already-live agents.
+    status: String,
     /// Stored ports from migration 013 — None for agents deployed before the migration.
     spec_ports: Option<Vec<i32>>,
     /// Stored image from migration 013 — None falls back to agents.image.
@@ -161,7 +163,7 @@ async fn restart_deployment(
     // Fetch deployment and agent info together, including stored spec columns.
     let info = match sqlx::query_as::<_, AgentDeployInfo>(
         "SELECT a.name, a.image, a.id as agent_id,
-                d.build_id, d.owner_id,
+                d.build_id, d.owner_id, d.status::text as status,
                 d.spec_ports, d.spec_image, d.k8s_deployment_name
          FROM agent_deployments d
          JOIN agents a ON a.id = d.agent_id
@@ -189,15 +191,10 @@ async fn restart_deployment(
 
     let container_id = ContainerId::new(&info.name);
 
-    // 409 if the agent is already running or starting — no-op restart makes no sense.
-    match state.runtime.status(&container_id).await {
-        Ok(status) if matches!(
-            status.state,
-            nasiko_runtime::RuntimeState::Running | nasiko_runtime::RuntimeState::Pending
-        ) => {
-            return (StatusCode::CONFLICT, "agent is already running or starting").into_response();
-        }
-        _ => {} // crashed, stopped, failed, unknown, or not found → proceed
+    // 409 if the DB considers the agent live — runtime state can lag (container killed
+    // externally, Docker restart, etc.) so the DB record is the authoritative guard.
+    if matches!(info.status.as_str(), "running" | "starting") {
+        return (StatusCode::CONFLICT, "agent is already running or starting").into_response();
     }
 
     // Resolve stored ports; fall back to port 8000 for pre-migration agents.
