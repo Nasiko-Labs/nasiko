@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nasiko
+      POSTGRES_PASSWORD: nasiko
+      POSTGRES_DB: nasiko_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - nasiko-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nasiko"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    command: server /data --address :9000
+    environment:
+      RUSTFS_ROOT_USER: nasiko
+      RUSTFS_ROOT_PASSWORD: nasiko123
+    ports:
+      - "9000:9000"
+    volumes:
+      - nasiko-s3-data:/data
+
+volumes:
+  nasiko-pg-data:
+  nasiko-s3-data:
