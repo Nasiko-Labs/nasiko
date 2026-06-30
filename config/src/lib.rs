@@ -38,6 +38,7 @@ pub struct Config {
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub github_callback_url: Option<String>,
 }
 
 impl Config {
@@ -92,6 +93,7 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
         })
     }
 }

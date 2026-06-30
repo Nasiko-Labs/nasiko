@@ -140,6 +140,7 @@ where
         .route("/health", get(health))
         .merge(observability::router())
         .merge(auth::login::public_router())  // public: login + initialize-admin only
+        .merge(github::public_router())       // public: GitHub OAuth callback
         .merge(a2a_public)
         .nest("/api", protected)
         .with_state(state)

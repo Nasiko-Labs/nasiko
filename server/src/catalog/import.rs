@@ -22,16 +22,16 @@ pub fn router() -> Router<AppState> {
 // ─── Response ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct ImportResult {
-    agent_id: Uuid,
-    build_id: Option<Uuid>,
-    container_name: Option<String>,
-    status: String,
+pub(crate) struct ImportResult {
+    pub(crate) agent_id: Uuid,
+    pub(crate) build_id: Option<Uuid>,
+    pub(crate) container_name: Option<String>,
+    pub(crate) status: String,
 }
 
 // ─── Shared Pipeline ────────────────────────────────────────────────────────
 
-struct AgentMetadata {
+pub(crate) struct AgentMetadata {
     name: String,
     display_name: Option<String>,
     description: Option<String>,
@@ -40,7 +40,7 @@ struct AgentMetadata {
     capabilities: serde_json::Value,
 }
 
-fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
+pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
     let card_path = dir.join("AgentCard.json");
     let content = std::fs::read_to_string(&card_path)
         .map_err(|e| format!("cannot read AgentCard.json: {e}"))?;
@@ -61,7 +61,7 @@ fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
     })
 }
 
-async fn build_and_deploy(
+pub(crate) async fn build_and_deploy(
     source_dir: &std::path::Path,
     meta: &AgentMetadata,
     owner_id: Uuid,

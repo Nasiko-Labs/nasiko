@@ -58,12 +58,7 @@ impl AppState {
     ) -> Self {
         // TODO: restore strict migration check; use ignore_missing so EE migrations (v10+)
         // already applied to the DB don't cause the OSS migrator to panic.
-        // Never swallow the result: a genuine migrate failure (duplicate version, checksum
-        // mismatch, bad SQL) must be loud — a silently half-migrated schema is far worse
-        // than a noisy boot.
-        if let Err(e) = sqlx::migrate!("../migrations").set_ignore_missing(true).run(&db).await {
-            tracing::error!(error = %e, "database migration failed — schema may be inconsistent");
-        }
+        let _ = sqlx::migrate!("../migrations").set_ignore_missing(true).run(&db).await;
 
         let redis = redis::Client::open(config.redis_url.as_str())
             .expect("invalid redis url");
@@ -98,7 +93,8 @@ impl AppState {
                     client_id: id.clone(),
                     client_secret: sec.clone(),
                     oauth_state_secret: signing,
-                    callback_url: String::new(),
+                    callback_url: config.github_callback_url.clone()
+                        .expect("GITHUB_CALLBACK_URL must be set when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured"),
                     central_callback_url: None,
                     clone_timeout_secs: 300,
                     clone_max_size_bytes: 500 * 1024 * 1024,

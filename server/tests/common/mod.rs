@@ -144,6 +144,7 @@ fn test_config(db_url: String) -> Config {
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        github_callback_url: None,
     }
 }
 
