@@ -29,9 +29,10 @@ pub fn ps(json: bool) -> Result<()> {
         println!("No agents running.");
         return Ok(());
     }
-    println!("{:<24} {:<10} {:<40} {:<6} NODE", "NAME", "STATE", "IMAGE", "PORT");
+    println!("{:<28} {:<12} {:<4} {}", "NAME", "STATE", "UP", "ENDPOINT");
     for c in &containers {
-        println!("{:<24} {:<10} {:<40} {:<6} {}", c.name, c.state, c.image, c.port, c.node_id);
+        let ep = c.endpoint.as_deref().unwrap_or("-");
+        println!("{:<28} {:<12} {:<4} {}", c.container_id, c.state, c.replicas_live, ep);
     }
     Ok(())
 }
