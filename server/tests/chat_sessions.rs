@@ -122,7 +122,7 @@ async fn list_sessions_cursor_round_trip() {
     let page1 = list_sessions(&server, uid, "?limit=2").await;
     let data1 = page1["data"].as_array().unwrap();
     assert_eq!(data1.len(), 2, "first page should have 2 sessions");
-    assert_eq!(page1["has_more"].as_bool().unwrap(), true);
+    assert!(page1["has_more"].as_bool().unwrap());
     assert!(page1["next_cursor"].is_string(), "next_cursor must be present");
 
     let next_cursor = page1["next_cursor"].as_str().unwrap();
@@ -132,7 +132,7 @@ async fn list_sessions_cursor_round_trip() {
     let page2 = list_sessions(&server, uid, &format!("?limit=2&cursor={next_cursor}")).await;
     let data2 = page2["data"].as_array().unwrap();
     assert_eq!(data2.len(), 1, "second page should have the remaining session");
-    assert_eq!(page2["has_more"].as_bool().unwrap(), false);
+    assert!(!page2["has_more"].as_bool().unwrap());
 
     // No overlap between pages.
     let page2_ids: Vec<&str> = data2.iter().map(|s| s["session_id"].as_str().unwrap()).collect();
@@ -204,7 +204,7 @@ async fn list_messages_cursor_round_trip() {
     let page1: Value = res.json().await.unwrap();
     let data1 = page1["data"].as_array().unwrap();
     assert_eq!(data1.len(), 2);
-    assert_eq!(page1["has_more"].as_bool().unwrap(), true);
+    assert!(page1["has_more"].as_bool().unwrap());
     assert!(page1["next_cursor"].is_string());
     // Data is in ASC order — earlier message comes first.
     assert!(
