@@ -16,6 +16,10 @@ pub struct Config {
     pub s3_region: String,
     pub secrets_encryption_key: String,
     pub oci_storage_bucket: String,
+    /// Registry prefix prepended to agent image tags at build time.
+    /// e.g. `"host.docker.internal:5001"` for local K8s dev.
+    /// Empty string → no prefix (Docker local mode).
+    pub agent_image_registry: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -38,7 +42,6 @@ pub struct Config {
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    pub github_callback_url: Option<String>,
 }
 
 impl Config {
@@ -58,6 +61,7 @@ impl Config {
             s3_region: env_or("S3_REGION", "us-east-1"),
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
+            agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -93,7 +97,6 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
         })
     }
 }

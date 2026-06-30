@@ -251,14 +251,63 @@ async fn execute_build(
     }
 }
 
+const MAX_ZIP_FILES: usize = 1_000;
+const MAX_ZIP_UNCOMPRESSED: u64 = 200 * 1024 * 1024; // 200 MiB
+
+/// Extract a zip archive from a byte slice into `dest`.
+/// Kept for the build/S3 path which already has data in memory.
 pub fn extract_zip_to_dir(data: &[u8], dest: &std::path::Path) -> std::result::Result<(), String> {
+    extract_zip_reader(std::io::Cursor::new(data), dest)
+}
+
+/// Extract a zip archive from a file on disk into `dest`.
+/// Used by the upload path after streaming the zip to disk.
+pub fn extract_zip_from_file(zip_path: &std::path::Path, dest: &std::path::Path) -> std::result::Result<(), String> {
+    let f = std::fs::File::open(zip_path).map_err(|e| format!("open zip: {e}"))?;
+    extract_zip_reader(std::io::BufReader::new(f), dest)
+}
+
+fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    dest: &std::path::Path,
+) -> std::result::Result<(), String> {
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-    let cursor = std::io::Cursor::new(data);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
+
+    if archive.len() > MAX_ZIP_FILES {
+        return Err(format!("zip contains {} files, limit is {MAX_ZIP_FILES}", archive.len()));
+    }
+
+    let mut uncompressed_total: u64 = 0;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let path = dest.join(file.mangled_name());
+
+        // Path traversal guard: `enclosed_name()` returns None for any entry whose stored
+        // path contains `..` or an absolute root — zip 2.x `mangled_name()` strips those
+        // components silently, so the Component::ParentDir check would never fire on it.
+        let safe_path = match file.enclosed_name() {
+            Some(p) => p,
+            None => {
+                return Err(format!("zip traversal attempt: {:?}", file.name()));
+            }
+        };
+
+        // Zip bomb guard (check declared uncompressed size before extraction)
+        uncompressed_total = uncompressed_total.saturating_add(file.size());
+        if uncompressed_total > MAX_ZIP_UNCOMPRESSED {
+            return Err(format!(
+                "zip uncompressed size exceeds {MAX_ZIP_UNCOMPRESSED} bytes — possible zip bomb"
+            ));
+        }
+
+        let path = dest.join(&safe_path);
+
+        // Belt-and-suspenders: verify the resolved path stays inside dest
+        if !path.starts_with(dest) {
+            return Err(format!("zip traversal attempt (join escaped dest): {}", safe_path.display()));
+        }
+
         if file.is_dir() {
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
         } else {

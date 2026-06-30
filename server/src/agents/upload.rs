@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use axum::{
@@ -12,13 +13,14 @@ use axum::{
     },
     routing::{get, post},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use nasiko_runtime::{ContainerId, DeploymentSpec};
 
 use crate::auth::Claims;
-use crate::build::{self, BuildStatus, routes::extract_zip_to_dir};
+use crate::build::{self, BuildStatus};
+use crate::build::routes::{extract_zip_from_file};
 use crate::state::AppState;
 
 use super::utils::{set_build_status, set_upload_status};
@@ -62,6 +64,23 @@ struct BuildStatusRow {
     status: BuildStatus,
 }
 
+/// Payload stored in build_jobs.payload JSONB — everything the worker needs to execute the build.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BuildJobPayload {
+    pub build_id: Uuid,
+    pub agent_id: Uuid,
+    pub owner_id: Uuid,
+    pub upload_id: String,
+    pub name: String,
+    /// Absolute path to the zip file on disk (streamed there by the upload handler).
+    pub zip_path: String,
+    pub image_tag: String,
+    pub ports: Vec<u16>,
+    pub env: HashMap<String, String>,
+}
+
+const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB
+
 // ─── POST /upload-and-deploy ─────────────────────────────────────────────────
 
 async fn upload_and_deploy(
@@ -76,19 +95,53 @@ async fn upload_and_deploy(
 
     let mut name: Option<String> = None;
     let mut version_tag: Option<String> = None;
-    let mut source_data: Option<Vec<u8>> = None;
+    let mut zip_path: Option<PathBuf> = None;
     let mut ports: Vec<u16> = vec![];
     let mut env: HashMap<String, String> = HashMap::new();
+
+    // Build a temporary directory early so we have a path to stream into.
+    // The worker cleans this up after the job completes.
+    let tmp_base = std::env::temp_dir();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
             "name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "source" => {
-                let data = field.bytes().await.unwrap_or_default();
-                if !data.is_empty() {
-                    source_data = Some(data.to_vec());
+                // Stream zip to disk rather than buffering it all in RAM.
+                let field_name = name.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let upload_dir = tmp_base.join(format!("nasiko-upload-{field_name}"));
+                if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("create upload dir: {e}")).into_response();
                 }
+                let path = upload_dir.join("upload.zip");
+
+                let mut f = match tokio::fs::File::create(&path).await {
+                    Ok(f) => f,
+                    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("create zip file: {e}")).into_response(),
+                };
+
+                let mut total_bytes: u64 = 0;
+                let mut chunk_stream = field;
+                loop {
+                    match chunk_stream.chunk().await {
+                        Ok(Some(chunk)) => {
+                            total_bytes += chunk.len() as u64;
+                            if total_bytes > MAX_UPLOAD_BYTES {
+                                tracing::warn!(total_bytes, limit = MAX_UPLOAD_BYTES, "upload rejected: size limit exceeded");
+                                let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+                                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 100 MiB").into_response();
+                            }
+                            use tokio::io::AsyncWriteExt;
+                            if let Err(e) = f.write_all(&chunk).await {
+                                return (StatusCode::INTERNAL_SERVER_ERROR, format!("write chunk: {e}")).into_response();
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => return (StatusCode::BAD_REQUEST, format!("read upload: {e}")).into_response(),
+                    }
+                }
+                zip_path = Some(path);
             }
             "ports" => {
                 if let Ok(text) = field.text().await {
@@ -113,16 +166,50 @@ async fn upload_and_deploy(
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
     let version_tag = version_tag.unwrap_or_else(|| "latest".to_string());
-    let source_data = match source_data {
-        Some(d) => d,
+    let zip_path = match zip_path {
+        Some(p) => p,
         None => return (StatusCode::BAD_REQUEST, "source zip is required").into_response(),
     };
 
-    let image_tag = format!("{name}:{version_tag}");
+    // ── Agent structure validation ────────────────────────────────────────────
+    // Extract to a temp dir, validate, then clean up (the zip stays for the worker).
+    let validation_dir = zip_path.parent()
+        .unwrap_or(&std::env::temp_dir().join("nasiko-val"))
+        .join("validate");
 
-    // Upsert the agent. Agent names are not globally unique (migration 006 dropped
-    // the unique constraint), so scope the lookup to this owner instead of
-    // relying on ON CONFLICT (name).
+    if let Err(e) = std::fs::create_dir_all(&validation_dir) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("create validation dir: {e}")).into_response();
+    }
+
+    let zip_path_clone = zip_path.clone();
+    let validation_dir_clone = validation_dir.clone();
+    let validation_result = tokio::task::spawn_blocking(move || {
+        validate_agent_zip(&zip_path_clone, &validation_dir_clone)
+    }).await;
+
+    // Clean up validation dir regardless of outcome
+    let _ = tokio::fs::remove_dir_all(&validation_dir).await;
+
+    match validation_result {
+        Ok(Ok(())) => {}
+        Ok(Err(msg)) => {
+            let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+            return (StatusCode::BAD_REQUEST, msg).into_response();
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("validation error: {e}")).into_response();
+        }
+    }
+
+    let image_tag = if state.config.agent_image_registry.is_empty() {
+        format!("{name}:{version_tag}")
+    } else {
+        format!("{}/{name}:{version_tag}", state.config.agent_image_registry)
+    };
+    let ports = if ports.is_empty() { vec![8000] } else { ports };
+
+    // ── Upsert agent ──────────────────────────────────────────────────────────
     let existing: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM agents WHERE owner_id = $1 AND name = $2 LIMIT 1",
     )
@@ -157,13 +244,14 @@ async fn upload_and_deploy(
         {
             Ok(id) => id,
             Err(e) => {
+                let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}"))
                     .into_response();
             }
         }
     };
 
-    // Persist a build record (status defaults to 'queued').
+    // ── Persist build record ──────────────────────────────────────────────────
     let build_id = match sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
          VALUES ($1, $2, $3) RETURNING id",
@@ -176,35 +264,56 @@ async fn upload_and_deploy(
     {
         Ok(id) => id,
         Err(e) => {
+            let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("create build record: {e}"))
                 .into_response();
         }
     };
 
-    let runtime = state.runtime.clone();
-    let db = state.db.clone();
-    let name_clone = name.clone();
-    let image_tag_clone = image_tag.clone();
-    let ports_clone = if ports.is_empty() { vec![8000] } else { ports };
-    // Use build_id as the upload_id so the client can poll both SSE and REST with the same ID.
     let upload_id = build_id.to_string();
 
-    tokio::spawn(async move {
-        execute_upload_and_deploy(
-            runtime,
-            db,
-            build_id,
-            agent_id,
-            owner_id,
-            upload_id,
-            name_clone,
-            source_data,
-            image_tag_clone,
-            ports_clone,
-            env,
-        )
-        .await;
-    });
+    // ── Insert build job (worker picks this up via SKIP LOCKED) ──────────────
+    let payload = BuildJobPayload {
+        build_id,
+        agent_id,
+        owner_id,
+        upload_id: upload_id.clone(),
+        name: name.clone(),
+        zip_path: zip_path.to_string_lossy().into_owned(),
+        image_tag: image_tag.clone(),
+        ports,
+        env,
+    };
+
+    let payload_value = match serde_json::to_value(&payload) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize payload: {e}")).into_response();
+        }
+    };
+
+    if let Err(e) = sqlx::query(
+        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
+    )
+    .bind(agent_id)
+    .bind(owner_id)
+    .bind(&payload_value)
+    .execute(&state.db)
+    .await
+    {
+        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue build: {e}")).into_response();
+    }
+
+    // Notify the build worker immediately so it doesn't wait for the 5s poll interval.
+    let _ = state.build_tx.send(()).await;
+
+    tracing::info!(
+        %build_id,
+        %agent_id,
+        %name,
+        "upload-and-deploy queued"
+    );
 
     (
         StatusCode::ACCEPTED,
@@ -219,8 +328,38 @@ async fn upload_and_deploy(
         .into_response()
 }
 
+/// Validate the agent zip structure synchronously (blocking, run in spawn_blocking).
+fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    extract_zip_from_file(zip_path, dest)?;
+
+    // Dockerfile must exist in root and have at least one FROM line
+    let dockerfile = dest.join("Dockerfile");
+    if !dockerfile.exists() {
+        tracing::warn!(zip_path = %zip_path.display(), reason = "missing Dockerfile", "upload rejected: invalid agent structure");
+        return Err("no Dockerfile found in root of zip".into());
+    }
+    let contents = std::fs::read_to_string(&dockerfile)
+        .map_err(|e| format!("read Dockerfile: {e}"))?;
+    if !contents.lines().any(|l| l.trim_start().starts_with("FROM ")) {
+        tracing::warn!(zip_path = %zip_path.display(), reason = "Dockerfile missing FROM", "upload rejected: invalid agent structure");
+        return Err("Dockerfile has no FROM instruction".into());
+    }
+
+    // At least one Python entrypoint must exist
+    let entrypoints = ["main.py", "src/main.py", "src/__main__.py", "__main__.py"];
+    let has_entrypoint = entrypoints.iter().any(|p| dest.join(p).exists());
+    if !has_entrypoint {
+        tracing::warn!(zip_path = %zip_path.display(), reason = "missing entrypoint", "upload rejected: invalid agent structure");
+        return Err("no Python entrypoint found (main.py, src/main.py, __main__.py, or src/__main__.py)".into());
+    }
+
+    Ok(())
+}
+
+/// Execute the full upload-and-deploy pipeline: extract, OTel patch, docker build, deploy.
+/// Called by the build worker.
 #[allow(clippy::too_many_arguments)]
-async fn execute_upload_and_deploy(
+pub async fn execute_upload_and_deploy(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
     db: sqlx::PgPool,
     build_id: Uuid,
@@ -228,7 +367,7 @@ async fn execute_upload_and_deploy(
     owner_id: Uuid,
     upload_id: String,
     name: String,
-    source_data: Vec<u8>,
+    zip_path: PathBuf,
     image_tag: String,
     ports: Vec<u16>,
     env: HashMap<String, String>,
@@ -239,8 +378,13 @@ async fn execute_upload_and_deploy(
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
     let result: Result<(), String> = async {
-        // Extract zip.
-        extract_zip_to_dir(&source_data, &tmp_dir)?;
+        // Extract zip (with guards — re-run here so the worker is self-contained).
+        let zp = zip_path.clone();
+        let td = tmp_dir.clone();
+        tokio::task::spawn_blocking(move || extract_zip_from_file(&zp, &td))
+            .await
+            .map_err(|e| format!("spawn_blocking extract: {e}"))??;
+
         set_upload_status(&db, &upload_id, &name, owner_id, "processing", None, None).await;
 
         let dockerfile_path = tmp_dir.join("Dockerfile");
@@ -293,13 +437,16 @@ async fn execute_upload_and_deploy(
     }
     .await;
 
+    // Clean up both the extracted dir and the original zip directory.
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    if let Some(zip_dir) = zip_path.parent() {
+        let _ = tokio::fs::remove_dir_all(zip_dir).await;
+    }
 
     match result {
         Ok(()) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
             set_upload_status(&db, &upload_id, &name, owner_id, "completed", Some(agent_id), None).await;
-            // Record the built version (idempotent on agent_id+version).
             let _ = sqlx::query(
                 "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
                  SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
@@ -313,6 +460,19 @@ async fn execute_upload_and_deploy(
                 .bind(agent_id)
                 .execute(&db)
                 .await;
+            // Record the deployment so it appears in list_deployments, restart, and crash guardian.
+            // k8s_deployment_name stores the raw agent name (ContainerId value); the runtime
+            // derives the actual K8s name via object_name() — do not pre-compute the prefix here.
+            let _ = sqlx::query(
+                "INSERT INTO agent_deployments (agent_id, build_id, owner_id, status, k8s_deployment_name) \
+                 VALUES ($1, $2, $3, 'running', $4)",
+            )
+            .bind(agent_id)
+            .bind(build_id)
+            .bind(owner_id)
+            .bind(&name)
+            .execute(&db)
+            .await;
             tracing::info!(build_id = %build_id, agent_id = %agent_id, "upload-and-deploy succeeded");
         }
         Err(e) => {

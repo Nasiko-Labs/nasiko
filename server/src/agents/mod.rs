@@ -1,5 +1,6 @@
 mod utils;
 pub mod acl;
+pub mod build_worker;
 pub mod deployments;
 pub mod update;
 pub mod upload;

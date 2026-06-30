@@ -4,6 +4,7 @@ use nasiko_auth::{AclChecker, AuthProvider, TokenService, UserAuthService};
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
+use tokio::sync::mpsc;
 
 use nasiko_config::Config;
 use crate::flow::{FlowConfig, FlowEventBus, FlowGuard};
@@ -36,6 +37,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
+    /// Wakes the build worker immediately when a new job is enqueued.
+    pub build_tx: mpsc::Sender<()>,
 }
 
 impl AppState {
@@ -56,9 +59,13 @@ impl AppState {
         runtime: Arc<dyn ContainerRuntime>,
         db: PgPool,
     ) -> Self {
-        // TODO: restore strict migration check; use ignore_missing so EE migrations (v10+)
-        // already applied to the DB don't cause the OSS migrator to panic.
-        let _ = sqlx::migrate!("../migrations").set_ignore_missing(true).run(&db).await;
+        // ignore_missing: EE migrations (v10+) already applied to the DB must not
+        // cause the OSS migrator to panic; strict on everything else.
+        sqlx::migrate!("../migrations")
+            .set_ignore_missing(true)
+            .run(&db)
+            .await
+            .expect("database migration failed");
 
         let redis = redis::Client::open(config.redis_url.as_str())
             .expect("invalid redis url");
@@ -93,14 +100,15 @@ impl AppState {
                     client_id: id.clone(),
                     client_secret: sec.clone(),
                     oauth_state_secret: signing,
-                    callback_url: config.github_callback_url.clone()
-                        .expect("GITHUB_CALLBACK_URL must be set when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured"),
+                    callback_url: String::new(),
                     central_callback_url: None,
                     clone_timeout_secs: 300,
                     clone_max_size_bytes: 500 * 1024 * 1024,
                 };
                 GitHubService::new(cfg).ok().map(Arc::new)
             });
+
+        let (build_tx, build_rx) = mpsc::channel(64);
 
         let state = Self {
             runtime,
@@ -115,7 +123,12 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             github_svc,
+            build_tx,
         };
+
+        // Spawn the durable build worker. It owns the receiver and exits when sender drops.
+        let worker_state = state.clone();
+        tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
         crate::seed::seed_agents_if_configured(&state).await;
 
