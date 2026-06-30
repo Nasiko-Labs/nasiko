@@ -469,6 +469,7 @@ struct SearchQuery {
 /// exact/prefix/contains scoring.  Minimum query length: 2 chars.
 async fn search(
     State(state): State<AppState>,
+    claims: Claims,
     Query(sq): Query<SearchQuery>,
 ) -> impl IntoResponse {
     let q = sq.q.trim().to_string();
@@ -476,14 +477,27 @@ async fn search(
         return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
     }
 
+    let owner_filter: Option<Uuid> = if claims.is_superuser {
+        None
+    } else {
+        match claims.sub.parse() {
+            Ok(id) => Some(id),
+            Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        }
+    };
+
     let sql = format!(
         r#"SELECT * FROM agents
-           WHERE lower(name) LIKE '%' || lower($1) || '%'
-              OR lower(COALESCE(description,'')) LIKE '%' || lower($1) || '%'
-              OR EXISTS (
-                  SELECT 1 FROM unnest(tags) t
-                  WHERE lower(t) LIKE '%' || lower($1) || '%'
-              )
+           WHERE ($3::uuid IS NULL OR owner_id = $3)
+             AND (
+               lower(name) LIKE '%' || lower($1) || '%'
+               OR lower(COALESCE(display_name,'')) LIKE '%' || lower($1) || '%'
+               OR lower(COALESCE(description,'')) LIKE '%' || lower($1) || '%'
+               OR EXISTS (
+                   SELECT 1 FROM unnest(tags) t
+                   WHERE lower(t) LIKE '%' || lower($1) || '%'
+               )
+             )
            ORDER BY {AGENT_SCORE_SQL} DESC, name ASC
            LIMIT $2"#
     );
@@ -491,6 +505,7 @@ async fn search(
     let result = sqlx::query_as::<_, Agent>(&sql)
         .bind(&q)
         .bind(sq.limit.clamp(1, 50))
+        .bind(owner_filter)
         .fetch_all(&state.db)
         .await;
 
