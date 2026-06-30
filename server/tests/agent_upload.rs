@@ -71,6 +71,7 @@ async fn get_build(server: &common::TestServer, user_id: &str, build_id: &str) -
         .unwrap()
 }
 
+#[allow(dead_code)]
 /// Poll the build record until its status is terminal, or panic on timeout.
 async fn wait_for_terminal_status(
     server: &common::TestServer,
@@ -93,6 +94,16 @@ async fn wait_for_terminal_status(
 }
 
 const NO_DOCKERFILE_ZIP_ENTRY: (&str, &[u8]) = ("README.md", b"no dockerfile here");
+
+/// A zip that passes the upload endpoint's structural validation (Dockerfile + main.py) but
+/// will fail deterministically at the Docker build step in the test environment — no real
+/// image build is triggered by the validation layer, so status transitions are still testable.
+fn make_valid_structure_zip() -> Vec<u8> {
+    common::make_zip(&[
+        ("Dockerfile", b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]"),
+        ("main.py", b"print('hello')"),
+    ])
+}
 
 // ─── validation ──────────────────────────────────────────────────────────────
 
@@ -156,7 +167,7 @@ async fn upload_persists_agent_and_build_record() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let zip = common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
+    let zip = make_valid_structure_zip();
     let res = upload(
         &server,
         uid,
@@ -215,7 +226,7 @@ async fn upload_reuses_agent_on_repeat_name() {
         &server,
         uid,
         vec![("name", "repeat".into()), ("version_tag", "v1".into())],
-        Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
+        Some(make_valid_structure_zip()),
     )
     .await
     .json()
@@ -226,7 +237,7 @@ async fn upload_reuses_agent_on_repeat_name() {
         &server,
         uid,
         vec![("name", "repeat".into()), ("version_tag", "v2".into())],
-        Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
+        Some(make_valid_structure_zip()),
     )
     .await
     .json()
@@ -245,24 +256,27 @@ async fn upload_reuses_agent_on_repeat_name() {
 #[tokio::test]
 #[serial]
 async fn upload_marks_build_failed_without_dockerfile() {
+    // Validation now happens synchronously in the upload handler before a build record
+    // is created, so a missing Dockerfile yields an immediate 400 rather than a queued
+    // job that later transitions to "failed".
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let body: Value = upload(
+    let res = upload(
         &server,
         uid,
         vec![("name", "nodockerfile".into()), ("version_tag", "v1".into())],
         Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
     )
-    .await
-    .json()
-    .await
-    .unwrap();
-    let build_id = body["build_id"].as_str().unwrap();
+    .await;
 
-    let status = wait_for_terminal_status(&server, uid, build_id).await;
-    assert_eq!(status, "failed", "missing Dockerfile must fail the build");
+    assert_eq!(res.status(), 400, "missing Dockerfile must be rejected immediately");
+    let body = res.text().await.unwrap();
+    assert!(
+        body.to_lowercase().contains("dockerfile"),
+        "error message should mention Dockerfile: {body}"
+    );
 
     server.cleanup().await;
 }

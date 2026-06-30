@@ -122,6 +122,7 @@ fn test_config(db_url: String) -> Config {
         s3_region: "us-east-1".into(),
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-test-artifacts".into(),
+        agent_image_registry: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,
@@ -144,7 +145,6 @@ fn test_config(db_url: String) -> Config {
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
-        github_callback_url: None,
     }
 }
 
