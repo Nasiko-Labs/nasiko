@@ -8,8 +8,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use nasiko_runtime::ContainerId;
-
 use crate::acl::user_can_access_agent;
 use crate::auth::Claims;
 use crate::state::AppState;
@@ -26,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/agents/{id}/versions", get(list_versions))
         .route("/agents/search", get(search))
         .route("/agents/by-skill", get(by_skill))
+        .route("/search/users", get(search_users))
 }
 
 #[derive(Deserialize)]
@@ -100,17 +99,8 @@ async fn create(
         "stateTransitionHistory": false,
         "chat_agent": false
     }));
-    let skills_vec = body.skills.unwrap_or_default();
-    let mut tags = body.tags.unwrap_or_default();
-    // Merge unique tags declared on each skill into the agent's tag set.
-    for skill in &skills_vec {
-        for tag in &skill.tags {
-            if !tags.contains(tag) {
-                tags.push(tag.clone());
-            }
-        }
-    }
-    let skills = serde_json::to_value(&skills_vec).unwrap_or_default();
+    let skills = serde_json::to_value(body.skills.unwrap_or_default()).unwrap_or_default();
+    let tags = body.tags.unwrap_or_default();
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
     let owner_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
@@ -228,14 +218,8 @@ async fn list(
 
 async fn get_one(
     State(state): State<AppState>,
-    claims: Claims,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
-    };
-
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
             sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
@@ -251,17 +235,11 @@ async fn get_one(
         }
     };
 
-    let agent = match result {
-        Ok(Some(a)) => a,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent.id).await {
-        return StatusCode::FORBIDDEN.into_response();
+    match result {
+        Ok(Some(agent)) => Json(agent).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
-
-    Json(agent).into_response()
 }
 
 async fn update(
@@ -282,22 +260,6 @@ async fn update(
         }
 
     let skills_changed = body.skills.is_some();
-
-    // When skills are being updated, merge their tags into the provided tag list so
-    // the COALESCE write carries all skill-derived tags alongside any explicit ones.
-    let merged_tags = if let Some(ref skill_list) = body.skills {
-        let mut tags = body.tags.clone().unwrap_or_default();
-        for skill in skill_list {
-            for tag in &skill.tags {
-                if !tags.contains(tag) {
-                    tags.push(tag.clone());
-                }
-            }
-        }
-        Some(tags)
-    } else {
-        body.tags.clone()
-    };
 
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
@@ -334,7 +296,7 @@ async fn update(
     .bind(&body.documentation_url)
     .bind(&body.capabilities)
     .bind(body.skills.as_ref().and_then(|s| serde_json::to_value(s).ok()))
-    .bind(&merged_tags)
+    .bind(&body.tags)
     .bind(&body.metadata)
     .bind(&body.status)
     .bind(&body.image)
@@ -365,14 +327,6 @@ async fn update(
     }
 }
 
-#[derive(Serialize)]
-struct DeletedAgent {
-    deleted: bool,
-    agent_id: Uuid,
-    containers_stopped: usize,
-    runtime_errors: Vec<String>,
-}
-
 async fn delete(
     State(state): State<AppState>,
     claims: Claims,
@@ -388,56 +342,13 @@ async fn delete(
             return StatusCode::FORBIDDEN.into_response();
         }
 
-    // Fetch agent name early — gives a clean 404 before touching the runtime,
-    // and provides the primary container name needed for teardown.
-    let name: String = match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await
-    {
-        Ok(Some(n)) => n,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(e) => {
-            tracing::error!(%e, %id, "delete agent: fetch name");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
-        }
-    };
-
-    // Collect all non-stopped deployment container names for this agent.
-    // Collect distinct K8s workload names from non-stopped deployment rows.
-    // k8s_deployment_name is the actual workload/container identifier; namespace is
-    // the K8s namespace (e.g. 'nasiko-agents') and must not be used as a container ID.
-    // In Docker OSS, k8s_deployment_name is NULL so no extra entries are added and
-    // teardown falls through to the agent name only.
-    let k8s_names: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
-         WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
+    // Stop any active deployments first so the FK RESTRICT on agent_deployments doesn't block.
+    let _ = sqlx::query(
+        "UPDATE agent_deployments SET status = 'stopped' WHERE agent_id = $1 AND status != 'stopped'",
     )
     .bind(id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
-
-    let mut containers_to_stop: Vec<String> = vec![name.clone()];
-    for kn in k8s_names {
-        if !containers_to_stop.contains(&kn) {
-            containers_to_stop.push(kn);
-        }
-    }
-
-    // Tear down all identified containers before deleting DB records (best-effort).
-    let mut containers_stopped = 0usize;
-    let mut runtime_errors: Vec<String> = vec![];
-    for container_name in &containers_to_stop {
-        match state.runtime.destroy(&ContainerId::new(container_name)).await {
-            Ok(()) => containers_stopped += 1,
-            Err(e) => {
-                // Absent/already-stopped containers are expected; log but don't fail.
-                tracing::debug!(%e, %id, container_name, "delete agent: runtime.destroy — absent or already stopped");
-                runtime_errors.push(format!("{container_name}: {e}"));
-            }
-        }
-    }
+    .execute(&state.db)
+    .await;
 
     let result = sqlx::query("DELETE FROM agents WHERE id = $1")
         .bind(id)
@@ -445,16 +356,7 @@ async fn delete(
         .await;
 
     match result {
-        Ok(r) if r.rows_affected() > 0 => (
-            StatusCode::OK,
-            Json(DeletedAgent {
-                deleted: true,
-                agent_id: id,
-                containers_stopped,
-                runtime_errors,
-            }),
-        )
-            .into_response(),
+        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %id, "delete agent: db error");
@@ -465,18 +367,8 @@ async fn delete(
 
 async fn list_versions(
     State(state): State<AppState>,
-    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(uid) => uid,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
-    };
-
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, id).await {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-
     let result = sqlx::query_as::<_, AgentVersion>(
         "SELECT * FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC",
     )
@@ -490,6 +382,81 @@ async fn list_versions(
     }
 }
 
+// ── Scoring helpers ───────────────────────────────────────────────────────────
+//
+// Mirrors Python's _calculate_match_score(query, text, boost):
+//
+//   exact match   → 100.0 * boost
+//   prefix match  →  90.0 * boost   (text starts with query)
+//   contains      →  70.0 * boost   (query appears anywhere in text)
+//   no match      →   0.0
+//
+// Python takes max() across fields — we use GREATEST() in SQL.
+//
+// Agent field boosts (from redis_search_service.py lines 289-321):
+//   name        → 2.8   (exact=280, prefix=252, contains=196)
+//   description → 2.0   (exact=200, prefix=180, contains=140)
+//   tag exact   → 95.0  (fixed)
+//   tag partial → 70.0  (fixed)
+//
+// User field boosts (from redis_search_service.py lines 216-226):
+//   username     → 3.0  (exact=300, prefix=270, contains=210)
+//   display_name → 2.5  (exact=250, prefix=225, contains=175)
+//   email        → 1.5  (exact=150, prefix=135, contains=105)
+
+const AGENT_SCORE_SQL: &str = r#"
+    GREATEST(
+        CASE
+            WHEN lower(name) = lower($1)              THEN 280.0
+            WHEN lower(name) LIKE lower($1) || '%'    THEN 252.0
+            WHEN lower(name) LIKE '%' || lower($1) || '%' THEN 196.0
+            ELSE 0.0
+        END,
+        CASE
+            WHEN lower(COALESCE(description,'')) = lower($1)                     THEN 200.0
+            WHEN lower(COALESCE(description,'')) LIKE lower($1) || '%'           THEN 180.0
+            WHEN lower(COALESCE(description,'')) LIKE '%' || lower($1) || '%'    THEN 140.0
+            ELSE 0.0
+        END,
+        CASE
+            WHEN EXISTS (
+                SELECT 1 FROM unnest(tags) t
+                WHERE lower(t) = lower($1)
+            ) THEN 95.0
+            WHEN EXISTS (
+                SELECT 1 FROM unnest(tags) t
+                WHERE lower(t) LIKE '%' || lower($1) || '%'
+            ) THEN 70.0
+            ELSE 0.0
+        END
+    )
+"#;
+
+const USER_SCORE_SQL: &str = r#"
+    GREATEST(
+        CASE
+            WHEN lower(username) = lower($1)              THEN 300.0
+            WHEN lower(username) LIKE lower($1) || '%'    THEN 270.0
+            WHEN lower(username) LIKE '%' || lower($1) || '%' THEN 210.0
+            ELSE 0.0
+        END,
+        CASE
+            WHEN lower(COALESCE(display_name,'')) = lower($1)                        THEN 250.0
+            WHEN lower(COALESCE(display_name,'')) LIKE lower($1) || '%'              THEN 225.0
+            WHEN lower(COALESCE(display_name,'')) LIKE '%' || lower($1) || '%'       THEN 175.0
+            ELSE 0.0
+        END,
+        CASE
+            WHEN lower(COALESCE(email,'')) = lower($1)                    THEN 150.0
+            WHEN lower(COALESCE(email,'')) LIKE lower($1) || '%'          THEN 135.0
+            WHEN lower(COALESCE(email,'')) LIKE '%' || lower($1) || '%'   THEN 105.0
+            ELSE 0.0
+        END
+    )
+"#;
+
+// ── /agents/search ────────────────────────────────────────────────────────────
+
 #[derive(Deserialize)]
 struct SearchQuery {
     q: String,
@@ -497,37 +464,112 @@ struct SearchQuery {
     limit: i64,
 }
 
+/// Agent-only search.  Scoring matches Python's redis_search_service.py:
+/// GREATEST across (name×2.8, description×2.0, tag score) with tiered
+/// exact/prefix/contains scoring.  Minimum query length: 2 chars.
 async fn search(
     State(state): State<AppState>,
-    claims: Claims,
     Query(sq): Query<SearchQuery>,
 ) -> impl IntoResponse {
-    let owner_filter: Option<Uuid> = if claims.is_superuser {
-        None
-    } else {
-        match claims.sub.parse() {
-            Ok(id) => Some(id),
-            Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
-        }
-    };
+    let q = sq.q.trim().to_string();
+    if q.len() < 2 {
+        return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
+    }
 
-    let result = sqlx::query_as::<_, Agent>(
+    let sql = format!(
         r#"SELECT * FROM agents
-           WHERE ($3::uuid IS NULL OR owner_id = $3)
-             AND (name ILIKE '%' || $1 || '%'
-               OR display_name ILIKE '%' || $1 || '%'
-               OR description ILIKE '%' || $1 || '%')
-           ORDER BY similarity(name, $1) DESC
-           LIMIT $2"#,
-    )
-    .bind(&sq.q)
-    .bind(sq.limit)
-    .bind(owner_filter)
-    .fetch_all(&state.db)
-    .await;
+           WHERE lower(name) LIKE '%' || lower($1) || '%'
+              OR lower(COALESCE(description,'')) LIKE '%' || lower($1) || '%'
+              OR EXISTS (
+                  SELECT 1 FROM unnest(tags) t
+                  WHERE lower(t) LIKE '%' || lower($1) || '%'
+              )
+           ORDER BY {AGENT_SCORE_SQL} DESC, name ASC
+           LIMIT $2"#
+    );
+
+    let result = sqlx::query_as::<_, Agent>(&sql)
+        .bind(&q)
+        .bind(sq.limit.clamp(1, 50))
+        .fetch_all(&state.db)
+        .await;
 
     match result {
         Ok(agents) => Json(agents).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "agents search: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
+// ── /search/users ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct UserSearchQuery {
+    q: String,
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+/// Mirrors Python's `RedisSearchService.search_users` / `GET /search/users`.
+/// Field boosts: username×3.0, display_name×2.5, email×1.5.
+/// Scoring: exact (100×boost) > prefix (90×boost) > contains (70×boost).
+/// Minimum query length: 2 chars. Sort: score DESC, username ASC.
+#[derive(Serialize, sqlx::FromRow)]
+struct UserSearchResult {
+    id: Uuid,
+    username: String,
+    display_name: Option<String>,
+    email: Option<String>,
+    score: f64,
+}
+
+#[derive(Serialize)]
+struct UserSearchResponse {
+    users: Vec<UserSearchResult>,
+    total: usize,
+    max_score: f64,
+}
+
+async fn search_users(
+    State(state): State<AppState>,
+    Query(sq): Query<UserSearchQuery>,
+) -> impl IntoResponse {
+    let q = sq.q.trim().to_string();
+    if q.len() < 2 {
+        return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
+    }
+
+    let sql = format!(
+        r#"SELECT id, username, display_name, email,
+                  {USER_SCORE_SQL} AS score
+           FROM users
+           WHERE deleted_at IS NULL
+             AND (
+               lower(username)                    LIKE '%' || lower($1) || '%'
+               OR lower(COALESCE(display_name,'')) LIKE '%' || lower($1) || '%'
+               OR lower(COALESCE(email,''))         LIKE '%' || lower($1) || '%'
+             )
+           ORDER BY score DESC, username ASC
+           LIMIT $2"#
+    );
+
+    let result = sqlx::query_as::<_, UserSearchResult>(&sql)
+        .bind(&q)
+        .bind(sq.limit.clamp(1, 50))
+        .fetch_all(&state.db)
+        .await;
+
+    match result {
+        Ok(users) => {
+            let max_score = users.first().map(|u| u.score).unwrap_or(0.0);
+            let total = users.len();
+            Json(UserSearchResponse { users, total, max_score }).into_response()
+        }
+        Err(e) => {
+            tracing::error!(%e, "search_users: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
     }
 }
