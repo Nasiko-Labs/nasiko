@@ -64,19 +64,75 @@ struct BuildStatusRow {
     status: BuildStatus,
 }
 
-/// Payload stored in build_jobs.payload JSONB — everything the worker needs to execute the build.
+/// Payload stored in build_jobs.payload JSONB. The `kind` tag selects the dispatch path in
+/// `build_worker`. All variants must include everything the worker needs — no DB re-reads.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct BuildJobPayload {
-    pub build_id: Uuid,
-    pub agent_id: Uuid,
-    pub owner_id: Uuid,
-    pub upload_id: String,
-    pub name: String,
-    /// Absolute path to the zip file on disk (streamed there by the upload handler).
-    pub zip_path: String,
-    pub image_tag: String,
-    pub ports: Vec<u16>,
-    pub env: HashMap<String, String>,
+#[serde(tag = "kind")]
+pub enum BuildJobPayload {
+    /// Initial upload-and-deploy (POST /api/agents/upload-and-deploy).
+    Upload {
+        build_id: Uuid,
+        agent_id: Uuid,
+        owner_id: Uuid,
+        upload_id: String,
+        name: String,
+        /// Absolute path to the zip file on disk (streamed there by the upload handler).
+        zip_path: String,
+        image_tag: String,
+        ports: Vec<u16>,
+        env: HashMap<String, String>,
+    },
+    /// In-place agent update (PUT /api/agents/{id}/update).
+    Update {
+        build_id: Uuid,
+        agent_id: Uuid,
+        owner_id: Uuid,
+        name: String,
+        /// Path to uploaded zip on disk, or `None` for a GitHub re-deploy.
+        zip_path: Option<String>,
+        image_tag: String,
+        new_version: String,
+        prev_version: String,
+        prev_image: Option<String>,
+        changelog: Option<String>,
+    },
+    /// Rollback to a prior version (POST /api/agents/{id}/rollback).
+    Rollback {
+        rollback_build_id: Uuid,
+        agent_id: Uuid,
+        caller_id: Uuid,
+        agent_name: String,
+        target_version: String,
+        target_image_tag: String,
+        reason: Option<String>,
+    },
+    /// Standalone image build without deploy (POST /api/build/builds).
+    StandaloneBuild {
+        build_id: Uuid,
+        agent_id: Uuid,
+        agent_name: String,
+        github_url: Option<String>,
+        source_key: Option<String>,
+        version_tag: String,
+    },
+}
+
+impl BuildJobPayload {
+    pub fn build_id(&self) -> Uuid {
+        match self {
+            Self::Upload { build_id, .. }
+            | Self::Update { build_id, .. }
+            | Self::StandaloneBuild { build_id, .. } => *build_id,
+            Self::Rollback { rollback_build_id, .. } => *rollback_build_id,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Upload { name, .. } | Self::Update { name, .. } => name,
+            Self::Rollback { agent_name, .. } | Self::StandaloneBuild { agent_name, .. } => agent_name,
+        }
+    }
 }
 
 const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB
@@ -273,7 +329,7 @@ async fn upload_and_deploy(
     let upload_id = build_id.to_string();
 
     // ── Insert build job (worker picks this up via SKIP LOCKED) ──────────────
-    let payload = BuildJobPayload {
+    let payload = BuildJobPayload::Upload {
         build_id,
         agent_id,
         owner_id,

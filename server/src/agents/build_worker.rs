@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+use super::update::{AgentVersionRow, execute_agent_rollback, execute_agent_update};
 use super::upload::{BuildJobPayload, execute_upload_and_deploy};
+use crate::build::routes::execute_build;
 
 #[derive(Debug, sqlx::FromRow)]
 struct BuildJob {
@@ -113,37 +115,130 @@ async fn try_claim_and_run(state: &AppState) -> anyhow::Result<bool> {
         }
     };
 
+    let build_id = payload.build_id();
+    let label = payload.label().to_owned();
+
     tracing::info!(
         job_id = %job.id,
         agent_id = %job.agent_id,
-        attempt = "from DB",
-        name = %payload.name,
+        name = %label,
         "build worker: job claimed"
     );
 
     let start = std::time::Instant::now();
-    execute_upload_and_deploy(
-        state.runtime.clone(),
-        state.db.clone(),
-        payload.build_id,
-        payload.agent_id,
-        payload.owner_id,
-        payload.upload_id,
-        payload.name.clone(),
-        std::path::PathBuf::from(&payload.zip_path),
-        payload.image_tag,
-        payload.ports,
-        payload.env,
-    )
-    .await;
 
-    // `execute_upload_and_deploy` writes agent_builds / upload_status itself.
-    // We just need to finalize the build_job row.
-    // Infer success/failure from the agent_builds status that was just written.
+    match payload {
+        BuildJobPayload::Upload {
+            build_id: _,
+            agent_id,
+            owner_id,
+            upload_id,
+            name,
+            zip_path,
+            image_tag,
+            ports,
+            env,
+        } => {
+            execute_upload_and_deploy(
+                state.runtime.clone(),
+                state.db.clone(),
+                build_id,
+                agent_id,
+                owner_id,
+                upload_id,
+                name,
+                std::path::PathBuf::from(&zip_path),
+                image_tag,
+                ports,
+                env,
+            )
+            .await;
+        }
+
+        BuildJobPayload::Update {
+            build_id: _,
+            agent_id,
+            owner_id,
+            name,
+            zip_path,
+            image_tag,
+            new_version,
+            prev_version,
+            prev_image,
+            changelog,
+        } => {
+            let source_data = match zip_path {
+                Some(ref path) => match tokio::fs::read(path).await {
+                    Ok(data) => Some(data),
+                    Err(e) => {
+                        tracing::error!(job_id = %job.id, %path, %e, "build worker: cannot read update zip");
+                        mark_job(&state.db, job.id, "failed", Some(&format!("read zip: {e}"))).await;
+                        return Ok(true);
+                    }
+                },
+                None => None,
+            };
+            execute_agent_update(
+                state.clone(),
+                build_id,
+                agent_id,
+                owner_id,
+                name,
+                source_data,
+                image_tag,
+                new_version,
+                prev_version,
+                prev_image,
+                changelog,
+            )
+            .await;
+        }
+
+        BuildJobPayload::Rollback {
+            rollback_build_id: _,
+            agent_id,
+            caller_id,
+            agent_name,
+            target_version,
+            target_image_tag,
+            reason,
+        } => {
+            let target = AgentVersionRow {
+                version: target_version,
+                image_tag: target_image_tag,
+                can_rollback: true,
+            };
+            execute_agent_rollback(state.clone(), build_id, agent_id, caller_id, agent_name, target, reason).await;
+        }
+
+        BuildJobPayload::StandaloneBuild {
+            build_id: _,
+            agent_id: _,
+            agent_name,
+            github_url,
+            source_key,
+            version_tag,
+        } => {
+            execute_build(
+                state.runtime.clone(),
+                state.db.clone(),
+                build_id,
+                agent_name,
+                github_url,
+                source_key,
+                version_tag,
+                state.oci_storage.clone(),
+                state.http_client.clone(),
+            )
+            .await;
+        }
+    }
+
+    // Infer success/failure from the agent_builds status written by the execute function.
     let build_status: Option<String> = sqlx::query_scalar(
         "SELECT status::text FROM agent_builds WHERE id = $1",
     )
-    .bind(payload.build_id)
+    .bind(build_id)
     .fetch_optional(&state.db)
     .await
     .ok()

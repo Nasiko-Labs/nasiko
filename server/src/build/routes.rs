@@ -16,6 +16,7 @@ use sqlx::prelude::FromRow;
 use uuid::Uuid;
 
 use super::BuildStatus;
+use crate::agents::upload::BuildJobPayload;
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -142,21 +143,32 @@ async fn create_build(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    // Spawn build task
-    let build_id = build.id;
-    let orch = state.runtime.clone();
-    let db = state.db.clone();
-    let oci_storage = state.oci_storage.clone();
-    let http_client = state.http_client.clone();
-    tokio::spawn(async move {
-        execute_build(orch, db, build_id, agent_name, github_url, source_key, version_tag, oci_storage, http_client).await;
-    });
+    let payload = BuildJobPayload::StandaloneBuild {
+        build_id: build.id,
+        agent_id,
+        agent_name,
+        github_url,
+        source_key,
+        version_tag,
+    };
+    if let Err(e) = sqlx::query(
+        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
+    )
+    .bind(agent_id)
+    .bind(owner_id)
+    .bind(serde_json::to_value(&payload).expect("serialize build payload"))
+    .execute(&state.db)
+    .await
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue build: {e}")).into_response();
+    }
+    let _ = state.build_tx.send(()).await;
 
     (StatusCode::CREATED, Json(build)).into_response()
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_build(
+pub async fn execute_build(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
     db: sqlx::PgPool,
     build_id: Uuid,

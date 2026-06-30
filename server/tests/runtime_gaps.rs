@@ -288,6 +288,107 @@ async fn upload_creates_build_job_in_db() {
 
 #[tokio::test]
 #[serial]
+async fn update_creates_build_job_in_db() {
+    // PUT /api/agents/{id}/update must INSERT into build_jobs (not spawn a goroutine).
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let agent_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO agents (name, owner_id, image, version, status) \
+         VALUES ('update-queue-agent', $1, 'update-queue-agent:1.0.0', '1.0.0', 'running') RETURNING id",
+    )
+    .bind(owner_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let zip = common::make_zip(&[("README.md", b"no dockerfile")]);
+    let form = reqwest::multipart::Form::new()
+        .part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
+    let res = server
+        .client
+        .put(server.url(&format!("/api/agents/{agent_id}/update")))
+        .header("x-user-id", uid)
+        .header("x-username", "admin")
+        .header("x-is-superuser", "true")
+        .header("x-user-role", "admin")
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202, "update should return 202");
+
+    let payload: Option<Value> =
+        sqlx::query_scalar("SELECT payload FROM build_jobs WHERE agent_id = $1 LIMIT 1")
+            .bind(agent_id)
+            .fetch_optional(&server.db)
+            .await
+            .unwrap();
+    let payload = payload.expect("update handler should insert a build_jobs row");
+    assert_eq!(payload["kind"].as_str().unwrap(), "Update", "payload kind should be Update");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn rollback_creates_build_job_in_db() {
+    // POST /api/agents/{id}/rollback must INSERT into build_jobs (not spawn a goroutine).
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let agent_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO agents (name, owner_id, image, version, status) \
+         VALUES ('rollback-queue-agent', $1, 'rollback-queue-agent:1.0.1', '1.0.1', 'running') RETURNING id",
+    )
+    .bind(owner_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, can_rollback, status) \
+         VALUES ($1, '1.0.0', 'rollback-queue-agent:1.0.0', false, true, 'archived')",
+    )
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let res = server
+        .client
+        .post(server.url(&format!("/api/agents/{agent_id}/rollback")))
+        .header("x-user-id", uid)
+        .header("x-username", "admin")
+        .header("x-is-superuser", "true")
+        .header("x-user-role", "admin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202, "rollback should return 202");
+
+    let payload: Option<Value> =
+        sqlx::query_scalar("SELECT payload FROM build_jobs WHERE agent_id = $1 LIMIT 1")
+            .bind(agent_id)
+            .fetch_optional(&server.db)
+            .await
+            .unwrap();
+    let payload = payload.expect("rollback handler should insert a build_jobs row");
+    assert_eq!(payload["kind"].as_str().unwrap(), "Rollback", "payload kind should be Rollback");
+    assert_eq!(
+        payload["target_version"].as_str().unwrap(), "1.0.0",
+        "rollback payload should carry the target version"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn upload_build_job_payload_contains_ports() {
     // The build_jobs.payload must store the ports submitted in the upload form.
     let server = common::TestServer::start().await;

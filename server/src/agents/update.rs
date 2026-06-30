@@ -11,6 +11,7 @@ use uuid::Uuid;
 use nasiko_runtime::{ContainerId, DeploymentSpec};
 
 use crate::acl::user_can_access_agent;
+use crate::agents::upload::BuildJobPayload;
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus, download_repo_tarball, routes::extract_zip_to_dir};
 use crate::catalog::agent_secrets;
@@ -50,10 +51,10 @@ struct RollbackResponse {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct AgentVersionRow {
-    version: String,
-    image_tag: String,
-    can_rollback: bool,
+pub struct AgentVersionRow {
+    pub version: String,
+    pub image_tag: String,
+    pub can_rollback: bool,
 }
 
 // ─── PUT /{id}/update ─────────────────────────────────────────────────────────
@@ -245,28 +246,45 @@ async fn update_agent(
         }
     };
 
-    let prev_version = current_version.clone();
-    let state_clone = state.clone();
-    let name_clone = agent_name.clone();
-    let image_tag_clone = image_tag.clone();
-    let new_version_clone = new_version.clone();
+    // Write zip to disk so the worker has a durable path after this request completes.
+    let zip_path = if let Some(ref data) = source_data {
+        let zip_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
+        if let Err(e) = tokio::fs::create_dir_all(&zip_dir).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("create update dir: {e}")).into_response();
+        }
+        let path = zip_dir.join("upload.zip");
+        if let Err(e) = tokio::fs::write(&path, data).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("write update zip: {e}")).into_response();
+        }
+        Some(path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
 
-    tokio::spawn(async move {
-        execute_agent_update(
-            state_clone,
-            build_id,
-            agent_id,
-            owner_id,
-            name_clone,
-            source_data,
-            image_tag_clone,
-            new_version_clone,
-            prev_version,
-            prev_image,
-            changelog,
-        )
-        .await;
-    });
+    let payload = BuildJobPayload::Update {
+        build_id,
+        agent_id,
+        owner_id,
+        name: agent_name.clone(),
+        zip_path,
+        image_tag: image_tag.clone(),
+        new_version: new_version.clone(),
+        prev_version: current_version.clone(),
+        prev_image,
+        changelog,
+    };
+    if let Err(e) = sqlx::query(
+        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
+    )
+    .bind(agent_id)
+    .bind(owner_id)
+    .bind(serde_json::to_value(&payload).expect("serialize update payload"))
+    .execute(&state.db)
+    .await
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue update: {e}")).into_response();
+    }
+    let _ = state.build_tx.send(()).await;
 
     (
         StatusCode::ACCEPTED,
@@ -338,7 +356,7 @@ async fn resolve_agent_github_source(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_agent_update(
+pub async fn execute_agent_update(
     state: AppState,
     build_id: Uuid,
     agent_id: Uuid,
@@ -655,21 +673,28 @@ async fn rollback_agent(
     };
 
     let rolled_back_to = target.version.clone();
-    let state_clone = state.clone();
-    let name_clone = agent_name.clone();
 
-    tokio::spawn(async move {
-        execute_agent_rollback(
-            state_clone,
-            rollback_build_id,
-            agent_id,
-            caller_id,
-            name_clone,
-            target,
-            reason,
-        )
-        .await;
-    });
+    let payload = BuildJobPayload::Rollback {
+        rollback_build_id,
+        agent_id,
+        caller_id,
+        agent_name: agent_name.clone(),
+        target_version: target.version,
+        target_image_tag: target.image_tag,
+        reason,
+    };
+    if let Err(e) = sqlx::query(
+        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
+    )
+    .bind(agent_id)
+    .bind(caller_id)
+    .bind(serde_json::to_value(&payload).expect("serialize rollback payload"))
+    .execute(&state.db)
+    .await
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue rollback: {e}")).into_response();
+    }
+    let _ = state.build_tx.send(()).await;
 
     (
         StatusCode::ACCEPTED,
@@ -684,7 +709,7 @@ async fn rollback_agent(
         .into_response()
 }
 
-async fn execute_agent_rollback(
+pub async fn execute_agent_rollback(
     state: AppState,
     rollback_build_id: Uuid,
     agent_id: Uuid,
