@@ -328,6 +328,8 @@ pub struct DeploymentStatus {
     pub endpoint: Option<String>,
     /// Human-readable message: crash reason, pull error, or general info.
     pub message: Option<String>,
+    /// Cumulative container restart count (K8s only; 0 for Docker).
+    pub restart_count: u32,
 }
 
 /// Validate inputs to [`ContainerRuntime::build`] before any backend call.

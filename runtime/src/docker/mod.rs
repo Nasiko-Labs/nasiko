@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
-    RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
+    RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
 use bollard::image::BuildImageOptions;
 use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
@@ -346,6 +346,7 @@ async fn inspect_to_status(
                 replicas_live: 0,
                 endpoint: None,
                 message: None,
+                restart_count: 0,
             });
         }
         Ok(Err(e)) => return Err(map_bollard_err(e)),
@@ -378,6 +379,7 @@ async fn inspect_to_status(
         replicas_live,
         endpoint,
         message: error_msg,
+        restart_count: 0,
     })
 }
 
@@ -560,29 +562,6 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     #[instrument(skip(self))]
-    async fn restart(&self, container_id: &ContainerId) -> Result<()> {
-        container_id.validate()?;
-        let name = DockerRuntime::container_name(container_id);
-        let timeout = self.config.operation_timeout;
-
-        tokio::time::timeout(
-            timeout,
-            self.client.restart_container(&name, None::<RestartContainerOptions>),
-        )
-        .await
-        .map_err(|_| RuntimeError::Timeout("restart_container".to_owned()))?
-        .map_err(|e| {
-            if is_not_found(&e) {
-                RuntimeError::ContainerNotFound(container_id.clone())
-            } else {
-                map_bollard_err(e)
-            }
-        })?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
     async fn status(&self, container_id: &ContainerId) -> Result<DeploymentStatus> {
         container_id.validate()?;
         inspect_to_status(&self.client, container_id, self.config.operation_timeout).await
@@ -629,6 +608,7 @@ impl ContainerRuntime for DockerRuntime {
                 replicas_live,
                 endpoint: None, // List does not provide port bindings; use endpoint() or status()
                 message: None,
+                restart_count: 0,
             });
         }
 
