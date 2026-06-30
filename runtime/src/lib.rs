@@ -89,14 +89,6 @@ pub trait ContainerRuntime: Send + Sync {
     /// Returns `RuntimeError::ContainerNotFound` if no deployment exists for this ID.
     async fn scale(&self, container_id: &ContainerId, replicas: u32) -> Result<()>;
 
-    /// Restart the agent container(s), picking up any new env/secrets.
-    ///
-    /// - Docker: stops and recreates the container from the same image.
-    /// - Kubernetes: triggers a rollout restart (annotation bump).
-    ///
-    /// Returns `RuntimeError::ContainerNotFound` if no deployment exists for this ID.
-    async fn restart(&self, container_id: &ContainerId) -> Result<()>;
-
     /// Return the current observed state of the agent deployment.
     ///
     /// If no resource exists for `container_id`, returns a status with
@@ -168,4 +160,13 @@ pub trait ContainerRuntime: Send + Sync {
     ///   and pushing the image to the registry. Timeout is
     ///   `KubeRuntimeConfig::build_timeout` (default 30 min).
     async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String>;
+
+    /// Best-effort delete of any autoscaler resource (e.g. KEDA ScaledObject) for this agent.
+    ///
+    /// Default no-op — only Kubernetes backends with KEDA installed override this.
+    /// Called by the crash-loop guardian before scaling to 0 so KEDA cannot
+    /// immediately scale the deployment back up.
+    async fn try_delete_autoscaler(&self, _id: &ContainerId) -> Result<()> {
+        Ok(())
+    }
 }
