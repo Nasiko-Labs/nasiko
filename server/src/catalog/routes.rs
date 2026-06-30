@@ -8,6 +8,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use nasiko_runtime::ContainerId;
+
 use crate::acl::user_can_access_agent;
 use crate::auth::Claims;
 use crate::state::AppState;
@@ -99,8 +101,17 @@ async fn create(
         "stateTransitionHistory": false,
         "chat_agent": false
     }));
-    let skills = serde_json::to_value(body.skills.unwrap_or_default()).unwrap_or_default();
-    let tags = body.tags.unwrap_or_default();
+    let skills_vec = body.skills.unwrap_or_default();
+    let mut tags = body.tags.unwrap_or_default();
+    // Merge unique tags declared on each skill into the agent's tag set.
+    for skill in &skills_vec {
+        for tag in &skill.tags {
+            if !tags.contains(tag) {
+                tags.push(tag.clone());
+            }
+        }
+    }
+    let skills = serde_json::to_value(&skills_vec).unwrap_or_default();
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
     let owner_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
@@ -218,8 +229,14 @@ async fn list(
 
 async fn get_one(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
+
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
             sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
@@ -235,11 +252,17 @@ async fn get_one(
         }
     };
 
-    match result {
-        Ok(Some(agent)) => Json(agent).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    let agent = match result {
+        Ok(Some(a)) => a,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent.id).await {
+        return StatusCode::FORBIDDEN.into_response();
     }
+
+    Json(agent).into_response()
 }
 
 async fn update(
@@ -260,6 +283,22 @@ async fn update(
         }
 
     let skills_changed = body.skills.is_some();
+
+    // When skills are being updated, merge their tags into the provided tag list so
+    // the COALESCE write carries all skill-derived tags alongside any explicit ones.
+    let merged_tags = if let Some(ref skill_list) = body.skills {
+        let mut tags = body.tags.clone().unwrap_or_default();
+        for skill in skill_list {
+            for tag in &skill.tags {
+                if !tags.contains(tag) {
+                    tags.push(tag.clone());
+                }
+            }
+        }
+        Some(tags)
+    } else {
+        body.tags.clone()
+    };
 
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
@@ -296,7 +335,7 @@ async fn update(
     .bind(&body.documentation_url)
     .bind(&body.capabilities)
     .bind(body.skills.as_ref().and_then(|s| serde_json::to_value(s).ok()))
-    .bind(&body.tags)
+    .bind(&merged_tags)
     .bind(&body.metadata)
     .bind(&body.status)
     .bind(&body.image)
@@ -327,6 +366,14 @@ async fn update(
     }
 }
 
+#[derive(Serialize)]
+struct DeletedAgent {
+    deleted: bool,
+    agent_id: Uuid,
+    containers_stopped: usize,
+    runtime_errors: Vec<String>,
+}
+
 async fn delete(
     State(state): State<AppState>,
     claims: Claims,
@@ -342,13 +389,56 @@ async fn delete(
             return StatusCode::FORBIDDEN.into_response();
         }
 
-    // Stop any active deployments first so the FK RESTRICT on agent_deployments doesn't block.
-    let _ = sqlx::query(
-        "UPDATE agent_deployments SET status = 'stopped' WHERE agent_id = $1 AND status != 'stopped'",
+    // Fetch agent name early — gives a clean 404 before touching the runtime,
+    // and provides the primary container name needed for teardown.
+    let name: String = match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(n)) => n,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "delete agent: fetch name");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
+    };
+
+    // Collect all non-stopped deployment container names for this agent.
+    // Collect distinct K8s workload names from non-stopped deployment rows.
+    // k8s_deployment_name is the actual workload/container identifier; namespace is
+    // the K8s namespace (e.g. 'nasiko-agents') and must not be used as a container ID.
+    // In Docker OSS, k8s_deployment_name is NULL so no extra entries are added and
+    // teardown falls through to the agent name only.
+    let k8s_names: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
+         WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
     )
     .bind(id)
-    .execute(&state.db)
-    .await;
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let mut containers_to_stop: Vec<String> = vec![name.clone()];
+    for kn in k8s_names {
+        if !containers_to_stop.contains(&kn) {
+            containers_to_stop.push(kn);
+        }
+    }
+
+    // Tear down all identified containers before deleting DB records (best-effort).
+    let mut containers_stopped = 0usize;
+    let mut runtime_errors: Vec<String> = vec![];
+    for container_name in &containers_to_stop {
+        match state.runtime.destroy(&ContainerId::new(container_name)).await {
+            Ok(()) => containers_stopped += 1,
+            Err(e) => {
+                // Absent/already-stopped containers are expected; log but don't fail.
+                tracing::debug!(%e, %id, container_name, "delete agent: runtime.destroy — absent or already stopped");
+                runtime_errors.push(format!("{container_name}: {e}"));
+            }
+        }
+    }
 
     let result = sqlx::query("DELETE FROM agents WHERE id = $1")
         .bind(id)
@@ -356,7 +446,16 @@ async fn delete(
         .await;
 
     match result {
-        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(r) if r.rows_affected() > 0 => (
+            StatusCode::OK,
+            Json(DeletedAgent {
+                deleted: true,
+                agent_id: id,
+                containers_stopped,
+                runtime_errors,
+            }),
+        )
+            .into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %id, "delete agent: db error");
@@ -367,8 +466,18 @@ async fn delete(
 
 async fn list_versions(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(uid) => uid,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let result = sqlx::query_as::<_, AgentVersion>(
         "SELECT * FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC",
     )
