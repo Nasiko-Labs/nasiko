@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -19,6 +20,24 @@ impl UserAuthServiceImpl {
     pub fn new(db: PgPool, auth: Arc<dyn AuthProvider>) -> Self {
         Self { db, auth }
     }
+
+    /// Record the JTI of a freshly-issued token so it can be revoked later.
+    /// Fire-and-forget — a failure to record doesn't fail the login.
+    async fn record_token(&self, token: &str, user_id: uuid::Uuid) {
+        let Some(jti) = crate::jwt::extract_jti(token) else { return };
+        let hash = crate::jwt::hash_jti(&jti);
+        let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
+        let _ = sqlx::query(
+            "INSERT INTO auth_tokens (user_id, token_hash, expires_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (token_hash) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(hash)
+        .bind(expires)
+        .execute(&self.db)
+        .await;
+    }
 }
 
 fn parse_role(role_str: Option<&str>) -> Option<Role> {
@@ -35,16 +54,12 @@ impl UserAuthService for UserAuthServiceImpl {
             is_superuser: bool,
             is_active: bool,
             role: Option<String>,
-            team_id: Option<String>,
-            department_id: Option<String>,
             access_secret_hash: String,
         }
 
         let row: Option<CredRow> = sqlx::query_as(
             r#"SELECT u.id, u.username, u.is_superuser, u.is_active,
                       u.role::text as role,
-                      u.team_id::text as team_id,
-                      u.department_id::text as department_id,
                       uc.access_secret_hash
                FROM users u
                JOIN user_credentials uc ON uc.user_id = u.id
@@ -79,13 +94,14 @@ impl UserAuthService for UserAuthServiceImpl {
             username: row.username.clone(),
             is_superuser: row.is_superuser,
             role,
-            team_id: row.team_id.clone(),
-            department_id: row.department_id.clone(),
+            team_id: None,
+            department_id: None,
             exp: 0,
             iat: 0,
         };
 
         let token = self.auth.issue_token(&identity).await?;
+        self.record_token(&token, row.id).await;
 
         Ok(LoginResult {
             token,
@@ -93,8 +109,8 @@ impl UserAuthService for UserAuthServiceImpl {
             username: row.username,
             is_superuser: row.is_superuser,
             role: role_str,
-            team_id: row.team_id,
-            department_id: row.department_id,
+            team_id: None,
+            department_id: None,
             expires_in: TOKEN_EXPIRY_SECS,
             access_key: None,
             access_secret: None,
@@ -159,6 +175,7 @@ impl UserAuthService for UserAuthServiceImpl {
         };
 
         let token = self.auth.issue_token(&identity).await?;
+        self.record_token(&token, user_id).await;
 
         Ok(LoginResult {
             token,
@@ -267,6 +284,7 @@ impl UserAuthService for UserAuthServiceImpl {
         };
 
         let token = self.auth.issue_token(&identity).await?;
+        self.record_token(&token, user_id).await;
 
         Ok(LoginResult {
             token,
@@ -292,15 +310,11 @@ impl UserAuthService for UserAuthServiceImpl {
             is_superuser: bool,
             username: String,
             role: Option<String>,
-            team_id: Option<String>,
-            department_id: Option<String>,
         }
 
         let row: Option<UserRow> = sqlx::query_as(
             r#"SELECT is_superuser, username,
-                      role::text as role,
-                      team_id::text as team_id,
-                      department_id::text as department_id
+                      role::text as role
                FROM users WHERE id = $1 AND deleted_at IS NULL"#,
         )
         .bind(user_uuid)
@@ -318,8 +332,8 @@ impl UserAuthService for UserAuthServiceImpl {
             username: row.username,
             is_superuser: row.is_superuser,
             role,
-            team_id: row.team_id,
-            department_id: row.department_id,
+            team_id: None,
+            department_id: None,
             exp: 0,
             iat: 0,
         })

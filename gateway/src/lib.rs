@@ -17,20 +17,27 @@ use proxy::{agent_proxy, server_proxy};
 use state::GatewayState;
 
 pub fn build_app(state: GatewayState) -> Router {
-    // Routes that require authentication
+    // ── Fully public routes (no auth, proxied straight to server) ───────────
+    // Only the bare minimum: token exchange and admin bootstrap.
+    // token_validate is public because you pass the token in the request body —
+    // there is no "caller" to authenticate.
+    let public = Router::new()
+        .route("/health", any(server_proxy))
+        .route("/.well-known/{*rest}", any(server_proxy))
+        .route("/api/auth/login", any(server_proxy))
+        .route("/api/auth/initialize-admin", any(server_proxy))
+        .route("/api/auth/tokens/validate", any(server_proxy));
+
+    // ── Auth-required: A2A orchestrator + direct agent proxy ────────────────
     let authed = Router::new()
         .route("/api/a2a", post(a2a_handler))
         .route("/agents/{agent_id}/{*rest}", any(agent_proxy))
         .route("/agents/{agent_id}", any(agent_proxy))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
-    // Public routes (no auth) — proxied to server
-    let public = Router::new()
-        .route("/health", any(server_proxy))
-        .route("/.well-known/{*rest}", any(server_proxy))
-        .route("/api/auth/{*rest}", any(server_proxy));
-
-    // Catch-all: authenticated, proxied to server (management API + frontend)
+    // ── Auth-required catch-all: management API + frontend ──────────────────
+    // This covers /api/auth/logout, /api/auth/system/*, and all other /api/*
+    // so that logout and protected management endpoints require a valid token.
     let fallback = Router::new()
         .fallback(any(server_proxy))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));

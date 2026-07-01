@@ -7,22 +7,25 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::auth::Claims;
 use crate::state::AppState;
 
 const COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
 
 /// Public routes — no auth required (merged outside the protected router).
+/// token_validate is here because callers supply the token in the request body;
+/// there is no authenticated "caller" to require.
 pub fn public_router() -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", post(login))
         .route("/api/auth/initialize-admin", post(initialize_admin))
+        .route("/api/auth/tokens/validate", post(token_validate))
 }
 
-/// Protected auth routes — go through require_auth middleware (nested under /api).
+/// Protected auth routes — require X-User-* headers from the gateway.
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/auth/logout", post(logout))
-        .route("/auth/tokens/validate", post(token_validate))
         .route("/auth/system/users-for-search", get(users_for_search))
 }
 
@@ -50,6 +53,12 @@ fn set_token_cookie(token: &str) -> header::HeaderValue {
         token, COOKIE_MAX_AGE
     ))
     .unwrap()
+}
+
+fn clear_token_cookie() -> header::HeaderValue {
+    header::HeaderValue::from_static(
+        "access_token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0",
+    )
 }
 
 async fn login(
@@ -82,11 +91,15 @@ async fn login(
     }
 }
 
-async fn logout() -> impl IntoResponse {
-    let clear = header::HeaderValue::from_static(
-        "access_token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0",
-    );
-    ([(header::SET_COOKIE, clear)], StatusCode::NO_CONTENT)
+/// Logout: revoke the active token in the DB so it immediately stops working
+/// at the gateway, then clear the browser cookie.
+async fn logout(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
+    // Best-effort revocation — don't fail the logout if the DB write fails
+    let _ = state.providers.token_svc.revoke_for_user(&claims.sub).await;
+    ([(header::SET_COOKIE, clear_token_cookie())], StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

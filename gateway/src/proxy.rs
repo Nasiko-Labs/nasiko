@@ -6,7 +6,7 @@ use axum::{
 };
 use nasiko_auth::{
     Identity, HEADER_DEPT_ID, HEADER_IS_SUPERUSER, HEADER_TEAM_ID, HEADER_USER_ID,
-    HEADER_USER_ROLE, HEADER_USERNAME,
+    HEADER_USER_ROLE, HEADER_USERNAME, TRUST_HEADERS,
 };
 use uuid::Uuid;
 
@@ -89,12 +89,11 @@ pub async fn agent_proxy(
             HEADER_IS_SUPERUSER,
             if identity.is_superuser { "true" } else { "false" },
         );
-    if let Some(ref role) = identity.role {
-        if let Ok(v) = serde_json::to_value(role) {
-            if let Some(s) = v.as_str() {
-                forwarded = forwarded.header(HEADER_USER_ROLE, s);
-            }
-        }
+    if let Some(ref role) = identity.role
+        && let Ok(v) = serde_json::to_value(role)
+        && let Some(s) = v.as_str()
+    {
+        forwarded = forwarded.header(HEADER_USER_ROLE, s);
     }
     if let Some(ref team_id) = identity.team_id {
         forwarded = forwarded.header(HEADER_TEAM_ID, team_id.as_str());
@@ -125,7 +124,13 @@ pub async fn server_proxy(
     let identity = req.extensions().get::<Identity>().cloned();
     let method = req.method().clone();
     let uri = req.uri().clone();
-    let headers = req.headers().clone();
+    let mut headers = req.headers().clone();
+
+    // Strip any client-supplied trust headers before forwarding — only the
+    // gateway is allowed to set these on requests reaching the server.
+    for h in TRUST_HEADERS {
+        headers.remove(*h);
+    }
 
     let target_url = format!(
         "{}{}",
@@ -155,12 +160,11 @@ pub async fn server_proxy(
                 HEADER_IS_SUPERUSER,
                 if id.is_superuser { "true" } else { "false" },
             );
-        if let Some(ref role) = id.role {
-            if let Ok(v) = serde_json::to_value(role) {
-                if let Some(s) = v.as_str() {
-                    forwarded = forwarded.header(HEADER_USER_ROLE, s);
-                }
-            }
+        if let Some(ref role) = id.role
+            && let Ok(v) = serde_json::to_value(role)
+            && let Some(s) = v.as_str()
+        {
+            forwarded = forwarded.header(HEADER_USER_ROLE, s);
         }
         if let Some(ref team_id) = id.team_id {
             forwarded = forwarded.header(HEADER_TEAM_ID, team_id.as_str());

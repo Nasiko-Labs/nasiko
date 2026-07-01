@@ -129,3 +129,14 @@ pub fn hash_jti(jti: &str) -> String {
     hasher.update(jti.as_bytes());
     format!("{:x}", hasher.finalize())
 }
+
+/// Extract the `jti` claim from a JWT without verifying the signature.
+/// Only call this on tokens you just issued — the purpose is to record
+/// the JTI for later revocation, not to authenticate anything.
+pub fn extract_jti(token: &str) -> Option<String> {
+    use base64::prelude::*;
+    let payload = token.split('.').nth(1)?;
+    let decoded = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    claims.get("jti").and_then(|v| v.as_str()).map(str::to_owned)
+}
