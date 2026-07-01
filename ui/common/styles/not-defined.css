@@ -67,6 +67,35 @@ smart-table:not(:defined) {
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
+data-view:not(:defined) {
+  display: block;
+  min-height: 200px;
+}
+
+/*
+  app-tabs upgrade contract. Before the script runs, every `[data-tab]` panel is
+  a plain block, so all of them render stacked — then `connectedCallback` hides
+  all but the active one, collapsing the page height (large CLS / "partial page
+  then abrupt render"). Pre-upgrade, show only the first panel (the default
+  active tab when no `active`/`query-param` override applies) and reserve the tab
+  strip's height so the panels don't jump up when the strip is prepended.
+*/
+app-tabs:not(:defined) {
+  display: block;
+  padding-top: calc(44px + var(--space-md));
+}
+app-tabs:not(:defined) > [data-tab] ~ [data-tab] {
+  display: none;
+}
+
+voice-input:not(:defined) {
+  display: block;
+  min-height: 170px;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  box-shadow: inset 0 0 0 1px var(--color-border), var(--shadow-sm);
+}
+
 @media (prefers-reduced-motion: reduce) {
   app-stat-card:not(:defined),
   app-skeleton:not(:defined),
