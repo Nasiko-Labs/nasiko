@@ -29,7 +29,7 @@ pub fn ps(json: bool) -> Result<()> {
         println!("No agents running.");
         return Ok(());
     }
-    println!("{:<28} {:<12} {:<4} ENDPOINT", "NAME", "STATE", "UP");
+    println!("{:<28} {:<12} {:<4} {}", "NAME", "STATE", "UP", "ENDPOINT");
     for c in &containers {
         let ep = c.endpoint.as_deref().unwrap_or("-");
         println!("{:<28} {:<12} {:<4} {}", c.container_id, c.state, c.replicas_live, ep);
@@ -95,13 +95,13 @@ fn stream_logs(agent: &str) -> Result<()> {
     let reader = BufReader::new(resp.body_mut().as_reader());
     for raw in reader.lines() {
         let raw = raw?;
-        if let Some(json) = raw.strip_prefix("data: ")
-            && let Ok(l) = serde_json::from_str::<LogLine>(json)
-        {
-            let ts  = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
-            let lvl = l.level.as_deref().unwrap_or("INFO");
-            let src = l.source.as_deref().unwrap_or("?");
-            println!("{ts} {lvl:<5} [{src}] {}", l.message);
+        if let Some(json) = raw.strip_prefix("data: ") {
+            if let Ok(l) = serde_json::from_str::<LogLine>(json) {
+                let ts  = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
+                let lvl = l.level.as_deref().unwrap_or("INFO");
+                let src = l.source.as_deref().unwrap_or("?");
+                println!("{ts} {lvl:<5} [{src}] {}", l.message);
+            }
         }
     }
     Ok(())

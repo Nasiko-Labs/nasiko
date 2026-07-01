@@ -89,11 +89,12 @@ pub async fn agent_proxy(
             HEADER_IS_SUPERUSER,
             if identity.is_superuser { "true" } else { "false" },
         );
-    if let Some(ref role) = identity.role
-        && let Ok(v) = serde_json::to_value(role)
-        && let Some(s) = v.as_str()
-    {
-        forwarded = forwarded.header(HEADER_USER_ROLE, s);
+    if let Some(ref role) = identity.role {
+        if let Ok(v) = serde_json::to_value(role) {
+            if let Some(s) = v.as_str() {
+                forwarded = forwarded.header(HEADER_USER_ROLE, s);
+            }
+        }
     }
     if let Some(ref team_id) = identity.team_id {
         forwarded = forwarded.header(HEADER_TEAM_ID, team_id.as_str());
@@ -154,11 +155,12 @@ pub async fn server_proxy(
                 HEADER_IS_SUPERUSER,
                 if id.is_superuser { "true" } else { "false" },
             );
-        if let Some(ref role) = id.role
-            && let Ok(v) = serde_json::to_value(role)
-            && let Some(s) = v.as_str()
-        {
-            forwarded = forwarded.header(HEADER_USER_ROLE, s);
+        if let Some(ref role) = id.role {
+            if let Ok(v) = serde_json::to_value(role) {
+                if let Some(s) = v.as_str() {
+                    forwarded = forwarded.header(HEADER_USER_ROLE, s);
+                }
+            }
         }
         if let Some(ref team_id) = id.team_id {
             forwarded = forwarded.header(HEADER_TEAM_ID, team_id.as_str());

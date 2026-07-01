@@ -108,13 +108,20 @@ pub struct AgentSelection {
     pub reasoning: String,
 }
 
+/// Skill with name + description, used in routing prompts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+}
+
 /// Simplified agent card used in LLM routing prompts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCardSummary {
     pub id: Uuid,
     pub name: String,
     pub description: String,
-    pub skills: Vec<String>,
+    pub skills: Vec<SkillSummary>,
     pub tags: Vec<String>,
 }
 

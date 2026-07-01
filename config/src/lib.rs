@@ -16,6 +16,10 @@ pub struct Config {
     pub s3_region: String,
     pub secrets_encryption_key: String,
     pub oci_storage_bucket: String,
+    /// Registry prefix prepended to agent image tags at build time.
+    /// e.g. `"host.docker.internal:5001"` for local K8s dev.
+    /// Empty string → no prefix (Docker local mode).
+    pub agent_image_registry: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -64,6 +68,7 @@ impl Config {
             s3_region: env_or("S3_REGION", "us-east-1"),
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
+            agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),

@@ -137,6 +137,10 @@ async fn generate_and_apply(
     .await
     .is_ok();
 
+    if applied {
+        crate::catalog::skills::sync_agent_skills_json(&state.db, agent_id, &skills_json).await;
+    }
+
     Json(ApplyResponse {
         card,
         applied,

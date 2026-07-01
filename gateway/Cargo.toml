@@ -17,6 +17,8 @@ nasiko-agent-proxy.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
 nasiko-react-agent.workspace = true
 nasiko-types.workspace = true
+nasiko-router.workspace = true
+rust_decimal = { workspace = true }
 
 # Web framework
 axum = { workspace = true }

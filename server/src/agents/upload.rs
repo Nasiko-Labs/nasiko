@@ -27,7 +27,7 @@ use super::utils::{set_build_status, set_upload_status};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/upload-and-deploy", post(upload_and_deploy))
+        .route("/upload-and-deploy",        post(upload_and_deploy))
         .route("/deploy-status/{build_id}", get(deploy_status_sse))
         .route("/upload-status/{upload_id}", get(get_upload_status))
 }

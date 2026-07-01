@@ -9,7 +9,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::get,
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -54,10 +54,25 @@ async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
 // ---------------------------------------------------------------------------
 
 /// Internal health/metrics endpoints — mounted at router root (no auth required).
+use super::handler;
+
+/// Public router — mounted at root (no /api prefix, no auth required).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/metrics", get(metrics))
         .route("/readiness", get(readiness))
+}
+
+/// Protected router — mounted under /api/v1/observability (auth required).
+pub fn protected_router() -> Router<AppState> {
+    Router::new()
+        .route("/session/list", get(handler::get_all_sessions))
+        .route("/session/{session_id}", get(handler::get_session_details))
+        .route("/trace/{project_id}/{trace_id}", get(handler::get_trace_details))
+        .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
+        .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
+        .route("/finops/dashboard", get(handler::get_finops_dashboard))
+        .route("/finops/insights", post(handler::get_finops_insights))
 }
 
 /// Observe endpoints — mounted under `/api` (auth required via middleware).
@@ -185,10 +200,10 @@ async fn agent_logs(
     }
 
     // ── Source 3: Loki (optional) ────────────────────────────────────────────
-    if let Some(ref obs) = state.observability
-        && let Ok(entries) = obs.query_logs(&agent_name, q.since, q.until, q.limit).await
-    {
-        all_logs.extend(parse_loki_logs(entries));
+    if let Some(ref obs) = state.observability {
+        if let Ok(entries) = obs.query_logs(&agent_name, q.since, q.until, q.limit).await {
+            all_logs.extend(parse_loki_logs(entries));
+        }
     }
 
     // ── Merge, filter, sort ──────────────────────────────────────────────────
@@ -201,7 +216,7 @@ async fn agent_logs(
         all_logs.retain(|l| l.message.to_lowercase().contains(&s));
     }
 
-    all_logs.sort_by_key(|l| std::cmp::Reverse(l.timestamp));
+    all_logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     all_logs.truncate(q.limit);
 
     Json(all_logs).into_response()
@@ -305,22 +320,22 @@ async fn agent_stats(
         .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(24));
 
     // ── Tempo path ───────────────────────────────────────────────────────────
-    if let Some(ref obs) = state.observability
-        && let Ok(stats) = obs.get_agent_stats(&agent_name, since).await
-    {
-        let resp = AgentStatsResponse {
-            agent_id: agent_id.to_string(),
-            period_start: stats.period_start,
-            total_requests: stats.total_requests,
-            error_rate: stats.error_rate,
-            avg_latency_ms: stats.avg_latency_ms,
-            p50_latency_ms: None,
-            p95_latency_ms: None,
-            total_input_tokens: stats.total_tokens.input_tokens,
-            total_output_tokens: stats.total_tokens.output_tokens,
-            source: "tempo",
-        };
-        return Json(resp).into_response();
+    if let Some(ref obs) = state.observability {
+        if let Ok(stats) = obs.get_agent_stats(&agent_name, since).await {
+            let resp = AgentStatsResponse {
+                agent_id: agent_id.to_string(),
+                period_start: stats.period_start,
+                total_requests: stats.total_requests,
+                error_rate: stats.error_rate,
+                avg_latency_ms: stats.avg_latency_ms,
+                p50_latency_ms: None,
+                p95_latency_ms: None,
+                total_input_tokens: stats.total_tokens.input_tokens,
+                total_output_tokens: stats.total_tokens.output_tokens,
+                source: "tempo",
+            };
+            return Json(resp).into_response();
+        }
     }
 
     // ── proxy_logs fallback ──────────────────────────────────────────────────

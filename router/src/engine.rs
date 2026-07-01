@@ -242,7 +242,10 @@ fn card_to_summary(a: &AgentCard) -> AgentCardSummary {
         id: a.id,
         name: a.name.clone(),
         description: a.description.clone(),
-        skills: a.skills.clone(),
+        skills: a.skills.iter().map(|s| crate::models::SkillSummary {
+            name: s.clone(),
+            description: s.clone(),
+        }).collect(),
         tags: a.tags.clone(),
     }
 }

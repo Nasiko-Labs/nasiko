@@ -52,20 +52,21 @@ pub async fn auth_middleware(
 
 fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {
     // Try Authorization: Bearer <token>
-    if let Some(auth) = headers.get(header::AUTHORIZATION)
-        && let Ok(value) = auth.to_str()
-        && let Some(token) = value.strip_prefix("Bearer ")
-    {
-        return Some(token.to_string());
+    if let Some(auth) = headers.get(header::AUTHORIZATION) {
+        if let Ok(value) = auth.to_str() {
+            if let Some(token) = value.strip_prefix("Bearer ") {
+                return Some(token.to_string());
+            }
+        }
     }
 
     // Try cookie
-    if let Some(cookie) = headers.get(header::COOKIE)
-        && let Ok(value) = cookie.to_str()
-    {
-        for part in value.split(';') {
-            if let Some(token) = part.trim().strip_prefix("access_token=") {
-                return Some(token.to_string());
+    if let Some(cookie) = headers.get(header::COOKIE) {
+        if let Ok(value) = cookie.to_str() {
+            for part in value.split(';') {
+                if let Some(token) = part.trim().strip_prefix("access_token=") {
+                    return Some(token.to_string());
+                }
             }
         }
     }

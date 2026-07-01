@@ -1,148 +1,45 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use nasiko_config::Config;
-use nasiko_runtime::{
-    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, Result as RuntimeResult,
-    RuntimeState,
-};
 use nasiko_server::{Providers, state::AppState};
 use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-// ─── Infra endpoints — overridable via env for CI ────────────────────────────
+// ─── defaults pointing at docker compose --profile infra ────────────────────
 
-fn pg_admin_url() -> String {
-    std::env::var("TEST_PG_URL")
-        .unwrap_or_else(|_| "postgres://nasiko:nasiko@localhost:5432/nasiko_dev".into())
-}
-
-fn redis_url() -> String {
-    std::env::var("TEST_REDIS_URL")
-        .unwrap_or_else(|_| "redis://localhost:6379".into())
-}
-
-fn s3_endpoint() -> String {
-    std::env::var("TEST_S3_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".into())
-}
-
-// ─── FakeRuntime ─────────────────────────────────────────────────────────────
-
-/// No-op ContainerRuntime for integration tests.
-///
-/// Tests exercise HTTP routes, ACL, and DB state — not actual container
-/// deployment. Using FakeRuntime eliminates the Docker daemon dependency from
-/// CI and removes ~300ms of Docker ping overhead per test.
-struct FakeRuntime;
-
-fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
-    DeploymentStatus {
-        container_id: container_id.clone(),
-        state: RuntimeState::Running,
-        replicas_live: 1,
-        endpoint: Some("http://localhost:8000".into()),
-        message: None,
-        restart_count: 0,
-    }
-}
-
-#[async_trait]
-impl ContainerRuntime for FakeRuntime {
-    async fn deploy(&self, spec: &DeploymentSpec) -> RuntimeResult<DeploymentStatus> {
-        Ok(fake_status(&spec.container_id))
-    }
-
-    async fn destroy(&self, _container_id: &ContainerId) -> RuntimeResult<()> {
-        Ok(())
-    }
-
-    async fn scale(&self, _container_id: &ContainerId, _replicas: u32) -> RuntimeResult<()> {
-        Ok(())
-    }
-
-    async fn restart(&self, _container_id: &ContainerId) -> RuntimeResult<()> {
-        Ok(())
-    }
-
-    async fn status(&self, container_id: &ContainerId) -> RuntimeResult<DeploymentStatus> {
-        Ok(fake_status(container_id))
-    }
-
-    async fn list(&self) -> RuntimeResult<Vec<DeploymentStatus>> {
-        Ok(vec![])
-    }
-
-    async fn endpoint(&self, _container_id: &ContainerId) -> RuntimeResult<String> {
-        Ok("http://localhost:8000".into())
-    }
-
-    async fn logs(&self, _container_id: &ContainerId, _tail: u32) -> RuntimeResult<Vec<String>> {
-        Ok(vec![])
-    }
-
-    async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
-        Ok(image_tag.to_owned())
-    }
-}
-
-// ─── TestServer ──────────────────────────────────────────────────────────────
+const PG_ADMIN_URL: &str = "postgres://nasiko:nasiko@localhost:5432/nasiko_dev";
+const REDIS_URL: &str = "redis://localhost:6379";
+const S3_ENDPOINT: &str = "http://localhost:9000";
 
 /// A running test server bound to a random port, backed by an isolated DB.
 /// Call `cleanup().await` at the end of each test to drop the test database.
+#[allow(dead_code)]
 pub struct TestServer {
     pub base_url: String,
     pub client: reqwest::Client,
-    /// Direct pool access for tests that need to seed or verify DB state.
-    #[allow(dead_code)]
     pub db: PgPool,
     db_name: String,
-    admin_pool: PgPool,
-}
-
-/// Single-connection pool options used throughout tests.
-///
-/// max_connections(1) keeps shared memory usage minimal — Postgres allocates
-/// DSM segments per connection for parallel workers, and a per-test admin pool
-/// of default size (10) quickly exhausts the system's shared-memory budget
-/// when many test DBs are created in sequence.
-fn minimal_pool_opts() -> PgPoolOptions {
-    PgPoolOptions::new()
-        .max_connections(1)
-        .min_connections(0)
-        .idle_timeout(std::time::Duration::from_secs(1))
-        .acquire_timeout(std::time::Duration::from_secs(30))
 }
 
 impl TestServer {
     pub async fn start() -> Self {
-        let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
-        let admin = minimal_pool_opts()
-            .connect(&pg_admin)
+        // Create isolated test database
+        let admin = PgPool::connect(PG_ADMIN_URL)
             .await
-            .expect("connect to postgres — is the DB available? (set TEST_PG_URL to override)");
+            .expect("connect to postgres — is `docker compose --profile infra up -d` running?");
 
         sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
             .execute(&admin)
             .await
             .expect("create test database");
 
-        // Build db_url from pg_admin_url by replacing the database name.
-        let db_url = {
-            let base = pg_admin.rsplitn(2, '/').last().unwrap_or(&pg_admin);
-            format!("{base}/{db_name}")
-        };
+        let db_url = format!("postgres://nasiko:nasiko@localhost:5432/{db_name}");
+        let db = PgPool::connect(&db_url).await.expect("connect to test db");
+        let db_for_server = db.clone();
 
-        let db = minimal_pool_opts()
-            .connect(&db_url)
-            .await
-            .expect("connect to test db");
-
-        let s3_ep = s3_endpoint();
-        let config = test_config(db_url, redis_url(), s3_ep.clone());
+        let config = test_config(db_url);
 
         let auth: Arc<dyn nasiko_auth::AuthProvider> =
             Arc::new(nasiko_auth::SimpleJwtAuth::from_env());
@@ -154,9 +51,13 @@ impl TestServer {
             token_svc: user_auth,
         };
 
-        let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime);
+        let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = Arc::new(
+            nasiko_server::runtime::build_docker_runtime(&config)
+                .await
+                .expect("docker runtime"),
+        );
 
-        let state = AppState::from_config_with_db(config, providers, runtime, db.clone()).await;
+        let state = AppState::from_config_with_db(config, providers, runtime, db_for_server).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -169,33 +70,23 @@ impl TestServer {
             axum::serve(listener, app).await.unwrap();
         });
 
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
         TestServer {
             base_url: format!("http://127.0.0.1:{port}"),
             client: reqwest::Client::new(),
-            db: db.clone(),
+            db,
             db_name,
-            admin_pool: admin,
         }
     }
 
     pub async fn cleanup(&self) {
-        // Terminate connections to the test DB before dropping it.
-        sqlx::query(&format!(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}'",
-            self.db_name
-        ))
-        .execute(&self.admin_pool)
-        .await
-        .ok();
-
+        let admin = PgPool::connect(PG_ADMIN_URL).await.unwrap();
         sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", self.db_name))
-            .execute(&self.admin_pool)
+            .execute(&admin)
             .await
             .ok();
-
-        // Close both pools so Postgres can release their DSM segments immediately.
-        self.db.close().await;
-        self.admin_pool.close().await;
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -203,11 +94,12 @@ impl TestServer {
     }
 }
 
-fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config {
+fn test_config(db_url: String) -> Config {
+    // S3Storage::from_env() and SimpleJwtAuth::from_env() read env vars at call time.
     // SAFETY: tests run serially via #[serial], so no concurrent env mutation.
     unsafe {
         std::env::set_var("JWT_SECRET", "test-secret-for-nasiko-tests");
-        std::env::set_var("S3_ENDPOINT", &s3_endpoint);
+        std::env::set_var("S3_ENDPOINT", S3_ENDPOINT);
         std::env::set_var("S3_ACCESS_KEY", "nasiko");
         std::env::set_var("S3_SECRET_KEY", "nasiko123");
         std::env::set_var("S3_REGION", "us-east-1");
@@ -219,11 +111,11 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         bind: "127.0.0.1:0".into(),
         domain: None,
         database_url: db_url,
-        redis_url,
+        redis_url: REDIS_URL.into(),
         scheduler_mode: "local".into(),
         k8s_namespace: "nasiko-test".into(),
         kubeconfig: None,
-        s3_endpoint,
+        s3_endpoint: S3_ENDPOINT.into(),
         s3_bucket: "nasiko-test".into(),
         s3_access_key: "nasiko".into(),
         s3_secret_key: "nasiko123".into(),
@@ -253,6 +145,13 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        agent_registry_cache_ttl_secs: 3600,
+        router_shortlist_threshold: 15,
+        router_shortlist_size: 10,
+        max_router_history_messages: 20,
+        ollama_url: "http://localhost:11434".into(),
+        ollama_embedding_model: "nomic-embed-text".into(),
+        router_agent_timeout_secs: 60,
     }
 }
 

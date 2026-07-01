@@ -67,6 +67,10 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         self.inner.scale(container_id, replicas).await
     }
 
+    async fn restart(&self, container_id: &ContainerId) -> Result<()> {
+        self.inner.restart(container_id).await
+    }
+
     async fn status(&self, container_id: &ContainerId) -> Result<DeploymentStatus> {
         self.inner.status(container_id).await
     }

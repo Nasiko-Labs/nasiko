@@ -1,5 +1,6 @@
 use axum::{
-    extract::State,
+    extract::{Multipart, State},
+    http::StatusCode,
     response::{
         sse::{Event, Sse},
         IntoResponse, Response,
@@ -15,11 +16,22 @@ use nasiko_react_agent::{
     AgentInfo, AgentSkill as OrcAgentSkill, Orchestrator, OrchestratorConfig, OrchestratorEvent,
     RegistrySource,
 };
-use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
+
+use nasiko_router::{FilePart, RouteRequest, RouterError, SessionHistory};
+use nasiko_types::a2a;
+use nasiko_types::a2a::{JsonRpcRequest, PartContent, StreamResponse};
 
 use crate::auth::AuthIdentity;
 use crate::state::GatewayState;
 
+// TODO: Implement `AgentExecutor` trait from a2a-server-lf to replace manual Axum routing.
+// The trait has two methods: execute(&self, ctx: ExecutorContext) -> BoxStream<StreamResponse>
+// and cancel(&self, ctx: ExecutorContext) -> BoxStream<StreamResponse>.
+// Our handler already returns a stream of StreamResponse — wrap it in the trait impl and let
+// a2a-server handle JSON-RPC envelope, SSE serialization, and /.well-known/agent-card.json.
+
+/// Client-facing A2A endpoint. Accepts JSONRPC `message/send` or `message/stream`.
+/// Routes to the ReAct orchestrator or a specific agent based on `agentId` in the message.
 pub async fn a2a_handler(
     State(state): State<GatewayState>,
     AuthIdentity(identity): AuthIdentity,
@@ -68,29 +80,36 @@ pub async fn a2a_handler(
         .and_then(|m| m.get("session_id"))
         .and_then(|v| v.as_str())
         .map(String::from);
-    let is_orchestrator = agent_id.as_deref() == Some("orchestrator") || agent_id.is_none();
+    let is_orchestrator = agent_id.as_deref() == Some("orchestrator");
+    let use_router = agent_id.is_none();
 
     let user_id: Uuid = identity.user_id.parse().unwrap_or(Uuid::nil());
 
     // Fetch chat history
     let history = if let Some(ref sid) = session_id {
-        fetch_session_history(&state.db, sid).await
+        SessionHistory::fetch(sid, &state.db, 20).await
     } else {
-        Vec::new()
+        SessionHistory::default()
     };
 
-    let query = if history.is_empty() {
-        text
-    } else {
-        let hist_text = history
-            .iter()
-            .map(|m| format!("{}: {}", m.0, m.1))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("{}\n\nCurrent message: {}", hist_text, text)
-    };
+    let query = history.with_current_query(&text);
 
-    if is_orchestrator {
+    if use_router {
+        let sid = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let route_req = RouteRequest {
+            query: text,
+            user_id,
+            session_id: sid,
+            file_parts: vec![],
+        };
+        match state.routing_engine.route(route_req, &state.db).await {
+            Ok(result) => {
+                agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
+            }
+            Err(RouterError::NoAgentsAvailable) => Err(A2aError::NoAgents),
+            Err(e) => Err(A2aError::Internal(e.to_string())),
+        }
+    } else if is_orchestrator {
         orchestrator_stream(&state, &query, &task_id, &context_id, user_id).await
     } else {
         agent_stream(
@@ -450,6 +469,143 @@ async fn agent_stream(
     }
 }
 
+// ─── Router Stats ─────────────────────────────────────────────────────────────
+
+/// `GET /api/router/stats` — admin-only.
+/// Returns aggregated rows from the `agent_selection_stats` materialized view.
+pub async fn router_stats_handler(
+    State(state): State<GatewayState>,
+    _identity: AuthIdentity,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let rows = sqlx::query_as::<_, StatsRow>(
+        r#"SELECT
+            selected_agent_name AS agent_name,
+            selection_count,
+            successful_calls,
+            failed_calls,
+            avg_agent_latency_ms,
+            avg_selection_latency_ms,
+            avg_stage1_candidates,
+            avg_stage2_candidates,
+            date::text AS date
+        FROM agent_selection_stats
+        ORDER BY date DESC, selection_count DESC
+        LIMIT 200"#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {e}")))?;
+
+    let data: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "agent_name":              r.agent_name,
+                "selection_count":         r.selection_count,
+                "successful_calls":        r.successful_calls,
+                "failed_calls":            r.failed_calls,
+                "avg_agent_latency_ms":    r.avg_agent_latency_ms.map(|v| v.to_string()),
+                "avg_selection_latency_ms":r.avg_selection_latency_ms.map(|v| v.to_string()),
+                "avg_stage1_candidates":   r.avg_stage1_candidates.map(|v| v.to_string()),
+                "avg_stage2_candidates":   r.avg_stage2_candidates.map(|v| v.to_string()),
+                "date":                    r.date,
+            })
+        })
+        .collect();
+
+    Ok(axum::Json(serde_json::json!({ "data": data, "total": data.len() })))
+}
+
+#[derive(sqlx::FromRow)]
+struct StatsRow {
+    agent_name: Option<String>,
+    selection_count: Option<i64>,
+    successful_calls: Option<i64>,
+    failed_calls: Option<i64>,
+    avg_agent_latency_ms: Option<rust_decimal::Decimal>,
+    avg_selection_latency_ms: Option<rust_decimal::Decimal>,
+    avg_stage1_candidates: Option<rust_decimal::Decimal>,
+    avg_stage2_candidates: Option<rust_decimal::Decimal>,
+    date: Option<String>,
+}
+
+// ─── Multipart Upload Handler ─────────────────────────────────────────────────
+
+/// `POST /api/a2a/upload` — multipart/form-data A2A entry point.
+///
+/// Accepts:
+/// - `query`   (text field, required) — the user's question
+/// - Any number of additional fields treated as file attachments
+///
+/// Each file is base64-encoded into a `FilePart` data URI and forwarded
+/// alongside the query to the routing engine (Day 4 wiring) or falls through
+/// to the orchestrator path for now.
+pub async fn a2a_upload_handler(
+    State(state): State<GatewayState>,
+    AuthIdentity(identity): AuthIdentity,
+    mut multipart: Multipart,
+) -> Result<Response, A2aError> {
+    let mut query = String::new();
+    let mut file_parts: Vec<FilePart> = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| A2aError::InvalidRequest(format!("multipart error: {e}")))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+        let filename = field.file_name().map(str::to_string);
+        let content_type = field
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| A2aError::InvalidRequest(format!("field read error: {e}")))?;
+
+        if field_name == "query" {
+            query = String::from_utf8(bytes.to_vec())
+                .map_err(|_| A2aError::InvalidRequest("query must be valid UTF-8".into()))?;
+        } else {
+            let name = filename.unwrap_or_else(|| field_name.clone());
+            file_parts.push(FilePart::encode(name, &bytes, content_type));
+        }
+    }
+
+    if query.trim().is_empty() {
+        return Err(A2aError::InvalidRequest(
+            "multipart must include a non-empty 'query' text field".into(),
+        ));
+    }
+
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let context_id = uuid::Uuid::new_v4().to_string();
+    let user_id: uuid::Uuid = identity.sub.parse().unwrap_or(uuid::Uuid::nil());
+
+    tracing::info!(
+        user_id = %user_id,
+        file_count = file_parts.len(),
+        "a2a upload: routing query with {} file(s)",
+        file_parts.len()
+    );
+
+    let route_req = RouteRequest {
+        query: query.clone(),
+        user_id,
+        session_id: Uuid::new_v4().to_string(),
+        file_parts,
+    };
+    match state.routing_engine.route(route_req, &state.db).await {
+        Ok(result) => {
+            agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
+        }
+        Err(RouterError::NoAgentsAvailable) => Err(A2aError::NoAgents),
+        Err(e) => Err(A2aError::Internal(e.to_string())),
+    }
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn to_sse(event: StreamResponse) -> Event {
@@ -482,16 +638,6 @@ async fn resolve_endpoint(state: &GatewayState, agent_name: &str) -> Result<Stri
 
     let e = endpoint.trim_end_matches('/');
     Ok(format!("{e}/"))
-}
-
-async fn fetch_session_history(db: &sqlx::PgPool, session_id: &str) -> Vec<(String, String)> {
-    sqlx::query_as(
-        "SELECT role, content FROM chat_messages WHERE session_id = $1 ORDER BY timestamp ASC LIMIT 20",
-    )
-    .bind(session_id)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default()
 }
 
 fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {

@@ -2,11 +2,14 @@ use std::sync::Arc;
 
 use nasiko_auth::{AclChecker, AuthProvider, TokenService, UserAuthService};
 use nasiko_router::RoutingEngine;
+use nasiko_github::{GitHubConfig, GitHubService};
+use nasiko_observability::ObservabilityProvider;
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
+use tokio::sync::mpsc;
 
 use nasiko_config::Config;
-use crate::flow::{FlowConfig, FlowEventBus, FlowGuard};
+use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 
@@ -35,6 +38,13 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
+    /// Optional Tempo+Loki provider — present when TEMPO_URL + LOKI_URL are configured.
+    /// Falls back to DB-only queries when None.
+    pub observability: Option<Arc<dyn ObservabilityProvider>>,
+    /// Shared GitHubService instance — None if GitHub OAuth is not configured.
+    pub github_svc: Option<Arc<GitHubService>>,
+    /// Wakes the build worker immediately when a new job is enqueued.
+    pub build_tx: mpsc::Sender<()>,
 }
 
 impl AppState {
@@ -55,9 +65,13 @@ impl AppState {
         runtime: Arc<dyn ContainerRuntime>,
         db: PgPool,
     ) -> Self {
-        // TODO: restore strict migration check; use ignore_missing so EE migrations (v10+)
-        // already applied to the DB don't cause the OSS migrator to panic.
-        let _ = sqlx::migrate!("../migrations").set_ignore_missing(true).run(&db).await;
+        // ignore_missing: EE migrations (v10+) already applied to the DB must not
+        // cause the OSS migrator to panic; strict on everything else.
+        sqlx::migrate!("../migrations")
+            .set_ignore_missing(true)
+            .run(&db)
+            .await
+            .expect("database migration failed");
 
         let redis = redis::Client::open(config.redis_url.as_str())
             .expect("invalid redis url");
@@ -87,6 +101,38 @@ impl AppState {
         let flow_events = FlowEventBus::new();
         let genai_metrics = GenAiMetrics::new();
 
+        // Optional Tempo+Loki observability backend
+        let observability: Option<Arc<dyn ObservabilityProvider>> = {
+            let tempo_url = std::env::var("TEMPO_URL").ok();
+            let loki_url  = std::env::var("LOKI_URL").ok();
+            match (tempo_url, loki_url) {
+                (Some(t), Some(l)) => {
+                    use nasiko_observability::TempoLokiProvider;
+                    Some(Arc::new(TempoLokiProvider::new(t, l)))
+                }
+                _ => None,
+            }
+        };
+
+        let github_svc = config.github_client_id.as_ref()
+            .zip(config.github_client_secret.as_ref())
+            .and_then(|(id, sec)| {
+                let signing = std::env::var("OAUTH_STATE_SIGNING_KEY")
+                    .unwrap_or_else(|_| sec.clone());
+                let cfg = GitHubConfig {
+                    client_id: id.clone(),
+                    client_secret: sec.clone(),
+                    oauth_state_secret: signing,
+                    callback_url: String::new(),
+                    central_callback_url: None,
+                    clone_timeout_secs: 300,
+                    clone_max_size_bytes: 500 * 1024 * 1024,
+                };
+                GitHubService::new(cfg).ok().map(Arc::new)
+            });
+
+        let (build_tx, build_rx) = mpsc::channel(64);
+
         let state = Self {
             runtime,
             db,
@@ -100,7 +146,14 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             routing_engine,
+            observability,
+            github_svc,
+            build_tx,
         };
+
+        // Spawn the durable build worker. It owns the receiver and exits when sender drops.
+        let worker_state = state.clone();
+        tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
         crate::seed::seed_agents_if_configured(&state).await;
 

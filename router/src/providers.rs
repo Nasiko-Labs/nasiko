@@ -154,6 +154,7 @@ pub struct CompletionResult {
     pub model: String,
 }
 
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("network error: {0}")]

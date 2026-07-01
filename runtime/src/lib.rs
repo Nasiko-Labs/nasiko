@@ -89,6 +89,14 @@ pub trait ContainerRuntime: Send + Sync {
     /// Returns `RuntimeError::ContainerNotFound` if no deployment exists for this ID.
     async fn scale(&self, container_id: &ContainerId, replicas: u32) -> Result<()>;
 
+    /// Restart the agent container(s), picking up any new env/secrets.
+    ///
+    /// - Docker: stops and recreates the container from the same image.
+    /// - Kubernetes: triggers a rollout restart (annotation bump).
+    ///
+    /// Returns `RuntimeError::ContainerNotFound` if no deployment exists for this ID.
+    async fn restart(&self, container_id: &ContainerId) -> Result<()>;
+
     /// Return the current observed state of the agent deployment.
     ///
     /// If no resource exists for `container_id`, returns a status with
