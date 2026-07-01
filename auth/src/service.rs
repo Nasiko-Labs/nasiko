@@ -21,7 +21,7 @@ impl UserAuthServiceImpl {
         Self { db, auth }
     }
 
-    /// Record the JTI of a freshly-issued token so it can be revoked later.
+    /// Record a user token JTI so it can be revoked later.
     /// Fire-and-forget — a failure to record doesn't fail the login.
     async fn record_token(&self, token: &str, user_id: uuid::Uuid) {
         let Some(jti) = crate::jwt::extract_jti(token) else { return };
@@ -33,6 +33,24 @@ impl UserAuthServiceImpl {
              ON CONFLICT (token_hash) DO NOTHING",
         )
         .bind(user_id)
+        .bind(hash)
+        .bind(expires)
+        .execute(&self.db)
+        .await;
+    }
+
+    /// Record an agent token JTI so it can be revoked later.
+    /// Agent tokens store `agent_id` instead of `user_id` (different subject table).
+    async fn record_agent_token(&self, token: &str, agent_id: uuid::Uuid) {
+        let Some(jti) = crate::jwt::extract_jti(token) else { return };
+        let hash = crate::jwt::hash_jti(&jti);
+        let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
+        let _ = sqlx::query(
+            "INSERT INTO auth_tokens (agent_id, token_hash, expires_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (token_hash) DO NOTHING",
+        )
+        .bind(agent_id)
         .bind(hash)
         .bind(expires)
         .execute(&self.db)
@@ -220,7 +238,9 @@ impl UserAuthService for UserAuthServiceImpl {
             iat: 0,
         };
 
-        self.auth.issue_token(&identity).await
+        let token = self.auth.issue_token(&identity).await?;
+        self.record_agent_token(&token, agent_uuid).await;
+        Ok(token)
     }
 
     async fn upsert_oauth_user(
@@ -351,6 +371,22 @@ impl TokenService for UserAuthServiceImpl {
             "UPDATE auth_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()",
         )
         .bind(user_uuid)
+        .execute(&self.db)
+        .await
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn revoke_for_agent(&self, agent_id: &str) -> Result<u64, AuthError> {
+        let agent_uuid = agent_id
+            .parse::<uuid::Uuid>()
+            .map_err(|_| AuthError::InvalidToken("invalid agent_id".into()))?;
+
+        let result = sqlx::query(
+            "UPDATE auth_tokens SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL AND expires_at > now()",
+        )
+        .bind(agent_uuid)
         .execute(&self.db)
         .await
         .map_err(|e| AuthError::InvalidToken(e.to_string()))?;

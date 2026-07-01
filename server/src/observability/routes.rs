@@ -9,7 +9,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::get,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -54,25 +54,10 @@ async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
 // ---------------------------------------------------------------------------
 
 /// Internal health/metrics endpoints — mounted at router root (no auth required).
-use super::handler;
-
-/// Public router — mounted at root (no /api prefix, no auth required).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/metrics", get(metrics))
         .route("/readiness", get(readiness))
-}
-
-/// Protected router — mounted under /api/v1/observability (auth required).
-pub fn protected_router() -> Router<AppState> {
-    Router::new()
-        .route("/session/list", get(handler::get_all_sessions))
-        .route("/session/{session_id}", get(handler::get_session_details))
-        .route("/trace/{project_id}/{trace_id}", get(handler::get_trace_details))
-        .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
-        .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
-        .route("/finops/dashboard", get(handler::get_finops_dashboard))
-        .route("/finops/insights", post(handler::get_finops_insights))
 }
 
 /// Observe endpoints — mounted under `/api` (auth required via middleware).
@@ -200,10 +185,10 @@ async fn agent_logs(
     }
 
     // ── Source 3: Loki (optional) ────────────────────────────────────────────
-    if let Some(ref obs) = state.observability {
-        if let Ok(entries) = obs.query_logs(&agent_name, q.since, q.until, q.limit).await {
-            all_logs.extend(parse_loki_logs(entries));
-        }
+    if let Some(ref obs) = state.observability
+        && let Ok(entries) = obs.query_logs(&agent_name, q.since, q.until, q.limit).await
+    {
+        all_logs.extend(parse_loki_logs(entries));
     }
 
     // ── Merge, filter, sort ──────────────────────────────────────────────────
@@ -216,7 +201,7 @@ async fn agent_logs(
         all_logs.retain(|l| l.message.to_lowercase().contains(&s));
     }
 
-    all_logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    all_logs.sort_by_key(|l| std::cmp::Reverse(l.timestamp));
     all_logs.truncate(q.limit);
 
     Json(all_logs).into_response()
@@ -241,6 +226,8 @@ async fn agent_logs_stream(
     let db      = state.db.clone();
     let runtime = state.runtime.clone();
 
+    const MAX_STREAM_SECS: u64 = 3600; // 1-hour max lifetime — prevents connection hoarding
+
     let stream = async_stream::stream! {
         // ── Step 1: historical container logs ────────────────────────────────
         let container_id = nasiko_runtime::ContainerId::new(agent_name.clone());
@@ -254,8 +241,15 @@ async fn agent_logs_stream(
 
         // ── Step 2: live tail of proxy_logs ──────────────────────────────────
         let mut last_ts = Utc::now();
+        let deadline = std::time::Instant::now() + Duration::from_secs(MAX_STREAM_SECS);
 
         loop {
+            if std::time::Instant::now() >= deadline {
+                // Signal the client that the stream ended normally (reconnect if needed).
+                yield Ok(Event::default().event("close").data("stream timeout — reconnect to continue"));
+                break;
+            }
+
             tokio::time::sleep(Duration::from_secs(3)).await;
 
             let rows: Vec<(DateTime<Utc>, i32, i64, Option<String>)> = sqlx::query_as(
@@ -320,22 +314,22 @@ async fn agent_stats(
         .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(24));
 
     // ── Tempo path ───────────────────────────────────────────────────────────
-    if let Some(ref obs) = state.observability {
-        if let Ok(stats) = obs.get_agent_stats(&agent_name, since).await {
-            let resp = AgentStatsResponse {
-                agent_id: agent_id.to_string(),
-                period_start: stats.period_start,
-                total_requests: stats.total_requests,
-                error_rate: stats.error_rate,
-                avg_latency_ms: stats.avg_latency_ms,
-                p50_latency_ms: None,
-                p95_latency_ms: None,
-                total_input_tokens: stats.total_tokens.input_tokens,
-                total_output_tokens: stats.total_tokens.output_tokens,
-                source: "tempo",
-            };
-            return Json(resp).into_response();
-        }
+    if let Some(ref obs) = state.observability
+        && let Ok(stats) = obs.get_agent_stats(&agent_name, since).await
+    {
+        let resp = AgentStatsResponse {
+            agent_id: agent_id.to_string(),
+            period_start: stats.period_start,
+            total_requests: stats.total_requests,
+            error_rate: stats.error_rate,
+            avg_latency_ms: stats.avg_latency_ms,
+            p50_latency_ms: None,
+            p95_latency_ms: None,
+            total_input_tokens: stats.total_tokens.input_tokens,
+            total_output_tokens: stats.total_tokens.output_tokens,
+            source: "tempo",
+        };
+        return Json(resp).into_response();
     }
 
     // ── proxy_logs fallback ──────────────────────────────────────────────────
@@ -410,7 +404,13 @@ async fn list_traces(
         .await
         .ok()
         .flatten();
-        name.into_iter().collect()
+
+        // If a specific agent was requested but doesn't exist, return 404 rather
+        // than silently falling back to all agents (would be an information leak).
+        match name {
+            Some(n) => vec![n],
+            None => return (StatusCode::NOT_FOUND, "agent not found").into_response(),
+        }
     } else {
         sqlx::query_scalar::<_, String>(
             "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 20",
@@ -476,13 +476,21 @@ async fn finops(
 
     // Resolve agent UUIDs → names for the Tempo query.
     let agent_ids: Vec<String> = if let Some(ref ids_csv) = params.agent_ids {
-        let uuids: Vec<Uuid> = ids_csv
-            .split(',')
-            .filter_map(|s| s.trim().parse::<Uuid>().ok())
-            .collect();
+        let tokens: Vec<&str> = ids_csv.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        let uuids: Vec<Uuid> = tokens.iter().filter_map(|s| s.parse::<Uuid>().ok()).collect();
+
+        // If the caller supplied ids but ALL of them are malformed, return 400
+        // rather than silently falling back to all agents (information disclosure).
+        if !tokens.is_empty() && uuids.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "agent_ids must be comma-separated UUIDs",
+            )
+                .into_response();
+        }
 
         if uuids.is_empty() {
-            // No specific agents requested — use all running agents.
+            // Empty string / no real ids — default to all running agents.
             sqlx::query_scalar::<_, String>(
                 "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 50",
             )

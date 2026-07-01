@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use nasiko_auth::{AclChecker, AuthProvider, TokenService, UserAuthService};
-use nasiko_router::RoutingEngine;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
 use nasiko_runtime::ContainerRuntime;
@@ -37,7 +36,6 @@ pub struct AppState {
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
-    pub routing_engine: Arc<dyn RoutingEngine>,
     /// Optional Tempo+Loki provider — present when TEMPO_URL + LOKI_URL are configured.
     /// Falls back to DB-only queries when None.
     pub observability: Option<Arc<dyn ObservabilityProvider>>,
@@ -86,10 +84,6 @@ impl AppState {
             .build()
             .expect("failed to build http client");
 
-        let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
-            nasiko_router::OssRoutingEngine::from_config(&config, http_client.clone()),
-        );
-
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
             max_fan_out: config.flow_max_fan_out as u32,
@@ -101,16 +95,27 @@ impl AppState {
         let flow_events = FlowEventBus::new();
         let genai_metrics = GenAiMetrics::new();
 
-        // Optional Tempo+Loki observability backend
+        // Optional Tempo+Loki observability backend.
+        // Both TEMPO_URL and LOKI_URL must be set together — a partial config
+        // is logged as a warning so operators can spot misconfiguration early.
         let observability: Option<Arc<dyn ObservabilityProvider>> = {
             let tempo_url = std::env::var("TEMPO_URL").ok();
             let loki_url  = std::env::var("LOKI_URL").ok();
             match (tempo_url, loki_url) {
                 (Some(t), Some(l)) => {
                     use nasiko_observability::TempoLokiProvider;
+                    tracing::info!(tempo_url = %t, loki_url = %l, "observability backend enabled");
                     Some(Arc::new(TempoLokiProvider::new(t, l)))
                 }
-                _ => None,
+                (Some(_), None) => {
+                    tracing::warn!("TEMPO_URL is set but LOKI_URL is missing — observability backend disabled. Set both to enable.");
+                    None
+                }
+                (None, Some(_)) => {
+                    tracing::warn!("LOKI_URL is set but TEMPO_URL is missing — observability backend disabled. Set both to enable.");
+                    None
+                }
+                (None, None) => None,
             }
         };
 
@@ -145,7 +150,6 @@ impl AppState {
             flow_events,
             genai_metrics,
             config: Arc::new(config),
-            routing_engine,
             observability,
             github_svc,
             build_tx,

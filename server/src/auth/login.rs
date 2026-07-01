@@ -152,29 +152,55 @@ async fn token_validate(
     State(state): State<AppState>,
     Json(req): Json<ValidateRequest>,
 ) -> impl IntoResponse {
-    match state.providers.auth.validate_token(&req.token).await {
-        Ok(identity) => Json(serde_json::json!({
-            "valid": true,
-            "user_id": identity.user_id,
-            "username": identity.username,
-            "is_superuser": identity.is_superuser,
-            "role": identity.role.as_ref().and_then(|r| serde_json::to_value(r).ok()),
-            "team_id": identity.team_id,
-            "department_id": identity.department_id,
-        })).into_response(),
-        Err(nasiko_auth::AuthError::Expired) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"valid": false, "error": "expired"})),
-        ).into_response(),
-        Err(nasiko_auth::AuthError::Revoked) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"valid": false, "error": "token revoked"})),
-        ).into_response(),
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"valid": false, "error": "invalid"})),
-        ).into_response(),
+    // Step 1: verify signature + expiry
+    let identity = match state.providers.auth.validate_token(&req.token).await {
+        Ok(id) => id,
+        Err(nasiko_auth::AuthError::Expired) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"valid": false, "error": "expired"})),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"valid": false, "error": "invalid"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Step 2: check revocation — same logic as the gateway so validate is consistent.
+    if let Some(jti) = nasiko_auth::jwt::extract_jti(&req.token) {
+        let hash = nasiko_auth::jwt::hash_jti(&jti);
+        let revoked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM auth_tokens WHERE token_hash = $1 AND revoked_at IS NOT NULL)",
+        )
+        .bind(&hash)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(false);
+
+        if revoked {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"valid": false, "error": "token revoked"})),
+            )
+                .into_response();
+        }
     }
+
+    Json(serde_json::json!({
+        "valid": true,
+        "user_id": identity.user_id,
+        "username": identity.username,
+        "is_superuser": identity.is_superuser,
+        "role": identity.role.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+        "team_id": identity.team_id,
+        "department_id": identity.department_id,
+    }))
+    .into_response()
 }
 
 async fn users_for_search(State(state): State<AppState>) -> impl IntoResponse {

@@ -3,6 +3,8 @@ pub mod config;
 pub mod orchestrator;
 pub mod proxy;
 pub mod state;
+#[cfg(test)]
+mod tests;
 
 use axum::{
     middleware,

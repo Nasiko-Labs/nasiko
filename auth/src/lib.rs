@@ -1,6 +1,8 @@
 pub mod headers;
 pub mod jwt;
 pub mod service;
+#[cfg(test)]
+mod tests;
 
 pub use headers::*;
 pub use service::UserAuthServiceImpl;
@@ -140,6 +142,7 @@ pub trait UserAuthService: Send + Sync + 'static {
 #[async_trait]
 pub trait TokenService: Send + Sync + 'static {
     async fn revoke_for_user(&self, user_id: &str) -> Result<u64, AuthError>;
+    async fn revoke_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
     async fn revoke_all(&self) -> Result<u64, AuthError>;
 }
 
@@ -170,6 +173,7 @@ pub struct NoopTokenService;
 #[async_trait]
 impl TokenService for NoopTokenService {
     async fn revoke_for_user(&self, _user_id: &str) -> Result<u64, AuthError> { Ok(0) }
+    async fn revoke_for_agent(&self, _agent_id: &str) -> Result<u64, AuthError> { Ok(0) }
     async fn revoke_all(&self) -> Result<u64, AuthError> { Ok(0) }
 }
 

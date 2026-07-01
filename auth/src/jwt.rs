@@ -54,6 +54,7 @@ pub fn decode_jwt(secret: &str, token: &str) -> Result<Identity, AuthError> {
     let mut validation = Validation::default();
     validation.required_spec_claims.clear();
     validation.validate_exp = true;
+    validation.leeway = 0; // treat exp literally — no clock-skew tolerance
 
     let data = decode::<JwtClaims>(
         token,
@@ -89,6 +90,7 @@ pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, Strin
     let mut validation = Validation::default();
     validation.required_spec_claims.clear();
     validation.validate_exp = true;
+    validation.leeway = 0; // treat exp literally — no clock-skew tolerance
 
     let data = decode::<JwtClaims>(
         token,
