@@ -15,6 +15,7 @@ nasiko-auth.workspace = true
 nasiko-flow.workspace = true
 nasiko-agent-proxy.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
+nasiko-react-agent.workspace = true
 nasiko-types.workspace = true
 
 # Web framework
@@ -32,6 +33,11 @@ reqwest = { workspace = true, features = ["stream"] }
 
 # Streaming
 futures = { workspace = true }
+async-stream = { workspace = true }
+
+# Static assets
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }

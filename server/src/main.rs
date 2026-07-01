@@ -1,19 +1,7 @@
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
-use rust_embed::Embed;
-
-#[derive(Embed)]
-#[folder = "../ui/oss/"]
-struct OssAssets;
-
-#[derive(Embed)]
-#[folder = "../ui/common/"]
-#[prefix = "common/"]
-struct CommonAssets;
 
 #[tokio::main]
 async fn main() {
@@ -23,12 +11,10 @@ async fn main() {
     let config = nasiko_config::Config::from_env().expect("invalid config");
     let bind = config.bind.clone();
 
-    // Build DB pool early so it can be shared with auth services.
     let db = sqlx::PgPool::connect(&config.database_url)
         .await
         .expect("failed to connect to postgres");
 
-    // Select auth provider based on whether JWT_SECRET is configured.
     let auth: Arc<dyn nasiko_auth::AuthProvider> = if std::env::var("JWT_SECRET").is_ok() {
         Arc::new(nasiko_auth::SimpleJwtAuth::from_env())
     } else {
@@ -56,29 +42,9 @@ async fn main() {
 
     let state =
         nasiko_server::state::AppState::from_config_with_db(config, providers, runtime, db).await;
-    let app = nasiko_server::build_app(state, static_handler);
+    let app = nasiko_server::build_app(state, || async { StatusCode::NOT_FOUND });
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("nasiko-server (OSS) listening on {bind}");
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn static_handler(req: Request<Body>) -> Response {
-    let path = req.uri().path().trim_start_matches('/');
-    let path = if path.is_empty() { "index.html" } else { path };
-
-    if let Some(file) = OssAssets::get(path).or_else(|| CommonAssets::get(path)) {
-        let mime = mime_guess::from_path(path).first_or_octet_stream();
-        return ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response();
-    }
-
-    if let Some(file) = OssAssets::get("404.html") {
-        return (
-            StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/html")],
-            file.data,
-        )
-            .into_response();
-    }
-    StatusCode::NOT_FOUND.into_response()
 }
