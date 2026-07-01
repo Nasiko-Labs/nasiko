@@ -29,6 +29,11 @@ pub struct Span {
     pub duration_ms: Option<u64>,
     /// `resource.service.name` from the OTLP resource attributes.
     pub service_name: String,
+    /// OTLP span kind integer (0=unspecified 1=internal 2=server 3=client 4=producer 5=consumer).
+    pub kind: u8,
+    /// OTLP status code integer (0=unset 1=ok 2=error).
+    pub status_code: u8,
+    pub status_message: String,
     /// All span-level attributes (gen_ai.*, http.*, etc.).
     pub attributes: HashMap<String, serde_json::Value>,
 }

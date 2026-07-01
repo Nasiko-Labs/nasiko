@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use crate::build::{download_repo_tarball, extract_tar_gzip, is_valid_repo_name};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -22,16 +21,16 @@ pub fn router() -> Router<AppState> {
 // ─── Response ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-pub(crate) struct ImportResult {
-    pub(crate) agent_id: Uuid,
-    pub(crate) build_id: Option<Uuid>,
-    pub(crate) container_name: Option<String>,
-    pub(crate) status: String,
+struct ImportResult {
+    agent_id: Uuid,
+    build_id: Option<Uuid>,
+    container_name: Option<String>,
+    status: String,
 }
 
 // ─── Shared Pipeline ────────────────────────────────────────────────────────
 
-pub(crate) struct AgentMetadata {
+struct AgentMetadata {
     name: String,
     display_name: Option<String>,
     description: Option<String>,
@@ -40,7 +39,7 @@ pub(crate) struct AgentMetadata {
     capabilities: serde_json::Value,
 }
 
-pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
+fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
     let card_path = dir.join("AgentCard.json");
     let content = std::fs::read_to_string(&card_path)
         .map_err(|e| format!("cannot read AgentCard.json: {e}"))?;
@@ -61,7 +60,7 @@ pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, St
     })
 }
 
-pub(crate) async fn build_and_deploy(
+async fn build_and_deploy(
     source_dir: &std::path::Path,
     meta: &AgentMetadata,
     owner_id: Uuid,
@@ -74,38 +73,42 @@ pub(crate) async fn build_and_deploy(
         return Err((StatusCode::BAD_REQUEST, "no Dockerfile found in source".into()));
     }
 
-    // Register agent in catalog and sync skills projection atomically.
-    let mut tx = state.db.begin().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("begin tx: {e}")))?;
+    // Register agent in catalog first (build record needs the FK)
+    let existing_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM agents WHERE name = $1")
+        .bind(&meta.name)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("lookup agent: {e}")))?;
 
-    let agent_id: Uuid = sqlx::query_scalar(
-        r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (name) DO UPDATE
-             SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
-             WHERE agents.owner_id = EXCLUDED.owner_id
-           RETURNING id"#,
-    )
-    .bind(&meta.name)
-    .bind(&meta.display_name)
-    .bind(&meta.description)
-    .bind(owner_id)
-    .bind(&meta.version)
-    .bind(&image_tag)
-    .bind(&meta.skills)
-    .bind(&meta.capabilities)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?
-    .ok_or_else(|| (StatusCode::CONFLICT, "agent name already in use by another owner".into()))?;
+    let agent_id: Uuid = if let Some(id) = existing_id {
+        sqlx::query("UPDATE agents SET version = $1, image = $2, updated_at = now() WHERE id = $3")
+            .bind(&meta.version)
+            .bind(&image_tag)
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("update agent: {e}")))?;
+        id
+    } else {
+        sqlx::query_scalar(
+            r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING id"#,
+        )
+        .bind(&meta.name)
+        .bind(&meta.display_name)
+        .bind(&meta.description)
+        .bind(owner_id)
+        .bind(&meta.version)
+        .bind(&image_tag)
+        .bind(&meta.skills)
+        .bind(&meta.capabilities)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?
+    };
 
-    let skills: Vec<crate::catalog::models::Skill> =
-        serde_json::from_value(meta.skills.clone())
-            .map_err(|_| (StatusCode::BAD_REQUEST, "skills must be an array of skill objects".into()))?;
-    crate::catalog::skills::sync_agent_skills(&mut tx, agent_id, &skills).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")))?;
-    // FIX: create the build record inside the same transaction so the agent row
-    // and its first build record are always committed together.
+    // Create build record
     let build_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO agent_builds (agent_id, version_tag, image_reference, status)
            VALUES ($1, $2, $3, 'building')
@@ -114,12 +117,9 @@ pub(crate) async fn build_and_deploy(
     .bind(agent_id)
     .bind(&meta.version)
     .bind(&image_tag)
-    .fetch_one(&mut *tx)
+    .fetch_one(&state.db)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create build record: {e}")))?;
-
-    tx.commit().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit: {e}")))?;
 
     // Build image
     // TODO: migrate to new runtime API — build() now takes tar bytes, not a directory path.
@@ -175,23 +175,16 @@ async fn import_upload(
     claims: Claims,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
+    let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
 
-    const MAX_UPLOAD_BYTES: usize = 200 * 1024 * 1024;
     let mut package_data: Option<Vec<u8>> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("package") {
-            let data = match field.bytes().await {
-                Ok(d) if !d.is_empty() => d,
-                _ => continue,
-            };
-            if data.len() > MAX_UPLOAD_BYTES {
-                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 200 MB limit").into_response();
+            if let Ok(data) = field.bytes().await {
+                if !data.is_empty() {
+                    package_data = Some(data.to_vec());
+                }
             }
-            package_data = Some(data.to_vec());
         }
     }
 
@@ -235,45 +228,46 @@ async fn import_github(
     claims: Claims,
     Json(req): Json<GithubImportRequest>,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
+    let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
 
-    // Validate repository name: must be "owner/repo" with safe characters only.
-    // Prevents path traversal and ensures git-clone-equivalent safety.
-    if !is_valid_repo_name(&req.repository) {
-        return (StatusCode::BAD_REQUEST, "invalid repository format — expected 'owner/repo'").into_response();
-    }
+    // Get user's GitHub token
+    let gh_token: Option<(serde_json::Value,)> = sqlx::query_as(
+        "SELECT provider_metadata FROM user_identities WHERE user_id = $1::uuid AND provider = 'github'",
+    )
+    .bind(&claims.sub)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
 
-    // Load and decrypt the user's stored GitHub access token.
-    let access_token = match crate::github::load_github_token(&state.db, owner_id).await {
-        Some(t) => t,
+    let access_token = match gh_token {
+        Some((meta,)) => match meta.get("access_token").and_then(|t| t.as_str()) {
+            Some(t) => t.to_string(),
+            None => return (StatusCode::FORBIDDEN, "GitHub not connected").into_response(),
+        },
         None => return (StatusCode::FORBIDDEN, "GitHub not connected — visit /add-agent.html to connect").into_response(),
     };
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-github-{}", Uuid::new_v4()));
+    let clone_url = format!("https://{}@github.com/{}.git", access_token, req.repository);
 
-    let tarball_bytes = match download_repo_tarball(&state.http_client, &access_token, &req.repository).await {
-        Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
-    };
+    let clone_result = tokio::process::Command::new("git")
+        .args(["clone", "--depth=1", &clone_url, tmp_dir.to_str().unwrap_or(".")])
+        .output()
+        .await;
 
-    if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
-        tracing::warn!(%e, "failed to create extraction directory");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    match clone_result {
+        Ok(output) if !output.status.success() => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return (StatusCode::BAD_REQUEST, format!("git clone failed: {stderr}")).into_response();
+        }
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("git clone error: {e}")).into_response();
+        }
+        _ => {}
     }
-    if let Err(e) = extract_tar_gzip(&tarball_bytes, &tmp_dir) {
-        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-        return (StatusCode::BAD_REQUEST, format!("failed to extract repository archive: {e}")).into_response();
-    }
-    let actual_root = match tokio::fs::read_dir(&tmp_dir).await {
-        Ok(mut rd) => rd.next_entry().await.ok().flatten().map(|e| e.path()),
-        Err(_) => None,
-    }
-    .unwrap_or_else(|| tmp_dir.clone());
 
-    let meta = match read_agent_card(&actual_root) {
+    let meta = match read_agent_card(&tmp_dir) {
         Ok(m) => m,
         Err(e) => {
             let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -281,7 +275,7 @@ async fn import_github(
         }
     };
 
-    let result = build_and_deploy(&actual_root, &meta, owner_id, &state).await;
+    let result = build_and_deploy(&tmp_dir, &meta, owner_id, &state).await;
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     match result {
@@ -304,10 +298,7 @@ async fn import_registry(
     claims: Claims,
     Json(req): Json<RegistryImportRequest>,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
+    let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
 
     // Parse OCI reference: "registry.host/owner/name:tag"
     let (repo_with_host, tag) = match req.reference.rsplit_once(':') {
@@ -373,25 +364,9 @@ async fn import_registry(
             Err(e) => return (StatusCode::BAD_GATEWAY, format!("blob fetch error: {e}")).into_response(),
         };
 
-        let blob_data = {
-            use futures::StreamExt;
-            use bytes::BufMut;
-            const MAX_BLOB_BYTES: usize = 100 * 1024 * 1024;
-            let mut buf = bytes::BytesMut::with_capacity(64 * 1024);
-            let mut stream = blob_res.bytes_stream();
-            loop {
-                match stream.next().await {
-                    None => break,
-                    Some(Err(e)) => return (StatusCode::BAD_GATEWAY, format!("blob read error: {e}")).into_response(),
-                    Some(Ok(chunk)) => {
-                        if buf.len() + chunk.len() > MAX_BLOB_BYTES {
-                            return (StatusCode::BAD_REQUEST, "registry blob exceeds 100 MB limit").into_response();
-                        }
-                        buf.put(chunk);
-                    }
-                }
-            }
-            buf.freeze()
+        let blob_data = match blob_res.bytes().await {
+            Ok(b) => b,
+            Err(e) => return (StatusCode::BAD_GATEWAY, format!("blob read error: {e}")).into_response(),
         };
 
         // Decompress gzip then extract tar
@@ -440,24 +415,21 @@ async fn import_registry(
         // Derive agent name from repo
         let agent_name = repo.rsplit('/').next().unwrap_or("agent").to_string();
 
-        // Register agent in catalog — only update if this caller owns the existing entry.
+        // Register agent in catalog
         let agent_id: Uuid = match sqlx::query_scalar(
             r#"INSERT INTO agents (name, display_name, owner_id, version, image)
                VALUES ($1, $1, $2, $3, $4)
-               ON CONFLICT (name) DO UPDATE
-                 SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
-                 WHERE agents.owner_id = EXCLUDED.owner_id
+               ON CONFLICT (name) DO UPDATE SET version = $3, image = $4, updated_at = now()
                RETURNING id"#,
         )
         .bind(&agent_name)
         .bind(owner_id)
         .bind(&tag)
         .bind(&image_with_tag)
-        .fetch_optional(&state.db)
+        .fetch_one(&state.db)
         .await
         {
-            Ok(Some(id)) => id,
-            Ok(None) => return (StatusCode::CONFLICT, "agent name already in use by another owner").into_response(),
+            Ok(id) => id,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")).into_response(),
         };
 
@@ -490,3 +462,13 @@ async fn import_registry(
     }
 }
 
+fn extract_tar_gzip(data: &[u8], dest: &std::path::Path) -> Result<(), String> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    let decoder = GzDecoder::new(std::io::Cursor::new(data));
+    let mut archive = Archive::new(decoder);
+    archive.unpack(dest).map_err(|e| e.to_string())?;
+    Ok(())
+}

@@ -16,10 +16,6 @@ pub struct Config {
     pub s3_region: String,
     pub secrets_encryption_key: String,
     pub oci_storage_bucket: String,
-    /// Registry prefix prepended to agent image tags at build time.
-    /// e.g. `"host.docker.internal:5001"` for local K8s dev.
-    /// Empty string → no prefix (Docker local mode).
-    pub agent_image_registry: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -42,6 +38,13 @@ pub struct Config {
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub agent_registry_cache_ttl_secs: u64,
+    pub router_shortlist_threshold: usize,
+    pub router_shortlist_size: usize,
+    pub max_router_history_messages: usize,
+    pub ollama_url: String,
+    pub ollama_embedding_model: String,
+    pub router_agent_timeout_secs: u64,
 }
 
 impl Config {
@@ -61,7 +64,6 @@ impl Config {
             s3_region: env_or("S3_REGION", "us-east-1"),
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
-            agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -97,6 +99,13 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            agent_registry_cache_ttl_secs: env_parse("AGENT_REGISTRY_CACHE_TTL_SECS", 3600),
+            router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
+            router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
+            max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
+            ollama_url: env_or("OLLAMA_URL", "http://ollama:11434"),
+            ollama_embedding_model: env_or("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
+            router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
         })
     }
 }

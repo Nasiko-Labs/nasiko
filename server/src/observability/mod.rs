@@ -1,4 +1,5 @@
-pub mod logs;
+mod handler;
 mod routes;
+pub mod service;
 
-pub use routes::{router, observe_router};
+pub use routes::{protected_router, router};

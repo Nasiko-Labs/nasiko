@@ -82,7 +82,6 @@ pub struct CompletionUsage {
     pub completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
-/// OpenAI prompt_tokens_details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptTokensDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,7 +90,6 @@ pub struct PromptTokensDetails {
     pub audio_tokens: Option<i32>,
 }
 
-/// OpenAI completion_tokens_details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionTokensDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,7 +100,7 @@ pub struct CompletionTokensDetails {
     pub rejected_prediction_tokens: Option<i32>,
 }
 
-/// Agent selection result
+/// Agent selection result from LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSelection {
     pub agent_id: Uuid,
@@ -110,30 +108,21 @@ pub struct AgentSelection {
     pub reasoning: String,
 }
 
-/// Skill with name + description, used in routing prompts
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillSummary {
-    pub name: String,
-    pub description: String,
-}
-
-/// Simplified agent card for routing prompt
+/// Simplified agent card used in LLM routing prompts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCardSummary {
     pub id: Uuid,
     pub name: String,
     pub description: String,
-    pub skills: Vec<SkillSummary>,
+    pub skills: Vec<String>,
     pub tags: Vec<String>,
 }
-
-// ─── Streaming chunk models (OpenAI SSE format) ────────────────────────────
 
 /// A single SSE chunk in the streaming response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionChunk {
     pub id: String,
-    pub object: String, // "chat.completion.chunk"
+    pub object: String,
     pub created: i64,
     pub model: String,
     pub choices: Vec<ChunkChoice>,
@@ -148,7 +137,6 @@ pub struct ChunkChoice {
     pub finish_reason: Option<String>,
 }
 
-/// The delta object within a streaming chunk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,6 +145,6 @@ pub struct ChunkDelta {
     pub content: Option<String>,
 }
 
-/// Type alias for a boxed stream of chunk results from a provider
+/// Type alias for a boxed stream of chunks from a provider
 pub type ChunkStream =
-    Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, super::providers::ProviderError>> + Send>>;
+    Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, crate::providers::ProviderError>> + Send>>;

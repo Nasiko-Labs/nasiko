@@ -1,0 +1,22 @@
+pub mod agent_client;
+pub mod agent_registry;
+pub mod engine;
+pub mod error;
+pub mod models;
+pub mod providers;
+pub mod reranker;
+pub mod selector;
+pub mod session_history;
+pub mod types;
+pub mod vector_store;
+
+pub use agent_registry::AgentRegistry;
+pub use engine::{OssRoutingEngine, RouterConfig, RoutingEngine};
+pub use error::RouterError;
+pub use models::AgentCardSummary;
+pub use selector::ConversationMessage;
+pub use reranker::Reranker;
+pub use selector::AgentSelector;
+pub use session_history::SessionHistory;
+pub use types::{AgentCard, FilePart, RouteRequest, RouteResult, RouterLogEntry};
+pub use vector_store::VectorStore;

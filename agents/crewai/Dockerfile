@@ -10,7 +10,12 @@ RUN pip install --no-cache-dir \
     google-genai \
     pillow \
     pydantic \
-    python-dotenv
+    python-dotenv \
+    "opentelemetry-sdk>=1.25.0" \
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25.0" \
+    "opentelemetry-instrumentation-httpx>=0.46b0" \
+    "opentelemetry-instrumentation-starlette>=0.46b0" \
+    "opentelemetry-instrumentation-openai>=0.35.0b0"
 
 ENV PYTHONUNBUFFERED=1
 

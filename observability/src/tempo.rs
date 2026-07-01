@@ -53,11 +53,19 @@ struct OtlpScopeSpans {
 }
 
 #[derive(Debug, Deserialize)]
+struct OtlpStatus {
+    code: Option<u8>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpSpan {
     span_id: String,
     parent_span_id: Option<String>,
     name: String,
+    kind: Option<String>,
+    status: Option<OtlpStatus>,
     start_time_unix_nano: String,
     end_time_unix_nano: Option<String>,
     attributes: Option<Vec<OtlpAttribute>>,
@@ -207,24 +215,41 @@ fn otlp_attr_to_json(v: &OtlpAttributeValue) -> Value {
     if let Some(s) = &v.string_value {
         return Value::String(s.clone());
     }
+
     if let Some(i) = &v.int_value {
-        // May be a JSON string like "123" or a raw number — normalise to u64.
         if let Some(n) = i.as_u64() {
             return Value::Number(n.into());
         }
-        if let Some(s) = i.as_str()
-            && let Ok(n) = s.parse::<u64>() {
+
+        if let Some(s) = i.as_str() {
+            if let Ok(n) = s.parse::<u64>() {
                 return Value::Number(n.into());
             }
+        }
+
         return i.clone();
     }
+
     if let Some(b) = v.bool_value {
         return Value::Bool(b);
     }
+
     if let Some(d) = v.double_value {
         return serde_json::json!(d);
     }
+
     Value::Null
+}
+
+fn parse_span_kind(kind: Option<&str>) -> u8 {
+    match kind {
+        Some("SPAN_KIND_INTERNAL") => 1,
+        Some("SPAN_KIND_SERVER") => 2,
+        Some("SPAN_KIND_CLIENT") => 3,
+        Some("SPAN_KIND_PRODUCER") => 4,
+        Some("SPAN_KIND_CONSUMER") => 5,
+        _ => 0,
+    }
 }
 
 fn extract_service_name(attrs: &[OtlpAttribute]) -> String {
@@ -269,6 +294,11 @@ fn parse_otlp_trace(
                     span_id: span.span_id.clone(),
                     parent_span_id: span.parent_span_id.clone(),
                     name: span.name.clone(),
+                    kind: parse_span_kind(span.kind.as_deref()),
+                    status_code: span.status.as_ref().and_then(|s| s.code).unwrap_or(0),
+                    status_message: span.status.as_ref()
+                        .and_then(|s| s.message.clone())
+                        .unwrap_or_default(),
                     started_at,
                     ended_at,
                     duration_ms,

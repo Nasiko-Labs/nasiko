@@ -77,6 +77,9 @@ def _auto_instrument():
     _try_instrument("opentelemetry.instrumentation.requests", "RequestsInstrumentor")
     _try_instrument("opentelemetry.instrumentation.logging", "LoggingInstrumentor")
     _try_instrument("opentelemetry.instrumentation.starlette", "StarletteInstrumentor")
+    # LLM clients — emit gen_ai.usage.input_tokens / output_tokens / request.model
+    _try_instrument("opentelemetry.instrumentation.openai", "OpenAIInstrumentor")
+    _try_instrument("opentelemetry.instrumentation.anthropic", "AnthropicInstrumentor")
 
 
 def _try_instrument(module_path: str, class_name: str):

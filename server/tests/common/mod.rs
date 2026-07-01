@@ -13,11 +13,10 @@ const S3_ENDPOINT: &str = "http://localhost:9000";
 
 /// A running test server bound to a random port, backed by an isolated DB.
 /// Call `cleanup().await` at the end of each test to drop the test database.
+#[allow(dead_code)]
 pub struct TestServer {
     pub base_url: String,
     pub client: reqwest::Client,
-    /// Direct pool access for tests that need to seed or verify DB state.
-    #[allow(dead_code)]
     pub db: PgPool,
     db_name: String,
 }
@@ -38,6 +37,7 @@ impl TestServer {
 
         let db_url = format!("postgres://nasiko:nasiko@localhost:5432/{db_name}");
         let db = PgPool::connect(&db_url).await.expect("connect to test db");
+        let db_for_server = db.clone();
 
         let config = test_config(db_url);
 
@@ -57,7 +57,7 @@ impl TestServer {
                 .expect("docker runtime"),
         );
 
-        let state = AppState::from_config_with_db(config, providers, runtime, db.clone()).await;
+        let state = AppState::from_config_with_db(config, providers, runtime, db_for_server).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -76,7 +76,7 @@ impl TestServer {
         TestServer {
             base_url: format!("http://127.0.0.1:{port}"),
             client: reqwest::Client::new(),
-            db: db.clone(),
+            db,
             db_name,
         }
     }
@@ -95,17 +95,9 @@ impl TestServer {
 }
 
 fn test_config(db_url: String) -> Config {
-    // S3Storage::from_env() and SimpleJwtAuth::from_env() read env vars at call time.
-    // SAFETY: tests run serially via #[serial], so no concurrent env mutation.
-    unsafe {
-        std::env::set_var("JWT_SECRET", "test-secret-for-nasiko-tests");
-        std::env::set_var("S3_ENDPOINT", S3_ENDPOINT);
-        std::env::set_var("S3_ACCESS_KEY", "nasiko");
-        std::env::set_var("S3_SECRET_KEY", "nasiko123");
-        std::env::set_var("S3_REGION", "us-east-1");
-        // 32 bytes of 0x41 ('A'), base64-encoded — required by SecretsCrypto::load_master_key()
-        std::env::set_var("SECRETS_ENCRYPTION_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=");
-    }
+    // JWT_SECRET must be set in env for SimpleJwtAuth::from_env()
+    // SAFETY: tests run serially via #[serial], so no concurrent env mutation
+    unsafe { std::env::set_var("JWT_SECRET", "test-secret-for-nasiko-tests") };
 
     Config {
         bind: "127.0.0.1:0".into(),
@@ -122,7 +114,6 @@ fn test_config(db_url: String) -> Config {
         s3_region: "us-east-1".into(),
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-test-artifacts".into(),
-        agent_image_registry: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,
@@ -145,26 +136,16 @@ fn test_config(db_url: String) -> Config {
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        agent_registry_cache_ttl_secs: 3600,
+        router_shortlist_threshold: 15,
+        router_shortlist_size: 10,
+        max_router_history_messages: 20,
+        ollama_url: "http://localhost:11434".into(),
+        ollama_embedding_model: "nomic-embed-text".into(),
+        router_agent_timeout_secs: 60,
     }
 }
 
 async fn fallback() -> axum::http::StatusCode {
     axum::http::StatusCode::NOT_FOUND
-}
-
-/// Build an in-memory zip archive from `(path, bytes)` pairs.
-#[allow(dead_code)]
-pub fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
-    use std::io::Write;
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    {
-        let mut zw = zip::ZipWriter::new(&mut cursor);
-        let opts = zip::write::SimpleFileOptions::default();
-        for (name, data) in entries {
-            zw.start_file(*name, opts).unwrap();
-            zw.write_all(data).unwrap();
-        }
-        zw.finish().unwrap();
-    }
-    cursor.into_inner()
 }

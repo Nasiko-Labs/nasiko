@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use crate::router::providers::LLMProvider;
+use nasiko_router::providers::LLMProvider;
 use crate::state::AppState;
 
 use super::generator::{CapabilityGenerator, GeneratedCard, GeneratorError};
@@ -136,10 +136,6 @@ async fn generate_and_apply(
     .execute(&state.db)
     .await
     .is_ok();
-
-    if applied {
-        crate::catalog::skills::sync_agent_skills_json(&state.db, agent_id, &skills_json).await;
-    }
 
     Json(ApplyResponse {
         card,

@@ -80,6 +80,8 @@ def _auto_instrument():
     _try_instrument("opentelemetry.instrumentation.requests", "RequestsInstrumentor")
     _try_instrument("opentelemetry.instrumentation.logging", "LoggingInstrumentor")
     _try_instrument("opentelemetry.instrumentation.starlette", "StarletteInstrumentor")
+    _try_instrument("opentelemetry.instrumentation.openai", "OpenAIInstrumentor")
+    _try_instrument("opentelemetry.instrumentation.anthropic", "AnthropicInstrumentor")
 
 
 def _try_instrument(module_path: str, class_name: str):

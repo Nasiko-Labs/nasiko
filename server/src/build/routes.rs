@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
 use uuid::Uuid;
 
-use super::BuildStatus;
-use crate::agents::upload::BuildJobPayload;
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -39,7 +37,7 @@ struct BuildRecord {
     commit_hash: Option<String>,
     version_tag: String,
     image_reference: String,
-    status: BuildStatus,
+    status: String,
     logs_url: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -143,32 +141,20 @@ async fn create_build(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    let payload = BuildJobPayload::StandaloneBuild {
-        build_id: build.id,
-        agent_id,
-        agent_name,
-        github_url,
-        source_key,
-        version_tag,
-    };
-    if let Err(e) = sqlx::query(
-        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
-    )
-    .bind(agent_id)
-    .bind(owner_id)
-    .bind(serde_json::to_value(&payload).expect("serialize build payload"))
-    .execute(&state.db)
-    .await
-    {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue build: {e}")).into_response();
-    }
-    let _ = state.build_tx.send(()).await;
+    // Spawn build task
+    let build_id = build.id;
+    let orch = state.runtime.clone();
+    let db = state.db.clone();
+    let oci_storage = state.oci_storage.clone();
+    let http_client = state.http_client.clone();
+    tokio::spawn(async move {
+        execute_build(orch, db, build_id, agent_name, github_url, source_key, version_tag, oci_storage, http_client).await;
+    });
 
     (StatusCode::CREATED, Json(build)).into_response()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn execute_build(
+async fn execute_build(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
     db: sqlx::PgPool,
     build_id: Uuid,
@@ -179,7 +165,7 @@ pub async fn execute_build(
     oci_storage: nasiko_oci::storage::S3Storage,
     http_client: reqwest::Client,
 ) {
-    update_status(&db, build_id, BuildStatus::Building).await;
+    update_status(&db, build_id, "building").await;
 
     let image_tag = format!("{agent_name}:{version_tag}");
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-build-{build_id}"));
@@ -236,7 +222,7 @@ pub async fn execute_build(
 
     match result {
         Ok(()) => {
-            update_status(&db, build_id, BuildStatus::Success).await;
+            update_status(&db, build_id, "success").await;
 
             if let Err(e) = sqlx::query(
                 r#"INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active)
@@ -258,68 +244,19 @@ pub async fn execute_build(
         }
         Err(e) => {
             tracing::error!(build_id = %build_id, %e, "build failed");
-            update_status(&db, build_id, BuildStatus::Failed).await;
+            update_status(&db, build_id, "failed").await;
         }
     }
 }
 
-const MAX_ZIP_FILES: usize = 1_000;
-const MAX_ZIP_UNCOMPRESSED: u64 = 200 * 1024 * 1024; // 200 MiB
-
-/// Extract a zip archive from a byte slice into `dest`.
-/// Kept for the build/S3 path which already has data in memory.
 pub fn extract_zip_to_dir(data: &[u8], dest: &std::path::Path) -> std::result::Result<(), String> {
-    extract_zip_reader(std::io::Cursor::new(data), dest)
-}
-
-/// Extract a zip archive from a file on disk into `dest`.
-/// Used by the upload path after streaming the zip to disk.
-pub fn extract_zip_from_file(zip_path: &std::path::Path, dest: &std::path::Path) -> std::result::Result<(), String> {
-    let f = std::fs::File::open(zip_path).map_err(|e| format!("open zip: {e}"))?;
-    extract_zip_reader(std::io::BufReader::new(f), dest)
-}
-
-fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
-    reader: R,
-    dest: &std::path::Path,
-) -> std::result::Result<(), String> {
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-
-    if archive.len() > MAX_ZIP_FILES {
-        return Err(format!("zip contains {} files, limit is {MAX_ZIP_FILES}", archive.len()));
-    }
-
-    let mut uncompressed_total: u64 = 0;
+    let cursor = std::io::Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-
-        // Path traversal guard: `enclosed_name()` returns None for any entry whose stored
-        // path contains `..` or an absolute root — zip 2.x `mangled_name()` strips those
-        // components silently, so the Component::ParentDir check would never fire on it.
-        let safe_path = match file.enclosed_name() {
-            Some(p) => p,
-            None => {
-                return Err(format!("zip traversal attempt: {:?}", file.name()));
-            }
-        };
-
-        // Zip bomb guard (check declared uncompressed size before extraction)
-        uncompressed_total = uncompressed_total.saturating_add(file.size());
-        if uncompressed_total > MAX_ZIP_UNCOMPRESSED {
-            return Err(format!(
-                "zip uncompressed size exceeds {MAX_ZIP_UNCOMPRESSED} bytes — possible zip bomb"
-            ));
-        }
-
-        let path = dest.join(&safe_path);
-
-        // Belt-and-suspenders: verify the resolved path stays inside dest
-        if !path.starts_with(dest) {
-            return Err(format!("zip traversal attempt (join escaped dest): {}", safe_path.display()));
-        }
-
+        let path = dest.join(file.mangled_name());
         if file.is_dir() {
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
         } else {
@@ -333,14 +270,14 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
     Ok(())
 }
 
-async fn update_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus) {
+async fn update_status(db: &sqlx::PgPool, build_id: Uuid, status: &str) {
     if let Err(e) = sqlx::query("UPDATE agent_builds SET status = $2, updated_at = now() WHERE id = $1")
         .bind(build_id)
         .bind(status)
         .execute(db)
         .await
     {
-        tracing::error!(build_id = %build_id, ?status, %e, "failed to update build status");
+        tracing::error!(build_id = %build_id, %status, %e, "failed to update build status");
     }
 }
 
@@ -370,7 +307,7 @@ async fn build_progress_sse(
     let db = state.db.clone();
 
     let stream = async_stream::stream! {
-        let mut last_status: Option<BuildStatus> = None;
+        let mut last_status = String::new();
 
         loop {
             let record: Option<BuildRecord> = sqlx::query_as(
@@ -389,8 +326,8 @@ async fn build_progress_sse(
                 break;
             };
 
-            if Some(record.status) != last_status {
-                last_status = Some(record.status);
+            if record.status != last_status {
+                last_status = record.status.clone();
                 yield Ok(Event::default().data(
                     serde_json::json!({
                         "status": record.status,
@@ -399,7 +336,7 @@ async fn build_progress_sse(
                 ));
             }
 
-            if matches!(record.status, BuildStatus::Success | BuildStatus::Failed) {
+            if record.status == "success" || record.status == "failed" {
                 break;
             }
 
@@ -455,7 +392,7 @@ async fn list_all_builds(
         sqlx::query_as::<_, BuildRecord>(
             r#"SELECT b.* FROM agent_builds b
                LEFT JOIN agents a ON a.id = b.agent_id
-               WHERE ($1::text IS NULL OR b.status::text = $1)
+               WHERE ($1::text IS NULL OR b.status = $1)
                  AND ($2::text IS NULL OR a.name ILIKE '%' || $2 || '%' OR b.version_tag ILIKE '%' || $2 || '%')
                ORDER BY b.created_at DESC
                LIMIT $3 OFFSET $4"#,
@@ -471,7 +408,7 @@ async fn list_all_builds(
             r#"SELECT b.* FROM agent_builds b
                JOIN agents a ON a.id = b.agent_id
                WHERE a.owner_id = $5
-                 AND ($1::text IS NULL OR b.status::text = $1)
+                 AND ($1::text IS NULL OR b.status = $1)
                  AND ($2::text IS NULL OR a.name ILIKE '%' || $2 || '%' OR b.version_tag ILIKE '%' || $2 || '%')
                ORDER BY b.created_at DESC
                LIMIT $3 OFFSET $4"#,
@@ -495,30 +432,8 @@ async fn list_all_builds(
 
 async fn list_builds(
     State(state): State<AppState>,
-    claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
-
-    // Superusers see all; others must own the agent.
-    if !claims.is_superuser {
-        let owned: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND owner_id = $2)",
-        )
-        .bind(agent_id)
-        .bind(user_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(false);
-
-        if !owned {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-    }
-
     match sqlx::query_as::<_, BuildRecord>(
         "SELECT * FROM agent_builds WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 20",
     )
@@ -541,7 +456,7 @@ pub async fn auto_generate_capabilities_pub(
     agent_name: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
-    use crate::router::providers::LLMProvider;
+    use nasiko_router::providers::LLMProvider;
 
     let data = match oci_storage.get_blob(source_key).await {
         Ok(d) => d,
@@ -568,7 +483,7 @@ pub async fn auto_generate_capabilities_pub(
             let input_modes = serde_json::to_value(&card.default_input_modes).unwrap_or_default();
             let output_modes = serde_json::to_value(&card.default_output_modes).unwrap_or_default();
 
-            let updated_ids: Vec<uuid::Uuid> = match sqlx::query_scalar::<_, uuid::Uuid>(
+            if let Err(e) = sqlx::query(
                 r#"UPDATE agents
                    SET description = COALESCE(NULLIF(description, ''), $2),
                        skills = $3,
@@ -577,8 +492,7 @@ pub async fn auto_generate_capabilities_pub(
                        default_input_modes = $6,
                        default_output_modes = $7,
                        updated_at = now()
-                   WHERE name = $1
-                   RETURNING id"#,
+                   WHERE name = $1"#,
             )
             .bind(agent_name)
             .bind(&card.description)
@@ -587,26 +501,11 @@ pub async fn auto_generate_capabilities_pub(
             .bind(&caps_json)
             .bind(&input_modes)
             .bind(&output_modes)
-            .fetch_all(db)
+            .execute(db)
             .await
             {
-                Ok(ids) => ids,
-                Err(e) => {
-                    tracing::error!("capability gen: failed to update agent '{agent_name}': {e}");
-                    return;
-                }
-            };
-
-            // Keep the normalized agent_skills projection in sync (best-effort).
-            // agents.name is non-unique (migration 006); warn if more than one matched.
-            if updated_ids.len() > 1 {
-                tracing::warn!(
-                    "capability gen: name '{agent_name}' matched {} agents — capabilities overwritten for all",
-                    updated_ids.len()
-                );
-            }
-            for id in updated_ids {
-                crate::catalog::skills::sync_agent_skills_json(db, id, &skills_json).await;
+                tracing::error!("capability gen: failed to update agent '{agent_name}': {e}");
+                return;
             }
 
             tracing::info!("capability gen: updated card for agent '{agent_name}'");
