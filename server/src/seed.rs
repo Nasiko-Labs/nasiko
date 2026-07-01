@@ -5,16 +5,22 @@ use uuid::Uuid;
 
 use crate::catalog::models::Agent;
 use crate::state::AppState;
-use nasiko_runtime::{ContainerId, DeploymentSpec};
+use nasiko_runtime::{ContainerId, DeploymentSpec, RuntimeState};
 
 const OSS_USER_ID: Uuid = Uuid::nil();
+const AGENT_PORT: u16 = 8000;
 
-/// Seed reference agents from pre-built public Docker images.
+/// Ensure seed agents are deployed and running.
 ///
 /// Reads `SEED_AGENTS` env var (space-separated image refs, e.g.
-/// "nasiko/echo-agent nasiko/qa-bot"). For each image that doesn't
-/// already have a registered agent, creates a DB entry and deploys
-/// the container via the orchestrator.
+/// "nasiko/echo-agent nasiko/nutrition:v2"). For each image:
+///
+/// 1. Upsert the DB record (insert if new, update image if changed)
+/// 2. Check runtime status
+/// 3. Deploy if not running or image changed
+/// 4. Fetch agent card once healthy
+///
+/// Designed to run as a background task — does not block server startup.
 pub async fn seed_agents_if_configured(state: &AppState) {
     let images = match std::env::var("SEED_AGENTS") {
         Ok(val) if !val.trim().is_empty() => val,
@@ -25,34 +31,72 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     let openai_base = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
     let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_default();
 
-    for (idx, image) in images.split_whitespace().enumerate() {
+    for image in images.split_whitespace() {
         let agent_name = extract_name(image);
-        let agent_port = 5000u16 + idx as u16;
 
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM agents WHERE name = $1)",
+        let existing = sqlx::query_as::<_, Agent>(
+            "SELECT * FROM agents WHERE name = $1",
         )
         .bind(&agent_name)
-        .fetch_one(&state.db)
+        .fetch_optional(&state.db)
         .await
-        .unwrap_or(true);
+        .unwrap_or(None);
 
-        if exists {
-            info!(agent = %agent_name, "seed agent already registered, skipping");
-            continue;
-        }
-
-        info!(agent = %agent_name, image = %image, "seeding reference agent");
-
-        let agent = match register_agent(&state.db, &agent_name, image).await {
-            Ok(a) => a,
-            Err(e) => {
-                warn!(agent = %agent_name, error = %e, "failed to register seed agent");
-                continue;
+        let needs_deploy = match &existing {
+            None => true,
+            Some(agent) => {
+                let image_changed = agent.image.as_deref() != Some(image);
+                if image_changed {
+                    true
+                } else {
+                    let container_id = ContainerId::new(agent_name.clone());
+                    match state.runtime.status(&container_id).await {
+                        Ok(status) => status.state != RuntimeState::Running,
+                        Err(_) => true,
+                    }
+                }
             }
         };
 
+        if !needs_deploy {
+            info!(agent = %agent_name, "seed agent already running, skipping");
+            continue;
+        }
+
+        info!(agent = %agent_name, image = %image, "seeding agent");
+
+        let agent = match &existing {
+            Some(a) => {
+                // Update image if it changed
+                if a.image.as_deref() != Some(image) {
+                    let _ = sqlx::query(
+                        "UPDATE agents SET image = $2, status = 'deploying', updated_at = now() WHERE id = $1",
+                    )
+                    .bind(a.id)
+                    .bind(image)
+                    .execute(&state.db)
+                    .await;
+                } else {
+                    let _ = sqlx::query(
+                        "UPDATE agents SET status = 'deploying', updated_at = now() WHERE id = $1",
+                    )
+                    .bind(a.id)
+                    .execute(&state.db)
+                    .await;
+                }
+                a.clone()
+            }
+            None => match register_agent(&state.db, &agent_name, image).await {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(agent = %agent_name, error = %e, "failed to register seed agent");
+                    continue;
+                }
+            },
+        };
+
         let mut env = HashMap::new();
+        env.insert("PORT".into(), AGENT_PORT.to_string());
         if !openai_key.is_empty() {
             env.insert("OPENAI_API_KEY".into(), openai_key.clone());
         }
@@ -73,7 +117,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             min_replicas: 1,
             max_replicas: 1,
             env_vars: env,
-            ports: vec![agent_port],
+            ports: vec![AGENT_PORT],
             resources: None,
         };
 
@@ -82,16 +126,16 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 info!(agent = %agent_name, ?status, "seed agent deployed");
                 let agent_url = status.endpoint.clone().unwrap_or_default();
                 let _ = sqlx::query(
-                    "UPDATE agents SET status = 'running', url = $2 WHERE id = $1",
+                    "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
                 )
                 .bind(agent.id)
                 .bind(&agent_url)
                 .execute(&state.db)
                 .await;
 
-                // Wait for container to be ready, then fetch agent card
+                // Wait for container to become healthy, then fetch agent card
                 for _ in 0..10 {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     if fetch_and_apply_agent_card(state, agent.id, &agent_url).await {
                         break;
                     }
@@ -99,6 +143,12 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             }
             Err(e) => {
                 warn!(agent = %agent_name, error = %e, "failed to deploy seed agent");
+                let _ = sqlx::query(
+                    "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
+                )
+                .bind(agent.id)
+                .execute(&state.db)
+                .await;
             }
         }
     }
@@ -140,7 +190,6 @@ async fn fetch_and_apply_agent_card(state: &AppState, agent_id: Uuid, agent_url:
 
     let base = agent_url.trim_end_matches('/');
 
-    // Try both well-known paths (new spec uses agent-card.json)
     let urls = [
         format!("{base}/.well-known/agent-card.json"),
         format!("{base}/.well-known/agent.json"),
@@ -186,7 +235,6 @@ async fn fetch_and_apply_agent_card(state: &AppState, agent_id: Uuid, agent_url:
     .execute(&state.db)
     .await;
 
-    // Keep the normalized agent_skills projection in sync (best-effort).
     if let Some(skills_json) = card.get("skills") {
         crate::catalog::skills::sync_agent_skills_json(&state.db, agent_id, skills_json).await;
     }

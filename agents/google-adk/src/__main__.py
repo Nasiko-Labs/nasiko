@@ -29,7 +29,7 @@ CORS_ORIGINS = [
 
 @click.command()
 @click.option("--host", default="localhost")
-@click.option("--port", default=10006)
+@click.option("--port", default=8000)
 def main(host, port):
     """Starts the Google ADK Research Agent server."""
     if not os.getenv("GOOGLE_API_KEY"):

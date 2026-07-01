@@ -147,6 +147,12 @@ impl TestServer {
         let auth: Arc<dyn nasiko_auth::AuthProvider> =
             Arc::new(nasiko_auth::SimpleJwtAuth::from_env());
         let user_auth = Arc::new(nasiko_auth::UserAuthServiceImpl::new(db.clone(), auth.clone()));
+
+        user_auth
+            .bootstrap_admin("admin", "test-password")
+            .await
+            .expect("bootstrap test admin");
+
         let providers = Providers {
             auth,
             acl: Arc::new(nasiko_auth::NoopAuthorizer),
@@ -259,6 +265,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
             "gitlab.com".to_owned(),
             "bitbucket.org".to_owned(),
         ],
+        admin_username: "admin".into(),
+        admin_password: "test-password".into(),
     }
 }
 

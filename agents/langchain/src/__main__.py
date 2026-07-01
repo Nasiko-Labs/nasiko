@@ -29,7 +29,7 @@ CORS_ORIGINS = [
 
 @click.command()
 @click.option("--host", default="localhost")
-@click.option("--port", default=10007)
+@click.option("--port", default=8000)
 def main(host, port):
     """Starts the LangChain Research Agent server."""
     if not os.getenv("OPENAI_API_KEY"):

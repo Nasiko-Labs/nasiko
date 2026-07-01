@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use nasiko_auth::UserAuthService;
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 
 #[tokio::main]
@@ -15,17 +16,17 @@ async fn main() {
         .await
         .expect("failed to connect to postgres");
 
-    let auth: Arc<dyn nasiko_auth::AuthProvider> = if std::env::var("JWT_SECRET").is_ok() {
-        Arc::new(nasiko_auth::SimpleJwtAuth::from_env())
-    } else {
-        tracing::warn!("JWT_SECRET not set — using passthrough auth (dev mode only)");
-        Arc::new(nasiko_auth::SingleUserAuth)
-    };
+    let auth: Arc<dyn nasiko_auth::AuthProvider> = Arc::new(nasiko_auth::SimpleJwtAuth::from_env());
 
     let user_auth_svc = Arc::new(nasiko_auth::UserAuthServiceImpl::new(
         db.clone(),
         auth.clone(),
     ));
+
+    user_auth_svc
+        .bootstrap_admin(&config.admin_username, &config.admin_password)
+        .await
+        .expect("failed to bootstrap admin user");
 
     let providers = nasiko_server::Providers {
         auth,

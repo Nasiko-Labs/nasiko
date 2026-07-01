@@ -43,8 +43,9 @@ pub struct Config {
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub github_callback_url: Option<String>,
-    /// Allowlist of git clone hosts. Comma-separated. GIT_CLONE_ALLOWED_HOSTS env var.
     pub git_clone_allowed_hosts: Vec<String>,
+    pub admin_username: String,
+    pub admin_password: String,
 }
 
 impl Config {
@@ -107,6 +108,8 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            admin_username: env_or("ADMIN_USERNAME", "admin"),
+            admin_password: required_env("ADMIN_PASSWORD")?,
         })
     }
 }

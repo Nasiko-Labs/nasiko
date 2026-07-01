@@ -112,7 +112,7 @@ pub fn generate_access_secret() -> String {
 
 // ─── User auth service types ──────────────────────────────────────────────────
 
-/// Result returned by login/initialize-admin/oauth operations.
+/// Result returned by login/oauth operations.
 #[derive(Debug, Clone)]
 pub struct LoginResult {
     pub token: String,
@@ -123,16 +123,14 @@ pub struct LoginResult {
     pub team_id: Option<String>,
     pub department_id: Option<String>,
     pub expires_in: u64,
-    pub access_key: Option<String>,
-    pub access_secret: Option<String>,
 }
 
-/// High-level user authentication operations (login, admin init, oauth, agent tokens).
+/// High-level user authentication operations (login, oauth, agent tokens).
 /// Implementations hold the DB pool and use an AuthProvider for token issuance.
 #[async_trait]
 pub trait UserAuthService: Send + Sync + 'static {
-    async fn authenticate(&self, access_key: &str, access_secret: &str) -> Result<LoginResult, AuthError>;
-    async fn initialize_admin(&self, username: &str, email: &str) -> Result<LoginResult, AuthError>;
+    async fn authenticate(&self, username: &str, password: &str) -> Result<LoginResult, AuthError>;
+    async fn bootstrap_admin(&self, username: &str, password: &str) -> Result<(), AuthError>;
     async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError>;
     async fn upsert_oauth_user(&self, provider: &str, provider_id: &str, username: &str) -> Result<LoginResult, AuthError>;
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
@@ -151,11 +149,11 @@ pub struct NoopUserAuthService;
 
 #[async_trait]
 impl UserAuthService for NoopUserAuthService {
-    async fn authenticate(&self, _access_key: &str, _access_secret: &str) -> Result<LoginResult, AuthError> {
+    async fn authenticate(&self, _username: &str, _password: &str) -> Result<LoginResult, AuthError> {
         Err(AuthError::InvalidToken("user auth not configured".into()))
     }
-    async fn initialize_admin(&self, _username: &str, _email: &str) -> Result<LoginResult, AuthError> {
-        Err(AuthError::InvalidToken("user auth not configured".into()))
+    async fn bootstrap_admin(&self, _username: &str, _password: &str) -> Result<(), AuthError> {
+        Ok(())
     }
     async fn issue_agent_token(&self, _agent_id: &str) -> Result<String, AuthError> {
         Err(AuthError::InvalidToken("user auth not configured".into()))
@@ -178,25 +176,6 @@ impl TokenService for NoopTokenService {
 }
 
 // ─── OSS default implementations ─────────────────────────────────────────────
-
-pub struct SingleUserAuth;
-
-#[async_trait]
-impl AuthProvider for SingleUserAuth {
-    async fn validate_token(&self, _token: &str) -> Result<Identity, AuthError> {
-        Ok(Identity {
-            user_id: "00000000-0000-0000-0000-000000000000".to_string(),
-            sub: "00000000-0000-0000-0000-000000000000".to_string(),
-            exp: u64::MAX,
-            iat: 0,
-            username: "admin".to_string(),
-            is_superuser: true,
-            team_id: None,
-            department_id: None,
-            role: Some(Role::Admin),
-        })
-    }
-}
 
 pub struct SimpleJwtAuth {
     pub secret: String,

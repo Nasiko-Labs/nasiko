@@ -207,7 +207,7 @@ async fn main() {
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8080);
+        .unwrap_or(8000);
 
     let handler = Arc::new(DefaultRequestHandler::new(
         CodingAgent::new(),

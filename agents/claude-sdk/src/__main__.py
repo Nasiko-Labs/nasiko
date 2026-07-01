@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @click.command()
 @click.option("--host", default="localhost")
-@click.option("--port", default=10002)
+@click.option("--port", default=8000)
 def main(host, port):
     """Starts the Synthesizer Agent server."""
     capabilities = AgentCapabilities(streaming=True)

@@ -14,11 +14,11 @@ use serde_json::{Value, json};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-async fn init_admin(server: &common::TestServer) -> Value {
+async fn login(server: &common::TestServer) -> Value {
     server
         .client
-        .post(server.url("/api/auth/initialize-admin"))
-        .json(&json!({"username": "admin", "email": "admin@test.local"}))
+        .post(server.url("/api/auth/login"))
+        .json(&json!({"username": "admin", "password": "test-password"}))
         .send()
         .await
         .unwrap()
@@ -50,10 +50,9 @@ async fn create_user(server: &common::TestServer, admin_id: &str, username: &str
 #[serial]
 async fn test_server_uses_injected_user_id_header() {
     let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
+    let admin = login(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    // Simulate what the gateway injects after validating the JWT
     let res = server
         .client
         .get(server.url("/api/me"))
@@ -78,13 +77,12 @@ async fn test_server_uses_injected_user_id_header() {
 #[serial]
 async fn test_server_uses_correct_role_from_header() {
     let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
+    let admin = login(&server).await;
     let admin_id = admin["user_id"].as_str().unwrap();
 
     let alice = create_user(&server, admin_id, "alice", "alice@test.local").await;
     let alice_id = alice["id"].as_str().unwrap();
 
-    // Gateway injects alice's identity headers
     let res = server
         .client
         .get(server.url("/api/me"))
@@ -111,7 +109,6 @@ async fn test_server_uses_correct_role_from_header() {
 async fn test_no_gateway_headers_returns_401() {
     let server = common::TestServer::start().await;
 
-    // No X-User-* headers and no JWT — must be 401
     let res = server
         .client
         .get(server.url("/api/me"))
@@ -128,27 +125,12 @@ async fn test_no_gateway_headers_returns_401() {
 #[serial]
 async fn test_bearer_jwt_without_headers_returns_401() {
     let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
 
-    // Login to get a valid JWT
-    let token = server
-        .client
-        .post(server.url("/api/auth/login"))
-        .json(&json!({
-            "access_key": admin["access_key"],
-            "access_secret": admin["access_secret"]
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()["token"]
+    let token = login(&server).await["token"]
         .as_str()
         .unwrap()
         .to_owned();
 
-    // Valid JWT but no X-User-* headers — server does not validate JWTs directly
     let res = server
         .client
         .get(server.url("/api/me"))
@@ -168,13 +150,12 @@ async fn test_bearer_jwt_without_headers_returns_401() {
 #[serial]
 async fn test_member_cannot_access_user_management() {
     let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
+    let admin = login(&server).await;
     let admin_id = admin["user_id"].as_str().unwrap();
 
     let alice = create_user(&server, admin_id, "alice", "alice@test.local").await;
     let alice_id = alice["id"].as_str().unwrap();
 
-    // Alice (member) tries to list users — should be forbidden
     let res = server
         .client
         .get(server.url("/api/users"))
@@ -188,7 +169,6 @@ async fn test_member_cannot_access_user_management() {
 
     assert_eq!(res.status(), 403);
 
-    // Admin can list users
     let res = server
         .client
         .get(server.url("/api/users"))

@@ -13,8 +13,8 @@ use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 
 /// Pluggable providers for auth and ACL.
-/// OSS uses SingleUserAuth/NoopAcl.
-/// Cloud uses OAuthProvider/RbacChecker.
+/// OSS uses SimpleJwtAuth/NoopAcl.
+/// Cloud uses JwtAuthProvider/HierarchyAuthorizer.
 #[derive(Clone)]
 pub struct Providers {
     pub auth: Arc<dyn AuthProvider>,
@@ -128,7 +128,8 @@ impl AppState {
                     client_id: id.clone(),
                     client_secret: sec.clone(),
                     oauth_state_secret: signing,
-                    callback_url: String::new(),
+                    callback_url: config.github_callback_url.clone()
+                        .expect("GITHUB_CALLBACK_URL must be set when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured"),
                     central_callback_url: None,
                     clone_timeout_secs: 300,
                     clone_max_size_bytes: 500 * 1024 * 1024,
@@ -159,7 +160,10 @@ impl AppState {
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
-        crate::seed::seed_agents_if_configured(&state).await;
+        let seed_state = state.clone();
+        tokio::spawn(async move {
+            crate::seed::seed_agents_if_configured(&seed_state).await;
+        });
 
         state
     }

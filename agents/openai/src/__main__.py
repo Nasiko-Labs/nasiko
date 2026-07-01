@@ -34,7 +34,7 @@ CORS_ORIGINS = [
 
 @click.command()
 @click.option("--host", default="localhost")
-@click.option("--port", default=10003)
+@click.option("--port", default=8000)
 def main(host, port):
     """Starts the Research Agent server."""
     capabilities = AgentCapabilities(streaming=True)

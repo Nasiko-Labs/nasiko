@@ -18,6 +18,9 @@ set dotenv-load
 
 # Run server + gateway (foreground)
 run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill $(jobs -p) 2>/dev/null; wait' INT TERM
     cargo run -p nasiko-server & cargo run -p nasiko-gateway & wait
 
 # Release OSS control plane (server + gateway)
