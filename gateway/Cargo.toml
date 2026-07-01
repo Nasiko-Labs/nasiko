@@ -12,27 +12,38 @@ path = "src/lib.rs"
 
 [dependencies]
 nasiko-auth.workspace = true
+nasiko-flow.workspace = true
+nasiko-agent-proxy.workspace = true
+nasiko-runtime = { workspace = true, features = ["docker"] }
+nasiko-react-agent.workspace = true
+nasiko-types.workspace = true
 
-# Pingora
-pingora = { version = "0.8", features = ["proxy", "lb", "openssl"] }
-pingora-core = "0.8"
-pingora-proxy = "0.8"
-pingora-http = "0.8"
-pingora-limits = "0.8"
+# Web framework
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
 
-# Serialization & config
-serde = { workspace = true }
-serde_json = { workspace = true }
+# Database & state
+sqlx = { workspace = true }
+redis = { workspace = true }
+
+# HTTP client (for proxying)
+reqwest = { workspace = true, features = ["stream"] }
+
+# Streaming
+futures = { workspace = true }
+async-stream = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
-dashmap = { workspace = true }
+uuid = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 async-trait = "0.1"
-
-[dev-dependencies]
-tokio = { workspace = true }
+dashmap = { workspace = true }

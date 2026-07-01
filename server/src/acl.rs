@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use nasiko_react_agent::CallGuard;
 
-use crate::flow::{FlowContext, FlowGuard};
+use nasiko_flow::{FlowContext, FlowGuard};
 
 /// Check whether a user can access an agent.
 ///

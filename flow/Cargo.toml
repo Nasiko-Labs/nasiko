@@ -1,0 +1,12 @@
+[package]
+name = "nasiko-flow"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+redis = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }

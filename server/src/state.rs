@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use nasiko_auth::{AclChecker, AuthProvider, TokenService, UserAuthService};
 use nasiko_github::{GitHubConfig, GitHubService};
+use nasiko_observability::ObservabilityProvider;
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
 use nasiko_config::Config;
-use crate::flow::{FlowConfig, FlowEventBus, FlowGuard};
+use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 
@@ -35,6 +36,9 @@ pub struct AppState {
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
+    /// Optional Tempo+Loki provider — present when TEMPO_URL + LOKI_URL are configured.
+    /// Falls back to DB-only queries when None.
+    pub observability: Option<Arc<dyn ObservabilityProvider>>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
     /// Wakes the build worker immediately when a new job is enqueued.
@@ -91,6 +95,19 @@ impl AppState {
         let flow_events = FlowEventBus::new();
         let genai_metrics = GenAiMetrics::new();
 
+        // Optional Tempo+Loki observability backend
+        let observability: Option<Arc<dyn ObservabilityProvider>> = {
+            let tempo_url = std::env::var("TEMPO_URL").ok();
+            let loki_url  = std::env::var("LOKI_URL").ok();
+            match (tempo_url, loki_url) {
+                (Some(t), Some(l)) => {
+                    use nasiko_observability::TempoLokiProvider;
+                    Some(Arc::new(TempoLokiProvider::new(t, l)))
+                }
+                _ => None,
+            }
+        };
+
         let github_svc = config.github_client_id.as_ref()
             .zip(config.github_client_secret.as_ref())
             .and_then(|(id, sec)| {
@@ -122,6 +139,7 @@ impl AppState {
             flow_events,
             genai_metrics,
             config: Arc::new(config),
+            observability,
             github_svc,
             build_tx,
         };

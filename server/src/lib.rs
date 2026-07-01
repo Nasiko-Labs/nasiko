@@ -5,11 +5,10 @@ pub mod auth;
 pub mod build;
 pub mod capabilities;
 pub mod chat;
-pub mod flow;
+pub mod flows;
 pub mod github;
 pub mod observability;
 pub mod pool;
-pub mod proxy;
 pub mod catalog;
 pub mod router;
 pub mod runtime;
@@ -84,7 +83,6 @@ where
         .layer(middleware::from_fn(auth::rbac::require_superuser));
 
     // Agent deploy routes (upload-and-deploy, deploy-status, deployments, ACL): deployer+ only.
-    // Agent proxy routes (/agents/{id}/*) are separate and require only auth.
     let agent_deploy_routes = Router::new()
         .nest("/agents", agents::router())
         .nest("/user", agents::user_routes())
@@ -95,21 +93,9 @@ where
         .nest("/build", build::router())
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
-    // Proxy fallback routes carry the proxy middleware themselves so management routes
-    // under /agents/{id}/* (deployment, acl, update, rollback) are never intercepted.
-    let agent_proxy_routes = Router::new()
-        .route("/agents/{agent_id}", axum::routing::any(agent_proxy_fallback))
-        .route("/agents/{agent_id}/{*rest}", axum::routing::any(agent_proxy_fallback))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            proxy::agent_proxy_middleware,
-        ));
-
     let protected = Router::new()
         .route("/me", get(me))
-        .route("/a2a", axum::routing::post(router::a2a_handler))
         .merge(agent_deploy_routes)
-        .merge(agent_proxy_routes)
         .merge(container_routes)
         .merge(pool_routes)
         .merge(user_routes)
@@ -119,9 +105,9 @@ where
         .merge(secrets::router())
         .merge(settings::router())
         .merge(capabilities::router())
-        .merge(proxy::router())
         .merge(usage::routes::router())
-        .merge(flow::routes::router())
+        .merge(flows::router())
+        .merge(observability::observe_router())
         .merge(github::router())
         .merge(auth::login::protected_router())
         .layer(middleware::from_fn_with_state(
@@ -132,16 +118,10 @@ where
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     let oci_routes = nasiko_oci::axum_routes(oci_state);
 
-    // A2A discovery endpoints (public — agents need to discover each other without auth)
-    // TODO: add API key auth for production
-    let a2a_public = proxy::discovery_router().with_state(state.clone());
-
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
-        .merge(auth::login::public_router())  // public: login + initialize-admin only
-        .merge(github::public_router())       // public: GitHub OAuth callback
-        .merge(a2a_public)
+        .merge(auth::login::public_router())
         .nest("/api", protected)
         .with_state(state)
         .merge(oci_routes)
@@ -152,12 +132,6 @@ where
 
 async fn health() -> &'static str {
     "ok"
-}
-
-/// Catch-all for /agents/{id}/* — the proxy middleware (layered on agent_proxy_routes)
-/// handles actual forwarding; this handler is only reached on proxy error.
-async fn agent_proxy_fallback() -> axum::http::StatusCode {
-    axum::http::StatusCode::BAD_GATEWAY
 }
 
 async fn me(claims: Claims) -> Json<Claims> {
