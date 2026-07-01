@@ -15,21 +15,6 @@ struct OssAssets;
 #[prefix = "common/"]
 struct CommonAssets;
 
-async fn static_handler(req: Request<Body>) -> Response {
-    let path = req.uri().path().trim_start_matches('/');
-    let path = if path.is_empty() { "index.html" } else { path };
-
-    if let Some(file) = OssAssets::get(path).or_else(|| CommonAssets::get(path)) {
-        let mime = mime_guess::from_path(path).first_or_octet_stream();
-        return ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response();
-    }
-
-    if let Some(file) = OssAssets::get("404.html") {
-        return (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/html")], file.data).into_response();
-    }
-    StatusCode::NOT_FOUND.into_response()
-}
-
 #[tokio::main]
 async fn main() {
     let telemetry_config = TelemetryConfig::from_env();
@@ -51,7 +36,10 @@ async fn main() {
         Arc::new(nasiko_auth::SingleUserAuth)
     };
 
-    let user_auth_svc = Arc::new(nasiko_auth::UserAuthServiceImpl::new(db.clone(), auth.clone()));
+    let user_auth_svc = Arc::new(nasiko_auth::UserAuthServiceImpl::new(
+        db.clone(),
+        auth.clone(),
+    ));
 
     let providers = nasiko_server::Providers {
         auth,
@@ -66,10 +54,31 @@ async fn main() {
             .expect("failed to create Docker runtime"),
     );
 
-    let state = nasiko_server::state::AppState::from_config_with_db(config, providers, runtime, db).await;
+    let state =
+        nasiko_server::state::AppState::from_config_with_db(config, providers, runtime, db).await;
     let app = nasiko_server::build_app(state, static_handler);
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("nasiko-server (OSS) listening on {bind}");
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn static_handler(req: Request<Body>) -> Response {
+    let path = req.uri().path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    if let Some(file) = OssAssets::get(path).or_else(|| CommonAssets::get(path)) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response();
+    }
+
+    if let Some(file) = OssAssets::get("404.html") {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/html")],
+            file.data,
+        )
+            .into_response();
+    }
+    StatusCode::NOT_FOUND.into_response()
 }
