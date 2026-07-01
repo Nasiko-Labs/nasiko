@@ -57,11 +57,14 @@ async fn test_proxy_middleware_does_not_block_non_agent_protected_routes() {
 
 #[tokio::test]
 #[serial]
-async fn test_agent_proxy_route_requires_auth() {
+async fn test_agent_proxy_route_not_served_by_server() {
+    // The A2A agent proxy lives in the gateway, not the server.
+    // The server only exposes management routes (deploy, ACL, etc.).
+    // Requests to /api/agents/{id}/chat have no matching route on the server,
+    // so the fallback fires — 404, regardless of auth.
     let server = common::TestServer::start().await;
     let random_agent_id = Uuid::new_v4();
 
-    // No gateway auth headers — auth middleware fires before proxy middleware
     let res = server
         .client
         .get(server.url(&format!("/api/agents/{random_agent_id}/chat")))
@@ -69,19 +72,19 @@ async fn test_agent_proxy_route_requires_auth() {
         .await
         .unwrap();
 
-    assert_eq!(res.status(), 401);
+    assert_eq!(res.status(), 404);
 
     server.cleanup().await;
 }
 
-// ─── Regression: missing traceparent no longer returns 400 ───────────────────
+// ─── Agent proxy paths on the server return 404 ──────────────────────────────
 
 #[tokio::test]
 #[serial]
 async fn test_agent_proxy_without_traceparent_returns_404_not_400() {
-    // Before the fix, a missing traceparent returned 400 (MissingFlowContext).
-    // After the fix, the middleware creates a new root trace, proceeds to look
-    // up the agent in the DB, and returns 404 when it is not found.
+    // Agent proxying is handled entirely by the gateway, not the server.
+    // Requests to /api/agents/{id}/* have no matching route on the server,
+    // so the fallback fires — 404 — even with valid auth headers.
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();

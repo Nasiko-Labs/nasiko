@@ -95,10 +95,10 @@ fn resolve_agent_id(client: &Client, name: &str) -> Result<String> {
     let agents: Vec<serde_json::Value> = client.get_json("/catalog/agents")?;
     for a in &agents {
         let agent_name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if agent_name == name {
-            if let Some(id) = a.get("id").and_then(|v| v.as_str()) {
-                return Ok(id.to_string());
-            }
+        if agent_name == name
+            && let Some(id) = a.get("id").and_then(|v| v.as_str())
+        {
+            return Ok(id.to_string());
         }
     }
     anyhow::bail!("agent '{name}' not found — is it registered? (check `nasiko ps`)")
