@@ -30,6 +30,15 @@ impl ContainerId {
         ContainerId(id.into())
     }
 
+    /// Create a ContainerId from an agent UUID.
+    ///
+    /// UUID v4 always satisfies ContainerId constraints: 36 chars, lowercase hex + hyphens,
+    /// starts and ends with a hex digit. This avoids the `try_new(...).expect(...)` pattern
+    /// at every call site that converts an agent `Uuid` to a container ID.
+    pub fn from_uuid(id: uuid::Uuid) -> Self {
+        ContainerId(id.to_string())
+    }
+
     /// Borrow the inner string.
     pub fn as_str(&self) -> &str {
         &self.0

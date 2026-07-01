@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::build::BuildStatus;
 
-pub(super) async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus) {
+pub(crate) async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus) {
     if let Err(e) =
         sqlx::query("UPDATE agent_builds SET status = $2, updated_at = now() WHERE id = $1")
             .bind(build_id)

@@ -181,15 +181,18 @@ async fn restart_deployment(
         }
     };
 
-    // Owner or superuser only.
+    // Owner or superuser only. Deliberately stricter than read access:
+    // any deployer-role user can READ a public agent, but only the owner (or a
+    // superuser/admin) may restart it — restarting causes destroy + recreate which
+    // is a denial-of-service if granted too broadly.
+    // Orphaned agents (owner_id = NULL, set by ON DELETE SET NULL) must be handled
+    // by a superuser; non-superusers always receive 403 for them.
     if !claims.is_superuser {
         let is_owner = info.owner_id.map(|o| o == user_id).unwrap_or(false);
-        if !is_owner && !user_can_access_agent(&state.db, user_id, info.agent_id).await {
+        if !is_owner {
             return StatusCode::FORBIDDEN.into_response();
         }
     }
-
-    let container_id = ContainerId::new(&info.name);
 
     // 409 if the DB considers the agent live — runtime state can lag (container killed
     // externally, Docker restart, etc.) so the DB record is the authoritative guard.
@@ -214,18 +217,37 @@ async fn restart_deployment(
 
     if let Some(k8s_name) = &info.k8s_deployment_name {
         // ── K8s path: scale-to-1 (avoids tearing down and recreating the Deployment) ──
+        // k8s_deployment_name stores the ContainerId value persisted at deploy time.
+        // Pre-fix agents have agent_name here; post-fix agents have the UUID.
+        // Either way, the stored value is what K8s knows about — use it as-is.
         tracing::info!(agent_id = %info.agent_id, k8s_name, "restart: using K8s scale-to-1 path");
         let k8s_id = ContainerId::new(k8s_name);
+
+        // Refresh the K8s Secret before scaling up so that secrets rotated while
+        // the agent was stopped are picked up without requiring a full redeploy.
+        // Non-fatal: proceed with scale-to-1 even if the Secret update fails —
+        // the pod will start with the previously applied values.
+        if let Err(e) = state.runtime.refresh_secrets(&k8s_id, secrets).await {
+            tracing::warn!(%e, %deployment_id, k8s_name, "restart: failed to refresh K8s secret (using existing values)");
+        }
+
         if let Err(e) = state.runtime.scale(&k8s_id, 1).await {
             tracing::error!(%e, %deployment_id, k8s_name, "restart_deployment: scale-to-1 failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("scale failed: {e}")).into_response();
         }
     } else {
-        // ── Docker path: destroy + recreate ──────────────────────────────────────────
-        let _ = state.runtime.destroy(&container_id).await;
+        // ── Docker path: destroy + recreate (UUID-keyed) ─────────────────────────────
+        // Post-fix containers use the agent UUID as ContainerId; pre-fix containers
+        // used the agent name. Try UUID first; fall back to name to avoid leaving a
+        // stale name-based container running alongside the new UUID-based one.
+        let uuid_id = ContainerId::from_uuid(info.agent_id);
+        let name_id = ContainerId::new(&info.name);
+        if state.runtime.destroy(&uuid_id).await.is_err() {
+            let _ = state.runtime.destroy(&name_id).await;
+        }
 
         let spec = DeploymentSpec {
-            container_id: ContainerId::new(&info.name),
+            container_id: uuid_id,
             name: info.name.clone(),
             image,
             ports,

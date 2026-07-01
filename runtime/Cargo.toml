@@ -9,6 +9,7 @@ async-trait = "0.1"
 thiserror = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 # docker feature
 bollard = { version = "0.17", optional = true }

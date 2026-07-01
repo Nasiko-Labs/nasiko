@@ -1,4 +1,4 @@
-mod utils;
+pub(crate) mod utils;
 pub mod acl;
 pub mod build_worker;
 pub mod deployments;

@@ -6,6 +6,12 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+const MAX_ATTEMPTS: i32 = 3;
+/// How old a job must be before it is considered stuck (not legitimately slow).
+/// Must exceed the runtime's build_timeout (Docker + K8s both default to 30 min).
+/// 2× headroom avoids false positives on large images.
+const STUCK_JOB_MINS: i64 = 60;
+
 use super::update::{AgentVersionRow, execute_agent_rollback, execute_agent_update};
 use super::upload::{BuildJobPayload, execute_upload_and_deploy};
 use crate::build::routes::execute_build;
@@ -15,6 +21,7 @@ struct BuildJob {
     id: Uuid,
     agent_id: Uuid,
     payload: serde_json::Value,
+    attempt: i32,
 }
 
 /// Main build worker loop. Spawned once at server startup.
@@ -22,10 +29,20 @@ struct BuildJob {
 /// Receives notifications on `notify` when a new job is queued; also polls
 /// every 5 seconds as a fallback in case a notification is lost.
 ///
+/// A separate periodic sweep (every 10 minutes) re-runs `recover_stuck_jobs` to
+/// catch jobs left `in_progress` by a crashed replica — without this, a multi-replica
+/// cluster where no replica restarts would leave stuck jobs stranded indefinitely.
+///
 /// After each successful claim, drains the queue immediately before sleeping
 /// to avoid a 5-second lag when multiple jobs arrive in a burst.
 pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     recover_stuck_jobs(&state.db).await;
+
+    // First tick fires after the interval, not immediately — startup already ran recovery.
+    let recovery_start = tokio::time::Instant::now() + Duration::from_secs(10 * 60);
+    let mut recovery_tick =
+        tokio::time::interval_at(recovery_start, Duration::from_secs(10 * 60));
+    recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     tracing::info!("build worker: started");
     loop {
@@ -38,51 +55,82 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
                 }
             }
             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            _ = recovery_tick.tick() => {
+                recover_stuck_jobs(&state.db).await;
+                // Fall through to the drain loop: recovered jobs are now pending.
+            }
         }
         // Drain: keep claiming jobs until the queue is empty.
+        // Each job runs in a spawned task so a panicking build job cannot kill
+        // the outer loop. Panicked jobs are recovered by the next recovery_tick.
         loop {
-            match try_claim_and_run(&state).await {
-                Ok(true) => {} // there may be more
-                Ok(false) => {
+            let state_clone = state.clone();
+            match tokio::task::spawn(async move { try_claim_and_run(state_clone).await }).await {
+                Ok(Ok(true)) => {} // job ran, there may be more
+                Ok(Ok(false)) => {
                     tracing::debug!("build worker: queue empty");
                     break;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::error!(%e, "build worker: claim/run error");
                     break;
                 }
+                Err(ref e) if e.is_panic() => {
+                    tracing::error!("build worker: job task panicked — job left in_progress, will recover at next startup");
+                }
+                Err(_) => break, // task cancelled (server shutdown)
             }
         }
     }
 }
 
-/// On startup, reset any jobs that were left `in_progress` for more than 30 minutes
-/// (likely from a crashed server instance).
+/// Handle jobs left `in_progress` for longer than `STUCK_JOB_MINS`.
+///
+/// Called at startup and periodically (every 10 min) so stuck jobs from a crashed
+/// replica are recovered without requiring a server restart.
+/// The `make_interval` form keeps the threshold in one place rather than
+/// embedding it as a string literal in two separate SQL statements.
 async fn recover_stuck_jobs(db: &PgPool) {
-    match sqlx::query(
-        "UPDATE build_jobs SET status = 'pending', picked_at = NULL
-         WHERE status = 'in_progress' AND picked_at < now() - INTERVAL '30 minutes'",
+    // Permanently fail exhausted jobs (>= MAX_ATTEMPTS attempts already made).
+    if let Err(e) = sqlx::query(
+        "UPDATE build_jobs SET status = 'failed', error_msg = 'max attempts exceeded', completed_at = now()
+         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2) AND attempt >= $1",
     )
+    .bind(MAX_ATTEMPTS)
+    .bind(STUCK_JOB_MINS)
     .execute(db)
     .await
     {
-        Ok(result) if result.rows_affected() > 0 => {
-            tracing::warn!(count = result.rows_affected(), "build worker: reset stuck in_progress jobs on startup");
+        tracing::error!(%e, "build worker: exhausted-job recovery query failed");
+    }
+
+    // Reset remaining stuck jobs so they get another try.
+    match sqlx::query(
+        "UPDATE build_jobs SET status = 'pending', picked_at = NULL
+         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2) AND attempt < $1",
+    )
+    .bind(MAX_ATTEMPTS)
+    .bind(STUCK_JOB_MINS)
+    .execute(db)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 => {
+            tracing::warn!(count = r.rows_affected(), "build worker: reset stuck in_progress jobs");
         }
         Ok(_) => {}
         Err(e) => {
-            tracing::error!(%e, "build worker: startup recovery query failed");
+            tracing::error!(%e, "build worker: stuck-job recovery query failed");
         }
     }
 }
 
 /// Claim one pending job and execute it. Returns `Ok(true)` if a job was found
 /// and run (caller should loop), `Ok(false)` if the queue is empty.
-async fn try_claim_and_run(state: &AppState) -> anyhow::Result<bool> {
+async fn try_claim_and_run(state: AppState) -> anyhow::Result<bool> {
     let mut tx = state.db.begin().await?;
 
     let job = sqlx::query_as::<_, BuildJob>(
-        "SELECT id, agent_id, payload
+        "SELECT id, agent_id, payload, attempt
          FROM build_jobs
          WHERE status = 'pending'
          ORDER BY created_at
@@ -105,6 +153,21 @@ async fn try_claim_and_run(state: &AppState) -> anyhow::Result<bool> {
     .await?;
 
     tx.commit().await?;
+
+    // Inline attempt cap: fail immediately if we've already exhausted all retries.
+    // job.attempt is the pre-increment value; after the UPDATE, DB holds attempt+1.
+    // We cap when DB value > MAX_ATTEMPTS, i.e., job.attempt >= MAX_ATTEMPTS.
+    if job.attempt >= MAX_ATTEMPTS {
+        sqlx::query(
+            "UPDATE build_jobs SET status = 'failed', error_msg = 'max attempts exceeded', completed_at = now() WHERE id = $1",
+        )
+        .bind(job.id)
+        .execute(&state.db)
+        .await
+        .ok();
+        tracing::warn!(job_id = %job.id, attempt = job.attempt + 1, "build worker: job exceeded max attempts, failing");
+        return Ok(true); // consumed a slot; try next
+    }
 
     let payload: BuildJobPayload = match serde_json::from_value(job.payload) {
         Ok(p) => p,
@@ -229,6 +292,7 @@ async fn try_claim_and_run(state: &AppState) -> anyhow::Result<bool> {
                 version_tag,
                 state.oci_storage.clone(),
                 state.http_client.clone(),
+                state.config.git_clone_allowed_hosts.clone(),
             )
             .await;
         }

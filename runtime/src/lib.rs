@@ -177,4 +177,18 @@ pub trait ContainerRuntime: Send + Sync {
     async fn try_delete_autoscaler(&self, _id: &ContainerId) -> Result<()> {
         Ok(())
     }
+
+    /// Re-apply the agent's current secrets before a scale-up restart.
+    ///
+    /// Default no-op — the Docker runtime picks up secrets at `deploy()` time.
+    /// The Kubernetes runtime overrides this to re-apply the K8s Secret so that
+    /// secrets rotated while an agent was stopped are picked up on next restart
+    /// without requiring a full redeploy.
+    async fn refresh_secrets(
+        &self,
+        _id: &ContainerId,
+        _env_vars: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }

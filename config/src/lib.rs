@@ -42,13 +42,9 @@ pub struct Config {
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    pub agent_registry_cache_ttl_secs: u64,
-    pub router_shortlist_threshold: usize,
-    pub router_shortlist_size: usize,
-    pub max_router_history_messages: usize,
-    pub ollama_url: String,
-    pub ollama_embedding_model: String,
-    pub router_agent_timeout_secs: u64,
+    pub github_callback_url: Option<String>,
+    /// Allowlist of git clone hosts. Comma-separated. GIT_CLONE_ALLOWED_HOSTS env var.
+    pub git_clone_allowed_hosts: Vec<String>,
 }
 
 impl Config {
@@ -104,13 +100,13 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            agent_registry_cache_ttl_secs: env_parse("AGENT_REGISTRY_CACHE_TTL_SECS", 3600),
-            router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
-            router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
-            max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
-            ollama_url: env_or("OLLAMA_URL", "http://ollama:11434"),
-            ollama_embedding_model: env_or("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
-            router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
+            github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
+            git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
+                .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
         })
     }
 }

@@ -17,8 +17,44 @@ use uuid::Uuid;
 
 use super::BuildStatus;
 use crate::agents::upload::BuildJobPayload;
+use crate::agents::utils::set_build_status;
 use crate::auth::Claims;
 use crate::state::AppState;
+
+// ─── Input validation ────────────────────────────────────────────────────────
+
+/// Validate a git clone URL.
+/// Only HTTPS scheme is allowed. Host must be in the provided allowlist.
+/// Two-layer: called at HTTP handler (before DB insert) and in execute_build
+/// (defence-in-depth for jobs that bypassed the handler via direct DB writes).
+pub(crate) fn validate_github_url(url: &str, allowed_hosts: &[String]) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("only https:// URLs are allowed".into());
+    }
+    let host = parsed.host_str().ok_or_else(|| "missing host".to_string())?;
+    if !allowed_hosts.iter().any(|h| h == host) {
+        return Err(format!("host '{host}' is not in the allowed list"));
+    }
+    Ok(())
+}
+
+/// Validate an OCI image tag segment.
+/// OCI spec: tag must start with [a-zA-Z0-9_] and contain only [a-zA-Z0-9._-].
+fn validate_version_tag(tag: &str) -> Result<(), String> {
+    if tag.is_empty() || tag.len() > 128 {
+        return Err("version_tag must be 1–128 characters".into());
+    }
+    let mut chars = tag.chars();
+    let first = chars.next().unwrap(); // non-empty guaranteed above
+    if !first.is_ascii_alphanumeric() && first != '_' {
+        return Err("version_tag must start with [a-zA-Z0-9_]".into());
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_') {
+        return Err("version_tag may only contain [a-zA-Z0-9._-]".into());
+    }
+    Ok(())
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -112,6 +148,16 @@ async fn create_build(
         None => return (StatusCode::NOT_FOUND, "agent not found or not owned by you").into_response(),
     };
 
+    // Validate user-supplied inputs before any side effects.
+    if let Err(e) = validate_version_tag(&version_tag) {
+        return (StatusCode::UNPROCESSABLE_ENTITY, e).into_response();
+    }
+    if let Some(ref url) = github_url
+        && let Err(e) = validate_github_url(url, &state.config.git_clone_allowed_hosts)
+    {
+        return (StatusCode::UNPROCESSABLE_ENTITY, e).into_response();
+    }
+
     let image_reference = format!("{agent_name}:{version_tag}");
 
     // If source ZIP provided, upload to S3
@@ -178,24 +224,47 @@ pub async fn execute_build(
     version_tag: String,
     oci_storage: nasiko_oci::storage::S3Storage,
     http_client: reqwest::Client,
+    allowed_hosts: Vec<String>,
 ) {
-    update_status(&db, build_id, BuildStatus::Building).await;
+    set_build_status(&db, build_id, BuildStatus::Building).await;
 
     let image_tag = format!("{agent_name}:{version_tag}");
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-build-{build_id}"));
 
     let result = async {
         // Acquire source into tmp_dir
-        if let Some(url) = &github_url {
+        if let Some(ref url) = github_url {
+            // Defence-in-depth: re-validate even if the HTTP handler already checked.
+            // Jobs inserted directly into build_jobs (e.g. admin tooling, migrations)
+            // bypass the handler — this ensures the subprocess never runs an arbitrary URL.
+            validate_github_url(url, &allowed_hosts)
+                .map_err(|e| format!("invalid github_url: {e}"))?;
+
             tokio::fs::create_dir_all(&tmp_dir).await
                 .map_err(|e| format!("create tmp dir: {e}"))?;
-            let status = tokio::process::Command::new("git")
-                .args(["clone", "--depth=1", url, tmp_dir.to_str().unwrap_or(".")])
-                .status()
-                .await
-                .map_err(|e| format!("git clone: {e}"))?;
-            if !status.success() {
-                return Err(format!("git clone failed with exit code {}", status.code().unwrap_or(1)));
+
+            // tmp_dir.to_str() fails only on non-UTF8 paths (exotic OS configs).
+            // Falling back to "." is dangerous: tar_directory would then package the
+            // server's working directory (binaries, env files) into the build context.
+            let tmp_path = tmp_dir.to_str()
+                .ok_or_else(|| "temp path contains non-UTF8 characters".to_string())?;
+
+            let clone_status = tokio::time::timeout(
+                Duration::from_secs(300),
+                tokio::process::Command::new("git")
+                    // Restrict git to HTTPS only — prevents protocol-redirect attacks.
+                    .env("GIT_ALLOW_PROTOCOL", "https")
+                    // Prevent git from blocking the worker waiting for terminal credentials.
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .args(["clone", "--depth=1", url, tmp_path])
+                    .status(),
+            )
+            .await
+            .map_err(|_| "git clone timed out after 5 minutes".to_string())?
+            .map_err(|e| format!("git clone: {e}"))?;
+
+            if !clone_status.success() {
+                return Err(format!("git clone failed with exit code {}", clone_status.code().unwrap_or(1)));
             }
         } else if let Some(key) = &source_key {
             let data = oci_storage.get_blob(key).await
@@ -236,7 +305,7 @@ pub async fn execute_build(
 
     match result {
         Ok(()) => {
-            update_status(&db, build_id, BuildStatus::Success).await;
+            set_build_status(&db, build_id, BuildStatus::Success).await;
 
             if let Err(e) = sqlx::query(
                 r#"INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active)
@@ -258,7 +327,7 @@ pub async fn execute_build(
         }
         Err(e) => {
             tracing::error!(build_id = %build_id, %e, "build failed");
-            update_status(&db, build_id, BuildStatus::Failed).await;
+            set_build_status(&db, build_id, BuildStatus::Failed).await;
         }
     }
 }
@@ -331,17 +400,6 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
         }
     }
     Ok(())
-}
-
-async fn update_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus) {
-    if let Err(e) = sqlx::query("UPDATE agent_builds SET status = $2, updated_at = now() WHERE id = $1")
-        .bind(build_id)
-        .bind(status)
-        .execute(db)
-        .await
-    {
-        tracing::error!(build_id = %build_id, ?status, %e, "failed to update build status");
-    }
 }
 
 // ─── GET /builds/{id} ───────────────────────────────────────────────────────
@@ -541,7 +599,7 @@ pub async fn auto_generate_capabilities_pub(
     agent_name: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
-    use nasiko_router::providers::LLMProvider;
+    use crate::router::providers::LLMProvider;
 
     let data = match oci_storage.get_blob(source_key).await {
         Ok(d) => d,

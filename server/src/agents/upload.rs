@@ -470,8 +470,9 @@ pub async fn execute_upload_and_deploy(
 
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
-        // Deploy container.
-        let container_id = ContainerId::new(&name);
+        // Deploy container keyed on agent UUID (not name) to prevent cross-team
+        // naming collisions when two teams have agents with the same name.
+        let container_id = ContainerId::from_uuid(agent_id);
         let spec = DeploymentSpec {
             container_id,
             name: name.clone(),
@@ -516,9 +517,10 @@ pub async fn execute_upload_and_deploy(
                 .bind(agent_id)
                 .execute(&db)
                 .await;
-            // Record the deployment so it appears in list_deployments, restart, and crash guardian.
-            // k8s_deployment_name stores the raw agent name (ContainerId value); the runtime
-            // derives the actual K8s name via object_name() — do not pre-compute the prefix here.
+            // Record the deployment. k8s_deployment_name stores the ContainerId value
+            // (agent UUID string) so that restart and crash guardian can reconstruct
+            // the same ContainerId. The runtime derives the actual K8s/Docker name via
+            // object_name() — do not pre-compute the prefix here.
             let _ = sqlx::query(
                 "INSERT INTO agent_deployments (agent_id, build_id, owner_id, status, k8s_deployment_name) \
                  VALUES ($1, $2, $3, 'running', $4)",
@@ -526,7 +528,7 @@ pub async fn execute_upload_and_deploy(
             .bind(agent_id)
             .bind(build_id)
             .bind(owner_id)
-            .bind(&name)
+            .bind(agent_id.to_string())
             .execute(&db)
             .await;
             tracing::info!(build_id = %build_id, agent_id = %agent_id, "upload-and-deploy succeeded");
