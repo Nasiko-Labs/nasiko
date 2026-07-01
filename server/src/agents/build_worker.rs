@@ -61,22 +61,35 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             }
         }
         // Drain: keep claiming jobs until the queue is empty.
-        // Each job runs in a spawned task so a panicking build job cannot kill
-        // the outer loop. Panicked jobs are recovered by the next recovery_tick.
+        // Claim runs in the outer task (minimal, no panic risk).
+        // Execute runs in a spawned task for panic isolation.
+        // Separating the two means we always have the job_id available in the panic arm,
+        // enabling immediate reset instead of waiting up to STUCK_JOB_MINS.
         loop {
+            // Phase 1: claim (no panic risk — just DB reads/writes)
+            let job = match claim_next_job(&state).await {
+                Ok(Some(j)) => j,
+                Ok(None) => { tracing::debug!("build worker: queue empty"); break; }
+                Err(e) => { tracing::error!(%e, "build worker: claim error"); break; }
+            };
+
+            let job_id = job.id;
+            let old_attempt = job.attempt; // pre-increment; DB now holds old_attempt + 1
+
+            // Inline attempt cap: fail immediately if this claim pushed attempt over the limit.
+            if old_attempt >= MAX_ATTEMPTS {
+                mark_job(&state.db, job_id, "failed", Some("max attempts exceeded")).await;
+                tracing::warn!(job_id = %job_id, attempt = old_attempt + 1, "build worker: job exceeded max attempts");
+                continue; // try next job
+            }
+
+            // Phase 2: execute in a spawned task (panic-isolated)
             let state_clone = state.clone();
-            match tokio::task::spawn(async move { try_claim_and_run(state_clone).await }).await {
-                Ok(Ok(true)) => {} // job ran, there may be more
-                Ok(Ok(false)) => {
-                    tracing::debug!("build worker: queue empty");
-                    break;
-                }
-                Ok(Err(e)) => {
-                    tracing::error!(%e, "build worker: claim/run error");
-                    break;
-                }
+            match tokio::task::spawn(async move { execute_claimed_job(state_clone, job).await }).await {
+                Ok(()) => {} // job finished (success or failure recorded in DB by execute_claimed_job)
                 Err(ref e) if e.is_panic() => {
-                    tracing::error!("build worker: job task panicked — job left in_progress, will recover at next startup");
+                    tracing::error!(job_id = %job_id, "build worker: job panicked — resetting immediately");
+                    reset_panicked_job(&state.db, job_id, old_attempt).await;
                 }
                 Err(_) => break, // task cancelled (server shutdown)
             }
@@ -124,9 +137,12 @@ async fn recover_stuck_jobs(db: &PgPool) {
     }
 }
 
-/// Claim one pending job and execute it. Returns `Ok(true)` if a job was found
-/// and run (caller should loop), `Ok(false)` if the queue is empty.
-async fn try_claim_and_run(state: AppState) -> anyhow::Result<bool> {
+/// Claim one pending job from the queue.
+///
+/// Sets status to `in_progress` and increments attempt within a transaction.
+/// Returns `Ok(None)` if the queue is empty. The returned `job.attempt` is the
+/// pre-increment value; the DB now holds `attempt + 1`.
+async fn claim_next_job(state: &AppState) -> anyhow::Result<Option<BuildJob>> {
     let mut tx = state.db.begin().await?;
 
     let job = sqlx::query_as::<_, BuildJob>(
@@ -142,7 +158,7 @@ async fn try_claim_and_run(state: AppState) -> anyhow::Result<bool> {
 
     let Some(job) = job else {
         tx.rollback().await?;
-        return Ok(false);
+        return Ok(None);
     };
 
     sqlx::query(
@@ -153,38 +169,30 @@ async fn try_claim_and_run(state: AppState) -> anyhow::Result<bool> {
     .await?;
 
     tx.commit().await?;
+    Ok(Some(job))
+}
 
-    // Inline attempt cap: fail immediately if we've already exhausted all retries.
-    // job.attempt is the pre-increment value; after the UPDATE, DB holds attempt+1.
-    // We cap when DB value > MAX_ATTEMPTS, i.e., job.attempt >= MAX_ATTEMPTS.
-    if job.attempt >= MAX_ATTEMPTS {
-        sqlx::query(
-            "UPDATE build_jobs SET status = 'failed', error_msg = 'max attempts exceeded', completed_at = now() WHERE id = $1",
-        )
-        .bind(job.id)
-        .execute(&state.db)
-        .await
-        .ok();
-        tracing::warn!(job_id = %job.id, attempt = job.attempt + 1, "build worker: job exceeded max attempts, failing");
-        return Ok(true); // consumed a slot; try next
-    }
-
+/// Execute an already-claimed build job.
+///
+/// Runs as a `tokio::task::spawn` target so panics are isolated from the worker loop.
+/// Marks the job done or failed in the DB before returning — the caller does not
+/// need to do any DB cleanup on `Ok(())`.
+async fn execute_claimed_job(state: AppState, job: BuildJob) {
     let payload: BuildJobPayload = match serde_json::from_value(job.payload) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(job_id = %job.id, %e, "build worker: invalid payload, marking failed");
             mark_job(&state.db, job.id, "failed", Some(&e.to_string())).await;
-            return Ok(true);
+            return;
         }
     };
 
     let build_id = payload.build_id();
-    let label = payload.label().to_owned();
 
     tracing::info!(
         job_id = %job.id,
         agent_id = %job.agent_id,
-        name = %label,
+        name = %payload.label(),
         "build worker: job claimed"
     );
 
@@ -236,7 +244,7 @@ async fn try_claim_and_run(state: AppState) -> anyhow::Result<bool> {
                     Err(e) => {
                         tracing::error!(job_id = %job.id, %path, %e, "build worker: cannot read update zip");
                         mark_job(&state.db, job.id, "failed", Some(&format!("read zip: {e}"))).await;
-                        return Ok(true);
+                        return;
                     }
                 },
                 None => None,
@@ -319,21 +327,35 @@ async fn try_claim_and_run(state: AppState) -> anyhow::Result<bool> {
             ("done", None)
         }
         _ => {
-            tracing::error!(
-                job_id = %job.id,
-                agent_id = %job.agent_id,
-                "build worker: job failed"
-            );
+            tracing::error!(job_id = %job.id, agent_id = %job.agent_id, "build worker: job failed");
             ("failed", Some("build or deploy step failed — see agent_builds for details".to_string()))
         }
     };
 
     mark_job(&state.db, job.id, status, err.as_deref()).await;
-
     // If the agent was deleted mid-build, the cascade will have deleted this build_jobs row —
     // the UPDATE above is a no-op (0 rows affected) and that's fine.
+}
 
-    Ok(true)
+/// Immediately reset a panicked job rather than waiting for the `STUCK_JOB_MINS` sweep.
+///
+/// `old_attempt` is the pre-increment value from the claim. The DB now holds `old_attempt + 1`.
+/// If that value is at or above `MAX_ATTEMPTS`, the job is permanently failed;
+/// otherwise it is reset to `pending` for immediate retry.
+async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
+    if old_attempt >= MAX_ATTEMPTS {
+        mark_job(db, job_id, "failed", Some("job panicked during execution")).await;
+    } else if let Err(e) = sqlx::query(
+        "UPDATE build_jobs SET status = 'pending', picked_at = NULL WHERE id = $1",
+    )
+    .bind(job_id)
+    .execute(db)
+    .await
+    {
+        tracing::error!(job_id = %job_id, %e, "build worker: failed to reset panicked job — will recover via periodic sweep");
+    } else {
+        tracing::warn!(job_id = %job_id, attempt = old_attempt + 1, "build worker: panicked job reset to pending");
+    }
 }
 
 async fn mark_job(db: &PgPool, id: Uuid, status: &str, error: Option<&str>) {

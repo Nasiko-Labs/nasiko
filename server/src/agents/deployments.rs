@@ -254,6 +254,10 @@ async fn restart_deployment(
             env_vars: secrets,
             min_replicas: 1,
             max_replicas: 1,
+            // TODO: persist spec_resources in agent_deployments and restore here.
+            // Currently the upload path also uses None, so both deploy and restart
+            // apply the runtime default (0.5 CPU / 512 MiB). No behavioral regression
+            // until the API supports caller-specified resource limits.
             resources: None,
         };
 
