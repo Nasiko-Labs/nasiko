@@ -12,17 +12,18 @@ use serde_json::json;
 use std::convert::Infallible;
 use uuid::Uuid;
 
+use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
 use nasiko_react_agent::{
     AgentInfo, AgentSkill as OrcAgentSkill, Orchestrator, OrchestratorConfig, OrchestratorEvent,
     RegistrySource,
 };
 
-use nasiko_router::{FilePart, RouteRequest, RouterError, SessionHistory};
-use nasiko_types::a2a;
-use nasiko_types::a2a::{JsonRpcRequest, PartContent, StreamResponse};
+use nasiko_router::{AgentSelector, FilePart, RouteRequest, RouterError, SessionHistory};
+use nasiko_flow::FlowContext;
 
-use crate::auth::AuthIdentity;
-use crate::state::GatewayState;
+use crate::acl::CpCallGuard;
+use crate::auth::Claims;
+use crate::state::AppState;
 
 // TODO: Implement `AgentExecutor` trait from a2a-server-lf to replace manual Axum routing.
 // The trait has two methods: execute(&self, ctx: ExecutorContext) -> BoxStream<StreamResponse>
@@ -30,19 +31,22 @@ use crate::state::GatewayState;
 // Our handler already returns a stream of StreamResponse — wrap it in the trait impl and let
 // a2a-server handle JSON-RPC envelope, SSE serialization, and /.well-known/agent-card.json.
 
-/// Client-facing A2A endpoint. Accepts JSONRPC `message/send` or `message/stream`.
-/// Routes to the ReAct orchestrator or a specific agent based on `agentId` in the message.
-pub async fn a2a_handler(
-    State(state): State<GatewayState>,
-    AuthIdentity(identity): AuthIdentity,
+/// Server-side A2A dispatch endpoint. Accepts JSONRPC `message/send` or `message/stream`.
+/// Dispatches to the routing engine (no agent_id), ReAct orchestrator (agent_id=orchestrator),
+/// or a specific agent directly.
+///
+/// Note: the gateway has its own `orchestrator.rs` for the production A2A path (with auth,
+/// rate limiting, CORS). This handler lives in the server for direct access and integration
+/// testing without the gateway layer.
+pub async fn a2a_dispatch_handler(
+    State(state): State<AppState>,
+    claims: Claims,
     Json(req): Json<JsonRpcRequest>,
-) -> Result<Response, A2aError> {
+) -> Result<Response, A2aDispatchError> {
     let params: nasiko_types::a2a::SendMessageRequest = serde_json::from_value(
-        req.params
-            .clone()
-            .ok_or_else(|| A2aError::InvalidRequest("missing params".into()))?,
+        req.params.clone().ok_or_else(|| A2aDispatchError::InvalidRequest("missing params".into()))?,
     )
-    .map_err(|e| A2aError::InvalidRequest(format!("bad params: {e}")))?;
+    .map_err(|e| A2aDispatchError::InvalidRequest(format!("bad params: {e}")))?;
 
     let text = params
         .message
@@ -56,7 +60,7 @@ pub async fn a2a_handler(
         .join("\n");
 
     if text.is_empty() {
-        return Err(A2aError::InvalidRequest(
+        return Err(A2aDispatchError::InvalidRequest(
             "message must contain at least one text part".into(),
         ));
     }
@@ -68,14 +72,12 @@ pub async fn a2a_handler(
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let agent_id = params
-        .metadata
+    let agent_id = params.metadata
         .as_ref()
         .and_then(|m| m.get("agent_id"))
         .and_then(|v| v.as_str())
         .map(String::from);
-    let session_id = params
-        .metadata
+    let session_id = params.metadata
         .as_ref()
         .and_then(|m| m.get("session_id"))
         .and_then(|v| v.as_str())
@@ -83,9 +85,8 @@ pub async fn a2a_handler(
     let is_orchestrator = agent_id.as_deref() == Some("orchestrator");
     let use_router = agent_id.is_none();
 
-    let user_id: Uuid = identity.user_id.parse().unwrap_or(Uuid::nil());
+    let user_id: Uuid = claims.sub.parse().unwrap_or(Uuid::nil());
 
-    // Fetch chat history
     let history = if let Some(ref sid) = session_id {
         SessionHistory::fetch(sid, &state.db, 20).await
     } else {
@@ -106,34 +107,28 @@ pub async fn a2a_handler(
             Ok(result) => {
                 agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
             }
-            Err(RouterError::NoAgentsAvailable) => Err(A2aError::NoAgents),
-            Err(e) => Err(A2aError::Internal(e.to_string())),
+            Err(RouterError::NoAgentsAvailable) => Err(A2aDispatchError::NoAgents),
+            Err(e) => Err(A2aDispatchError::Internal(e.to_string())),
         }
     } else if is_orchestrator {
         orchestrator_stream(&state, &query, &task_id, &context_id, user_id).await
     } else {
-        agent_stream(
-            &state,
-            agent_id.as_deref().unwrap(),
-            &query,
-            &task_id,
-            &context_id,
-            user_id,
-        )
-        .await
+        agent_stream(&state, agent_id.as_deref().unwrap(), &query, &task_id, &context_id, user_id).await
     }
 }
 
+// ─── Orchestrator Path ───────────────────────────────────────────────────────
+
 async fn orchestrator_stream(
-    state: &GatewayState,
+    state: &AppState,
     query: &str,
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
-) -> Result<Response, A2aError> {
-    let agent_summaries = fetch_active_agents(&state.db)
+) -> Result<Response, A2aDispatchError> {
+    let agent_summaries = AgentSelector::fetch_active_agents(&state.db)
         .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?;
+        .map_err(|e| A2aDispatchError::Internal(e.to_string()))?;
 
     let mut agents: Vec<AgentInfo> = Vec::new();
     for summary in &agent_summaries {
@@ -161,7 +156,7 @@ async fn orchestrator_stream(
     }
 
     if agents.is_empty() {
-        return Err(A2aError::NoAgents);
+        return Err(A2aDispatchError::NoAgents);
     }
 
     let config = OrchestratorConfig {
@@ -173,7 +168,7 @@ async fn orchestrator_stream(
         ..Default::default()
     };
 
-    let flow_ctx = nasiko_flow::FlowContext::new_root();
+    let flow_ctx = FlowContext::new_root();
     let flow_id = flow_ctx.flow_id.clone();
     let traceparent = flow_ctx.to_traceparent();
     state.flow_guard.init_flow(&flow_ctx, "orchestrator").await;
@@ -189,15 +184,24 @@ async fn orchestrator_stream(
     .execute(&state.db)
     .await;
 
+    let caller_uuid: Option<Uuid> = None;
+    let guard = CpCallGuard::new(
+        state.db.clone(),
+        state.flow_guard.clone(),
+        flow_ctx,
+        caller_uuid,
+    );
+
     let a2a_client = nasiko_react_agent::A2aClient::new()
         .with_headers(vec![("traceparent".to_string(), traceparent)]);
 
     let mut orchestrator = Orchestrator::new(config, RegistrySource::Static(agents))
-        .with_a2a_client(a2a_client);
+        .with_a2a_client(a2a_client)
+        .with_guard(guard);
     orchestrator
         .init()
         .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?;
+        .map_err(|e| A2aDispatchError::Internal(e.to_string()))?;
 
     let mut rx = orchestrator.run_stream(query);
     let task_id = task_id.to_string();
@@ -237,7 +241,10 @@ async fn orchestrator_stream(
                             .await;
 
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                                "type": "tool_call", "agent": agent, "message": message, "turn": turn,
+                                "type": "tool_call",
+                                "agent": agent,
+                                "message": message,
+                                "turn": turn,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
@@ -257,13 +264,20 @@ async fn orchestrator_stream(
                             .await;
 
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                                "type": "tool_result", "agent": agent, "result": result, "success": success, "turn": turn,
+                                "type": "tool_result",
+                                "agent": agent,
+                                "result": result,
+                                "success": success,
+                                "turn": turn,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
                         OrchestratorEvent::PolicyRejected { agent, reason, turn } => {
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                                "type": "policy_rejected", "agent": agent, "reason": reason, "turn": turn,
+                                "type": "policy_rejected",
+                                "agent": agent,
+                                "reason": reason,
+                                "turn": turn,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
@@ -308,28 +322,30 @@ async fn orchestrator_stream(
     Ok(Sse::new(stream).into_response())
 }
 
+// ─── Direct Agent Path ───────────────────────────────────────────────────────
+
 async fn agent_stream(
-    state: &GatewayState,
+    state: &AppState,
     target: &str,
     query: &str,
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
-) -> Result<Response, A2aError> {
+) -> Result<Response, A2aDispatchError> {
     let agent = sqlx::query_as::<_, AgentRow>(
         "SELECT id, name, status FROM agents WHERE (id::text = $1 OR name = $1) AND status = 'running'",
     )
     .bind(target)
     .fetch_optional(&state.db)
     .await
-    .map_err(|e| A2aError::Internal(e.to_string()))?
-    .ok_or_else(|| A2aError::AgentNotFound(target.to_string()))?;
+    .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+    .ok_or_else(|| A2aDispatchError::AgentNotFound(target.to_string()))?;
 
     let endpoint = resolve_endpoint(state, &agent.name)
         .await
-        .map_err(A2aError::Internal)?;
+        .map_err(|e| A2aDispatchError::Internal(e))?;
 
-    let flow_ctx = nasiko_flow::FlowContext::new_root();
+    let flow_ctx = FlowContext::new_root();
     let flow_id = flow_ctx.flow_id.clone();
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
@@ -354,12 +370,15 @@ async fn agent_stream(
         .json(&req_body)
         .send()
         .await
-        .map_err(|e| A2aError::Internal(format!("agent request failed: {e}")))?;
+        .map_err(|e| A2aDispatchError::Internal(format!("agent request failed: {e}")))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(A2aError::Internal(format!("agent HTTP {}: {}", status, body)));
+        return Err(A2aDispatchError::Internal(format!(
+            "agent HTTP {}: {}",
+            status, body
+        )));
     }
 
     let content_type = response
@@ -408,7 +427,9 @@ async fn agent_stream(
                             buffer = buffer[line_end + 1..].to_string();
 
                             if let Some(data) = line.strip_prefix("data: ") {
-                                if data.trim().is_empty() { continue; }
+                                if data.trim().is_empty() {
+                                    continue;
+                                }
                                 let normalized = normalize_agent_event(data, &task_id, &context_id);
                                 yield Ok(Event::default().data(normalized));
                             }
@@ -436,10 +457,11 @@ async fn agent_stream(
 
         Ok(Sse::new(stream).into_response())
     } else {
+        // Non-streaming JSON — wrap as A2A stream
         let resp_body: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| A2aError::Internal(format!("invalid agent JSON: {e}")))?;
+            .map_err(|e| A2aDispatchError::Internal(format!("invalid agent JSON: {e}")))?;
 
         let text = nasiko_types::a2a::extract_text(
             resp_body.get("result").unwrap_or(&resp_body),
@@ -451,9 +473,11 @@ async fn agent_stream(
 
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
+
             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                 &task_id, &context_id, &artifact_id, &text, false, true,
             ))));
+
             yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
 
             let _ = sqlx::query(
@@ -474,8 +498,8 @@ async fn agent_stream(
 /// `GET /api/router/stats` — admin-only.
 /// Returns aggregated rows from the `agent_selection_stats` materialized view.
 pub async fn router_stats_handler(
-    State(state): State<GatewayState>,
-    _identity: AuthIdentity,
+    State(state): State<AppState>,
+    _claims: Claims,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
     let rows = sqlx::query_as::<_, StatsRow>(
         r#"SELECT
@@ -529,29 +553,28 @@ struct StatsRow {
     date: Option<String>,
 }
 
-// ─── Multipart Upload Handler ─────────────────────────────────────────────────
+// ─── Upload Handler ───────────────────────────────────────────────────────────
 
-/// `POST /api/a2a/upload` — multipart/form-data A2A entry point.
+/// `POST /api/a2a/upload` — multipart/form-data A2A dispatch entry point.
 ///
 /// Accepts:
 /// - `query`   (text field, required) — the user's question
 /// - Any number of additional fields treated as file attachments
 ///
 /// Each file is base64-encoded into a `FilePart` data URI and forwarded
-/// alongside the query to the routing engine (Day 4 wiring) or falls through
-/// to the orchestrator path for now.
+/// alongside the query to the routing engine.
 pub async fn a2a_upload_handler(
-    State(state): State<GatewayState>,
-    AuthIdentity(identity): AuthIdentity,
+    State(state): State<AppState>,
+    claims: Claims,
     mut multipart: Multipart,
-) -> Result<Response, A2aError> {
+) -> Result<Response, A2aDispatchError> {
     let mut query = String::new();
     let mut file_parts: Vec<FilePart> = Vec::new();
 
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| A2aError::InvalidRequest(format!("multipart error: {e}")))?
+        .map_err(|e| A2aDispatchError::InvalidRequest(format!("multipart error: {e}")))?
     {
         let field_name = field.name().unwrap_or("").to_string();
         let filename = field.file_name().map(str::to_string);
@@ -563,11 +586,11 @@ pub async fn a2a_upload_handler(
         let bytes = field
             .bytes()
             .await
-            .map_err(|e| A2aError::InvalidRequest(format!("field read error: {e}")))?;
+            .map_err(|e| A2aDispatchError::InvalidRequest(format!("field read error: {e}")))?;
 
         if field_name == "query" {
             query = String::from_utf8(bytes.to_vec())
-                .map_err(|_| A2aError::InvalidRequest("query must be valid UTF-8".into()))?;
+                .map_err(|_| A2aDispatchError::InvalidRequest("query must be valid UTF-8".into()))?;
         } else {
             let name = filename.unwrap_or_else(|| field_name.clone());
             file_parts.push(FilePart::encode(name, &bytes, content_type));
@@ -575,19 +598,19 @@ pub async fn a2a_upload_handler(
     }
 
     if query.trim().is_empty() {
-        return Err(A2aError::InvalidRequest(
+        return Err(A2aDispatchError::InvalidRequest(
             "multipart must include a non-empty 'query' text field".into(),
         ));
     }
 
-    let task_id = uuid::Uuid::new_v4().to_string();
-    let context_id = uuid::Uuid::new_v4().to_string();
-    let user_id: uuid::Uuid = identity.sub.parse().unwrap_or(uuid::Uuid::nil());
+    let task_id = Uuid::new_v4().to_string();
+    let context_id = Uuid::new_v4().to_string();
+    let user_id: Uuid = claims.sub.parse().unwrap_or(Uuid::nil());
 
     tracing::info!(
         user_id = %user_id,
         file_count = file_parts.len(),
-        "a2a upload: routing query with {} file(s)",
+        "a2a dispatch upload: routing query with {} file(s)",
         file_parts.len()
     );
 
@@ -601,18 +624,18 @@ pub async fn a2a_upload_handler(
         Ok(result) => {
             agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
         }
-        Err(RouterError::NoAgentsAvailable) => Err(A2aError::NoAgents),
-        Err(e) => Err(A2aError::Internal(e.to_string())),
+        Err(RouterError::NoAgentsAvailable) => Err(A2aDispatchError::NoAgents),
+        Err(e) => Err(A2aDispatchError::Internal(e.to_string())),
     }
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
-async fn resolve_endpoint(state: &GatewayState, agent_name: &str) -> Result<String, String> {
+async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
     let stored_url: Option<String> = sqlx::query_scalar(
         "SELECT url FROM agents WHERE name = $1 AND status = 'running'",
     )
@@ -622,11 +645,11 @@ async fn resolve_endpoint(state: &GatewayState, agent_name: &str) -> Result<Stri
     .map_err(|e| format!("db lookup: {e}"))?
     .flatten();
 
-    if let Some(ref url) = stored_url
-        && !url.is_empty()
-    {
-        let u = url.trim_end_matches('/');
-        return Ok(format!("{u}/"));
+    if let Some(ref url) = stored_url {
+        if !url.is_empty() {
+            let u = url.trim_end_matches('/');
+            return Ok(format!("{u}/"));
+        }
     }
 
     let container_id = nasiko_runtime::ContainerId::new(agent_name);
@@ -640,6 +663,7 @@ async fn resolve_endpoint(state: &GatewayState, agent_name: &str) -> Result<Stri
     Ok(format!("{e}/"))
 }
 
+/// Normalize a Python a2a-sdk JSONRPC event to CP native StreamResponse format.
 fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
         return data.to_string();
@@ -660,10 +684,14 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
             let artifact = result.get("artifact").cloned().unwrap_or(json!({}));
             let append = result.get("append").and_then(|a| a.as_bool()).unwrap_or(false);
             let last_chunk = result.get("final").and_then(|f| f.as_bool()).unwrap_or(false);
+
             let normalized = json!({
                 "artifactUpdate": {
-                    "taskId": task_id, "contextId": context_id,
-                    "artifact": artifact, "append": append, "lastChunk": last_chunk,
+                    "taskId": task_id,
+                    "contextId": context_id,
+                    "artifact": artifact,
+                    "append": append,
+                    "lastChunk": last_chunk,
                 }
             });
             serde_json::to_string(&normalized).unwrap_or_else(|_| data.to_string())
@@ -672,7 +700,9 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
             let status = result.get("status").cloned().unwrap_or(json!({}));
             let normalized = json!({
                 "statusUpdate": {
-                    "taskId": task_id, "contextId": context_id, "status": status,
+                    "taskId": task_id,
+                    "contextId": context_id,
+                    "status": status,
                 }
             });
             serde_json::to_string(&normalized).unwrap_or_else(|_| data.to_string())
@@ -681,65 +711,7 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
     }
 }
 
-async fn fetch_active_agents(db: &sqlx::PgPool) -> Result<Vec<AgentSummary>, sqlx::Error> {
-    let agents = sqlx::query_as::<_, AgentCardRow>(
-        "SELECT id, name, description, skills, tags FROM agents WHERE status = 'running' ORDER BY name",
-    )
-    .fetch_all(db)
-    .await?;
-
-    Ok(agents
-        .into_iter()
-        .map(|a| AgentSummary {
-            id: a.id,
-            name: a.name,
-            description: a.description.unwrap_or_default(),
-            skills: extract_skills(a.skills.0),
-            tags: a.tags,
-        })
-        .collect())
-}
-
-fn extract_skills(skills_json: serde_json::Value) -> Vec<SkillSummary> {
-    let Some(arr) = skills_json.as_array() else {
-        return vec![];
-    };
-    arr.iter()
-        .filter_map(|s| {
-            let name = s.get("name").and_then(|n| n.as_str())?.to_string();
-            let description = s
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap_or(&name)
-                .to_string();
-            Some(SkillSummary { name, description })
-        })
-        .collect()
-}
-
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-struct AgentSummary {
-    id: Uuid,
-    name: String,
-    description: String,
-    skills: Vec<SkillSummary>,
-    tags: Vec<String>,
-}
-
-struct SkillSummary {
-    name: String,
-    description: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct AgentCardRow {
-    id: Uuid,
-    name: String,
-    description: Option<String>,
-    skills: sqlx::types::Json<serde_json::Value>,
-    tags: Vec<String>,
-}
+// ─── Types & Errors ──────────────────────────────────────────────────────────
 
 #[derive(sqlx::FromRow)]
 #[allow(dead_code)]
@@ -750,28 +722,28 @@ struct AgentRow {
 }
 
 #[derive(Debug)]
-pub enum A2aError {
+pub enum A2aDispatchError {
     InvalidRequest(String),
     NoAgents,
     AgentNotFound(String),
     Internal(String),
 }
 
-impl IntoResponse for A2aError {
+impl IntoResponse for A2aDispatchError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
-            Self::InvalidRequest(e) => (axum::http::StatusCode::BAD_REQUEST, -32602, e),
+            Self::InvalidRequest(e) => (StatusCode::BAD_REQUEST, -32602, e),
             Self::NoAgents => (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                StatusCode::SERVICE_UNAVAILABLE,
                 -32603,
                 "no agents available".into(),
             ),
             Self::AgentNotFound(name) => (
-                axum::http::StatusCode::NOT_FOUND,
+                StatusCode::NOT_FOUND,
                 -32604,
                 format!("agent '{}' not found or not running", name),
             ),
-            Self::Internal(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, -32603, e),
+            Self::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, e),
         };
 
         let body = Json(json!({

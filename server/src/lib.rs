@@ -20,7 +20,7 @@ pub mod telemetry;
 pub mod usage;
 pub mod users;
 
-use axum::{Json, Router, middleware, routing::get};
+use axum::{ Json, Router, middleware, routing::get };
 use axum::handler::Handler;
 use serde::Serialize;
 use tower_http::cors::CorsLayer;
@@ -49,9 +49,7 @@ impl<T: Serialize> Paginated<T> {
 /// Called by both OSS and cloud binaries. The `fallback` handler serves
 /// static UI assets — each binary provides its own with appropriate embeds.
 pub fn build_app<F, T>(state: AppState, fallback: F) -> Router
-where
-    F: Handler<T, ()> + Clone + Send + 'static,
-    T: 'static,
+    where F: Handler<T, ()> + Clone + Send + 'static, T: 'static
 {
     build_app_with_user_router(state.clone(), fallback, users::router())
 }
@@ -62,11 +60,10 @@ where
 pub fn build_app_with_user_router<F, T>(
     state: AppState,
     fallback: F,
-    user_router: Router<AppState>,
-) -> Router
-where
-    F: Handler<T, ()> + Clone + Send + 'static,
-    T: 'static,
+    user_router: Router<AppState>
+)
+    -> Router
+    where F: Handler<T, ()> + Clone + Send + 'static, T: 'static
 {
     // Container lifecycle routes: deployer+ only
     let container_routes = Router::new()
@@ -79,8 +76,7 @@ where
         .layer(middleware::from_fn(auth::rbac::require_admin));
 
     // User management: superuser only
-    let user_routes = user_router
-        .layer(middleware::from_fn(auth::rbac::require_superuser));
+    let user_routes = user_router.layer(middleware::from_fn(auth::rbac::require_superuser));
 
     // Agent deploy routes (upload-and-deploy, deploy-status, deployments, ACL): deployer+ only.
     let agent_deploy_routes = Router::new()
@@ -95,8 +91,8 @@ where
 
     let protected = Router::new()
         .route("/me", get(me))
+        .merge(router::router_routes())
         .merge(agent_deploy_routes)
-        .nest("/agents", agents::router())
         .merge(container_routes)
         .merge(pool_routes)
         .merge(user_routes)
@@ -112,10 +108,7 @@ where
         .merge(observability::observe_router())
         .merge(github::router())
         .merge(auth::login::protected_router())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     let oci_routes = nasiko_oci::axum_routes(oci_state);
@@ -124,6 +117,7 @@ where
         .route("/health", get(health))
         .merge(observability::router())
         .merge(auth::login::public_router())
+        .merge(github::public_router())  
         .nest("/api", protected)
         .with_state(state)
         .merge(oci_routes)

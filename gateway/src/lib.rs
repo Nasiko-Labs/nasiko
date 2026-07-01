@@ -1,6 +1,5 @@
 pub mod auth;
 pub mod config;
-pub mod orchestrator;
 pub mod proxy;
 pub mod state;
 #[cfg(test)]
@@ -8,13 +7,12 @@ mod tests;
 
 use axum::{
     middleware,
-    routing::{any, post},
+    routing::any,
     Router,
 };
 use tower_http::cors::CorsLayer;
 
 use auth::auth_middleware;
-use orchestrator::a2a_handler;
 use proxy::{agent_proxy, server_proxy};
 use state::GatewayState;
 
@@ -32,7 +30,6 @@ pub fn build_app(state: GatewayState) -> Router {
 
     // ── Auth-required: A2A orchestrator + direct agent proxy ────────────────
     let authed = Router::new()
-        .route("/api/a2a", post(a2a_handler))
         .route("/agents/{agent_id}/{*rest}", any(agent_proxy))
         .route("/agents/{agent_id}", any(agent_proxy))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
