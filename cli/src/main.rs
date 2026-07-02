@@ -40,6 +40,9 @@ const HELP_TEXT: &str = "\
   run        Build + run agent locally
   chat       Send a message via A2A protocol (--tui for full-screen)
   sessions   List chat sessions
+  create-session  Create a new session on the active cluster
+  history    Show message history for a session
+  delete-session  Delete a session
 
 \x1b[33mOperate:\x1b[0m
   push       Build + push image to cluster registry (no deploy)
@@ -202,15 +205,40 @@ enum AgentOpsCommands {
         /// Launch full-screen TUI (ratatui)
         #[arg(long)]
         tui: bool,
-        /// Resume a previous session by ID
+        /// Resume a previous session by ID (TUI mode)
         #[arg(long)]
         resume: Option<String>,
+        /// Route message to an existing session (one-shot mode)
+        #[arg(long)]
+        session_id: Option<String>,
     },
     /// List chat sessions
     Sessions {
         /// A2A endpoint URL (uses active cluster if omitted)
         #[arg(long)]
         endpoint: Option<String>,
+    },
+    /// Create a new chat session on the active cluster
+    #[command(name = "create-session")]
+    CreateSession {
+        /// A2A agent URL to associate with the session
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Show message history for a session
+    #[command(name = "history")]
+    History {
+        /// Session ID
+        session_id: String,
+    },
+    /// Delete a chat session
+    #[command(name = "delete-session")]
+    DeleteSession {
+        /// Session ID
+        session_id: String,
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// GitHub integration
     Github {
@@ -509,15 +537,24 @@ fn main() -> Result<()> {
             AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
             AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
             AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
-            AgentOpsCommands::Chat { url, message, tui, resume } => {
+            AgentOpsCommands::Chat { url, message, tui, resume, session_id } => {
                 if tui || resume.is_some() {
                     commands::tui::run_tui(&url, resume.as_deref())
                 } else {
-                    commands::chat::chat(&url, message.as_deref())
+                    commands::chat::chat(&url, message.as_deref(), session_id.as_deref())
                 }
             }
             AgentOpsCommands::Sessions { endpoint } => {
                 commands::tui::list_sessions(endpoint.as_deref())
+            }
+            AgentOpsCommands::CreateSession { agent } => {
+                commands::tui::create_session(agent.as_deref())
+            }
+            AgentOpsCommands::History { session_id } => {
+                commands::tui::session_history(&session_id)
+            }
+            AgentOpsCommands::DeleteSession { session_id, yes } => {
+                commands::tui::delete_session(&session_id, yes)
             }
             AgentOpsCommands::Agents { command } => match command {
                 AgentsCommands::Ls => commands::agents::cmd_ls(),

@@ -10,12 +10,12 @@ use crate::config;
 /// - Direct agent: http://localhost:10010/
 /// - CP orchestrator: http://localhost:8080/api/a2a
 /// - CP agent proxy: http://localhost:8080/api/agents/{id}/a2a
-pub fn chat(url: &str, message: Option<&str>) -> Result<()> {
+pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
     let endpoint = url.trim_end_matches('/');
 
     match message {
         Some(msg) => {
-            send_message(endpoint, msg)?;
+            send_message(endpoint, msg, session_id)?;
             println!();
         }
         None => {
@@ -31,7 +31,7 @@ pub fn chat(url: &str, message: Option<&str>) -> Result<()> {
                     break;
                 }
                 println!();
-                match send_message(endpoint, &input) {
+                match send_message(endpoint, &input, session_id) {
                     Ok(_) => println!("\n"),
                     Err(e) => eprintln!("  error: {e}\n"),
                 }
@@ -42,7 +42,10 @@ pub fn chat(url: &str, message: Option<&str>) -> Result<()> {
 }
 
 /// Send an A2A message/stream request and handle the response.
-fn send_message(endpoint: &str, text: &str) -> Result<()> {
+fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<()> {
+    let context_id = session_id
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
@@ -52,7 +55,7 @@ fn send_message(endpoint: &str, text: &str) -> Result<()> {
                 "messageId": uuid::Uuid::new_v4().to_string(),
                 "role": "ROLE_USER",
                 "parts": [{"text": text}],
-                "contextId": uuid::Uuid::new_v4().to_string()
+                "contextId": context_id
             }
         }
     });

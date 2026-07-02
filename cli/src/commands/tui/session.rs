@@ -210,6 +210,23 @@ pub fn post_cp_message(
     Ok(())
 }
 
+pub fn delete_cp_session(base_url: &str, token: &str, session_id: &str) -> Result<()> {
+    let http = ureq::Agent::new_with_config(
+        ureq::config::Config::builder().timeout_global(None).build(),
+    );
+    let url = format!("{base_url}/api/chat/sessions/{session_id}");
+    let resp = http
+        .delete(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .call()
+        .context("failed to delete session")?;
+    let status = resp.status().as_u16();
+    if status >= 400 {
+        anyhow::bail!("server returned HTTP {status} for delete session");
+    }
+    Ok(())
+}
+
 // ─── Unified helpers ────────────────────────────────────────────────────────
 
 pub fn start_session(endpoint: &str) -> Result<Session> {

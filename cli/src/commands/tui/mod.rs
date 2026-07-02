@@ -110,6 +110,54 @@ fn handle_scroll_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+// ─── Session management commands ────────────────────────────────────────────
+
+pub fn create_session(agent_url: Option<&str>) -> Result<()> {
+    let base_url = crate::config::active_url().context("no active cluster — run `nasiko connect <url>`")?;
+    let token = crate::config::active_token()
+        .context("config error")?
+        .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
+    let s = session::create_cp_session(&base_url, &token, agent_url.unwrap_or(""), "New session")?;
+    println!("{}", s.session_id);
+    Ok(())
+}
+
+pub fn session_history(session_id: &str) -> Result<()> {
+    let base_url = crate::config::active_url().context("no active cluster")?;
+    let token = crate::config::active_token()
+        .context("config error")?
+        .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
+    let messages = session::fetch_cp_messages(&base_url, &token, session_id)?;
+    if messages.is_empty() {
+        println!("No messages in session '{session_id}'.");
+        return Ok(());
+    }
+    for msg in messages {
+        println!("[{}] {}", msg.role, msg.content);
+    }
+    Ok(())
+}
+
+pub fn delete_session(session_id: &str, yes: bool) -> Result<()> {
+    if !yes {
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!("Delete session '{session_id}'?"))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    let base_url = crate::config::active_url().context("no active cluster")?;
+    let token = crate::config::active_token()
+        .context("config error")?
+        .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
+    session::delete_cp_session(&base_url, &token, session_id)?;
+    println!("Session '{session_id}' deleted.");
+    Ok(())
+}
+
 // ─── Sessions list command ──────────────────────────────────────────────────
 
 pub fn list_sessions(endpoint: Option<&str>) -> Result<()> {
