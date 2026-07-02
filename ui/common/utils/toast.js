@@ -1,6 +1,5 @@
 export function showToast(message) {
   const toast = document.createElement("div");
-  toast.setAttribute("popover", "manual");
   toast.textContent = message;
   Object.assign(toast.style, {
     position: "fixed",
@@ -14,16 +13,17 @@ export function showToast(message) {
     boxShadow: "var(--shadow-lg)",
     border: "1px solid var(--color-border)",
     fontSize: "var(--font-size-sm)",
-    inset: "auto",
-    margin: "0",
+    zIndex: "10000",
+    maxWidth: "min(90vw, 400px)",
+    textAlign: "center",
+    wordBreak: "break-word",
     opacity: "0",
     transition: "opacity 200ms",
   });
   document.body.appendChild(toast);
-  toast.showPopover();
-  setTimeout(() => { toast.style.opacity = "1"; }, 10);
+  requestAnimationFrame(() => { toast.style.opacity = "1"; });
   setTimeout(() => {
     toast.style.opacity = "0";
-    setTimeout(() => { toast.hidePopover(); toast.remove(); }, 200);
-  }, 2000);
+    setTimeout(() => { toast.remove(); }, 200);
+  }, 3000);
 }

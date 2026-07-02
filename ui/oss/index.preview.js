@@ -7,10 +7,11 @@ export default {
       { text: '{"jsonrpc":"2.0","id":"1","result":{"type":"status","status":"completed"}}\n', delay: 100 },
     ]}],
     ["GET /api/containers", [
-      { id: "coding-agent", name: "Coding Agent", image: "nasiko/coding-agent:latest", status: "running" },
-      { id: "docs-agent", name: "Docs Agent", image: "nasiko/docs-agent:latest", status: "running" },
-      { id: "nutrition-agent", name: "Nutrition", image: "nasiko/nutrition:latest", status: "running" },
-      { id: "research-agent", name: "Research", image: "nasiko/research-agent:latest", status: "running" },
+      { container_id: "coding-agent", state: "running", replicas_live: 1, endpoint: "http://coding-agent:8000" },
+      { container_id: "docs-agent", state: "running", replicas_live: 1, endpoint: "http://docs-agent:8000" },
+      { container_id: "nutrition-agent", state: "running", replicas_live: 1, endpoint: "http://nutrition:8000" },
+      { container_id: "research-agent", state: "running", replicas_live: 1, endpoint: "http://research-agent:8000" },
+      { container_id: "devops-agent", state: "stopped", replicas_live: 0, endpoint: null },
     ]],
   ],
   scenarios: {

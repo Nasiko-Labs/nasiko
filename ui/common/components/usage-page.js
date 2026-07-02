@@ -1,11 +1,10 @@
-import { icons } from '/common/utils/icons.js';
-
 import styles from './usage-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class UsagePage extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
+      <h1 class="page-title">Usage</h1>
       <div class="stats" id="stats-grid">
         ${Array.from({ length: 4 }, () => `
           <div class="stat-card">
@@ -16,8 +15,10 @@ class UsagePage extends HTMLElement {
       </div>
 
       <h2 class="section-title">Daily Usage (7 days)</h2>
-      <div class="chart-wrap" id="chart" style="display:flex;align-items:flex-end;gap:var(--space-xs);height:200px;padding:var(--space-md);">
-        ${Array.from({ length: 7 }, () => `<div style="flex:1;background:var(--color-border);border-radius:var(--radius-sm) var(--radius-sm) 0 0;height:${20 + Math.floor(Math.random() * 60)}%;opacity:0.5;"></div>`).join('')}
+      <div class="chart-wrap" id="chart">
+        <div style="display:flex;align-items:flex-end;gap:var(--space-xs);height:160px;padding:var(--space-md);">
+          ${Array.from({ length: 7 }, (_, i) => `<div style="flex:1;background:var(--color-border);border-radius:var(--radius-sm) var(--radius-sm) 0 0;height:${20 + ((i * 17 + 13) % 60)}%;opacity:0.5;"></div>`).join('')}
+        </div>
       </div>
 
       <div class="tabs">
@@ -48,24 +49,24 @@ class UsagePage extends HTMLElement {
     const grid = this.querySelector('#stats-grid');
     grid.innerHTML = `
       <div class="stat-card">
-        <div class="stat-label">Today</div>
-        <div class="stat-value">${this.#fmtTokens(s.today_tokens)}</div>
-        <div class="stat-sub">${this.#fmtCost(s.today_cost)}</div>
+        <div class="stat-label">Total Tokens</div>
+        <div class="stat-value">${this.#fmtTokens(s.total_tokens)}</div>
+        <div class="stat-sub">${this.#fmtTokens(s.total_input_tokens)} in / ${this.#fmtTokens(s.total_output_tokens)} out</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">This Week</div>
-        <div class="stat-value">${this.#fmtTokens(s.week_tokens)}</div>
-        <div class="stat-sub">${this.#fmtCost(s.week_cost)}</div>
+        <div class="stat-label">Total Cost</div>
+        <div class="stat-value">${this.#fmtCost(s.total_cost_usd)}</div>
+        <div class="stat-sub">Last ${s.period_days || 30} days</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">This Month</div>
-        <div class="stat-value">${this.#fmtTokens(s.month_tokens)}</div>
-        <div class="stat-sub">${this.#fmtCost(s.month_cost)}</div>
+        <div class="stat-label">Requests</div>
+        <div class="stat-value">${(s.request_count || 0).toLocaleString()}</div>
+        <div class="stat-sub">${s.avg_latency_ms != null ? Math.round(s.avg_latency_ms) + 'ms avg' : '—'}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Total Requests</div>
-        <div class="stat-value">${(s.total_requests || 0).toLocaleString()}</div>
-        <div class="stat-sub">${s.active_agents || 0} active agents</div>
+        <div class="stat-label">Avg Latency</div>
+        <div class="stat-value">${s.avg_latency_ms != null ? Math.round(s.avg_latency_ms) + 'ms' : '—'}</div>
+        <div class="stat-sub">per request</div>
       </div>
     `;
   }
@@ -77,14 +78,15 @@ class UsagePage extends HTMLElement {
       chart.innerHTML = '<p style="color:var(--color-text-muted);text-align:center;padding:var(--space-xl);">No usage data yet.</p>';
       return;
     }
-    const max = Math.max(...data.map(d => d.tokens));
+    const max = Math.max(...data.map(d => d.total_tokens || 0));
+    const barHeight = 140;
     chart.innerHTML = `
-      <div style="display:flex;align-items:flex-end;gap:var(--space-xs);height:160px;">
+      <div style="display:flex;align-items:flex-end;gap:var(--space-xs);height:${barHeight + 24}px;padding:0 var(--space-sm);">
         ${data.map(d => {
-          const pct = max > 0 ? (d.tokens / max) * 100 : 0;
-          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;">
-            <div style="width:100%;background:var(--color-primary);border-radius:var(--radius-sm) var(--radius-sm) 0 0;height:${pct}%;min-height:2px;transition:height 0.3s;"></div>
-            <span style="font-size:var(--font-size-xs);color:var(--color-text-muted);">${d.date?.slice(5) || ''}</span>
+          const h = max > 0 ? Math.max(2, Math.round(((d.total_tokens || 0) / max) * barHeight)) : 2;
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;">
+            <div style="width:100%;background:var(--color-primary);border-radius:var(--radius-sm) var(--radius-sm) 0 0;height:${h}px;transition:height 0.3s;"></div>
+            <span style="font-size:var(--font-size-xs);color:var(--color-text-muted);white-space:nowrap;">${d.date?.slice(5) || ''}</span>
           </div>`;
         }).join('')}
       </div>
@@ -94,11 +96,11 @@ class UsagePage extends HTMLElement {
   #setupTable() {
     const table = this.querySelector('#usage-table');
     table.columns = [
-      { key: 'name', label: 'Name', width: '30%' },
-      { key: 'requests', label: 'Requests', width: '15%' },
-      { key: 'tokens', label: 'Tokens', width: '20%', render: (v) => this.#fmtTokens(v) },
-      { key: 'cost', label: 'Cost', width: '15%', render: (v) => this.#fmtCost(v) },
-      { key: 'avg_latency_ms', label: 'Avg Latency', width: '20%', render: (v) => v != null ? `${v}ms` : '—' },
+      { key: 'agent_name', label: 'Agent', width: '25%', render: (v) => v || '(unknown)' },
+      { key: 'request_count', label: 'Requests', width: '15%' },
+      { key: 'total_tokens', label: 'Tokens', width: '20%', render: (v) => this.#fmtTokens(v) },
+      { key: 'total_cost_usd', label: 'Cost', width: '15%', render: (v) => this.#fmtCost(v) },
+      { key: 'avg_latency_ms', label: 'Avg Latency', width: '25%', render: (v) => v != null ? `${Math.round(v)}ms` : '—' },
     ];
   }
 

@@ -132,10 +132,12 @@
       &.visible { display: flex; }
     }
     .footer {
-      margin-top: var(--space-sm);
       display: flex;
       flex-wrap: wrap;
       gap: var(--space-sm);
+    }
+    .footer:has(.file-item) {
+      margin-top: var(--space-sm);
     }
     .file-list { display: flex; flex-direction: column; gap: 6px; width: 100%; }
     .file-item {

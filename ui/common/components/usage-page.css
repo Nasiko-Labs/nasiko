@@ -1,5 +1,15 @@
 @scope (usage-page) {
-  :scope { display: block; }
+  :scope {
+    display: block;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: var(--space-lg) var(--space-md);
+  }
+  .page-title {
+    font-size: var(--font-size-2xl);
+    font-weight: 600;
+    margin: 0 0 var(--space-lg);
+  }
   .stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

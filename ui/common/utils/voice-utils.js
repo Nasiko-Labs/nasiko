@@ -2,8 +2,6 @@
  * Shared voice recording and transcription utilities
  */
 
-import { icons } from '/common/utils/icons.js';
-
 export class VoiceRecorder {
   constructor() {
     this.isRecording = false;
@@ -48,13 +46,10 @@ export class VoiceRecorder {
     return new Promise((resolve, reject) => {
       this.mediaRecorder.onstop = async () => {
         try {
-          const audioBlob = new Blob(this.audioChunks, { type: "audio/wav" });
-          const formData = new FormData();
-          const recordingFileName = `recording-${new Date().toISOString().replace(/:/g, "-")}.wav`;
-          formData.append("audio", audioBlob, recordingFileName);
+          const audioBlob = new Blob(this.audioChunks, { type: "audio/webm" });
 
           if (this.transcriptionCallback) {
-            const transcribedText = await this.transcriptionCallback(formData);
+            const transcribedText = await this.transcriptionCallback(audioBlob);
             this.cleanup();
             resolve(transcribedText);
           } else {

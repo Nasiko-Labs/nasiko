@@ -1,6 +1,7 @@
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
+import '/common/components/smart-table.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-badge.js';
 
@@ -12,6 +13,10 @@ const STATUS_VARIANTS = { running: 'success', stopped: 'warning', failed: 'error
 class YourAgentsPage extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
+      <div class="page-header">
+        <h1 class="page-title">Your Agents</h1>
+        <p class="page-desc">Deployed agent containers you manage.</p>
+      </div>
       <smart-table
         data-fn="fetchContainers"
         search

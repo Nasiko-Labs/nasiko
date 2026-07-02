@@ -24,7 +24,7 @@ export default {
       { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
       { title: "Builds", url: "/builds.html", icon: "cube" },
       { title: "Usage", url: "/usage.html", icon: "code" },
-      { title: "Secrets", url: "/secrets.html", icon: "key" },
+      { title: "Secrets", url: "/secrets.html", icon: "lock" },
       { title: "Settings", url: "/settings.html", icon: "settings" },
     ],
   },

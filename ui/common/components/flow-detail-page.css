@@ -1,5 +1,10 @@
 @scope (flow-detail-page) {
-  :scope { display: block; }
+  :scope {
+    display: block;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: var(--space-lg) var(--space-md);
+  }
   .page-toolbar {
     display: flex;
     align-items: center;

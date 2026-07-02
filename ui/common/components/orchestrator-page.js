@@ -132,9 +132,10 @@ class OrchestratorPage extends HTMLElement {
     try {
       const res = await fetch('/api/containers');
       if (!res.ok) throw new Error('Failed to fetch');
-      const containers = await res.json();
-      const recent = (Array.isArray(containers) ? containers : [])
-        .filter(c => c.status === 'running')
+      const body = await res.json();
+      const containers = Array.isArray(body) ? body : (body.data || []);
+      const recent = containers
+        .filter(c => (c.state || c.status) === 'running')
         .slice(0, 6);
 
       if (!recent.length) {
@@ -142,15 +143,18 @@ class OrchestratorPage extends HTMLElement {
         return;
       }
 
-      grid.innerHTML = recent.map(agent => `
-        <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(agent.name || agent.id)}">
-          <div class="agent-card-icon">${icons.cube('', 14)}</div>
-          <div class="agent-card-info">
-            <div class="agent-card-name">${this.#esc(agent.name || agent.id)}</div>
-            ${agent.image ? `<div class="agent-card-desc">${this.#esc(agent.image.split('/').pop().split(':')[0])}</div>` : ''}
-          </div>
-        </a>
-      `).join('');
+      grid.innerHTML = recent.map(agent => {
+        const id = agent.container_id || agent.name || agent.id;
+        const displayName = agent.display_name || this.#formatName(id);
+        return `
+          <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(displayName)}&agent_id=${encodeURIComponent(id)}">
+            <div class="agent-card-icon">${icons.cube('', 14)}</div>
+            <div class="agent-card-info">
+              <div class="agent-card-name">${this.#esc(displayName)}</div>
+            </div>
+          </a>
+        `;
+      }).join('');
     } catch {
       grid.innerHTML = '';
       this.querySelector('#recent-agents')?.remove();
@@ -161,6 +165,7 @@ class OrchestratorPage extends HTMLElement {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let fullText = '';
     let lastStatus = '';
     let lastDotClass = '';
 
@@ -226,14 +231,20 @@ class OrchestratorPage extends HTMLElement {
           }
 
           if (evt.artifactUpdate) {
-            const text = evt.artifactUpdate.artifact?.parts
+            const au = evt.artifactUpdate;
+            const text = au.artifact?.parts
               ?.filter(p => p.text)
               .map(p => p.text)
               .join('');
             if (text) {
+              if (au.append) {
+                fullText += text;
+              } else {
+                fullText = text;
+              }
               streamStatus.classList.add('is-done');
               responseContent.classList.add('is-visible');
-              responseContent.textContent = text;
+              responseContent.textContent = fullText;
             }
           }
         } catch {}
@@ -241,11 +252,16 @@ class OrchestratorPage extends HTMLElement {
     }
 
     streamStatus.classList.add('is-done');
-    if (!responseContent.textContent) {
+    if (!fullText) {
+      fullText = 'No response';
       responseContent.classList.add('is-visible');
-      responseContent.textContent = 'No response';
+      responseContent.textContent = fullText;
     }
-    return responseContent.textContent;
+    return fullText;
+  }
+
+  #formatName(id) {
+    return (id || '').replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
 
   #esc(s) {

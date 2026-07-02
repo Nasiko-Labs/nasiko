@@ -1,14 +1,12 @@
 // Settings page fixtures
 export default {
-  window: {
-    fetchSettings: async () => ({
-      cluster_name: "nasiko-dev",
-      scheduler_mode: "local",
-      otel_enabled: false,
-      otel_collector_endpoint: "http://otel-collector.nasiko-infra:4318",
-      seed_agents: "nasiko/coding:latest nasiko/research:latest",
-      max_containers: 20,
-      default_replicas: 1,
-    }),
-  },
+  fetch: [
+    ["GET /api/settings", {
+      instance_name: "nasiko-dev",
+      default_model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      registry_url: "https://registry.nasiko.dev",
+    }],
+    ["PUT /api/settings", { ok: true }],
+  ],
 };
