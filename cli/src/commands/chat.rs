@@ -146,8 +146,13 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<()> {
         let mut is_terminal = false;
 
         if let Some(task) = result.get("task") {
-            handle_task_result(task);
-            is_terminal = true;
+            // A "task" event with terminal state means we're done (non-streaming response).
+            // Otherwise it's the initial task submission — keep reading.
+            let state = task.pointer("/status/state").and_then(|s| s.as_str()).unwrap_or("");
+            if matches!(state, "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED") {
+                handle_task_result(task);
+                is_terminal = true;
+            }
         } else if let Some(status_update) = result.get("statusUpdate") {
             handle_status_update(status_update);
             is_terminal = is_terminal_state(status_update);
@@ -309,10 +314,10 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         let msg_id = format!("{:x}", std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
         let mut payload = serde_json::json!({
-            "jsonrpc": "2.0", "method": "message/send", "id": &msg_id,
+            "jsonrpc": "2.0", "method": "SendMessage", "id": &msg_id,
             "params": { "message": {
-                "role": "user", "parts": [{ "kind": "text", "text": msg }],
-                "messageId": &msg_id, "kind": "message",
+                "role": "ROLE_USER", "parts": [{ "text": msg }],
+                "messageId": &msg_id,
             }}
         });
         if let Some(ref cid) = ctx_id {
@@ -320,6 +325,7 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         }
         let mut resp = ureq::post(&format!("{}/", base))
             .header("Content-Type", "application/json")
+            .header("A2A-Version", "1.0")
             .send_json(&payload)
             .map_err(|e| anyhow::anyhow!("failed to reach agent: {}", e))?;
         let raw: serde_json::Value = resp.body_mut().read_json()?;
