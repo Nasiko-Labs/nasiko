@@ -226,13 +226,14 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     }
   }
 
+  .nav-icon { opacity: 0.6; }
+  .nav-link:hover .nav-icon, .nav-link.is-active .nav-icon { opacity: 1; }
+
   .nav-link {
     position: relative;
     display: inline-flex;
-    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    text-align: center;
+    gap: var(--space-xs);
     padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-sm);
     font-size: var(--font-size-sm);
@@ -543,10 +544,11 @@ export class AppHeader extends HTMLElement {
         const active = this.#isActive(href);
         const titleEsc = this.#esc(link.title);
         const bgSpan = active ? '<span class="nav-link-bg"></span>' : '';
+        const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('nav-icon', 16) : '';
         return `<li><a href="${this.#esc(href)}"
         class="nav-link${active ? " is-active" : ""}"
         data-text="${titleEsc}"
-        ${active ? 'aria-current="page"' : ""}>${bgSpan}<span class="nav-link-text">${titleEsc}</span></a></li>`;
+        ${active ? 'aria-current="page"' : ""}>${bgSpan}${iconHtml}<span class="nav-link-text">${titleEsc}</span></a></li>`;
       })
       .join("");
 
