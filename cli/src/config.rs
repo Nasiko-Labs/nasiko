@@ -43,9 +43,21 @@ pub fn save(config: &Config) -> Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        // Restrict the ~/.nasiko/ directory so other local users cannot list it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     let content = serde_json::to_string_pretty(config)?;
-    std::fs::write(&path, content)?;
+    std::fs::write(&path, &content)?;
+    // Restrict to owner-only: the file contains a raw JWT token.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 

@@ -108,10 +108,8 @@ async fn initialize_admin(
     State(state): State<AppState>,
     Json(req): Json<InitAdminRequest>,
 ) -> impl IntoResponse {
-    match state.auth.authenticate(&req.username, &req.email).await {
-        // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
-        _ => {}
-    }
+    // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
+    let _ = state.auth.authenticate(&req.username, &req.email).await;
     // The actual initialize-admin endpoint uses a different flow:
     // it creates the admin user and returns credentials.
     match initialize_admin_inner(&state, &req.username, &req.email).await {

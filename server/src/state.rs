@@ -158,10 +158,10 @@ impl AppState {
         if let (Ok(admin_user), Ok(admin_pass)) = (
             std::env::var("ADMIN_USERNAME"),
             std::env::var("ADMIN_PASSWORD"),
-        ) {
-            if let Err(e) = self.auth.bootstrap_admin(&admin_user, &admin_pass).await {
-                tracing::warn!(%e, "admin bootstrap failed (may already exist)");
-            }
+        )
+            && let Err(e) = self.auth.bootstrap_admin(&admin_user, &admin_pass).await
+        {
+            tracing::warn!(%e, "admin bootstrap failed (may already exist)");
         }
 
         crate::seed::seed_agents_if_configured(self).await;

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::catalog::models::Skill;
-use nasiko_router::models::*;
-use nasiko_router::providers::{CompletionResult, LLMProvider, ProviderError};
+use crate::router::models::*;
+use crate::router::providers::{CompletionResult, LLMProvider, ProviderError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedCard {
@@ -13,6 +13,12 @@ pub struct GeneratedCard {
     pub capabilities: GeneratedCapabilities,
     pub default_input_modes: Vec<String>,
     pub default_output_modes: Vec<String>,
+    /// Primary framework detected from imports/deps (fastapi, express, gin, axum, etc.), or null.
+    pub framework: Option<String>,
+    /// Communication transport inferred from route definitions and server setup.
+    pub transport: String,
+    /// LLM provider the agent wraps (openai, anthropic, groq, etc.), or null if not LLM-based.
+    pub llm_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,12 +85,15 @@ impl CapabilityGenerator {
     fn build_system_prompt(&self) -> String {
         r#"You are an expert at analyzing agent source code and generating A2A-compatible agent cards.
 
-Given the source code of an agent, produce:
+Given the source code of an agent (and optionally its dependency manifest), produce:
 1. A concise description of what the agent does (1-2 sentences)
 2. A list of skills the agent exposes — each skill is a discrete capability that can be invoked
 3. Tags for discovery (lowercase, hyphenated)
 4. Capabilities (boolean flags for protocol features)
 5. Input/output MIME types the agent handles
+6. Framework: the primary framework used to build the agent (fastapi, flask, django, express, nestjs, gin, axum, langchain, crewai, etc.) — null if not detectable from imports or deps
+7. Transport: how the agent communicates externally — one of "http", "websocket", "grpc", "stdio", or "unknown"
+8. LLM Provider: which LLM provider the agent directly wraps or calls (openai, anthropic, groq, ollama, huggingface, gemini, etc.) — null if the agent is not LLM-based
 
 Guidelines for skills:
 - Each skill should have a unique kebab-case id, a human-readable name, a description explaining what it does, relevant tags, and 1-2 example invocations (as plain text strings)
@@ -101,21 +110,60 @@ Guidelines for capabilities:
 - streaming: true if the agent supports streaming responses (SSE, WebSocket, async generators)
 - pushNotifications: true if the agent can send unsolicited notifications
 - stateTransitionHistory: true if the agent tracks and exposes task state changes
-- chat_agent: true if the agent maintains conversational context across messages"#.to_string()
+- chat_agent: true if the agent maintains conversational context across messages
+
+Guidelines for framework detection:
+- Python: look for `from fastapi import`, `import flask`, `from django`, `import starlette`, `from langchain`, `import crewai`
+- JS/TS: look for `express`, `@nestjs`, `fastify`, `hono` in imports or package.json
+- Go: look for `gin`, `echo`, `fiber`, `chi` in import paths
+- Rust: look for `axum`, `actix`, `warp`, `rocket` in Cargo.toml
+- Use exact lowercase name: "fastapi", "flask", "express", "gin", "axum", "langchain", etc.
+
+Guidelines for transport detection:
+- "http": REST routes, HTTP handlers, ASGI/WSGI apps
+- "websocket": websocket handlers, socket.io, ws library
+- "grpc": grpc server definitions, proto imports
+- "stdio": stdin/stdout communication, subprocess-based agents
+- "unknown": cannot determine from available source"#.to_string()
     }
 
     fn build_user_prompt(&self, source_code: &str, agent_name: &str) -> String {
-        // Truncate source if too long (leave room for system prompt + output)
-        let max_source_chars = 60_000;
-        let truncated = if source_code.len() > max_source_chars {
-            &source_code[..max_source_chars]
+        // Byte budget, not char budget — named accurately to avoid future confusion.
+        const MAX_SOURCE_BYTES: usize = 60_000;
+
+        // Separate dependency manifests from source code so the LLM sees them
+        // as distinct sections — manifests give strong framework/provider signal
+        // with low token cost and should not be crowded out by source.
+        let (manifests, source) = split_manifests(source_code);
+
+        let truncated = if source.len() > MAX_SOURCE_BYTES {
+            // floor_char_boundary ensures we never split a multi-byte UTF-8 codepoint.
+            // Without this, slicing at a byte offset inside a 2-4 byte char panics.
+            &source[..source.floor_char_boundary(MAX_SOURCE_BYTES)]
         } else {
-            source_code
+            &source
         };
 
-        format!(
-            "Agent name: {agent_name}\n\nSource code:\n```\n{truncated}\n```"
-        )
+        let mut prompt = format!("Agent name: {agent_name}\n\n");
+
+        if !manifests.is_empty() {
+            prompt.push_str("Dependency manifests (requirements.txt / package.json / Cargo.toml / go.mod / pyproject.toml):\n");
+            prompt.push_str("```\n");
+            // Cap manifests at 4KB — they're dense with signal but rarely need more.
+            let manifest_cap = 4_000;
+            if manifests.len() > manifest_cap {
+                prompt.push_str(&manifests[..manifest_cap]);
+                prompt.push_str("\n[... truncated]\n");
+            } else {
+                prompt.push_str(&manifests);
+            }
+            prompt.push_str("```\n\n");
+        }
+
+        prompt.push_str("Source code:\n```\n");
+        prompt.push_str(truncated);
+        prompt.push_str("\n```");
+        prompt
     }
 
     fn output_schema() -> serde_json::Value {
@@ -163,12 +211,92 @@ Guidelines for capabilities:
                 "default_output_modes": {
                     "type": "array",
                     "items": { "type": "string" }
+                },
+                "framework": {
+                    "anyOf": [
+                        { "type": "string", "description": "e.g. fastapi, flask, express, gin, axum, langchain" },
+                        { "type": "null" }
+                    ]
+                },
+                "transport": {
+                    "type": "string",
+                    "enum": ["http", "websocket", "grpc", "stdio", "unknown"]
+                },
+                "llm_provider": {
+                    "anyOf": [
+                        { "type": "string", "description": "e.g. openai, anthropic, groq, ollama, gemini" },
+                        { "type": "null" }
+                    ]
                 }
             },
-            "required": ["description", "skills", "tags", "capabilities", "default_input_modes", "default_output_modes"],
+            "required": [
+                "description", "skills", "tags", "capabilities",
+                "default_input_modes", "default_output_modes",
+                "framework", "transport", "llm_provider"
+            ],
             "additionalProperties": false
         })
     }
+}
+
+/// Split combined source text into (manifests, source_code).
+///
+/// Files named `requirements.txt`, `package.json`, `Cargo.toml`, `go.mod`,
+/// or `pyproject.toml` carry dense dependency signal.  Separating them lets
+/// the user prompt present them as a dedicated section before the source,
+/// improving framework and LLM-provider detection without wasting source quota.
+fn split_manifests(source_code: &str) -> (String, String) {
+    let manifest_names = [
+        "requirements.txt",
+        "package.json",
+        "cargo.toml",
+        "go.mod",
+        "pyproject.toml",
+        "package-lock.json",
+    ];
+
+    let mut manifests = String::new();
+    let mut source = String::new();
+    let mut current_header: Option<&str> = None;
+    let mut current_body = String::new();
+
+    for line in source_code.lines() {
+        if let Some(stripped) = line.strip_prefix("--- ").and_then(|l| l.strip_suffix(" ---")) {
+            // Flush previous section
+            if let Some(header) = current_header {
+                let lower = header.to_lowercase();
+                if manifest_names.iter().any(|m| lower.ends_with(m)) {
+                    manifests.push_str(&format!("--- {header} ---\n"));
+                    manifests.push_str(&current_body);
+                } else {
+                    source.push_str(&format!("--- {header} ---\n"));
+                    source.push_str(&current_body);
+                }
+            }
+            current_header = Some(stripped);
+            current_body = String::new();
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+
+    // Flush the last section
+    if let Some(header) = current_header {
+        let lower = header.to_lowercase();
+        if manifest_names.iter().any(|m| lower.ends_with(m)) {
+            manifests.push_str(&format!("--- {header} ---\n"));
+            manifests.push_str(&current_body);
+        } else {
+            source.push_str(&format!("--- {header} ---\n"));
+            source.push_str(&current_body);
+        }
+    } else {
+        // No section headers — treat the whole thing as source
+        source.push_str(source_code);
+    }
+
+    (manifests, source)
 }
 
 #[derive(Debug, thiserror::Error)]

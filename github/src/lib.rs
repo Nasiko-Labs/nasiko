@@ -17,23 +17,14 @@
 //!
 //! ## Route integration
 //!
-//! Enable the `routes` feature to get Axum route handlers.  Wire them into the
-//! protected router *after* the `require_auth` middleware so that `X-User-Id`
-//! is already present.
-//!
-//! ```rust,ignore
-//! let app = Router::new()
-//!     .merge(nasiko_github::routes::github_router(Arc::new(svc)))
-//!     .layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
-//! ```
+//! This crate provides the GitHub OAuth/clone **service layer** only. HTTP route
+//! handlers live in the consuming server (`oss/server/src/github.rs`), wired in
+//! *after* the `require_auth` middleware so `X-User-Id` is already present.
 
 pub mod config;
 pub mod error;
 pub mod models;
 pub mod service;
-
-#[cfg(feature = "routes")]
-pub mod routes;
 
 pub(crate) mod http;
 

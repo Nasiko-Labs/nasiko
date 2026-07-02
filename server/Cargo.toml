@@ -13,12 +13,11 @@ path = "src/main.rs"
 [dependencies]
 nasiko-auth.workspace = true
 nasiko-flow.workspace = true
-nasiko-github = { workspace = true, features = ["routes"] }
+nasiko-github = { workspace = true }
 nasiko-utils.workspace = true
 nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
 nasiko-react-agent.workspace = true
-nasiko-router.workspace = true
 nasiko-types.workspace = true
 nasiko-config.workspace = true
 nasiko-observability.workspace = true
@@ -72,3 +71,4 @@ serial_test = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 uuid = { workspace = true }
 tokio = { workspace = true }
+async-trait = { workspace = true }

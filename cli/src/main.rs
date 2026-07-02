@@ -396,6 +396,8 @@ enum AuthCommands {
     Status,
     /// Clear stored token
     Logout,
+    /// Print the authenticated user's profile
+    Whoami,
 }
 
 #[derive(Subcommand)]
@@ -558,6 +560,7 @@ fn main() -> Result<()> {
                 AuthCommands::Login => commands::auth::login(),
                 AuthCommands::Status => commands::auth::status(),
                 AuthCommands::Logout => commands::auth::logout(),
+                AuthCommands::Whoami => commands::auth::whoami(),
             },
             CpCommands::Secrets { command } => match command {
                 SecretsCommands::Set { key, value, agent } => commands::secrets::set(&key, &value, agent.as_deref()),

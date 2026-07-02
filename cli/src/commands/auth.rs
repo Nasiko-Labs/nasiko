@@ -62,3 +62,50 @@ pub fn logout() -> Result<()> {
     println!("Logged out from: {}", name);
     Ok(())
 }
+
+/// Print the currently authenticated user's profile.
+pub fn whoami() -> Result<()> {
+    let (cluster_name, entry) = config::active_cluster()?;
+    let token = entry
+        .token
+        .ok_or_else(|| anyhow::anyhow!("not logged in — run: nasiko auth login"))?;
+
+    let http = ureq::Agent::new_with_defaults();
+    let url = format!("{}/api/users/me", entry.url);
+
+    let resp = http
+        .get(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .call()
+        .context("failed to reach control plane")?;
+
+    if resp.status().as_u16() != 200 {
+        let mut resp = resp;
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        bail!("HTTP {}: {}", resp.status().as_u16(), body);
+    }
+
+    let mut resp = resp;
+    let user: serde_json::Value = resp.body_mut().read_json().context("invalid response")?;
+
+    println!("Cluster:   {}", cluster_name);
+    if let Some(v) = user.get("username").and_then(|v| v.as_str()) {
+        println!("Username:  {}", v);
+    }
+    if let Some(v) = user.get("email").and_then(|v| v.as_str()) {
+        println!("Email:     {}", v);
+    }
+    if let Some(v) = user.get("role").and_then(|v| v.as_str()) {
+        println!("Role:      {}", v);
+    }
+    if let Some(v) = user.get("is_superuser").and_then(|v| v.as_bool()) {
+        println!("Superuser: {}", v);
+    }
+    if let Some(v) = user.get("is_active").and_then(|v| v.as_bool()) {
+        println!("Active:    {}", v);
+    }
+    if let Some(v) = user.get("created_at").and_then(|v| v.as_str()) {
+        println!("Since:     {}", v);
+    }
+    Ok(())
+}

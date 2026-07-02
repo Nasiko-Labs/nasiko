@@ -179,7 +179,8 @@ CREATE TABLE agent_skills (
     tags TEXT[] NOT NULL DEFAULT '{}',
     examples JSONB NOT NULL DEFAULT '[]',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (agent_id, skill_key)
+    UNIQUE (agent_id, skill_key),
+    CONSTRAINT tags_lowercase CHECK (tags = ARRAY(SELECT lower(t) FROM unnest(tags) AS t))
 );
 CREATE INDEX idx_agent_skills_tags ON agent_skills USING gin(tags);
 

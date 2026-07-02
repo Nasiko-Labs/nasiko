@@ -22,16 +22,16 @@ pub fn router() -> Router<AppState> {
 // ─── Response ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct ImportResult {
-    agent_id: Uuid,
-    build_id: Option<Uuid>,
-    container_name: Option<String>,
-    status: String,
+pub(crate) struct ImportResult {
+    pub(crate) agent_id: Uuid,
+    pub(crate) build_id: Option<Uuid>,
+    pub(crate) container_name: Option<String>,
+    pub(crate) status: String,
 }
 
 // ─── Shared Pipeline ────────────────────────────────────────────────────────
 
-struct AgentMetadata {
+pub(crate) struct AgentMetadata {
     name: String,
     display_name: Option<String>,
     description: Option<String>,
@@ -40,7 +40,7 @@ struct AgentMetadata {
     capabilities: serde_json::Value,
 }
 
-fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
+pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
     let card_path = dir.join("AgentCard.json");
     let content = std::fs::read_to_string(&card_path)
         .map_err(|e| format!("cannot read AgentCard.json: {e}"))?;
@@ -61,7 +61,7 @@ fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
     })
 }
 
-async fn build_and_deploy(
+pub(crate) async fn build_and_deploy(
     source_dir: &std::path::Path,
     meta: &AgentMetadata,
     owner_id: Uuid,
@@ -77,41 +77,27 @@ async fn build_and_deploy(
     // Register agent in catalog and sync skills projection atomically.
     let mut tx = state.db.begin().await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("begin tx: {e}")))?;
-    let existing_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM agents WHERE name = $1")
-        .bind(&meta.name)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("lookup agent: {e}")))?;
 
-    let agent_id: Uuid = if let Some(id) = existing_id {
-        sqlx::query("UPDATE agents SET version = $1, image = $2, updated_at = now() WHERE id = $3")
-            .bind(&meta.version)
-            .bind(&image_tag)
-            .bind(id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("update agent: {e}")))?;
-        id
-    } else {
-        sqlx::query_scalar(
-            r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-               RETURNING id"#,
-        )
-        .bind(&meta.name)
-        .bind(&meta.display_name)
-        .bind(&meta.description)
-        .bind(owner_id)
-        .bind(&meta.version)
-        .bind(&image_tag)
-        .bind(&meta.skills)
-        .bind(&meta.capabilities)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?
-        .ok_or_else(|| (StatusCode::CONFLICT, "agent name already in use by another owner".into()))?
-    };
-
+    let agent_id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (name) DO UPDATE
+             SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
+             WHERE agents.owner_id = EXCLUDED.owner_id
+           RETURNING id"#,
+    )
+    .bind(&meta.name)
+    .bind(&meta.display_name)
+    .bind(&meta.description)
+    .bind(owner_id)
+    .bind(&meta.version)
+    .bind(&image_tag)
+    .bind(&meta.skills)
+    .bind(&meta.capabilities)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?
+    .ok_or_else(|| (StatusCode::CONFLICT, "agent name already in use by another owner".into()))?;
 
     let skills: Vec<crate::catalog::models::Skill> =
         serde_json::from_value(meta.skills.clone())
@@ -120,8 +106,6 @@ async fn build_and_deploy(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")))?;
     // FIX: create the build record inside the same transaction so the agent row
     // and its first build record are always committed together.
-
-    // Create build record
     let build_id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO agent_builds (agent_id, version_tag, image_reference, status)
            VALUES ($1, $2, $3, 'building')
@@ -315,6 +299,27 @@ struct RegistryImportRequest {
 
 const SOURCE_MEDIA_TYPE: &str = "application/vnd.nasiko.agent.v1.tar+gzip";
 
+fn validate_registry_host(
+    host: &str,
+    allowed: &[String],
+) -> Result<(), (StatusCode, String)> {
+    if allowed.is_empty() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "registry import is disabled — set REGISTRY_IMPORT_ALLOWED_HOSTS to enable it".to_string(),
+        ));
+    }
+    // Strip port before comparing (ghcr.io:443 → ghcr.io)
+    let host_no_port = host.split(':').next().unwrap_or(host);
+    if !allowed.iter().any(|h| h.split(':').next().unwrap_or(h) == host_no_port) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("registry host '{host_no_port}' is not in the allowed list"),
+        ));
+    }
+    Ok(())
+}
+
 async fn import_registry(
     State(state): State<AppState>,
     claims: Claims,
@@ -336,6 +341,10 @@ async fn import_registry(
         Some((h, r)) => (h, r.to_string()),
         None => return (StatusCode::BAD_REQUEST, "invalid reference: expected registry.host/owner/name[:tag]".to_string()).into_response(),
     };
+
+    if let Err((code, msg)) = validate_registry_host(host, &state.config.registry_import_allowed_hosts) {
+        return (code, msg).into_response();
+    }
 
     let registry_url = format!("https://{}", host);
 

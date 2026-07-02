@@ -1,35 +1,38 @@
-//! Real-input integration tests for `nasiko-github`.
+//! Integration tests for `nasiko-github`.
 //!
-//! All tests are `#[ignore]` — they are skipped in CI and opt-in locally.
+//! Tests t01–t04 and t12–t13 run in CI without any credentials (pure logic).
+//! Tests t05–t11 are `#[ignore]` — opt-in locally with real GitHub credentials.
 //!
-//! ## Quick start
+//! ## Running the network tests locally
 //!
 //! ```bash
-//! # Minimum: test token + any public repo you have access to
 //! export GITHUB_CLIENT_ID="your_oauth_app_client_id"
 //! export GITHUB_CLIENT_SECRET="your_oauth_app_client_secret"
 //! export GITHUB_CALLBACK_URL="https://example.com/api/github/callback"
 //! export GITHUB_TEST_TOKEN="ghp_yourPersonalAccessToken"
-//! export GITHUB_TEST_REPO="octocat/Hello-World"   # any public repo
-//! export GITHUB_TEST_BRANCH="master"              # branch in that repo
+//! export GITHUB_TEST_REPO="octocat/Hello-World"
+//! export GITHUB_TEST_BRANCH="master"
 //!
 //! cargo test -p nasiko-github -- --ignored --nocapture
 //! ```
 //!
 //! ## What each test covers
 //!
-//! | Test | Real network? | Needs token? | What it proves |
-//! |---|---|---|---|
-//! | `t01_state_build_verify` | no | no | HMAC round-trip with real secret |
-//! | `t02_state_tampered_rejected` | no | no | Constant-time sig check |
-//! | `t03_state_expired_rejected` | no | no | 600 s age window |
-//! | `t04_authorization_url` | no | no | URL shape + client_id present |
-//! | `t05_verify_token_valid` | **yes** | yes | Real token → true |
-//! | `t06_verify_token_invalid` | **yes** | no | Garbage token → false |
-//! | `t07_list_repos` | **yes** | yes | Returns ≥ 1 repo, fields populated |
-//! | `t08_clone_to_archive` | **yes** | yes | Archive non-empty, no .git inside |
-//! | `t09_token_not_in_error` | **yes** | no | Bad repo → error scrubbed |
-//! | `t10_archive_structure` | **yes** | yes | tar.gz unpacks to real files |
+//! | Test | Ignored? | Real network? | Needs token? | What it proves |
+//! |---|---|---|---|---|
+//! | `t01_state_build_verify` | no | no | no | HMAC round-trip with real secret |
+//! | `t02_state_tampered_rejected` | no | no | no | Constant-time sig check |
+//! | `t03_state_expired_rejected` | no | no | no | 600 s age window |
+//! | `t04_authorization_url` | no | no | no | URL shape + client_id present |
+//! | `t05_verify_token_valid` | **yes** | **yes** | yes | Real token → true |
+//! | `t06_verify_token_invalid` | **yes** | **yes** | no | Garbage token → false |
+//! | `t07_list_repos` | **yes** | **yes** | yes | Returns ≥ 1 repo, fields populated |
+//! | `t08_clone_to_archive` | **yes** | **yes** | yes | Archive non-empty, no .git inside |
+//! | `t09_token_not_in_error` | **yes** | **yes** | no | Bad repo → error scrubbed |
+//! | `t10_archive_structure` | **yes** | **yes** | yes | tar.gz unpacks to real files |
+//! | `t11_list_repos_sorted_by_updated_desc` | **yes** | **yes** | yes | Ordering newest-first |
+//! | `t12_clone_rejects_invalid_repo_name` | no | no | no | Input validation before network |
+//! | `t13_clone_rejects_invalid_branch_name` | no | no | no | Input validation before network |
 
 use std::collections::BTreeMap;
 
@@ -60,7 +63,6 @@ fn svc_from_env() -> Option<GitHubService> {
 // ── t01 ── OAuth state round-trip ─────────────────────────────────────────────
 
 #[tokio::test]
-#[ignore]
 async fn t01_state_build_verify() {
     let svc = match svc_from_env() {
         Some(s) => s,
@@ -87,7 +89,6 @@ async fn t01_state_build_verify() {
 // ── t02 ── Tampered signature is rejected ─────────────────────────────────────
 
 #[tokio::test]
-#[ignore]
 async fn t02_state_tampered_rejected() {
     let svc = match svc_from_env() {
         Some(s) => s,
@@ -114,7 +115,6 @@ async fn t02_state_tampered_rejected() {
 // ── t03 ── Expired state (correctly signed, iat > 600 s ago) is rejected ─────
 
 #[tokio::test]
-#[ignore]
 async fn t03_state_expired_rejected() {
     // This test verifies the AGE CHECK, not the signature check.
     // It builds a correctly-signed state whose `iat` is 700 seconds in the
@@ -168,7 +168,6 @@ async fn t03_state_expired_rejected() {
 // ── t04 ── Authorization URL shape ───────────────────────────────────────────
 
 #[tokio::test]
-#[ignore]
 async fn t04_authorization_url() {
     let svc = match svc_from_env() {
         Some(s) => s,
@@ -459,7 +458,6 @@ async fn t11_list_repos_sorted_by_updated_desc() {
 // ── t12 ── Invalid repository name is rejected before network call ─────────────
 
 #[tokio::test]
-#[ignore]
 async fn t12_clone_rejects_invalid_repo_name() {
     let svc = match svc_from_env() {
         Some(s) => s,
@@ -468,9 +466,9 @@ async fn t12_clone_rejects_invalid_repo_name() {
             return;
         }
     };
-    let token = need_env!("GITHUB_TEST_TOKEN");
 
     // These should all be rejected by validate_repo_full_name without any network call.
+    // No real token needed — validation fires before any git/network operation.
     let invalid_names = [
         "no-slash",
         "",
@@ -482,7 +480,7 @@ async fn t12_clone_rejects_invalid_repo_name() {
     ];
 
     for bad in invalid_names {
-        let err = svc.clone_to_archive(&token, bad, "main").await.unwrap_err();
+        let err = svc.clone_to_archive("dummy-token", bad, "main").await.unwrap_err();
         assert!(
             matches!(err, nasiko_github::Error::GitClone(_)),
             "expected GitClone for invalid repo {bad:?}, got: {err:?}"
@@ -495,7 +493,6 @@ async fn t12_clone_rejects_invalid_repo_name() {
 // ── t13 ── Invalid branch name is rejected before network call ────────────────
 
 #[tokio::test]
-#[ignore]
 async fn t13_clone_rejects_invalid_branch_name() {
     let svc = match svc_from_env() {
         Some(s) => s,
@@ -504,12 +501,12 @@ async fn t13_clone_rejects_invalid_branch_name() {
             return;
         }
     };
-    let token = need_env!("GITHUB_TEST_TOKEN");
 
+    // No real token needed — branch validation fires before any git/network operation.
     let invalid_branches = ["", "has space", "has~tilde", "has^caret", "has:colon"];
 
     for bad in invalid_branches {
-        let err = svc.clone_to_archive(&token, "owner/repo", bad).await.unwrap_err();
+        let err = svc.clone_to_archive("dummy-token", "owner/repo", bad).await.unwrap_err();
         assert!(
             matches!(err, nasiko_github::Error::GitClone(_)),
             "expected GitClone for invalid branch {bad:?}, got: {err:?}"

@@ -44,6 +44,10 @@ pub struct Config {
     pub github_client_secret: Option<String>,
     pub github_callback_url: Option<String>,
     pub git_clone_allowed_hosts: Vec<String>,
+    /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
+    /// Comma-separated.  Empty = reject all registry imports (safest default for
+    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
+    pub registry_import_allowed_hosts: Vec<String>,
     pub admin_username: String,
     pub admin_password: String,
 }
@@ -104,6 +108,12 @@ impl Config {
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            registry_import_allowed_hosts: std::env::var("REGISTRY_IMPORT_ALLOWED_HOSTS")
+                .unwrap_or_default()
                 .split(',')
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())

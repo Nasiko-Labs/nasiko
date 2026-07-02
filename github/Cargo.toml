@@ -21,12 +21,6 @@ tempfile     = { workspace = true }
 tar          = { workspace = true }
 flate2       = { workspace = true }
 chrono       = { workspace = true }
-axum         = { workspace = true, optional = true }
-http         = { workspace = true, optional = true }
-
-[features]
-default = []
-routes  = ["dep:axum", "dep:http"]
 
 [dev-dependencies]
 tokio      = { workspace = true }

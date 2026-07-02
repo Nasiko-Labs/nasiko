@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(management_router())
         // Static sub-paths MUST come before /{id} to avoid being captured as IDs.
+        .route("/users/me", get(get_me))
         .route("/users", get(list_users))
         .route("/users/{id}", get(get_user))
         // OSS accessible-agents: owner + public only (no grant table).
@@ -430,6 +431,31 @@ async fn my_accessible_agents(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
     accessible_agents_impl(&state.db, user_id).await
+}
+
+// ─── GET /users/me ──────────────────────────────────────────────────────────
+
+async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
+        r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
+                  u.is_active, u.role::text as role,
+                  u.created_at, u.last_login
+           FROM users u
+           WHERE u.id = $1 AND u.deleted_at IS NULL"#,
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match result {
+        Ok(Some(user)) => Json(user).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "user not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 // ─── shared helper ──────────────────────────────────────────────────────────
