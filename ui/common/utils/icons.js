@@ -97,6 +97,7 @@ export const icons = {
   calendar: s(`<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>`),
   clock:    s(`<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>`),
   key:      s(`<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 0-7.778 7.778 5.5 5.5 0 0 0 7.777 0L15.5 15.5m0 0l3 3L21 16l-3-3"/>`),
+  lock:     s(`<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>`),
 
   // File icons for folder-browser (paths only; caller wraps in <svg>)
   filePaths: {
@@ -135,6 +136,7 @@ export const icons = {
     `<rect x="1" y="1" width="14" height="14" rx="2"/></svg>`,
 
   // ── Dev ──────────────────────────────────────────────────────────────────
+  trace: s(`<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>`),
   code: s(`<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>`),
 
   // ── Add Agent methods ─────────────────────────────────────────────────────

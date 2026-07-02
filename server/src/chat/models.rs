@@ -45,6 +45,7 @@ pub struct ChatMessage {
     pub content: String,
     pub file_parts: Option<sqlx::types::Json<serde_json::Value>>,
     pub has_file_parts: bool,
+    pub trace_id: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -78,4 +79,5 @@ pub struct SendMessage {
     pub content: String,
     pub file_parts: Option<serde_json::Value>,
     pub file_ids: Option<Vec<Uuid>>,
+    pub trace_id: Option<String>,
 }

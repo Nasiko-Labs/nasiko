@@ -24,6 +24,12 @@ impl HrAgent {
         }
     }
 
+    #[tracing::instrument(name = "ChatCompletion", skip_all, fields(
+        gen_ai.operation.name = "chat",
+        gen_ai.request.model = %self.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+    ))]
     async fn chat(
         &self,
         messages: &[serde_json::Value],
@@ -51,9 +57,21 @@ impl HrAgent {
             return Err(format!("LLM API {status}: {body}"));
         }
 
-        resp.json::<serde_json::Value>()
+        let response = resp.json::<serde_json::Value>()
             .await
-            .map_err(|e| format!("JSON parse: {e}"))
+            .map_err(|e| format!("JSON parse: {e}"))?;
+
+        if let Some(usage) = response.get("usage") {
+            let span = tracing::Span::current();
+            if let Some(v) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
+                span.record("gen_ai.usage.input_tokens", v);
+            }
+            if let Some(v) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
+                span.record("gen_ai.usage.output_tokens", v);
+            }
+        }
+
+        Ok(response)
     }
 }
 
@@ -250,7 +268,8 @@ async fn main() {
 
     let app = axum::Router::new()
         .nest("/jsonrpc", a2a_server::jsonrpc::jsonrpc_router(handler.clone()))
-        .merge(a2a_server::agent_card::agent_card_router(card_producer));
+        .merge(a2a_server::agent_card::agent_card_router(card_producer))
+        .layer(tower_http::trace::TraceLayer::new_for_http());
 
     tracing::info!("HR Assistant listening on 0.0.0.0:{port}");
 

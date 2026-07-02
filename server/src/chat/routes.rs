@@ -506,8 +506,8 @@ async fn send_message(
     };
 
     let msg = match sqlx::query_as::<_, ChatMessage>(
-        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts, trace_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -515,6 +515,7 @@ async fn send_message(
     .bind(&body.content)
     .bind(&file_parts_json)
     .bind(has_file_parts)
+    .bind(&body.trace_id)
     .fetch_one(&mut *tx)
     .await
     {
