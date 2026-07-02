@@ -195,8 +195,8 @@ class LoginPage extends HTMLElement {
         });
 
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || 'Invalid credentials');
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.error || 'Invalid credentials');
         }
 
         window.location.href = '/';

@@ -1,3 +1,5 @@
+import '/common/components/smart-table.js';
+
 const STATUS_VARIANTS = { completed: 'success', running: 'info', failed: 'error', timeout: 'warning' };
 
 class FlowsPage extends HTMLElement {

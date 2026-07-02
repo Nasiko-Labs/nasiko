@@ -1,3 +1,5 @@
+import '/common/components/smart-table.js';
+
 const STATUS_VARIANTS = { success: 'success', building: 'info', failed: 'error', queued: 'neutral', cancelled: 'warning' };
 
 class BuildsPage extends HTMLElement {

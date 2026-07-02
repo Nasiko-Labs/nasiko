@@ -2,6 +2,7 @@ import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
 import '/common/components/app-modal.js';
+import '/common/components/smart-table.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (secrets-page) {
