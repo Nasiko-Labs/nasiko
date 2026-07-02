@@ -36,7 +36,7 @@ styles.replaceSync(`@scope (app-user-menu) {
 
       @media (min-width: 1024px) {
         gap: var(--space-sm);
-        & svg:last-child { display: block; margin-left: auto; flex-shrink: 0; }
+        & svg:last-child { display: var(--user-name-display, block); margin-left: auto; flex-shrink: 0; }
       }
     }
     .user-avatar {
@@ -61,7 +61,7 @@ styles.replaceSync(`@scope (app-user-menu) {
     .user-name {
       display: none;
       @media (min-width: 1024px) {
-        display: block;
+        display: var(--user-name-display, block);
         flex: 1;
         min-width: 0;
         overflow: hidden;

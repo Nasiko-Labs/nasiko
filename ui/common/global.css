@@ -87,7 +87,9 @@
 
   /* Layout */
   --app-header-height: 48px;
-  --app-sidebar-width: 180px;
+  --app-sidebar-width-expanded: 180px;
+  --app-sidebar-width-collapsed: 52px;
+  --app-sidebar-width: var(--app-sidebar-width-expanded);
   --page-max-width: 75rem;
 }
 

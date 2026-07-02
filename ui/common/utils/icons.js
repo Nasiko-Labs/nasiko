@@ -49,6 +49,9 @@ export const icons = {
     16
   ),
 
+  // Sidebar toggle (panel-left icon from Lucide)
+  panelLeft: s(`<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>`),
+
   // Wide arc arrows used in calendar navigation
   arrowLeft:  s(`<path d="M15.5 3.5l-7 8.5 7 8.5"/>`),
   arrowRight: s(`<path d="M8.5 3.5l7 8.5-7 8.5"/>`),

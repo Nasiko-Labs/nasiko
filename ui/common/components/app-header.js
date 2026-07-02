@@ -25,24 +25,6 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   }
 }
 
-/* ── View transitions for app-header ────────────────────────────────────────
-   Rules live here (outside @scope) because ::view-transition-* are document-
-   level pseudo-elements and cannot be targeted from inside @scope.
-
-   @view-transition { navigation: auto } is in global.css — it must be in a
-   regular (non-adopted) stylesheet so the browser reads it before navigation.
-
-   NESTING: app-header uses view-transition-name: app-header +
-   view-transition-group: contain (Chrome 140+). This properly nests nav-active
-   inside app-header's group so Chrome captures the child element correctly on
-   cross-document page loads.
-
-   The header is always frozen (animation: none + mix-blend-mode: normal).
-   The nav-active morph only runs when prefers-reduced-motion is not set.
-   ────────────────────────────────────────────────────────────────────────────── */
-/* Always freeze the header — suppress both snapshots so the header chrome
-   appears completely static. mix-blend-mode: normal prevents the default
-   plus-lighter blend from double-exposing semi-transparent elements. */
 ::view-transition-old(app-header),
 ::view-transition-new(app-header) {
   animation: none;
@@ -54,17 +36,12 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-
-
 @scope (app-header) {
   :scope {
     display: block;
     position: sticky;
     top: 0;
     z-index: 100;
-    /* Freeze header across page navigations; view-transition-group: contain
-       (Chrome 140+) makes nav-active a properly nested child group so Chrome
-       captures it correctly on fresh cross-document page loads. */
     view-transition-name: app-header;
 
     @media (min-width: 1024px) {
@@ -74,6 +51,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       width: var(--app-sidebar-width);
       height: 100dvh;
       flex-shrink: 0;
+      transition: width 0.2s ease;
+      overflow: hidden;
     }
   }
 
@@ -128,6 +107,82 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     }
   }
 
+  .brand-row {
+    display: none;
+
+    @media (min-width: 1024px) {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-sm);
+      margin-bottom: var(--space-xs);
+      min-height: 36px;
+      flex-shrink: 0;
+    }
+  }
+
+  .brand-link {
+    flex-shrink: 0;
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--color-text-main);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    &:hover {
+      color: var(--color-text-main);
+    }
+  }
+
+  .brand-link-mobile {
+    flex-shrink: 0;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+    text-decoration: none;
+
+    &:hover {
+      color: var(--color-text-main);
+    }
+
+    @media (min-width: 1024px) {
+      display: none;
+    }
+  }
+
+  .sidebar-toggle {
+    display: none;
+
+    @media (min-width: 1024px) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      color: var(--color-text-muted);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      flex-shrink: 0;
+
+      &:hover {
+        color: var(--color-text-main);
+        background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+      }
+    }
+  }
+
+  :scope.is-collapsed .brand-link {
+    @media (min-width: 1024px) {
+      opacity: 0;
+      width: 0;
+      overflow: hidden;
+    }
+  }
+
   .center {
     flex: 1;
     display: flex;
@@ -150,42 +205,6 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     }
   }
 
-  .brand-link {
-    flex-shrink: 0;
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--color-text-main);
-    text-decoration: none;
-
-    &:hover {
-      color: var(--color-text-main);
-    }
-
-    @media (min-width: 1024px) {
-      display: block;
-      padding: var(--space-sm) var(--space-md);
-      font-size: var(--font-size-base);
-      margin-bottom: var(--space-xs);
-    }
-  }
-
-  .search-hint {
-    display: inline;
-    font-size: 0.65rem;
-    color: var(--color-text-muted);
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
-    border-radius: 3px;
-    padding: 0 4px;
-    font-family: var(--font-mono);
-    cursor: pointer;
-    margin-left: 4px;
-    vertical-align: middle;
-    line-height: 1.6;
-
-    &:hover { border-color: var(--color-primary); color: var(--color-primary); }
-  }
-
   .nav {
     flex: 1;
     min-width: 0;
@@ -196,8 +215,6 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       overflow: visible;
     }
   }
-
-
 
   .nav-list {
     display: flex;
@@ -226,7 +243,10 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     }
   }
 
-  .nav-icon { opacity: 0.6; }
+  .nav-icon {
+    opacity: 0.6;
+    flex-shrink: 0;
+  }
   .nav-link:hover .nav-icon, .nav-link.is-active .nav-icon { opacity: 1; }
 
   .nav-link {
@@ -266,7 +286,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 
     @media (min-width: 1024px) {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
+      gap: var(--space-sm);
       text-align: left;
       white-space: normal;
       padding: var(--space-xs) var(--space-md);
@@ -284,6 +305,14 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
           background-color: transparent;
         }
       }
+    }
+  }
+
+  :scope.is-collapsed .nav-link-text {
+    @media (min-width: 1024px) {
+      opacity: 0;
+      width: 0;
+      overflow: hidden;
     }
   }
 
@@ -359,6 +388,12 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     }
   }
 
+  :scope.is-collapsed .user {
+    @media (min-width: 1024px) {
+      --user-name-display: none;
+    }
+  }
+
   .sr-only {
     position: absolute;
     width: 1px;
@@ -394,6 +429,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppHeader extends HTMLElement {
+  #collapsed = localStorage.getItem("app-sidebar-collapsed") === "true";
+
   #esc(str) {
     if (!str) return "";
     return str.replace(/[&<>"']/g, m => ({
@@ -414,6 +451,12 @@ export class AppHeader extends HTMLElement {
   };
 
   #handleClick = (e) => {
+    if (e.target.closest("[data-sidebar-toggle]")) {
+      this.#collapsed = !this.#collapsed;
+      localStorage.setItem("app-sidebar-collapsed", this.#collapsed);
+      this.#applyCollapsed();
+      return;
+    }
     if (e.target.closest("[data-search-trigger]")) {
       this.querySelector("app-nav-search")?.open();
     } else {
@@ -424,6 +467,14 @@ export class AppHeader extends HTMLElement {
     }
   };
 
+  #applyCollapsed() {
+    this.classList.toggle("is-collapsed", this.#collapsed);
+    document.documentElement.style.setProperty(
+      "--app-sidebar-width",
+      this.#collapsed ? "var(--app-sidebar-width-collapsed)" : "var(--app-sidebar-width-expanded)"
+    );
+  }
+
   static get observedAttributes() {
     return ["nav-links", "brand-title", "brand-url"];
   }
@@ -433,6 +484,7 @@ export class AppHeader extends HTMLElement {
   }
 
   async connectedCallback() {
+    this.#applyCollapsed();
     document.removeEventListener("keydown", this.#handleKeyDown);
     this.removeEventListener("click", this.#handleClick);
     this.addEventListener("click", this.#handleClick);
@@ -548,6 +600,7 @@ export class AppHeader extends HTMLElement {
         return `<li><a href="${this.#esc(href)}"
         class="nav-link${active ? " is-active" : ""}"
         data-text="${titleEsc}"
+        title="${titleEsc}"
         ${active ? 'aria-current="page"' : ""}>${bgSpan}${iconHtml}<span class="nav-link-text">${titleEsc}</span></a></li>`;
       })
       .join("");
@@ -555,8 +608,15 @@ export class AppHeader extends HTMLElement {
     this.innerHTML = `
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
       <header class="bar" role="banner">
+        <div class="brand-row">
+          ${brandTitle ? `<a href="${this.#esc(brandUrl)}" class="brand-link">${this.#esc(brandTitle)}</a>` : ""}
+          <button class="sidebar-toggle" data-sidebar-toggle
+            aria-label="Toggle sidebar" type="button">
+            ${icons.panelLeft("", 18)}
+          </button>
+        </div>
         <div class="center">
-          ${brandTitle ? `<a href="${this.#esc(brandUrl)}" class="brand-link">${this.#esc(brandTitle)}${navLinks.length ? ` <kbd class="search-hint" data-search-trigger title="Search pages (\\\\)">\\</kbd>` : ""}</a>` : ""}
+          ${brandTitle ? `<a href="${this.#esc(brandUrl)}" class="brand-link-mobile">${this.#esc(brandTitle)}</a>` : ""}
           ${
             navLinks.length
               ? `

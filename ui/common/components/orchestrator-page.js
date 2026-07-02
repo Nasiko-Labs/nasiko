@@ -1,4 +1,14 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/components/voice-input.js';
+
+window.transcribeAudio = async (blob) => {
+  const form = new FormData();
+  form.append('file', blob, 'audio.webm');
+  const res = await fetch('/api/transcribe', { method: 'POST', body: form });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return data.text;
+};
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (orchestrator-page) {
@@ -104,6 +114,76 @@ styles.replaceSync(`@scope (orchestrator-page) {
     text-decoration: none;
   }
   .continue-link:hover { text-decoration: underline; }
+
+  .recent-agents {
+    width: min(100%, 680px);
+    margin-top: var(--space-xl);
+  }
+  :scope.has-response .recent-agents { display: none; }
+  .recent-agents-title {
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: var(--space-sm);
+  }
+  .recent-agents-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--space-sm);
+  }
+  .agent-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+    text-decoration: none;
+    color: var(--color-text-main);
+    transition: border-color 0.15s, box-shadow 0.15s;
+
+    &:hover {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px var(--color-primary-ring);
+    }
+  }
+  .agent-card-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    background: var(--color-primary-subtle);
+    color: var(--color-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .agent-card-info {
+    min-width: 0;
+  }
+  .agent-card-name {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .agent-card-desc {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .agent-card-skel {
+    height: 52px;
+    border-radius: var(--radius-md);
+    background: var(--color-bg-base);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
 }`);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -118,6 +198,14 @@ class OrchestratorPage extends HTMLElement {
           transcription-callback="transcribeAudio"
         ></voice-input>
       </div>
+      <div class="recent-agents" id="recent-agents">
+        <div class="recent-agents-title">Recent agents</div>
+        <div class="recent-agents-grid" id="recent-agents-grid">
+          <div class="agent-card-skel"></div>
+          <div class="agent-card-skel"></div>
+          <div class="agent-card-skel"></div>
+        </div>
+      </div>
       <div class="response-area" id="response-area">
         <div class="status-history" id="status-history"></div>
         <div class="stream-status" id="stream-status"><span class="pulse"></span> ...</div>
@@ -125,6 +213,8 @@ class OrchestratorPage extends HTMLElement {
         <a class="continue-link" id="continue-link" style="display:none;" href="#">Continue in chat</a>
       </div>
     `;
+
+    this.#loadRecentAgents();
 
     const voiceInput = this.querySelector('#voice-input');
     const responseArea = this.querySelector('#response-area');
@@ -209,6 +299,36 @@ class OrchestratorPage extends HTMLElement {
         voiceInput.setLoading(false);
       }
     });
+  }
+
+  async #loadRecentAgents() {
+    const grid = this.querySelector('#recent-agents-grid');
+    try {
+      const res = await fetch('/api/containers');
+      if (!res.ok) throw new Error('Failed to fetch');
+      const containers = await res.json();
+      const recent = (Array.isArray(containers) ? containers : [])
+        .filter(c => c.status === 'running')
+        .slice(0, 6);
+
+      if (!recent.length) {
+        grid.innerHTML = `<span style="font-size:var(--font-size-sm);color:var(--color-text-muted)">No agents running</span>`;
+        return;
+      }
+
+      grid.innerHTML = recent.map(agent => `
+        <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(agent.name || agent.id)}">
+          <div class="agent-card-icon">${icons.cube('', 14)}</div>
+          <div class="agent-card-info">
+            <div class="agent-card-name">${this.#esc(agent.name || agent.id)}</div>
+            ${agent.image ? `<div class="agent-card-desc">${this.#esc(agent.image.split('/').pop().split(':')[0])}</div>` : ''}
+          </div>
+        </a>
+      `).join('');
+    } catch {
+      grid.innerHTML = '';
+      this.querySelector('#recent-agents')?.remove();
+    }
   }
 
   async #readStream(res, streamStatus, statusHistory, responseContent) {
