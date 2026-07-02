@@ -4,15 +4,15 @@ docker := env("DOCKER", if path_exists("/usr/bin/podman") == "true" { "podman" }
 
 # Start backing infra (Postgres, Redis, S3)
 infra:
-    {{docker}} compose -f ../docker-compose.infra.yml up -d
+    {{docker}} compose -f docker-compose.infra.yml up -d
 
 # Stop backing infra
 infra-down:
-    {{docker}} compose -f ../docker-compose.infra.yml down
+    {{docker}} compose -f docker-compose.infra.yml down
 
 # Show infra logs (-f to follow)
 logs *args:
-    {{docker}} compose -f ../docker-compose.infra.yml logs {{args}}
+    {{docker}} compose -f docker-compose.infra.yml logs {{args}}
 
 # Run server + gateway (foreground)
 run:

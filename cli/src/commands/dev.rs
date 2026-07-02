@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 
 use crate::config;
 
-const COMPOSE_YAML: &str = include_str!("../../docker-compose.dev.yml");
+const COMPOSE_YAML: &str = include_str!("../../../docker-compose.infra.yml");
 const CP_IMAGE_DEFAULT: &str = "nasiko/cp:latest";
 const CP_BINARY_NAME: &str = "nasiko-cp";
 const CP_BINARY_PATH_IN_IMAGE: &str = "/nasiko-cp-cloud";

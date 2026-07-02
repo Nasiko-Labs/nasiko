@@ -20,7 +20,6 @@ class ChatPage extends HTMLElement {
     this.innerHTML = `
       <div class="chat-header">
         <span class="chat-agent-name">${agentLabel}</span>
-${agentId ? `<app-badge variant="info">${agentId}</app-badge>` : ""}
       </div>
       <div class="messages" id="messages"></div>
       <div class="input-area">

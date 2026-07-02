@@ -1,3 +1,9 @@
+# Nasiko Platform — Infrastructure
+#
+# Start:  just infra          (or: docker compose up -d)
+# Stop:   just infra-down     (or: docker compose down)
+# Logs:   just logs -f
+
 services:
   postgres:
     image: docker.io/pgvector/pgvector:pg16
@@ -8,30 +14,60 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - nasiko-pg-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nasiko"]
-      interval: 2s
+      test: ["CMD-SHELL", "pg_isready -U nasiko -d nasiko_dev"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: docker.io/library/redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address :9001
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    command: server /data --address :9000
     environment:
-      MINIO_ROOT_USER: nasiko
-      MINIO_ROOT_PASSWORD: nasiko123
+      RUSTFS_ROOT_USER: nasiko
+      RUSTFS_ROOT_PASSWORD: nasiko123
     ports:
       - "9000:9000"
-      - "9001:9001"
     volumes:
-      - nasiko-s3-data:/data
+      - rustfs-data:/data
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/config/otel-collector.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/config/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"   # Tempo HTTP query API
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"   # Loki HTTP API
 
 volumes:
-  nasiko-pg-data:
-  nasiko-s3-data:
+  postgres-data:
+  rustfs-data:

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
+use nasiko_router::RoutingEngine;
 use nasiko_observability::ObservabilityProvider;
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
@@ -25,6 +26,7 @@ pub struct AppState {
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
+    pub routing_engine: Arc<dyn RoutingEngine>,
     /// Optional Tempo+Loki provider — present when TEMPO_URL + LOKI_URL are configured.
     /// Falls back to DB-only queries when None.
     pub observability: Option<Arc<dyn ObservabilityProvider>>,
@@ -72,6 +74,10 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .expect("failed to build http client");
+
+        let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
+            nasiko_router::OssRoutingEngine::from_config(&config, http_client.clone())
+        );
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -140,6 +146,7 @@ impl AppState {
             flow_events,
             genai_metrics,
             config: Arc::new(config),
+            routing_engine,
             observability,
             github_svc,
             build_tx,
@@ -152,8 +159,7 @@ impl AppState {
         state
     }
 
-    /// Run one-time initialization: bootstrap admin user, seed agents.
-    /// Call after the server is constructed but before serving requests.
+    /// Run one-time initialization: bootstrap admin user, spawn seed agents in background.
     pub async fn init(&self) {
         if let (Ok(admin_user), Ok(admin_pass)) = (
             std::env::var("ADMIN_USERNAME"),
@@ -164,6 +170,9 @@ impl AppState {
             tracing::warn!(%e, "admin bootstrap failed (may already exist)");
         }
 
-        crate::seed::seed_agents_if_configured(self).await;
+        let state = self.clone();
+        tokio::spawn(async move {
+            crate::seed::seed_agents_if_configured(&state).await;
+        });
     }
 }

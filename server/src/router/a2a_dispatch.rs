@@ -283,11 +283,16 @@ async fn orchestrator_stream(
                         }
                         OrchestratorEvent::Content { content } => {
                             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
-                                &task_id, &context_id, &artifact_id, &content, content_started, true,
+                                &task_id, &context_id, &artifact_id, &content, content_started, false,
                             ))));
                             content_started = true;
                         }
                         OrchestratorEvent::Done { .. } => {
+                            if content_started {
+                                yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
+                                    &task_id, &context_id, &artifact_id, "", true, true,
+                                ))));
+                            }
                             yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
                             break;
                         }
@@ -343,7 +348,7 @@ async fn agent_stream(
 
     let endpoint = resolve_endpoint(state, &agent.name)
         .await
-        .map_err(|e| A2aDispatchError::Internal(e))?;
+        .map_err(A2aDispatchError::Internal)?;
 
     let flow_ctx = FlowContext::new_root();
     let flow_id = flow_ctx.flow_id.clone();
@@ -366,6 +371,7 @@ async fn agent_stream(
     let response = state
         .http_client
         .post(&endpoint)
+        .header("A2A-Version", "1.0")
         .header("traceparent", flow_ctx.to_traceparent())
         .json(&req_body)
         .send()
@@ -645,12 +651,11 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     .map_err(|e| format!("db lookup: {e}"))?
     .flatten();
 
-    if let Some(ref url) = stored_url {
-        if !url.is_empty() {
+    if let Some(ref url) = stored_url
+        && !url.is_empty() {
             let u = url.trim_end_matches('/');
             return Ok(format!("{u}/"));
         }
-    }
 
     let container_id = nasiko_runtime::ContainerId::new(agent_name);
     let endpoint = state
@@ -658,9 +663,8 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
         .endpoint(&container_id)
         .await
         .map_err(|e| format!("runtime endpoint: {e}"))?;
-
-    let e = endpoint.trim_end_matches('/');
-    Ok(format!("{e}/"))
+    let base = endpoint.trim_end_matches('/');
+    Ok(format!("{base}/"))
 }
 
 /// Normalize a Python a2a-sdk JSONRPC event to CP native StreamResponse format.
@@ -669,7 +673,10 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
         return data.to_string();
     };
 
-    if parsed.get("statusUpdate").is_some() || parsed.get("artifactUpdate").is_some() {
+    // Already in the expected format (no JSON-RPC wrapper)
+    if parsed.get("statusUpdate").is_some() || parsed.get("artifactUpdate").is_some()
+        || parsed.get("task").is_some() || parsed.get("message").is_some()
+    {
         return data.to_string();
     }
 
@@ -709,6 +716,8 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
         }
         _ => data.to_string(),
     }
+
+    data.to_string()
 }
 
 // ─── Types & Errors ──────────────────────────────────────────────────────────

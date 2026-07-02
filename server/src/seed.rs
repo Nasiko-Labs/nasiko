@@ -60,11 +60,12 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         .await
         .unwrap_or(None);
 
+        let force_pull = std::env::var("SEED_FORCE_PULL").is_ok();
         let needs_deploy = match &existing {
             None => true,
             Some(agent) => {
                 let image_changed = agent.image.as_deref() != Some(image);
-                if image_changed {
+                if image_changed || force_pull {
                     true
                 } else {
                     let container_id = ContainerId::new(agent_name.clone());
@@ -241,15 +242,25 @@ async fn fetch_and_apply_agent_card(state: &AppState, agent_id: Uuid, agent_url:
     .bind(agent_id)
     .bind(card.get("description").and_then(|v| v.as_str()))
     .bind(card.get("skills"))
-    .bind(
-        card.get("tags")
+    .bind({
+        let mut tags: Vec<String> = card
+            .get("tags")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            }),
-    )
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if let Some(skills) = card.get("skills").and_then(|v| v.as_array()) {
+            for skill in skills {
+                if let Some(skill_tags) = skill.get("tags").and_then(|v| v.as_array()) {
+                    for t in skill_tags.iter().filter_map(|v| v.as_str()) {
+                        if !tags.contains(&t.to_string()) {
+                            tags.push(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if tags.is_empty() { None } else { Some(tags) }
+    })
     .bind(card.get("capabilities"))
     .execute(&state.db)
     .await;

@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+use futures::StreamExt;
 use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
+use rig::completion::message::{ToolCall, ToolFunction};
 use rig::providers::openai;
+use rig::streaming::StreamingChoice;
 use rig::tool::{ToolDyn, ToolSet};
 use tokio::sync::mpsc;
 
@@ -517,8 +520,8 @@ async fn run_stream_inner(
             req = req.temperature(temp);
         }
 
-        let response = match req.send().await {
-            Ok(r) => r,
+        let mut stream = match req.stream().await {
+            Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(OrchestratorEvent::Error {
                     message: e.to_string(),
@@ -529,19 +532,39 @@ async fn run_stream_inner(
 
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
+        let mut streamed_text = false;
 
-        for content in response.choice.iter() {
-            match content {
-                AssistantContent::Text(t) => text_parts.push(t.text.clone()),
-                AssistantContent::ToolCall(tc) => tool_calls.push(tc.clone()),
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(StreamingChoice::Message(text)) => {
+                    text_parts.push(text.clone());
+                    let _ = tx.send(OrchestratorEvent::Content {
+                        content: text,
+                    }).await;
+                    streamed_text = true;
+                }
+                Ok(StreamingChoice::ToolCall(name, id, params)) => {
+                    tool_calls.push(ToolCall {
+                        id,
+                        function: ToolFunction {
+                            name,
+                            arguments: params,
+                        },
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(OrchestratorEvent::Error {
+                        message: e.to_string(),
+                    }).await;
+                    return Err(OrchestratorError::Completion(e.to_string()));
+                }
             }
         }
 
         if !tool_calls.is_empty() {
-            // Emit thinking if there's reasoning text alongside tool calls
-            if !text_parts.is_empty() {
+            if streamed_text {
                 let _ = tx.send(OrchestratorEvent::Thinking {
-                    content: text_parts.join("\n"),
+                    content: text_parts.join(""),
                 }).await;
             }
 
@@ -623,13 +646,9 @@ async fn run_stream_inner(
                 &combined,
             );
         } else {
-            // Final answer — emit as content event
-            let final_text = text_parts.join("\n");
+            // Final answer — already streamed token-by-token via Content events
+            let final_text = text_parts.join("");
             context.push_assistant(&final_text);
-
-            let _ = tx.send(OrchestratorEvent::Content {
-                content: final_text,
-            }).await;
 
             let _ = tx.send(OrchestratorEvent::Done {
                 turns: turn_idx + 1,
