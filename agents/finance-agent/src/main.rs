@@ -3,56 +3,37 @@ use std::sync::Arc;
 use a2a::*;
 use a2a_server::*;
 use futures::stream::BoxStream;
-use reqwest::Client;
-
 mod telemetry;
+mod tools;
 
-const SYSTEM_PROMPT: &str = "\
-You are a Finance Analyst agent. You help teams with:
-- Expense management: categorization, approval workflows, policy compliance
-- Budget analysis: variance reports, spend tracking, allocation optimization
-- Revenue forecasting: trend analysis, scenario modeling, growth projections
-- Invoice processing: validation, matching, payment scheduling
-- Financial compliance: audit preparation, regulatory requirements, internal controls
-- Cost optimization: identifying waste, recommending consolidation, ROI analysis
-
-Be precise with numbers and always clarify assumptions. When providing \
-calculations, show your work step by step. If data is missing or ambiguous, \
-state what assumptions you are making. Use standard accounting terminology \
-and flag any figures that should be verified against source systems.";
-
-struct LlmAgent {
-    system_prompt: &'static str,
+struct FinanceAgent {
     model: String,
     api_key: String,
     base_url: String,
-    http: Client,
+    http: reqwest::Client,
 }
 
-impl LlmAgent {
-    fn new(system_prompt: &'static str) -> Self {
+impl FinanceAgent {
+    fn new() -> Self {
         Self {
-            system_prompt,
-            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
-            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-            http: Client::new(),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
+            http: reqwest::Client::new(),
         }
     }
 
-    async fn stream_chat(
+    async fn chat(
         &self,
-        user_message: &str,
-    ) -> Result<reqwest::Response, String> {
+        messages: &[serde_json::Value],
+        tools: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            "stream": true,
-            "temperature": 0.4,
+            "messages": messages,
+            "tools": tools,
+            "temperature": 0.1,
         });
 
         let resp = self
@@ -66,15 +47,15 @@ impl LlmAgent {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("LLM API {status}: {text}"));
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("LLM API {status}: {body}"));
         }
 
-        Ok(resp)
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("JSON parse: {e}"))
     }
 }
-
-struct FinanceAgent(LlmAgent);
 
 impl AgentExecutor for FinanceAgent {
     fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
@@ -96,126 +77,101 @@ impl AgentExecutor for FinanceAgent {
             })
             .unwrap_or_default();
 
-        let agent = LlmAgent::new(SYSTEM_PROMPT);
+        let model = self.model.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
+        let http = self.http.clone();
 
         let stream = async_stream::stream! {
-            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id: task_id.clone(),
-                context_id: context_id.clone(),
-                status: TaskStatus {
-                    state: TaskState::Working,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }));
+            yield Ok(status_working(&task_id, &context_id, None));
 
-            let artifact_id = new_artifact_id();
-            let resp = match agent.stream_chat(&user_text).await {
-                Ok(r) => r,
-                Err(e) => {
-                    yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                        task_id,
-                        context_id,
-                        status: TaskStatus {
-                            state: TaskState::Failed,
-                            message: Some(Message::new(Role::Agent, vec![Part::text(&e)])),
-                            timestamp: Some(chrono::Utc::now()),
-                        },
-                        metadata: None,
-                    }));
-                    return;
-                }
-            };
+            let agent = FinanceAgent { model, api_key, base_url, http };
+            let tool_defs = tools::definitions();
 
-            let mut byte_stream = resp.bytes_stream();
-            let mut buffer = String::new();
-            let mut first_chunk = true;
+            let system = "\
+You are a Finance Analyst agent with access to real-time market data. You can look up \
+currency exchange rates and cryptocurrency prices/market data.\n\n\
+Guidelines:\n\
+- Use exchange_rates to get current forex rates for any base currency\n\
+- Use crypto_search to find a cryptocurrency's ID if you're unsure of the exact name\n\
+- Use crypto_price to get detailed price/market data for a specific coin\n\
+- Use crypto_market to get an overview of top cryptocurrencies by market cap\n\
+- Be precise with numbers — show appropriate decimal places for the context\n\
+- Always note that prices are point-in-time snapshots and may change rapidly\n\
+- When comparing currencies, show both directions (e.g. 1 USD = X EUR, 1 EUR = Y USD)";
 
-            use futures::StreamExt;
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(_) => break,
+            let mut messages = vec![
+                serde_json::json!({"role": "system", "content": system}),
+                serde_json::json!({"role": "user", "content": user_text}),
+            ];
+
+            let mut final_text = String::new();
+
+            for _ in 0..4 {
+                let resp = match agent.chat(&messages, &tool_defs).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield Ok(status_failed(&task_id, &context_id, &e));
+                        return;
+                    }
                 };
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer = buffer[line_end + 1..].to_string();
+                let choice = &resp["choices"][0]["message"];
+                messages.push(choice.clone());
 
-                    let Some(data) = line.strip_prefix("data: ") else { continue };
-                    if data == "[DONE]" { break; }
+                if let Some(calls) = choice["tool_calls"].as_array() {
+                    for tc in calls {
+                        let name = tc["function"]["name"].as_str().unwrap_or("");
+                        let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                        let call_id = tc["id"].as_str().unwrap_or("");
 
-                    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else { continue };
-                    let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() else { continue };
-                    if content.is_empty() { continue; }
+                        let preview = extract_preview(args);
+                        yield Ok(status_working(
+                            &task_id, &context_id,
+                            Some(&format!("{name}: {preview}")),
+                        ));
 
-                    yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
-                        task_id: task_id.clone(),
-                        context_id: context_id.clone(),
-                        artifact: Artifact {
-                            artifact_id: artifact_id.clone(),
-                            name: None,
-                            description: None,
-                            parts: vec![Part::text(content)],
-                            metadata: None,
-                            extensions: None,
-                        },
-                        append: Some(!first_chunk),
-                        last_chunk: Some(false),
-                        metadata: None,
-                    }));
-                    first_chunk = false;
+                        let result = tools::execute(name, args).await;
+
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": result,
+                        }));
+                    }
+                } else {
+                    final_text = choice["content"].as_str().unwrap_or("").to_string();
+                    break;
                 }
             }
 
-            // Final chunk marker
             yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
                 task_id: task_id.clone(),
                 context_id: context_id.clone(),
                 artifact: Artifact {
-                    artifact_id,
+                    artifact_id: new_artifact_id(),
                     name: None,
                     description: None,
-                    parts: vec![],
+                    parts: vec![Part::text(&final_text)],
                     metadata: None,
                     extensions: None,
                 },
-                append: Some(true),
+                append: Some(false),
                 last_chunk: Some(true),
                 metadata: None,
             }));
 
-            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id,
-                context_id,
-                status: TaskStatus {
-                    state: TaskState::Completed,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }));
+            yield Ok(status_completed(&task_id, &context_id));
         };
 
         Box::pin(stream)
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
-        let task_id = ctx.task_id;
-        let context_id = ctx.context_id;
+        let task_id = ctx.task_id.clone();
+        let context_id = ctx.context_id.clone();
         Box::pin(futures::stream::once(async move {
-            Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id,
-                context_id,
-                status: TaskStatus {
-                    state: TaskState::Canceled,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }))
+            Ok(status_completed(&task_id, &context_id))
         }))
     }
 }
@@ -230,14 +186,14 @@ async fn main() {
         .unwrap_or(8000);
 
     let handler = Arc::new(DefaultRequestHandler::new(
-        FinanceAgent(LlmAgent::new(SYSTEM_PROMPT)),
+        FinanceAgent::new(),
         InMemoryTaskStore::new(),
     ));
 
     let agent_card = AgentCard {
         name: "Finance Analyst".to_string(),
-        description: "Expense tracking, budget analysis, revenue forecasting, and invoice management".to_string(),
-        version: "0.1.0".to_string(),
+        description: "Real-time exchange rates, cryptocurrency prices, and market data analysis".to_string(),
+        version: "1.0.0".to_string(),
         provider: Some(AgentProvider {
             organization: "Nasiko".to_string(),
             url: "https://nasiko.io".to_string(),
@@ -250,27 +206,27 @@ async fn main() {
         },
         skills: vec![
             AgentSkill {
-                id: "expense-management".into(),
-                name: "Expense Management".into(),
-                description: "Track, categorize, and manage expense reports and approvals".into(),
-                tags: vec!["finance".into(), "expenses".into(), "accounting".into()],
-                examples: Some(vec!["Categorize last month's SaaS expenses".into()]),
+                id: "exchange-rates".into(),
+                name: "Exchange Rates".into(),
+                description: "Look up current currency exchange rates for any base currency".into(),
+                tags: vec!["finance".into(), "forex".into(), "currency".into()],
+                examples: Some(vec!["What's the USD to EUR exchange rate?".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "budget-analysis".into(),
-                name: "Budget Analysis".into(),
-                description: "Analyze budgets, track variance, and forecast spending".into(),
-                tags: vec!["finance".into(), "budget".into(), "forecasting".into()],
-                examples: Some(vec!["Show Q3 budget variance for engineering".into()]),
+                id: "crypto-prices".into(),
+                name: "Crypto Prices".into(),
+                description: "Get real-time cryptocurrency prices and market data".into(),
+                tags: vec!["finance".into(), "crypto".into(), "bitcoin".into()],
+                examples: Some(vec!["What's the current price of Bitcoin?".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "invoice-processing".into(),
-                name: "Invoice Processing".into(),
-                description: "Validate invoices, match to POs, and schedule payments".into(),
-                tags: vec!["finance".into(), "invoices".into(), "payments".into()],
-                examples: Some(vec!["Check pending invoices over 30 days".into()]),
+                id: "market-overview".into(),
+                name: "Market Overview".into(),
+                description: "Get an overview of top cryptocurrencies by market cap".into(),
+                tags: vec!["finance".into(), "market".into(), "overview".into()],
+                examples: Some(vec!["Show me the top 10 cryptos by market cap".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
         ],
@@ -302,4 +258,76 @@ async fn main() {
         .expect("failed to bind");
 
     axum::serve(listener, app).await.expect("server failed");
+}
+
+// ─── Event helpers ──────────────────────────────────────────────────────────
+
+fn status_working(task_id: &str, context_id: &str, msg: Option<&str>) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Working,
+            message: msg.map(|t| Message {
+                message_id: new_message_id(),
+                context_id: Some(context_id.into()),
+                task_id: Some(task_id.into()),
+                role: Role::Agent,
+                parts: vec![Part::text(t)],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            }),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
+}
+
+fn status_completed(task_id: &str, context_id: &str) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Completed,
+            message: None,
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
+}
+
+fn extract_preview(args: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(args)
+        .ok()
+        .and_then(|v| {
+            v.as_object()?.values().find_map(|val| {
+                val.as_str().map(|s| {
+                    if s.len() > 60 { format!("{}...", &s[..60]) } else { s.to_string() }
+                })
+            })
+        })
+        .unwrap_or_else(|| "...".into())
+}
+
+fn status_failed(task_id: &str, context_id: &str, error: &str) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Failed,
+            message: Some(Message {
+                message_id: new_message_id(),
+                context_id: Some(context_id.into()),
+                task_id: Some(task_id.into()),
+                role: Role::Agent,
+                parts: vec![Part::text(error)],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            }),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
 }

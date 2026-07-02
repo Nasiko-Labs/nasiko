@@ -3,61 +3,37 @@ use std::sync::Arc;
 use a2a::*;
 use a2a_server::*;
 use futures::stream::BoxStream;
-use reqwest::Client;
-
 mod telemetry;
+mod tools;
 
-const SYSTEM_PROMPT: &str = "\
-You are a Legal Counsel agent. You help teams with:
-- Contract review: identifying key terms, risks, and unusual clauses
-- NDA generation: drafting mutual and one-way non-disclosure agreements
-- Compliance checking: GDPR, SOC 2, HIPAA, and other regulatory frameworks
-- IP and trademark guidance: registration processes, infringement assessment
-- Regulatory monitoring: tracking relevant legal changes and their impact
-- Policy drafting: acceptable use policies, terms of service, privacy policies
-
-IMPORTANT DISCLAIMERS:
-- This is informational guidance only and does NOT constitute legal advice.
-- Always recommend consulting qualified human legal counsel for binding decisions.
-- Flag high-risk areas where professional legal review is essential.
-- Never guarantee legal outcomes or interpret jurisdiction-specific rulings.
-
-When reviewing documents, highlight specific clauses of concern and explain \
-why they matter in plain language. Provide balanced analysis of risks for \
-both parties where applicable.";
-
-struct LlmAgent {
-    system_prompt: &'static str,
+struct LegalAgent {
     model: String,
     api_key: String,
     base_url: String,
-    http: Client,
+    http: reqwest::Client,
 }
 
-impl LlmAgent {
-    fn new(system_prompt: &'static str) -> Self {
+impl LegalAgent {
+    fn new() -> Self {
         Self {
-            system_prompt,
-            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
-            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-            http: Client::new(),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
+            http: reqwest::Client::new(),
         }
     }
 
-    async fn stream_chat(
+    async fn chat(
         &self,
-        user_message: &str,
-    ) -> Result<reqwest::Response, String> {
+        messages: &[serde_json::Value],
+        tools: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            "stream": true,
-            "temperature": 0.4,
+            "messages": messages,
+            "tools": tools,
+            "temperature": 0.1,
         });
 
         let resp = self
@@ -71,15 +47,15 @@ impl LlmAgent {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("LLM API {status}: {text}"));
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("LLM API {status}: {body}"));
         }
 
-        Ok(resp)
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("JSON parse: {e}"))
     }
 }
-
-struct LegalAgent(LlmAgent);
 
 impl AgentExecutor for LegalAgent {
     fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
@@ -101,126 +77,103 @@ impl AgentExecutor for LegalAgent {
             })
             .unwrap_or_default();
 
-        let agent = LlmAgent::new(SYSTEM_PROMPT);
+        let model = self.model.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
+        let http = self.http.clone();
 
         let stream = async_stream::stream! {
-            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id: task_id.clone(),
-                context_id: context_id.clone(),
-                status: TaskStatus {
-                    state: TaskState::Working,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }));
+            yield Ok(status_working(&task_id, &context_id, None));
 
-            let artifact_id = new_artifact_id();
-            let resp = match agent.stream_chat(&user_text).await {
-                Ok(r) => r,
-                Err(e) => {
-                    yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                        task_id,
-                        context_id,
-                        status: TaskStatus {
-                            state: TaskState::Failed,
-                            message: Some(Message::new(Role::Agent, vec![Part::text(&e)])),
-                            timestamp: Some(chrono::Utc::now()),
-                        },
-                        metadata: None,
-                    }));
-                    return;
-                }
-            };
+            let agent = LegalAgent { model, api_key, base_url, http };
+            let tool_defs = tools::definitions();
 
-            let mut byte_stream = resp.bytes_stream();
-            let mut buffer = String::new();
-            let mut first_chunk = true;
+            let system = "\
+You are a Legal Research agent with access to real legal databases. You can search SEC EDGAR \
+for corporate filings, look up company submissions, search the Federal Register for regulations, \
+and find case law via CourtListener.\n\n\
+Guidelines:\n\
+- Use sec_filing_search to find SEC filings by keyword (10-K, 10-Q, 8-K, etc.)\n\
+- Use sec_company_filings to get recent filings for a specific company by CIK\n\
+- Use federal_register to search for regulations, proposed rules, and notices\n\
+- Use case_law_search to find court opinions and case law\n\
+- Always include citations and source links in your responses\n\
+- DISCLAIMER: This is informational research only, NOT legal advice\n\
+- Always recommend consulting qualified legal counsel for binding decisions\n\
+- Flag high-risk areas where professional legal review is essential";
 
-            use futures::StreamExt;
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(_) => break,
+            let mut messages = vec![
+                serde_json::json!({"role": "system", "content": system}),
+                serde_json::json!({"role": "user", "content": user_text}),
+            ];
+
+            let mut final_text = String::new();
+
+            for _ in 0..4 {
+                let resp = match agent.chat(&messages, &tool_defs).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield Ok(status_failed(&task_id, &context_id, &e));
+                        return;
+                    }
                 };
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer = buffer[line_end + 1..].to_string();
+                let choice = &resp["choices"][0]["message"];
+                messages.push(choice.clone());
 
-                    let Some(data) = line.strip_prefix("data: ") else { continue };
-                    if data == "[DONE]" { break; }
+                if let Some(calls) = choice["tool_calls"].as_array() {
+                    for tc in calls {
+                        let name = tc["function"]["name"].as_str().unwrap_or("");
+                        let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                        let call_id = tc["id"].as_str().unwrap_or("");
 
-                    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else { continue };
-                    let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() else { continue };
-                    if content.is_empty() { continue; }
+                        let preview = extract_preview(args);
+                        yield Ok(status_working(
+                            &task_id, &context_id,
+                            Some(&format!("{name}: {preview}")),
+                        ));
 
-                    yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
-                        task_id: task_id.clone(),
-                        context_id: context_id.clone(),
-                        artifact: Artifact {
-                            artifact_id: artifact_id.clone(),
-                            name: None,
-                            description: None,
-                            parts: vec![Part::text(content)],
-                            metadata: None,
-                            extensions: None,
-                        },
-                        append: Some(!first_chunk),
-                        last_chunk: Some(false),
-                        metadata: None,
-                    }));
-                    first_chunk = false;
+                        let result = tools::execute(name, args).await;
+
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": result,
+                        }));
+                    }
+                } else {
+                    final_text = choice["content"].as_str().unwrap_or("").to_string();
+                    break;
                 }
             }
 
-            // Final chunk marker
             yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
                 task_id: task_id.clone(),
                 context_id: context_id.clone(),
                 artifact: Artifact {
-                    artifact_id,
+                    artifact_id: new_artifact_id(),
                     name: None,
                     description: None,
-                    parts: vec![],
+                    parts: vec![Part::text(&final_text)],
                     metadata: None,
                     extensions: None,
                 },
-                append: Some(true),
+                append: Some(false),
                 last_chunk: Some(true),
                 metadata: None,
             }));
 
-            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id,
-                context_id,
-                status: TaskStatus {
-                    state: TaskState::Completed,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }));
+            yield Ok(status_completed(&task_id, &context_id));
         };
 
         Box::pin(stream)
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
-        let task_id = ctx.task_id;
-        let context_id = ctx.context_id;
+        let task_id = ctx.task_id.clone();
+        let context_id = ctx.context_id.clone();
         Box::pin(futures::stream::once(async move {
-            Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id,
-                context_id,
-                status: TaskStatus {
-                    state: TaskState::Canceled,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }))
+            Ok(status_completed(&task_id, &context_id))
         }))
     }
 }
@@ -235,14 +188,14 @@ async fn main() {
         .unwrap_or(8000);
 
     let handler = Arc::new(DefaultRequestHandler::new(
-        LegalAgent(LlmAgent::new(SYSTEM_PROMPT)),
+        LegalAgent::new(),
         InMemoryTaskStore::new(),
     ));
 
     let agent_card = AgentCard {
-        name: "Legal Counsel".to_string(),
-        description: "Contract review, NDA generation, compliance checking, and regulatory monitoring".to_string(),
-        version: "0.1.0".to_string(),
+        name: "Legal Research".to_string(),
+        description: "SEC filings, Federal Register regulations, and case law search".to_string(),
+        version: "1.0.0".to_string(),
         provider: Some(AgentProvider {
             organization: "Nasiko".to_string(),
             url: "https://nasiko.io".to_string(),
@@ -255,27 +208,27 @@ async fn main() {
         },
         skills: vec![
             AgentSkill {
-                id: "contract-review".into(),
-                name: "Contract Review".into(),
-                description: "Review contracts for risks, unusual clauses, and key terms".into(),
-                tags: vec!["legal".into(), "contracts".into(), "review".into()],
-                examples: Some(vec!["Review this SaaS agreement for red flags".into()]),
+                id: "sec-filings".into(),
+                name: "SEC Filings".into(),
+                description: "Search SEC EDGAR for corporate filings (10-K, 10-Q, 8-K)".into(),
+                tags: vec!["legal".into(), "sec".into(), "filings".into(), "corporate".into()],
+                examples: Some(vec!["Find Apple's latest 10-K filing".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "compliance-check".into(),
-                name: "Compliance Check".into(),
-                description: "Assess compliance with GDPR, SOC 2, HIPAA, and other frameworks".into(),
-                tags: vec!["legal".into(), "compliance".into(), "gdpr".into()],
-                examples: Some(vec!["Is our data retention policy GDPR compliant?".into()]),
+                id: "regulations".into(),
+                name: "Federal Register".into(),
+                description: "Search the Federal Register for regulations and notices".into(),
+                tags: vec!["legal".into(), "regulations".into(), "compliance".into()],
+                examples: Some(vec!["Find recent AI regulation proposals".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "document-generation".into(),
-                name: "Document Generation".into(),
-                description: "Draft NDAs, policies, and other legal documents".into(),
-                tags: vec!["legal".into(), "nda".into(), "documents".into()],
-                examples: Some(vec!["Generate a mutual NDA for a vendor partnership".into()]),
+                id: "case-law".into(),
+                name: "Case Law Search".into(),
+                description: "Search court opinions and case law via CourtListener".into(),
+                tags: vec!["legal".into(), "cases".into(), "courts".into()],
+                examples: Some(vec!["Find Supreme Court cases about fair use".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
         ],
@@ -300,11 +253,83 @@ async fn main() {
         .nest("/jsonrpc", a2a_server::jsonrpc::jsonrpc_router(handler.clone()))
         .merge(a2a_server::agent_card::agent_card_router(card_producer));
 
-    tracing::info!("Legal Counsel listening on 0.0.0.0:{port}");
+    tracing::info!("Legal Research listening on 0.0.0.0:{port}");
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("failed to bind");
 
     axum::serve(listener, app).await.expect("server failed");
+}
+
+// ─── Event helpers ──────────────────────────────────────────────────────────
+
+fn status_working(task_id: &str, context_id: &str, msg: Option<&str>) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Working,
+            message: msg.map(|t| Message {
+                message_id: new_message_id(),
+                context_id: Some(context_id.into()),
+                task_id: Some(task_id.into()),
+                role: Role::Agent,
+                parts: vec![Part::text(t)],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            }),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
+}
+
+fn status_completed(task_id: &str, context_id: &str) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Completed,
+            message: None,
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
+}
+
+fn extract_preview(args: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(args)
+        .ok()
+        .and_then(|v| {
+            v.as_object()?.values().find_map(|val| {
+                val.as_str().map(|s| {
+                    if s.len() > 60 { format!("{}...", &s[..60]) } else { s.to_string() }
+                })
+            })
+        })
+        .unwrap_or_else(|| "...".into())
+}
+
+fn status_failed(task_id: &str, context_id: &str, error: &str) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Failed,
+            message: Some(Message {
+                message_id: new_message_id(),
+                context_id: Some(context_id.into()),
+                task_id: Some(task_id.into()),
+                role: Role::Agent,
+                parts: vec![Part::text(error)],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            }),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
 }
