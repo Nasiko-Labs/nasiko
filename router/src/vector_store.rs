@@ -11,32 +11,44 @@ pub struct EmbeddedAgent {
 
 pub struct VectorStore {
     agents: Vec<EmbeddedAgent>,
-    ollama_url: String,
+    api_key: String,
+    base_url: String,
     model: String,
     enabled: bool,
 }
 
 #[derive(Deserialize)]
-struct OllamaEmbeddingResponse {
+struct OpenAiEmbeddingResponse {
+    data: Vec<OpenAiEmbeddingData>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiEmbeddingData {
     embedding: Vec<f32>,
 }
 
 impl VectorStore {
-    /// Build an embedded store from a list of agents.
-    /// If Ollama is unreachable, falls back to disabled mode — shortlist() returns all agents.
-    pub async fn build(agents: Vec<AgentCard>, ollama_url: String, model: String) -> Self {
+    /// Build an embedded store from a list of agents using the OpenAI embeddings API.
+    /// If the API key is empty or the call fails, falls back to disabled mode —
+    /// shortlist() returns all agents unchanged.
+    pub async fn build(agents: Vec<AgentCard>, api_key: String, base_url: String, model: String) -> Self {
+        if api_key.is_empty() {
+            tracing::debug!("No OpenAI API key configured — Stage 1 (vector store) disabled");
+            return Self::disabled_from(agents);
+        }
+
         let client = Client::new();
         let mut embedded = Vec::with_capacity(agents.len());
 
         for agent in &agents {
             let prompt = format!("{} {} {}", agent.name, agent.description, agent.tags.join(" "));
-            match embed_text(&client, &ollama_url, &model, &prompt).await {
+            match embed_text(&client, &api_key, &base_url, &model, &prompt).await {
                 Ok(emb) => embedded.push(EmbeddedAgent {
                     agent: agent.clone(),
                     embedding: emb,
                 }),
                 Err(e) => {
-                    tracing::warn!(%e, "Ollama unreachable — disabling vector store, Stage 1 will be skipped");
+                    tracing::warn!(%e, "OpenAI embeddings failed — disabling vector store, Stage 1 will be skipped");
                     return Self::disabled_from(agents);
                 }
             }
@@ -44,7 +56,8 @@ impl VectorStore {
 
         Self {
             agents: embedded,
-            ollama_url,
+            api_key,
+            base_url,
             model,
             enabled: true,
         }
@@ -54,7 +67,8 @@ impl VectorStore {
     pub fn disabled() -> Self {
         Self {
             agents: vec![],
-            ollama_url: String::new(),
+            api_key: String::new(),
+            base_url: String::new(),
             model: String::new(),
             enabled: false,
         }
@@ -65,13 +79,14 @@ impl VectorStore {
         Self::disabled_from(agents)
     }
 
-    fn disabled_from(agents: Vec<AgentCard>) -> Self {
+    pub(crate) fn disabled_from(agents: Vec<AgentCard>) -> Self {
         Self {
             agents: agents
                 .into_iter()
                 .map(|a| EmbeddedAgent { agent: a, embedding: vec![] })
                 .collect(),
-            ollama_url: String::new(),
+            api_key: String::new(),
+            base_url: String::new(),
             model: String::new(),
             enabled: false,
         }
@@ -83,7 +98,7 @@ impl VectorStore {
             return Err(RouterError::Embedding("vector store is disabled".into()));
         }
         let client = Client::new();
-        embed_text(&client, &self.ollama_url, &self.model, text).await
+        embed_text(&client, &self.api_key, &self.base_url, &self.model, text).await
     }
 
     /// Score a pre-computed embedding against a subset of agents using stored embeddings.
@@ -111,9 +126,9 @@ impl VectorStore {
     /// Return top-k agents by cosine similarity to query.
     ///
     /// Falls back to returning all agents when:
-    ///   - Store is disabled (Ollama was unreachable)
+    ///   - Store is disabled (no API key or embeddings failed)
     ///   - Agent count < threshold (skip semantic search for small catalogs)
-    ///   - Top similarity score < 0.2 (no meaningful match found — matches Python behaviour)
+    ///   - Top similarity score < 0.2 (no meaningful match found)
     pub async fn shortlist(&self, query: &str, k: usize, threshold: usize) -> Vec<AgentCard> {
         let all: Vec<AgentCard> = self.agents.iter().map(|a| a.agent.clone()).collect();
 
@@ -159,32 +174,40 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 async fn embed_text(
     client: &Client,
-    ollama_url: &str,
+    api_key: &str,
+    base_url: &str,
     model: &str,
     text: &str,
 ) -> Result<Vec<f32>, RouterError> {
+    let url = format!("{}/v1/embeddings", base_url.trim_end_matches('/'));
     let resp = client
-        .post(format!("{}/api/embeddings", ollama_url))
+        .post(&url)
+        .bearer_auth(api_key)
         .json(&serde_json::json!({
             "model": model,
-            "prompt": text,
+            "input": text,
         }))
         .send()
         .await
-        .map_err(|e| RouterError::Embedding(format!("Ollama request failed: {e}")))?;
+        .map_err(|e| RouterError::Embedding(format!("OpenAI embeddings request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(RouterError::Embedding(format!("Ollama returned {status}: {body}")));
+        return Err(RouterError::Embedding(format!("OpenAI embeddings returned {status}: {body}")));
     }
 
-    let parsed: OllamaEmbeddingResponse = resp
+    let parsed: OpenAiEmbeddingResponse = resp
         .json()
         .await
         .map_err(|e| RouterError::Embedding(format!("failed to parse embedding response: {e}")))?;
 
-    Ok(parsed.embedding)
+    parsed
+        .data
+        .into_iter()
+        .next()
+        .map(|d| d.embedding)
+        .ok_or_else(|| RouterError::Embedding("empty embedding response".into()))
 }
 
 #[cfg(test)]

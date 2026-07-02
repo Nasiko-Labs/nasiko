@@ -42,14 +42,19 @@ pub struct Config {
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub agent_registry_cache_ttl_secs: u64,
+    pub router_shortlist_threshold: usize,
+    pub router_shortlist_size: usize,
+    pub max_router_history_messages: usize,
+    /// OpenAI-compatible model used for Stage 1 vector embeddings.
+    /// Default: `text-embedding-3-small`. Stage 1 is skipped if `openai_api_key` is unset.
+    pub embedding_model: String,
+    pub router_agent_timeout_secs: u64,
     pub github_callback_url: Option<String>,
-    pub git_clone_allowed_hosts: Vec<String>,
-    /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
-    /// Comma-separated.  Empty = reject all registry imports (safest default for
-    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
-    pub registry_import_allowed_hosts: Vec<String>,
-    pub admin_username: String,
-    pub admin_password: String,
+    /// Docker network to attach agent containers to.
+    /// Set to the compose network name (e.g. `nasiko-cloud-rs_default`) when the
+    /// server itself runs inside Docker so agents are reachable via container IP.
+    pub docker_agent_network: Option<String>,
 }
 
 impl Config {
@@ -73,9 +78,9 @@ impl Config {
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
-            openai_model: env_or("OPENAI_MODEL", "deepseek-v4-flash"),
-            router_model: env_or("ROUTER_MODEL", "deepseek-v4-pro"),
-            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "deepseek-v4-flash"),
+            openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
+            router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
+            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
             a2a_discovery_url: std::env::var("A2A_DISCOVERY_URL").ok(),
             otel_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otel_protocol: env_or("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
@@ -105,21 +110,14 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            agent_registry_cache_ttl_secs: env_parse("AGENT_REGISTRY_CACHE_TTL_SECS", 3600),
+            router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
+            router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
+            max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
+            embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
+            router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
-            git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
-                .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            registry_import_allowed_hosts: std::env::var("REGISTRY_IMPORT_ALLOWED_HOSTS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            admin_username: env_or("ADMIN_USERNAME", "admin"),
-            admin_password: required_env("ADMIN_PASSWORD")?,
+            docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK").ok().filter(|s| !s.is_empty()),
         })
     }
 }

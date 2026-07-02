@@ -3,10 +3,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nasiko_config::Config;
 use nasiko_runtime::{
-    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, Result as RuntimeResult,
+    ContainerId,
+    ContainerRuntime,
+    DeploymentSpec,
+    DeploymentStatus,
+    Result as RuntimeResult,
     RuntimeState,
 };
-use nasiko_server::state::AppState;
+use nasiko_server::{ Providers, state::AppState };
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -14,18 +18,17 @@ use uuid::Uuid;
 // ─── Infra endpoints — overridable via env for CI ────────────────────────────
 
 fn pg_admin_url() -> String {
-    std::env::var("TEST_PG_URL")
+    std::env
+        ::var("TEST_PG_URL")
         .unwrap_or_else(|_| "postgres://nasiko:nasiko@localhost:5432/nasiko_dev".into())
 }
 
 fn redis_url() -> String {
-    std::env::var("TEST_REDIS_URL")
-        .unwrap_or_else(|_| "redis://localhost:6379".into())
+    std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into())
 }
 
 fn s3_endpoint() -> String {
-    std::env::var("TEST_S3_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".into())
+    std::env::var("TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into())
 }
 
 // ─── FakeRuntime ─────────────────────────────────────────────────────────────
@@ -91,6 +94,7 @@ impl ContainerRuntime for FakeRuntime {
 
 /// A running test server bound to a random port, backed by an isolated DB.
 /// Call `cleanup().await` at the end of each test to drop the test database.
+#[allow(dead_code)]
 pub struct TestServer {
     pub base_url: String,
     pub client: reqwest::Client,
@@ -121,13 +125,11 @@ impl TestServer {
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
         let admin = minimal_pool_opts()
-            .connect(&pg_admin)
-            .await
+            .connect(&pg_admin).await
             .expect("connect to postgres — is the DB available? (set TEST_PG_URL to override)");
 
         sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&admin)
-            .await
+            .execute(&admin).await
             .expect("create test database");
 
         // Build db_url from pg_admin_url by replacing the database name.
@@ -136,27 +138,28 @@ impl TestServer {
             format!("{base}/{db_name}")
         };
 
-        let db = minimal_pool_opts()
-            .connect(&db_url)
-            .await
-            .expect("connect to test db");
+        let db = minimal_pool_opts().connect(&db_url).await.expect("connect to test db");
 
-        let s3_ep = s3_endpoint();
-        let config = test_config(db_url, redis_url(), s3_ep.clone());
+        let config = test_config(db_url, redis_url(), s3_endpoint());
 
-        let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-        let auth: Arc<dyn nasiko_auth::AuthService> =
-            Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
+        let auth: Arc<dyn nasiko_auth::AuthProvider> = Arc::new(
+            nasiko_auth::SimpleJwtAuth::from_env()
+        );
+        let user_auth = Arc::new(nasiko_auth::UserAuthServiceImpl::new(db.clone(), auth.clone()));
+        let providers = Providers {
+            auth,
+            acl: Arc::new(nasiko_auth::NoopAuthorizer),
+            user_auth: user_auth.clone(),
+            token_svc: user_auth,
+        };
 
         let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime);
 
-        let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
+        let state = AppState::from_config_with_db(config, providers, runtime, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
@@ -174,17 +177,17 @@ impl TestServer {
 
     pub async fn cleanup(&self) {
         // Terminate connections to the test DB before dropping it.
-        sqlx::query(&format!(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}'",
-            self.db_name
-        ))
-        .execute(&self.admin_pool)
-        .await
-        .ok();
+        sqlx::query(
+            &format!(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}'",
+                self.db_name
+            )
+        )
+            .execute(&self.admin_pool).await
+            .ok();
 
         sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", self.db_name))
-            .execute(&self.admin_pool)
-            .await
+            .execute(&self.admin_pool).await
             .ok();
 
         // Close both pools so Postgres can release their DSM segments immediately.
@@ -198,7 +201,10 @@ impl TestServer {
 }
 
 fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config {
-    // SAFETY: tests run serially via #[serial], so no concurrent env mutation.
+    // JWT_SECRET must be set in env for SimpleJwtAuth::from_env(); S3_* / SECRETS_ENCRYPTION_KEY
+    // must be set for S3Storage::from_env() and SecretsCrypto::load_master_key(), which read
+    // directly from env rather than from Config.
+    // SAFETY: tests run serially via #[serial], so no concurrent env mutation
     unsafe {
         std::env::set_var("JWT_SECRET", "test-secret-for-nasiko-tests");
         std::env::set_var("S3_ENDPOINT", &s3_endpoint);
@@ -247,15 +253,14 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        agent_registry_cache_ttl_secs: 3600,
+        router_shortlist_threshold: 15,
+        router_shortlist_size: 10,
+        max_router_history_messages: 20,
+        embedding_model: "text-embedding-3-small".into(),
+        router_agent_timeout_secs: 60,
         github_callback_url: None,
-        git_clone_allowed_hosts: vec![
-            "github.com".to_owned(),
-            "gitlab.com".to_owned(),
-            "bitbucket.org".to_owned(),
-        ],
-        registry_import_allowed_hosts: vec![],
-        admin_username: "admin".into(),
-        admin_password: "test-admin-password".into(),
+        docker_agent_network: None,
     }
 }
 

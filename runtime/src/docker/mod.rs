@@ -8,6 +8,7 @@ use bollard::container::{
 };
 use bollard::image::BuildImageOptions;
 use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
+use bollard::network::ConnectNetworkOptions;
 use bollard::container::LogsOptions;
 use bollard::Docker;
 use futures_util::StreamExt;
@@ -27,6 +28,12 @@ pub struct DockerRuntimeConfig {
     /// IP address to bind container ports to.
     /// Default: `"127.0.0.1"` (loopback only). Use `"0.0.0.0"` for external access.
     pub bind_host: String,
+    /// Docker network to attach agent containers to after they start.
+    /// When set, `endpoint()` returns the container's IP on this network + internal port,
+    /// so the server can reach agents even when running inside Docker itself.
+    /// Example: `"nasiko-cloud-rs_default"` when running via docker-compose.
+    /// Default: `None` (use host-mapped port at `localhost`).
+    pub network: Option<String>,
     /// Per-operation timeout for Docker API calls (create, start, stop, inspect, logs).
     /// Default: 30 seconds.
     pub operation_timeout: Duration,
@@ -40,6 +47,7 @@ impl Default for DockerRuntimeConfig {
     fn default() -> Self {
         DockerRuntimeConfig {
             bind_host: "127.0.0.1".to_owned(),
+            network: None,
             operation_timeout: Duration::from_secs(30),
             build_timeout: Duration::from_secs(30 * 60),
         }
@@ -267,13 +275,63 @@ fn parse_memory_bytes(s: &str) -> i64 {
     }
 }
 
+/// Resolve the endpoint URL for a running container.
+///
+/// When `network` is `Some(name)`, looks up the container's IP on that network
+/// and uses the lowest *container* port (not the host-mapped port). This lets
+/// the server reach agents when both run inside Docker on the same network.
+///
+/// Falls back to `http://localhost:<host_port>` when:
+/// - `network` is `None`, or
+/// - the container is not connected to the named network.
+fn extract_endpoint(
+    network_settings: &Option<bollard::models::NetworkSettings>,
+    network: Option<&str>,
+) -> Option<String> {
+    let ns = network_settings.as_ref()?;
+
+    // Try the named network first: use container IP + lowest container port
+    if let Some(net_name) = network {
+        let ip = ns
+            .networks
+            .as_ref()
+            .and_then(|nets| nets.get(net_name))
+            .and_then(|n| n.ip_address.as_deref())
+            .filter(|ip| !ip.is_empty());
+
+        if let Some(ip) = ip {
+            // Pick the lowest container port from exposed bindings
+            if let Some(ports) = ns.ports.as_ref() {
+                let mut keys: Vec<&String> = ports.keys().collect();
+                keys.sort_by_key(|k| {
+                    k.split('/').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(0)
+                });
+                for key in keys {
+                    if let Some(container_port) = key.split('/').next().and_then(|p| p.parse::<u16>().ok()) {
+                        return Some(format!("http://{ip}:{container_port}"));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to host-mapped port
+    ns.ports
+        .as_ref()
+        .and_then(extract_host_port)
+        .map(|hp| format!("http://localhost:{hp}"))
+}
+
 // ── Deploy helpers ─────────────────────────────────────────────────────────────
 
 /// Create and start a container from a `DeploymentSpec`.
+/// If `network` is `Some`, the container is also connected to that Docker network
+/// after starting so that server-side code running inside Docker can reach it.
 async fn create_and_start(
     client: &Docker,
     spec: &DeploymentSpec,
     bind_host: &str,
+    network: Option<&str>,
     timeout: Duration,
 ) -> Result<()> {
     let name = DockerRuntime::container_name(&spec.container_id);
@@ -320,14 +378,31 @@ async fn create_and_start(
     .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
     .map_err(map_bollard_err)?;
 
+    if let Some(net) = network {
+        let connect_opts = ConnectNetworkOptions {
+            container: name.as_str(),
+            ..Default::default()
+        };
+        tokio::time::timeout(timeout, client.connect_network(net, connect_opts))
+            .await
+            .map_err(|_| RuntimeError::Timeout("connect_network".to_owned()))?
+            .map_err(map_bollard_err)?;
+    }
+
     Ok(())
 }
 
 /// Inspect a container and build a `DeploymentStatus`. Returns `Unknown` status
 /// if the container does not exist (not an error).
+///
+/// When `network` is `Some`, the endpoint is the container's IP on that network
+/// plus the lowest exposed port — so in-Docker callers can reach the agent directly.
+/// Falls back to `localhost:host_port` when `network` is `None` or the container
+/// is not connected to the named network.
 async fn inspect_to_status(
     client: &Docker,
     container_id: &ContainerId,
+    network: Option<&str>,
     timeout: Duration,
 ) -> Result<DeploymentStatus> {
     let name = DockerRuntime::container_name(container_id);
@@ -364,11 +439,7 @@ async fn inspect_to_status(
     let replicas_live = if state == RuntimeState::Running { 1 } else { 0 };
 
     let endpoint = if state == RuntimeState::Running {
-        info.network_settings
-            .as_ref()
-            .and_then(|ns| ns.ports.as_ref())
-            .and_then(extract_host_port)
-            .map(|hp| format!("http://localhost:{hp}"))
+        extract_endpoint(&info.network_settings, network)
     } else {
         None
     };
@@ -403,7 +474,7 @@ impl ContainerRuntime for DockerRuntime {
             Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
             Ok(Err(ref e)) if is_not_found(e) => {
                 // Container does not exist: create and start it
-                create_and_start(&self.client, spec, &self.config.bind_host, timeout).await?;
+                create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout).await?;
             }
             Ok(Err(e)) => return Err(map_bollard_err(e)),
             Ok(Ok(existing)) => {
@@ -453,12 +524,12 @@ impl ContainerRuntime for DockerRuntime {
                     .map_err(|_| RuntimeError::Timeout("remove_container".to_owned()))?
                     .map_err(map_bollard_err)?;
 
-                    create_and_start(&self.client, spec, &self.config.bind_host, timeout).await?;
+                    create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout).await?;
                 }
             }
         }
 
-        inspect_to_status(&self.client, &spec.container_id, timeout).await
+        inspect_to_status(&self.client, &spec.container_id, self.config.network.as_deref(), timeout).await
     }
 
     #[instrument(skip(self))]
@@ -587,7 +658,7 @@ impl ContainerRuntime for DockerRuntime {
     #[instrument(skip(self))]
     async fn status(&self, container_id: &ContainerId) -> Result<DeploymentStatus> {
         container_id.validate()?;
-        inspect_to_status(&self.client, container_id, self.config.operation_timeout).await
+        inspect_to_status(&self.client, container_id, self.config.network.as_deref(), self.config.operation_timeout).await
     }
 
     #[instrument(skip(self))]
@@ -658,18 +729,8 @@ impl ContainerRuntime for DockerRuntime {
             }
         })?;
 
-        let host_port = info
-            .network_settings
-            .as_ref()
-            .and_then(|ns| ns.ports.as_ref())
-            .and_then(extract_host_port)
-            .ok_or_else(|| {
-                RuntimeError::Internal(format!(
-                    "container {name} has no bound host port"
-                ))
-            })?;
-
-        Ok(format!("http://localhost:{host_port}"))
+        extract_endpoint(&info.network_settings, self.config.network.as_deref())
+            .ok_or_else(|| RuntimeError::Internal(format!("container {name} has no reachable endpoint")))
     }
 
     #[instrument(skip(self))]

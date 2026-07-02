@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
     response::{
         IntoResponse,
@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/upload-and-deploy",        post(upload_and_deploy))
         .route("/deploy-status/{build_id}", get(deploy_status_sse))
         .route("/upload-status/{upload_id}", get(get_upload_status))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES as usize))
 }
 
 pub fn user_routes() -> Router<AppState> {
@@ -263,7 +264,7 @@ async fn upload_and_deploy(
     } else {
         format!("{}/{name}:{version_tag}", state.config.agent_image_registry)
     };
-    let ports = if ports.is_empty() { vec![8000] } else { ports };
+    let ports = if ports.is_empty() { vec![5000] } else { ports };
 
     // ── Upsert agent ──────────────────────────────────────────────────────────
     let existing: Option<Uuid> = sqlx::query_scalar(
@@ -327,6 +328,14 @@ async fn upload_and_deploy(
     };
 
     let upload_id = build_id.to_string();
+
+    // ── Inject server-level defaults into agent env (caller values take precedence) ──
+    if let Some(key) = &state.config.openai_api_key {
+        env.entry("OPENAI_API_KEY".to_owned()).or_insert_with(|| key.clone());
+    }
+    if let Some(url) = &state.config.openai_base_url {
+        env.entry("OPENAI_BASE_URL".to_owned()).or_insert_with(|| url.clone());
+    }
 
     // ── Insert build job (worker picks this up via SKIP LOCKED) ──────────────
     let payload = BuildJobPayload::Upload {
@@ -470,9 +479,8 @@ pub async fn execute_upload_and_deploy(
 
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
-        // Deploy container keyed on agent UUID (not name) to prevent cross-team
-        // naming collisions when two teams have agents with the same name.
-        let container_id = ContainerId::from_uuid(agent_id);
+        // Deploy container.
+        let container_id = ContainerId::new(&name);
         let spec = DeploymentSpec {
             container_id,
             name: name.clone(),
@@ -517,10 +525,9 @@ pub async fn execute_upload_and_deploy(
                 .bind(agent_id)
                 .execute(&db)
                 .await;
-            // Record the deployment. k8s_deployment_name stores the ContainerId value
-            // (agent UUID string) so that restart and crash guardian can reconstruct
-            // the same ContainerId. The runtime derives the actual K8s/Docker name via
-            // object_name() — do not pre-compute the prefix here.
+            // Record the deployment so it appears in list_deployments, restart, and crash guardian.
+            // k8s_deployment_name stores the raw agent name (ContainerId value); the runtime
+            // derives the actual K8s name via object_name() — do not pre-compute the prefix here.
             let _ = sqlx::query(
                 "INSERT INTO agent_deployments (agent_id, build_id, owner_id, status, k8s_deployment_name) \
                  VALUES ($1, $2, $3, 'running', $4)",
@@ -528,7 +535,7 @@ pub async fn execute_upload_and_deploy(
             .bind(agent_id)
             .bind(build_id)
             .bind(owner_id)
-            .bind(agent_id.to_string())
+            .bind(&name)
             .execute(&db)
             .await;
             tracing::info!(build_id = %build_id, agent_id = %agent_id, "upload-and-deploy succeeded");

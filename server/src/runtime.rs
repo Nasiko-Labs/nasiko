@@ -11,7 +11,10 @@ use nasiko_runtime::{DockerRuntime, DockerRuntimeConfig, Result};
 pub async fn build_docker_runtime(
     config: &Config,
 ) -> Result<InstrumentedRuntime<DockerRuntime, OtelInjector>> {
-    let docker = DockerRuntime::new(DockerRuntimeConfig::default()).await?;
+    let docker = DockerRuntime::new(DockerRuntimeConfig {
+        network: config.docker_agent_network.clone(),
+        ..DockerRuntimeConfig::default()
+    }).await?;
     Ok(InstrumentedRuntime::new(
         docker,
         OtelInjector,

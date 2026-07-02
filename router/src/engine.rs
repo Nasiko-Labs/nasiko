@@ -50,8 +50,9 @@ pub struct OssRoutingEngine {
     registry: Arc<AgentRegistry>,
     config: RouterConfig,
     selector: AgentSelector,
-    ollama_url: String,
-    ollama_model: String,
+    api_key: String,
+    base_url: String,
+    embedding_model: String,
 }
 
 impl OssRoutingEngine {
@@ -62,12 +63,11 @@ impl OssRoutingEngine {
         api_key: String,
         base_url: String,
         router_model: String,
-        ollama_url: String,
-        ollama_model: String,
+        embedding_model: String,
     ) -> Self {
-        let provider = LLMProvider::new(http_client, api_key, base_url);
+        let provider = LLMProvider::new(http_client, api_key.clone(), base_url.clone());
         let selector = AgentSelector::new(provider, router_model);
-        Self { registry, config, selector, ollama_url, ollama_model }
+        Self { registry, config, selector, api_key, base_url, embedding_model }
     }
 
     pub fn from_config(config: &nasiko_config::Config, http_client: Client) -> Self {
@@ -84,8 +84,7 @@ impl OssRoutingEngine {
             config.openai_api_key.clone().unwrap_or_default(),
             config.openai_base_url.clone().unwrap_or_else(|| "https://api.openai.com".into()),
             config.router_model.clone(),
-            config.ollama_url.clone(),
-            config.ollama_embedding_model.clone(),
+            config.embedding_model.clone(),
         )
     }
 }
@@ -108,13 +107,14 @@ impl RoutingEngine for OssRoutingEngine {
 
         let registry_ms = t0.elapsed().as_millis() as i32;
 
-        // Stage 1 — vector store semantic shortlist
+        // Stage 1 — vector store semantic shortlist (OpenAI embeddings, skipped if no key)
         let t1 = Instant::now();
         let store = Arc::new(
             VectorStore::build(
                 agents.clone(),
-                self.ollama_url.clone(),
-                self.ollama_model.clone(),
+                self.api_key.clone(),
+                self.base_url.clone(),
+                self.embedding_model.clone(),
             )
             .await,
         );
@@ -178,7 +178,7 @@ impl RoutingEngine for OssRoutingEngine {
             registry_fetch_ms: Some(registry_ms),
             stage1_candidates: Some(stage1_count as i32),
             stage2_candidates: Some(stage2_count as i32),
-            embedding_model: Some(self.ollama_model.clone()),
+            embedding_model: Some(self.embedding_model.clone()),
             selection_llm_ms: Some(stage3_ms),
             file_count: req.file_parts.len() as i32,
         };

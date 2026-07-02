@@ -1,0 +1,198 @@
+# Nasiko Platform — OSS docker-compose
+#
+# Profiles:
+#   infra   — postgres, redis, rustfs (S3), otel-collector, tempo, loki
+#   server  — nasiko-server (OSS, Docker runtime)
+#   gateway — nasiko-gateway (OSS proxy)
+#   full    — entire stack at once
+#
+# Port layout:
+#   OSS gateway → localhost:8080  (main entry point)
+#   OSS server  → localhost:9090  (direct access, debugging only)
+#
+# Usage:
+#   cd oss/
+#   cp .env.example .env && vi .env
+#   docker compose --profile infra up -d
+#   docker compose --profile infra --profile server up -d
+#   docker compose --profile full up -d
+#
+# Local dev (server via cargo run, run from repo root):
+#   docker compose -f oss/docker-compose.yml --profile infra up -d
+#   DATABASE_URL=postgres://nasiko:nasiko@localhost:5432/nasiko_dev \
+#     REDIS_URL=redis://localhost:6379 S3_SECRET_KEY=nasiko123 \
+#     SECRETS_ENCRYPTION_KEY=... OPENAI_API_KEY=... \
+#     cargo run -p nasiko-server
+
+services:
+
+  # ─── Infra ──────────────────────────────────────────────────────────────────
+
+  postgres:
+    image: docker.io/pgvector/pgvector:pg16
+    profiles: [infra, full]
+    environment:
+      POSTGRES_USER: nasiko
+      POSTGRES_PASSWORD: nasiko
+      POSTGRES_DB: nasiko_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nasiko -d nasiko_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    profiles: [infra, full]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    profiles: [infra, full]
+    command: server /data --address :9000
+    environment:
+      RUSTFS_ROOT_USER: nasiko
+      RUSTFS_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    ports:
+      - "9000:9000"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    profiles: [infra, full]
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/config/otel-collector.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    profiles: [infra, full]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/config/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"   # Tempo HTTP query API
+
+  loki:
+    image: grafana/loki:3.3.2
+    profiles: [infra, full]
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"   # Loki HTTP API
+
+  # ─── Server ─────────────────────────────────────────────────────────────────
+
+  server:
+    build:
+      context: ..
+      dockerfile: oss/server/Dockerfile
+    profiles: [server, full]
+    ports:
+      - "9090:8080"   # direct access for debugging; gateway is the main entry point
+    environment:
+      DATABASE_URL: postgres://nasiko:nasiko@postgres:5432/nasiko_dev
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://rustfs:9000
+      S3_ACCESS_KEY: nasiko
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: nasiko
+      OCI_STORAGE_BUCKET: nasiko-artifacts
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ROUTER_MODEL: ${ROUTER_MODEL:-gpt-4o-mini}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_SERVICE_NAME: nasiko-server
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_TRACES_SAMPLER_ARG: "1.0"
+      TEMPO_URL: http://tempo:3200
+      LOKI_URL: http://loki:3100
+      DOCKER_AGENT_NETWORK: nasiko-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+      - nasiko-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+    restart: unless-stopped
+
+  admin-init:
+    image: curlimages/curl:latest
+    profiles: [server, full]
+    entrypoint: >
+      sh -c '
+        echo "Waiting for server...";
+        until curl -sf http://server:8080/health > /dev/null; do sleep 2; done;
+        echo "Server ready. Initializing admin...";
+        RESPONSE=$$(curl -s -X POST http://server:8080/api/auth/initialize-admin \
+          -H "Content-Type: application/json" \
+          -d "{\"username\":\"$$ADMIN_USERNAME\",\"email\":\"$$ADMIN_EMAIL\"}");
+        if echo "$$RESPONSE" | grep -q "access_key"; then
+          echo "=== Admin credentials (save these) ===";
+          echo "$$RESPONSE";
+          echo "======================================";
+        else
+          echo "Admin already exists or initialization failed — skipping.";
+        fi
+      '
+    environment:
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@nasiko.local}
+    depends_on:
+      - server
+    restart: "no"
+
+  # ─── Gateway ────────────────────────────────────────────────────────────────
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: oss/gateway/Dockerfile
+    profiles: [gateway, full]
+    ports:
+      - "8080:8080"   # OSS entry point
+    environment:
+      GATEWAY_LISTEN: 0.0.0.0:8080
+      GATEWAY_UPSTREAM: http://server:8080
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://nasiko:nasiko@postgres:5432/nasiko_dev
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - server
+
+  # ─── Agent Runtime ──────────────────────────────────────────────────────────
+  # Agents are deployed dynamically via the upload-and-deploy flow.
+  # No static agent services defined here.
+
+volumes:
+  postgres-data:
+
+networks:
+  nasiko-net:
+    name: nasiko-net
