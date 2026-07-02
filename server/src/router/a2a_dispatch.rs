@@ -740,8 +740,6 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
         }
         _ => data.to_string(),
     }
-
-    data.to_string()
 }
 
 // ─── Types & Errors ──────────────────────────────────────────────────────────
