@@ -62,6 +62,10 @@ pub struct Config {
     /// Set to the compose network name (e.g. `nasiko-cloud-rs_default`) when the
     /// server itself runs inside Docker so agents are reachable via container IP.
     pub docker_agent_network: Option<String>,
+    /// OCI registry host to pull agent images from (e.g. `"localhost:8443"`).
+    /// When set, the Docker runtime pulls images from this registry before creating containers.
+    /// Maps to env var `OCI_REGISTRY_HOST`.
+    pub oci_registry_host: Option<String>,
 }
 
 impl Config {
@@ -125,6 +129,7 @@ impl Config {
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK").ok().filter(|s| !s.is_empty()),
+            oci_registry_host: std::env::var("OCI_REGISTRY_HOST").ok().filter(|s| !s.is_empty()),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')

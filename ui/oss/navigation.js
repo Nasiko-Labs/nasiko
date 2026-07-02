@@ -9,7 +9,7 @@ window.fetchNavigation = async () => [
   { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
   { title: "Builds", url: "/builds.html", icon: "cube" },
   { title: "Usage", url: "/usage.html", icon: "code" },
-  { title: "Secrets", url: "/secrets.html", icon: "key" },
+  { title: "Secrets", url: "/secrets.html", icon: "lock" },
   { title: "Settings", url: "/settings.html", icon: "settings" },
 ];
 
@@ -22,4 +22,61 @@ window.fetchAgents = async (query, page, limit) => {
 window.fetchSessions = async (_query, _page, limit) => {
   const params = new URLSearchParams({ limit });
   return fetchApi(`/chat/sessions?${params}`);
+};
+
+window.fetchContainers = async (query, page, limit) => {
+  const params = new URLSearchParams({ limit, offset: ((page || 1) - 1) * limit });
+  if (query) params.set('q', query);
+  const body = await fetchApi(`/catalog/agents?${params}`);
+  const data = Array.isArray(body) ? body : (body.data || []);
+  return { data, total: body.total || data.length };
+};
+
+window.fetchFlows = async (query, page, limit) => {
+  const params = new URLSearchParams({ q: query || '', page, limit });
+  return fetchApi(`/flows?${params}`);
+};
+
+window.fetchFlowDetail = async (flowId) => {
+  return fetchApi(`/flows/${flowId}`);
+};
+
+window.fetchTraceDetail = async (traceId) => {
+  return fetchApi(`/observe/traces/${traceId}`);
+};
+
+window.fetchUsageSummary = async () => {
+  return fetchApi('/usage/summary');
+};
+
+window.fetchUsageHistory = async (days = 7) => {
+  return fetchApi(`/usage/history?days=${days}`);
+};
+
+window.fetchUsageByAgent = async (query, page, limit) => {
+  const params = new URLSearchParams({ q: query || '', limit, offset: ((page || 1) - 1) * limit });
+  return fetchApi(`/usage/by-agent?${params}`);
+};
+
+window.fetchUsageByModel = async (query, page, limit) => {
+  const params = new URLSearchParams({ q: query || '', limit, offset: ((page || 1) - 1) * limit });
+  return fetchApi(`/usage/by-model?${params}`);
+};
+
+window.fetchBuilds = async (query, page, limit) => {
+  const params = new URLSearchParams({ limit, offset: ((page || 1) - 1) * limit });
+  if (query) params.set('q', query);
+  return fetchApi(`/build/builds?${params}`);
+};
+
+window.fetchSettings = async () => {
+  return fetchApi('/settings');
+};
+
+window.saveSettings = async (settings) => {
+  return fetchApi('/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
 };
