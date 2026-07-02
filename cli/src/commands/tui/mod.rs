@@ -160,26 +160,38 @@ pub fn delete_session(session_id: &str, yes: bool) -> Result<()> {
 
 // ─── Sessions list command ──────────────────────────────────────────────────
 
-pub fn list_sessions(endpoint: Option<&str>) -> Result<()> {
-    if let Some(endpoint) = endpoint
-        && let Some((base_url, token)) = session::cp_credentials(endpoint) {
-            let sessions = session::list_cp_sessions(&base_url, &token)?;
-            if sessions.is_empty() {
-                println!("No sessions found.");
-                return Ok(());
-            }
-            println!("{:<36} {:<20} {:<24} TITLE", "ID", "AGENT", "UPDATED");
-            for s in sessions {
-                println!(
-                    "{:<36} {:<20} {:<24} {}",
-                    s.session_id,
-                    s.agent_name.as_deref().unwrap_or("-"),
-                    s.updated_at.get(..19).unwrap_or(&s.updated_at),
-                    s.title,
-                );
-            }
+pub fn list_sessions(endpoint: Option<&str>, cursor: Option<&str>, limit: Option<u32>) -> Result<()> {
+    // Resolve CP credentials: prefer explicit endpoint, fall back to active cluster.
+    let cp_creds = if let Some(ep) = endpoint {
+        session::cp_credentials(ep)
+    } else {
+        match (crate::config::active_url(), crate::config::active_token()) {
+            (Ok(url), Ok(Some(token))) => Some((url, token)),
+            _ => None,
+        }
+    };
+
+    if let Some((base_url, token)) = cp_creds {
+        let page = session::list_cp_sessions(&base_url, &token, cursor, limit)?;
+        if page.data.is_empty() {
+            println!("No sessions found.");
             return Ok(());
         }
+        println!("{:<36} {:<20} {:<24} TITLE", "ID", "AGENT", "UPDATED");
+        for s in &page.data {
+            println!(
+                "{:<36} {:<20} {:<24} {}",
+                s.session_id,
+                s.agent_name.as_deref().unwrap_or("-"),
+                s.updated_at.get(..19).unwrap_or(&s.updated_at),
+                s.title,
+            );
+        }
+        if let Some(cursor) = page.next_cursor {
+            println!("\n(more results — use --cursor {cursor} to continue)");
+        }
+        return Ok(());
+    }
 
     let sessions = session::list_local_sessions()?;
     if sessions.is_empty() {

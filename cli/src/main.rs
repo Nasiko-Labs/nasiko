@@ -217,6 +217,12 @@ enum AgentOpsCommands {
         /// A2A endpoint URL (uses active cluster if omitted)
         #[arg(long)]
         endpoint: Option<String>,
+        /// Pagination cursor from a previous listing
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Maximum number of sessions to return (default 50)
+        #[arg(long)]
+        limit: Option<u32>,
     },
     /// Create a new chat session on the active cluster
     #[command(name = "create-session")]
@@ -544,8 +550,8 @@ fn main() -> Result<()> {
                     commands::chat::chat(&url, message.as_deref(), session_id.as_deref())
                 }
             }
-            AgentOpsCommands::Sessions { endpoint } => {
-                commands::tui::list_sessions(endpoint.as_deref())
+            AgentOpsCommands::Sessions { endpoint, cursor, limit } => {
+                commands::tui::list_sessions(endpoint.as_deref(), cursor.as_deref(), limit)
             }
             AgentOpsCommands::CreateSession { agent } => {
                 commands::tui::create_session(agent.as_deref())

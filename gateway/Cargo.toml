@@ -11,11 +11,11 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
+dotenvy.workspace = true
 nasiko-auth.workspace = true
 nasiko-flow.workspace = true
 nasiko-agent-proxy.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker"] }
-nasiko-react-agent.workspace = true
 nasiko-types.workspace = true
 
 # Web framework
@@ -33,7 +33,6 @@ reqwest = { workspace = true, features = ["stream"] }
 
 # Streaming
 futures = { workspace = true }
-async-stream = { workspace = true }
 
 # Static assets
 rust-embed = { workspace = true }

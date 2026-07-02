@@ -17,6 +17,7 @@ struct CommonAssets;
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
     let telemetry_config = TelemetryConfig::from_env();
     init_telemetry(&telemetry_config);
 

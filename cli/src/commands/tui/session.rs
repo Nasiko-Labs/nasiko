@@ -18,6 +18,12 @@ pub struct CpSession {
     pub last_message: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CpSessionPage {
+    pub data: Vec<CpSession>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpMessage {
     pub role: String,
@@ -134,18 +140,26 @@ pub fn cp_credentials(endpoint: &str) -> Option<(String, String)> {
     Some((base_url, token))
 }
 
-pub fn list_cp_sessions(base_url: &str, token: &str) -> Result<Vec<CpSession>> {
+pub fn list_cp_sessions(
+    base_url: &str,
+    token: &str,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<CpSessionPage> {
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder().timeout_global(None).build(),
     );
-    let url = format!("{base_url}/api/chat/sessions");
+    let mut url = format!("{base_url}/api/chat/sessions");
+    let mut params: Vec<String> = Vec::new();
+    if let Some(c) = cursor { params.push(format!("cursor={}", crate::api::urlencode(c))); }
+    if let Some(l) = limit { params.push(format!("limit={l}")); }
+    if !params.is_empty() { url.push('?'); url.push_str(&params.join("&")); }
     let mut resp = http
         .get(&url)
         .header("Authorization", &format!("Bearer {token}"))
         .call()
         .context("failed to list CP sessions")?;
-    let sessions: Vec<CpSession> = resp.body_mut().read_json().context("invalid sessions JSON")?;
-    Ok(sessions)
+    resp.body_mut().read_json().context("invalid sessions JSON")
 }
 
 pub fn create_cp_session(
@@ -177,6 +191,9 @@ pub fn fetch_cp_messages(
     token: &str,
     session_id: &str,
 ) -> Result<Vec<CpMessage>> {
+    #[derive(Deserialize)]
+    struct Page { data: Vec<CpMessage> }
+
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder().timeout_global(None).build(),
     );
@@ -186,8 +203,8 @@ pub fn fetch_cp_messages(
         .header("Authorization", &format!("Bearer {token}"))
         .call()
         .context("failed to fetch messages")?;
-    let messages: Vec<CpMessage> = resp.body_mut().read_json().context("invalid messages JSON")?;
-    Ok(messages)
+    let page: Page = resp.body_mut().read_json().context("invalid messages JSON")?;
+    Ok(page.data)
 }
 
 pub fn post_cp_message(

@@ -11,11 +11,11 @@ use crate::config;
 /// - CP orchestrator: http://localhost:8080/api/a2a
 /// - CP agent proxy: http://localhost:8080/api/agents/{id}/a2a
 pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
-    let endpoint = url.trim_end_matches('/');
+    let endpoint = normalize_a2a_url(url);
 
     match message {
         Some(msg) => {
-            send_message(endpoint, msg, session_id)?;
+            send_message(&endpoint, msg, session_id)?;
             println!();
         }
         None => {
@@ -31,7 +31,7 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Resul
                     break;
                 }
                 println!();
-                match send_message(endpoint, &input, session_id) {
+                match send_message(&endpoint, &input, session_id) {
                     Ok(_) => println!("\n"),
                     Err(e) => eprintln!("  error: {e}\n"),
                 }
@@ -39,6 +39,17 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Resul
         }
     }
     Ok(())
+}
+
+/// Normalize a URL to an A2A endpoint. If a bare base URL is given (no path or just "/"),
+/// append "/api/a2a" so users can pass the cluster URL directly.
+fn normalize_a2a_url(url: &str) -> String {
+    let base = url.trim_end_matches('/');
+    if base.contains("/api/") || base.ends_with("/a2a") {
+        base.to_string()
+    } else {
+        format!("{base}/api/a2a")
+    }
 }
 
 /// Send an A2A message/stream request and handle the response.
