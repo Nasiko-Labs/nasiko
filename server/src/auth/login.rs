@@ -10,16 +10,16 @@ use serde::{Deserialize, Serialize};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-const COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
+const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 
 /// Public routes — no auth required (merged outside the protected router).
 /// token_validate is here because callers supply the token in the request body;
 /// there is no authenticated "caller" to require.
 pub fn public_router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/auth/login", post(login))
-        .route("/api/v1/auth/initialize-admin", post(initialize_admin))
-        .route("/api/v1/auth/tokens/validate", post(token_validate))
+        .route("/api/auth/login", post(login))
+        .route("/api/auth/initialize-admin", post(initialize_admin))
+        .route("/api/auth/tokens/validate", post(token_validate))
 }
 
 /// Protected auth routes — require X-User-* headers from the gateway.
