@@ -3,56 +3,37 @@ use std::sync::Arc;
 use a2a::*;
 use a2a_server::*;
 use futures::stream::BoxStream;
-use reqwest::Client;
-
 mod telemetry;
+mod tools;
 
-const SYSTEM_PROMPT: &str = "\
-You are an AI Infrastructure Manager agent. You help teams with:
-- Model registry: versioning, metadata, lineage tracking, deployment promotion
-- GPU scheduling: cluster utilization, job queuing, preemption policies, spot instances
-- Training orchestration: distributed training, hyperparameter sweeps, checkpointing
-- Model evaluation: benchmark pipelines, A/B testing, regression detection
-- Prompt management: versioning, testing, optimization, cost tracking
-- Inference optimization: batching, quantization, caching, autoscaling
-
-Speak in terms of MLOps concepts and suggest practical approaches. When discussing \
-resource allocation, consider cost-performance tradeoffs. Recommend specific tools \
-and frameworks where appropriate (e.g., MLflow, Ray, vLLM, TensorRT). Always \
-consider reproducibility, monitoring, and rollback capabilities in your suggestions.";
-
-struct LlmAgent {
-    system_prompt: &'static str,
+struct InfraAgent {
     model: String,
     api_key: String,
     base_url: String,
-    http: Client,
+    http: reqwest::Client,
 }
 
-impl LlmAgent {
-    fn new(system_prompt: &'static str) -> Self {
+impl InfraAgent {
+    fn new() -> Self {
         Self {
-            system_prompt,
-            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
-            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-            http: Client::new(),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
+            http: reqwest::Client::new(),
         }
     }
 
-    async fn stream_chat(
+    async fn chat(
         &self,
-        user_message: &str,
-    ) -> Result<reqwest::Response, String> {
+        messages: &[serde_json::Value],
+        tools: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            "stream": true,
-            "temperature": 0.4,
+            "messages": messages,
+            "tools": tools,
+            "temperature": 0.2,
         });
 
         let resp = self
@@ -66,15 +47,15 @@ impl LlmAgent {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("LLM API {status}: {text}"));
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("LLM API {status}: {body}"));
         }
 
-        Ok(resp)
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("JSON parse: {e}"))
     }
 }
-
-struct InfraAgent(LlmAgent);
 
 impl AgentExecutor for InfraAgent {
     fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
@@ -96,126 +77,101 @@ impl AgentExecutor for InfraAgent {
             })
             .unwrap_or_default();
 
-        let agent = LlmAgent::new(SYSTEM_PROMPT);
+        let model = self.model.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
+        let http = self.http.clone();
 
         let stream = async_stream::stream! {
-            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id: task_id.clone(),
-                context_id: context_id.clone(),
-                status: TaskStatus {
-                    state: TaskState::Working,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }));
+            yield Ok(status_working(&task_id, &context_id, None));
 
-            let artifact_id = new_artifact_id();
-            let resp = match agent.stream_chat(&user_text).await {
-                Ok(r) => r,
-                Err(e) => {
-                    yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                        task_id,
-                        context_id,
-                        status: TaskStatus {
-                            state: TaskState::Failed,
-                            message: Some(Message::new(Role::Agent, vec![Part::text(&e)])),
-                            timestamp: Some(chrono::Utc::now()),
-                        },
-                        metadata: None,
-                    }));
-                    return;
-                }
-            };
+            let agent = InfraAgent { model, api_key, base_url, http };
+            let tool_defs = tools::definitions();
 
-            let mut byte_stream = resp.bytes_stream();
-            let mut buffer = String::new();
-            let mut first_chunk = true;
+            let system = "\
+You are an Infrastructure agent with access to real tools. You can search the Terraform Registry \
+for modules and providers, perform DNS lookups, and get IP geolocation info.\n\n\
+Guidelines:\n\
+- Use terraform_modules to find reusable Terraform modules for any infrastructure need\n\
+- Use terraform_provider to get details about a specific Terraform provider\n\
+- Use dns_lookup to resolve DNS records (A, AAAA, CNAME, MX, TXT, NS)\n\
+- Use ip_info to get geolocation and network info for an IP address\n\
+- When recommending Terraform modules, prefer official/verified ones with high download counts\n\
+- For DNS issues, check multiple record types to build a complete picture\n\
+- Always consider security implications (e.g., exposed IPs, missing DNS records)";
 
-            use futures::StreamExt;
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(_) => break,
+            let mut messages = vec![
+                serde_json::json!({"role": "system", "content": system}),
+                serde_json::json!({"role": "user", "content": user_text}),
+            ];
+
+            let mut final_text = String::new();
+
+            for _ in 0..4 {
+                let resp = match agent.chat(&messages, &tool_defs).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield Ok(status_failed(&task_id, &context_id, &e));
+                        return;
+                    }
                 };
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer = buffer[line_end + 1..].to_string();
+                let choice = &resp["choices"][0]["message"];
+                messages.push(choice.clone());
 
-                    let Some(data) = line.strip_prefix("data: ") else { continue };
-                    if data == "[DONE]" { break; }
+                if let Some(calls) = choice["tool_calls"].as_array() {
+                    for tc in calls {
+                        let name = tc["function"]["name"].as_str().unwrap_or("");
+                        let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                        let call_id = tc["id"].as_str().unwrap_or("");
 
-                    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else { continue };
-                    let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() else { continue };
-                    if content.is_empty() { continue; }
+                        let preview = extract_preview(args);
+                        yield Ok(status_working(
+                            &task_id, &context_id,
+                            Some(&format!("{name}: {preview}")),
+                        ));
 
-                    yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
-                        task_id: task_id.clone(),
-                        context_id: context_id.clone(),
-                        artifact: Artifact {
-                            artifact_id: artifact_id.clone(),
-                            name: None,
-                            description: None,
-                            parts: vec![Part::text(content)],
-                            metadata: None,
-                            extensions: None,
-                        },
-                        append: Some(!first_chunk),
-                        last_chunk: Some(false),
-                        metadata: None,
-                    }));
-                    first_chunk = false;
+                        let result = tools::execute(name, args).await;
+
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": result,
+                        }));
+                    }
+                } else {
+                    final_text = choice["content"].as_str().unwrap_or("").to_string();
+                    break;
                 }
             }
 
-            // Final chunk marker
             yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
                 task_id: task_id.clone(),
                 context_id: context_id.clone(),
                 artifact: Artifact {
-                    artifact_id,
+                    artifact_id: new_artifact_id(),
                     name: None,
                     description: None,
-                    parts: vec![],
+                    parts: vec![Part::text(&final_text)],
                     metadata: None,
                     extensions: None,
                 },
-                append: Some(true),
+                append: Some(false),
                 last_chunk: Some(true),
                 metadata: None,
             }));
 
-            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id,
-                context_id,
-                status: TaskStatus {
-                    state: TaskState::Completed,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }));
+            yield Ok(status_completed(&task_id, &context_id));
         };
 
         Box::pin(stream)
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
-        let task_id = ctx.task_id;
-        let context_id = ctx.context_id;
+        let task_id = ctx.task_id.clone();
+        let context_id = ctx.context_id.clone();
         Box::pin(futures::stream::once(async move {
-            Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-                task_id,
-                context_id,
-                status: TaskStatus {
-                    state: TaskState::Canceled,
-                    message: None,
-                    timestamp: Some(chrono::Utc::now()),
-                },
-                metadata: None,
-            }))
+            Ok(status_completed(&task_id, &context_id))
         }))
     }
 }
@@ -230,14 +186,14 @@ async fn main() {
         .unwrap_or(8000);
 
     let handler = Arc::new(DefaultRequestHandler::new(
-        InfraAgent(LlmAgent::new(SYSTEM_PROMPT)),
+        InfraAgent::new(),
         InMemoryTaskStore::new(),
     ));
 
     let agent_card = AgentCard {
-        name: "AI Infrastructure Manager".to_string(),
-        description: "Model registry, GPU scheduling, training orchestration, and evaluation pipelines".to_string(),
-        version: "0.1.0".to_string(),
+        name: "Infrastructure Manager".to_string(),
+        description: "Terraform module search, DNS resolution, IP geolocation, and provider info".to_string(),
+        version: "1.0.0".to_string(),
         provider: Some(AgentProvider {
             organization: "Nasiko".to_string(),
             url: "https://nasiko.io".to_string(),
@@ -250,27 +206,27 @@ async fn main() {
         },
         skills: vec![
             AgentSkill {
-                id: "model-registry".into(),
-                name: "Model Registry".into(),
-                description: "Manage model versions, metadata, and deployment promotion".into(),
-                tags: vec!["utilities".into(), "models".into(), "registry".into()],
-                examples: Some(vec!["List all production models and their versions".into()]),
+                id: "terraform-search".into(),
+                name: "Terraform Registry".into(),
+                description: "Search for Terraform modules and provider documentation".into(),
+                tags: vec!["infrastructure".into(), "terraform".into(), "iac".into()],
+                examples: Some(vec!["Find a Terraform module for AWS VPC".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "gpu-scheduling".into(),
-                name: "GPU Scheduling".into(),
-                description: "Optimize GPU cluster utilization and job scheduling".into(),
-                tags: vec!["utilities".into(), "gpu".into(), "compute".into()],
-                examples: Some(vec!["Schedule a training job on 4x A100 GPUs".into()]),
+                id: "dns-lookup".into(),
+                name: "DNS Lookup".into(),
+                description: "Resolve DNS records (A, AAAA, CNAME, MX, TXT, NS) for any domain".into(),
+                tags: vec!["infrastructure".into(), "dns".into(), "networking".into()],
+                examples: Some(vec!["What DNS records does github.com have?".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "eval-pipeline".into(),
-                name: "Evaluation Pipeline".into(),
-                description: "Set up model evaluation benchmarks and regression testing".into(),
-                tags: vec!["utilities".into(), "evaluation".into(), "benchmarks".into()],
-                examples: Some(vec!["Run the standard eval suite on the latest checkpoint".into()]),
+                id: "ip-geolocation".into(),
+                name: "IP Geolocation".into(),
+                description: "Get geolocation and network info for an IP address".into(),
+                tags: vec!["infrastructure".into(), "networking".into(), "ip".into()],
+                examples: Some(vec!["Where is IP 8.8.8.8 located?".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
         ],
@@ -295,11 +251,83 @@ async fn main() {
         .nest("/jsonrpc", a2a_server::jsonrpc::jsonrpc_router(handler.clone()))
         .merge(a2a_server::agent_card::agent_card_router(card_producer));
 
-    tracing::info!("AI Infrastructure Manager listening on 0.0.0.0:{port}");
+    tracing::info!("Infrastructure Manager listening on 0.0.0.0:{port}");
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("failed to bind");
 
     axum::serve(listener, app).await.expect("server failed");
+}
+
+// ─── Event helpers ──────────────────────────────────────────────────────────
+
+fn status_working(task_id: &str, context_id: &str, msg: Option<&str>) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Working,
+            message: msg.map(|t| Message {
+                message_id: new_message_id(),
+                context_id: Some(context_id.into()),
+                task_id: Some(task_id.into()),
+                role: Role::Agent,
+                parts: vec![Part::text(t)],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            }),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
+}
+
+fn status_completed(task_id: &str, context_id: &str) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Completed,
+            message: None,
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
+}
+
+fn extract_preview(args: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(args)
+        .ok()
+        .and_then(|v| {
+            v.as_object()?.values().find_map(|val| {
+                val.as_str().map(|s| {
+                    if s.len() > 60 { format!("{}...", &s[..60]) } else { s.to_string() }
+                })
+            })
+        })
+        .unwrap_or_else(|| "...".into())
+}
+
+fn status_failed(task_id: &str, context_id: &str, error: &str) -> StreamResponse {
+    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Failed,
+            message: Some(Message {
+                message_id: new_message_id(),
+                context_id: Some(context_id.into()),
+                task_id: Some(task_id.into()),
+                role: Role::Agent,
+                parts: vec![Part::text(error)],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            }),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    })
 }
