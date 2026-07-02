@@ -1,0 +1,94 @@
+@scope (chat-page) {
+  :scope {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - 60px);
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 var(--space-md);
+  }
+  .chat-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-md) 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .chat-agent-name {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    color: var(--color-text-main);
+  }
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--space-md) 0;
+  }
+  .msg-row {
+    display: flex;
+    margin-bottom: var(--space-md);
+  }
+  .msg-row.is-user { justify-content: flex-end; }
+  .msg {
+    max-width: 85%;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .msg.is-user {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    border-bottom-right-radius: var(--radius-sm);
+  }
+  .msg.is-assistant {
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-bottom-left-radius: var(--radius-sm);
+  }
+  .assistant-stream {
+    max-width: 85%;
+  }
+  .stream-status {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    padding: var(--space-sm) var(--space-md);
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: 28px;
+    transition: opacity 0.2s;
+  }
+  .stream-status .pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-primary);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+  .stream-status.is-done { opacity: 0; height: 0; min-height: 0; padding: 0; overflow: hidden; }
+  .stream-content {
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-bottom-left-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    display: none;
+  }
+  .stream-content.is-visible { display: block; }
+  .input-area {
+    padding: var(--space-sm) 0 var(--space-md);
+    border-top: 1px solid var(--color-border);
+  }
+}

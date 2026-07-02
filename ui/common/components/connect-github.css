@@ -1,0 +1,57 @@
+@scope (connect-github) {
+  :scope { display: block; }
+  .connect-card {
+    max-width: 480px;
+    margin: var(--space-xl) auto;
+    padding: var(--space-2xl);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-bg-surface);
+    text-align: center;
+  }
+  .connect-icon {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto var(--space-lg);
+    border-radius: 50%;
+    background: var(--color-neutral-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .connect-icon svg { width: 32px; height: 32px; fill: var(--color-text-main); }
+  .connect-title {
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin-bottom: var(--space-sm);
+  }
+  .connect-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-xl);
+    line-height: 1.6;
+  }
+  .connect-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 12px var(--space-xl);
+    background: #24292f;
+    color: #fff;
+    font-weight: 600;
+    font-size: var(--font-size-base);
+    border-radius: var(--radius-md);
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+  .connect-btn:hover { background: #1b1f23; color: #fff; }
+  .connect-btn svg { width: 20px; height: 20px; fill: currentColor; }
+  .connect-scopes {
+    margin-top: var(--space-lg);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+}

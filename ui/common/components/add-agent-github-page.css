@@ -1,0 +1,80 @@
+@scope (add-agent-github-page) {
+  :scope { display: block; }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-xs);
+  }
+  .toolbar h1 { font-size: var(--font-size-lg); font-weight: 600; margin: 0; }
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--font-size-sm);
+    color: var(--color-primary);
+    text-decoration: none;
+  }
+  .back-link:hover { text-decoration: underline; }
+  .subtitle {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    margin-bottom: var(--space-md);
+  }
+  .subtitle code {
+    padding: 1px 5px;
+    background: var(--color-bg-elevated);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+  }
+  .repo-list {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin-top: var(--space-sm);
+  }
+  .repo-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
+    transition: background 0.1s;
+  }
+  .repo-item:last-child { border-bottom: none; }
+  .repo-item:hover { background: var(--color-bg-elevated); }
+  .repo-info { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-md); }
+  .repo-name {
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+  }
+  .repo-meta {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: center;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+  .search-box {
+    width: 100%;
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+  .search-box:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
+  }
+  .search-box::placeholder { color: var(--color-text-muted); }
+}
