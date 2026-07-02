@@ -206,14 +206,13 @@ fn build_span_tree(
     // Collect children per parent
     let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
     for s in spans {
-        if let Some(ref parent) = s.parent_span_id {
-            if nodes.contains_key(parent.as_str()) {
+        if let Some(ref parent) = s.parent_span_id
+            && nodes.contains_key(parent.as_str()) {
                 children_map
                     .entry(parent.clone())
                     .or_default()
                     .push(s.span_id.clone());
             }
-        }
     }
 
     // Identify roots: spans whose parent_span_id is None or not in the node map
@@ -271,6 +270,7 @@ fn build_span_tree(
         })
         .collect();
 
+    #[allow(clippy::filter_map_bool_then)]
     let mut root_nodes: Vec<SpanNode> = root_ids
         .iter()
         .filter_map(|id| {
@@ -1019,7 +1019,7 @@ impl ObservabilityService {
 
         let p50 = durations.get(durations.len() / 2).map(|&v| v as f64);
         let p99 = durations
-            .get((durations.len() * 99 / 100).saturating_sub(1).max(0))
+            .get((durations.len() * 99 / 100).saturating_sub(1))
             .map(|&v| v as f64);
 
         let mut total_input = 0u64;
