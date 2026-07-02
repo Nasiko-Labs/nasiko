@@ -92,9 +92,10 @@ ${agentId ? `<app-badge variant="info">${agentId}</app-badge>` : ""}
               role: "ROLE_USER",
               parts: [{ text: content }],
             },
-            metadata: this.#sessionId
-              ? { session_id: this.#sessionId }
-              : undefined,
+            metadata: {
+              ...(agentId && { agent_id: agentId }),
+              ...(this.#sessionId && { session_id: this.#sessionId }),
+            },
           },
         };
 
@@ -128,8 +129,11 @@ ${agentId ? `<app-badge variant="info">${agentId}</app-badge>` : ""}
     try {
       const res = await fetch(`/api/chat/sessions/${this.#sessionId}/messages`);
       if (!res.ok) return;
-      const msgs = await res.json();
-      msgs.forEach((m) => this.#appendMsg(messagesEl, m.role, m.content));
+      const result = await res.json();
+      const msgs = result.data || result;
+      if (Array.isArray(msgs)) {
+        msgs.forEach((m) => this.#appendMsg(messagesEl, m.role, m.content));
+      }
     } catch {}
   }
 

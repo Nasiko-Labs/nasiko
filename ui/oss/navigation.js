@@ -18,3 +18,8 @@ window.fetchAgents = async (query, page, limit) => {
   const agents = await fetchApi(`/catalog/agents?${params}`);
   return { data: Array.isArray(agents) ? agents : agents.data || [], total: agents.total || agents.length };
 };
+
+window.fetchSessions = async (_query, _page, limit) => {
+  const params = new URLSearchParams({ limit });
+  return fetchApi(`/chat/sessions?${params}`);
+};
