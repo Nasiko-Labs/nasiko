@@ -1,5 +1,4 @@
 import "./voice-input.js";
-import { icons } from '/common/utils/icons.js';
 
 import styles from './chat-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -21,6 +20,7 @@ class ChatPage extends HTMLElement {
     this.innerHTML = `
       <div class="chat-header">
         <span class="chat-agent-name">${agentLabel}</span>
+${agentId ? `<app-badge variant="info">${agentId}</app-badge>` : ""}
       </div>
       <div class="messages" id="messages"></div>
       <div class="input-area">
@@ -35,14 +35,7 @@ class ChatPage extends HTMLElement {
     const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
 
-    if (this.#sessionId) {
-      messagesEl.innerHTML = `
-        <div class="msg-skel"><div class="msg-skel-line" style="width:60%"></div></div>
-        <div class="msg-skel is-right"><div class="msg-skel-line" style="width:45%"></div></div>
-        <div class="msg-skel"><div class="msg-skel-line" style="width:70%"></div></div>
-      `;
-      this.#loadMessages(messagesEl);
-    }
+    if (this.#sessionId) this.#loadMessages(messagesEl);
 
     chatInput.addEventListener("voice-input-submit", async (e) => {
       const content = e.detail.value;
@@ -99,10 +92,9 @@ class ChatPage extends HTMLElement {
               role: "ROLE_USER",
               parts: [{ text: content }],
             },
-            metadata: {
-              ...(agentId && { agent_id: agentId }),
-              ...(this.#sessionId && { session_id: this.#sessionId }),
-            },
+            metadata: this.#sessionId
+              ? { session_id: this.#sessionId }
+              : undefined,
           },
         };
 
@@ -122,19 +114,8 @@ class ChatPage extends HTMLElement {
           }
         }
 
-        const { text: reply, traceId } = await this.#readA2aStream(res, messagesEl);
-        this.#persistMessage(this.#sessionId, "assistant", reply, traceId);
-        if (traceId) {
-          const lastRow = messagesEl.querySelector(".msg-row.is-assistant:last-child .assistant-stream");
-          if (lastRow) {
-            const traceBtn = document.createElement("a");
-            traceBtn.className = "msg-trace-btn";
-            traceBtn.href = `/session-trace.html?trace_id=${traceId}`;
-            traceBtn.title = "View trace";
-            traceBtn.innerHTML = icons.trace('', 14);
-            lastRow.appendChild(traceBtn);
-          }
-        }
+        const reply = await this.#readA2aStream(res, messagesEl);
+        this.#persistMessage(this.#sessionId, "assistant", reply);
       } catch (err) {
         this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
       } finally {
@@ -146,31 +127,19 @@ class ChatPage extends HTMLElement {
   async #loadMessages(messagesEl) {
     try {
       const res = await fetch(`/api/chat/sessions/${this.#sessionId}/messages`);
-      messagesEl.innerHTML = '';
       if (!res.ok) return;
-      const result = await res.json();
-      const msgs = result.data || result;
-      if (Array.isArray(msgs)) {
-        msgs.forEach((m) => this.#appendMsg(messagesEl, m.role, m.content, m.trace_id));
-      }
-    } catch { messagesEl.innerHTML = ''; }
+      const msgs = await res.json();
+      msgs.forEach((m) => this.#appendMsg(messagesEl, m.role, m.content));
+    } catch {}
   }
 
-  #appendMsg(messagesEl, role, content, traceId) {
+  #appendMsg(messagesEl, role, content) {
     const row = document.createElement("div");
     row.className = `msg-row is-${role}`;
     const div = document.createElement("div");
     div.className = `msg is-${role}`;
     div.textContent = content;
     row.appendChild(div);
-    if (traceId) {
-      const traceBtn = document.createElement("a");
-      traceBtn.className = "msg-trace-btn";
-      traceBtn.href = `/session-trace.html?trace_id=${traceId}`;
-      traceBtn.title = "View trace";
-      traceBtn.innerHTML = icons.trace('', 14);
-      row.appendChild(traceBtn);
-    }
     messagesEl.appendChild(row);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
@@ -196,7 +165,6 @@ class ChatPage extends HTMLElement {
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
     let fullText = "";
-    let traceId = null;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -223,10 +191,6 @@ class ChatPage extends HTMLElement {
               for (const part of msg.parts) {
                 if (part.data) {
                   const d = part.data;
-                  if (d.type === "trace_meta" && d.trace_id) {
-                    traceId = d.trace_id;
-                    continue;
-                  }
                   let text = "";
                   if (d.type === "thinking") {
                     text = d.content || "Thinking...";
@@ -280,16 +244,14 @@ class ChatPage extends HTMLElement {
       fullText = "No response";
     }
 
-    return { text: fullText, traceId };
+    return fullText;
   }
 
-  #persistMessage(sessionId, role, content, traceId) {
-    const payload = { role, content };
-    if (traceId) payload.trace_id = traceId;
+  #persistMessage(sessionId, role, content) {
     fetch(`/api/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ role, content }),
     }).catch(() => {});
   }
 

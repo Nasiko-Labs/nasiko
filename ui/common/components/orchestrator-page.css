@@ -168,8 +168,7 @@
   .agent-card-skel {
     height: 52px;
     border-radius: var(--radius-md);
-    background: var(--color-border);
-    opacity: 0.5;
+    background: var(--color-bg-base);
     animation: pulse 1.4s ease-in-out infinite;
   }
 }

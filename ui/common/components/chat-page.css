@@ -2,14 +2,10 @@
   :scope {
     display: flex;
     flex-direction: column;
-    height: calc(100dvh - var(--app-header-height));
+    height: calc(100dvh - 60px);
     max-width: 760px;
     margin: 0 auto;
     padding: 0 var(--space-md);
-
-    @media (min-width: 1024px) {
-      height: 100dvh;
-    }
   }
   .chat-header {
     display: flex;
@@ -91,43 +87,8 @@
     display: none;
   }
   .stream-content.is-visible { display: block; }
-  .msg-trace-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border-radius: var(--radius-sm);
-    color: var(--color-text-muted);
-    opacity: 0;
-    transition: opacity 0.15s, color 0.15s, background 0.15s;
-    align-self: flex-end;
-    margin-bottom: var(--space-xs);
-    flex-shrink: 0;
-  }
-  .msg-row:hover .msg-trace-btn { opacity: 1; }
-  .msg-trace-btn:hover {
-    color: var(--color-primary);
-    background: var(--color-bg-hover);
-  }
   .input-area {
-    padding: var(--space-sm) 0;
+    padding: var(--space-sm) 0 var(--space-md);
     border-top: 1px solid var(--color-border);
-  }
-  .msg-skel {
-    display: flex;
-    margin-bottom: var(--space-md);
-  }
-  .msg-skel.is-right { justify-content: flex-end; }
-  .msg-skel-line {
-    height: 36px;
-    border-radius: var(--radius-md);
-    background: var(--color-border);
-    opacity: 0.5;
-    animation: chat-skel-pulse 1.4s ease-in-out infinite;
-  }
-  @keyframes chat-skel-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
   }
 }
