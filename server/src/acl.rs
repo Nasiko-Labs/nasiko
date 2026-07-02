@@ -48,9 +48,9 @@ pub async fn user_can_access_agent(db: &PgPool, user_id: Uuid, agent_id: Uuid) -
 
 /// Check whether `caller_agent_id` is permitted to invoke `target_agent_id`.
 ///
-/// Allowlist semantics:
-/// - If agent_acl has NO rows for the caller → unrestricted (can call anything).
-/// - If agent_acl has ANY rows for the caller → only listed targets are allowed.
+/// Default-deny: both caller and target must have an explicit row in `agent_acl`.
+/// To allow an agent to call another, insert a row:
+///   `INSERT INTO agent_acl (caller_agent_id, target_agent_id) VALUES ($1, $2)`
 pub async fn check_agent_acl(
     db: &PgPool,
     caller_agent_id: Uuid,
@@ -58,13 +58,10 @@ pub async fn check_agent_acl(
 ) -> Result<bool, sqlx::Error> {
     let allowed: Option<bool> = sqlx::query_scalar(
         r#"
-        SELECT CASE
-            WHEN NOT EXISTS (SELECT 1 FROM agent_acl WHERE caller_agent_id = $1)
-                THEN true
-            WHEN EXISTS (SELECT 1 FROM agent_acl WHERE caller_agent_id = $1 AND target_agent_id = $2)
-                THEN true
-            ELSE false
-        END
+        SELECT EXISTS (
+            SELECT 1 FROM agent_acl
+            WHERE caller_agent_id = $1 AND target_agent_id = $2
+        )
         "#,
     )
     .bind(caller_agent_id)
@@ -72,16 +69,15 @@ pub async fn check_agent_acl(
     .fetch_one(db)
     .await?;
 
-    Ok(allowed.unwrap_or(true))
+    Ok(allowed.unwrap_or(false))
 }
 
-/// Fetch the set of agent IDs that `caller_agent_id` is allowed to invoke.
-/// Returns None if the caller has no ACL rows (unrestricted).
-/// Returns Some(set) if the caller has an explicit allowlist.
+/// Fetch the set of agent IDs that `caller_agent_id` is explicitly allowed to invoke.
+/// Returns an empty Vec when the caller has no grants (all calls denied by default).
 pub async fn allowed_targets(
     db: &PgPool,
     caller_agent_id: Uuid,
-) -> Result<Option<Vec<Uuid>>, sqlx::Error> {
+) -> Result<Vec<Uuid>, sqlx::Error> {
     let targets: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT target_agent_id FROM agent_acl WHERE caller_agent_id = $1",
     )
@@ -89,11 +85,7 @@ pub async fn allowed_targets(
     .fetch_all(db)
     .await?;
 
-    if targets.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(targets.into_iter().map(|(id,)| id).collect()))
-    }
+    Ok(targets.into_iter().map(|(id,)| id).collect())
 }
 
 /// CallGuard implementation for the CP orchestrator.

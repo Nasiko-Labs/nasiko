@@ -65,11 +65,6 @@ async fn by_skill(
         }
     };
 
-    // Normalise to lowercase before the GIN containment check.  Tags are
-    // stored lowercase after migration 014, so this ensures the query matches
-    // even if the caller passes "Data-Pipeline" instead of "data-pipeline".
-    let tag_lower = tag.to_lowercase();
-
     let result = sqlx
         ::query_as::<_, AgentSummary>(
             r#"SELECT a.id, a.name, a.display_name, a.description, a.url, a.icon_url,
@@ -83,7 +78,7 @@ async fn by_skill(
            ORDER BY a.created_at DESC
            LIMIT $2 OFFSET $3"#
         )
-        .bind(&tag_lower)
+        .bind(tag)
         .bind(limit)
         .bind(offset)
         .bind(owner_filter)
@@ -112,17 +107,12 @@ async fn create(
     })
     );
     let skills_vec = body.skills.unwrap_or_default();
-    // Normalise tags to lowercase at write time for consistent GIN lookup.
-    let mut tags: Vec<String> = body.tags.unwrap_or_default()
-        .into_iter()
-        .map(|t| t.to_lowercase())
-        .collect();
+    let mut tags = body.tags.unwrap_or_default();
     // Merge unique tags declared on each skill into the agent's tag set.
     for skill in &skills_vec {
         for tag in &skill.tags {
-            let tag_lower = tag.to_lowercase();
-            if !tags.contains(&tag_lower) {
-                tags.push(tag_lower);
+            if !tags.contains(tag) {
+                tags.push(tag.clone());
             }
         }
     }
@@ -315,23 +305,18 @@ async fn update(
 
     // When skills are being updated, merge their tags into the provided tag list so
     // the COALESCE write carries all skill-derived tags alongside any explicit ones.
-    // All tags are normalised to lowercase for consistent GIN lookup.
     let merged_tags = if let Some(ref skill_list) = body.skills {
-        let mut tags: Vec<String> = body.tags.clone().unwrap_or_default()
-            .into_iter()
-            .map(|t| t.to_lowercase())
-            .collect();
+        let mut tags = body.tags.clone().unwrap_or_default();
         for skill in skill_list {
             for tag in &skill.tags {
-                let tag_lower = tag.to_lowercase();
-                if !tags.contains(&tag_lower) {
-                    tags.push(tag_lower);
+                if !tags.contains(tag) {
+                    tags.push(tag.clone());
                 }
             }
         }
         Some(tags)
     } else {
-        body.tags.as_ref().map(|ts| ts.iter().map(|t| t.to_lowercase()).collect())
+        body.tags.clone()
     };
 
     let mut tx = match state.db.begin().await {
@@ -536,7 +521,6 @@ async fn list_versions(
 
 // ── Scoring helpers ───────────────────────────────────────────────────────────
 //
-// Mirrors Python's _calculate_match_score(query, text, boost):
 //
 //   exact match   → 100.0 * boost
 //   prefix match  →  90.0 * boost   (text starts with query)
@@ -561,22 +545,19 @@ const AGENT_SCORE_SQL: &str =
     r#"
     GREATEST(
         CASE
-            -- ILIKE $1 is case-insensitive and allows the trigram GIN index to
-            -- activate.  lower(col) = lower($1) would defeat the GIN index because
-            -- the index expression is 'name', not 'lower(name)'.
-            WHEN name ILIKE $1                THEN 280.0
-            WHEN name ILIKE $1 || '%'         THEN 252.0
-            WHEN name ILIKE '%' || $1 || '%'  THEN 196.0
+            WHEN lower(name) = lower($1)     THEN 280.0
+            WHEN name ILIKE $1 || '%'        THEN 252.0
+            WHEN name ILIKE '%' || $1 || '%' THEN 196.0
             ELSE 0.0
         END,
         CASE
-            WHEN COALESCE(display_name,'') ILIKE $1                        THEN 240.0
+            WHEN lower(COALESCE(display_name,'')) = lower($1)              THEN 240.0
             WHEN COALESCE(display_name,'') ILIKE $1 || '%'                 THEN 216.0
             WHEN COALESCE(display_name,'') ILIKE '%' || $1 || '%'          THEN 168.0
             ELSE 0.0
         END,
         CASE
-            WHEN COALESCE(description,'') ILIKE $1                        THEN 200.0
+            WHEN lower(COALESCE(description,'')) = lower($1)              THEN 200.0
             WHEN COALESCE(description,'') ILIKE $1 || '%'                 THEN 180.0
             WHEN COALESCE(description,'') ILIKE '%' || $1 || '%'          THEN 140.0
             ELSE 0.0
@@ -599,20 +580,20 @@ const USER_SCORE_SQL: &str =
     r#"
     GREATEST(
         CASE
-            WHEN username ILIKE $1                     THEN 300.0
+            WHEN lower(username) = lower($1)          THEN 300.0
             WHEN username ILIKE $1 || '%'              THEN 270.0
             WHEN username ILIKE '%' || $1 || '%'       THEN 210.0
             ELSE 0.0
         END,
         CASE
-            WHEN COALESCE(display_name,'') ILIKE $1                        THEN 250.0
+            WHEN lower(COALESCE(display_name,'')) = lower($1)              THEN 250.0
             WHEN COALESCE(display_name,'') ILIKE $1 || '%'                 THEN 225.0
             WHEN COALESCE(display_name,'') ILIKE '%' || $1 || '%'          THEN 175.0
             ELSE 0.0
         END,
         CASE
-            WHEN COALESCE(email,'') ILIKE $1           THEN 150.0
-            WHEN COALESCE(email,'') ILIKE $1 || '%'    THEN 135.0
+            WHEN lower(COALESCE(email,'')) = lower($1)     THEN 150.0
+            WHEN COALESCE(email,'') ILIKE $1 || '%'        THEN 135.0
             WHEN COALESCE(email,'') ILIKE '%' || $1 || '%' THEN 105.0
             ELSE 0.0
         END
@@ -628,8 +609,7 @@ struct SearchQuery {
     limit: i64,
 }
 
-/// Agent-only search.  Scoring matches Python's redis_search_service.py:
-/// GREATEST across (name×2.8, description×2.0, tag score) with tiered
+/// Agent-only search.  Scoring: GREATEST across (name×2.8, description×2.0, tag score) with tiered
 /// exact/prefix/contains scoring.  Minimum query length: 2 chars.
 async fn search(
     State(state): State<AppState>,
@@ -686,8 +666,7 @@ struct UserSearchQuery {
     q: String,
 }
 
-/// Mirrors Python's `RedisSearchService.search_users` / `GET /search/users`.
-/// Field boosts: username×3.0, display_name×2.5, email×1.5.
+/// User search. Field boosts: username×3.0, display_name×2.5, email×1.5.
 /// Scoring: exact (100×boost) > prefix (90×boost) > contains (70×boost).
 /// Minimum query length: 2 chars. Sort: score DESC, username ASC.
 /// Returns all matching users (no limit).

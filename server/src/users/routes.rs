@@ -14,24 +14,53 @@ use crate::auth::Claims;
 use crate::state::AppState;
 use crate::Paginated;
 
-/// Full user router — list, get, and all management routes.
-/// Used by the OSS server.
+/// Returns 409 if `target_id` is the only active admin left.
+async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::response::Response> {
+    let is_admin: Option<bool> = sqlx::query_scalar(
+        "SELECT (role = 'admin' OR is_superuser) FROM users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(target_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    if is_admin == Some(true) {
+        let admin_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM users WHERE (role = 'admin' OR is_superuser) AND is_active = true AND deleted_at IS NULL",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+        if admin_count <= 1 {
+            return Some(
+                (StatusCode::CONFLICT, Json(serde_json::json!({"error": "cannot deactivate the last admin"}))).into_response(),
+            );
+        }
+    }
+    None
+}
+
+/// Full user router — list, get, and all management routes including role changes.
+/// Used by the OSS server. EE provides its own router (ee/server/src/users.rs)
+/// that merges management_router() and supplies EE-aware handlers + the cascade
+/// role-change endpoint.
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(management_router())
+        // Role change must come before /{id} to avoid being swallowed as an id segment.
+        .route("/users/{id}/role", put(change_role))
         // Static sub-paths MUST come before /{id} to avoid being captured as IDs.
-        .route("/users/me", get(get_me))
         .route("/users", get(list_users))
         .route("/users/{id}", get(get_user))
-        // OSS accessible-agents: owner + public only (no grant table).
-        // EE overrides these in ee/server/src/users.rs with the full grant check.
         .route("/users/me/accessible-agents", get(my_accessible_agents))
         .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
-/// Management-only router — all routes except list/get users and accessible-agents.
-/// EE server merges this and provides its own org-aware list/get and grant-aware
-/// accessible-agents handlers.
+/// Management-only router — create/update/delete users and related operations.
+/// The role-change endpoint is registered separately so it can be overridden
+/// without causing a duplicate-route panic.
 pub fn management_router() -> Router<AppState> {
     Router::new()
         .route("/users/admins", get(list_admins))
@@ -217,8 +246,11 @@ struct UpdateUser {
     display_name: Option<String>,
     password: Option<String>,
     is_active: Option<bool>,
-    #[allow(dead_code)]
-    role: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ChangeRoleRequest {
+    pub role: String,
 }
 
 async fn update_user(
@@ -282,8 +314,14 @@ async fn update_user(
 
 async fn delete_user(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    // Prevent self-deletion.
+    if claims.sub == id.to_string() {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot delete your own account"}))).into_response();
+    }
+
     let is_super: Option<bool> = sqlx::query_scalar("SELECT is_superuser FROM users WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
@@ -292,7 +330,26 @@ async fn delete_user(
         .flatten();
 
     if is_super == Some(true) {
-        return (StatusCode::FORBIDDEN, "cannot delete superuser").into_response();
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot delete superuser"}))).into_response();
+    }
+
+    // Prevent deletion if the user owns any non-deleted agents.
+    let owned_agents: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    if owned_agents > 0 {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "user owns agents — reassign or delete them first",
+                "agent_count": owned_agents,
+            })),
+        ).into_response();
     }
 
     match sqlx::query("DELETE FROM users WHERE id = $1")
@@ -300,7 +357,7 @@ async fn delete_user(
         .execute(&state.db)
         .await
     {
-        Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, "user not found").into_response(),
+        Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "user not found"}))).into_response(),
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -310,8 +367,19 @@ async fn delete_user(
 
 async fn deactivate(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    // Prevent self-deactivation.
+    if claims.sub == id.to_string() {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot deactivate your own account"}))).into_response();
+    }
+
+    // Prevent deactivating the last admin.
+    if let Some(err) = check_last_admin(&state, id).await {
+        return err;
+    }
+
     match sqlx::query(
         "UPDATE users SET is_active = false WHERE id = $1 AND deleted_at IS NULL",
     )
@@ -319,7 +387,11 @@ async fn deactivate(
     .execute(&state.db)
     .await
     {
-        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            // Revoke all live tokens immediately so the gateway stops accepting them.
+            let _ = state.auth.revoke_tokens_for_user(&id.to_string()).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -389,6 +461,79 @@ async fn regenerate_credentials(
     }
 }
 
+// ─── PUT /users/{id}/role ────────────────────────────────────────────────────
+
+/// Change a user's role and immediately revoke their live tokens.
+pub async fn change_role(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ChangeRoleRequest>,
+) -> impl IntoResponse {
+    // Cannot change your own role through the admin API.
+    if claims.sub == id.to_string() {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot change your own role"}))).into_response();
+    }
+
+    let new_role = req.role.trim().to_lowercase();
+    let valid_roles = ["admin", "member", "team_member", "team_lead", "department_manager"];
+    if !valid_roles.contains(&new_role.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("invalid role '{}'; valid: {}", new_role, valid_roles.join(", "))})),
+        ).into_response();
+    }
+
+    // Fetch current role — ensures the user exists and enables last-admin guard.
+    let current_role: Option<String> = sqlx::query_scalar(
+        "SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let Some(current_role) = current_role else {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "user not found"}))).into_response();
+    };
+
+    // Last-admin guard: prevent demoting the only remaining admin.
+    if current_role == "admin" && new_role != "admin" {
+        if let Some(err) = check_last_admin(&state, id).await {
+            return err;
+        }
+    }
+
+    // No-op if the role hasn't changed.
+    if current_role == new_role {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
+    match sqlx::query(
+        "UPDATE users SET role = $2::user_role, updated_at = now() WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(&new_role)
+    .execute(&state.db)
+    .await
+    {
+        Ok(r) if r.rows_affected() == 0 => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "user not found"}))).into_response();
+        }
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+        Ok(_) => {}
+    }
+
+    // Revoke all live tokens — role is embedded in JWT so stale tokens would
+    // carry the old (wrong) role until natural expiry.
+    let _ = state.auth.revoke_tokens_for_user(&id.to_string()).await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 // ─── GET /users/admins ───────────────────────────────────────────────────────
 
 async fn list_admins(State(state): State<AppState>) -> impl IntoResponse {
@@ -431,31 +576,6 @@ async fn my_accessible_agents(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
     accessible_agents_impl(&state.db, user_id).await
-}
-
-// ─── GET /users/me ──────────────────────────────────────────────────────────
-
-async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
-    let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
-        r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
-                  u.is_active, u.role::text as role,
-                  u.created_at, u.last_login
-           FROM users u
-           WHERE u.id = $1 AND u.deleted_at IS NULL"#,
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await;
-
-    match result {
-        Ok(Some(user)) => Json(user).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "user not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
 }
 
 // ─── shared helper ──────────────────────────────────────────────────────────

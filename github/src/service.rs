@@ -69,8 +69,7 @@ impl GitHubService {
     /// Format: `v1.<base64url(payload)>.<hex_hmac_sha256>`
     ///
     /// The payload is a `BTreeMap` serialized with `serde_json` — BTreeMap
-    /// guarantees alphabetical key order, matching Python's
-    /// `json.dumps(..., sort_keys=True)`.  This is required so that
+    /// guarantees deterministic alphabetical key order, which is required so that
     /// [`verify_state`](Self::verify_state) can recompute an identical byte
     /// string during verification.
     ///
@@ -82,7 +81,6 @@ impl GitHubService {
         let iat = unix_now();
         let nonce = Uuid::new_v4().to_string();
 
-        // BTreeMap serialises with sorted keys — matches Python sort_keys=True.
         let mut payload: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
         payload.insert("flow", serde_json::Value::String("connect".into()));
         payload.insert("iat", serde_json::Value::Number(iat.into()));

@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Serialize)]
 struct AclResponse {
+    /// Always false — default-deny semantics: explicit grants required.
     unrestricted: bool,
     allowed: Vec<Uuid>,
 }
@@ -47,8 +48,7 @@ async fn get_agent_acl(
     }
 
     match allowed_targets(&state.db, agent_id).await {
-        Ok(None) => Json(AclResponse { unrestricted: true, allowed: vec![] }).into_response(),
-        Ok(Some(targets)) => Json(AclResponse { unrestricted: false, allowed: targets }).into_response(),
+        Ok(targets) => Json(AclResponse { unrestricted: false, allowed: targets }).into_response(),
         Err(e) => {
             tracing::error!(%e, %agent_id, "get_agent_acl db error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

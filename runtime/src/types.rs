@@ -100,14 +100,6 @@ impl From<&str> for ContainerId {
 }
 
 /// Observed lifecycle state of a deployed agent.
-///
-/// Maps to Python's `DeploymentStatus` enum in `nasiko/core/app/entity/entity.py`:
-/// - `Pending`  → STARTING
-/// - `Running`  → RUNNING
-/// - `Crashed`  → CRASHED (runtime crash / restart threshold exceeded)
-/// - `Failed`   → FAILED (infrastructure failure: image pull, container config)
-/// - `Stopped`  → STOPPED
-/// - `Unknown`  → (no Python equivalent; backend returned unrecognised state)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AuthError, Identity, Role};
 
-pub const DEFAULT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+pub const DEFAULT_EXPIRY_SECS: u64 = 12 * 60 * 60; // 12 hours
 
 /// Internal JWT claims — never exposed outside this module.
 #[derive(Debug, Serialize, Deserialize)]

@@ -73,26 +73,25 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     bcrypt::verify(password, hash).unwrap_or(false)
 }
 
-const ACCESS_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-fn random_charset_string(len: usize) -> String {
-    use rand::TryRngCore;
-    use rand::rngs::OsRng;
-    let mut bytes = vec![0u8; len];
-    OsRng.try_fill_bytes(&mut bytes).expect("OS CSPRNG unavailable");
-    bytes.iter()
-        .map(|&b| ACCESS_CHARSET[b as usize % ACCESS_CHARSET.len()] as char)
-        .collect()
-}
-
-/// Generate a NASK_-prefixed access key using the OS CSPRNG.
+/// Generate a NASK_-prefixed access key.
 pub fn generate_access_key() -> String {
-    format!("NASK_{}", random_charset_string(22))
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut rng = rand::rng();
+    let suffix: String = (0..22)
+        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+        .collect();
+    format!("NASK_{}", suffix)
 }
 
-/// Generate a random access secret (URL-safe, 43 chars) using the OS CSPRNG.
+/// Generate a random access secret (URL-safe, 43 chars).
 pub fn generate_access_secret() -> String {
-    random_charset_string(43)
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut rng = rand::rng();
+    (0..43)
+        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+        .collect()
 }
 
 // ─── User auth service types ──────────────────────────────────────────────────

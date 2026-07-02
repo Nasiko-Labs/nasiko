@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-const COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
+const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 
 /// Public routes — no auth required (merged outside the protected router).
 /// token_validate is here because callers supply the token in the request body;
@@ -108,8 +108,10 @@ async fn initialize_admin(
     State(state): State<AppState>,
     Json(req): Json<InitAdminRequest>,
 ) -> impl IntoResponse {
-    // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
-    let _ = state.auth.authenticate(&req.username, &req.email).await;
+    match state.auth.authenticate(&req.username, &req.email).await {
+        // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
+        _ => {}
+    }
     // The actual initialize-admin endpoint uses a different flow:
     // it creates the admin user and returns credentials.
     match initialize_admin_inner(&state, &req.username, &req.email).await {

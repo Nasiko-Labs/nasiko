@@ -125,8 +125,7 @@ async fn update_agent(
     }
 
     // Determine new version.
-    // Accepts strategy keywords (auto, patch, minor, major) for Python-client compat,
-    // or an explicit semver string (e.g. "1.2.3").
+    // Accepts strategy keywords (auto, patch, minor, major) or an explicit semver string (e.g. "1.2.3").
     let new_version = match requested_version.as_deref() {
         None | Some("auto") | Some("patch") => {
             if semver::Version::parse(&current_version).is_err() {

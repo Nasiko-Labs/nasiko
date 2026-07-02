@@ -4,7 +4,7 @@ use sqlx::PgPool;
 
 use crate::{AuthError, AuthService, Identity, LoginResult, Role};
 
-const TOKEN_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
+const TOKEN_EXPIRY_SECS: u64 = 12 * 60 * 60; // 12 hours
 
 /// DB-backed implementation of AuthService.
 /// Handles user lookup, password verification, token issuance, and revocation.
