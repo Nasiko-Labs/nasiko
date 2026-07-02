@@ -6,7 +6,7 @@ use nasiko_runtime::{
     ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, Result as RuntimeResult,
     RuntimeState,
 };
-use nasiko_server::{Providers, state::AppState};
+use nasiko_server::state::AppState;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -144,25 +144,13 @@ impl TestServer {
         let s3_ep = s3_endpoint();
         let config = test_config(db_url, redis_url(), s3_ep.clone());
 
-        let auth: Arc<dyn nasiko_auth::AuthProvider> =
-            Arc::new(nasiko_auth::SimpleJwtAuth::from_env());
-        let user_auth = Arc::new(nasiko_auth::UserAuthServiceImpl::new(db.clone(), auth.clone()));
-
-        user_auth
-            .bootstrap_admin("admin", "test-password")
-            .await
-            .expect("bootstrap test admin");
-
-        let providers = Providers {
-            auth,
-            acl: Arc::new(nasiko_auth::NoopAuthorizer),
-            user_auth: user_auth.clone(),
-            token_svc: user_auth,
-        };
+        let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+        let auth: Arc<dyn nasiko_auth::AuthService> =
+            Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
         let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime);
 
-        let state = AppState::from_config_with_db(config, providers, runtime, db.clone()).await;
+        let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -265,8 +253,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
             "gitlab.com".to_owned(),
             "bitbucket.org".to_owned(),
         ],
-        admin_username: "admin".into(),
-        admin_password: "test-password".into(),
     }
 }
 

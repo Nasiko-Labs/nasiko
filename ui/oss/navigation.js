@@ -15,5 +15,6 @@ window.fetchNavigation = async () => [
 
 window.fetchAgents = async (query, page, limit) => {
   const params = new URLSearchParams({ q: query || '', page, limit });
-  return fetchApi(`/catalog/agents?${params}`);
+  const agents = await fetchApi(`/catalog/agents?${params}`);
+  return { data: Array.isArray(agents) ? agents : agents.data || [], total: agents.total || agents.length };
 };

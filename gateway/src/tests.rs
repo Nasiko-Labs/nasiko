@@ -106,8 +106,6 @@ fn trust_headers_are_stripped_from_headers_map() {
     headers.insert("x-username",      HeaderValue::from_static("admin"));
     headers.insert("x-is-superuser",  HeaderValue::from_static("true"));
     headers.insert("x-user-role",     HeaderValue::from_static("admin"));
-    headers.insert("x-user-team-id",  HeaderValue::from_static("team-1"));
-    headers.insert("x-user-dept-id",  HeaderValue::from_static("dept-1"));
     // Also add a legitimate header that should survive
     headers.insert("content-type", HeaderValue::from_static("application/json"));
 
@@ -128,35 +126,18 @@ fn trust_headers_are_stripped_from_headers_map() {
     assert!(headers.get("content-type").is_some());
 }
 
-// ── SingleUserAuth passes any token ──────────────────────────────────────────
+// ── SimpleJwtAuth passes via AuthService trait ───────────────────────────────
 
 #[tokio::test]
-async fn single_user_auth_accepts_garbage_token() {
-    use nasiko_auth::{AuthProvider, SingleUserAuth};
-    let auth = SingleUserAuth;
-    let result = auth.validate_token("garbage-token-xyz").await;
-    assert!(result.is_ok());
-    let id = result.unwrap();
-    assert!(id.is_superuser, "SingleUserAuth should return a superuser");
-}
-
-// ── SimpleJwtAuth: gateway validates real tokens ──────────────────────────────
-
-#[tokio::test]
-async fn gateway_jwt_auth_roundtrip() {
-    use nasiko_auth::{AuthProvider, Identity, Role, SimpleJwtAuth, jwt::DEFAULT_EXPIRY_SECS};
+async fn simple_jwt_auth_roundtrip() {
+    use nasiko_auth::{AuthService, Identity, Role, SimpleJwtAuth, jwt::DEFAULT_EXPIRY_SECS};
 
     let auth = SimpleJwtAuth { secret: "gw-secret".into(), expiry_secs: DEFAULT_EXPIRY_SECS };
     let id = Identity {
         user_id: "bbbbbbbb-0000-0000-0000-000000000001".into(),
-        sub: "bbbbbbbb-0000-0000-0000-000000000001".into(),
         username: "gw-user".into(),
         is_superuser: false,
         role: Some(Role::TeamMember),
-        team_id: None,
-        department_id: None,
-        exp: 0,
-        iat: 0,
     };
 
     let token = auth.issue_token(&id).await.unwrap();
@@ -168,19 +149,14 @@ async fn gateway_jwt_auth_roundtrip() {
 
 #[tokio::test]
 async fn gateway_rejects_token_signed_with_wrong_secret() {
-    use nasiko_auth::{AuthProvider, Identity, SimpleJwtAuth, jwt::DEFAULT_EXPIRY_SECS};
+    use nasiko_auth::{AuthService, Identity, SimpleJwtAuth, jwt::DEFAULT_EXPIRY_SECS};
 
     let signer = SimpleJwtAuth { secret: "correct-secret".into(), expiry_secs: DEFAULT_EXPIRY_SECS };
     let id = Identity {
         user_id: "bbbbbbbb-0000-0000-0000-000000000002".into(),
-        sub: "bbbbbbbb-0000-0000-0000-000000000002".into(),
         username: "u".into(),
         is_superuser: false,
         role: None,
-        team_id: None,
-        department_id: None,
-        exp: 0,
-        iat: 0,
     };
     let token = signer.issue_token(&id).await.unwrap();
 

@@ -1,21 +1,16 @@
 //! Unit tests for nasiko-auth — no database or runtime required.
 
 use crate::{
-    AuthProvider, Identity, Role, SimpleJwtAuth, SingleUserAuth,
+    AuthService, Identity, Role, SimpleJwtAuth,
     jwt::{DEFAULT_EXPIRY_SECS, JwtClaims, decode_jwt, encode_jwt, extract_jti, hash_jti},
 };
 
 fn test_identity(user_id: &str) -> Identity {
     Identity {
         user_id: user_id.to_owned(),
-        sub: user_id.to_owned(),
         username: "testuser".to_owned(),
         is_superuser: false,
         role: Some(Role::TeamMember),
-        team_id: None,
-        department_id: None,
-        exp: 0,
-        iat: 0,
     }
 }
 
@@ -58,8 +53,6 @@ fn jwt_expired_token_returns_expired_error() {
         iat: now.saturating_sub(200),
         username: id.username.clone(),
         is_superuser: id.is_superuser,
-        team_id: None,
-        department_id: None,
         role: None,
     };
     let token = encode(
@@ -134,25 +127,7 @@ fn hash_jti_is_64_hex_chars() {
     assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
-// ── SingleUserAuth ────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn single_user_auth_accepts_any_token() {
-    let auth = SingleUserAuth;
-    let result = auth.validate_token("any-garbage-token").await;
-    assert!(result.is_ok());
-    let id = result.unwrap();
-    assert!(id.is_superuser);
-    assert_eq!(id.username, "admin");
-}
-
-#[tokio::test]
-async fn single_user_auth_accepts_empty_token() {
-    let auth = SingleUserAuth;
-    assert!(auth.validate_token("").await.is_ok());
-}
-
-// ── SimpleJwtAuth ─────────────────────────────────────────────────────────────
+// ── SimpleJwtAuth (as AuthService) ───────────────────────────────────────────
 
 #[tokio::test]
 async fn simple_jwt_auth_rejects_invalid_token() {

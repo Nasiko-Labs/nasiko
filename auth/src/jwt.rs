@@ -17,10 +17,6 @@ pub(crate) struct JwtClaims {
     pub username: String,
     pub is_superuser: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub department_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
 }
 
@@ -33,8 +29,6 @@ pub fn encode_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result
         iat: now,
         username: identity.username.clone(),
         is_superuser: identity.is_superuser,
-        team_id: identity.team_id.clone(),
-        department_id: identity.department_id.clone(),
         role: identity.role.as_ref().map(|r| {
             serde_json::to_value(r)
                 .ok()
@@ -73,14 +67,9 @@ pub fn decode_jwt(secret: &str, token: &str) -> Result<Identity, AuthError> {
         .and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok());
 
     Ok(Identity {
-        user_id: c.sub.clone(),
-        sub: c.sub,
-        exp: c.exp,
-        iat: c.iat,
+        user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
-        team_id: c.team_id,
-        department_id: c.department_id,
         role,
     })
 }
@@ -110,14 +99,9 @@ pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, Strin
         .and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok());
 
     let identity = Identity {
-        user_id: c.sub.clone(),
-        sub: c.sub,
-        exp: c.exp,
-        iat: c.iat,
+        user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
-        team_id: c.team_id,
-        department_id: c.department_id,
         role,
     };
 

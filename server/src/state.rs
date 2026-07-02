@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nasiko_auth::{AclChecker, AuthProvider, TokenService, UserAuthService};
+use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
 use nasiko_runtime::ContainerRuntime;
@@ -12,17 +12,6 @@ use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 
-/// Pluggable providers for auth and ACL.
-/// OSS uses SimpleJwtAuth/NoopAcl.
-/// Cloud uses JwtAuthProvider/HierarchyAuthorizer.
-#[derive(Clone)]
-pub struct Providers {
-    pub auth: Arc<dyn AuthProvider>,
-    pub acl: Arc<dyn AclChecker>,
-    pub user_auth: Arc<dyn UserAuthService>,
-    pub token_svc: Arc<dyn TokenService>,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<dyn ContainerRuntime>,
@@ -31,7 +20,7 @@ pub struct AppState {
     pub oci_storage: nasiko_oci::storage::S3Storage,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
-    pub providers: Providers,
+    pub auth: Arc<dyn AuthService>,
     pub flow_guard: FlowGuard,
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
@@ -48,18 +37,18 @@ pub struct AppState {
 impl AppState {
     pub async fn from_config(
         config: Config,
-        providers: Providers,
+        auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
     ) -> Self {
         let db = PgPool::connect(&config.database_url)
             .await
             .expect("failed to connect to postgres");
-        Self::from_config_with_db(config, providers, runtime, db).await
+        Self::from_config_with_db(config, auth, runtime, db).await
     }
 
     pub async fn from_config_with_db(
         config: Config,
-        providers: Providers,
+        auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
         db: PgPool,
     ) -> Self {
@@ -146,7 +135,7 @@ impl AppState {
             oci_storage,
             usage_tracker,
             http_client,
-            providers,
+            auth,
             flow_guard,
             flow_events,
             genai_metrics,
@@ -160,11 +149,21 @@ impl AppState {
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
-        let seed_state = state.clone();
-        tokio::spawn(async move {
-            crate::seed::seed_agents_if_configured(&seed_state).await;
-        });
-
         state
+    }
+
+    /// Run one-time initialization: bootstrap admin user, seed agents.
+    /// Call after the server is constructed but before serving requests.
+    pub async fn init(&self) {
+        if let (Ok(admin_user), Ok(admin_pass)) = (
+            std::env::var("ADMIN_USERNAME"),
+            std::env::var("ADMIN_PASSWORD"),
+        ) {
+            if let Err(e) = self.auth.bootstrap_admin(&admin_user, &admin_pass).await {
+                tracing::warn!(%e, "admin bootstrap failed (may already exist)");
+            }
+        }
+
+        crate::seed::seed_agents_if_configured(self).await;
     }
 }

@@ -17,7 +17,7 @@ use nasiko_flow::{FlowContext, FlowGuard};
 /// 2. The agent is public (`agents.is_public = TRUE`).
 /// 3. A `agent_grants` row exists with `grant_type = 'public'` or `grant_type = 'user'`.
 ///
-/// Team/department grants are EE-only (HierarchyAuthorizer in ee/auth).
+/// Team/department grants are EE-only (EeAuthService in ee/auth).
 /// Soft-deleted agents (`deleted_at IS NOT NULL`) are always denied.
 pub async fn user_can_access_agent(db: &PgPool, user_id: Uuid, agent_id: Uuid) -> bool {
     sqlx::query_scalar::<_, bool>(

@@ -36,7 +36,7 @@ where
 ///    the only issuer. This prevents identity spoofing even if the server is
 ///    somehow reachable directly.
 /// 2. Extract the Bearer token or access_token cookie.
-/// 3. Validate the JWT signature and expiry via AuthProvider.
+/// 3. Validate the JWT signature and expiry via AuthService.
 /// 4. Check the JTI against auth_tokens for revocation (makes logout instant).
 /// 5. Inject verified Identity into request extensions for downstream handlers.
 pub async fn auth_middleware(

@@ -14,14 +14,28 @@ infra-down:
 logs *args:
     {{docker}} compose -f ../docker-compose.infra.yml logs {{args}}
 
-set dotenv-load
-
 # Run server + gateway (foreground)
 run:
     #!/usr/bin/env bash
     set -euo pipefail
+    set -a; source server/.env 2>/dev/null || source server/.env.example; set +a
+    set -a; source gateway/.env 2>/dev/null || source gateway/.env.example; set +a
     trap 'kill $(jobs -p) 2>/dev/null; wait' INT TERM
     cargo run -p nasiko-server & cargo run -p nasiko-gateway & wait
+
+# Run server only
+run-server:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a; source server/.env 2>/dev/null || source server/.env.example; set +a
+    cargo run -p nasiko-server
+
+# Run gateway only
+run-gateway:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a; source gateway/.env 2>/dev/null || source gateway/.env.example; set +a
+    cargo run -p nasiko-gateway
 
 # Release OSS control plane (server + gateway)
 release-cp tag="latest":

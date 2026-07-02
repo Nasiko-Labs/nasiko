@@ -8,7 +8,6 @@ use axum::{
 use nasiko_auth::{
     Identity, Role,
     HEADER_USER_ID, HEADER_USERNAME, HEADER_IS_SUPERUSER, HEADER_USER_ROLE,
-    HEADER_TEAM_ID, HEADER_DEPT_ID,
 };
 
 use super::Claims;
@@ -41,24 +40,11 @@ pub async fn require_auth(
         .and_then(|v| v.to_str().ok())
         .and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok());
 
-    let team_id = req.headers().get(HEADER_TEAM_ID)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-
-    let department_id = req.headers().get(HEADER_DEPT_ID)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-
     let identity = Identity {
-        user_id: user_id.clone(),
-        sub: user_id,
+        user_id,
         username,
         is_superuser,
         role,
-        team_id,
-        department_id,
-        exp: 0,
-        iat: 0,
     };
 
     req.extensions_mut().insert(Claims::from(identity));

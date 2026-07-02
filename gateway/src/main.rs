@@ -27,7 +27,7 @@ async fn main() {
     let flow_guard = FlowGuard::new(redis_client, FlowConfig::from_env());
 
     // Auth provider (OSS: SimpleJwtAuth)
-    let auth: Arc<dyn nasiko_auth::AuthProvider> = Arc::new(nasiko_auth::SimpleJwtAuth {
+    let auth: Arc<dyn nasiko_auth::AuthService> = Arc::new(nasiko_auth::SimpleJwtAuth {
         secret: config.jwt_secret.clone(),
         expiry_secs: nasiko_auth::jwt::DEFAULT_EXPIRY_SECS,
     });

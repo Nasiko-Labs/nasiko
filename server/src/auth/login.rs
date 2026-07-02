@@ -7,21 +7,25 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::auth::Claims;
 use crate::state::AppState;
 
 const COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
 
 /// Public routes — no auth required (merged outside the protected router).
+/// token_validate is here because callers supply the token in the request body;
+/// there is no authenticated "caller" to require.
 pub fn public_router() -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", post(login))
+        .route("/api/auth/initialize-admin", post(initialize_admin))
+        .route("/api/auth/tokens/validate", post(token_validate))
 }
 
-/// Protected auth routes — go through require_auth middleware (nested under /api).
+/// Protected auth routes — require X-User-* headers from the gateway.
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/auth/logout", post(logout))
-        .route("/auth/tokens/validate", post(token_validate))
         .route("/auth/system/users-for-search", get(users_for_search))
 }
 
@@ -39,8 +43,6 @@ struct LoginResponse {
     is_superuser: bool,
     role: String,
     expires_in: u64,
-    department_id: Option<String>,
-    team_id: Option<String>,
 }
 
 fn set_token_cookie(token: &str) -> header::HeaderValue {
@@ -51,11 +53,17 @@ fn set_token_cookie(token: &str) -> header::HeaderValue {
     .unwrap()
 }
 
+fn clear_token_cookie() -> header::HeaderValue {
+    header::HeaderValue::from_static(
+        "access_token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0",
+    )
+}
+
 async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    match state.providers.user_auth.authenticate(&req.username, &req.password).await {
+    match state.auth.authenticate(&req.username, &req.password).await {
         Ok(result) => {
             let cookie = set_token_cookie(&result.token);
             (
@@ -67,8 +75,6 @@ async fn login(
                     is_superuser: result.is_superuser,
                     role: result.role,
                     expires_in: result.expires_in,
-                    department_id: result.department_id,
-                    team_id: result.team_id,
                 }),
             ).into_response()
         }
@@ -81,11 +87,124 @@ async fn login(
     }
 }
 
-async fn logout() -> impl IntoResponse {
-    let clear = header::HeaderValue::from_static(
-        "access_token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0",
-    );
-    ([(header::SET_COOKIE, clear)], StatusCode::NO_CONTENT)
+/// Logout: revoke the active token in the DB so it immediately stops working
+/// at the gateway, then clear the browser cookie.
+async fn logout(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
+    // Best-effort revocation — don't fail the logout if the DB write fails
+    let _ = state.auth.revoke_tokens_for_user(&claims.sub).await;
+    ([(header::SET_COOKIE, clear_token_cookie())], StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct InitAdminRequest {
+    username: String,
+    email: String,
+}
+
+async fn initialize_admin(
+    State(state): State<AppState>,
+    Json(req): Json<InitAdminRequest>,
+) -> impl IntoResponse {
+    match state.auth.authenticate(&req.username, &req.email).await {
+        // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
+        _ => {}
+    }
+    // The actual initialize-admin endpoint uses a different flow:
+    // it creates the admin user and returns credentials.
+    match initialize_admin_inner(&state, &req.username, &req.email).await {
+        Ok(resp) => resp,
+        Err(resp) => resp,
+    }
+}
+
+async fn initialize_admin_inner(
+    state: &AppState,
+    username: &str,
+    email: &str,
+) -> Result<axum::response::Response, axum::response::Response> {
+    // Check if admin exists
+    let admin_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND deleted_at IS NULL",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    if admin_count > 0 {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "admin already exists"})),
+        ).into_response());
+    }
+
+    let access_key = nasiko_auth::generate_access_key();
+    let access_secret = nasiko_auth::generate_access_secret();
+    let access_secret_hash = nasiko_auth::hash_password(&access_secret)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+
+    let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
+        r#"INSERT INTO users (username, email, is_superuser, is_active, role)
+           VALUES ($1, $2, true, true, 'admin'::user_role)
+           RETURNING id"#,
+    )
+    .bind(username)
+    .bind(email)
+    .fetch_one(&state.db)
+    .await;
+
+    let user_id = match result {
+        Ok((id,)) => id,
+        Err(e) if e.to_string().contains("unique") || e.to_string().contains("duplicate") => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "username or email already exists"})),
+            ).into_response());
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            ).into_response());
+        }
+    };
+
+    sqlx::query(
+        r#"INSERT INTO user_credentials (user_id, access_key, access_secret_hash)
+           VALUES ($1, $2, $3)"#,
+    )
+    .bind(user_id)
+    .bind(&access_key)
+    .bind(&access_secret_hash)
+    .execute(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+
+    let identity = nasiko_auth::Identity {
+        user_id: user_id.to_string(),
+        username: username.to_owned(),
+        is_superuser: true,
+        role: Some(nasiko_auth::Role::Admin),
+    };
+
+    let token = state.auth.issue_token(&identity).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+
+    let cookie = set_token_cookie(&token);
+    Ok((
+        StatusCode::CREATED,
+        [(header::SET_COOKIE, cookie)],
+        Json(serde_json::json!({
+            "user_id": user_id.to_string(),
+            "username": username,
+            "token": token,
+            "access_key": access_key,
+            "access_secret": access_secret,
+            "message": "Admin created. Store access_secret securely — it won't be shown again.",
+        })),
+    ).into_response())
 }
 
 #[derive(Deserialize)]
@@ -97,29 +216,53 @@ async fn token_validate(
     State(state): State<AppState>,
     Json(req): Json<ValidateRequest>,
 ) -> impl IntoResponse {
-    match state.providers.auth.validate_token(&req.token).await {
-        Ok(identity) => Json(serde_json::json!({
-            "valid": true,
-            "user_id": identity.user_id,
-            "username": identity.username,
-            "is_superuser": identity.is_superuser,
-            "role": identity.role.as_ref().and_then(|r| serde_json::to_value(r).ok()),
-            "team_id": identity.team_id,
-            "department_id": identity.department_id,
-        })).into_response(),
-        Err(nasiko_auth::AuthError::Expired) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"valid": false, "error": "expired"})),
-        ).into_response(),
-        Err(nasiko_auth::AuthError::Revoked) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"valid": false, "error": "token revoked"})),
-        ).into_response(),
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"valid": false, "error": "invalid"})),
-        ).into_response(),
+    // Step 1: verify signature + expiry
+    let identity = match state.auth.validate_token(&req.token).await {
+        Ok(id) => id,
+        Err(nasiko_auth::AuthError::Expired) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"valid": false, "error": "expired"})),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"valid": false, "error": "invalid"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Step 2: check revocation — same logic as the gateway so validate is consistent.
+    if let Some(jti) = nasiko_auth::jwt::extract_jti(&req.token) {
+        let hash = nasiko_auth::jwt::hash_jti(&jti);
+        let revoked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM auth_tokens WHERE token_hash = $1 AND revoked_at IS NOT NULL)",
+        )
+        .bind(&hash)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(false);
+
+        if revoked {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"valid": false, "error": "token revoked"})),
+            )
+                .into_response();
+        }
     }
+
+    Json(serde_json::json!({
+        "valid": true,
+        "user_id": identity.user_id,
+        "username": identity.username,
+        "is_superuser": identity.is_superuser,
+        "role": identity.role.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+    }))
+    .into_response()
 }
 
 async fn users_for_search(State(state): State<AppState>) -> impl IntoResponse {

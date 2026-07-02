@@ -5,7 +5,7 @@ use axum::{
     response::Response,
 };
 use nasiko_auth::{
-    Identity, HEADER_DEPT_ID, HEADER_IS_SUPERUSER, HEADER_TEAM_ID, HEADER_USER_ID,
+    Identity, HEADER_IS_SUPERUSER, HEADER_USER_ID,
     HEADER_USER_ROLE, HEADER_USERNAME, TRUST_HEADERS,
 };
 use uuid::Uuid;
@@ -95,12 +95,6 @@ pub async fn agent_proxy(
     {
         forwarded = forwarded.header(HEADER_USER_ROLE, s);
     }
-    if let Some(ref team_id) = identity.team_id {
-        forwarded = forwarded.header(HEADER_TEAM_ID, team_id.as_str());
-    }
-    if let Some(ref dept_id) = identity.department_id {
-        forwarded = forwarded.header(HEADER_DEPT_ID, dept_id.as_str());
-    }
 
     if !body_bytes.is_empty() {
         forwarded = forwarded.body(body_bytes);
@@ -165,12 +159,6 @@ pub async fn server_proxy(
             && let Some(s) = v.as_str()
         {
             forwarded = forwarded.header(HEADER_USER_ROLE, s);
-        }
-        if let Some(ref team_id) = id.team_id {
-            forwarded = forwarded.header(HEADER_TEAM_ID, team_id.as_str());
-        }
-        if let Some(ref dept_id) = id.department_id {
-            forwarded = forwarded.header(HEADER_DEPT_ID, dept_id.as_str());
         }
     }
 

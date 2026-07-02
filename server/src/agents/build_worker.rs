@@ -107,7 +107,7 @@ async fn recover_stuck_jobs(db: &PgPool) {
     // Permanently fail exhausted jobs (>= MAX_ATTEMPTS attempts already made).
     if let Err(e) = sqlx::query(
         "UPDATE build_jobs SET status = 'failed', error_msg = 'max attempts exceeded', completed_at = now()
-         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2) AND attempt >= $1",
+         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt >= $1",
     )
     .bind(MAX_ATTEMPTS)
     .bind(STUCK_JOB_MINS)
@@ -120,7 +120,7 @@ async fn recover_stuck_jobs(db: &PgPool) {
     // Reset remaining stuck jobs so they get another try.
     match sqlx::query(
         "UPDATE build_jobs SET status = 'pending', picked_at = NULL
-         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2) AND attempt < $1",
+         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt < $1",
     )
     .bind(MAX_ATTEMPTS)
     .bind(STUCK_JOB_MINS)

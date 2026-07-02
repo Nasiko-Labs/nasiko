@@ -1,8 +1,19 @@
 use std::sync::Arc;
 
-use axum::http::StatusCode;
-use nasiko_auth::UserAuthService;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
+use rust_embed::Embed;
+
+#[derive(Embed)]
+#[folder = "../ui/oss/"]
+struct OssAssets;
+
+#[derive(Embed)]
+#[folder = "../ui/common/"]
+#[prefix = "common/"]
+struct CommonAssets;
 
 #[tokio::main]
 async fn main() {
@@ -12,27 +23,21 @@ async fn main() {
     let config = nasiko_config::Config::from_env().expect("invalid config");
     let bind = config.bind.clone();
 
+    // Build DB pool early so it can be shared with auth services.
     let db = sqlx::PgPool::connect(&config.database_url)
         .await
         .expect("failed to connect to postgres");
 
-    let auth: Arc<dyn nasiko_auth::AuthProvider> = Arc::new(nasiko_auth::SimpleJwtAuth::from_env());
-
-    let user_auth_svc = Arc::new(nasiko_auth::UserAuthServiceImpl::new(
-        db.clone(),
-        auth.clone(),
-    ));
-
-    user_auth_svc
-        .bootstrap_admin(&config.admin_username, &config.admin_password)
-        .await
-        .expect("failed to bootstrap admin user");
-
-    let providers = nasiko_server::Providers {
-        auth,
-        acl: Arc::new(nasiko_auth::NoopAuthorizer),
-        user_auth: user_auth_svc.clone(),
-        token_svc: user_auth_svc,
+    // Select auth implementation based on whether JWT_SECRET is configured.
+    let auth: Arc<dyn nasiko_auth::AuthService> = match std::env::var("JWT_SECRET") {
+        Ok(jwt_secret) => Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret)),
+        Err(_) => {
+            tracing::warn!("JWT_SECRET not set — using gateway-only JWT auth (dev mode)");
+            Arc::new(nasiko_auth::SimpleJwtAuth {
+                secret: "dev-mode-secret".into(),
+                expiry_secs: nasiko_auth::jwt::DEFAULT_EXPIRY_SECS,
+            })
+        }
     };
 
     let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = Arc::new(
@@ -42,10 +47,31 @@ async fn main() {
     );
 
     let state =
-        nasiko_server::state::AppState::from_config_with_db(config, providers, runtime, db).await;
-    let app = nasiko_server::build_app(state, || async { StatusCode::NOT_FOUND });
+        nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, db).await;
+    state.init().await;
+    let app = nasiko_server::build_app(state, static_handler);
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("nasiko-server (OSS) listening on {bind}");
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn static_handler(req: Request<Body>) -> Response {
+    let path = req.uri().path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    if let Some(file) = OssAssets::get(path).or_else(|| CommonAssets::get(path)) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response();
+    }
+
+    if let Some(file) = OssAssets::get("404.html") {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/html")],
+            file.data,
+        )
+            .into_response();
+    }
+    StatusCode::NOT_FOUND.into_response()
 }

@@ -5,7 +5,7 @@ pub mod service;
 mod tests;
 
 pub use headers::*;
-pub use service::UserAuthServiceImpl;
+pub use service::AuthServiceImpl;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -30,39 +30,23 @@ pub struct Identity {
     #[serde(default)]
     pub is_superuser: bool,
     #[serde(default)]
-    pub team_id: Option<String>,
-    #[serde(default)]
-    pub department_id: Option<String>,
-    #[serde(default)]
     pub role: Option<Role>,
-    #[serde(default)]
-    pub sub: String,
-    #[serde(default)]
-    pub exp: u64,
-    #[serde(default)]
-    pub iat: u64,
 }
 
-/// Validate a token and extract identity.
+/// Consolidated auth trait — replaces AuthProvider, Authorizer, UserAuthService, TokenService.
 #[async_trait]
-pub trait AuthProvider: Send + Sync + 'static {
+pub trait AuthService: Send + Sync + 'static {
     async fn validate_token(&self, token: &str) -> Result<Identity, AuthError>;
-
-    async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError> {
-        let _ = identity;
-        Err(AuthError::InvalidToken("token issuance not supported by this provider".into()))
-    }
-}
-
-/// What can this identity do?
-#[async_trait]
-pub trait Authorizer: Send + Sync + 'static {
+    async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError>;
+    async fn authenticate(&self, username: &str, password: &str) -> Result<LoginResult, AuthError>;
+    async fn bootstrap_admin(&self, username: &str, password: &str) -> Result<(), AuthError>;
+    async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError>;
+    async fn upsert_oauth_user(&self, provider: &str, provider_id: &str, username: &str) -> Result<LoginResult, AuthError>;
+    async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
+    async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError>;
+    async fn revoke_all_tokens(&self) -> Result<u64, AuthError>;
+    async fn revoke_tokens_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
     async fn can_access_agent(&self, identity: &Identity, agent_id: &str) -> bool;
-    async fn can_discover_agent(&self, identity: &Identity, agent_id: &str) -> bool;
-    fn can_deploy(&self, identity: &Identity) -> bool;
-    fn can_manage_secrets(&self, identity: &Identity) -> bool;
-    fn can_manage_users(&self, identity: &Identity) -> bool;
-    fn can_manage_pool(&self, identity: &Identity) -> bool;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -112,7 +96,7 @@ pub fn generate_access_secret() -> String {
 
 // ─── User auth service types ──────────────────────────────────────────────────
 
-/// Result returned by login/oauth operations.
+/// Result returned by login/initialize-admin/oauth operations.
 #[derive(Debug, Clone)]
 pub struct LoginResult {
     pub token: String,
@@ -120,62 +104,12 @@ pub struct LoginResult {
     pub username: String,
     pub is_superuser: bool,
     pub role: String,
-    pub team_id: Option<String>,
-    pub department_id: Option<String>,
     pub expires_in: u64,
+    pub access_key: Option<String>,
+    pub access_secret: Option<String>,
 }
 
-/// High-level user authentication operations (login, oauth, agent tokens).
-/// Implementations hold the DB pool and use an AuthProvider for token issuance.
-#[async_trait]
-pub trait UserAuthService: Send + Sync + 'static {
-    async fn authenticate(&self, username: &str, password: &str) -> Result<LoginResult, AuthError>;
-    async fn bootstrap_admin(&self, username: &str, password: &str) -> Result<(), AuthError>;
-    async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError>;
-    async fn upsert_oauth_user(&self, provider: &str, provider_id: &str, username: &str) -> Result<LoginResult, AuthError>;
-    async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
-}
-
-/// Token revocation operations.
-#[async_trait]
-pub trait TokenService: Send + Sync + 'static {
-    async fn revoke_for_user(&self, user_id: &str) -> Result<u64, AuthError>;
-    async fn revoke_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
-    async fn revoke_all(&self) -> Result<u64, AuthError>;
-}
-
-/// No-op implementation — used in dev/passthrough mode.
-pub struct NoopUserAuthService;
-
-#[async_trait]
-impl UserAuthService for NoopUserAuthService {
-    async fn authenticate(&self, _username: &str, _password: &str) -> Result<LoginResult, AuthError> {
-        Err(AuthError::InvalidToken("user auth not configured".into()))
-    }
-    async fn bootstrap_admin(&self, _username: &str, _password: &str) -> Result<(), AuthError> {
-        Ok(())
-    }
-    async fn issue_agent_token(&self, _agent_id: &str) -> Result<String, AuthError> {
-        Err(AuthError::InvalidToken("user auth not configured".into()))
-    }
-    async fn upsert_oauth_user(&self, _provider: &str, _provider_id: &str, _username: &str) -> Result<LoginResult, AuthError> {
-        Err(AuthError::InvalidToken("user auth not configured".into()))
-    }
-    async fn lookup_user(&self, _user_id: &str) -> Result<Identity, AuthError> {
-        Err(AuthError::InvalidToken("user auth not configured".into()))
-    }
-}
-
-pub struct NoopTokenService;
-
-#[async_trait]
-impl TokenService for NoopTokenService {
-    async fn revoke_for_user(&self, _user_id: &str) -> Result<u64, AuthError> { Ok(0) }
-    async fn revoke_for_agent(&self, _agent_id: &str) -> Result<u64, AuthError> { Ok(0) }
-    async fn revoke_all(&self) -> Result<u64, AuthError> { Ok(0) }
-}
-
-// ─── OSS default implementations ─────────────────────────────────────────────
+// ─── Gateway-only JWT auth ───────────────────────────────────────────────────
 
 pub struct SimpleJwtAuth {
     pub secret: String,
@@ -192,7 +126,7 @@ impl SimpleJwtAuth {
 }
 
 #[async_trait]
-impl AuthProvider for SimpleJwtAuth {
+impl AuthService for SimpleJwtAuth {
     async fn validate_token(&self, token: &str) -> Result<Identity, AuthError> {
         jwt::decode_jwt(&self.secret, token)
     }
@@ -200,30 +134,40 @@ impl AuthProvider for SimpleJwtAuth {
     async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError> {
         jwt::encode_jwt(&self.secret, self.expiry_secs, identity)
     }
+
+    async fn authenticate(&self, _username: &str, _password: &str) -> Result<LoginResult, AuthError> {
+        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+    }
+
+    async fn bootstrap_admin(&self, _username: &str, _password: &str) -> Result<(), AuthError> {
+        Ok(())
+    }
+
+    async fn issue_agent_token(&self, _agent_id: &str) -> Result<String, AuthError> {
+        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+    }
+
+    async fn upsert_oauth_user(&self, _provider: &str, _provider_id: &str, _username: &str) -> Result<LoginResult, AuthError> {
+        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+    }
+
+    async fn lookup_user(&self, _user_id: &str) -> Result<Identity, AuthError> {
+        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+    }
+
+    async fn revoke_tokens_for_user(&self, _user_id: &str) -> Result<u64, AuthError> {
+        Ok(0)
+    }
+
+    async fn revoke_all_tokens(&self) -> Result<u64, AuthError> {
+        Ok(0)
+    }
+
+    async fn revoke_tokens_for_agent(&self, _agent_id: &str) -> Result<u64, AuthError> {
+        Ok(0)
+    }
+
+    async fn can_access_agent(&self, _identity: &Identity, _agent_id: &str) -> bool {
+        true
+    }
 }
-
-pub struct NoopAuthorizer;
-
-#[async_trait]
-impl Authorizer for NoopAuthorizer {
-    async fn can_access_agent(&self, _identity: &Identity, _agent_id: &str) -> bool { true }
-    async fn can_discover_agent(&self, _identity: &Identity, _agent_id: &str) -> bool { true }
-    fn can_deploy(&self, _identity: &Identity) -> bool { true }
-    fn can_manage_secrets(&self, _identity: &Identity) -> bool { true }
-    fn can_manage_users(&self, _identity: &Identity) -> bool { true }
-    fn can_manage_pool(&self, _identity: &Identity) -> bool { true }
-}
-
-// ─── Backwards-compatible aliases ────────────────────────────────────────────
-
-pub type Claims = Identity;
-
-impl Identity {
-    /// JWT subject claim — by design equal to `user_id`.
-    #[allow(clippy::misnamed_getters)]
-    pub fn sub(&self) -> &str { &self.user_id }
-}
-
-pub trait AclChecker: Authorizer {}
-impl<T: Authorizer> AclChecker for T {}
-pub type NoopAcl = NoopAuthorizer;

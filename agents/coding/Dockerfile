@@ -9,8 +9,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ripgrep ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Built from the workspace root: `cargo build -p nasiko-coding-agent --release`
-COPY target/release/nasiko-coding-agent /usr/local/bin/coding-agent
+COPY target/x86_64-unknown-linux-musl/release/nasiko-coding-agent /usr/local/bin/coding-agent
 
 ENV WORKSPACE_DIR=/workspace
 ENV PORT=8000
