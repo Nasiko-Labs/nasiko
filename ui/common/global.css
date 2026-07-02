@@ -147,6 +147,11 @@ main.app-shell {
     margin-inline: auto;
   }
 
+  body > :not(app-header):not(app-loading-bar):not(main) {
+    flex: 1;
+    min-width: 0;
+  }
+
   body > main.app-shell, .app-layout > main.app-shell {
     max-width: none;
     margin: 0;
