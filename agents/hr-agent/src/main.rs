@@ -3,43 +3,57 @@ use std::sync::Arc;
 use a2a::*;
 use a2a_server::*;
 use futures::stream::BoxStream;
-mod telemetry;
-mod tools;
+use reqwest::Client;
 
-struct HrAgent {
+mod telemetry;
+
+const SYSTEM_PROMPT: &str = "\
+You are an HR Assistant agent. You help employees with:
+- Employee onboarding workflows and checklists
+- PTO/leave balance queries and time-off requests
+- Company policy lookups and explanations
+- Benefits enrollment and insurance questions
+- Performance review scheduling and preparation
+- Workplace compliance and harassment reporting procedures
+- Job posting and referral program information
+
+Be professional, empathetic, and concise. If you don't have access to specific \
+employee data (which requires HRIS integration), explain what information would be \
+needed and how the request would typically be handled. Always maintain confidentiality \
+awareness — never ask for or reveal sensitive personal information in responses.";
+
+struct LlmAgent {
+    system_prompt: &'static str,
     model: String,
     api_key: String,
     base_url: String,
-    http: reqwest::Client,
+    http: Client,
 }
 
-impl HrAgent {
-    fn new() -> Self {
+impl LlmAgent {
+    fn new(system_prompt: &'static str) -> Self {
         Self {
+            system_prompt,
+            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
-            http: reqwest::Client::new(),
+            http: Client::new(),
         }
     }
 
-    #[tracing::instrument(name = "ChatCompletion", skip_all, fields(
-        gen_ai.operation.name = "chat",
-        gen_ai.request.model = %self.model,
-        gen_ai.usage.input_tokens = tracing::field::Empty,
-        gen_ai.usage.output_tokens = tracing::field::Empty,
-    ))]
-    async fn chat(
+    async fn stream_chat(
         &self,
-        messages: &[serde_json::Value],
-        tools: &[serde_json::Value],
-    ) -> Result<serde_json::Value, String> {
+        user_message: &str,
+    ) -> Result<reqwest::Response, String> {
         let body = serde_json::json!({
             "model": self.model,
-            "messages": messages,
-            "tools": tools,
-            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "stream": true,
+            "temperature": 0.4,
         });
 
         let resp = self
@@ -53,27 +67,15 @@ impl HrAgent {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("LLM API {status}: {body}"));
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("LLM API {status}: {text}"));
         }
 
-        let response = resp.json::<serde_json::Value>()
-            .await
-            .map_err(|e| format!("JSON parse: {e}"))?;
-
-        if let Some(usage) = response.get("usage") {
-            let span = tracing::Span::current();
-            if let Some(v) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                span.record("gen_ai.usage.input_tokens", v);
-            }
-            if let Some(v) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
-                span.record("gen_ai.usage.output_tokens", v);
-            }
-        }
-
-        Ok(response)
+        Ok(resp)
     }
 }
+
+struct HrAgent(LlmAgent);
 
 impl AgentExecutor for HrAgent {
     fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
@@ -95,102 +97,126 @@ impl AgentExecutor for HrAgent {
             })
             .unwrap_or_default();
 
-        let model = self.model.clone();
-        let api_key = self.api_key.clone();
-        let base_url = self.base_url.clone();
-        let http = self.http.clone();
+        let agent = LlmAgent::new(SYSTEM_PROMPT);
 
         let stream = async_stream::stream! {
-            yield Ok(status_working(&task_id, &context_id, None));
+            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                task_id: task_id.clone(),
+                context_id: context_id.clone(),
+                status: TaskStatus {
+                    state: TaskState::Working,
+                    message: None,
+                    timestamp: Some(chrono::Utc::now()),
+                },
+                metadata: None,
+            }));
 
-            let agent = HrAgent { model, api_key, base_url, http };
-            let tool_defs = tools::definitions();
+            let artifact_id = new_artifact_id();
+            let resp = match agent.stream_chat(&user_text).await {
+                Ok(r) => r,
+                Err(e) => {
+                    yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                        task_id,
+                        context_id,
+                        status: TaskStatus {
+                            state: TaskState::Failed,
+                            message: Some(Message::new(Role::Agent, vec![Part::text(&e)])),
+                            timestamp: Some(chrono::Utc::now()),
+                        },
+                        metadata: None,
+                    }));
+                    return;
+                }
+            };
 
-            let system = "\
-You are an HR Assistant agent with access to real tools. You can look up public holidays \
-for any country, calculate working days between dates, check world time in any timezone, \
-and get country information.\n\n\
-Guidelines:\n\
-- Use public_holidays to find holidays for a given country and year\n\
-- Use working_days to calculate business days between dates (accounts for weekends and holidays)\n\
-- Use world_clock to check current time in a timezone (useful for scheduling across offices)\n\
-- Use country_info to get details about a country (languages, currencies, timezones)\n\
-- Be professional and empathetic\n\
-- When discussing time-off, always clarify the country context for holiday calculations\n\
-- For international teams, highlight timezone differences and suggest meeting windows";
+            let mut byte_stream = resp.bytes_stream();
+            let mut buffer = String::new();
+            let mut first_chunk = true;
 
-            let mut messages = vec![
-                serde_json::json!({"role": "system", "content": system}),
-                serde_json::json!({"role": "user", "content": user_text}),
-            ];
-
-            let mut final_text = String::new();
-
-            for _ in 0..4 {
-                let resp = match agent.chat(&messages, &tool_defs).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        yield Ok(status_failed(&task_id, &context_id, &e));
-                        return;
-                    }
+            use futures::StreamExt;
+            while let Some(chunk_result) = byte_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(_) => break,
                 };
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                let choice = &resp["choices"][0]["message"];
-                messages.push(choice.clone());
+                while let Some(line_end) = buffer.find('\n') {
+                    let line = buffer[..line_end].trim().to_string();
+                    buffer = buffer[line_end + 1..].to_string();
 
-                if let Some(calls) = choice["tool_calls"].as_array() {
-                    for tc in calls {
-                        let name = tc["function"]["name"].as_str().unwrap_or("");
-                        let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                        let call_id = tc["id"].as_str().unwrap_or("");
+                    let Some(data) = line.strip_prefix("data: ") else { continue };
+                    if data == "[DONE]" { break; }
 
-                        let preview = extract_preview(args);
-                        yield Ok(status_working(
-                            &task_id, &context_id,
-                            Some(&format!("{name}: {preview}")),
-                        ));
+                    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else { continue };
+                    let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() else { continue };
+                    if content.is_empty() { continue; }
 
-                        let result = tools::execute(name, args).await;
-
-                        messages.push(serde_json::json!({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": result,
-                        }));
-                    }
-                } else {
-                    final_text = choice["content"].as_str().unwrap_or("").to_string();
-                    break;
+                    yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
+                        task_id: task_id.clone(),
+                        context_id: context_id.clone(),
+                        artifact: Artifact {
+                            artifact_id: artifact_id.clone(),
+                            name: None,
+                            description: None,
+                            parts: vec![Part::text(content)],
+                            metadata: None,
+                            extensions: None,
+                        },
+                        append: Some(!first_chunk),
+                        last_chunk: Some(false),
+                        metadata: None,
+                    }));
+                    first_chunk = false;
                 }
             }
 
+            // Final chunk marker
             yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
                 task_id: task_id.clone(),
                 context_id: context_id.clone(),
                 artifact: Artifact {
-                    artifact_id: new_artifact_id(),
+                    artifact_id,
                     name: None,
                     description: None,
-                    parts: vec![Part::text(&final_text)],
+                    parts: vec![],
                     metadata: None,
                     extensions: None,
                 },
-                append: Some(false),
+                append: Some(true),
                 last_chunk: Some(true),
                 metadata: None,
             }));
 
-            yield Ok(status_completed(&task_id, &context_id));
+            yield Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                task_id,
+                context_id,
+                status: TaskStatus {
+                    state: TaskState::Completed,
+                    message: None,
+                    timestamp: Some(chrono::Utc::now()),
+                },
+                metadata: None,
+            }));
         };
 
         Box::pin(stream)
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
-        let task_id = ctx.task_id.clone();
-        let context_id = ctx.context_id.clone();
+        let task_id = ctx.task_id;
+        let context_id = ctx.context_id;
         Box::pin(futures::stream::once(async move {
-            Ok(status_completed(&task_id, &context_id))
+            Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                task_id,
+                context_id,
+                status: TaskStatus {
+                    state: TaskState::Canceled,
+                    message: None,
+                    timestamp: Some(chrono::Utc::now()),
+                },
+                metadata: None,
+            }))
         }))
     }
 }
@@ -205,14 +231,14 @@ async fn main() {
         .unwrap_or(8000);
 
     let handler = Arc::new(DefaultRequestHandler::new(
-        HrAgent::new(),
+        HrAgent(LlmAgent::new(SYSTEM_PROMPT)),
         InMemoryTaskStore::new(),
     ));
 
     let agent_card = AgentCard {
         name: "HR Assistant".to_string(),
-        description: "Public holidays, working day calculations, world clock, and country information for HR planning".to_string(),
-        version: "1.0.0".to_string(),
+        description: "Employee onboarding, PTO queries, policy lookups, and benefits enrollment".to_string(),
+        version: "0.1.0".to_string(),
         provider: Some(AgentProvider {
             organization: "Nasiko".to_string(),
             url: "https://nasiko.io".to_string(),
@@ -225,27 +251,27 @@ async fn main() {
         },
         skills: vec![
             AgentSkill {
-                id: "holidays".into(),
-                name: "Public Holidays".into(),
-                description: "Look up public holidays for any country and year".into(),
-                tags: vec!["hr".into(), "holidays".into(), "time-off".into()],
-                examples: Some(vec!["What are the public holidays in Germany for 2025?".into()]),
+                id: "onboarding".into(),
+                name: "Employee Onboarding".into(),
+                description: "Guide new hires through onboarding steps and paperwork".into(),
+                tags: vec!["hr".into(), "onboarding".into(), "employees".into()],
+                examples: Some(vec!["Start onboarding for new engineering hire".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "working-days".into(),
-                name: "Working Days Calculator".into(),
-                description: "Calculate business days between dates, accounting for holidays".into(),
-                tags: vec!["hr".into(), "calendar".into(), "planning".into()],
-                examples: Some(vec!["How many working days between Jan 1 and Mar 31 in the US?".into()]),
+                id: "policy-lookup".into(),
+                name: "Policy Lookup".into(),
+                description: "Search and explain company HR policies".into(),
+                tags: vec!["hr".into(), "policy".into(), "compliance".into()],
+                examples: Some(vec!["What is the remote work policy?".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
             AgentSkill {
-                id: "world-clock".into(),
-                name: "World Clock".into(),
-                description: "Check current time in any timezone for scheduling across offices".into(),
-                tags: vec!["hr".into(), "timezone".into(), "scheduling".into()],
-                examples: Some(vec!["What time is it in Tokyo right now?".into()]),
+                id: "leave-management".into(),
+                name: "Leave Management".into(),
+                description: "Check PTO balances, request time off, track approvals".into(),
+                tags: vec!["hr".into(), "pto".into(), "leave".into()],
+                examples: Some(vec!["How many PTO days do I have left?".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
         ],
@@ -268,8 +294,7 @@ async fn main() {
 
     let app = axum::Router::new()
         .nest("/jsonrpc", a2a_server::jsonrpc::jsonrpc_router(handler.clone()))
-        .merge(a2a_server::agent_card::agent_card_router(card_producer))
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+        .merge(a2a_server::agent_card::agent_card_router(card_producer));
 
     tracing::info!("HR Assistant listening on 0.0.0.0:{port}");
 
@@ -278,76 +303,4 @@ async fn main() {
         .expect("failed to bind");
 
     axum::serve(listener, app).await.expect("server failed");
-}
-
-// ─── Event helpers ──────────────────────────────────────────────────────────
-
-fn status_working(task_id: &str, context_id: &str, msg: Option<&str>) -> StreamResponse {
-    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-        task_id: task_id.into(),
-        context_id: context_id.into(),
-        status: TaskStatus {
-            state: TaskState::Working,
-            message: msg.map(|t| Message {
-                message_id: new_message_id(),
-                context_id: Some(context_id.into()),
-                task_id: Some(task_id.into()),
-                role: Role::Agent,
-                parts: vec![Part::text(t)],
-                metadata: None,
-                extensions: None,
-                reference_task_ids: None,
-            }),
-            timestamp: Some(chrono::Utc::now()),
-        },
-        metadata: None,
-    })
-}
-
-fn status_completed(task_id: &str, context_id: &str) -> StreamResponse {
-    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-        task_id: task_id.into(),
-        context_id: context_id.into(),
-        status: TaskStatus {
-            state: TaskState::Completed,
-            message: None,
-            timestamp: Some(chrono::Utc::now()),
-        },
-        metadata: None,
-    })
-}
-
-fn extract_preview(args: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(args)
-        .ok()
-        .and_then(|v| {
-            v.as_object()?.values().find_map(|val| {
-                val.as_str().map(|s| {
-                    if s.len() > 60 { format!("{}...", &s[..60]) } else { s.to_string() }
-                })
-            })
-        })
-        .unwrap_or_else(|| "...".into())
-}
-
-fn status_failed(task_id: &str, context_id: &str, error: &str) -> StreamResponse {
-    StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
-        task_id: task_id.into(),
-        context_id: context_id.into(),
-        status: TaskStatus {
-            state: TaskState::Failed,
-            message: Some(Message {
-                message_id: new_message_id(),
-                context_id: Some(context_id.into()),
-                task_id: Some(task_id.into()),
-                role: Role::Agent,
-                parts: vec![Part::text(error)],
-                metadata: None,
-                extensions: None,
-                reference_task_ids: None,
-            }),
-            timestamp: Some(chrono::Utc::now()),
-        },
-        metadata: None,
-    })
 }

@@ -215,14 +215,6 @@ async fn orchestrator_stream(
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
 
-        // Emit trace_id so the UI can link this response to its distributed trace.
-        {
-            let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                "type": "trace_meta", "trace_id": flow_id,
-            })));
-            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
-        }
-
         let mut content_started = false;
 
         loop {
@@ -415,14 +407,6 @@ async fn agent_stream(
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
 
-            // Emit trace_id so the UI can link this response to its distributed trace.
-            {
-                let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                    "type": "trace_meta", "trace_id": flow_id_cleanup,
-                })));
-                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
-            }
-
             let mut buffer = String::new();
             let mut pinned = std::pin::pin!(byte_stream);
             let mut agent_done = false;
@@ -495,14 +479,6 @@ async fn agent_stream(
 
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
-
-            // Emit trace_id so the UI can link this response to its distributed trace.
-            {
-                let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                    "type": "trace_meta", "trace_id": flow_id_cleanup,
-                })));
-                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
-            }
 
             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                 &task_id, &context_id, &artifact_id, &text, false, true,
@@ -740,6 +716,8 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
         }
         _ => data.to_string(),
     }
+
+    data.to_string()
 }
 
 // ─── Types & Errors ──────────────────────────────────────────────────────────
