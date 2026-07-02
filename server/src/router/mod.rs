@@ -8,7 +8,7 @@ pub use nasiko_router::{AgentCardSummary, AgentSelector};
 /// set at startup by each binary (OssRoutingEngine for OSS, EeRoutingEngine for EE).
 pub fn router_routes() -> axum::Router<crate::state::AppState> {
     axum::Router::new()
-        .route("/a2a", axum::routing::post(a2a_dispatch_handler))
-        .route("/a2a/upload", axum::routing::post(a2a_upload_handler))
+        .route("/router/a2a", axum::routing::post(a2a_dispatch_handler))
+        .route("/router/a2a/upload", axum::routing::post(a2a_upload_handler))
         .route("/router/stats", axum::routing::get(router_stats_handler))
 }

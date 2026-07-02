@@ -10,16 +10,16 @@ use serde::{Deserialize, Serialize};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
+const COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
 
 /// Public routes — no auth required (merged outside the protected router).
 /// token_validate is here because callers supply the token in the request body;
 /// there is no authenticated "caller" to require.
 pub fn public_router() -> Router<AppState> {
     Router::new()
-        .route("/api/auth/login", post(login))
-        .route("/api/auth/initialize-admin", post(initialize_admin))
-        .route("/api/auth/tokens/validate", post(token_validate))
+        .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/initialize-admin", post(initialize_admin))
+        .route("/api/v1/auth/tokens/validate", post(token_validate))
 }
 
 /// Protected auth routes — require X-User-* headers from the gateway.
@@ -108,10 +108,8 @@ async fn initialize_admin(
     State(state): State<AppState>,
     Json(req): Json<InitAdminRequest>,
 ) -> impl IntoResponse {
-    match state.auth.authenticate(&req.username, &req.email).await {
-        // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
-        _ => {}
-    }
+    // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
+    let _ = state.auth.authenticate(&req.username, &req.email).await;
     // The actual initialize-admin endpoint uses a different flow:
     // it creates the admin user and returns credentials.
     match initialize_admin_inner(&state, &req.username, &req.email).await {

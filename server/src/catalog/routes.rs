@@ -25,9 +25,12 @@ pub fn router() -> Router<AppState> {
         .route("/agents/{id}", put(update))
         .route("/agents/{id}", axum::routing::delete(delete))
         .route("/agents/{id}/versions", get(list_versions))
-        .route("/agents/search", get(search))
+        .route("/agents/{id}/versions/{version}", axum::routing::delete(delete_version))
         .route("/agents/by-skill", get(by_skill))
+        .route("/search/agents", get(search))
         .route("/search/users", get(search_users))
+        .route("/registry/user/agents", get(registry_user_agents))
+        .route("/registries/{id}", get(get_by_registry_id))
 }
 
 #[derive(Deserialize)]
@@ -65,6 +68,11 @@ async fn by_skill(
         }
     };
 
+    // Normalise to lowercase before the GIN containment check.  Tags are
+    // stored lowercase after migration 014, so this ensures the query matches
+    // even if the caller passes "Data-Pipeline" instead of "data-pipeline".
+    let tag_lower = tag.to_lowercase();
+
     let result = sqlx
         ::query_as::<_, AgentSummary>(
             r#"SELECT a.id, a.name, a.display_name, a.description, a.url, a.icon_url,
@@ -78,7 +86,7 @@ async fn by_skill(
            ORDER BY a.created_at DESC
            LIMIT $2 OFFSET $3"#
         )
-        .bind(tag)
+        .bind(&tag_lower)
         .bind(limit)
         .bind(offset)
         .bind(owner_filter)
@@ -107,12 +115,17 @@ async fn create(
     })
     );
     let skills_vec = body.skills.unwrap_or_default();
-    let mut tags = body.tags.unwrap_or_default();
+    // Normalise tags to lowercase at write time for consistent GIN lookup.
+    let mut tags: Vec<String> = body.tags.unwrap_or_default()
+        .into_iter()
+        .map(|t| t.to_lowercase())
+        .collect();
     // Merge unique tags declared on each skill into the agent's tag set.
     for skill in &skills_vec {
         for tag in &skill.tags {
-            if !tags.contains(tag) {
-                tags.push(tag.clone());
+            let tag_lower = tag.to_lowercase();
+            if !tags.contains(&tag_lower) {
+                tags.push(tag_lower);
             }
         }
     }
@@ -305,18 +318,23 @@ async fn update(
 
     // When skills are being updated, merge their tags into the provided tag list so
     // the COALESCE write carries all skill-derived tags alongside any explicit ones.
+    // All tags are normalised to lowercase for consistent GIN lookup.
     let merged_tags = if let Some(ref skill_list) = body.skills {
-        let mut tags = body.tags.clone().unwrap_or_default();
+        let mut tags: Vec<String> = body.tags.clone().unwrap_or_default()
+            .into_iter()
+            .map(|t| t.to_lowercase())
+            .collect();
         for skill in skill_list {
             for tag in &skill.tags {
-                if !tags.contains(tag) {
-                    tags.push(tag.clone());
+                let tag_lower = tag.to_lowercase();
+                if !tags.contains(&tag_lower) {
+                    tags.push(tag_lower);
                 }
             }
         }
         Some(tags)
     } else {
-        body.tags.clone()
+        body.tags.as_ref().map(|ts| ts.iter().map(|t| t.to_lowercase()).collect())
     };
 
     let mut tx = match state.db.begin().await {
@@ -519,8 +537,56 @@ async fn list_versions(
     }
 }
 
+// ── DELETE /agents/{id}/versions/{version} ────────────────────────────────────
+
+async fn delete_version(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path((agent_id, version)): Path<(Uuid, String)>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(uid) => uid,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
+
+    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // Prevent deleting the currently active version.
+    let is_active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agent_versions WHERE agent_id = $1 AND version = $2 AND is_active = true)",
+    )
+    .bind(agent_id)
+    .bind(&version)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
+
+    if is_active {
+        return (StatusCode::CONFLICT, "cannot delete the active version — rollback first").into_response();
+    }
+
+    match sqlx::query(
+        "DELETE FROM agent_versions WHERE agent_id = $1 AND version = $2",
+    )
+    .bind(agent_id)
+    .bind(&version)
+    .execute(&state.db)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => (StatusCode::NOT_FOUND, "version not found").into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, %version, "delete_version db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
 // ── Scoring helpers ───────────────────────────────────────────────────────────
 //
+// Mirrors Python's _calculate_match_score(query, text, boost):
 //
 //   exact match   → 100.0 * boost
 //   prefix match  →  90.0 * boost   (text starts with query)
@@ -545,19 +611,22 @@ const AGENT_SCORE_SQL: &str =
     r#"
     GREATEST(
         CASE
-            WHEN lower(name) = lower($1)     THEN 280.0
-            WHEN name ILIKE $1 || '%'        THEN 252.0
-            WHEN name ILIKE '%' || $1 || '%' THEN 196.0
+            -- ILIKE $1 is case-insensitive and allows the trigram GIN index to
+            -- activate.  lower(col) = lower($1) would defeat the GIN index because
+            -- the index expression is 'name', not 'lower(name)'.
+            WHEN name ILIKE $1                THEN 280.0
+            WHEN name ILIKE $1 || '%'         THEN 252.0
+            WHEN name ILIKE '%' || $1 || '%'  THEN 196.0
             ELSE 0.0
         END,
         CASE
-            WHEN lower(COALESCE(display_name,'')) = lower($1)              THEN 240.0
+            WHEN COALESCE(display_name,'') ILIKE $1                        THEN 240.0
             WHEN COALESCE(display_name,'') ILIKE $1 || '%'                 THEN 216.0
             WHEN COALESCE(display_name,'') ILIKE '%' || $1 || '%'          THEN 168.0
             ELSE 0.0
         END,
         CASE
-            WHEN lower(COALESCE(description,'')) = lower($1)              THEN 200.0
+            WHEN COALESCE(description,'') ILIKE $1                        THEN 200.0
             WHEN COALESCE(description,'') ILIKE $1 || '%'                 THEN 180.0
             WHEN COALESCE(description,'') ILIKE '%' || $1 || '%'          THEN 140.0
             ELSE 0.0
@@ -580,20 +649,20 @@ const USER_SCORE_SQL: &str =
     r#"
     GREATEST(
         CASE
-            WHEN lower(username) = lower($1)          THEN 300.0
+            WHEN username ILIKE $1                     THEN 300.0
             WHEN username ILIKE $1 || '%'              THEN 270.0
             WHEN username ILIKE '%' || $1 || '%'       THEN 210.0
             ELSE 0.0
         END,
         CASE
-            WHEN lower(COALESCE(display_name,'')) = lower($1)              THEN 250.0
+            WHEN COALESCE(display_name,'') ILIKE $1                        THEN 250.0
             WHEN COALESCE(display_name,'') ILIKE $1 || '%'                 THEN 225.0
             WHEN COALESCE(display_name,'') ILIKE '%' || $1 || '%'          THEN 175.0
             ELSE 0.0
         END,
         CASE
-            WHEN lower(COALESCE(email,'')) = lower($1)     THEN 150.0
-            WHEN COALESCE(email,'') ILIKE $1 || '%'        THEN 135.0
+            WHEN COALESCE(email,'') ILIKE $1           THEN 150.0
+            WHEN COALESCE(email,'') ILIKE $1 || '%'    THEN 135.0
             WHEN COALESCE(email,'') ILIKE '%' || $1 || '%' THEN 105.0
             ELSE 0.0
         END
@@ -609,7 +678,8 @@ struct SearchQuery {
     limit: i64,
 }
 
-/// Agent-only search.  Scoring: GREATEST across (name×2.8, description×2.0, tag score) with tiered
+/// Agent-only search.  Scoring matches Python's redis_search_service.py:
+/// GREATEST across (name×2.8, description×2.0, tag score) with tiered
 /// exact/prefix/contains scoring.  Minimum query length: 2 chars.
 async fn search(
     State(state): State<AppState>,
@@ -666,7 +736,8 @@ struct UserSearchQuery {
     q: String,
 }
 
-/// User search. Field boosts: username×3.0, display_name×2.5, email×1.5.
+/// Mirrors Python's `RedisSearchService.search_users` / `GET /search/users`.
+/// Field boosts: username×3.0, display_name×2.5, email×1.5.
 /// Scoring: exact (100×boost) > prefix (90×boost) > contains (70×boost).
 /// Minimum query length: 2 chars. Sort: score DESC, username ASC.
 /// Returns all matching users (no limit).
@@ -725,4 +796,97 @@ async fn search_users(
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
         }
     }
+}
+
+// ── GET /registry/user/agents ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RegistryUserAgentsQuery {
+    q: Option<String>,
+    status: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+/// Returns agents accessible to the current user: owned + public + explicitly granted.
+/// Supports optional `?q` (name/description search), `?status`, `?limit`, `?offset`.
+/// Superusers see all agents.
+async fn registry_user_agents(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(q): Query<RegistryUserAgentsQuery>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
+
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
+
+    let agents = if claims.is_superuser {
+        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
+        sqlx::query_as::<_, Agent>(
+            r#"SELECT * FROM agents
+               WHERE ($1::text IS NULL OR (name ILIKE $1 OR description ILIKE $1))
+                 AND ($2::text IS NULL OR status = $2)
+               ORDER BY created_at DESC
+               LIMIT $3 OFFSET $4"#,
+        )
+        .bind(&pattern)
+        .bind(&q.status)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
+        sqlx::query_as::<_, Agent>(
+            r#"SELECT * FROM agents
+               WHERE (
+                   owner_id = $1
+                   OR is_public = true
+                   OR EXISTS (
+                       SELECT 1 FROM agent_grants ag
+                       WHERE ag.agent_id = agents.id
+                         AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
+                           OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text))
+                   )
+               )
+                 AND ($2::text IS NULL OR (name ILIKE $2 OR description ILIKE $2))
+                 AND ($3::text IS NULL OR status = $3)
+               ORDER BY created_at DESC
+               LIMIT $4 OFFSET $5"#,
+        )
+        .bind(user_id)
+        .bind(&pattern)
+        .bind(&q.status)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match agents {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "registry_user_agents: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
+// ── GET /registries/{id} ──────────────────────────────────────────────────────
+
+/// Look up an agent by its UUID or name (registry-entry lookup).
+/// Equivalent to GET /agents/{id} but exposed at the /registries/ path for
+/// clients that use the registry-centric URL scheme.
+async fn get_by_registry_id(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    get_one(State(state), claims, Path(id)).await
 }

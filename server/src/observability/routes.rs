@@ -2,22 +2,21 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
+    Json,
+    Router,
+    extract::{ Path, Query, State },
     http::StatusCode,
-    response::{
-        IntoResponse, Response,
-        sse::{Event, KeepAlive, Sse},
-    },
-    routing::get,
+    response::{ IntoResponse, Response, sse::{ Event, KeepAlive, Sse } },
+    routing::{ get, post },
 };
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{ DateTime, Utc };
+use serde::{ Deserialize, Serialize };
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::state::AppState;
-use super::logs::{LogLine, LogQuery, parse_container_logs, parse_loki_logs, query_proxy_logs};
+use super::handler;
+use super::logs::{ LogLine, LogQuery, parse_container_logs, parse_loki_logs, query_proxy_logs };
 
 // ---------------------------------------------------------------------------
 // Agent resolution helper
@@ -30,22 +29,20 @@ use super::logs::{LogLine, LogQuery, parse_container_logs, parse_loki_logs, quer
 async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
     if let Ok(id) = agent_ref.parse::<Uuid>() {
         sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, name FROM agents WHERE id = $1 AND deleted_at IS NULL",
+            "SELECT id, name FROM agents WHERE id = $1 AND deleted_at IS NULL"
         )
-        .bind(id)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten()
+            .bind(id)
+            .fetch_optional(db).await
+            .ok()
+            .flatten()
     } else {
         sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, name FROM agents WHERE name = $1 AND deleted_at IS NULL",
+            "SELECT id, name FROM agents WHERE name = $1 AND deleted_at IS NULL"
         )
-        .bind(agent_ref)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten()
+            .bind(agent_ref)
+            .fetch_optional(db).await
+            .ok()
+            .flatten()
     }
 }
 
@@ -55,23 +52,33 @@ async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
 
 /// Internal health/metrics endpoints — mounted at router root (no auth required).
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/metrics", get(metrics))
-        .route("/readiness", get(readiness))
+    Router::new().route("/metrics", get(metrics)).route("/readiness", get(readiness))
 }
 
-/// Observe endpoints — mounted under `/api` (auth required via middleware).
+/// Protected router — mounted under /api/v1/observability (auth required).
+pub fn protected_router() -> Router<AppState> {
+    Router::new()
+        .route("/session/list", get(handler::get_all_sessions))
+        .route("/session/{session_id}", get(handler::get_session_details))
+        .route("/trace/{project_id}/{trace_id}", get(handler::get_trace_details))
+        .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
+        .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
+        .route("/finops/dashboard", get(handler::get_finops_dashboard))
+        .route("/finops/insights", post(handler::get_finops_insights))
+}
+
+/// Observe endpoints — mounted under `/api/v1/observability` (auth required via middleware).
 ///
 /// Path params that contain `{agent_ref}` accept either a UUID or an agent name,
 /// so both the UI (UUID) and CLI (`nasiko logs my-agent`) work without pre-resolving.
 pub fn observe_router() -> Router<AppState> {
     Router::new()
-        .route("/observe/agents/{agent_ref}/logs",        get(agent_logs))
-        .route("/observe/agents/{agent_ref}/logs/stream", get(agent_logs_stream))
-        .route("/observe/agents/{agent_ref}/stats",       get(agent_stats))
-        .route("/observe/traces",                          get(list_traces))
-        .route("/observe/traces/{trace_id}",               get(get_trace))
-        .route("/observe/finops",                          get(finops))
+        .route("/observability/agents/{agent_ref}/logs", get(agent_logs))
+        .route("/observability/agents/{agent_ref}/logs/stream", get(agent_logs_stream))
+        .route("/observability/agents/{agent_ref}/stats", get(agent_stats))
+        .route("/observability/traces", get(list_traces))
+        .route("/observability/traces/{trace_id}", get(get_trace))
+        .route("/observability/finops", get(finops))
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +99,9 @@ struct LogParams {
     search: Option<String>,
 }
 
-fn default_limit() -> usize { 200 }
+fn default_limit() -> usize {
+    200
+}
 
 #[derive(Debug, Deserialize)]
 struct StatsParams {
@@ -109,7 +118,9 @@ struct TracesParams {
     limit: usize,
 }
 
-fn default_traces_limit() -> usize { 50 }
+fn default_traces_limit() -> usize {
+    50
+}
 
 #[derive(Debug, Deserialize)]
 struct FinOpsParams {
@@ -152,16 +163,14 @@ struct AgentStatsResponse {
 async fn agent_logs(
     State(state): State<AppState>,
     Path(agent_ref): Path<String>,
-    Query(params): Query<LogParams>,
+    Query(params): Query<LogParams>
 ) -> Response {
     let Some((agent_id, agent_name)) = resolve_agent(&state.db, &agent_ref).await else {
         return (StatusCode::NOT_FOUND, format!("Agent '{}' not found", agent_ref)).into_response();
     };
 
-    let since = params.since.as_deref()
-        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
-    let until = params.until.as_deref()
-        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let since = params.since.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let until = params.until.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
     let q = LogQuery {
         since,
@@ -185,8 +194,9 @@ async fn agent_logs(
     }
 
     // ── Source 3: Loki (optional) ────────────────────────────────────────────
-    if let Some(ref obs) = state.observability
-        && let Ok(entries) = obs.query_logs(&agent_name, q.since, q.until, q.limit).await
+    if
+        let Some(ref obs) = state.observability &&
+        let Ok(entries) = obs.query_logs(&agent_name, q.since, q.until, q.limit).await
     {
         all_logs.extend(parse_loki_logs(entries));
     }
@@ -217,13 +227,13 @@ async fn agent_logs(
 ///   • Sends an SSE comment `keepalive` every cycle so the connection stays alive.
 async fn agent_logs_stream(
     State(state): State<AppState>,
-    Path(agent_ref): Path<String>,
+    Path(agent_ref): Path<String>
 ) -> Response {
     let Some((agent_id, agent_name)) = resolve_agent(&state.db, &agent_ref).await else {
         return (StatusCode::NOT_FOUND, format!("Agent '{}' not found", agent_ref)).into_response();
     };
 
-    let db      = state.db.clone();
+    let db = state.db.clone();
     let runtime = state.runtime.clone();
 
     const MAX_STREAM_SECS: u64 = 3600; // 1-hour max lifetime — prevents connection hoarding
@@ -252,26 +262,32 @@ async fn agent_logs_stream(
 
             tokio::time::sleep(Duration::from_secs(3)).await;
 
-            let rows: Vec<(DateTime<Utc>, i32, i64, Option<String>)> = sqlx::query_as(
-                r#"SELECT timestamp, status, latency_ms, error
+            let rows: Vec<(DateTime<Utc>, i32, i64, Option<String>)> = sqlx
+                ::query_as(
+                    r#"SELECT timestamp, status, latency_ms, error
                    FROM proxy_logs
                    WHERE (caller_id = $1 OR target_agent_id = $1)
                      AND timestamp > $2
                    ORDER BY timestamp ASC
-                   LIMIT 50"#,
-            )
-            .bind(agent_id)
-            .bind(last_ts)
-            .fetch_all(&db)
-            .await
-            .unwrap_or_default();
+                   LIMIT 50"#
+                )
+                .bind(agent_id)
+                .bind(last_ts)
+                .fetch_all(&db).await
+                .unwrap_or_default();
 
             for (ts, status, latency_ms, error) in rows {
                 last_ts = ts;
-                let level = if status >= 500 { "ERROR" } else if status >= 400 { "WARN" } else { "INFO" };
+                let level = if status >= 500 {
+                    "ERROR"
+                } else if status >= 400 {
+                    "WARN"
+                } else {
+                    "INFO"
+                };
                 let message = match error {
                     Some(e) => format!("A2A call → HTTP {status}  ({latency_ms}ms) — {e}"),
-                    None    => format!("A2A call → HTTP {status}  ({latency_ms}ms)"),
+                    None => format!("A2A call → HTTP {status}  ({latency_ms}ms)"),
                 };
                 let line = LogLine {
                     timestamp: ts,
@@ -303,19 +319,21 @@ async fn agent_logs_stream(
 async fn agent_stats(
     State(state): State<AppState>,
     Path(agent_ref): Path<String>,
-    Query(params): Query<StatsParams>,
+    Query(params): Query<StatsParams>
 ) -> Response {
     let Some((agent_id, agent_name)) = resolve_agent(&state.db, &agent_ref).await else {
         return (StatusCode::NOT_FOUND, format!("Agent '{}' not found", agent_ref)).into_response();
     };
 
-    let since = params.since.as_deref()
+    let since = params.since
+        .as_deref()
         .and_then(|s| s.parse::<DateTime<Utc>>().ok())
         .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(24));
 
     // ── Tempo path ───────────────────────────────────────────────────────────
-    if let Some(ref obs) = state.observability
-        && let Ok(stats) = obs.get_agent_stats(&agent_name, since).await
+    if
+        let Some(ref obs) = state.observability &&
+        let Ok(stats) = obs.get_agent_stats(&agent_name, since).await
     {
         let resp = AgentStatsResponse {
             agent_id: agent_id.to_string(),
@@ -342,8 +360,9 @@ async fn agent_stats(
         error_rate: Option<f64>,
     }
 
-    let stats: Option<ProxyStats> = sqlx::query_as(
-        r#"SELECT
+    let stats: Option<ProxyStats> = sqlx
+        ::query_as(
+            r#"SELECT
              COUNT(*)::bigint                                                     AS total_requests,
              AVG(latency_ms::float8)                                             AS avg_latency_ms,
              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms::float8)    AS p50_latency_ms,
@@ -351,21 +370,29 @@ async fn agent_stats(
              SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)::float8
                / NULLIF(COUNT(*)::float8, 0)                                     AS error_rate
            FROM proxy_logs
-           WHERE target_agent_id = $1 AND timestamp >= $2"#,
-    )
-    .bind(agent_id)
-    .bind(since)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+           WHERE target_agent_id = $1 AND timestamp >= $2"#
+        )
+        .bind(agent_id)
+        .bind(since)
+        .fetch_optional(&state.db).await
+        .ok()
+        .flatten();
 
     let resp = AgentStatsResponse {
         agent_id: agent_id.to_string(),
         period_start: since,
-        total_requests: stats.as_ref().map(|s| s.total_requests as u64).unwrap_or(0),
-        error_rate: stats.as_ref().and_then(|s| s.error_rate).unwrap_or(0.0),
-        avg_latency_ms: stats.as_ref().and_then(|s| s.avg_latency_ms).unwrap_or(0.0),
+        total_requests: stats
+            .as_ref()
+            .map(|s| s.total_requests as u64)
+            .unwrap_or(0),
+        error_rate: stats
+            .as_ref()
+            .and_then(|s| s.error_rate)
+            .unwrap_or(0.0),
+        avg_latency_ms: stats
+            .as_ref()
+            .and_then(|s| s.avg_latency_ms)
+            .unwrap_or(0.0),
         p50_latency_ms: stats.as_ref().and_then(|s| s.p50_latency_ms),
         p95_latency_ms: stats.as_ref().and_then(|s| s.p95_latency_ms),
         total_input_tokens: 0,
@@ -381,18 +408,16 @@ async fn agent_stats(
 /// Returns 503 when no observability backend is configured.
 async fn list_traces(
     State(state): State<AppState>,
-    Query(params): Query<TracesParams>,
+    Query(params): Query<TracesParams>
 ) -> Response {
     let Some(ref obs) = state.observability else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "Observability backend not configured (set TEMPO_URL + LOKI_URL)",
-        )
-            .into_response();
+        ).into_response();
     };
 
-    let since = params.since.as_deref()
-        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let since = params.since.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
     // Build agent_ids list: either the requested one or all running agents.
     let agent_ids: Vec<String> = if let Some(id) = params.agent_id {
@@ -413,11 +438,10 @@ async fn list_traces(
         }
     } else {
         sqlx::query_scalar::<_, String>(
-            "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 20",
+            "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 20"
         )
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
+            .fetch_all(&state.db).await
+            .unwrap_or_default()
     };
 
     match obs.list_sessions(&agent_ids, since, params.limit).await {
@@ -430,16 +454,12 @@ async fn list_traces(
 ///
 /// Returns full trace detail with all spans.
 /// Returns 503 when no observability backend is configured.
-async fn get_trace(
-    State(state): State<AppState>,
-    Path(trace_id): Path<String>,
-) -> Response {
+async fn get_trace(State(state): State<AppState>, Path(trace_id): Path<String>) -> Response {
     let Some(ref obs) = state.observability else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "Observability backend not configured (set TEMPO_URL + LOKI_URL)",
-        )
-            .into_response();
+        ).into_response();
     };
 
     match obs.get_trace(&trace_id).await {
@@ -459,20 +479,15 @@ async fn get_trace(
 ///
 /// Returns token usage and estimated cost per agent.
 /// Returns 503 when no observability backend is configured.
-async fn finops(
-    State(state): State<AppState>,
-    Query(params): Query<FinOpsParams>,
-) -> Response {
+async fn finops(State(state): State<AppState>, Query(params): Query<FinOpsParams>) -> Response {
     let Some(ref obs) = state.observability else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "Observability backend not configured (set TEMPO_URL + LOKI_URL)",
-        )
-            .into_response();
+        ).into_response();
     };
 
-    let since = params.since.as_deref()
-        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let since = params.since.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
     // Resolve agent UUIDs → names for the Tempo query.
     let agent_ids: Vec<String> = if let Some(ref ids_csv) = params.agent_ids {
@@ -492,28 +507,25 @@ async fn finops(
         if uuids.is_empty() {
             // Empty string / no real ids — default to all running agents.
             sqlx::query_scalar::<_, String>(
-                "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 50",
+                "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 50"
             )
-            .fetch_all(&state.db)
-            .await
-            .unwrap_or_default()
+                .fetch_all(&state.db).await
+                .unwrap_or_default()
         } else {
             // Look up names for the given UUIDs.
             sqlx::query_scalar::<_, String>(
-                "SELECT name FROM agents WHERE id = ANY($1) AND deleted_at IS NULL",
+                "SELECT name FROM agents WHERE id = ANY($1) AND deleted_at IS NULL"
             )
-            .bind(&uuids)
-            .fetch_all(&state.db)
-            .await
-            .unwrap_or_default()
+                .bind(&uuids)
+                .fetch_all(&state.db).await
+                .unwrap_or_default()
         }
     } else {
         sqlx::query_scalar::<_, String>(
-            "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 50",
+            "SELECT name FROM agents WHERE status = 'running' AND deleted_at IS NULL LIMIT 50"
         )
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
+            .fetch_all(&state.db).await
+            .unwrap_or_default()
     };
 
     match obs.get_finops_dashboard(&agent_ids, since).await {
@@ -539,48 +551,44 @@ struct Metrics {
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    let agents_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
-        .fetch_one(&state.db)
-        .await
+    let agents_total: i64 = sqlx
+        ::query_scalar("SELECT COUNT(*) FROM agents")
+        .fetch_one(&state.db).await
         .unwrap_or(0);
 
-    let agents_running: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE status = 'running'")
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or(0);
+    let agents_running: i64 = sqlx
+        ::query_scalar("SELECT COUNT(*) FROM agents WHERE status = 'running'")
+        .fetch_one(&state.db).await
+        .unwrap_or(0);
 
-    let containers_total = state
-        .runtime
-        .list()
-        .await
+    let containers_total = state.runtime
+        .list().await
         .map(|c| c.len() as i64)
         .unwrap_or(0);
 
-    let users_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.db)
-        .await
+    let users_total: i64 = sqlx
+        ::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&state.db).await
         .unwrap_or(0);
 
-    let builds_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_builds")
-        .fetch_one(&state.db)
-        .await
+    let builds_total: i64 = sqlx
+        ::query_scalar("SELECT COUNT(*) FROM agent_builds")
+        .fetch_one(&state.db).await
         .unwrap_or(0);
 
-    let builds_pending: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_builds WHERE status IN ('queued', 'building')")
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or(0);
-
-    let chat_sessions_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_sessions")
-        .fetch_one(&state.db)
-        .await
+    let builds_pending: i64 = sqlx
+        ::query_scalar("SELECT COUNT(*) FROM agent_builds WHERE status IN ('queued', 'building')")
+        .fetch_one(&state.db).await
         .unwrap_or(0);
 
-    let token_usage_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_usage")
-        .fetch_one(&state.db)
-        .await
+    let chat_sessions_total: i64 = sqlx
+        ::query_scalar("SELECT COUNT(*) FROM chat_sessions")
+        .fetch_one(&state.db).await
+        .unwrap_or(0);
+
+    let token_usage_total: i64 = sqlx
+        ::query_scalar("SELECT COUNT(*) FROM token_usage")
+        .fetch_one(&state.db).await
         .unwrap_or(0);
 
     Json(Metrics {
@@ -604,16 +612,10 @@ struct ReadinessCheck {
 }
 
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
-    let pg_ok = sqlx::query("SELECT 1")
-        .execute(&state.db)
-        .await
-        .is_ok();
+    let pg_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
 
     let redis_ok = match state.redis.get_multiplexed_async_connection().await {
-        Ok(mut conn) => redis::cmd("PING")
-            .query_async::<String>(&mut conn)
-            .await
-            .is_ok(),
+        Ok(mut conn) => redis::cmd("PING").query_async::<String>(&mut conn).await.is_ok(),
         Err(_) => false,
     };
 
@@ -621,11 +623,7 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
 
     let all_ok = pg_ok && orch_ok;
     let status = if all_ok { "ready" } else { "degraded" };
-    let http_status = if all_ok {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
+    let http_status = if all_ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
 
     (
         http_status,

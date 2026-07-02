@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
     response::{
         IntoResponse,
@@ -27,15 +27,16 @@ use super::utils::{set_build_status, set_upload_status};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/upload-and-deploy",        post(upload_and_deploy))
-        .route("/deploy-status/{build_id}", get(deploy_status_sse))
-        .route("/upload-status/{upload_id}", get(get_upload_status))
+        .route("/upload",                          post(upload_and_deploy))
+        .route("/uploads",                         get(list_upload_status))
+        .route("/uploads/{upload_id}",             get(get_upload_status))
+        .route("/deploys/{build_id}/stream",       get(deploy_status_sse))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES as usize))
 }
 
 pub fn user_routes() -> Router<AppState> {
     Router::new()
-        .route("/upload-agents", get(list_upload_agents))
+        .route("/my-uploads", get(list_upload_agents))
 }
 
 #[derive(Debug, Serialize)]
@@ -479,8 +480,9 @@ pub async fn execute_upload_and_deploy(
 
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
-        // Deploy container.
-        let container_id = ContainerId::new(&name);
+        // Deploy container keyed on agent UUID (not name) to prevent cross-team
+        // naming collisions when two teams have agents with the same name.
+        let container_id = ContainerId::from_uuid(agent_id);
         let spec = DeploymentSpec {
             container_id,
             name: name.clone(),
@@ -525,9 +527,10 @@ pub async fn execute_upload_and_deploy(
                 .bind(agent_id)
                 .execute(&db)
                 .await;
-            // Record the deployment so it appears in list_deployments, restart, and crash guardian.
-            // k8s_deployment_name stores the raw agent name (ContainerId value); the runtime
-            // derives the actual K8s name via object_name() — do not pre-compute the prefix here.
+            // Record the deployment. k8s_deployment_name stores the ContainerId value
+            // (agent UUID string) so that restart and crash guardian can reconstruct
+            // the same ContainerId. The runtime derives the actual K8s/Docker name via
+            // object_name() — do not pre-compute the prefix here.
             let _ = sqlx::query(
                 "INSERT INTO agent_deployments (agent_id, build_id, owner_id, status, k8s_deployment_name) \
                  VALUES ($1, $2, $3, 'running', $4)",
@@ -535,7 +538,7 @@ pub async fn execute_upload_and_deploy(
             .bind(agent_id)
             .bind(build_id)
             .bind(owner_id)
-            .bind(&name)
+            .bind(agent_id.to_string())
             .execute(&db)
             .await;
             tracing::info!(build_id = %build_id, agent_id = %agent_id, "upload-and-deploy succeeded");
@@ -625,7 +628,67 @@ async fn get_upload_status(
     }
 }
 
-// ─── GET /user/upload-agents ─────────────────────────────────────────────────
+// ─── GET /agents/uploads ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct UploadListQuery {
+    #[serde(default = "default_upload_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_upload_limit() -> i64 {
+    10
+}
+
+async fn list_upload_status(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(q): Query<UploadListQuery>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
+
+    let rows = if claims.is_superuser {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(user_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match rows {
+        Ok(data) => {
+            let total = data.len();
+            Json(serde_json::json!({"data": data, "total": total})).into_response()
+        }
+        Err(e) => {
+            tracing::error!(%e, "list_upload_status db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+// ─── GET /agents/upload-agents ───────────────────────────────────────────────
 
 async fn list_upload_agents(
     State(state): State<AppState>,

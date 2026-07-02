@@ -4,12 +4,12 @@ pub mod agents;
 pub mod auth;
 pub mod build;
 pub mod capabilities;
+pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
 pub mod observability;
 pub mod pool;
-pub mod catalog;
 pub mod router;
 pub mod runtime;
 pub mod secrets;
@@ -81,24 +81,25 @@ where
     let user_routes = user_router
         .layer(middleware::from_fn(auth::rbac::require_superuser));
 
-    // Agent deploy routes (upload-and-deploy, deploy-status, deployments, ACL): deployer+ only.
+    // Agent deploy routes (upload, deploy-status, deployments, ACL): deployer+ only.
     let agent_deploy_routes = Router::new()
         .nest("/agents", agents::router())
-        .nest("/user", agents::user_routes())
+        .nest("/agents", agents::user_routes())
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     // Build routes (trigger builds, view build history): deployer+ only
     let build_routes = Router::new()
-        .nest("/build", build::router())
+        .merge(build::router())
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     let protected = Router::new()
         .route("/me", get(me))
+        .merge(router::router_routes())
         .merge(agent_deploy_routes)
+        .merge(catalog::router())
         .merge(container_routes)
         .merge(pool_routes)
         .merge(user_routes)
-        .nest("/catalog", catalog::router())
         .merge(build_routes)
         .merge(chat::router())
         .merge(secrets::router())
@@ -106,6 +107,7 @@ where
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
+        .nest("/observability", observability::protected_router())
         .merge(observability::observe_router())
         .merge(github::router())
         .merge(auth::login::protected_router())
@@ -122,8 +124,8 @@ where
         .route("/health", get(health))
         .merge(observability::router())
         .merge(auth::login::public_router())
-        .merge(github::public_router())  
-        .nest("/api", protected)
+        .merge(github::public_router())
+        .nest("/api/v1", protected)
         .with_state(state)
         .merge(oci_routes)
         .fallback(fallback)

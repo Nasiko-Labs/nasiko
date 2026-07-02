@@ -2,6 +2,7 @@ pub(crate) mod utils;
 pub mod acl;
 pub mod build_worker;
 pub mod deployments;
+pub mod grants;
 pub mod update;
 pub mod upload;
 
@@ -14,7 +15,7 @@ pub use upload::UploadAndDeployResponse;
 pub fn router() -> Router<AppState> {
     upload::router()
         .merge(deployments::router())
-        .merge(acl::router())
+        .merge(grants::router())
         .merge(update::router())
 }
 
