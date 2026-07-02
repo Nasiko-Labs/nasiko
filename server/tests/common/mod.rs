@@ -91,6 +91,7 @@ impl ContainerRuntime for FakeRuntime {
 
 /// A running test server bound to a random port, backed by an isolated DB.
 /// Call `cleanup().await` at the end of each test to drop the test database.
+#[allow(dead_code)]
 pub struct TestServer {
     pub base_url: String,
     pub client: reqwest::Client,
@@ -247,12 +248,21 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        agent_registry_cache_ttl_secs: 3600,
+        router_shortlist_threshold: 15,
+        router_shortlist_size: 10,
+        max_router_history_messages: 20,
+        embedding_model: "text-embedding-3-small".into(),
+        router_agent_timeout_secs: 60,
         github_callback_url: None,
+        docker_agent_network: None,
+        oci_registry_host: None,
         git_clone_allowed_hosts: vec![
             "github.com".to_owned(),
             "gitlab.com".to_owned(),
             "bitbucket.org".to_owned(),
         ],
+        registry_import_allowed_hosts: vec![],
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
     }

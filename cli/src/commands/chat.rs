@@ -72,7 +72,10 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
     });
 
     let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder().timeout_global(None).build(),
+        ureq::config::Config::builder()
+            .timeout_global(None)
+            .http_status_as_error(false)
+            .build(),
     );
 
     // Attach auth token if endpoint matches the active cluster
@@ -97,12 +100,15 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
         req = req.header("Authorization", &format!("Bearer {t}"));
     }
 
-    let resp = req.send_json(&body).context("failed to reach A2A endpoint")?;
+    let mut resp = req.send_json(&body).context("failed to reach A2A endpoint")?;
 
     if resp.status().as_u16() >= 400 {
-        let mut resp = resp;
         let err_body = resp.body_mut().read_to_string().unwrap_or_default();
-        bail!("HTTP {}: {}", resp.status().as_u16(), err_body);
+        let msg = serde_json::from_str::<serde_json::Value>(&err_body)
+            .ok()
+            .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .unwrap_or(err_body);
+        bail!("HTTP {}: {}", resp.status().as_u16(), msg);
     }
 
     let content_type = resp
@@ -115,7 +121,6 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
     if content_type.contains("text/event-stream") {
         handle_sse_stream(resp)?;
     } else {
-        let mut resp = resp;
         let resp_json: serde_json::Value =
             resp.body_mut().read_json().context("invalid JSON response")?;
 

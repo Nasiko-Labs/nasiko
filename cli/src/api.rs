@@ -14,8 +14,13 @@ pub struct Client {
 impl Client {
     pub fn from_active_cluster() -> Result<Self> {
         let (_, entry) = config::active_cluster()?;
+        let agent = Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(None)
+                .build(),
+        );
         Ok(Self {
-            agent: Agent::new_with_defaults(),
+            agent,
             base_url: entry.url.clone(),
             token: entry.token,
         })
@@ -105,8 +110,17 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
-    pub fn post_empty<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
-        self.post_json(path, &serde_json::json!({}))
+    /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
+    pub fn post_void(&self, path: &str) -> Result<()> {
+        let mut resp = self
+            .auth_post(&self.api_url(path))
+            .send(&[] as &[u8])
+            .context("request failed")?;
+        if resp.status().as_u16() >= 400 {
+            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            bail!("HTTP {}: {}", resp.status().as_u16(), body);
+        }
+        Ok(())
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {

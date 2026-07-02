@@ -71,10 +71,22 @@ async fn deploy(
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => {
-            // Record the deployment (fire-and-forget — don't fail the request if this write fails).
+            // Update the catalog URL + record deployment (fire-and-forget).
             if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
                 let db = state.db.clone();
+                let endpoint = status.endpoint.clone();
                 tokio::spawn(async move {
+                    // Write the live endpoint URL + running status back to the catalog.
+                    if let Some(url) = endpoint {
+                        let _ = sqlx::query(
+                            "UPDATE agents SET url = $1, status = 'running', updated_at = now() WHERE id = $2",
+                        )
+                        .bind(&url)
+                        .bind(agent_id)
+                        .execute(&db)
+                        .await;
+                    }
+
                     let build_id: Option<Uuid> = sqlx::query_scalar(
                         "SELECT id FROM agent_builds WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
                     )

@@ -20,14 +20,15 @@ services:
     ports:
       - "6379:6379"
 
-  rustfs:
-    image: docker.io/rustfs/rustfs:latest
-    command: server /data --address :9000
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
     environment:
-      RUSTFS_ROOT_USER: nasiko
-      RUSTFS_ROOT_PASSWORD: nasiko123
+      MINIO_ROOT_USER: nasiko
+      MINIO_ROOT_PASSWORD: nasiko123
     ports:
       - "9000:9000"
+      - "9001:9001"
     volumes:
       - nasiko-s3-data:/data
 

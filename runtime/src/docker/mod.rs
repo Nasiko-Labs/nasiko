@@ -6,7 +6,7 @@ use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
     RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
 };
-use bollard::image::BuildImageOptions;
+use bollard::image::{BuildImageOptions, CreateImageOptions};
 use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
 use bollard::network::ConnectNetworkOptions;
 use bollard::container::LogsOptions;
@@ -41,6 +41,10 @@ pub struct DockerRuntimeConfig {
     /// This is intentionally separate from `operation_timeout` — never set them to the same value.
     /// Default: 30 minutes.
     pub build_timeout: Duration,
+    /// OCI registry host (e.g. `"localhost:8443"`) to pull images from before creating containers.
+    /// When set, images that don't already include a registry host are pulled from here first.
+    /// Default: `None` (use Docker's local cache / Docker Hub).
+    pub registry_host: Option<String>,
 }
 
 impl Default for DockerRuntimeConfig {
@@ -50,6 +54,7 @@ impl Default for DockerRuntimeConfig {
             network: None,
             operation_timeout: Duration::from_secs(30),
             build_timeout: Duration::from_secs(30 * 60),
+            registry_host: None,
         }
     }
 }
@@ -333,8 +338,28 @@ async fn create_and_start(
     bind_host: &str,
     network: Option<&str>,
     timeout: Duration,
+    registry_host: Option<&str>,
 ) -> Result<()> {
     let name = DockerRuntime::container_name(&spec.container_id);
+
+    // If the image is not in Docker's local cache, try pulling it.
+    // For local dev the image is already present (built via `docker build`).
+    // Inspect first to avoid an unnecessary pull attempt.
+    let image_present = client.inspect_image(&spec.image).await.is_ok();
+    if !image_present {
+        // Prefer the registry-qualified ref when a registry_host is configured.
+        let pull_ref = match registry_host {
+            Some(host) if !spec.image.starts_with(host) => format!("{host}/{}", spec.image),
+            _ => spec.image.clone(),
+        };
+        let opts = CreateImageOptions { from_image: pull_ref.as_str(), ..Default::default() };
+        let mut stream = client.create_image(Some(opts), None, None);
+        while let Some(res) = stream.next().await {
+            if let Err(e) = res {
+                return Err(RuntimeError::ImageNotFound(format!("pull {pull_ref} failed: {e}")));
+            }
+        }
+    }
 
     let env_vec: Vec<String> = spec
         .env_vars
@@ -474,7 +499,7 @@ impl ContainerRuntime for DockerRuntime {
             Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
             Ok(Err(ref e)) if is_not_found(e) => {
                 // Container does not exist: create and start it
-                create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout).await?;
+                create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout, self.config.registry_host.as_deref()).await?;
             }
             Ok(Err(e)) => return Err(map_bollard_err(e)),
             Ok(Ok(existing)) => {
@@ -524,7 +549,7 @@ impl ContainerRuntime for DockerRuntime {
                     .map_err(|_| RuntimeError::Timeout("remove_container".to_owned()))?
                     .map_err(map_bollard_err)?;
 
-                    create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout).await?;
+                    create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout, self.config.registry_host.as_deref()).await?;
                 }
             }
         }

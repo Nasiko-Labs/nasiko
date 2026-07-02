@@ -148,20 +148,33 @@ fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &
     let version = image.split(':').nth(1).unwrap_or("latest");
     let repo = format!("nasiko/{agent_name}");
 
-    println!("Pushing {image} → {repo}:{version}...");
-    oci::push_image(image, &repo, version)?;
-
     let image_ref = format!("{repo}:{version}");
 
-    // Create agent in registry (no local dir to save ID to)
-    println!("  Registering agent: {agent_name}");
-    let create = serde_json::json!({
-        "name": agent_name,
-        "display_name": agent_name,
-        "version": version,
-        "image": image_ref,
-    });
-    let _: serde_json::Value = client.post_json("/catalog/agents", &create)?;
+    // Tag locally so Docker can find it by the canonical ref without a registry pull.
+    let _ = std::process::Command::new("docker")
+        .args(["tag", image, &image_ref])
+        .status();
+
+    println!("Pushing {image} → {image_ref}...");
+    oci::push_image(image, &repo, version)?;
+
+    // Upsert agent in registry: update if exists, create otherwise.
+    let existing: Option<serde_json::Value> = client.get_json(&format!("/catalog/agents/{agent_name}")).ok();
+    if let Some(existing) = existing {
+        let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        println!("  Updating agent: {agent_name}");
+        let update = serde_json::json!({ "version": version, "image": image_ref });
+        let _: serde_json::Value = client.put_json(&format!("/catalog/agents/{id}"), &update)?;
+    } else {
+        println!("  Registering agent: {agent_name}");
+        let create = serde_json::json!({
+            "name": agent_name,
+            "display_name": agent_name,
+            "version": version,
+            "image": image_ref,
+        });
+        let _: serde_json::Value = client.post_json("/catalog/agents", &create)?;
+    }
 
     // Deploy container
     println!("Deploying container...");

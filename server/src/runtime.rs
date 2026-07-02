@@ -13,6 +13,7 @@ pub async fn build_docker_runtime(
 ) -> Result<InstrumentedRuntime<DockerRuntime, OtelInjector>> {
     let docker = DockerRuntime::new(DockerRuntimeConfig {
         network: config.docker_agent_network.clone(),
+        registry_host: config.oci_registry_host.clone(),
         ..DockerRuntimeConfig::default()
     }).await?;
     Ok(InstrumentedRuntime::new(

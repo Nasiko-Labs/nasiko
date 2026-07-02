@@ -43,7 +43,7 @@ impl S3Storage {
     pub async fn from_env(bucket: String) -> Self {
         let endpoint = std::env::var("S3_ENDPOINT").ok();
         let region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".into());
-        let access_key = std::env::var("S3_ACCESS_KEY").unwrap_or_default();
+        let access_key = std::env::var("S3_ACCESS_KEY").unwrap_or_else(|_| "nasiko".into());
         let secret_key = std::env::var("S3_SECRET_KEY").unwrap_or_default();
 
         Self::new(endpoint, region, access_key, secret_key, bucket, true)

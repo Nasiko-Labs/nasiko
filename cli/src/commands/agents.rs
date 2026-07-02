@@ -109,21 +109,21 @@ fn stream_logs(agent: &str) -> Result<()> {
 
 pub fn stop(agent: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let _: serde_json::Value = client.post_empty(&format!("/containers/{agent}/stop"))?;
+    client.post_void(&format!("/containers/{agent}/stop"))?;
     println!("Stopped: {agent}");
     Ok(())
 }
 
 pub fn start(agent: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let _: serde_json::Value = client.post_empty(&format!("/containers/{agent}/start"))?;
+    client.post_void(&format!("/containers/{agent}/start"))?;
     println!("Started: {agent}");
     Ok(())
 }
 
 pub fn restart(agent: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let _: serde_json::Value = client.post_empty(&format!("/containers/{agent}/restart"))?;
+    client.post_void(&format!("/containers/{agent}/restart"))?;
     println!("Restarted: {agent}");
     Ok(())
 }

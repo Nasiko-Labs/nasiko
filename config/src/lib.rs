@@ -51,10 +51,21 @@ pub struct Config {
     pub embedding_model: String,
     pub router_agent_timeout_secs: u64,
     pub github_callback_url: Option<String>,
+    pub git_clone_allowed_hosts: Vec<String>,
+    /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
+    /// Comma-separated.  Empty = reject all registry imports (safest default for
+    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
+    pub registry_import_allowed_hosts: Vec<String>,
+    pub admin_username: String,
+    pub admin_password: String,
     /// Docker network to attach agent containers to.
     /// Set to the compose network name (e.g. `nasiko-cloud-rs_default`) when the
     /// server itself runs inside Docker so agents are reachable via container IP.
     pub docker_agent_network: Option<String>,
+    /// OCI registry host to pull agent images from (e.g. `"localhost:8443"`).
+    /// When set, the Docker runtime pulls images from this registry before creating containers.
+    /// Maps to env var `OCI_REGISTRY_HOST`.
+    pub oci_registry_host: Option<String>,
 }
 
 impl Config {
@@ -118,6 +129,21 @@ impl Config {
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK").ok().filter(|s| !s.is_empty()),
+            oci_registry_host: std::env::var("OCI_REGISTRY_HOST").ok().filter(|s| !s.is_empty()),
+            git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
+                .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            registry_import_allowed_hosts: std::env::var("REGISTRY_IMPORT_ALLOWED_HOSTS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            admin_username: env_or("ADMIN_USERNAME", "admin"),
+            admin_password: required_env("ADMIN_PASSWORD")?,
         })
     }
 }
