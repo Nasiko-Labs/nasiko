@@ -183,17 +183,6 @@ CREATE TABLE agent_skills (
 );
 CREATE INDEX idx_agent_skills_tags ON agent_skills USING gin(tags);
 
-CREATE OR REPLACE FUNCTION normalize_tags_lowercase()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    NEW.tags := ARRAY(SELECT lower(t) FROM unnest(NEW.tags) AS t);
-    RETURN NEW;
-END;
-$$;
-CREATE TRIGGER trg_agent_skills_tags_lowercase
-    BEFORE INSERT OR UPDATE ON agent_skills
-    FOR EACH ROW EXECUTE FUNCTION normalize_tags_lowercase();
-
 -- =============================================================================
 -- Builds & Deployments
 -- =============================================================================
