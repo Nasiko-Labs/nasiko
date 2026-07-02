@@ -1,5 +1,15 @@
 @scope (settings-page) {
-  :scope { display: block; }
+  :scope {
+    display: block;
+    max-width: 700px;
+    margin: 0 auto;
+    padding: var(--space-lg) var(--space-md);
+  }
+  .page-title {
+    font-size: var(--font-size-2xl);
+    font-weight: 600;
+    margin: 0 0 var(--space-lg);
+  }
   .tabs {
     display: flex;
     gap: var(--space-md);
@@ -59,17 +69,19 @@
     display: flex;
     justify-content: flex-end;
     padding-top: var(--space-lg);
+    margin-top: var(--space-lg);
     border-top: 1px solid var(--color-border);
   }
   .save-btn {
-    padding: var(--space-sm) var(--space-lg);
+    padding: var(--space-sm) var(--space-xl);
     background: var(--color-primary);
     color: white;
     border: none;
     border-radius: var(--radius-md);
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
+    transition: opacity 0.15s;
   }
   .save-btn:hover { opacity: 0.9; }
   .save-btn:disabled { opacity: 0.5; cursor: not-allowed; }

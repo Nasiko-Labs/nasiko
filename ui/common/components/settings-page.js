@@ -15,6 +15,7 @@ class SettingsPage extends HTMLElement {
 
   connectedCallback() {
     this.innerHTML = `
+      <h1 class="page-title">Settings</h1>
       <nav class="tabs">${TABS.map(t =>
         `<button class="tab${t.key === 'general' ? ' is-active' : ''}" data-tab="${t.key}">${t.label}</button>`
       ).join('')}</nav>

@@ -1,5 +1,23 @@
 @scope (your-agents-page) {
-  :scope { display: block; }
+  :scope {
+    display: block;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: var(--space-lg) var(--space-md);
+  }
+  .page-header {
+    margin-bottom: var(--space-lg);
+  }
+  .page-title {
+    font-size: var(--font-size-2xl);
+    font-weight: 600;
+    margin: 0 0 var(--space-xs);
+  }
+  .page-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
   .env-row {
     display: grid;
     grid-template-columns: 1fr 1fr auto;
