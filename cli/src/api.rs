@@ -323,7 +323,7 @@ impl OciClient {
 }
 
 /// Minimal percent-encoding for query-string values (RFC 3986 unreserved kept as-is).
-fn urlencode(s: &str) -> String {
+pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

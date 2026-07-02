@@ -29,7 +29,7 @@ pub fn ps(json: bool) -> Result<()> {
         println!("No agents running.");
         return Ok(());
     }
-    println!("{:<28} {:<12} {:<4} {}", "NAME", "STATE", "UP", "ENDPOINT");
+    println!("{:<28} {:<12} {:<4} ENDPOINT", "NAME", "STATE", "UP");
     for c in &containers {
         let ep = c.endpoint.as_deref().unwrap_or("-");
         println!("{:<28} {:<12} {:<4} {}", c.container_id, c.state, c.replicas_live, ep);
@@ -95,13 +95,13 @@ fn stream_logs(agent: &str) -> Result<()> {
     let reader = BufReader::new(resp.body_mut().as_reader());
     for raw in reader.lines() {
         let raw = raw?;
-        if let Some(json) = raw.strip_prefix("data: ") {
-            if let Ok(l) = serde_json::from_str::<LogLine>(json) {
-                let ts  = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
-                let lvl = l.level.as_deref().unwrap_or("INFO");
-                let src = l.source.as_deref().unwrap_or("?");
-                println!("{ts} {lvl:<5} [{src}] {}", l.message);
-            }
+        if let Some(json) = raw.strip_prefix("data: ")
+            && let Ok(l) = serde_json::from_str::<LogLine>(json)
+        {
+            let ts  = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
+            let lvl = l.level.as_deref().unwrap_or("INFO");
+            let src = l.source.as_deref().unwrap_or("?");
+            println!("{ts} {lvl:<5} [{src}] {}", l.message);
         }
     }
     Ok(())
@@ -148,7 +148,7 @@ pub fn rm(agent: &str, force: bool) -> Result<()> {
 const PUBLIC_REGISTRY_URL: &str = "https://registry.nasiko.dev";
 
 fn registry_url() -> String {
-    std::env::var("NASIKO_REGISTRY_URL").unwrap_or_else(|_| PUBLIC_REGISTRY_URL.to_string())
+    crate::config::artifact_registry_url().unwrap_or_else(|| PUBLIC_REGISTRY_URL.to_string())
 }
 
 fn unwrap_agents(raw: serde_json::Value) -> Result<Vec<AgentRecord>> {
@@ -283,12 +283,13 @@ pub fn cmd_search(
     limit: usize,
 ) -> Result<()> {
     let base = registry_url();
+    use crate::api::urlencode;
     let mut url = format!("{}/v1/search?limit={}", base, limit);
-    if let Some(q) = query        { url.push_str(&format!("&q={}", q)); }
-    if let Some(t) = artifact_type { url.push_str(&format!("&type={}", t)); }
-    if let Some(f) = framework    { url.push_str(&format!("&framework={}", f)); }
-    if let Some(t) = tags         { url.push_str(&format!("&tags={}", t)); }
-    if let Some(o) = owner        { url.push_str(&format!("&owner={}", o)); }
+    if let Some(q) = query        { url.push_str(&format!("&q={}", urlencode(q))); }
+    if let Some(t) = artifact_type { url.push_str(&format!("&type={}", urlencode(t))); }
+    if let Some(f) = framework    { url.push_str(&format!("&framework={}", urlencode(f))); }
+    if let Some(t) = tags         { url.push_str(&format!("&tags={}", urlencode(t))); }
+    if let Some(o) = owner        { url.push_str(&format!("&owner={}", urlencode(o))); }
 
     let mut resp = ureq::get(&url).call().map_err(|e| anyhow::anyhow!("registry unreachable: {}", e))?;
     let raw: serde_json::Value = resp.body_mut().read_json()?;

@@ -293,7 +293,8 @@ fn emit_status_data(data: &serde_json::Value, tx: &mpsc::Sender<AppEvent>) {
             let success = data.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
             let result = data.get("result").and_then(|r| r.as_str()).unwrap_or("");
             let display = if result.len() > 120 {
-                format!("{}...", &result[..120])
+                let n = result.floor_char_boundary(120);
+                format!("{}...", &result[..n])
             } else {
                 result.to_string()
             };

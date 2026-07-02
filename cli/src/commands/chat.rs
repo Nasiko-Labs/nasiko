@@ -245,7 +245,8 @@ fn render_status_data(data: &serde_json::Value) {
             let icon = if success { "ok" } else { "err" };
             let color = if success { "32" } else { "31" };
             let display = if result.len() > 200 {
-                format!("{}...", &result[..200])
+                let n = result.floor_char_boundary(200);
+                format!("{}...", &result[..n])
             } else {
                 result.to_string()
             };

@@ -88,10 +88,10 @@ pub fn search(
         let tags = if artifact.tags.is_empty() { "—".to_string() } else { artifact.tags.join(", ") };
         if scored {
             let score = artifact.score.map(|s| format!("{:.0}%", s * 100.0)).unwrap_or_else(|| "—".to_string());
-            let desc_truncated = if desc.len() > 47 { format!("{}...", &desc[..47]) } else { desc.to_string() };
+            let desc_truncated = if desc.len() > 47 { format!("{}...", &desc[..desc.floor_char_boundary(47)]) } else { desc.to_string() };
             println!("{score:>5}  {ref_str:<name_width$} {desc_truncated:<50} {tags}");
         } else {
-            let desc_truncated = if desc.len() > 57 { format!("{}...", &desc[..57]) } else { desc.to_string() };
+            let desc_truncated = if desc.len() > 57 { format!("{}...", &desc[..desc.floor_char_boundary(57)]) } else { desc.to_string() };
             println!("{ref_str:<name_width$} {desc_truncated:<60} {tags}");
         }
     }

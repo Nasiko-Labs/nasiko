@@ -174,7 +174,7 @@ pub fn list_sessions(endpoint: Option<&str>) -> Result<()> {
                     "{:<36} {:<20} {:<24} {}",
                     s.session_id,
                     s.agent_name.as_deref().unwrap_or("-"),
-                    &s.updated_at[..19],
+                    s.updated_at.get(..19).unwrap_or(&s.updated_at),
                     s.title,
                 );
             }
@@ -192,11 +192,12 @@ pub fn list_sessions(endpoint: Option<&str>) -> Result<()> {
             "{:<36} {:<40} {:<24} {}",
             s.id,
             if s.endpoint.len() > 38 {
-                format!("{}...", &s.endpoint[..35])
+                let n = s.endpoint.floor_char_boundary(35);
+                format!("{}...", &s.endpoint[..n])
             } else {
                 s.endpoint.clone()
             },
-            &s.created_at[..19],
+            s.created_at.get(..19).unwrap_or(&s.created_at),
             s.title,
         );
     }
