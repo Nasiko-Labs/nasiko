@@ -19,12 +19,14 @@ pub fn public_router() -> Router<AppState> {
     Router::new().route("/api/github/callback", get(github_callback))
 }
 
-/// Protected routes — served under /api with require_auth middleware.
+/// Protected routes — served under /api/v1 with require_auth middleware.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/github/login", get(github_login))
-        .route("/github/status", get(github_status))
-        .route("/github/repos", get(github_repos))
+        .route("/auth/github/login-user", get(github_login_user))
+        .route("/auth/github/token", get(github_token))
+        .route("/github/user", get(github_status))
+        .route("/github/repositories", get(github_repos))
         .route("/github/logout", delete(github_logout))
         .route("/github/clone", post(github_clone))
 }
@@ -81,6 +83,59 @@ async fn github_login(State(state): State<AppState>, claims: Claims) -> impl Int
                 .into_response()
         }
     }
+}
+
+/// `GET /api/v1/auth/github/login-user`
+///
+/// Returns the GitHub OAuth authorization URL as JSON so the client can open
+/// it in a popup or new tab. Unlike `github_login`, this does not redirect
+/// the browser directly — the client controls the navigation.
+async fn github_login_user(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+    let Some(svc) = state.github_svc.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "GitHub OAuth not configured"}))).into_response();
+    };
+
+    match svc.authorization_url(&claims.sub) {
+        Ok(url) => Json(serde_json::json!({"auth_url": url})).into_response(),
+        Err(e) => {
+            warn!(user = %claims.sub, %e, "failed to build GitHub authorization URL (login-user)");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "failed to generate authorization URL"}))).into_response()
+        }
+    }
+}
+
+/// `GET /api/v1/auth/github/token`
+///
+/// Polls whether the current user's GitHub OAuth flow has completed.
+/// Returns `{connected: bool, valid: bool, login?: string}`.
+/// The raw access token is never returned — callers check `connected` + `valid`
+/// to determine whether GitHub features are available.
+async fn github_token(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
+    };
+
+    let Some(svc) = state.github_svc.as_ref() else {
+        return Json(serde_json::json!({"connected": false, "configured": false})).into_response();
+    };
+
+    let Some(token) = load_github_token(&state.db, user_id).await else {
+        return Json(serde_json::json!({"connected": false, "valid": false})).into_response();
+    };
+
+    // Fetch the GitHub login name from the stored identity row.
+    let login: Option<String> = sqlx::query_scalar(
+        "SELECT provider_username FROM user_identities WHERE user_id = $1 AND provider = 'github'",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let valid = svc.verify_token(&token).await.unwrap_or(false);
+    Json(serde_json::json!({"connected": true, "valid": valid, "login": login})).into_response()
 }
 
 /// `GET /api/github/callback`  (public — registered in `public_router`)
@@ -163,9 +218,9 @@ async fn github_callback(
 }
 
 async fn github_status(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
+    let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
     };
 
     let Some(svc) = state.github_svc.as_ref() else {
@@ -197,9 +252,9 @@ async fn github_repos(State(state): State<AppState>, claims: Claims) -> impl Int
         return (StatusCode::NOT_FOUND, "GitHub OAuth not configured").into_response();
     };
 
-    let user_id = match claims.user_uuid() {
+    let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
     };
 
     let Some(token) = load_github_token(&state.db, user_id).await else {
@@ -224,9 +279,9 @@ async fn github_repos(State(state): State<AppState>, claims: Claims) -> impl Int
 }
 
 async fn github_logout(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
+    let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
     };
 
     match sqlx::query(
@@ -283,9 +338,9 @@ async fn github_clone(
         return (StatusCode::SERVICE_UNAVAILABLE, "GitHub OAuth not configured").into_response();
     };
 
-    let user_id = match claims.user_uuid() {
+    let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
     let Some(token) = load_github_token(&state.db, user_id).await else {
@@ -319,27 +374,21 @@ async fn github_clone(
         warn!(s3_key, %e, "failed to upload clone archive to S3 — continuing with build");
     }
 
-    // Extract + parse on the blocking pool — a large repo archive must not
-    // gzip-decompress + untar on a tokio worker thread.
+    // Extract to a temp directory and run the standard build+deploy pipeline.
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-clone-{}", Uuid::new_v4()));
-    let meta = {
-        let bytes = archive.archive_bytes;
-        let tmp = tmp_dir.clone();
-        match tokio::task::spawn_blocking(move || {
-            crate::build::extract_tar_gzip(&bytes, &tmp)?;
-            crate::catalog::import::read_agent_card(&tmp)
-        })
-        .await
-        {
-            Ok(Ok(m)) => m,
-            Ok(Err(e)) => {
-                let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-                return (StatusCode::BAD_REQUEST, format!("failed to import cloned repo: {e}")).into_response();
-            }
-            Err(e) => {
-                let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("extract task failed: {e}")).into_response();
-            }
+    if let Err(e) = crate::build::extract_tar_gzip(&archive.archive_bytes, &tmp_dir) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to extract archive: {e}"),
+        )
+            .into_response();
+    }
+
+    let meta = match crate::catalog::import::read_agent_card(&tmp_dir) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+            return (StatusCode::BAD_REQUEST, e).into_response();
         }
     };
 

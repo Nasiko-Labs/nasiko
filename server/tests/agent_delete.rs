@@ -1,4 +1,4 @@
-//! Integration tests for DELETE /api/catalog/agents/{id}.
+//! Integration tests for DELETE /api/agents/{id}.
 //!
 //! Verifies:
 //!   - Auth / ownership guards (401, 403, 404)
@@ -33,7 +33,7 @@ async fn init_admin(server: &common::TestServer) -> Value {
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str) -> Value {
     server
         .client
-        .post(server.url("/api/catalog/agents"))
+        .post(server.url("/api/agents"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -50,7 +50,7 @@ async fn create_agent(server: &common::TestServer, uid: &str, name: &str) -> Val
 async fn delete_as_superuser(server: &common::TestServer, uid: &str, agent_id: &str) -> reqwest::Response {
     server
         .client
-        .delete(server.url(&format!("/api/catalog/agents/{agent_id}")))
+        .delete(server.url(&format!("/api/agents/{agent_id}")))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -70,7 +70,7 @@ async fn delete_agent_requires_auth() {
 
     let res = server
         .client
-        .delete(server.url(&format!("/api/catalog/agents/{random_id}")))
+        .delete(server.url(&format!("/api/agents/{random_id}")))
         .send()
         .await
         .unwrap();
@@ -122,7 +122,7 @@ async fn delete_agent_by_non_owner_returns_403() {
 
     let res = server
         .client
-        .delete(server.url(&format!("/api/catalog/agents/{agent_id}")))
+        .delete(server.url(&format!("/api/agents/{agent_id}")))
         .header("x-user-id", other_id)
         .header("x-username", "other")
         .header("x-is-superuser", "false")

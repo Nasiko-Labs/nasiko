@@ -1,4 +1,4 @@
-//! Tests for `POST /api/agents/upload-and-deploy` and `GET /api/agents/deploy-status/{id}`
+//! Tests for `POST /api/agents/upload` and `GET /api/agents/deploy-status/{id}`
 //! (the `agents` module DB persistence, P1).
 //!
 //! These exercise the synchronous persistence (agent upsert + build record) and the
@@ -48,7 +48,7 @@ async fn upload(
     }
     server
         .client
-        .post(server.url("/api/agents/upload-and-deploy"))
+        .post(server.url("/api/agents/upload"))
         .header("x-user-id", user_id)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -62,7 +62,7 @@ async fn upload(
 async fn get_build(server: &common::TestServer, user_id: &str, build_id: &str) -> reqwest::Response {
     server
         .client
-        .get(server.url(&format!("/api/build/builds/{build_id}")))
+        .get(server.url(&format!("/api/builds/{build_id}")))
         .header("x-user-id", user_id)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -148,7 +148,7 @@ async fn upload_without_identity_returns_401() {
         .part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
     let res = server
         .client
-        .post(server.url("/api/agents/upload-and-deploy"))
+        .post(server.url("/api/agents/upload"))
         .multipart(form)
         .send()
         .await
@@ -187,7 +187,7 @@ async fn upload_persists_agent_and_build_record() {
     // Agent persisted in the catalog.
     let agents: Value = server
         .client
-        .get(server.url("/api/catalog/agents"))
+        .get(server.url("/api/agents"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -293,7 +293,7 @@ async fn deploy_status_unknown_build_reports_not_found() {
     let random = uuid::Uuid::new_v4();
     let res = server
         .client
-        .get(server.url(&format!("/api/agents/deploy-status/{random}")))
+        .get(server.url(&format!("/api/agents/deploys/{random}/stream")))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")

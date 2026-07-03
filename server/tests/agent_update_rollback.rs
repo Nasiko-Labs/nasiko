@@ -39,7 +39,7 @@ async fn init_admin(server: &common::TestServer) -> Value {
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str, version: &str) -> Value {
     let res = server
         .client
-        .post(server.url("/api/catalog/agents"))
+        .post(server.url("/api/agents"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -101,7 +101,7 @@ async fn do_rollback(
     }
 }
 
-/// Poll GET /api/build/builds/{build_id} until the status is terminal.
+/// Poll GET /api/builds/{build_id} until the status is terminal.
 async fn wait_for_terminal_build(
     server: &common::TestServer,
     uid: &str,
@@ -110,7 +110,7 @@ async fn wait_for_terminal_build(
     for _ in 0..60 {
         let res = server
             .client
-            .get(server.url(&format!("/api/build/builds/{build_id}")))
+            .get(server.url(&format!("/api/builds/{build_id}")))
             .header("x-user-id", uid)
             .header("x-username", "admin")
             .header("x-is-superuser", "true")
@@ -399,7 +399,7 @@ async fn update_marks_build_failed_without_dockerfile() {
     // Agent version should be rolled back to the original.
     let agent_res: Value = server
         .client
-        .get(server.url(&format!("/api/catalog/agents/{agent_id}")))
+        .get(server.url(&format!("/api/agents/{agent_id}")))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")

@@ -4,12 +4,12 @@ pub mod agents;
 pub mod auth;
 pub mod build;
 pub mod capabilities;
+pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
 pub mod observability;
 pub mod pool;
-pub mod catalog;
 pub mod router;
 pub mod runtime;
 pub mod secrets;
@@ -81,25 +81,25 @@ where
     let user_routes = user_router
         .layer(middleware::from_fn(auth::rbac::require_superuser));
 
-    // Agent deploy routes (upload-and-deploy, deploy-status, deployments, ACL): deployer+ only.
+    // Agent deploy routes (upload, deploy-status, deployments, ACL): deployer+ only.
     let agent_deploy_routes = Router::new()
         .nest("/agents", agents::router())
-        .nest("/user", agents::user_routes())
+        .nest("/agents", agents::user_routes())
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     // Build routes (trigger builds, view build history): deployer+ only
     let build_routes = Router::new()
-        .nest("/build", build::router())
+        .merge(build::router())
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     let protected = Router::new()
         .route("/me", get(me))
         .merge(router::router_routes())
         .merge(agent_deploy_routes)
+        .merge(catalog::router())
         .merge(container_routes)
         .merge(pool_routes)
         .merge(user_routes)
-        .nest("/catalog", catalog::router())
         .merge(build_routes)
         .merge(chat::router())
         .merge(secrets::router())
@@ -107,7 +107,7 @@ where
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
-        .nest("/v1/observability", observability::protected_router())
+        .nest("/observability", observability::protected_router())
         .merge(observability::observe_router())
         .merge(github::router())
         .merge(auth::login::protected_router())
@@ -118,11 +118,7 @@ where
         ));
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
-    let oci_routes = nasiko_oci::axum_routes(oci_state)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
+    let oci_routes = nasiko_oci::axum_routes(oci_state);
 
     Router::new()
         .route("/health", get(health))

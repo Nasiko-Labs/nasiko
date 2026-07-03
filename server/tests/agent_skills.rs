@@ -1,4 +1,4 @@
-//! Integration tests for skill-tag discovery (`GET /api/catalog/agents/by-skill`)
+//! Integration tests for skill-tag discovery (`GET /api/agents/by-skill`)
 //! and the agent_skills projection kept in sync by catalog create/update.
 //!
 //! Uses the TestServer harness (isolated DB per test, gateway-header simulation).
@@ -40,11 +40,11 @@ async fn create_user(server: &common::TestServer, admin_id: &str, username: &str
         .unwrap()
 }
 
-/// POST /api/catalog/agents as a superuser; returns the created agent JSON.
+/// POST /api/agents as a superuser; returns the created agent JSON.
 async fn create_agent(server: &common::TestServer, uid: &str, body: Value) -> Value {
     let res = server
         .client
-        .post(server.url("/api/catalog/agents"))
+        .post(server.url("/api/agents"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -66,7 +66,7 @@ async fn by_skill(
 ) -> (u16, Vec<String>) {
     let res = server
         .client
-        .get(server.url(&format!("/api/catalog/agents/by-skill?{query}")))
+        .get(server.url(&format!("/api/agents/by-skill?{query}")))
         .header("x-user-id", uid)
         .header("x-username", "u")
         .header("x-is-superuser", if is_super { "true" } else { "false" })
@@ -134,7 +134,7 @@ async fn update_resyncs_skill_tags() {
     // Replace skills: drop "nlp", add "vision".
     let res = server
         .client
-        .put(server.url(&format!("/api/catalog/agents/{id}")))
+        .put(server.url(&format!("/api/agents/{id}")))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")

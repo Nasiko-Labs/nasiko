@@ -61,7 +61,7 @@ async fn test_routing_engine_no_agents_returns_503() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body("hello, which agent can help me?")),
     )
     .send()
@@ -85,7 +85,7 @@ async fn test_explicit_orchestrator_no_agents_returns_503() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body_for_agent("hello", "orchestrator")),
     )
     .send()
@@ -108,7 +108,7 @@ async fn test_explicit_agent_not_found_returns_404() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body_for_agent("hello", "agent-that-does-not-exist")),
     )
     .send()
@@ -131,7 +131,7 @@ async fn test_a2a_missing_params_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&json!({ "jsonrpc": "2.0", "method": "message/stream", "id": "1" })),
     )
     .send()
@@ -154,7 +154,7 @@ async fn test_a2a_empty_text_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body("")),
     )
     .send()
@@ -198,7 +198,7 @@ async fn test_upload_no_query_field_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a/upload"))
+            .post(server.url("/api/router/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -223,7 +223,7 @@ async fn test_upload_empty_query_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a/upload"))
+            .post(server.url("/api/router/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -249,7 +249,7 @@ async fn test_upload_valid_query_no_agents_returns_503() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a/upload"))
+            .post(server.url("/api/router/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -308,7 +308,7 @@ async fn test_routing_single_agent() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body("what can you help me with?")),
     )
     .send()
@@ -336,7 +336,7 @@ async fn test_routing_lte_15_agents() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body("help me write code")),
     )
     .send()
@@ -364,7 +364,7 @@ async fn test_routing_ollama_disabled_gt_threshold() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body("summarize some document")),
     )
     .send()
@@ -391,7 +391,7 @@ async fn test_routing_gt_15_agents_with_embeddings() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body("write a python script")),
     )
     .send()
@@ -414,7 +414,7 @@ async fn test_routing_fallback_to_first_candidate() {
     let _ = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body("any question")),
     )
     .send()
@@ -455,7 +455,7 @@ async fn test_routing_with_history() {
         }
     });
 
-    let resp = as_superuser(server.client.post(server.url("/api/a2a")).json(&body))
+    let resp = as_superuser(server.client.post(server.url("/api/router/a2a")).json(&body))
         .send()
         .await
         .unwrap();
@@ -487,7 +487,7 @@ async fn test_routing_with_file_upload() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a/upload"))
+            .post(server.url("/api/router/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -514,7 +514,7 @@ async fn test_router_log_written() {
     let _ = as_superuser(
         server
             .client
-            .post(server.url("/api/a2a"))
+            .post(server.url("/api/router/a2a"))
             .json(&stream_body(query_text)),
     )
     .send()

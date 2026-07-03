@@ -1,8 +1,8 @@
 //! Integration tests for Phase 2 — Agent Lifecycle Visibility.
 //!
 //! Covers: GET /api/agents/deployments, /api/agents/{id}/deployment,
-//!         /api/agents/upload-status/{id}, /api/user/upload-agents,
-//!         /api/catalog/agents/{id}/versions.
+//!         /api/agents/uploads/{id}, /api/agents/my-uploads,
+//!         /api/agents/{id}/versions.
 //!
 //! Uses direct DB seeding (server.db) instead of triggering real Docker builds,
 //! keeping these tests fast and purely focused on the read-path endpoints.
@@ -31,11 +31,11 @@ async fn init_admin(server: &common::TestServer) -> Value {
         .unwrap()
 }
 
-/// POST /api/catalog/agents as superuser; returns the created agent JSON.
+/// POST /api/agents as superuser; returns the created agent JSON.
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str, version: &str) -> Value {
     server
         .client
-        .post(server.url("/api/catalog/agents"))
+        .post(server.url("/api/agents"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -211,7 +211,7 @@ async fn get_agent_deployment_returns_seeded_record() {
     server.cleanup().await;
 }
 
-// ─── GET /api/agents/upload-status/{id} ─────────────────────────────────────
+// ─── GET /api/agents/uploads/{id} ─────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -220,7 +220,7 @@ async fn get_upload_status_unknown_id_returns_404() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = get_as_superuser(&server, uid, "/api/agents/upload-status/nonexistent-id").await;
+    let res = get_as_superuser(&server, uid, "/api/agents/uploads/nonexistent-id").await;
     assert_eq!(res.status(), 404);
 
     server.cleanup().await;
@@ -246,7 +246,7 @@ async fn get_upload_status_returns_seeded_record() {
     .await
     .unwrap();
 
-    let res = get_as_superuser(&server, uid, &format!("/api/agents/upload-status/{upload_id}")).await;
+    let res = get_as_superuser(&server, uid, &format!("/api/agents/uploads/{upload_id}")).await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["upload_id"].as_str().unwrap(), upload_id);
@@ -256,7 +256,7 @@ async fn get_upload_status_returns_seeded_record() {
     server.cleanup().await;
 }
 
-// ─── GET /api/user/upload-agents ─────────────────────────────────────────────
+// ─── GET /api/agents/my-uploads ─────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -265,7 +265,7 @@ async fn list_upload_agents_returns_empty_initially() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = get_as_superuser(&server, uid, "/api/user/upload-agents").await;
+    let res = get_as_superuser(&server, uid, "/api/agents/my-uploads").await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert!(body.is_array());
@@ -315,7 +315,7 @@ async fn list_upload_agents_scoped_to_owner() {
     // Non-superuser sees only their own record.
     let res = server
         .client
-        .get(server.url("/api/user/upload-agents"))
+        .get(server.url("/api/agents/my-uploads"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "false")
@@ -330,14 +330,14 @@ async fn list_upload_agents_scoped_to_owner() {
     assert_eq!(records[0]["agent_name"].as_str().unwrap(), "mine");
 
     // Superuser sees both.
-    let res = get_as_superuser(&server, uid, "/api/user/upload-agents").await;
+    let res = get_as_superuser(&server, uid, "/api/agents/my-uploads").await;
     let body: Value = res.json().await.unwrap();
     assert_eq!(body.as_array().unwrap().len(), 2, "superuser should see all uploads");
 
     server.cleanup().await;
 }
 
-// ─── GET /api/catalog/agents/{id}/versions ──────────────────────────────────
+// ─── GET /api/agents/{id}/versions ──────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -349,7 +349,7 @@ async fn list_versions_empty_for_new_agent() {
     let agent = create_agent(&server, uid, "version-test-agent", "1.0.0").await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    let res = get_as_superuser(&server, uid, &format!("/api/catalog/agents/{agent_id}/versions")).await;
+    let res = get_as_superuser(&server, uid, &format!("/api/agents/{agent_id}/versions")).await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert!(body.is_array());
@@ -380,7 +380,7 @@ async fn list_versions_returns_seeded_versions() {
     .await
     .unwrap();
 
-    let res = get_as_superuser(&server, uid, &format!("/api/catalog/agents/{agent_id}/versions")).await;
+    let res = get_as_superuser(&server, uid, &format!("/api/agents/{agent_id}/versions")).await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     let versions = body.as_array().unwrap();

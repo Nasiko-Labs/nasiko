@@ -177,15 +177,14 @@ struct CreateUser {
     email: String,
     display_name: Option<String>,
     role: Option<String>,
+    password: String,
 }
 
 async fn create_user(
     State(state): State<AppState>,
     Json(body): Json<CreateUser>,
 ) -> impl IntoResponse {
-    let access_key = nasiko_auth::generate_access_key();
-    let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
+    let access_secret_hash = match nasiko_auth::hash_password(&body.password) {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -211,7 +210,7 @@ async fn create_user(
                    VALUES ($1, $2, $3)"#,
             )
             .bind(id)
-            .bind(&access_key)
+            .bind(body.username.as_str())
             .bind(&access_secret_hash)
             .execute(&state.db)
             .await;
@@ -222,9 +221,6 @@ async fn create_user(
                     Json(serde_json::json!({
                         "id": id,
                         "username": body.username,
-                        "access_key": access_key,
-                        "access_secret": access_secret,
-                        "message": "Store access_secret securely — it won't be shown again.",
                     })),
                 ).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -273,7 +269,7 @@ async fn update_user(
 
     // Hash password if provided
     let password_hash = match &body.password {
-        Some(p) => match nasiko_auth::hash_password_blocking(p.clone()).await {
+        Some(p) => match nasiko_auth::hash_password(p) {
             Ok(h) => Some(h),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
@@ -425,7 +421,7 @@ async fn regenerate_credentials(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
+    let access_secret_hash = match nasiko_auth::hash_password(&access_secret) {
         Ok(h) => h,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -572,9 +568,9 @@ async fn my_accessible_agents(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
+    let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
     accessible_agents_impl(&state.db, user_id).await
 }
@@ -582,9 +578,9 @@ async fn my_accessible_agents(
 // ─── GET /users/me ──────────────────────────────────────────────────────────
 
 async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
+    let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
     let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
         r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,

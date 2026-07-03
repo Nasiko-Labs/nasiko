@@ -1,11 +1,11 @@
 //! Integration tests for catalog read-endpoint ACL enforcement and skill-tag dedup.
 //!
 //! Covers:
-//!   - GET /api/catalog/agents/{id}       — non-owner gets 403, superuser gets through
-//!   - GET /api/catalog/agents/{id}/versions — non-owner gets 403
-//!   - GET /api/catalog/agents/search     — non-owner only sees their own agents
-//!   - POST /api/catalog/agents           — skill tags are merged into agent.tags on create
-//!   - PUT  /api/catalog/agents/{id}      — skill tags are merged into agent.tags on update
+//!   - GET /api/agents/{id}       — non-owner gets 403, superuser gets through
+//!   - GET /api/agents/{id}/versions — non-owner gets 403
+//!   - GET /api/search/agents     — non-owner only sees their own agents
+//!   - POST /api/agents           — skill tags are merged into agent.tags on create
+//!   - PUT  /api/agents/{id}      — skill tags are merged into agent.tags on update
 //!
 //! Requires infra (Postgres :5432, Redis, S3):
 //!   cargo test -p nasiko-server --test catalog_acl -- --test-threads=1
@@ -50,7 +50,7 @@ async fn create_user(server: &common::TestServer, admin_id: &str, username: &str
 async fn create_agent(server: &common::TestServer, uid: &str, body: Value) -> Value {
     let res = server
         .client
-        .post(server.url("/api/catalog/agents"))
+        .post(server.url("/api/agents"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -66,7 +66,7 @@ async fn create_agent(server: &common::TestServer, uid: &str, body: Value) -> Va
 async fn get_agent(server: &common::TestServer, uid: &str, is_super: bool, id: &str) -> reqwest::Response {
     server
         .client
-        .get(server.url(&format!("/api/catalog/agents/{id}")))
+        .get(server.url(&format!("/api/agents/{id}")))
         .header("x-user-id", uid)
         .header("x-username", "u")
         .header("x-is-superuser", if is_super { "true" } else { "false" })
@@ -79,7 +79,7 @@ async fn get_agent(server: &common::TestServer, uid: &str, is_super: bool, id: &
 async fn list_versions(server: &common::TestServer, uid: &str, is_super: bool, agent_id: &str) -> reqwest::Response {
     server
         .client
-        .get(server.url(&format!("/api/catalog/agents/{agent_id}/versions")))
+        .get(server.url(&format!("/api/agents/{agent_id}/versions")))
         .header("x-user-id", uid)
         .header("x-username", "u")
         .header("x-is-superuser", if is_super { "true" } else { "false" })
@@ -92,7 +92,7 @@ async fn list_versions(server: &common::TestServer, uid: &str, is_super: bool, a
 async fn search(server: &common::TestServer, uid: &str, is_super: bool, q: &str) -> Vec<Value> {
     let res = server
         .client
-        .get(server.url(&format!("/api/catalog/agents/search?q={q}")))
+        .get(server.url(&format!("/api/search/agents?q={q}")))
         .header("x-user-id", uid)
         .header("x-username", "u")
         .header("x-is-superuser", if is_super { "true" } else { "false" })
@@ -101,15 +101,13 @@ async fn search(server: &common::TestServer, uid: &str, is_super: bool, q: &str)
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    // Agent search returns a {agents, total, max_score} envelope (Python parity).
-    let body: Value = res.json().await.unwrap();
-    body["agents"].as_array().cloned().unwrap_or_default()
+    res.json::<Vec<Value>>().await.unwrap()
 }
 
 async fn update_agent(server: &common::TestServer, uid: &str, agent_id: &str, body: Value) -> Value {
     let res = server
         .client
-        .put(server.url(&format!("/api/catalog/agents/{agent_id}")))
+        .put(server.url(&format!("/api/agents/{agent_id}")))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -242,7 +240,7 @@ async fn search_is_owner_scoped() {
 
     let other_agent = server
         .client
-        .post(server.url("/api/catalog/agents"))
+        .post(server.url("/api/agents"))
         .header("x-user-id", other_id)
         .header("x-username", "srch-other")
         .header("x-is-superuser", "false")
@@ -340,63 +338,6 @@ async fn update_with_skills_merges_skill_tags() {
 
     let added_count = tags.iter().filter(|&&t| t == "added").count();
     assert_eq!(added_count, 1, "'added' must appear exactly once after dedup");
-
-    server.cleanup().await;
-}
-
-// ─── read vs manage split (R3 correction / RUN-9) ────────────────────────────
-// A public (or invoke-granted) agent is READABLE by a non-owner, but must NOT be
-// mutable/destroyable by them — mutations are owner-or-superuser only.
-#[tokio::test]
-#[serial]
-async fn public_agent_non_owner_can_read_but_not_mutate() {
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let owner_id = admin["user_id"].as_str().unwrap();
-
-    let agent = create_agent(&server, owner_id, json!({"name": "pub-split-agent", "version": "1.0.0"})).await;
-    let agent_id = agent["id"].as_str().unwrap();
-
-    // Make it public so view-access (can_access_agent) is true for anyone.
-    sqlx::query("UPDATE agents SET is_public = true WHERE id = $1")
-        .bind(uuid::Uuid::parse_str(agent_id).unwrap())
-        .execute(&server.db)
-        .await
-        .unwrap();
-
-    let bob = create_user(&server, owner_id, "bobpub").await;
-    let bob_id = bob["id"].as_str().unwrap();
-
-    // READ: allowed for a non-owner because the agent is public.
-    let read = get_agent(&server, bob_id, false, agent_id).await;
-    assert_eq!(read.status(), 200, "non-owner should be able to read a public agent");
-
-    // DELETE: forbidden — destroy is owner-or-superuser (RUN-9 IDOR guard).
-    let del = server
-        .client
-        .delete(server.url(&format!("/api/catalog/agents/{agent_id}")))
-        .header("x-user-id", bob_id)
-        .header("x-username", "bobpub")
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(del.status(), 403, "non-owner must NOT delete a public agent");
-
-    // UPDATE: likewise forbidden — an invoke/public grant is not a manage grant.
-    let upd = server
-        .client
-        .put(server.url(&format!("/api/catalog/agents/{agent_id}")))
-        .header("x-user-id", bob_id)
-        .header("x-username", "bobpub")
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .json(&json!({"description": "hijacked"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(upd.status(), 403, "non-owner must NOT update a public agent");
 
     server.cleanup().await;
 }

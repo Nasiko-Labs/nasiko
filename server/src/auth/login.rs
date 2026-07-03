@@ -31,13 +31,7 @@ pub fn protected_router() -> Router<AppState> {
 
 #[derive(Deserialize)]
 struct LoginRequest {
-    // The system authenticates by access-key/secret (authenticate() matches arg1
-    // against access_key OR username, arg2 against access_secret_hash). Accept both
-    // key sets: CLI callers send {username,password}; the web/test clients send
-    // {access_key,access_secret}.
-    #[serde(alias = "access_key")]
     username: String,
-    #[serde(alias = "access_secret")]
     password: String,
 }
 
@@ -107,15 +101,14 @@ async fn logout(
 #[derive(Deserialize)]
 struct InitAdminRequest {
     username: String,
-    email: String,
+m    password: String,
 }
 
 async fn initialize_admin(
     State(state): State<AppState>,
     Json(req): Json<InitAdminRequest>,
 ) -> impl IntoResponse {
-    // Creates the admin user + credentials and returns them (with a recorded token).
-    match initialize_admin_inner(&state, &req.username, &req.email).await {
+    match initialize_admin_inner(&state, &req.username, &req.password).await {
         Ok(resp) => resp,
         Err(resp) => resp,
     }
@@ -124,7 +117,7 @@ async fn initialize_admin(
 async fn initialize_admin_inner(
     state: &AppState,
     username: &str,
-    email: &str,
+    password: &str,
 ) -> Result<axum::response::Response, axum::response::Response> {
     // Check if admin exists
     let admin_count: i64 = sqlx::query_scalar(
@@ -135,18 +128,16 @@ async fn initialize_admin_inner(
     .unwrap_or(0);
 
     if admin_count > 0 {
-        // 409: initializing an admin when one already exists is a conflict, not an
-        // authorization failure.
         return Err((
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "admin already exists"})),
         ).into_response());
     }
 
-    let access_key = nasiko_auth::generate_access_key();
-    let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = nasiko_auth::hash_password_blocking(access_secret.clone()).await
+    let access_secret_hash = nasiko_auth::hash_password(password)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+
+    let email = format!("{}@localhost", username);
 
     let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
         r#"INSERT INTO users (username, email, is_superuser, is_active, role)
@@ -154,7 +145,7 @@ async fn initialize_admin_inner(
            RETURNING id"#,
     )
     .bind(username)
-    .bind(email)
+    .bind(&email)
     .fetch_one(&state.db)
     .await;
 
@@ -179,18 +170,21 @@ async fn initialize_admin_inner(
            VALUES ($1, $2, $3)"#,
     )
     .bind(user_id)
-    .bind(&access_key)
+    .bind(username)
     .bind(&access_secret_hash)
     .execute(&state.db)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
 
-    // Authenticate with the freshly-created credentials to obtain a token that is
-    // also RECORDED in auth_tokens (so it is revocable). `issue_token` alone mints a
-    // JWT but does not record its JTI; `authenticate` (the login path) does both.
-    let login = state.auth.authenticate(username, &access_secret).await
+    let identity = nasiko_auth::Identity {
+        user_id: user_id.to_string(),
+        username: username.to_owned(),
+        is_superuser: true,
+        role: Some(nasiko_auth::Role::Admin),
+    };
+
+    let token = state.auth.issue_token(&identity).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
-    let token = login.token;
 
     let cookie = set_token_cookie(&token);
     Ok((
@@ -200,9 +194,6 @@ async fn initialize_admin_inner(
             "user_id": user_id.to_string(),
             "username": username,
             "token": token,
-            "access_key": access_key,
-            "access_secret": access_secret,
-            "message": "Admin created. Store access_secret securely — it won't be shown again.",
         })),
     ).into_response())
 }

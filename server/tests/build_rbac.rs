@@ -1,9 +1,9 @@
 //! RBAC integration tests for build and deploy routes.
 //!
 //! Verifies that `require_deployer` is enforced on:
-//!   POST /api/build/builds
-//!   POST /api/agents/upload-and-deploy
-//!   GET  /api/build/builds/agent/{agent_id}  (ownership scoping)
+//!   POST /api/builds
+//!   POST /api/agents/upload
+//!   GET  /api/builds/agent/{agent_id}  (ownership scoping)
 //!
 //! The server trusts gateway-injected headers (x-user-id, x-user-role, x-is-superuser).
 //! Tests set these directly to simulate different identity contexts without needing
@@ -54,7 +54,7 @@ async fn create_user(server: &common::TestServer, admin_id: &str, username: &str
 async fn create_agent(server: &common::TestServer, owner_id: &str) -> Value {
     server
         .client
-        .post(server.url("/api/catalog/agents"))
+        .post(server.url("/api/agents"))
         .header("x-user-id", owner_id)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -68,7 +68,7 @@ async fn create_agent(server: &common::TestServer, owner_id: &str) -> Value {
         .unwrap()
 }
 
-/// POST /api/build/builds with given identity; multipart role check only (no real zip).
+/// POST /api/builds with given identity; multipart role check only (no real zip).
 async fn try_trigger_build(
     server: &common::TestServer,
     user_id: &str,
@@ -81,7 +81,7 @@ async fn try_trigger_build(
         .text("version_tag", "v1");
     server
         .client
-        .post(server.url("/api/build/builds"))
+        .post(server.url("/api/builds"))
         .header("x-user-id", user_id)
         .header("x-username", "u")
         .header("x-is-superuser", if is_superuser { "true" } else { "false" })
@@ -94,7 +94,7 @@ async fn try_trigger_build(
         .as_u16()
 }
 
-/// POST /api/agents/upload-and-deploy with given identity; RBAC check only (no real zip).
+/// POST /api/agents/upload with given identity; RBAC check only (no real zip).
 async fn try_upload_deploy(
     server: &common::TestServer,
     user_id: &str,
@@ -104,7 +104,7 @@ async fn try_upload_deploy(
     let form = reqwest::multipart::Form::new().text("name", "test-agent");
     server
         .client
-        .post(server.url("/api/agents/upload-and-deploy"))
+        .post(server.url("/api/agents/upload"))
         .header("x-user-id", user_id)
         .header("x-username", "u")
         .header("x-is-superuser", if is_superuser { "true" } else { "false" })
@@ -117,7 +117,7 @@ async fn try_upload_deploy(
         .as_u16()
 }
 
-/// GET /api/build/builds/agent/{agent_id} with given identity.
+/// GET /api/builds/agent/{agent_id} with given identity.
 async fn try_list_builds(
     server: &common::TestServer,
     user_id: &str,
@@ -127,7 +127,7 @@ async fn try_list_builds(
 ) -> u16 {
     server
         .client
-        .get(server.url(&format!("/api/build/builds/agent/{agent_id}")))
+        .get(server.url(&format!("/api/builds/agent/{agent_id}")))
         .header("x-user-id", user_id)
         .header("x-username", "u")
         .header("x-is-superuser", if is_superuser { "true" } else { "false" })
@@ -139,7 +139,7 @@ async fn try_list_builds(
         .as_u16()
 }
 
-// ─── Tests: POST /api/build/builds ──────────────────────────────────────────
+// ─── Tests: POST /api/builds ──────────────────────────────────────────
 
 /// Member role (lowest) must be rejected by the RBAC middleware before the
 /// handler even runs — the response is 403 regardless of request body validity.
@@ -192,7 +192,7 @@ async fn superuser_can_trigger_build() {
     server.cleanup().await;
 }
 
-// ─── Tests: POST /api/agents/upload-and-deploy ──────────────────────────────
+// ─── Tests: POST /api/agents/upload ──────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -227,7 +227,7 @@ async fn team_member_can_reach_upload_handler() {
     server.cleanup().await;
 }
 
-// ─── Tests: GET /api/build/builds/agent/{id} (ownership) ───────────────────
+// ─── Tests: GET /api/builds/agent/{id} (ownership) ───────────────────
 
 /// Non-owner cannot see build history for another user's agent.
 #[tokio::test]

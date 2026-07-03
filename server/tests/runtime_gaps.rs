@@ -234,7 +234,7 @@ async fn do_upload(
     form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
     server
         .client
-        .post(server.url("/api/agents/upload-and-deploy"))
+        .post(server.url("/api/agents/upload"))
         .header("x-user-id", uid)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")

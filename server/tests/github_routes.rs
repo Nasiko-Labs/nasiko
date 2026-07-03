@@ -15,7 +15,7 @@ async fn init_admin(server: &common::TestServer) -> serde_json::Value {
         .unwrap()
 }
 
-// ─── /api/github/status ──────────────────────────────────────────────────────
+// ─── /api/github/user ──────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -24,7 +24,7 @@ async fn test_github_status_requires_auth() {
 
     let res = server
         .client
-        .get(server.url("/api/github/status"))
+        .get(server.url("/api/github/user"))
         .send()
         .await
         .unwrap();
@@ -44,7 +44,7 @@ async fn test_github_status_reports_not_configured_when_oauth_not_set() {
 
     let res = server
         .client
-        .get(server.url("/api/github/status"))
+        .get(server.url("/api/github/user"))
         .header("x-user-id", user_id)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -75,7 +75,7 @@ async fn test_github_status_reports_not_connected_when_no_token_stored() {
 
     let body: serde_json::Value = server
         .client
-        .get(server.url("/api/github/status"))
+        .get(server.url("/api/github/user"))
         .header("x-user-id", user_id)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
@@ -102,7 +102,7 @@ async fn test_github_repos_requires_auth() {
 
     let res = server
         .client
-        .get(server.url("/api/github/repos"))
+        .get(server.url("/api/github/repositories"))
         .send()
         .await
         .unwrap();
@@ -121,7 +121,7 @@ async fn test_github_repos_returns_404_when_oauth_not_configured() {
 
     let res = server
         .client
-        .get(server.url("/api/github/repos"))
+        .get(server.url("/api/github/repositories"))
         .header("x-user-id", user_id)
         .header("x-username", "admin")
         .header("x-is-superuser", "true")
