@@ -67,7 +67,15 @@ impl AuthService for AuthServiceImpl {
     }
 
     async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError> {
-        crate::jwt::encode_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, identity)
+        let token = crate::jwt::encode_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, identity)?;
+        // Record every issued token in auth_tokens so it is revocable (matches the
+        // EE impl). Previously only `authenticate` recorded, so tokens minted via
+        // `issue_token` directly — e.g. initialize-admin — were unrevocable.
+        // Best-effort + ON CONFLICT DO NOTHING, so it's safe if a caller also records.
+        if let Ok(uid) = identity.user_id.parse::<uuid::Uuid>() {
+            self.record_token(&token, uid).await;
+        }
+        Ok(token)
     }
 
     async fn authenticate(&self, username: &str, password: &str) -> Result<LoginResult, AuthError> {
@@ -100,7 +108,7 @@ impl AuthService for AuthServiceImpl {
             return Err(AuthError::InvalidToken("account disabled".into()));
         }
 
-        if !crate::verify_password(password, &row.access_secret_hash) {
+        if !crate::verify_password_blocking(password.to_owned(), row.access_secret_hash.clone()).await {
             return Err(AuthError::InvalidToken("invalid credentials".into()));
         }
 
@@ -119,8 +127,8 @@ impl AuthService for AuthServiceImpl {
             role,
         };
 
+        // issue_token now records the token itself, so no explicit record here.
         let token = self.issue_token(&identity).await?;
-        self.record_token(&token, row.id).await;
 
         Ok(LoginResult {
             token,
@@ -146,7 +154,7 @@ impl AuthService for AuthServiceImpl {
             return Ok(());
         }
 
-        let access_secret_hash = crate::hash_password(password)?;
+        let access_secret_hash = crate::hash_password_blocking(password.to_owned()).await?;
 
         let email = format!("{}@localhost", username);
         let result: Result<(uuid::Uuid,), _> = sqlx::query_as(

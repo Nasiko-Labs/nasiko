@@ -22,7 +22,9 @@ async fn login(server: &common::TestServer, access_key: &str, access_secret: &st
     server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": access_key, "access_secret": access_secret}))
+        // Login accepts the access-key as `username` and access-secret as `password`
+        // (authenticate looks up `access_key = $1 OR username = $1`).
+        .json(&json!({"username": access_key, "password": access_secret}))
         .send()
         .await
         .unwrap()
@@ -136,7 +138,7 @@ async fn test_login_with_wrong_secret_is_rejected() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": admin["access_key"], "access_secret": "wrong-secret"}))
+        .json(&json!({"username": admin["access_key"], "password": "wrong-secret"}))
         .send()
         .await
         .unwrap();
@@ -154,7 +156,7 @@ async fn test_login_with_nonexistent_key_is_rejected() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": "NASK_doesnotexist", "access_secret": "anything"}))
+        .json(&json!({"username": "NASK_doesnotexist", "password": "anything"}))
         .send()
         .await
         .unwrap();
@@ -533,8 +535,8 @@ async fn test_deactivated_user_cannot_login() {
         .client
         .post(server.url("/api/auth/login"))
         .json(&json!({
-            "access_key": alice["access_key"],
-            "access_secret": alice["access_secret"]
+            "username": alice["access_key"],
+            "password": alice["access_secret"]
         }))
         .send()
         .await
@@ -616,7 +618,7 @@ async fn test_regenerate_credentials_invalidates_old_ones() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": old_key, "access_secret": old_secret}))
+        .json(&json!({"username": old_key, "password": old_secret}))
         .send()
         .await
         .unwrap();
@@ -654,8 +656,8 @@ async fn test_admin_can_delete_user() {
         .client
         .post(server.url("/api/auth/login"))
         .json(&json!({
-            "access_key": alice["access_key"],
-            "access_secret": alice["access_secret"]
+            "username": alice["access_key"],
+            "password": alice["access_secret"]
         }))
         .send()
         .await

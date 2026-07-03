@@ -185,7 +185,7 @@ async fn create_user(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
+    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -273,7 +273,7 @@ async fn update_user(
 
     // Hash password if provided
     let password_hash = match &body.password {
-        Some(p) => match nasiko_auth::hash_password_async(p).await {
+        Some(p) => match nasiko_auth::hash_password_blocking(p.clone()).await {
             Ok(h) => Some(h),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
@@ -425,7 +425,7 @@ async fn regenerate_credentials(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
+    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
         Ok(h) => h,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -500,10 +500,10 @@ pub async fn change_role(
     };
 
     // Last-admin guard: prevent demoting the only remaining admin.
-    if current_role == "admin" && new_role != "admin" {
-        if let Some(err) = check_last_admin(&state, id).await {
-            return err;
-        }
+    if current_role == "admin" && new_role != "admin"
+        && let Some(err) = check_last_admin(&state, id).await
+    {
+        return err;
     }
 
     // No-op if the role hasn't changed.
@@ -572,9 +572,9 @@ async fn my_accessible_agents(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
     accessible_agents_impl(&state.db, user_id).await
 }
@@ -582,9 +582,9 @@ async fn my_accessible_agents(
 // ─── GET /users/me ──────────────────────────────────────────────────────────
 
 async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
     let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
         r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,

@@ -378,7 +378,10 @@ pub async fn execute_agent_update(
     let result: Result<DeploymentStatus, String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
-            extract_zip_to_dir(&zip_data, &tmp_dir)?;
+            let tmp = tmp_dir.clone();
+            tokio::task::spawn_blocking(move || extract_zip_to_dir(&zip_data, &tmp))
+                .await
+                .map_err(|e| format!("extract task failed: {e}"))??;
             tmp_dir.clone()
         } else {
             // GitHub re-deploy: download the tarball and find the inner top-level dir.
@@ -392,7 +395,10 @@ pub async fn execute_agent_update(
             let tarball = download_repo_tarball(&state.http_client, &token, &full_repo)
                 .await?;
 
-            build::extract_tar_gzip(&tarball, &tmp_dir)?;
+            let tmp = tmp_dir.clone();
+            tokio::task::spawn_blocking(move || build::extract_tar_gzip(&tarball, &tmp))
+                .await
+                .map_err(|e| format!("extract task failed: {e}"))??;
 
             // GitHub archives unpack into a single top-level dir (e.g. owner-repo-<sha>/).
             // Find it so we can look for the Dockerfile there.
@@ -428,8 +434,10 @@ pub async fn execute_agent_update(
                 .map_err(|e| format!("write Dockerfile: {e}"))?;
         }
 
-        let tar_bytes = build::tar_directory(&agent_source_dir)
-            .map_err(|e| format!("tar source: {e}"))?;
+        let src = agent_source_dir.clone();
+        let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
+            .await
+            .map_err(|e| format!("tar task failed: {e}"))??;
         state.runtime.build(&tar_bytes, &image_tag).await.map_err(|e| format!("build: {e}"))?;
 
         set_upload_status(db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;

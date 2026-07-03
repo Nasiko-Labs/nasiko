@@ -29,13 +29,16 @@ pub fn protected_router() -> Router<AppState> {
         .route("/auth/system/users-for-search", get(users_for_search))
 }
 
-/// Accepts either `{username, password}` or `{access_key, access_secret}`.
-/// The auth service handles both via its credential lookup query.
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum LoginRequest {
-    Credentials { username: String, password: String },
-    AccessKey { access_key: String, access_secret: String },
+struct LoginRequest {
+    // The system authenticates by access-key/secret (authenticate() matches arg1
+    // against access_key OR username, arg2 against access_secret_hash). Accept both
+    // key sets: CLI callers send {username,password}; the web/test clients send
+    // {access_key,access_secret}.
+    #[serde(alias = "access_key")]
+    username: String,
+    #[serde(alias = "access_secret")]
+    password: String,
 }
 
 #[derive(Serialize)]
@@ -66,11 +69,7 @@ async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    let (key, secret) = match req {
-        LoginRequest::Credentials { username, password } => (username, password),
-        LoginRequest::AccessKey { access_key, access_secret } => (access_key, access_secret),
-    };
-    match state.auth.authenticate(&key, &secret).await {
+    match state.auth.authenticate(&req.username, &req.password).await {
         Ok(result) => {
             let cookie = set_token_cookie(&result.token);
             (
@@ -83,8 +82,7 @@ async fn login(
                     role: result.role,
                     expires_in: result.expires_in,
                 }),
-            )
-                .into_response()
+            ).into_response()
         }
         Err(nasiko_auth::AuthError::InvalidToken(msg)) if msg == "account disabled" => {
             (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "account disabled"}))).into_response()
@@ -116,10 +114,7 @@ async fn initialize_admin(
     State(state): State<AppState>,
     Json(req): Json<InitAdminRequest>,
 ) -> impl IntoResponse {
-    // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
-    let _ = state.auth.authenticate(&req.username, &req.email).await;
-    // The actual initialize-admin endpoint uses a different flow:
-    // it creates the admin user and returns credentials.
+    // Creates the admin user + credentials and returns them (with a recorded token).
     match initialize_admin_inner(&state, &req.username, &req.email).await {
         Ok(resp) => resp,
         Err(resp) => resp,
@@ -140,6 +135,8 @@ async fn initialize_admin_inner(
     .unwrap_or(0);
 
     if admin_count > 0 {
+        // 409: initializing an admin when one already exists is a conflict, not an
+        // authorization failure.
         return Err((
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "admin already exists"})),
@@ -148,7 +145,7 @@ async fn initialize_admin_inner(
 
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = nasiko_auth::hash_password_async(&access_secret).await
+    let access_secret_hash = nasiko_auth::hash_password_blocking(access_secret.clone()).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
 
     let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
@@ -188,18 +185,12 @@ async fn initialize_admin_inner(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
 
-    let identity = nasiko_auth::Identity {
-        user_id: user_id.to_string(),
-        username: username.to_owned(),
-        is_superuser: true,
-        role: Some(nasiko_auth::Role::Admin),
-    };
-
-    let token = state.auth.issue_token(&identity).await
+    // Authenticate with the freshly-created credentials to obtain a token that is
+    // also RECORDED in auth_tokens (so it is revocable). `issue_token` alone mints a
+    // JWT but does not record its JTI; `authenticate` (the login path) does both.
+    let login = state.auth.authenticate(username, &access_secret).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
-
-    // Record the issued token so revocation and counting work correctly.
-    let _ = state.auth.record_user_token(&token, &user_id.to_string()).await;
+    let token = login.token;
 
     let cookie = set_token_cookie(&token);
     Ok((
