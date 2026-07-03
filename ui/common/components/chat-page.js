@@ -215,11 +215,24 @@ class ChatPage extends HTMLElement {
         if (!raw) continue;
         try {
           const evt = JSON.parse(raw);
+          const statusUpdate = evt.statusUpdate || evt.result?.statusUpdate;
+          const artifactUpdate = evt.artifactUpdate || evt.result?.artifactUpdate;
 
-          if (evt.statusUpdate) {
-            const su = evt.statusUpdate;
+          if (statusUpdate) {
+            const su = statusUpdate;
+            const state = su.status?.state;
             const msg = su.status?.message;
             if (msg && msg.parts) {
+              if (state === "TASK_STATE_COMPLETED") {
+                const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
+                if (text && !fullText) {
+                  fullText = text;
+                  statusEl.classList.add("is-done");
+                  contentEl.classList.add("is-visible");
+                  contentEl.textContent = fullText;
+                  messagesEl.scrollTop = messagesEl.scrollHeight;
+                }
+              }
               for (const part of msg.parts) {
                 if (part.data) {
                   const d = part.data;
@@ -250,8 +263,8 @@ class ChatPage extends HTMLElement {
             }
           }
 
-          if (evt.artifactUpdate) {
-            const au = evt.artifactUpdate;
+          if (artifactUpdate) {
+            const au = artifactUpdate;
             const text = au.artifact?.parts
               ?.filter((p) => p.text)
               .map((p) => p.text)
