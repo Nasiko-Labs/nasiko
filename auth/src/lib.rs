@@ -43,6 +43,7 @@ pub trait AuthService: Send + Sync + 'static {
     async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError>;
     async fn upsert_oauth_user(&self, provider: &str, provider_id: &str, username: &str) -> Result<LoginResult, AuthError>;
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
+    async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError>;
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError>;
     async fn revoke_all_tokens(&self) -> Result<u64, AuthError>;
     async fn revoke_tokens_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
@@ -172,6 +173,10 @@ impl AuthService for SimpleJwtAuth {
 
     async fn lookup_user(&self, _user_id: &str) -> Result<Identity, AuthError> {
         Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+    }
+
+    async fn record_user_token(&self, _token: &str, _user_id: &str) -> Result<(), AuthError> {
+        Ok(())
     }
 
     async fn revoke_tokens_for_user(&self, _user_id: &str) -> Result<u64, AuthError> {

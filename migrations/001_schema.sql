@@ -7,6 +7,11 @@ CREATE OR REPLACE FUNCTION text_array_to_string(arr TEXT[], sep TEXT)
     RETURNS TEXT LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
 AS $$ SELECT array_to_string(arr, sep) $$;
 
+-- Helper: check all elements of a text array are lowercase (Postgres 16 compatible)
+CREATE OR REPLACE FUNCTION array_is_lowercase(arr TEXT[])
+    RETURNS BOOLEAN LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$ SELECT arr = ARRAY(SELECT lower(t) FROM unnest(arr) AS t) $$;
+
 -- Helper: auto-update updated_at on row change
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END; $$;
@@ -179,7 +184,8 @@ CREATE TABLE agent_skills (
     tags TEXT[] NOT NULL DEFAULT '{}',
     examples JSONB NOT NULL DEFAULT '[]',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (agent_id, skill_key)
+    UNIQUE (agent_id, skill_key),
+    CONSTRAINT tags_lowercase CHECK (array_is_lowercase(tags))
 );
 CREATE INDEX idx_agent_skills_tags ON agent_skills USING gin(tags);
 

@@ -314,6 +314,14 @@ impl AuthService for AuthServiceImpl {
         })
     }
 
+    async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError> {
+        let user_uuid = user_id
+            .parse::<uuid::Uuid>()
+            .map_err(|_| AuthError::InvalidToken("invalid user_id".into()))?;
+        self.record_token(token, user_uuid).await;
+        Ok(())
+    }
+
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError> {
         let user_uuid = user_id
             .parse::<uuid::Uuid>()

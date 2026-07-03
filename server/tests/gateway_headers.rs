@@ -14,11 +14,13 @@ use serde_json::{Value, json};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+/// Bootstrap the admin (creates the user + issues a token) and return the
+/// response body. Used by tests that need a valid user_id or token.
 async fn login(server: &common::TestServer) -> Value {
     server
         .client
-        .post(server.url("/api/auth/login"))
-        .json(&json!({"username": "admin", "password": "test-password"}))
+        .post(server.url("/api/auth/initialize-admin"))
+        .json(&json!({"username": "admin", "email": "admin@test.local"}))
         .send()
         .await
         .unwrap()

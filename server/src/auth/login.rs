@@ -29,10 +29,13 @@ pub fn protected_router() -> Router<AppState> {
         .route("/auth/system/users-for-search", get(users_for_search))
 }
 
+/// Accepts either `{username, password}` or `{access_key, access_secret}`.
+/// The auth service handles both via its credential lookup query.
 #[derive(Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
+#[serde(untagged)]
+enum LoginRequest {
+    Credentials { username: String, password: String },
+    AccessKey { access_key: String, access_secret: String },
 }
 
 #[derive(Serialize)]
@@ -63,7 +66,11 @@ async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    match state.auth.authenticate(&req.username, &req.password).await {
+    let (key, secret) = match req {
+        LoginRequest::Credentials { username, password } => (username, password),
+        LoginRequest::AccessKey { access_key, access_secret } => (access_key, access_secret),
+    };
+    match state.auth.authenticate(&key, &secret).await {
         Ok(result) => {
             let cookie = set_token_cookie(&result.token);
             (
@@ -76,7 +83,8 @@ async fn login(
                     role: result.role,
                     expires_in: result.expires_in,
                 }),
-            ).into_response()
+            )
+                .into_response()
         }
         Err(nasiko_auth::AuthError::InvalidToken(msg)) if msg == "account disabled" => {
             (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "account disabled"}))).into_response()
@@ -133,7 +141,7 @@ async fn initialize_admin_inner(
 
     if admin_count > 0 {
         return Err((
-            StatusCode::FORBIDDEN,
+            StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "admin already exists"})),
         ).into_response());
     }
@@ -189,6 +197,9 @@ async fn initialize_admin_inner(
 
     let token = state.auth.issue_token(&identity).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+
+    // Record the issued token so revocation and counting work correctly.
+    let _ = state.auth.record_user_token(&token, &user_id.to_string()).await;
 
     let cookie = set_token_cookie(&token);
     Ok((
