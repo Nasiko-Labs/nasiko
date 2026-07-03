@@ -1,8 +1,6 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use nasiko_runtime::{ContainerId, ContainerRuntime};
-
 #[derive(Debug, Clone)]
 pub struct AgentEndpoint {
     pub host: String,
@@ -16,19 +14,15 @@ pub enum ResolveError {
     NotFound,
     #[error("agent not running (status: {0})")]
     NotRunning(String),
-    #[error("runtime error: {0}")]
-    Runtime(String),
+    #[error("agent has no endpoint URL configured")]
+    NoEndpoint,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
 
-/// Resolve an agent ID to its network endpoint.
-///
-/// Looks up the agent in the database. If the agent has a stored URL, parses it.
-/// Otherwise falls back to the container runtime for endpoint resolution.
+/// Resolve an agent ID to its network endpoint from the database.
 pub async fn resolve(
     db: &PgPool,
-    runtime: &dyn ContainerRuntime,
     agent_id: Uuid,
 ) -> Result<AgentEndpoint, ResolveError> {
     let agent = sqlx::query_as::<_, AgentRow>(
@@ -43,29 +37,17 @@ pub async fn resolve(
         return Err(ResolveError::NotRunning(agent.status));
     }
 
-    if let Some(ref url) = agent.url
-        && !url.is_empty()
-    {
-        let (host, port) = parse_host_port(url);
-        return Ok(AgentEndpoint {
-            host,
-            port,
-            name: agent.name,
-        });
+    match agent.url {
+        Some(ref url) if !url.is_empty() => {
+            let (host, port) = parse_host_port(url);
+            Ok(AgentEndpoint {
+                host,
+                port,
+                name: agent.name,
+            })
+        }
+        _ => Err(ResolveError::NoEndpoint),
     }
-
-    let container_id = ContainerId::new(agent.name.clone());
-    let endpoint = runtime
-        .endpoint(&container_id)
-        .await
-        .map_err(|e| ResolveError::Runtime(e.to_string()))?;
-
-    let (host, port) = parse_host_port(&endpoint);
-    Ok(AgentEndpoint {
-        host,
-        port,
-        name: agent.name,
-    })
 }
 
 fn parse_host_port(url: &str) -> (String, u16) {

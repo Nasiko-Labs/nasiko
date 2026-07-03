@@ -55,12 +55,13 @@ pub async fn agent_proxy(
 
     // Resolve agent endpoint
     let endpoint =
-        nasiko_agent_proxy::resolve(&state.db, state.runtime.as_ref(), agent_id)
+        nasiko_agent_proxy::resolve(&state.db, agent_id)
             .await
             .map_err(|e| match e {
                 nasiko_agent_proxy::ResolveError::NotFound => StatusCode::NOT_FOUND,
                 nasiko_agent_proxy::ResolveError::NotRunning(_) => StatusCode::SERVICE_UNAVAILABLE,
-                _ => StatusCode::BAD_GATEWAY,
+                nasiko_agent_proxy::ResolveError::NoEndpoint => StatusCode::BAD_GATEWAY,
+                nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             })?;
 
     let target_url = format!("http://{}:{}{}", endpoint.host, endpoint.port, forwarded_path);

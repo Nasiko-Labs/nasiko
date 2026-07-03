@@ -215,7 +215,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         domain: None,
         database_url: db_url,
         redis_url,
-        scheduler_mode: "local".into(),
+        agent_runtime: "local".into(),
         k8s_namespace: "nasiko-test".into(),
         kubeconfig: None,
         s3_endpoint,

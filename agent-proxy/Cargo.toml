@@ -4,7 +4,6 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-nasiko-runtime = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }

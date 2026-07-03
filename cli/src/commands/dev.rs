@@ -191,7 +191,7 @@ pub fn start(infra_only: bool) -> Result<()> {
     cmd.env("CP_BIND", "0.0.0.0:8080")
         .env("DATABASE_URL", "postgresql://nasiko:nasiko@localhost:5432/nasiko_dev")
         .env("REDIS_URL", "redis://localhost:6379")
-        .env("SCHEDULER_MODE", "local")
+        .env("AGENT_RUNTIME", "local")
         .env("S3_ENDPOINT", "http://localhost:9000")
         .env("S3_BUCKET", "nasiko")
         .env("S3_ACCESS_KEY", "nasiko")

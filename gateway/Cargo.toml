@@ -15,7 +15,6 @@ dotenvy.workspace = true
 nasiko-auth.workspace = true
 nasiko-flow.workspace = true
 nasiko-agent-proxy.workspace = true
-nasiko-runtime = { workspace = true, features = ["docker"] }
 nasiko-types.workspace = true
 
 # Web framework

@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use nasiko_runtime::{ContainerId, DeploymentSpec};
+use nasiko_runtime::{ContainerId, DeploymentSpec, DeploymentStatus};
 
 use crate::acl::user_can_access_agent;
 use crate::agents::upload::BuildJobPayload;
@@ -376,7 +376,7 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
-    let result: Result<(), String> = async {
+    let result: Result<DeploymentStatus, String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
             extract_zip_to_dir(&zip_data, &tmp_dir)?;
@@ -446,17 +446,17 @@ pub async fn execute_agent_update(
             max_replicas: 1,
             resources: None,
         };
-        state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
+        let deploy_status = state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
 
         set_upload_status(db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
-        Ok(())
+        Ok(deploy_status)
     }
     .await;
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     match result {
-        Ok(()) => {
+        Ok(deploy_status) => {
             // Archive the previously active version, insert the new one, mark old as rollback-eligible.
             let _ = sqlx::query(
                 "UPDATE agent_versions SET is_active = false, status = 'archived' \
@@ -493,10 +493,12 @@ pub async fn execute_agent_update(
             .execute(db)
             .await;
 
+            let agent_url = deploy_status.endpoint.unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1",
+                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
             )
             .bind(agent_id)
+            .bind(&agent_url)
             .execute(db)
             .await;
 
@@ -743,7 +745,7 @@ pub async fn execute_agent_rollback(
     };
 
     match state.runtime.deploy(&spec).await {
-        Ok(_) => {
+        Ok(deploy_status) => {
             // Deactivate current version, activate rollback target.
             let _ = sqlx::query(
                 "UPDATE agent_versions SET is_active = false, status = 'archived' \
@@ -762,11 +764,13 @@ pub async fn execute_agent_rollback(
             .execute(db)
             .await;
 
+            let agent_url = deploy_status.endpoint.unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'running', version = $2, image = $3, updated_at = now() \
+                "UPDATE agents SET status = 'running', url = $2, version = $3, image = $4, updated_at = now() \
                  WHERE id = $1",
             )
             .bind(agent_id)
+            .bind(&agent_url)
             .bind(&target.version)
             .bind(&target.image_tag)
             .execute(db)

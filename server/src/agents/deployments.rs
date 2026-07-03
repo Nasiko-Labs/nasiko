@@ -261,9 +261,21 @@ async fn restart_deployment(
             resources: None,
         };
 
-        if let Err(e) = state.runtime.deploy(&spec).await {
-            tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
+        match state.runtime.deploy(&spec).await {
+            Ok(status) => {
+                let agent_url = status.endpoint.unwrap_or_default();
+                let _ = sqlx::query(
+                    "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(info.agent_id)
+                .bind(&agent_url)
+                .execute(&state.db)
+                .await;
+            }
+            Err(e) => {
+                tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
+            }
         }
     }
 
@@ -301,11 +313,6 @@ async fn restart_deployment(
         .await;
         tracing::info!(agent_id = %info.agent_id, "restart: crash fields cleared");
     }
-
-    let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
-        .bind(info.agent_id)
-        .execute(&state.db)
-        .await;
 
     match new_deploy_id {
         Some(id) => (StatusCode::OK, Json(serde_json::json!({ "deployment_id": id }))).into_response(),

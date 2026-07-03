@@ -33,14 +33,7 @@ async fn main() {
         expiry_secs: nasiko_auth::jwt::DEFAULT_EXPIRY_SECS,
     });
 
-    // Container runtime
-    let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = Arc::new(
-        nasiko_runtime::DockerRuntime::new(nasiko_runtime::DockerRuntimeConfig::default())
-            .await
-            .expect("failed to create Docker runtime"),
-    );
-
-    let state = GatewayState::from_config(&config, auth, runtime, flow_guard).await;
+    let state = GatewayState::from_config(&config, auth, flow_guard).await;
     let app = nasiko_gateway::build_app(state);
 
     let listener = tokio::net::TcpListener::bind(&config.listen_addr)
