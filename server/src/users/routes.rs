@@ -501,7 +501,8 @@ pub async fn change_role(
 
     // Last-admin guard: prevent demoting the only remaining admin.
     if current_role == "admin" && new_role != "admin"
-        && let Some(err) = check_last_admin(&state, id).await {
+        && let Some(err) = check_last_admin(&state, id).await
+    {
         return err;
     }
 
