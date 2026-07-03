@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::acl::{allowed_targets, user_can_access_agent};
+use crate::acl::allowed_targets;
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -38,12 +38,8 @@ async fn get_agent_acl(
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
 
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+    if !crate::acl::can_access_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -64,12 +60,12 @@ async fn add_agent_acl(
     Path(agent_id): Path<Uuid>,
     Json(body): Json<AddAclBody>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+    if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -112,12 +108,8 @@ async fn remove_agent_acl(
     claims: Claims,
     Path((agent_id, target_id)): Path<(Uuid, Uuid)>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
 
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+    if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 

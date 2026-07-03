@@ -11,7 +11,6 @@ use uuid::Uuid;
 
 use nasiko_runtime::ContainerId;
 
-use crate::acl::user_can_access_agent;
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -57,11 +56,9 @@ async fn by_skill(
     let owner_filter: Option<Uuid> = if claims.is_superuser {
         None
     } else {
-        match claims.sub.parse() {
+        match claims.user_uuid() {
             Ok(id) => Some(id),
-            Err(_) => {
-                return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-            }
+            Err(e) => return e.into_response(),
         }
     };
 
@@ -128,11 +125,9 @@ async fn create(
     }
     let skills = serde_json::to_value(&skills_vec).unwrap_or_default();
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => {
-            return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-        }
+        Err(e) => return e.into_response(),
     };
 
     let mut tx = match state.db.begin().await {
@@ -216,11 +211,9 @@ async fn list(
     let owner_filter: Option<Uuid> = if claims.is_superuser {
         None
     } else {
-        match claims.sub.parse() {
+        match claims.user_uuid() {
             Ok(id) => Some(id),
-            Err(_) => {
-                return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-            }
+            Err(e) => return e.into_response(),
         }
     };
 
@@ -254,12 +247,6 @@ async fn get_one(
     claims: Claims,
     Path(id): Path<String>
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-        }
-    };
 
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
@@ -286,7 +273,7 @@ async fn get_one(
         }
     };
 
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent.id).await {
+    if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -299,15 +286,9 @@ async fn update(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateAgent>
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-        }
-    };
 
-    // Superusers can update any agent; others must own it or be on the team.
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, id).await {
+    // Mutation → owner-or-superuser only (an invoke/public grant must not confer edit).
+    if !crate::acl::can_manage_agent(&state, &claims, id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -417,14 +398,8 @@ async fn delete(
     claims: Claims,
     Path(id): Path<Uuid>
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-        }
-    };
 
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, id).await {
+    if !crate::acl::can_manage_agent(&state, &claims, id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -510,14 +485,8 @@ async fn list_versions(
     claims: Claims,
     Path(id): Path<Uuid>
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(uid) => uid,
-        Err(_) => {
-            return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-        }
-    };
 
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, id).await {
+    if !crate::acl::can_access_agent(&state, &claims, id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -672,11 +641,9 @@ async fn search(
     let owner_filter: Option<Uuid> = if claims.is_superuser {
         None
     } else {
-        match claims.sub.parse() {
+        match claims.user_uuid() {
             Ok(id) => Some(id),
-            Err(_) => {
-                return (StatusCode::UNAUTHORIZED, "invalid user id").into_response();
-            }
+            Err(e) => return e.into_response(),
         }
     };
 

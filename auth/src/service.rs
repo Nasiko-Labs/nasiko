@@ -100,7 +100,7 @@ impl AuthService for AuthServiceImpl {
             return Err(AuthError::InvalidToken("account disabled".into()));
         }
 
-        if !crate::verify_password_async(password, &row.access_secret_hash).await {
+        if !crate::verify_password(password, &row.access_secret_hash) {
             return Err(AuthError::InvalidToken("invalid credentials".into()));
         }
 
@@ -146,7 +146,7 @@ impl AuthService for AuthServiceImpl {
             return Ok(());
         }
 
-        let access_secret_hash = crate::hash_password_async(password).await?;
+        let access_secret_hash = crate::hash_password(password)?;
 
         let email = format!("{}@localhost", username);
         let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
@@ -314,14 +314,6 @@ impl AuthService for AuthServiceImpl {
         })
     }
 
-    async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError> {
-        let user_uuid = user_id
-            .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::InvalidToken("invalid user_id".into()))?;
-        self.record_token(token, user_uuid).await;
-        Ok(())
-    }
-
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError> {
         let user_uuid = user_id
             .parse::<uuid::Uuid>()
@@ -365,7 +357,41 @@ impl AuthService for AuthServiceImpl {
         Ok(result.rows_affected())
     }
 
-    async fn can_access_agent(&self, _identity: &Identity, _agent_id: &str) -> bool {
-        true
+    /// OSS access rule: owner ∪ public ∪ user-grant (superuser sees all).
+    /// Team/department grants are EE-only — `EeAuthService` overrides this with the
+    /// fuller check. This is the single source of truth for per-agent access in OSS;
+    /// handlers reach it via `state.auth.can_access_agent`, so the check is
+    /// edition-aware without duplicating SQL per handler.
+    async fn can_access_agent(&self, identity: &Identity, agent_id: &str) -> bool {
+        if identity.is_superuser {
+            return true;
+        }
+        let Ok(agent_uuid) = agent_id.parse::<uuid::Uuid>() else { return false };
+        let Ok(user_uuid) = identity.user_id.parse::<uuid::Uuid>() else { return false };
+
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                SELECT 1 FROM agents a
+                WHERE a.id = $2
+                  AND a.deleted_at IS NULL
+                  AND (
+                      a.owner_id = $1
+                      OR a.is_public = TRUE
+                      OR EXISTS (
+                          SELECT 1 FROM agent_grants ag
+                          WHERE ag.agent_id = a.id
+                            AND (
+                                (ag.grant_type = 'public' AND ag.grantee_id = '*')
+                             OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text)
+                            )
+                      )
+                  )
+            )"#,
+        )
+        .bind(user_uuid)
+        .bind(agent_uuid)
+        .fetch_one(&self.db)
+        .await
+        .unwrap_or(false)
     }
 }

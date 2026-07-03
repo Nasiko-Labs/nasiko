@@ -343,3 +343,60 @@ async fn update_with_skills_merges_skill_tags() {
 
     server.cleanup().await;
 }
+
+// ─── read vs manage split (R3 correction / RUN-9) ────────────────────────────
+// A public (or invoke-granted) agent is READABLE by a non-owner, but must NOT be
+// mutable/destroyable by them — mutations are owner-or-superuser only.
+#[tokio::test]
+#[serial]
+async fn public_agent_non_owner_can_read_but_not_mutate() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let owner_id = admin["user_id"].as_str().unwrap();
+
+    let agent = create_agent(&server, owner_id, json!({"name": "pub-split-agent", "version": "1.0.0"})).await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    // Make it public so view-access (can_access_agent) is true for anyone.
+    sqlx::query("UPDATE agents SET is_public = true WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(agent_id).unwrap())
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let bob = create_user(&server, owner_id, "bobpub").await;
+    let bob_id = bob["id"].as_str().unwrap();
+
+    // READ: allowed for a non-owner because the agent is public.
+    let read = get_agent(&server, bob_id, false, agent_id).await;
+    assert_eq!(read.status(), 200, "non-owner should be able to read a public agent");
+
+    // DELETE: forbidden — destroy is owner-or-superuser (RUN-9 IDOR guard).
+    let del = server
+        .client
+        .delete(server.url(&format!("/api/catalog/agents/{agent_id}")))
+        .header("x-user-id", bob_id)
+        .header("x-username", "bobpub")
+        .header("x-is-superuser", "false")
+        .header("x-user-role", "member")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 403, "non-owner must NOT delete a public agent");
+
+    // UPDATE: likewise forbidden — an invoke/public grant is not a manage grant.
+    let upd = server
+        .client
+        .put(server.url(&format!("/api/catalog/agents/{agent_id}")))
+        .header("x-user-id", bob_id)
+        .header("x-username", "bobpub")
+        .header("x-is-superuser", "false")
+        .header("x-user-role", "member")
+        .json(&json!({"description": "hijacked"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upd.status(), 403, "non-owner must NOT update a public agent");
+
+    server.cleanup().await;
+}

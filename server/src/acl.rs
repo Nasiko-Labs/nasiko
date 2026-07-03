@@ -10,38 +10,50 @@ use nasiko_react_agent::CallGuard;
 
 use nasiko_flow::{FlowContext, FlowGuard};
 
-/// Check whether a user can access an agent.
+/// Edition-aware per-agent access check — the single entry point handlers should use.
 ///
-/// OSS access rules:
-/// 1. The user is the agent's owner (`agents.owner_id`).
-/// 2. The agent is public (`agents.is_public = TRUE`).
-/// 3. A `agent_grants` row exists with `grant_type = 'public'` or `grant_type = 'user'`.
+/// Delegates to `state.auth.can_access_agent`, so it honors exactly the rules of the
+/// running edition: OSS = owner ∪ public ∪ user-grant (superuser sees all);
+/// EE additionally honors team/department grants. This replaces direct calls to the
+/// OSS-only [`user_can_access_agent`] free function on handler paths, which is why a
+/// team/dept-granted user no longer 403s on catalog/deploy/update (AUTH-4).
 ///
-/// Team/department grants are EE-only (EeAuthService in ee/auth).
-/// Soft-deleted agents (`deleted_at IS NOT NULL`) are always denied.
-pub async fn user_can_access_agent(db: &PgPool, user_id: Uuid, agent_id: Uuid) -> bool {
+/// The superuser short-circuit lives inside the trait impls, so callers do NOT need a
+/// separate `claims.is_superuser` guard.
+pub async fn can_access_agent(
+    state: &crate::state::AppState,
+    claims: &crate::auth::Claims,
+    agent_id: Uuid,
+) -> bool {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    state.auth.can_access_agent(&identity, &agent_id.to_string()).await
+}
+
+/// Owner-or-superuser check for **mutating / destructive** operations (update,
+/// delete, rollback, secrets, invoke-ACL changes).
+///
+/// Deliberately stricter than [`can_access_agent`]: neither a public agent nor an
+/// *invoke* grant (user/team/dept) may confer the right to modify or destroy the
+/// agent. Using view-level access here would be an IDOR on public agents (RUN-9)
+/// and would silently promote an invoke-grant into a manage-grant in EE. Mirrors
+/// Python's `can_user_manage_agent` (owner ∨ admin) and EE `require_manage_agent`.
+pub async fn can_manage_agent(
+    state: &crate::state::AppState,
+    claims: &crate::auth::Claims,
+    agent_id: Uuid,
+) -> bool {
+    if claims.is_superuser {
+        return true;
+    }
+    let Ok(user_id) = claims.user_uuid() else {
+        return false;
+    };
     sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS(
-            SELECT 1 FROM agents a
-            WHERE a.id = $2
-              AND a.deleted_at IS NULL
-              AND (
-                  a.owner_id = $1
-                  OR a.is_public = TRUE
-                  OR EXISTS (
-                      SELECT 1 FROM agent_grants ag
-                      WHERE ag.agent_id = a.id
-                        AND (
-                            (ag.grant_type = 'public' AND ag.grantee_id = '*')
-                         OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text)
-                        )
-                  )
-              )
-        )"#,
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL)",
     )
-    .bind(user_id)
     .bind(agent_id)
-    .fetch_one(db)
+    .bind(user_id)
+    .fetch_one(&state.db)
     .await
     .unwrap_or(false)
 }

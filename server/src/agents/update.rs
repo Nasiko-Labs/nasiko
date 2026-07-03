@@ -8,8 +8,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use nasiko_runtime::DeploymentStatus;
 
-use crate::acl::user_can_access_agent;
 use crate::agents::upload::BuildJobPayload;
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus, download_repo_tarball, routes::extract_zip_to_dir};
@@ -64,9 +64,9 @@ async fn update_agent(
     Path(agent_id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // Fetch agent — verify it exists and capture state we need for the update.
@@ -91,7 +91,7 @@ async fn update_agent(
     };
 
     // Superusers bypass ACL; everyone else needs owner or explicit ACL grant.
-    if !claims.is_superuser && !user_can_access_agent(&state.db, owner_id, agent_id).await {
+    if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -375,7 +375,7 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
-    let result: Result<(), String> = async {
+    let result: Result<DeploymentStatus, String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
             extract_zip_to_dir(&zip_data, &tmp_dir)?;
@@ -438,17 +438,17 @@ pub async fn execute_agent_update(
         // Key on the agent UUID (not name) so the update re-targets the existing
         // workload instead of spawning an orphaned name-keyed duplicate (RUN-2/7).
         let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), vec![], secrets, None);
-        state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
+        let deploy_status = state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
 
         set_upload_status(db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
-        Ok(())
+        Ok(deploy_status)
     }
     .await;
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     match result {
-        Ok(()) => {
+        Ok(deploy_status) => {
             // Archive the previously active version, insert the new one, mark old as rollback-eligible.
             let _ = sqlx::query(
                 "UPDATE agent_versions SET is_active = false, status = 'archived' \
@@ -485,10 +485,12 @@ pub async fn execute_agent_update(
             .execute(db)
             .await;
 
+            let agent_url = deploy_status.endpoint.unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1",
+                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
             )
             .bind(agent_id)
+            .bind(&agent_url)
             .execute(db)
             .await;
 
@@ -543,9 +545,9 @@ async fn rollback_agent(
     // to "no body" (which Option<Json<T>> does in Axum 0.8).
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    let caller_id: Uuid = match claims.sub.parse() {
+    let caller_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // Parse optional JSON body — empty body is valid (use defaults).
@@ -579,7 +581,7 @@ async fn rollback_agent(
     };
 
     // Superusers bypass ACL; everyone else needs owner or explicit ACL grant.
-    if !claims.is_superuser && !user_can_access_agent(&state.db, caller_id, agent_id).await {
+    if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -733,7 +735,7 @@ pub async fn execute_agent_rollback(
     let spec = crate::agents::build_agent_spec(agent_id, &agent_name, target.image_tag.clone(), vec![], secrets, None);
 
     match state.runtime.deploy(&spec).await {
-        Ok(_) => {
+        Ok(deploy_status) => {
             // Deactivate current version, activate rollback target.
             let _ = sqlx::query(
                 "UPDATE agent_versions SET is_active = false, status = 'archived' \
@@ -752,11 +754,13 @@ pub async fn execute_agent_rollback(
             .execute(db)
             .await;
 
+            let agent_url = deploy_status.endpoint.unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'running', version = $2, image = $3, updated_at = now() \
+                "UPDATE agents SET status = 'running', url = $2, version = $3, image = $4, updated_at = now() \
                  WHERE id = $1",
             )
             .bind(agent_id)
+            .bind(&agent_url)
             .bind(&target.version)
             .bind(&target.image_tag)
             .execute(db)

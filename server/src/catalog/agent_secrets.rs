@@ -135,9 +135,9 @@ async fn import_secrets(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     match import_user_secrets(&state.db, user_id, agent_id, &body.secret_names).await {
@@ -230,12 +230,7 @@ pub async fn import_user_secrets(
 }
 
 async fn can_manage_agent(state: &AppState, claims: &Claims, agent_id: Uuid) -> bool {
-    if claims.is_superuser {
-        return true;
-    }
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return false,
-    };
-    crate::acl::user_can_access_agent(&state.db, user_id, agent_id).await
+    // Managing secrets is a mutation → owner-or-superuser only (NOT view-access:
+    // an invoke-grant or a public flag must not confer secret-write).
+    crate::acl::can_manage_agent(state, claims, agent_id).await
 }

@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use nasiko_runtime::{ContainerId, DeploymentSpec};
 
-use crate::acl::user_can_access_agent;
 use crate::auth::Claims;
 use crate::catalog::agent_secrets;
 use crate::state::AppState;
@@ -64,9 +63,9 @@ async fn list_deployments(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let rows = if claims.is_superuser {
@@ -115,12 +114,8 @@ async fn get_agent_deployment(
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
 
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+    if !crate::acl::can_access_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -155,9 +150,9 @@ async fn restart_deployment(
     claims: Claims,
     Path(deployment_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // Fetch deployment and agent info together, including stored spec columns.
@@ -261,9 +256,21 @@ async fn restart_deployment(
             resources: None,
         };
 
-        if let Err(e) = state.runtime.deploy(&spec).await {
-            tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
+        match state.runtime.deploy(&spec).await {
+            Ok(status) => {
+                let agent_url = status.endpoint.unwrap_or_default();
+                let _ = sqlx::query(
+                    "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(info.agent_id)
+                .bind(&agent_url)
+                .execute(&state.db)
+                .await;
+            }
+            Err(e) => {
+                tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
+            }
         }
     }
 
@@ -307,11 +314,6 @@ async fn restart_deployment(
         .await;
         tracing::info!(agent_id = %info.agent_id, "restart: crash fields cleared");
     }
-
-    let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
-        .bind(info.agent_id)
-        .execute(&state.db)
-        .await;
 
     match new_deploy_id {
         Some(id) => (StatusCode::OK, Json(serde_json::json!({ "deployment_id": id }))).into_response(),
