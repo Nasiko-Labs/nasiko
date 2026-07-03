@@ -18,8 +18,7 @@ use nasiko_react_agent::{
     RegistrySource,
 };
 
-use nasiko_router::{AgentSelector, SessionHistory};
-
+use nasiko_router::{AgentSelector, FilePart, RouteRequest, RouterError, SessionHistory};
 use nasiko_flow::FlowContext;
 
 use crate::acl::CpCallGuard;
@@ -83,7 +82,8 @@ pub async fn a2a_dispatch_handler(
         .and_then(|m| m.get("session_id"))
         .and_then(|v| v.as_str())
         .map(String::from);
-    let is_orchestrator = agent_id.is_none() || agent_id.as_deref() == Some("orchestrator");
+    let is_orchestrator = agent_id.as_deref() == Some("orchestrator");
+    let use_router = agent_id.is_none();
 
     let user_id: Uuid = claims.sub.parse().unwrap_or(Uuid::nil());
 
@@ -95,10 +95,31 @@ pub async fn a2a_dispatch_handler(
 
     let query = history.with_current_query(&text);
 
-    if is_orchestrator {
-        orchestrator_stream(&state, &query, &task_id, &context_id, user_id).await
+    if use_router {
+        let sid = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let route_req = RouteRequest {
+            query: text,
+            user_id,
+            session_id: sid,
+            file_parts: vec![],
+        };
+        match state.routing_engine.route(route_req, &state.db).await {
+            Ok(result) => {
+                agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
+            }
+            Err(RouterError::NoAgentsAvailable) => Err(A2aDispatchError::NoAgents),
+            Err(e) => Err(A2aDispatchError::Internal(e.to_string())),
+        }
+    } else if is_orchestrator {
+        orchestrator_stream(&state, &query, &task_id, &context_id, user_id, claims.is_superuser).await
     } else {
-        agent_stream(&state, agent_id.as_deref().unwrap(), &query, &task_id, &context_id, user_id).await
+        let target = agent_id.as_deref().unwrap();
+        if let Ok(target_uuid) = target.parse::<Uuid>() {
+            if !claims.is_superuser && !crate::acl::user_can_access_agent(&state.db, user_id, target_uuid).await {
+                return Err(A2aDispatchError::Forbidden);
+            }
+        }
+        agent_stream(&state, target, &query, &task_id, &context_id, user_id).await
     }
 }
 
@@ -110,10 +131,24 @@ async fn orchestrator_stream(
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
+    is_superuser: bool,
 ) -> Result<Response, A2aDispatchError> {
-    let agent_summaries = AgentSelector::fetch_active_agents(&state.db)
+    let all_agents = AgentSelector::fetch_active_agents(&state.db)
         .await
         .map_err(|e| A2aDispatchError::Internal(e.to_string()))?;
+
+    // Filter to agents the requesting user can access.
+    let agent_summaries = if is_superuser {
+        all_agents
+    } else {
+        let mut accessible = Vec::new();
+        for summary in all_agents {
+            if crate::acl::user_can_access_agent(&state.db, user_id, summary.id).await {
+                accessible.push(summary);
+            }
+        }
+        accessible
+    };
 
     let mut agents: Vec<AgentInfo> = Vec::new();
     for summary in &agent_summaries {
@@ -200,14 +235,6 @@ async fn orchestrator_stream(
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
 
-        // Emit trace_id so the UI can link this response to its distributed trace.
-        {
-            let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                "type": "trace_meta", "trace_id": flow_id,
-            })));
-            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
-        }
-
         let mut content_started = false;
 
         loop {
@@ -276,16 +303,11 @@ async fn orchestrator_stream(
                         }
                         OrchestratorEvent::Content { content } => {
                             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
-                                &task_id, &context_id, &artifact_id, &content, content_started, false,
+                                &task_id, &context_id, &artifact_id, &content, content_started, true,
                             ))));
                             content_started = true;
                         }
                         OrchestratorEvent::Done { .. } => {
-                            if content_started {
-                                yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
-                                    &task_id, &context_id, &artifact_id, "", true, true,
-                                ))));
-                            }
                             yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
                             break;
                         }
@@ -400,14 +422,6 @@ async fn agent_stream(
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
 
-            // Emit trace_id so the UI can link this response to its distributed trace.
-            {
-                let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                    "type": "trace_meta", "trace_id": flow_id_cleanup,
-                })));
-                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
-            }
-
             let mut buffer = String::new();
             let mut pinned = std::pin::pin!(byte_stream);
             let mut agent_done = false;
@@ -480,14 +494,6 @@ async fn agent_stream(
 
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
-
-            // Emit trace_id so the UI can link this response to its distributed trace.
-            {
-                let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                    "type": "trace_meta", "trace_id": flow_id_cleanup,
-                })));
-                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
-            }
 
             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                 &task_id, &context_id, &artifact_id, &text, false, true,
@@ -576,14 +582,15 @@ struct StatsRow {
 /// - `query`   (text field, required) — the user's question
 /// - Any number of additional fields treated as file attachments
 ///
-/// Each file is base64-encoded and forwarded alongside the query to the orchestrator.
+/// Each file is base64-encoded into a `FilePart` data URI and forwarded
+/// alongside the query to the routing engine.
 pub async fn a2a_upload_handler(
     State(state): State<AppState>,
     claims: Claims,
     mut multipart: Multipart,
 ) -> Result<Response, A2aDispatchError> {
     let mut query = String::new();
-    let mut file_count = 0usize;
+    let mut file_parts: Vec<FilePart> = Vec::new();
 
     while let Some(field) = multipart
         .next_field()
@@ -591,6 +598,11 @@ pub async fn a2a_upload_handler(
         .map_err(|e| A2aDispatchError::InvalidRequest(format!("multipart error: {e}")))?
     {
         let field_name = field.name().unwrap_or("").to_string();
+        let filename = field.file_name().map(str::to_string);
+        let content_type = field
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
 
         let bytes = field
             .bytes()
@@ -601,7 +613,8 @@ pub async fn a2a_upload_handler(
             query = String::from_utf8(bytes.to_vec())
                 .map_err(|_| A2aDispatchError::InvalidRequest("query must be valid UTF-8".into()))?;
         } else {
-            file_count += 1;
+            let name = filename.unwrap_or_else(|| field_name.clone());
+            file_parts.push(FilePart::encode(name, &bytes, content_type));
         }
     }
 
@@ -617,12 +630,24 @@ pub async fn a2a_upload_handler(
 
     tracing::info!(
         user_id = %user_id,
-        file_count,
-        "a2a dispatch upload: orchestrating query with {} file(s)",
-        file_count
+        file_count = file_parts.len(),
+        "a2a dispatch upload: routing query with {} file(s)",
+        file_parts.len()
     );
 
-    orchestrator_stream(&state, &query, &task_id, &context_id, user_id).await
+    let route_req = RouteRequest {
+        query: query.clone(),
+        user_id,
+        session_id: Uuid::new_v4().to_string(),
+        file_parts,
+    };
+    match state.routing_engine.route(route_req, &state.db).await {
+        Ok(result) => {
+            agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
+        }
+        Err(RouterError::NoAgentsAvailable) => Err(A2aDispatchError::NoAgents),
+        Err(e) => Err(A2aDispatchError::Internal(e.to_string())),
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -632,31 +657,6 @@ fn to_sse(event: StreamResponse) -> Event {
 }
 
 async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
-    // Prefer live runtime endpoint (Docker port mapping can change on restart).
-    let container_id = nasiko_runtime::ContainerId::new(agent_name.to_owned());
-    match state.runtime.endpoint(&container_id).await {
-        Ok(endpoint) => {
-            let base = endpoint.trim_end_matches('/');
-            return Ok(format!("{base}/jsonrpc"));
-        }
-        Err(_) => {
-            // Container not reachable via runtime — check if it's actually stopped.
-            if let Ok(status) = state.runtime.status(&container_id).await {
-                if status.state != nasiko_runtime::RuntimeState::Running {
-                    // Mark as stopped so future routing skips it.
-                    let _ = sqlx::query(
-                        "UPDATE agents SET status = 'stopped' WHERE name = $1 AND status = 'running'",
-                    )
-                    .bind(agent_name)
-                    .execute(&state.db)
-                    .await;
-                    return Err(format!("agent '{agent_name}' is not running"));
-                }
-            }
-        }
-    }
-
-    // Fall back to stored URL (e.g. external agents, K8s with stable DNS).
     let stored_url: Option<String> = sqlx::query_scalar(
         "SELECT url FROM agents WHERE name = $1 AND status = 'running'",
     )
@@ -669,10 +669,18 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     if let Some(ref url) = stored_url
         && !url.is_empty() {
             let u = url.trim_end_matches('/');
-            return Ok(format!("{u}/jsonrpc"));
+            return Ok(format!("{u}/"));
         }
 
-    Err(format!("no endpoint found for agent '{agent_name}'"))
+    let container_id = nasiko_runtime::ContainerId::new(agent_name);
+    let endpoint = state
+        .runtime
+        .endpoint(&container_id)
+        .await
+        .map_err(|e| format!("runtime endpoint: {e}"))?;
+
+    let e = endpoint.trim_end_matches('/');
+    Ok(format!("{e}/"))
 }
 
 /// Normalize a Python a2a-sdk JSONRPC event to CP native StreamResponse format.
@@ -681,10 +689,7 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
         return data.to_string();
     };
 
-    // Already in the expected format (no JSON-RPC wrapper)
-    if parsed.get("statusUpdate").is_some() || parsed.get("artifactUpdate").is_some()
-        || parsed.get("task").is_some() || parsed.get("message").is_some()
-    {
+    if parsed.get("statusUpdate").is_some() || parsed.get("artifactUpdate").is_some() {
         return data.to_string();
     }
 
@@ -740,6 +745,7 @@ struct AgentRow {
 pub enum A2aDispatchError {
     InvalidRequest(String),
     NoAgents,
+    Forbidden,
     AgentNotFound(String),
     Internal(String),
 }
@@ -753,6 +759,7 @@ impl IntoResponse for A2aDispatchError {
                 -32603,
                 "no agents available".into(),
             ),
+            Self::Forbidden => (StatusCode::FORBIDDEN, -32605, "access to this agent is not permitted".into()),
             Self::AgentNotFound(name) => (
                 StatusCode::NOT_FOUND,
                 -32604,

@@ -185,7 +185,7 @@ async fn create_user(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password(&access_secret) {
+    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -273,7 +273,7 @@ async fn update_user(
 
     // Hash password if provided
     let password_hash = match &body.password {
-        Some(p) => match nasiko_auth::hash_password(p) {
+        Some(p) => match nasiko_auth::hash_password_async(p).await {
             Ok(h) => Some(h),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
@@ -425,7 +425,7 @@ async fn regenerate_credentials(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password(&access_secret) {
+    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
         Ok(h) => h,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -500,10 +500,10 @@ pub async fn change_role(
     };
 
     // Last-admin guard: prevent demoting the only remaining admin.
-    if current_role == "admin" && new_role != "admin"
-        && let Some(err) = check_last_admin(&state, id).await
-    {
-        return err;
+    if current_role == "admin" && new_role != "admin" {
+        if let Some(err) = check_last_admin(&state, id).await {
+            return err;
+        }
     }
 
     // No-op if the role hasn't changed.

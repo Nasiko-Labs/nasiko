@@ -140,7 +140,7 @@ async fn initialize_admin_inner(
 
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = nasiko_auth::hash_password(&access_secret)
+    let access_secret_hash = nasiko_auth::hash_password_async(&access_secret).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
 
     let result: Result<(uuid::Uuid,), _> = sqlx::query_as(

@@ -100,7 +100,7 @@ impl AuthService for AuthServiceImpl {
             return Err(AuthError::InvalidToken("account disabled".into()));
         }
 
-        if !crate::verify_password(password, &row.access_secret_hash) {
+        if !crate::verify_password_async(password, &row.access_secret_hash).await {
             return Err(AuthError::InvalidToken("invalid credentials".into()));
         }
 
@@ -146,7 +146,7 @@ impl AuthService for AuthServiceImpl {
             return Ok(());
         }
 
-        let access_secret_hash = crate::hash_password(password)?;
+        let access_secret_hash = crate::hash_password_async(password).await?;
 
         let email = format!("{}@localhost", username);
         let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
