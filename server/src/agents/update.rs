@@ -8,7 +8,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use nasiko_runtime::{ContainerId, DeploymentSpec, DeploymentStatus};
 
 use crate::acl::user_can_access_agent;
 use crate::agents::upload::BuildJobPayload;
@@ -376,7 +375,7 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
-    let result: Result<DeploymentStatus, String> = async {
+    let result: Result<(), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
             extract_zip_to_dir(&zip_data, &tmp_dir)?;
@@ -436,27 +435,20 @@ pub async fn execute_agent_update(
         set_upload_status(db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
         let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
-        let spec = DeploymentSpec {
-            container_id: ContainerId::new(&name),
-            name: name.clone(),
-            image: image_tag.clone(),
-            ports: vec![8000],
-            env_vars: secrets,
-            min_replicas: 1,
-            max_replicas: 1,
-            resources: None,
-        };
-        let deploy_status = state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
+        // Key on the agent UUID (not name) so the update re-targets the existing
+        // workload instead of spawning an orphaned name-keyed duplicate (RUN-2/7).
+        let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), vec![], secrets, None);
+        state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
 
         set_upload_status(db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
-        Ok(deploy_status)
+        Ok(())
     }
     .await;
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     match result {
-        Ok(deploy_status) => {
+        Ok(()) => {
             // Archive the previously active version, insert the new one, mark old as rollback-eligible.
             let _ = sqlx::query(
                 "UPDATE agent_versions SET is_active = false, status = 'archived' \
@@ -493,22 +485,26 @@ pub async fn execute_agent_update(
             .execute(db)
             .await;
 
-            let agent_url = deploy_status.endpoint.unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+                "UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1",
             )
             .bind(agent_id)
-            .bind(&agent_url)
             .execute(db)
             .await;
 
+            // Persist k8s_deployment_name (= agent UUID string) + spec_image so the
+            // crash guardian and restart can find/rebuild this workload after an
+            // update (RUN-3); without it these columns were NULL and the deployment
+            // was invisible to the guardian and restarted on the wrong runtime path.
             let _ = sqlx::query(
-                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id) \
-                 VALUES ($1, $2, 'running', $3)",
+                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image) \
+                 VALUES ($1, $2, 'running', $3, $4, $5)",
             )
             .bind(agent_id)
             .bind(build_id)
             .bind(owner_id)
+            .bind(agent_id.to_string())
+            .bind(&image_tag)
             .execute(db)
             .await;
 
@@ -733,19 +729,11 @@ pub async fn execute_agent_rollback(
         .await;
 
     let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
-    let spec = DeploymentSpec {
-        container_id: ContainerId::new(&agent_name),
-        name: agent_name.clone(),
-        image: target.image_tag.clone(),
-        ports: vec![8000],
-        env_vars: secrets,
-        min_replicas: 1,
-        max_replicas: 1,
-        resources: None,
-    };
+    // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
+    let spec = crate::agents::build_agent_spec(agent_id, &agent_name, target.image_tag.clone(), vec![], secrets, None);
 
     match state.runtime.deploy(&spec).await {
-        Ok(deploy_status) => {
+        Ok(_) => {
             // Deactivate current version, activate rollback target.
             let _ = sqlx::query(
                 "UPDATE agent_versions SET is_active = false, status = 'archived' \
@@ -764,25 +752,26 @@ pub async fn execute_agent_rollback(
             .execute(db)
             .await;
 
-            let agent_url = deploy_status.endpoint.unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'running', url = $2, version = $3, image = $4, updated_at = now() \
+                "UPDATE agents SET status = 'running', version = $2, image = $3, updated_at = now() \
                  WHERE id = $1",
             )
             .bind(agent_id)
-            .bind(&agent_url)
             .bind(&target.version)
             .bind(&target.image_tag)
             .execute(db)
             .await;
 
+            // Persist identity + image for guardian/restart (RUN-3), as on update.
             let _ = sqlx::query(
-                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id) \
-                 VALUES ($1, $2, 'running', $3)",
+                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image) \
+                 VALUES ($1, $2, 'running', $3, $4, $5)",
             )
             .bind(agent_id)
             .bind(rollback_build_id)
             .bind(caller_id)
+            .bind(agent_id.to_string())
+            .bind(&target.image_tag)
             .execute(db)
             .await;
 

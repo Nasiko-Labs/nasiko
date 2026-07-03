@@ -43,13 +43,15 @@ async fn deploy(
     claims: Claims,
     Json(req): Json<DeployRequest>,
 ) -> impl IntoResponse {
-    let container_id = ContainerId::new(&req.name);
-
     // Start with env from request (inline -e flags)
     let mut env = req.env;
 
+    // Resolve the catalog agent (if any) once — used for both secret resolution and
+    // UUID-keying so this ad-hoc deploy converges with the upload/update/import paths.
+    let resolved_agent_id = resolve_agent_id_by_name(&state, &req.name).await;
+
     // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
-    if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
+    if let Some(agent_id) = resolved_agent_id {
         let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
         let resolved = resolve_full_env(&state.db, owner_id, agent_id).await;
         // resolved secrets are base; request env overrides
@@ -58,11 +60,18 @@ async fn deploy(
         }
     }
 
+    // UUID-key when the name maps to a catalog agent; fall back to name-keying only
+    // for ad-hoc images that have no catalog identity.
+    let container_id = match resolved_agent_id {
+        Some(agent_id) => ContainerId::from_uuid(agent_id),
+        None => ContainerId::new(&req.name),
+    };
+
     let spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
         image: req.image,
-        ports: if req.ports.is_empty() { vec![8000] } else { req.ports },
+        ports: if req.ports.is_empty() { vec![crate::agents::DEFAULT_AGENT_PORT] } else { req.ports },
         env_vars: env,
         min_replicas: req.replicas.unwrap_or(1),
         max_replicas: req.replicas.unwrap_or(1),
@@ -98,11 +107,12 @@ async fn deploy(
 
                     if let Some(build_id) = build_id {
                         let _ = sqlx::query(
-                            "INSERT INTO agent_deployments (agent_id, build_id, status)
-                             VALUES ($1, $2, 'running')",
+                            "INSERT INTO agent_deployments (agent_id, build_id, status, k8s_deployment_name)
+                             VALUES ($1, $2, 'running', $3)",
                         )
                         .bind(agent_id)
                         .bind(build_id)
+                        .bind(agent_id.to_string())
                         .execute(&db)
                         .await;
                     }
@@ -205,21 +215,15 @@ async fn restart(
     // Resolve env: vault (base) + agent secrets (override)
     let env = resolve_full_env(&state.db, owner_id, agent_id).await;
 
-    let container_id = ContainerId::new(&name);
+    // Destroy the UUID-keyed workload (post-fix); fall back to the name-keyed one
+    // for pre-fix containers so we don't leave a stale duplicate running.
+    let uuid_id = ContainerId::from_uuid(agent_id);
+    if state.runtime.destroy(&uuid_id).await.is_err() {
+        let _ = state.runtime.destroy(&ContainerId::new(&name)).await;
+    }
 
-    // Destroy and redeploy with fresh env
-    let _ = state.runtime.destroy(&container_id).await;
-
-    let spec = DeploymentSpec {
-        container_id,
-        name: name.clone(),
-        image,
-        ports: vec![port as u16],
-        env_vars: env,
-        min_replicas: 1,
-        max_replicas: 1,
-        resources: None,
-    };
+    // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec).
+    let spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![port as u16], env, None);
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => Json(status).into_response(),

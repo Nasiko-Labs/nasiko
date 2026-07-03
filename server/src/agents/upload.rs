@@ -16,7 +16,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use nasiko_runtime::{ContainerId, DeploymentSpec, DeploymentStatus};
 
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus};
@@ -264,7 +263,8 @@ async fn upload_and_deploy(
     } else {
         format!("{}/{name}:{version_tag}", state.config.agent_image_registry)
     };
-    let ports = if ports.is_empty() { vec![5000] } else { ports };
+    // Empty → canonical default is applied by build_agent_spec (8000, matching the
+    // agent images' EXPOSE); never default to 5000 here.
 
     // ── Upsert agent ──────────────────────────────────────────────────────────
     let existing: Option<Uuid> = sqlx::query_scalar(
@@ -442,7 +442,7 @@ pub async fn execute_upload_and_deploy(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
-    let result: Result<DeploymentStatus, String> = async {
+    let result: Result<(), String> = async {
         // Extract zip (with guards — re-run here so the worker is self-contained).
         let zp = zip_path.clone();
         let td = tmp_dir.clone();
@@ -479,27 +479,16 @@ pub async fn execute_upload_and_deploy(
 
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
-        // Deploy container keyed on agent UUID (not name) to prevent cross-team
-        // naming collisions when two teams have agents with the same name.
-        let container_id = ContainerId::from_uuid(agent_id);
-        let spec = DeploymentSpec {
-            container_id,
-            name: name.clone(),
-            image: image_tag.clone(),
-            ports,
-            env_vars: env,
-            min_replicas: 1,
-            max_replicas: 1,
-            resources: None,
-        };
-        let deploy_status = runtime
+        // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
+        let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
+        runtime
             .deploy(&spec)
             .await
             .map_err(|e| format!("deploy: {e}"))?;
 
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
 
-        Ok(deploy_status)
+        Ok(())
     }
     .await;
 
@@ -510,7 +499,7 @@ pub async fn execute_upload_and_deploy(
     }
 
     match result {
-        Ok(deploy_status) => {
+        Ok(()) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
             set_upload_status(&db, &upload_id, &name, owner_id, "completed", Some(agent_id), None).await;
             let _ = sqlx::query(
@@ -522,10 +511,8 @@ pub async fn execute_upload_and_deploy(
             .bind(build_id)
             .execute(&db)
             .await;
-            let agent_url = deploy_status.endpoint.unwrap_or_default();
-            let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
+            let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
                 .bind(agent_id)
-                .bind(&agent_url)
                 .execute(&db)
                 .await;
             // Record the deployment. k8s_deployment_name stores the ContainerId value

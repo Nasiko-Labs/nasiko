@@ -193,17 +193,16 @@ pub(crate) async fn build_and_deploy(
         .bind(build_id)
         .execute(&state.db).await;
 
-    // Deploy container
-    let spec = nasiko_runtime::DeploymentSpec {
-        container_id: nasiko_runtime::ContainerId::new(meta.name.clone()),
-        name: meta.name.clone(),
-        image: image_tag,
-        min_replicas: 1,
-        max_replicas: 1,
-        env_vars: std::collections::HashMap::new(),
-        ports: vec![8000],
-        resources: None,
-    };
+    // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
+    // existing workload on re-import and can't collide cross-team on the name.
+    let spec = crate::agents::build_agent_spec(
+        agent_id,
+        &meta.name,
+        image_tag,
+        vec![],
+        std::collections::HashMap::new(),
+        None,
+    );
 
     let container_name = match state.runtime.deploy(&spec).await {
         Ok(status) => Some(status.container_id.to_string()),
@@ -663,17 +662,15 @@ async fn import_registry(
             }
         };
 
-        // Deploy
-        let spec = nasiko_runtime::DeploymentSpec {
-            container_id: nasiko_runtime::ContainerId::new(agent_name.clone()),
-            name: agent_name,
-            image: image_with_tag,
-            min_replicas: 1,
-            max_replicas: 1,
-            env_vars: std::collections::HashMap::new(),
-            ports: vec![8000],
-            resources: None,
-        };
+        // Deploy — UUID-keyed (see build_agent_spec).
+        let spec = crate::agents::build_agent_spec(
+            agent_id,
+            &agent_name,
+            image_with_tag,
+            vec![],
+            std::collections::HashMap::new(),
+            None,
+        );
 
         let container_name = match state.runtime.deploy(&spec).await {
             Ok(status) => Some(status.container_id.to_string()),

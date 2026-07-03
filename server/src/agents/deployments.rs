@@ -249,8 +249,8 @@ async fn restart_deployment(
         let spec = DeploymentSpec {
             container_id: uuid_id,
             name: info.name.clone(),
-            image,
-            ports,
+            image: image.clone(),
+            ports: ports.clone(),
             env_vars: secrets,
             min_replicas: 1,
             max_replicas: 1,
@@ -261,21 +261,9 @@ async fn restart_deployment(
             resources: None,
         };
 
-        match state.runtime.deploy(&spec).await {
-            Ok(status) => {
-                let agent_url = status.endpoint.unwrap_or_default();
-                let _ = sqlx::query(
-                    "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
-                )
-                .bind(info.agent_id)
-                .bind(&agent_url)
-                .execute(&state.db)
-                .await;
-            }
-            Err(e) => {
-                tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
-            }
+        if let Err(e) = state.runtime.deploy(&spec).await {
+            tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
         }
     }
 
@@ -287,14 +275,20 @@ async fn restart_deployment(
     .execute(&state.db)
     .await;
 
+    // Carry identity + spec forward so the guardian and a subsequent restart keep
+    // working after this restart (RUN-3): k8s_deployment_name = agent UUID string,
+    // plus the ports/image this deployment actually used.
     let new_deploy_id: Option<Uuid> = sqlx::query_scalar(
-        "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id)
-         VALUES ($1, $2, 'running', $3)
+        "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_ports, spec_image)
+         VALUES ($1, $2, 'running', $3, $4, $5, $6)
          RETURNING id",
     )
     .bind(info.agent_id)
     .bind(info.build_id)
     .bind(info.owner_id)
+    .bind(info.agent_id.to_string())
+    .bind(ports.iter().map(|&p| p as i32).collect::<Vec<i32>>())
+    .bind(&image)
     .fetch_optional(&state.db)
     .await
     .ok()
@@ -313,6 +307,11 @@ async fn restart_deployment(
         .await;
         tracing::info!(agent_id = %info.agent_id, "restart: crash fields cleared");
     }
+
+    let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
+        .bind(info.agent_id)
+        .execute(&state.db)
+        .await;
 
     match new_deploy_id {
         Some(id) => (StatusCode::OK, Json(serde_json::json!({ "deployment_id": id }))).into_response(),
