@@ -225,6 +225,8 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             ports,
             env,
         } => {
+            let mut platform_env = state.agent_env(agent_id).await;
+            platform_env.extend(env);
             execute_upload_and_deploy(
                 state.runtime.clone(),
                 state.db.clone(),
@@ -240,8 +242,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 // Inject server LLM secrets at execution — not persisted in the payload (RUN-5).
                 state.config.openai_api_key.clone(),
                 state.config.openai_base_url.clone(),
-                state.config.agent_runtime.clone(),
-                state.config.agent_image_registry.clone(),
             )
             .await;
         }

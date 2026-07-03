@@ -22,7 +22,6 @@ pub struct AppState {
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
-    pub mcp: nasiko_mcp_gateway::McpState,
     pub flow_guard: FlowGuard,
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
@@ -49,20 +48,20 @@ impl AppState {
         Self::from_config_with_db(config, auth, runtime, db).await
     }
 
+    pub async fn run_migrations(db: &PgPool) {
+        sqlx::migrate!("../migrations")
+            .set_ignore_missing(true)
+            .run(db)
+            .await
+            .expect("database migration failed");
+    }
+
     pub async fn from_config_with_db(
         config: Config,
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
         db: PgPool,
     ) -> Self {
-        // ignore_missing: EE migrations (v10+) already applied to the DB must not
-        // cause the OSS migrator to panic; strict on everything else.
-        sqlx::migrate!("../migrations")
-            .set_ignore_missing(true)
-            .run(&db)
-            .await
-            .expect("database migration failed");
-
         let redis = redis::Client::open(config.redis_url.as_str())
             .expect("invalid redis url");
 
@@ -136,10 +135,6 @@ impl AppState {
 
         let (build_tx, build_rx) = mpsc::channel(64);
 
-        // MCP gateway state: reuses the same pool, redis client, and pooled
-        // HTTP client — no duplicated infrastructure.
-        let mcp = nasiko_mcp_gateway::McpState::new(db.clone(), redis.clone(), http_client.clone(), &config);
-
         let state = Self {
             runtime,
             db,
@@ -148,7 +143,6 @@ impl AppState {
             usage_tracker,
             http_client,
             auth,
-            mcp,
             flow_guard,
             flow_events,
             genai_metrics,
@@ -202,5 +196,18 @@ impl AppState {
                 tracing::debug!("materialized views refreshed");
             }
         });
+    }
+
+    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets.
+    pub async fn agent_env(&self, agent_id: uuid::Uuid) -> std::collections::HashMap<String, String> {
+        let mut env = crate::catalog::agent_secrets::resolve_agent_env(&self.db, agent_id).await;
+        if let Some(ref key) = self.config.openai_api_key {
+            env.entry("OPENAI_API_KEY".into()).or_insert_with(|| key.clone());
+        }
+        if let Some(ref url) = self.config.openai_base_url {
+            env.entry("OPENAI_BASE_URL".into()).or_insert_with(|| url.clone());
+        }
+        env.entry("PORT".into()).or_insert_with(|| "8000".into());
+        env
     }
 }

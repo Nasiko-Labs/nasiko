@@ -472,6 +472,14 @@ class ChatPage extends HTMLElement {
                   contentEl.innerHTML = renderMarkdown(fullText);
                   messagesEl.scrollTop = messagesEl.scrollHeight;
                 }
+              } else if (state === "TASK_STATE_FAILED") {
+                const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
+                if (text) {
+                  statusEl.classList.add("is-done");
+                  contentEl.classList.add("is-visible");
+                  contentEl.innerHTML = `<span style="color:var(--color-error)">${this.#esc(text)}</span>`;
+                  messagesEl.scrollTop = messagesEl.scrollHeight;
+                }
               }
               for (const part of msg.parts) {
                 if (part.data) {

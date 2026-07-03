@@ -109,6 +109,7 @@ class AgentCardPage extends HTMLElement {
             <div class="acp-header-tags">${tagsHtml}${moreTag}</div>
           </div>
           <div class="acp-header-actions">
+            ${a.status === 'running' ? `<button class="acp-action-btn" data-action="restart" title="Restart agent">${icons.refresh('', 14)} Restart</button>` : ''}
             ${a.status === 'running' ? `<button class="acp-action-btn" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</button>` : ''}
             <button class="acp-action-btn acp-action-btn--danger" data-action="delete" title="Delete agent">${icons.trash('', 14)} Delete</button>
             <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
@@ -254,7 +255,21 @@ class AgentCardPage extends HTMLElement {
       if (!btn) return;
       const action = btn.dataset.action;
 
-      if (action === 'stop') {
+      if (action === 'restart') {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = 'Restarting...';
+        try {
+          const res = await fetch(`/api/containers/${encodeURIComponent(a.name)}/restart`, { method: 'POST' });
+          if (!res.ok) throw new Error(await res.text());
+          showToast('Agent restarted');
+          location.reload();
+        } catch (err) {
+          showToast(`Failed to restart: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = original;
+        }
+      } else if (action === 'stop') {
         const original = btn.innerHTML;
         btn.disabled = true;
         btn.textContent = 'Stopping...';

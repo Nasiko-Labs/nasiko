@@ -197,7 +197,6 @@ class OrchestratorPage extends HTMLElement {
             const state = statusUpdate.status?.state;
             const msg = statusUpdate.status?.message;
             if (msg && msg.parts) {
-              // Extract text parts as final response on completion
               if (state === 'TASK_STATE_COMPLETED') {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
                 if (text && !fullText) {
@@ -205,6 +204,13 @@ class OrchestratorPage extends HTMLElement {
                   streamStatus.classList.add('is-done');
                   responseContent.classList.add('is-visible');
                   responseContent.textContent = fullText;
+                }
+              } else if (state === 'TASK_STATE_FAILED') {
+                const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
+                if (text) {
+                  streamStatus.classList.add('is-done');
+                  responseContent.classList.add('is-visible');
+                  responseContent.innerHTML = `<span style="color:var(--color-error)">${this.#esc(text)}</span>`;
                 }
               }
               for (const part of msg.parts) {

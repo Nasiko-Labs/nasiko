@@ -11,7 +11,6 @@ use uuid::Uuid;
 use nasiko_runtime::{ContainerId, DeploymentSpec};
 
 use crate::auth::Claims;
-use crate::catalog::agent_secrets;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -242,8 +241,8 @@ async fn restart_deployment(
     // Resolve stored image; fall back to agents.image for pre-migration agents.
     let image = info.spec_image.unwrap_or_else(|| info.image.clone());
 
-    // Resolve agent secrets for environment.
-    let secrets = agent_secrets::resolve_agent_env(&state.db, info.agent_id).await;
+    // Resolve agent environment (platform vars + agent-specific secrets).
+    let secrets = state.agent_env(info.agent_id).await;
 
     if let Some(k8s_name) = &info.k8s_deployment_name {
         // ── K8s path: scale-to-1 (avoids tearing down and recreating the Deployment) ──
@@ -293,10 +292,6 @@ async fn restart_deployment(
             // apply the runtime default (0.5 CPU / 512 MiB). No behavioral regression
             // until the API supports caller-specified resource limits.
             resources: None,
-            // Docker-only path (see the `if`/`else` above) — these fields are
-            // meaningless to DockerRuntime.
-            image_pull_secret_name: None,
-            image_pull_credential_seed: None,
         };
 
         match state.runtime.deploy(&spec).await {
