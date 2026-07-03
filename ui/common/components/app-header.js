@@ -52,7 +52,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       height: 100dvh;
       flex-shrink: 0;
       transition: width 0.2s ease;
-      overflow: hidden;
+      overflow: visible;
     }
   }
 

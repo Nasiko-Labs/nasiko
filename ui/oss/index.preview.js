@@ -19,5 +19,9 @@ export default {
       await page.click("[data-sidebar-toggle]");
       await page.waitForTimeout(250);
     },
+    "user-menu-open": async (page) => {
+      await page.click("[data-user-toggle]");
+      await page.waitForSelector(".user-dropdown.is-visible");
+    },
   },
 };
