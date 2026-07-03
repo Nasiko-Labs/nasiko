@@ -101,7 +101,9 @@ async fn search(server: &common::TestServer, uid: &str, is_super: bool, q: &str)
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    res.json::<Vec<Value>>().await.unwrap()
+    // Agent search returns a {agents, total, max_score} envelope (Python parity).
+    let body: Value = res.json().await.unwrap();
+    body["agents"].as_array().cloned().unwrap_or_default()
 }
 
 async fn update_agent(server: &common::TestServer, uid: &str, agent_id: &str, body: Value) -> Value {

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::catalog::models::Skill;
-use crate::router::models::*;
-use crate::router::providers::{CompletionResult, LLMProvider, ProviderError};
+use nasiko_router::models::*;
+use nasiko_router::providers::{CompletionResult, LLMProvider, ProviderError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedCard {
@@ -29,6 +29,17 @@ pub struct GeneratedCapabilities {
     #[serde(rename = "stateTransitionHistory")]
     pub state_transition_history: bool,
     pub chat_agent: bool,
+}
+
+/// Expand shorthand MIME types to their canonical form, matching Python's
+/// `normalize_mime` (agentcard_generator/tools.py). Unknown values pass through.
+fn normalize_mime(mime_type: &str) -> String {
+    match mime_type {
+        "text" => "text/plain".to_string(),
+        "json" => "application/json".to_string(),
+        "image" => "image/png".to_string(),
+        other => other.to_string(),
+    }
 }
 
 pub struct CapabilityGenerator {
@@ -76,8 +87,20 @@ impl CapabilityGenerator {
 
         let result = self.provider.chat_completion(&request).await?;
 
-        let card: GeneratedCard = serde_json::from_str(&result.content)
+        let mut card: GeneratedCard = serde_json::from_str(&result.content)
             .map_err(|e| GeneratorError::ParseError(e.to_string()))?;
+
+        // Backfill defaults when the model omits modes, then normalize shorthand
+        // MIME types — mirrors Python's agentcard_generator `normalize_mime`.
+        if card.default_input_modes.is_empty() {
+            card.default_input_modes =
+                vec!["application/json".to_string(), "text/plain".to_string()];
+        }
+        if card.default_output_modes.is_empty() {
+            card.default_output_modes = vec!["application/json".to_string()];
+        }
+        card.default_input_modes = card.default_input_modes.iter().map(|m| normalize_mime(m)).collect();
+        card.default_output_modes = card.default_output_modes.iter().map(|m| normalize_mime(m)).collect();
 
         Ok((card, result))
     }
@@ -305,4 +328,23 @@ pub enum GeneratorError {
     Provider(#[from] ProviderError),
     #[error("Failed to parse generated card: {0}")]
     ParseError(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_mime;
+
+    #[test]
+    fn normalizes_shorthand_mime_types() {
+        assert_eq!(normalize_mime("text"), "text/plain");
+        assert_eq!(normalize_mime("json"), "application/json");
+        assert_eq!(normalize_mime("image"), "image/png");
+    }
+
+    #[test]
+    fn passes_through_full_mime_types() {
+        assert_eq!(normalize_mime("text/plain"), "text/plain");
+        assert_eq!(normalize_mime("application/json"), "application/json");
+        assert_eq!(normalize_mime("image/svg+xml"), "image/svg+xml");
+    }
 }

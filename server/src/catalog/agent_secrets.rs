@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use nasiko_secrets::SecretsCrypto;
+use crate::secrets::crypto::SecretsCrypto;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -198,25 +198,33 @@ pub async fn import_user_secrets(
     let user_crypto  = SecretsCrypto::for_user(user_id);
     let agent_crypto = SecretsCrypto::for_agent(agent_id);
 
+    // Decrypt+re-encrypt each secret, then merge them all into `secrets_env` in a
+    // single UPDATE. The previous per-secret loop rewrote the whole row (and its
+    // jsonb) N times; here we build one patch object and merge once.
+    let mut patch = serde_json::Map::with_capacity(rows.len());
     for (name, user_ciphertext) in &rows {
         let plaintext = user_crypto
             .decrypt(user_ciphertext)
             .map_err(|e| format!("failed to decrypt user secret '{}': {}", name, e))?;
         let agent_ciphertext = agent_crypto.encrypt(&plaintext);
-
-        sqlx::query(
-            r#"UPDATE agents
-               SET secrets_env = jsonb_set(COALESCE(secrets_env, '{}'), array[$2], to_jsonb($3::text)),
-                   updated_at = now()
-               WHERE id = $1"#,
-        )
-        .bind(agent_id)
-        .bind(name)
-        .bind(&agent_ciphertext)
-        .execute(db)
-        .await
-        .map_err(|e| e.to_string())?;
+        patch.insert(name.clone(), serde_json::Value::String(agent_ciphertext));
     }
+
+    if patch.is_empty() {
+        return Ok(0);
+    }
+
+    sqlx::query(
+        r#"UPDATE agents
+           SET secrets_env = COALESCE(secrets_env, '{}'::jsonb) || $2::jsonb,
+               updated_at = now()
+           WHERE id = $1"#,
+    )
+    .bind(agent_id)
+    .bind(serde_json::Value::Object(patch))
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
 
     Ok(rows.len())
 }

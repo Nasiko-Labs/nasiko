@@ -623,8 +623,38 @@ const USER_SCORE_SQL: &str =
 #[derive(Deserialize)]
 struct SearchQuery {
     q: String,
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_search_limit")]
     limit: i64,
+}
+
+/// Default page size for agent search — matches Python's `search_agents(limit=10)`.
+/// (The `list` endpoint keeps its own larger default via `default_limit`.)
+fn default_search_limit() -> i64 {
+    10
+}
+
+/// One agent search hit: all agent fields plus its computed relevance `score`.
+/// `_total` is the pre-limit match count (window function) — carried per row and
+/// hoisted into the response envelope, not serialized on each item.
+#[derive(Serialize, sqlx::FromRow)]
+struct AgentSearchResult {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    agent: Agent,
+    #[sqlx(rename = "_score")]
+    score: f64,
+    #[serde(skip)]
+    #[sqlx(rename = "_total")]
+    total: i64,
+}
+
+/// Agent search envelope — mirrors Python's `{agents, total, max_score}` and the
+/// existing `UserSearchResponse` shape so both search surfaces are consistent.
+#[derive(Serialize)]
+struct AgentSearchResponse {
+    agents: Vec<AgentSearchResult>,
+    total: i64,
+    max_score: f64,
 }
 
 /// Agent-only search.  Scoring: GREATEST across (name×2.8, description×2.0, tag score) with tiered
@@ -650,9 +680,13 @@ async fn search(
         }
     };
 
+    // `COUNT(*) OVER()` yields the total match count (post-filter, pre-LIMIT) so
+    // the envelope reports `total` without a second query.
+    // Cast the score to double precision: the CASE/GREATEST numeric literals make
+    // Postgres infer `numeric`, which sqlx cannot decode into f64.
     let sql = format!(
-        r#"SELECT * FROM (
-               SELECT *, {AGENT_SCORE_SQL} AS _score
+        r#"SELECT *, COUNT(*) OVER() AS _total FROM (
+               SELECT *, ({AGENT_SCORE_SQL})::double precision AS _score
                FROM agents
                WHERE ($3::uuid IS NULL OR owner_id = $3)
            ) _s
@@ -662,14 +696,20 @@ async fn search(
     );
 
     let result = sqlx
-        ::query_as::<_, Agent>(&sql)
+        ::query_as::<_, AgentSearchResult>(&sql)
         .bind(&q)
         .bind(sq.limit.clamp(1, 50))
         .bind(owner_filter)
         .fetch_all(&state.db).await;
 
     match result {
-        Ok(agents) => Json(agents).into_response(),
+        Ok(agents) => {
+            // Rows are ORDER BY score DESC → first is the max; total is the shared
+            // window count (0 when there are no hits).
+            let max_score = agents.first().map(|a| a.score).unwrap_or(0.0);
+            let total = agents.first().map(|a| a.total).unwrap_or(0);
+            Json(AgentSearchResponse { agents, total, max_score }).into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "agents search: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
@@ -716,7 +756,7 @@ async fn search_users(
     let sql = format!(
         r#"SELECT id, username, display_name, email, score FROM (
                SELECT id, username, display_name, email,
-                      {USER_SCORE_SQL} AS score
+                      ({USER_SCORE_SQL})::double precision AS score
                FROM users
                WHERE deleted_at IS NULL
            ) _s

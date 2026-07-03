@@ -42,14 +42,75 @@ pub fn tar_directory(dir: &std::path::Path) -> Result<Vec<u8>, String> {
 }
 
 /// Decompress and unpack a gzipped tar archive into `dest`.
+///
+/// Hardened like the zip path (`routes::extract_zip_reader`): link entries
+/// (symlinks / hardlinks) are rejected outright — they are the classic tar
+/// traversal/escape vector — and every regular entry's path is validated to be
+/// relative, `..`-free, and contained within `dest` before it is written. File
+/// count and uncompressed size are capped to bound tar-bomb / disk-exhaustion.
 pub fn extract_tar_gzip(data: &[u8], dest: &std::path::Path) -> Result<(), String> {
     use flate2::read::GzDecoder;
     use tar::Archive;
 
+    const MAX_TAR_FILES: usize = 1_000;
+    const MAX_TAR_UNCOMPRESSED: u64 = 200 * 1024 * 1024; // 200 MiB
+
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let decoder = GzDecoder::new(std::io::Cursor::new(data));
     let mut archive = Archive::new(decoder);
-    archive.unpack(dest).map_err(|e| e.to_string())?;
+
+    let mut count: usize = 0;
+    let mut uncompressed_total: u64 = 0;
+
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let etype = entry.header().entry_type();
+
+        // Reject link entries — extracting them would let an archive plant a
+        // symlink/hardlink that escapes `dest` on a later write.
+        if etype.is_symlink() || etype.is_hard_link() {
+            let p = entry.path().map(|p| p.into_owned()).unwrap_or_default();
+            return Err(format!("tar contains a link entry which is not allowed: {}", p.display()));
+        }
+
+        count += 1;
+        if count > MAX_TAR_FILES {
+            return Err(format!("tar contains more than {MAX_TAR_FILES} entries"));
+        }
+
+        // Path-traversal guard: reject absolute paths and any `..` component,
+        // then confirm the joined path stays inside `dest`.
+        let rel = entry.path().map_err(|e| e.to_string())?.into_owned();
+        if rel.is_absolute()
+            || rel.components().any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(format!("tar traversal attempt: {}", rel.display()));
+        }
+        let out_path = dest.join(&rel);
+        if !out_path.starts_with(dest) {
+            return Err(format!("tar traversal attempt (join escaped dest): {}", rel.display()));
+        }
+
+        if etype.is_dir() {
+            std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        // Tar-bomb guard: check declared size before writing.
+        uncompressed_total = uncompressed_total
+            .saturating_add(entry.header().size().unwrap_or(0));
+        if uncompressed_total > MAX_TAR_UNCOMPRESSED {
+            return Err(format!(
+                "tar uncompressed size exceeds {MAX_TAR_UNCOMPRESSED} bytes — possible tar bomb"
+            ));
+        }
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut out = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
