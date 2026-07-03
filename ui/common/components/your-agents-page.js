@@ -1,28 +1,35 @@
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
-import '/common/components/smart-table.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-badge.js';
 
 import styles from './your-agents-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-const STATUS_VARIANTS = { running: 'success', stopped: 'warning', failed: 'error', deploying: 'info', starting: 'info', registered: 'neutral' };
-
 class YourAgentsPage extends HTMLElement {
+  #agents = [];
+
   connectedCallback() {
     this.innerHTML = `
       <div class="page-header">
-        <h1 class="page-title">Your Agents</h1>
-        <p class="page-desc">Deployed agent containers you manage.</p>
+        <div class="page-header-top">
+          <div>
+            <h1 class="page-title">Your Agents</h1>
+            <p class="page-desc">Deployed agent containers you manage.</p>
+          </div>
+        </div>
+        <div class="stats-bar" id="stats-bar"></div>
       </div>
-      <smart-table
-        data-fn="fetchContainers"
-        search
-        search-placeholder="Search your agents..."
-        limit="15"
-      ></smart-table>
+      <div class="toolbar">
+        <div class="search-wrap">
+          <span class="search-icon">${icons.search('', 18)}</span>
+          <input type="search" id="search-input" placeholder="Search agents..." />
+        </div>
+      </div>
+      <div class="agents-grid" id="agents-grid">
+        ${this.#skeletonCards()}
+      </div>
 
       <app-modal id="deploy-modal" heading="Deploy Agent">
         <div class="modal-section">
@@ -45,25 +52,90 @@ class YourAgentsPage extends HTMLElement {
       </app-modal>
     `;
 
-    const table = this.querySelector('smart-table');
-    table.columns = [
-      { key: 'name', label: 'Name', width: '20%', render: (v, row) => `<a href="/agent.html?id=${this.#escAttr(row.id)}" style="color:var(--color-primary);text-decoration:none;font-weight:500;">${this.#esc(row.display_name || v)}</a>` },
-      { key: 'image', label: 'Image', width: '22%', render: (v) => `<code style="font-size:var(--font-size-xs);background:var(--color-bg-base);padding:2px 6px;border-radius:var(--radius-sm);">${this.#esc(v || '—')}</code>` },
-      { key: 'status', label: 'Status', width: '12%', render: (v) => `<app-badge variant="${STATUS_VARIANTS[v] || 'neutral'}">${v}</app-badge>` },
-      { key: 'version', label: 'Version', width: '8%', render: (v) => v || '—' },
-      { key: 'actions', label: '', width: '20%', render: (_, row) => {
-        const esc = (s) => (s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        if (row.status === 'running') {
-          return `<div style="display:flex;gap:var(--space-xs);">
-            <app-button size="xs" data-action="restart" data-name="${esc(row.name)}">Restart</app-button>
-            <app-button size="xs" variant="ghost" data-action="stop" data-name="${esc(row.name)}">Stop</app-button>
-          </div>`;
-        }
-        return `<app-button size="xs" variant="primary" data-action="deploy" data-id="${esc(row.id)}" data-name="${esc(row.name)}" data-image="${esc(row.image || '')}">Deploy</app-button>`;
-      }},
-    ];
+    this.querySelector('#search-input').addEventListener('input', () => this.#renderGrid());
+    this.#setupModal();
+    this.#load();
+  }
 
-    // Deploy modal state
+  async #load() {
+    const result = await window.fetchContainers('', 1, 100);
+    this.#agents = result.data || [];
+    this.#renderStats();
+    this.#renderGrid();
+  }
+
+  #renderStats() {
+    const running = this.#agents.filter(a => a.status === 'running').length;
+    const stopped = this.#agents.filter(a => a.status === 'stopped').length;
+    const errored = this.#agents.filter(a => a.status === 'error' || a.status === 'failed').length;
+    this.querySelector('#stats-bar').innerHTML = `
+      <div class="stat-chip"><span class="stat-dot stat-dot--running"></span>${running} running</div>
+      <div class="stat-chip"><span class="stat-dot stat-dot--stopped"></span>${stopped} stopped</div>
+      ${errored ? `<div class="stat-chip"><span class="stat-dot stat-dot--error"></span>${errored} error</div>` : ''}
+      <div class="stat-chip stat-chip--total">${this.#agents.length} total</div>
+    `;
+  }
+
+  #skeletonCards() {
+    return Array.from({ length: 4 }, () => `
+      <div class="agent-card">
+        <div style="width:50%;height:1.1em;background:var(--color-border);border-radius:var(--radius-sm);"></div>
+        <div style="width:80%;height:0.8em;background:var(--color-border);border-radius:var(--radius-sm);margin-top:var(--space-sm);"></div>
+        <div style="width:40%;height:0.8em;background:var(--color-border);border-radius:var(--radius-sm);margin-top:var(--space-xs);"></div>
+      </div>
+    `).join('');
+  }
+
+  #renderGrid() {
+    const q = (this.querySelector('#search-input')?.value || '').toLowerCase();
+    let filtered = this.#agents;
+    if (q) {
+      filtered = filtered.filter(a =>
+        (a.display_name || a.name || '').toLowerCase().includes(q) ||
+        (a.image || '').toLowerCase().includes(q)
+      );
+    }
+
+    const grid = this.querySelector('#agents-grid');
+    if (!filtered.length) {
+      grid.innerHTML = '<div class="empty-state">No agents found.</div>';
+      return;
+    }
+
+    grid.innerHTML = filtered.map(a => {
+      const name = a.display_name || a.name;
+      const isRunning = a.status === 'running';
+      const isError = a.status === 'error' || a.status === 'failed';
+
+      return `
+        <div class="agent-card${isError ? ' agent-card--error' : ''}">
+          <div class="agent-card-header">
+            <div class="agent-card-icon">${icons.cube('', 20)}</div>
+            <div class="agent-card-status">
+              <span class="status-dot status-dot--${a.status}"></span>
+              <span class="status-label">${a.status}</span>
+            </div>
+          </div>
+          <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
+          <div class="agent-card-meta">
+            <code class="agent-card-image">${this.#esc(a.image || '—')}</code>
+            ${a.version ? `<span class="agent-card-version">v${this.#esc(a.version)}</span>` : ''}
+          </div>
+          <div class="agent-card-actions">
+            ${isRunning ? `
+              <button class="card-action-btn" data-action="restart" data-name="${this.#escAttr(a.name)}" title="Restart">${icons.refresh('', 14)} Restart</button>
+              <button class="card-action-btn" data-action="stop" data-name="${this.#escAttr(a.name)}" title="Stop">${icons.square('', 12)} Stop</button>
+            ` : `
+              <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || '')}">Deploy</button>
+            `}
+            <button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" title="Delete">${icons.trash('', 14)}</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  #setupModal() {
     let deployAgentId = null;
     let deployAgentName = null;
     let deployImage = null;
@@ -124,7 +196,6 @@ class YourAgentsPage extends HTMLElement {
 
     const deployBtn = this.querySelector('#deploy-confirm');
     deployBtn.addEventListener('click', withLoading(deployBtn, 'Deploying…', async () => {
-      // Import selected user secrets into agent secrets
       if (selectedSecrets.size > 0 && deployAgentId) {
         await fetch(`/api/catalog/agents/${deployAgentId}/secrets/import`, {
           method: 'POST',
@@ -133,7 +204,6 @@ class YourAgentsPage extends HTMLElement {
         });
       }
 
-      // Save inline env vars as agent secrets
       const rows = envRows.querySelectorAll('.env-row');
       for (const row of rows) {
         const inputs = row.querySelectorAll('input');
@@ -147,7 +217,6 @@ class YourAgentsPage extends HTMLElement {
         });
       }
 
-      // Deploy container
       const res = await fetch('/api/containers/pull', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -160,11 +229,10 @@ class YourAgentsPage extends HTMLElement {
       if (!res.ok) throw new Error(await res.text());
 
       modal.close();
-      table.refresh();
+      this.#load();
       showToast(`Deployed ${deployAgentName}`);
     }));
 
-    // Action clicks
     this.addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-action]');
       if (!btn) return;
@@ -178,7 +246,6 @@ class YourAgentsPage extends HTMLElement {
         selectedSecrets.clear();
         secretsSection.style.display = 'none';
 
-        // Load existing agent secrets to pre-fill
         try {
           const res = await fetch(`/api/catalog/agents/${deployAgentId}/secrets`);
           if (res.ok) {
@@ -195,9 +262,22 @@ class YourAgentsPage extends HTMLElement {
         const name = btn.dataset.name;
         try {
           await fetch(`/api/containers/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
-          table.refresh();
+          this.#load();
+          showToast(`${action === 'restart' ? 'Restarted' : 'Stopped'} ${name}`);
         } catch (err) {
           showToast(`Failed to ${action}: ${err.message}`);
+        }
+      } else if (action === 'delete') {
+        const name = btn.dataset.name;
+        const id = btn.dataset.id;
+        if (!confirm(`Delete agent "${name}"? This will stop the container and remove it from the registry.`)) return;
+        try {
+          const res = await fetch(`/api/catalog/agents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          if (!res.ok) throw new Error(await res.text());
+          this.#load();
+          showToast(`Deleted ${name}`);
+        } catch (err) {
+          showToast(`Failed to delete: ${err.message}`);
         }
       }
     });
@@ -210,7 +290,7 @@ class YourAgentsPage extends HTMLElement {
   }
 
   #escAttr(s) {
-    return (s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 }
 

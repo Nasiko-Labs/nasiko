@@ -24,13 +24,5 @@ pub async fn static_handler(req: Request<Body>) -> Response {
         return ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response();
     }
 
-    // SPA fallback: serve index.html for .html paths that don't exist
-    if (path.ends_with(".html") || !path.contains('.'))
-        && let Some(file) = OssAssets::get("index.html")
-    {
-        let mime = mime_guess::from_path("index.html").first_or_octet_stream();
-        return ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response();
-    }
-
     StatusCode::NOT_FOUND.into_response()
 }

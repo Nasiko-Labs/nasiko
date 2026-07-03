@@ -129,7 +129,7 @@ class AgentsPage extends HTMLElement {
         <div class="card-name">${a.display_name || a.name}</div>
         <div class="card-tags">${(a.tags || []).map((t) => `<span class="tag">${t}</span>`).join("")}</div>
         <div class="card-desc">${a.description || ""}</div>
-        <a class="card-btn" href="/chat.html?agent_id=${a.id}&agent_name=${encodeURIComponent(a.display_name || a.name)}">Start session</a>
+        <a class="card-btn" href="/agent-card.html?id=${a.id}">View agent</a>
       </div>
     `,
       )

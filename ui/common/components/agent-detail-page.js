@@ -62,7 +62,7 @@ class AgentDetailPage extends HTMLElement {
         </div>
         <div class="header-actions">
           <a class="action-btn is-primary" href="/chat.html?agent_id=${a.id}">Chat</a>
-          <a class="action-btn" href="/agent-card.html?id=${a.id}">View Card</a>
+          <a class="action-btn" href="/agent-card.html?id=${a.id}">Agent Card</a>
         </div>
       </div>
 
