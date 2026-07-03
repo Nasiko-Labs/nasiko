@@ -633,10 +633,27 @@ fn to_sse(event: StreamResponse) -> Event {
 
 async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
     // Prefer live runtime endpoint (Docker port mapping can change on restart).
-    let container_id = nasiko_runtime::ContainerId::new(agent_name);
-    if let Ok(endpoint) = state.runtime.endpoint(&container_id).await {
-        let base = endpoint.trim_end_matches('/');
-        return Ok(format!("{base}/jsonrpc"));
+    let container_id = nasiko_runtime::ContainerId::new(agent_name.to_owned());
+    match state.runtime.endpoint(&container_id).await {
+        Ok(endpoint) => {
+            let base = endpoint.trim_end_matches('/');
+            return Ok(format!("{base}/jsonrpc"));
+        }
+        Err(_) => {
+            // Container not reachable via runtime — check if it's actually stopped.
+            if let Ok(status) = state.runtime.status(&container_id).await {
+                if status.state != nasiko_runtime::RuntimeState::Running {
+                    // Mark as stopped so future routing skips it.
+                    let _ = sqlx::query(
+                        "UPDATE agents SET status = 'stopped' WHERE name = $1 AND status = 'running'",
+                    )
+                    .bind(agent_name)
+                    .execute(&state.db)
+                    .await;
+                    return Err(format!("agent '{agent_name}' is not running"));
+                }
+            }
+        }
     }
 
     // Fall back to stored URL (e.g. external agents, K8s with stable DNS).

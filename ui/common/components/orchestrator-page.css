@@ -3,13 +3,11 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
     min-height: calc(100dvh - 80px);
     padding: var(--space-md);
-    transition: min-height 0.3s;
+    padding-top: calc(25dvh - 40px);
   }
   :scope.has-response {
-    justify-content: flex-start;
     min-height: auto;
     padding-top: var(--space-md);
   }
@@ -29,6 +27,11 @@
     width: min(100%, 680px);
     min-height: 88px;
     transition: margin-bottom 0.3s;
+    contain: layout style;
+  }
+  .input-wrap voice-input:not(:defined) {
+    display: block;
+    height: 88px;
   }
   .response-area {
     width: min(100%, 680px);

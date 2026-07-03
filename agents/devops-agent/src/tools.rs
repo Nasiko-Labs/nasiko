@@ -78,6 +78,23 @@ pub fn definitions() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for DevOps documentation, tutorials, best practices, or troubleshooting guides. Use when existing tools don't cover the question.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for web results"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
     ]
 }
 
@@ -87,6 +104,7 @@ pub async fn execute(name: &str, arguments: &str) -> String {
         "github_actions_runs" => github_actions_runs(arguments).await,
         "docker_hub_search" => docker_hub_search(arguments).await,
         "check_endpoint" => check_endpoint(arguments).await,
+        "web_search" => web_search(arguments).await,
         _ => Err(format!("Unknown tool: {name}")),
     };
 
@@ -297,6 +315,77 @@ async fn check_endpoint(arguments: &str) -> Result<String, String> {
             }
         }
     }
+}
+
+async fn web_search(arguments: &str) -> Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
+    let query = args["query"].as_str().ok_or("missing 'query'")?;
+
+    let url = format!("https://html.duckduckgo.com/html/?q={}", urlencode(query));
+
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("search failed (HTTP {})", resp.status()));
+    }
+
+    let body = resp.text().await.map_err(|e| format!("read failed: {e}"))?;
+
+    let mut results: Vec<String> = Vec::new();
+    let link_parts: Vec<&str> = body.split("class=\"result__a\"").collect();
+    let snippet_parts: Vec<&str> = body.split("class=\"result__snippet\"").collect();
+
+    for (i, link_chunk) in link_parts.iter().enumerate().skip(1) {
+        if results.len() >= 5 {
+            break;
+        }
+
+        let href = extract_between(link_chunk, "href=\"", "\"").unwrap_or_default();
+        let title = extract_between(link_chunk, ">", "</a>")
+            .unwrap_or_default()
+            .replace("<b>", "")
+            .replace("</b>", "");
+
+        let snippet = if i < snippet_parts.len() {
+            extract_between(snippet_parts[i], ">", "</a>")
+                .unwrap_or_default()
+                .replace("<b>", "")
+                .replace("</b>", "")
+                .trim()
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        if !title.is_empty() {
+            let mut entry = format!("**{title}**\n  URL: {href}");
+            if !snippet.is_empty() {
+                entry.push_str(&format!("\n  {snippet}"));
+            }
+            results.push(entry);
+        }
+    }
+
+    if results.is_empty() {
+        return Ok(format!("No web results found for '{query}'."));
+    }
+
+    Ok(format!("Web results for '{query}':\n\n{}", results.join("\n\n")))
+}
+
+fn extract_between<'a>(text: &'a str, start: &str, end: &str) -> Option<String> {
+    let start_idx = text.find(start)? + start.len();
+    let remaining = &text[start_idx..];
+    let end_idx = remaining.find(end)?;
+    Some(remaining[..end_idx].to_string())
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

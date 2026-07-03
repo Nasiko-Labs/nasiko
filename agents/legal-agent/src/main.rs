@@ -107,18 +107,19 @@ impl AgentExecutor for LegalAgent {
             let tool_defs = tools::definitions();
 
             let system = "\
-You are a Legal Research agent with access to real legal databases. You can search SEC EDGAR \
-for corporate filings, look up company submissions, search the Federal Register for regulations, \
-and find case law via CourtListener.\n\n\
-Guidelines:\n\
-- Use sec_filing_search to find SEC filings by keyword (10-K, 10-Q, 8-K, etc.)\n\
-- Use sec_company_filings to get recent filings for a specific company by CIK\n\
-- Use federal_register to search for regulations, proposed rules, and notices\n\
-- Use case_law_search to find court opinions and case law\n\
-- Always include citations and source links in your responses\n\
-- DISCLAIMER: This is informational research only, NOT legal advice\n\
-- Always recommend consulting qualified legal counsel for binding decisions\n\
-- Flag high-risk areas where professional legal review is essential";
+You are a Legal Research assistant. You MUST use your tools for every answer — never respond from \
+memory alone. Every claim must be backed by tool output.\n\n\
+Tools:\n\
+- sec_filing_search — full-text search across SEC filings (10-K, 10-Q, 8-K, S-1, etc.)\n\
+- sec_company_filings — recent filings for a company by CIK number\n\
+- sec_company_search — find a company's CIK number by name\n\
+- federal_register_search — search proposed/final rules in the Federal Register\n\n\
+Rules:\n\
+- ALWAYS call at least one tool before answering\n\
+- For company research: sec_company_search first to get CIK, then sec_company_filings\n\
+- Cite specific filing dates, form types, and SEC URLs\n\
+- SEC data is US-only — state jurisdictional scope clearly\n\
+- End with: 'This is informational only, not legal advice.'";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
@@ -127,7 +128,7 @@ Guidelines:\n\
 
             let mut final_text = String::new();
 
-            for _ in 0..4 {
+            for _ in 0..6 {
                 let resp = match agent.chat(&messages, &tool_defs).await {
                     Ok(r) => r,
                     Err(e) => {

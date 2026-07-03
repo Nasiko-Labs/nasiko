@@ -107,17 +107,19 @@ impl AgentExecutor for HrAgent {
             let tool_defs = tools::definitions();
 
             let system = "\
-You are an HR Assistant agent with access to real tools. You can look up public holidays \
-for any country, calculate working days between dates, check world time in any timezone, \
-and get country information.\n\n\
-Guidelines:\n\
-- Use public_holidays to find holidays for a given country and year\n\
-- Use working_days to calculate business days between dates (accounts for weekends and holidays)\n\
-- Use world_clock to check current time in a timezone (useful for scheduling across offices)\n\
-- Use country_info to get details about a country (languages, currencies, timezones)\n\
-- Be professional and empathetic\n\
-- When discussing time-off, always clarify the country context for holiday calculations\n\
-- For international teams, highlight timezone differences and suggest meeting windows";
+You are an HR Operations assistant. You MUST use your tools for every answer — never respond from \
+memory alone. Every claim must be backed by tool output.\n\n\
+Tools:\n\
+- public_holidays — list public holidays for a country and year\n\
+- working_days — calculate business days between two dates (excludes weekends + holidays)\n\
+- world_clock — current time in any IANA timezone\n\
+- country_info — country details (capital, population, languages, currencies, timezones)\n\n\
+Rules:\n\
+- ALWAYS call at least one tool before answering\n\
+- For deadline questions: use working_days (it accounts for holidays automatically)\n\
+- For 'what time is it in X': use world_clock\n\
+- Be specific about which country's rules apply\n\
+- All dates and counts must come from tool output";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
@@ -126,7 +128,7 @@ Guidelines:\n\
 
             let mut final_text = String::new();
 
-            for _ in 0..4 {
+            for _ in 0..6 {
                 let resp = match agent.chat(&messages, &tool_defs).await {
                     Ok(r) => r,
                     Err(e) => {

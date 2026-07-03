@@ -90,12 +90,20 @@ impl AgentExecutor for PaperAgent {
             let tool_defs = tools::definitions();
 
             let system = "\
-You are a research assistant. You have access to arXiv, Semantic Scholar, and Wikipedia.\n\n\
+You are a research assistant. You MUST use your tools for every answer — never respond from \
+memory alone. Every claim must be backed by tool output.\n\n\
+Tools:\n\
+- arxiv_search — find papers (use sort_by=submittedDate for 'latest' queries)\n\
+- semantic_scholar — search with citation counts and influential citation data\n\
+- semantic_scholar_paper — detailed info on a specific paper (abstract, references, TL;DR)\n\
+- wikipedia_summary — background context on concepts\n\n\
 Rules:\n\
-- Use at most 2-3 tool calls total. One search is usually enough.\n\
-- Pick the single best tool for the query: semantic_scholar for well-known topics, arxiv_search for cutting-edge/recent work.\n\
-- Do NOT call semantic_scholar_paper for every result — only if the user asks about a specific paper.\n\
-- Synthesize a concise answer citing titles, authors, year, and links.";
+- ALWAYS call at least one tool before answering\n\
+- For recent/latest work: use arxiv_search with sort_by=submittedDate\n\
+- For influential/seminal work: use semantic_scholar (has citation counts)\n\
+- Always cite: title, authors, year, and link\n\
+- Include citation counts when available — they indicate paper impact\n\
+- Synthesize findings concisely; don't just list raw results";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
@@ -104,7 +112,7 @@ Rules:\n\
 
             let mut final_text = String::new();
 
-            for _ in 0..4 {
+            for _ in 0..6 {
                 let resp = match agent.chat(&messages, &tool_defs).await {
                     Ok(r) => r,
                     Err(e) => {

@@ -107,16 +107,20 @@ impl AgentExecutor for DevOpsAgent {
             let tool_defs = tools::definitions();
 
             let system = "\
-You are a DevOps Engineer agent with access to real tools. You can look up GitHub repositories, \
-check CI/CD workflow runs, search Docker Hub for images, and check endpoint health.\n\n\
-Guidelines:\n\
-- Use github_repo_info to get repository details (stars, forks, language, issues)\n\
-- Use github_actions_runs to check recent CI/CD pipeline status\n\
-- Use docker_hub_search to find container images\n\
-- Use check_endpoint to verify if a service is responding and measure latency\n\
-- Be concise and actionable — suggest specific commands when applicable\n\
-- When troubleshooting, start with the most likely cause\n\
-- Always consider blast radius and rollback strategies for production changes";
+You are a DevOps Engineer agent. You MUST use your tools for every answer — never respond from \
+memory alone. Every claim must be backed by tool output.\n\n\
+Tools:\n\
+- github_repo_info — repository details (stars, forks, language, issues)\n\
+- github_actions_runs — recent CI/CD workflow run status\n\
+- docker_hub_search — find container images\n\
+- check_endpoint — verify service health and latency\n\
+- web_search — documentation, tutorials, best practices, troubleshooting\n\n\
+Rules:\n\
+- ALWAYS call at least one tool before answering\n\
+- For how-to questions, use web_search to find current documentation\n\
+- For repo questions, use github_repo_info or github_actions_runs\n\
+- Cite your sources (URLs from tool results)\n\
+- Be concise and actionable";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
@@ -245,6 +249,14 @@ async fn main() {
                 description: "Search Docker Hub for container images".into(),
                 tags: vec!["devops".into(), "docker".into(), "containers".into()],
                 examples: Some(vec!["Find official PostgreSQL images on Docker Hub".into()]),
+                input_modes: None, output_modes: None, security_requirements: None,
+            },
+            AgentSkill {
+                id: "web-search".into(),
+                name: "Web Search".into(),
+                description: "Search the web for DevOps documentation, tutorials, and best practices".into(),
+                tags: vec!["devops".into(), "documentation".into(), "search".into()],
+                examples: Some(vec!["How do I set up GitHub Actions for Rust?".into()]),
                 input_modes: None, output_modes: None, security_requirements: None,
             },
         ],

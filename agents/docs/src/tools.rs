@@ -13,6 +13,11 @@ pub fn definitions() -> Vec<serde_json::Value> {
                         "query": {
                             "type": "string",
                             "description": "Crate name or search query"
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["downloads", "relevance", "recent-downloads"],
+                            "description": "Sort order for results (default: downloads)"
                         }
                     },
                     "required": ["query"]
@@ -112,6 +117,23 @@ pub fn definitions() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for information. Use when you need to find documentation, blog posts, comparisons, or any information not available through package registries. Good for 'latest', 'best', 'comparison' queries.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
     ]
 }
 
@@ -123,6 +145,7 @@ pub async fn execute(name: &str, arguments: &str) -> String {
         "npm_package" => npm_package(arguments).await,
         "pypi_package" => pypi_package(arguments).await,
         "github_readme" => github_readme(arguments).await,
+        "web_search" => web_search(arguments).await,
         _ => Err(format!("Unknown tool: {name}")),
     };
 
@@ -135,8 +158,13 @@ pub async fn execute(name: &str, arguments: &str) -> String {
 async fn crates_io_search(arguments: &str) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
     let query = args["query"].as_str().ok_or("missing 'query'")?;
+    let sort = args["sort"].as_str().unwrap_or("downloads");
 
-    let url = format!("https://crates.io/api/v1/crates?q={}&per_page=5", urlencode(query));
+    let url = format!(
+        "https://crates.io/api/v1/crates?q={}&per_page=10&sort={}",
+        urlencode(query),
+        urlencode(sort),
+    );
 
     let resp = reqwest::Client::new()
         .get(&url)
@@ -416,6 +444,84 @@ async fn github_readme(arguments: &str) -> Result<String, String> {
     } else {
         Ok(body)
     }
+}
+
+async fn web_search(arguments: &str) -> Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
+    let query = args["query"].as_str().ok_or("missing 'query'")?;
+
+    let url = format!("https://html.duckduckgo.com/html/?q={}", urlencode(query));
+
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("search failed (HTTP {})", resp.status()));
+    }
+
+    let body = resp.text().await.map_err(|e| format!("read failed: {e}"))?;
+
+    let mut results: Vec<String> = Vec::new();
+
+    // DuckDuckGo HTML results have <a class="result__a" href="URL">TITLE</a>
+    // and <a class="result__snippet">SNIPPET</a>
+    let link_parts: Vec<&str> = body.split("class=\"result__a\"").collect();
+    let snippet_parts: Vec<&str> = body.split("class=\"result__snippet\"").collect();
+
+    for (i, link_chunk) in link_parts.iter().enumerate().skip(1) {
+        if results.len() >= 5 {
+            break;
+        }
+
+        // After split on class="result__a", chunk starts with ` href="URL">TITLE</a>`
+        let href = extract_between(link_chunk, "href=\"", "\"").unwrap_or_default();
+
+        // Title is between first > and </a>
+        let title = extract_between(link_chunk, ">", "</a>")
+            .unwrap_or_default()
+            .replace("<b>", "")
+            .replace("</b>", "");
+
+        // Get snippet from the corresponding snippet part
+        let snippet = if i < snippet_parts.len() {
+            extract_between(snippet_parts[i], ">", "</a>")
+                .unwrap_or_default()
+                .replace("<b>", "")
+                .replace("</b>", "")
+                .trim()
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        if !title.is_empty() && !href.is_empty() {
+            let mut entry = format!("**{}**\n  {}", title.trim(), href);
+            if !snippet.is_empty() {
+                entry.push_str(&format!("\n  {snippet}"));
+            }
+            results.push(entry);
+        }
+    }
+
+    if results.is_empty() {
+        return Ok(format!("No web results found for '{query}'."));
+    }
+
+    Ok(results.join("\n\n"))
+}
+
+fn extract_between<'a>(s: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let start_idx = s.find(start)? + start.len();
+    let rest = &s[start_idx..];
+    let end_idx = rest.find(end)?;
+    Some(&rest[..end_idx])
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

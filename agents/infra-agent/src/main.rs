@@ -107,16 +107,20 @@ impl AgentExecutor for InfraAgent {
             let tool_defs = tools::definitions();
 
             let system = "\
-You are an Infrastructure agent with access to real tools. You can search the Terraform Registry \
-for modules and providers, perform DNS lookups, and get IP geolocation info.\n\n\
-Guidelines:\n\
-- Use terraform_modules to find reusable Terraform modules for any infrastructure need\n\
-- Use terraform_provider to get details about a specific Terraform provider\n\
-- Use dns_lookup to resolve DNS records (A, AAAA, CNAME, MX, TXT, NS)\n\
-- Use ip_info to get geolocation and network info for an IP address\n\
-- When recommending Terraform modules, prefer official/verified ones with high download counts\n\
-- For DNS issues, check multiple record types to build a complete picture\n\
-- Always consider security implications (e.g., exposed IPs, missing DNS records)";
+You are an Infrastructure Engineer assistant. You MUST use your tools for every answer — never \
+respond from memory alone. Every claim must be backed by tool output.\n\n\
+Tools:\n\
+- terraform_modules — search Terraform Registry for IaC modules\n\
+- terraform_provider — provider details (version, downloads, tier, source repo)\n\
+- dns_lookup — resolve DNS records (A, AAAA, CNAME, MX, TXT, etc.)\n\
+- ssl_check — verify TLS certificates and expiry dates\n\
+- ip_info — IP geolocation and network information\n\n\
+Rules:\n\
+- ALWAYS call at least one tool before answering\n\
+- For 'find a Terraform module for X': use terraform_modules\n\
+- For domain diagnostics: dns_lookup first, then ssl_check\n\
+- Always include specific versions and pin recommendations\n\
+- All data must come from tool output, never from memory";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
@@ -125,7 +129,7 @@ Guidelines:\n\
 
             let mut final_text = String::new();
 
-            for _ in 0..4 {
+            for _ in 0..6 {
                 let resp = match agent.chat(&messages, &tool_defs).await {
                     Ok(r) => r,
                     Err(e) => {

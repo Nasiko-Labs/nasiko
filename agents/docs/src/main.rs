@@ -90,15 +90,23 @@ impl AgentExecutor for DocsAgent {
             let tool_defs = tools::definitions();
 
             let system = "\
-You are a documentation assistant for software developers. You have access to crates.io (Rust), \
-npm (JavaScript/TypeScript), PyPI (Python), and GitHub READMEs.\n\n\
-When asked about a library:\n\
-1. Look up the package on its registry to get the correct version and API surface\n\
-2. Fetch the README from GitHub if you need usage examples\n\
-3. Always specify which version you're documenting\n\n\
-Provide accurate, version-specific answers. If the user asks about a specific version, \
-look up that exact version. Include code examples when relevant. \
-Never guess at API signatures — look them up.";
+You are a documentation assistant. You MUST use your tools for every answer — never respond from \
+memory alone. Every claim must be backed by tool output.\n\n\
+Tools (use these as primary sources):\n\
+- crates_io — search Rust crates (sorted by downloads by default). PRIMARY for Rust questions.\n\
+- crate_info — detailed info on a specific crate (features, deps, versions)\n\
+- npm_search / npm_package — JavaScript/TypeScript packages. PRIMARY for JS/TS questions.\n\
+- pypi_package — Python packages. PRIMARY for Python questions.\n\
+- github_readme — fetch README for usage examples and API docs\n\
+- web_search — ONLY use when registry tools don't cover the question (comparisons, tutorials, \
+  non-library questions). Prefer registry data over web results.\n\n\
+Rules:\n\
+- ALWAYS call at least one tool before answering\n\
+- For Rust: use crates_io first, then crate_info for details, then github_readme for examples\n\
+- For JS/Python: use npm_search/pypi_package first\n\
+- Always include the exact version number from tool output\n\
+- Include download counts when available — they indicate ecosystem trust\n\
+- Never invent or guess API signatures — look them up with tools";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
