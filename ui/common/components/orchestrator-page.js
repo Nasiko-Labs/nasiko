@@ -14,7 +14,12 @@ import styles from './orchestrator-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class OrchestratorPage extends HTMLElement {
+  #initialized = false;
+
   connectedCallback() {
+    if (this.#initialized) return;
+    this.#initialized = true;
+
     this.innerHTML = `
       <h1 class="title">What can I help you with?</h1>
       <div class="input-wrap">

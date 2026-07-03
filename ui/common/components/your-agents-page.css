@@ -1,3 +1,11 @@
+your-agents-page:not(:defined) {
+  display: block;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md);
+  min-height: 400px;
+}
+
 @keyframes skel-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }

@@ -1,3 +1,19 @@
+usage-page:not(:defined) {
+  display: block;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md);
+  min-height: 400px;
+}
+
+@keyframes usage-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes usage-skel-pulse { from, to { opacity: 1; } }
+}
+
 @scope (usage-page) {
   :scope {
     display: block;
@@ -71,5 +87,21 @@
     border-color: var(--color-primary);
     background: color-mix(in srgb, var(--color-primary) 10%, transparent);
     color: var(--color-text-main);
+  }
+
+  /* ── Skeleton loading ────────────────────────────────────────────────── */
+  .skel-line {
+    border-radius: var(--radius-sm);
+    background: var(--color-border);
+    animation: usage-skel-pulse 1.5s ease-in-out infinite;
+  }
+  .skel-line--label {
+    width: 60%;
+    height: 0.7em;
+  }
+  .skel-line--value {
+    width: 40%;
+    height: 1.5em;
+    margin-top: var(--space-sm);
   }
 }

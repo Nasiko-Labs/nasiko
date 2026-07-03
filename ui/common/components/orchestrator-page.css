@@ -1,3 +1,32 @@
+orchestrator-page:not(:defined) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: calc(100dvh - 80px);
+  padding: var(--space-md);
+  padding-top: calc(25dvh - 40px);
+}
+
+@keyframes orch-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+@keyframes orch-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes orch-pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+  }
+  @keyframes orch-skel-pulse {
+    from, to { opacity: 1; }
+  }
+}
+
 @scope (orchestrator-page) {
   :scope {
     display: flex;
@@ -54,12 +83,8 @@
     height: 6px;
     border-radius: 50%;
     background: var(--color-primary);
-    animation: pulse 1.5s ease-in-out infinite;
+    animation: orch-pulse 1.5s ease-in-out infinite;
     flex-shrink: 0;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 0.4; transform: scale(0.8); }
-    50% { opacity: 1; transform: scale(1.2); }
   }
   .stream-status.is-done { opacity: 0; min-height: 0; padding: 0; overflow: hidden; }
   .status-history {
@@ -173,7 +198,6 @@
     height: 52px;
     border-radius: var(--radius-md);
     background: var(--color-border);
-    opacity: 0.5;
-    animation: pulse 1.4s ease-in-out infinite;
+    animation: orch-skel-pulse 1.5s ease-in-out infinite;
   }
 }

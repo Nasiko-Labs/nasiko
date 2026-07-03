@@ -1,3 +1,8 @@
+agent-card-page:not(:defined) {
+  display: block;
+  min-height: 400px;
+}
+
 @scope (agent-card-page) {
   :scope { display: block; }
 

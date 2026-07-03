@@ -2,14 +2,19 @@ import styles from './usage-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class UsagePage extends HTMLElement {
+  #initialized = false;
+
   connectedCallback() {
+    if (this.#initialized) return;
+    this.#initialized = true;
+
     this.innerHTML = `
       <h1 class="page-title">Usage</h1>
       <div class="stats" id="stats-grid">
         ${Array.from({ length: 4 }, () => `
           <div class="stat-card">
-            <div style="width:60%;height:0.7em;background:var(--color-border);border-radius:var(--radius-sm);"></div>
-            <div style="width:40%;height:1.5em;background:var(--color-border);border-radius:var(--radius-sm);margin-top:var(--space-sm);"></div>
+            <div class="skel-line skel-line--label"></div>
+            <div class="skel-line skel-line--value"></div>
           </div>
         `).join('')}
       </div>
