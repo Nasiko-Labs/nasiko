@@ -183,10 +183,23 @@ class OrchestratorPage extends HTMLElement {
         if (!raw) continue;
         try {
           const evt = JSON.parse(raw);
+          const statusUpdate = evt.statusUpdate || evt.result?.statusUpdate;
+          const artifactUpdate = evt.artifactUpdate || evt.result?.artifactUpdate;
 
-          if (evt.statusUpdate) {
-            const msg = evt.statusUpdate.status?.message;
+          if (statusUpdate) {
+            const state = statusUpdate.status?.state;
+            const msg = statusUpdate.status?.message;
             if (msg && msg.parts) {
+              // Extract text parts as final response on completion
+              if (state === 'TASK_STATE_COMPLETED') {
+                const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
+                if (text && !fullText) {
+                  fullText = text;
+                  streamStatus.classList.add('is-done');
+                  responseContent.classList.add('is-visible');
+                  responseContent.textContent = fullText;
+                }
+              }
               for (const part of msg.parts) {
                 if (!part.data) continue;
                 const d = part.data;
@@ -230,8 +243,8 @@ class OrchestratorPage extends HTMLElement {
             }
           }
 
-          if (evt.artifactUpdate) {
-            const au = evt.artifactUpdate;
+          if (artifactUpdate) {
+            const au = artifactUpdate;
             const text = au.artifact?.parts
               ?.filter(p => p.text)
               .map(p => p.text)

@@ -183,6 +183,22 @@ async fn create_session(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
+    let agent_id: Option<Uuid> = match &body.agent_id {
+        None => None,
+        Some(id_or_name) => {
+            if let Ok(uuid) = id_or_name.parse::<Uuid>() {
+                Some(uuid)
+            } else {
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
+                    .bind(id_or_name)
+                    .fetch_optional(&state.db)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        }
+    };
+
     let session_id = format!("ses_{}", Uuid::new_v4().simple());
     let title = body.title.unwrap_or_else(|| "New chat".into());
 
@@ -193,7 +209,7 @@ async fn create_session(
     )
     .bind(&session_id)
     .bind(user_id)
-    .bind(body.agent_id)
+    .bind(agent_id)
     .bind(&body.agent_url)
     .bind(&title)
     .fetch_one(&state.db)

@@ -6,7 +6,7 @@
     justify-content: center;
     min-height: calc(100dvh - 80px);
     padding: var(--space-md);
-    transition: justify-content 0.3s, min-height 0.3s;
+    transition: min-height 0.3s;
   }
   :scope.has-response {
     justify-content: flex-start;
@@ -27,6 +27,7 @@
   }
   .input-wrap {
     width: min(100%, 680px);
+    min-height: 88px;
     transition: margin-bottom 0.3s;
   }
   .response-area {

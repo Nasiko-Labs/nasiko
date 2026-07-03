@@ -51,7 +51,7 @@ pub struct ChatMessage {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSession {
-    pub agent_id: Option<Uuid>,
+    pub agent_id: Option<String>,
     pub agent_url: Option<String>,
     pub title: Option<String>,
 }
