@@ -1,5 +1,5 @@
 pub mod agent_client;
-pub mod agent_registry;
+mod agent_registry;
 pub mod engine;
 pub mod error;
 pub mod models;
@@ -10,7 +10,6 @@ pub mod session_history;
 pub mod types;
 pub mod vector_store;
 
-pub use agent_registry::AgentRegistry;
 pub use engine::{OssRoutingEngine, RouterConfig, RoutingEngine};
 pub use error::RouterError;
 pub use models::AgentCardSummary;

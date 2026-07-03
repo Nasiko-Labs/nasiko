@@ -1,91 +1,36 @@
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::RouterError;
 use crate::types::AgentCard;
 
-struct CachedAgents {
-    agents: Vec<AgentCard>,
-    built_at: Instant,
-}
+pub async fn get_agents_for_user(
+    user_id: Uuid,
+    pool: &PgPool,
+) -> Result<Vec<AgentCard>, RouterError> {
+    let rows = sqlx::query_as::<_, AgentRow>(
+        r#"SELECT a.id, a.name, a.description, a.skills, a.tags, a.url
+           FROM agents a
+           LEFT JOIN agent_grants g ON g.agent_id = a.id
+           WHERE a.status = 'running'
+             AND (a.owner_id = $1 OR a.is_public = true OR g.grantee_id = $1::text)
+           GROUP BY a.id"#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
 
-pub struct AgentRegistry {
-    cache: Arc<RwLock<Option<CachedAgents>>>,
-    ttl: Duration,
-}
-
-impl AgentRegistry {
-    pub fn new(ttl_secs: u64) -> Self {
-        Self {
-            cache: Arc::new(RwLock::new(None)),
-            ttl: Duration::from_secs(ttl_secs),
-        }
-    }
-
-    pub async fn get_agents_for_user(
-        &self,
-        user_id: Uuid,
-        pool: &PgPool,
-    ) -> Result<Vec<AgentCard>, RouterError> {
-        {
-            let guard = self.cache.read().await;
-            if let Some(ref cached) = *guard {
-                if cached.built_at.elapsed() < self.ttl {
-                    return Ok(cached.agents.clone());
-                }
-            }
-        }
-
-        let agents = self.fetch_from_db(user_id, pool).await?;
-
-        {
-            let mut guard = self.cache.write().await;
-            *guard = Some(CachedAgents {
-                agents: agents.clone(),
-                built_at: Instant::now(),
-            });
-        }
-
-        Ok(agents)
-    }
-
-    pub async fn invalidate(&self) {
-        let mut guard = self.cache.write().await;
-        *guard = None;
-    }
-
-    async fn fetch_from_db(
-        &self,
-        user_id: Uuid,
-        pool: &PgPool,
-    ) -> Result<Vec<AgentCard>, RouterError> {
-        let rows = sqlx::query_as::<_, AgentRow>(
-            r#"SELECT a.id, a.name, a.description, a.skills, a.tags, a.url
-               FROM agents a
-               LEFT JOIN agent_grants g ON g.agent_id = a.id
-               WHERE a.status = 'running'
-                 AND (a.owner_id = $1 OR a.is_public = true OR g.grantee_id = $1::text)
-               GROUP BY a.id"#,
-        )
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| AgentCard {
-                id: r.id,
-                name: r.name,
-                description: r.description.unwrap_or_default(),
-                skills: extract_skill_names(r.skills.0),
-                tags: r.tags,
-                url: r.url,
-            })
-            .collect())
-    }
+    Ok(rows
+        .into_iter()
+        .map(|r| AgentCard {
+            id: r.id,
+            name: r.name,
+            description: r.description.unwrap_or_default(),
+            skills: extract_skill_names(r.skills.0),
+            tags: r.tags,
+            url: r.url,
+        })
+        .collect())
 }
 
 #[derive(sqlx::FromRow)]
@@ -107,7 +52,3 @@ fn extract_skill_names(skills_json: serde_json::Value) -> Vec<String> {
         vec![]
     }
 }
-
-#[cfg(test)]
-#[path = "tests/agent_registry.rs"]
-mod tests;

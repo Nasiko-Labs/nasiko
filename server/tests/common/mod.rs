@@ -248,7 +248,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
-        agent_registry_cache_ttl_secs: 3600,
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
         max_router_history_messages: 20,

@@ -190,8 +190,8 @@ async fn register_agent(
     owner_id: Uuid,
 ) -> Result<Agent, sqlx::Error> {
     sqlx::query_as::<_, Agent>(
-        r#"INSERT INTO agents (name, owner_id, image, status, metadata)
-           VALUES ($1, $2, $3, 'deploying', '{"seed": true}')
+        r#"INSERT INTO agents (name, owner_id, image, status, is_public, metadata)
+           VALUES ($1, $2, $3, 'deploying', true, '{"seed": true}')
            RETURNING *"#,
     )
     .bind(name)

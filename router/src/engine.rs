@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use crate::agent_registry::AgentRegistry;
+
+use crate::agent_registry;
 use crate::error::RouterError;
 use crate::models::AgentCardSummary;
 use crate::selector::ConversationMessage;
@@ -47,7 +48,6 @@ impl Default for RouterConfig {
 // ── OSS Engine ────────────────────────────────────────────────────────────────
 
 pub struct OssRoutingEngine {
-    registry: Arc<AgentRegistry>,
     config: RouterConfig,
     selector: AgentSelector,
     api_key: String,
@@ -57,7 +57,6 @@ pub struct OssRoutingEngine {
 
 impl OssRoutingEngine {
     pub fn new(
-        registry: Arc<AgentRegistry>,
         config: RouterConfig,
         http_client: Client,
         api_key: String,
@@ -67,18 +66,16 @@ impl OssRoutingEngine {
     ) -> Self {
         let provider = LLMProvider::new(http_client, api_key.clone(), base_url.clone());
         let selector = AgentSelector::new(provider, router_model);
-        Self { registry, config, selector, api_key, base_url, embedding_model }
+        Self { config, selector, api_key, base_url, embedding_model }
     }
 
     pub fn from_config(config: &nasiko_config::Config, http_client: Client) -> Self {
-        let registry = Arc::new(AgentRegistry::new(config.agent_registry_cache_ttl_secs));
         let router_config = RouterConfig {
             shortlist_threshold: config.router_shortlist_threshold,
             shortlist_size: config.router_shortlist_size,
             max_history_messages: config.max_router_history_messages,
         };
         Self::new(
-            registry,
             router_config,
             http_client,
             config.openai_api_key.clone().unwrap_or_default(),
@@ -96,7 +93,7 @@ impl RoutingEngine for OssRoutingEngine {
 
         // Fetch available agents + conversation history in parallel
         let (agents, history) = tokio::join!(
-            self.registry.get_agents_for_user(req.user_id, pool),
+            agent_registry::get_agents_for_user(req.user_id, pool),
             SessionHistory::fetch(&req.session_id, pool, self.config.max_history_messages),
         );
         let agents = agents?;
