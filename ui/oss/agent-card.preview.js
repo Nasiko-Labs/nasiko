@@ -69,6 +69,23 @@ export default {
         { id: "g-004", agent_id: "a-001", grant_type: "department", grantee_id: "dept-engineering", granted_by: null, created_at: "2026-06-18T10:00:00Z" },
       ],
     }],
+    [{ method: "GET", path: /^\/api\/observe\/agents\/.*\/logs/ }, [
+      { timestamp: "2026-07-03T10:00:01Z", level: "info", message: "Agent container started successfully", source: "container" },
+      { timestamp: "2026-07-03T10:00:02Z", level: "info", message: "Listening on 0.0.0.0:8080", source: "container" },
+      { timestamp: "2026-07-03T10:00:03Z", level: "debug", message: "Loading model weights from /models/nomic-embed-text", source: "container" },
+      { timestamp: "2026-07-03T10:00:05Z", level: "info", message: "Model loaded in 2.1s, ready to serve requests", source: "container" },
+      { timestamp: "2026-07-03T10:00:12Z", level: "info", message: "POST /a2a 200 - 312ms", source: "container" },
+      { timestamp: "2026-07-03T10:00:14Z", level: "info", message: "POST /a2a 200 - 289ms", source: "container" },
+      { timestamp: "2026-07-03T10:00:18Z", level: "warn", message: "Request latency exceeds threshold: 1200ms > 1000ms", source: "container" },
+      { timestamp: "2026-07-03T10:00:20Z", level: "info", message: "POST /a2a 200 - 445ms", source: "container" },
+      { timestamp: "2026-07-03T10:00:25Z", level: "error", message: "Connection to upstream LLM timed out after 30s", source: "container" },
+      { timestamp: "2026-07-03T10:00:26Z", level: "info", message: "Retrying LLM request (attempt 2/3)", source: "container" },
+      { timestamp: "2026-07-03T10:00:28Z", level: "info", message: "POST /a2a 200 - 2100ms (retry succeeded)", source: "container" },
+      { timestamp: "2026-07-03T10:00:30Z", level: "debug", message: "GC pause: 12ms, heap: 128MB/256MB", source: "container" },
+      { timestamp: "2026-07-03T10:00:35Z", level: "info", message: "POST /a2a 200 - 310ms", source: "container" },
+      { timestamp: "2026-07-03T10:00:40Z", level: "info", message: "Health check passed: all subsystems OK", source: "container" },
+      { timestamp: "2026-07-03T10:00:45Z", level: "info", message: "POST /a2a 200 - 278ms", source: "container" },
+    ]],
   ],
   scenarios: {
     "overview": async (page) => {
@@ -109,6 +126,15 @@ export default {
         `;
       });
       await page.waitForSelector('.acp-stat-value');
+    },
+    "logs-tab": async (page) => {
+      const url = new URL(page.url());
+      url.searchParams.set('id', 'a-001');
+      await page.goto(url.toString(), { waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-tab="logs"]', { timeout: 5000 });
+      await page.click('[data-tab="logs"]');
+      await page.waitForSelector('[data-panel="logs"].is-active');
+      await page.waitForSelector('.acp-log-line', { timeout: 5000 });
     },
   },
 };

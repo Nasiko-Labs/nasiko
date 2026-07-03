@@ -7,6 +7,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 const TABS = [
   { key: 'overview', label: 'Overview', icon: 'layers' },
   { key: 'settings', label: 'Settings', icon: 'settings' },
+  { key: 'logs', label: 'Logs', icon: 'terminal' },
 ];
 
 /** Deterministic color from a string hash, mapped to pleasant palette. */
@@ -29,6 +30,9 @@ class AgentCardPage extends HTMLElement {
   #initialized = false;
   #agent = null;
   #agentId = null;
+  #logsLoaded = false;
+  #logsTail = 100;
+  #logsFollowing = true;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -184,6 +188,32 @@ class AgentCardPage extends HTMLElement {
             </dl>
           </section>
         </div>
+
+        <div class="acp-panel" data-panel="logs">
+          <section class="acp-section">
+            <div class="acp-logs-toolbar">
+              <div class="acp-logs-toolbar-start">
+                <h2 class="acp-section-title">Container Logs</h2>
+              </div>
+              <div class="acp-logs-toolbar-end">
+                <label class="acp-logs-tail-label">
+                  Lines:
+                  <select class="acp-logs-tail-select" id="acp-logs-tail">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+                <button class="acp-logs-follow-btn is-active" id="acp-logs-follow" title="Auto-scroll to latest logs">
+                  ${icons.arrowDown('', 14)} Follow
+                </button>
+              </div>
+            </div>
+            <div class="acp-logs-viewer" id="acp-logs-viewer">
+              <app-skeleton lines="12" height="320px"></app-skeleton>
+            </div>
+          </section>
+        </div>
       </div>
     `;
 
@@ -194,7 +224,30 @@ class AgentCardPage extends HTMLElement {
       this.querySelectorAll('.acp-panel').forEach(p => p.classList.remove('is-active'));
       tab.classList.add('is-active');
       this.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add('is-active');
+      if (tab.dataset.tab === 'logs' && !this.#logsLoaded) {
+        this.#loadLogs();
+      }
     });
+
+    const tailSelect = this.querySelector('#acp-logs-tail');
+    if (tailSelect) {
+      tailSelect.addEventListener('change', () => {
+        this.#logsTail = Number(tailSelect.value);
+        this.#logsLoaded = false;
+        this.#loadLogs();
+      });
+    }
+
+    const followBtn = this.querySelector('#acp-logs-follow');
+    if (followBtn) {
+      followBtn.addEventListener('click', () => {
+        this.#logsFollowing = !this.#logsFollowing;
+        followBtn.classList.toggle('is-active', this.#logsFollowing);
+        if (this.#logsFollowing) {
+          this.#scrollLogsToBottom();
+        }
+      });
+    }
 
     this.addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-action]');
@@ -380,6 +433,79 @@ class AgentCardPage extends HTMLElement {
       el.innerHTML = `<div class="acp-acl-grid">${sections.join('')}</div>`;
     } catch {
       el.innerHTML = '';
+    }
+  }
+
+  async #loadLogs() {
+    const viewer = this.querySelector('#acp-logs-viewer');
+    if (!viewer) return;
+
+    if (!this.#logsLoaded) {
+      viewer.innerHTML = '<app-skeleton lines="12" height="320px"></app-skeleton>';
+    }
+
+    try {
+      const logs = await fetchApi(`/observe/agents/${this.#agentId}/logs?tail=${this.#logsTail}`);
+      this.#logsLoaded = true;
+
+      if (!logs || logs.length === 0) {
+        viewer.innerHTML = `
+          <div class="acp-logs-empty">
+            <app-empty-state
+              title="No logs available"
+              description="This agent has not produced any log output yet.">
+            </app-empty-state>
+          </div>`;
+        return;
+      }
+
+      const linesHtml = logs.map((line, i) => {
+        const ts = this.#formatLogTimestamp(line.timestamp);
+        return `<div class="acp-log-line">` +
+          `<span class="acp-log-num">${i + 1}</span>` +
+          `<span class="acp-log-ts">${this.#esc(ts)}</span>` +
+          `<app-badge class="acp-log-badge" variant="${this.#levelVariant(line.level)}">${this.#esc(line.level || 'info')}</app-badge>` +
+          `<span class="acp-log-msg">${this.#esc(line.message)}</span>` +
+          `</div>`;
+      }).join('');
+
+      viewer.innerHTML = `<div class="acp-logs-scroll">${linesHtml}</div>`;
+
+      if (this.#logsFollowing) {
+        this.#scrollLogsToBottom();
+      }
+    } catch {
+      this.#logsLoaded = false;
+      viewer.innerHTML = `
+        <div class="acp-logs-empty">
+          <app-empty-state
+            title="Failed to load logs"
+            description="Could not fetch logs for this agent. The agent may not be running.">
+          </app-empty-state>
+        </div>`;
+    }
+  }
+
+  #scrollLogsToBottom() {
+    const scroll = this.querySelector('.acp-logs-scroll');
+    if (scroll) {
+      scroll.scrollTop = scroll.scrollHeight;
+    }
+  }
+
+  #formatLogTimestamp(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return ts;
+    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  #levelVariant(level) {
+    switch (level) {
+      case 'error': return 'error';
+      case 'warn': return 'warning';
+      case 'debug': return 'neutral';
+      default: return 'success';
     }
   }
 

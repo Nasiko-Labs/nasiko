@@ -371,4 +371,112 @@
   }
   .acp-dl dd a { color: var(--color-primary); text-decoration: none; }
   .acp-dl dd a:hover { text-decoration: underline; }
+
+  /* -- Logs panel -------------------------------------------------------- */
+  .acp-logs-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+    flex-wrap: wrap;
+  }
+  .acp-logs-toolbar-start {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .acp-logs-toolbar-start .acp-section-title { margin: 0; }
+  .acp-logs-toolbar-end {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .acp-logs-tail-label {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+  select.acp-logs-tail-select {
+    font-size: var(--font-size-xs);
+    padding: 2px var(--space-xs);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
+  }
+  .acp-logs-follow-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .acp-logs-follow-btn:hover { border-color: var(--color-primary); }
+  .acp-logs-follow-btn.is-active {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
+  }
+
+  .acp-logs-viewer {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-base);
+    min-height: 320px;
+    overflow: hidden;
+  }
+  .acp-logs-scroll {
+    max-height: 480px;
+    overflow-y: auto;
+    overflow-x: auto;
+    padding: var(--space-sm) 0;
+  }
+  .acp-log-line {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    padding: 2px var(--space-sm);
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace;
+    font-size: var(--font-size-xs);
+    line-height: 1.6;
+    white-space: nowrap;
+  }
+  .acp-log-line:hover {
+    background: color-mix(in srgb, var(--color-border) 20%, transparent);
+  }
+  .acp-log-num {
+    color: var(--color-text-muted);
+    min-width: 3ch;
+    text-align: right;
+    flex-shrink: 0;
+    user-select: none;
+    opacity: 0.5;
+  }
+  .acp-log-ts {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    min-width: 8ch;
+  }
+  .acp-log-badge {
+    flex-shrink: 0;
+  }
+  .acp-log-msg {
+    color: var(--color-text-main);
+    white-space: pre;
+  }
+  .acp-logs-empty {
+    padding: var(--space-xl) var(--space-md);
+  }
+  .acp-logs-empty app-empty-state {
+    padding: var(--space-lg) var(--space-md);
+  }
 }
