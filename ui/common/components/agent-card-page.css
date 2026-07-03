@@ -7,34 +7,62 @@
     padding: var(--space-lg) var(--space-md);
   }
 
-  /* ── Header ────────────────────────────────────────────────────────────── */
+  /* -- Header ------------------------------------------------------------ */
   .acp-header {
     display: flex;
     align-items: center;
     gap: var(--space-md);
     margin-bottom: var(--space-md);
+    flex-wrap: wrap;
   }
   .acp-back {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
-    color: var(--color-text-main);
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    text-decoration: none;
     cursor: pointer;
     flex-shrink: 0;
+    white-space: nowrap;
   }
-  .acp-back:hover { border-color: var(--color-primary); }
+  .acp-back:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+  .acp-back-text {
+    @media (max-width: 640px) {
+      display: none;
+    }
+  }
   .acp-header-main { flex: 1; min-width: 0; }
   .acp-header-title {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: var(--space-sm);
     flex-wrap: wrap;
   }
+
+  /* -- Avatar ------------------------------------------------------------ */
+  .acp-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: #fff;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
   .acp-name {
     font-size: var(--font-size-2xl);
     font-weight: 600;
@@ -50,6 +78,10 @@
     flex-wrap: wrap;
     gap: 6px;
     margin-top: var(--space-xs);
+    margin-left: calc(36px + var(--space-sm));
+    @media (max-width: 640px) {
+      margin-left: 0;
+    }
   }
   .acp-tag {
     font-size: var(--font-size-xs);
@@ -69,6 +101,10 @@
     align-items: center;
     gap: var(--space-sm);
     flex-shrink: 0;
+    @media (max-width: 640px) {
+      width: 100%;
+      order: 3;
+    }
   }
   .acp-action-btn {
     display: inline-flex;
@@ -85,6 +121,10 @@
     white-space: nowrap;
   }
   .acp-action-btn:hover { border-color: var(--color-primary); }
+  .acp-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
   .acp-action-btn--danger { color: var(--color-error); }
   .acp-action-btn--danger:hover { border-color: var(--color-error); }
   .acp-start-btn {
@@ -106,7 +146,7 @@
     color: var(--color-on-primary);
   }
 
-  /* ── Description ───────────────────────────────────────────────────────── */
+  /* -- Description ------------------------------------------------------- */
   .acp-description {
     font-size: var(--font-size-sm);
     color: var(--color-text-prose);
@@ -115,7 +155,7 @@
     max-width: 72ch;
   }
 
-  /* ── Tabs ──────────────────────────────────────────────────────────────── */
+  /* -- Tabs -------------------------------------------------------------- */
   .acp-tabs {
     display: flex;
     gap: var(--space-lg);
@@ -123,6 +163,9 @@
     margin-bottom: var(--space-xl);
   }
   .acp-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
     padding: var(--space-sm) var(--space-xs);
     font-size: var(--font-size-sm);
     font-weight: 500;
@@ -135,11 +178,11 @@
   .acp-tab:hover { color: var(--color-text-main); }
   .acp-tab.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
 
-  /* ── Panels ────────────────────────────────────────────────────────────── */
+  /* -- Panels ------------------------------------------------------------ */
   .acp-panel { display: none; }
   .acp-panel.is-active { display: block; }
 
-  /* ── Sections ──────────────────────────────────────────────────────────── */
+  /* -- Sections ---------------------------------------------------------- */
   .acp-section { margin-bottom: var(--space-xl); }
   .acp-section-title {
     font-size: var(--font-size-lg);
@@ -153,11 +196,15 @@
     margin: 0 0 var(--space-md);
   }
 
-  /* ── Skills grid ───────────────────────────────────────────────────────── */
+  /* -- Skills grid ------------------------------------------------------- */
   .acp-skills-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: var(--space-md);
+  }
+  a.acp-skill-card {
+    text-decoration: none;
+    color: inherit;
   }
   .acp-skill-card {
     border: 1px solid var(--color-border);
@@ -167,6 +214,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
+    cursor: pointer;
+  }
+  .acp-skill-card:hover {
+    border-color: var(--color-primary);
   }
   .acp-skill-name {
     font-size: var(--font-size-base);
@@ -191,20 +242,15 @@
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
   }
-  .acp-skill-sample-icon { flex-shrink: 0; color: var(--color-text-muted); }
+  .acp-skill-sample-icon { flex-shrink: 0; color: var(--color-primary); }
   .acp-skill-sample-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .acp-skill-sample-go {
-    flex-shrink: 0;
-    color: var(--color-text-muted);
-    display: flex;
-  }
-  .acp-skill-sample-go:hover { color: var(--color-primary); }
 
-  /* ── Stats grid ────────────────────────────────────────────────────────── */
+  /* -- Stats grid -------------------------------------------------------- */
   .acp-stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: var(--space-md);
+    min-height: 90px;
   }
   .acp-stat {
     border: 1px solid var(--color-border);
@@ -222,8 +268,57 @@
     color: var(--color-text-main);
     margin-top: var(--space-xs);
   }
+  .acp-stats-empty {
+    grid-column: 1 / -1;
+  }
+  .acp-stats-empty app-empty-state {
+    padding: var(--space-lg) var(--space-md);
+  }
 
-  /* ── Details row ───────────────────────────────────────────────────────── */
+  /* -- ACL section ------------------------------------------------------- */
+  #acp-acl .acp-section-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+  .acp-acl-icon { color: var(--color-text-muted); }
+  .acp-acl-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-md);
+  }
+  .acp-acl-group {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    background: var(--color-bg-surface);
+  }
+  .acp-acl-group-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin: 0 0 var(--space-xs);
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+  .acp-acl-group-icon { color: var(--color-text-muted); flex-shrink: 0; }
+  .acp-acl-group-desc {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: 0 0 var(--space-sm);
+    line-height: 1.4;
+  }
+  .acp-acl-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+  .acp-acl-empty {
+    padding: var(--space-md);
+  }
+
+  /* -- Details row ------------------------------------------------------- */
   .acp-details-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -240,7 +335,7 @@
   }
   .acp-details-card .acp-section-title { margin-bottom: var(--space-xs); }
 
-  /* ── Definition list ───────────────────────────────────────────────────── */
+  /* -- Definition list --------------------------------------------------- */
   .acp-dl {
     display: flex;
     flex-direction: column;

@@ -511,152 +511,300 @@ async fn run_stream_inner(
             )
         };
 
-        let mut req = model
-            .completion_request(Message::user(&user_prompt))
-            .preamble(preamble.clone())
-            .tools(tool_defs.clone());
+        // Decide whether to stream or not:
+        // - First turn after tool results (turn_idx > 0): use non-streaming to capture usage
+        // - Final answer (no tools): we stream for real-time output
+        // Strategy: always try non-streaming first for tool-planning turns;
+        // if the response has no tool calls (final answer), re-issue as streaming.
+        // Optimization: on turn 0, stream directly since we don't know yet.
+        let use_non_streaming = turn_idx > 0;
 
-        if let Some(temp) = config.temperature {
-            req = req.temperature(temp);
-        }
+        if use_non_streaming {
+            let mut req = model
+                .completion_request(Message::user(&user_prompt))
+                .preamble(preamble.clone())
+                .tools(tool_defs.clone());
 
-        let mut stream = match req.stream().await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(OrchestratorEvent::Error {
-                    message: e.to_string(),
-                }).await;
-                return Err(OrchestratorError::Completion(e.to_string()));
+            if let Some(temp) = config.temperature {
+                req = req.temperature(temp);
             }
-        };
 
-        let mut text_parts = Vec::new();
-        let mut tool_calls = Vec::new();
-        let mut streamed_text = false;
-
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(StreamingChoice::Message(text)) => {
-                    text_parts.push(text.clone());
-                    let _ = tx.send(OrchestratorEvent::Content {
-                        content: text,
-                    }).await;
-                    streamed_text = true;
-                }
-                Ok(StreamingChoice::ToolCall(name, id, params)) => {
-                    tool_calls.push(ToolCall {
-                        id,
-                        function: ToolFunction {
-                            name,
-                            arguments: params,
-                        },
-                    });
-                }
+            let response = match req.send().await {
+                Ok(r) => r,
                 Err(e) => {
                     let _ = tx.send(OrchestratorEvent::Error {
                         message: e.to_string(),
                     }).await;
                     return Err(OrchestratorError::Completion(e.to_string()));
                 }
-            }
-        }
+            };
 
-        if !tool_calls.is_empty() {
-            if streamed_text {
-                let _ = tx.send(OrchestratorEvent::Thinking {
-                    content: text_parts.join(""),
+            // Extract usage from raw response
+            if let Some(ref usage) = response.raw_response.usage {
+                let input = usage.prompt_tokens as u64;
+                let total = usage.total_tokens as u64;
+                let output = total.saturating_sub(input);
+                let _ = tx.send(OrchestratorEvent::Usage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    model: config.model.clone(),
                 }).await;
             }
 
-            let mut results_for_context = Vec::new();
+            // Partition the response
+            let mut text_parts = Vec::new();
+            let mut tool_calls = Vec::new();
 
-            for tc in &tool_calls {
-                let name = &tc.function.name;
-                let args_str = tc.function.arguments.to_string();
+            for content in response.choice.iter() {
+                match content {
+                    AssistantContent::Text(t) => text_parts.push(t.text.clone()),
+                    AssistantContent::ToolCall(tc) => tool_calls.push(tc.clone()),
+                }
+            }
 
-                // Parse the message from args for the event
-                let msg = tc.function.arguments
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            if !tool_calls.is_empty() {
+                if !text_parts.is_empty() {
+                    let _ = tx.send(OrchestratorEvent::Thinking {
+                        content: text_parts.join(""),
+                    }).await;
+                }
 
-                // Derive agent name from tool name (call_agent_X → X with underscores back to dashes)
-                let agent_display = name
-                    .strip_prefix("call_agent_")
-                    .unwrap_or(name)
-                    .replace('_', "-");
+                let mut results_for_context = Vec::new();
 
-                // Enforce call guard (ACL, flow limits, cycle detection)
-                if let Some(g) = guard
-                    && let Err(reason) = g.before_call(&agent_display).await {
-                        let _ = tx.send(OrchestratorEvent::PolicyRejected {
-                            agent: agent_display.clone(),
-                            reason: reason.clone(),
-                            turn: turn_idx + 1,
-                        }).await;
-                        results_for_context.push(format!(
-                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
-                            name, reason
-                        ));
-                        continue;
-                    }
+                for tc in &tool_calls {
+                    let name = &tc.function.name;
+                    let args_str = tc.function.arguments.to_string();
 
-                let _ = tx.send(OrchestratorEvent::ToolCall {
-                    agent: agent_display.clone(),
-                    message: msg,
-                    turn: turn_idx + 1,
-                }).await;
+                    let msg = tc.function.arguments
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
 
-                let result = toolset.call(name, args_str).await;
+                    let agent_display = name
+                        .strip_prefix("call_agent_")
+                        .unwrap_or(name)
+                        .replace('_', "-");
 
-                match &result {
-                    Ok(output) => {
-                        if let Some(g) = guard {
-                            g.after_call(&agent_display, 0).await;
+                    if let Some(g) = guard
+                        && let Err(reason) = g.before_call(&agent_display).await {
+                            let _ = tx.send(OrchestratorEvent::PolicyRejected {
+                                agent: agent_display.clone(),
+                                reason: reason.clone(),
+                                turn: turn_idx + 1,
+                            }).await;
+                            results_for_context.push(format!(
+                                "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+                                name, reason
+                            ));
+                            continue;
                         }
-                        let _ = tx.send(OrchestratorEvent::ToolResult {
-                            agent: agent_display,
-                            result: output.clone(),
-                            success: true,
-                            turn: turn_idx + 1,
+
+                    let _ = tx.send(OrchestratorEvent::ToolCall {
+                        agent: agent_display.clone(),
+                        message: msg,
+                        turn: turn_idx + 1,
+                    }).await;
+
+                    let result = toolset.call(name, args_str).await;
+
+                    match &result {
+                        Ok(output) => {
+                            if let Some(g) = guard {
+                                g.after_call(&agent_display, 0).await;
+                            }
+                            let _ = tx.send(OrchestratorEvent::ToolResult {
+                                agent: agent_display,
+                                result: output.clone(),
+                                success: true,
+                                turn: turn_idx + 1,
+                            }).await;
+                            results_for_context.push(format!("[{}] Result: {}", name, output));
+                        }
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            let _ = tx.send(OrchestratorEvent::ToolResult {
+                                agent: agent_display,
+                                result: err_str.clone(),
+                                success: false,
+                                turn: turn_idx + 1,
+                            }).await;
+                            results_for_context.push(format!("[{}] Error: {}", name, err_str));
+                        }
+                    }
+                }
+
+                let combined = results_for_context.join("\n\n");
+                context.push_tool_result(
+                    &tool_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    &combined,
+                );
+            } else {
+                // Final answer from non-streaming — emit as Content chunks
+                let final_text = text_parts.join("\n");
+                for chunk in final_text.chars().collect::<Vec<_>>().chunks(200) {
+                    let s: String = chunk.iter().collect();
+                    let _ = tx.send(OrchestratorEvent::Content { content: s }).await;
+                }
+                context.push_assistant(&final_text);
+
+                let _ = tx.send(OrchestratorEvent::Done {
+                    turns: turn_idx + 1,
+                    context_compacted,
+                }).await;
+
+                return Ok(());
+            }
+        } else {
+            // Streaming path (turn 0 or when we want real-time output)
+            let mut req = model
+                .completion_request(Message::user(&user_prompt))
+                .preamble(preamble.clone())
+                .tools(tool_defs.clone());
+
+            if let Some(temp) = config.temperature {
+                req = req.temperature(temp);
+            }
+
+            let mut stream = match req.stream().await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(OrchestratorEvent::Error {
+                        message: e.to_string(),
+                    }).await;
+                    return Err(OrchestratorError::Completion(e.to_string()));
+                }
+            };
+
+            let mut text_parts = Vec::new();
+            let mut tool_calls = Vec::new();
+            let mut streamed_text = false;
+
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(StreamingChoice::Message(text)) => {
+                        text_parts.push(text.clone());
+                        let _ = tx.send(OrchestratorEvent::Content {
+                            content: text,
                         }).await;
-                        results_for_context.push(format!("[{}] Result: {}", name, output));
+                        streamed_text = true;
+                    }
+                    Ok(StreamingChoice::ToolCall(name, id, params)) => {
+                        tool_calls.push(ToolCall {
+                            id,
+                            function: ToolFunction {
+                                name,
+                                arguments: params,
+                            },
+                        });
                     }
                     Err(e) => {
-                        let err_str = e.to_string();
-                        let _ = tx.send(OrchestratorEvent::ToolResult {
-                            agent: agent_display,
-                            result: err_str.clone(),
-                            success: false,
-                            turn: turn_idx + 1,
+                        let _ = tx.send(OrchestratorEvent::Error {
+                            message: e.to_string(),
                         }).await;
-                        results_for_context.push(format!("[{}] Error: {}", name, err_str));
+                        return Err(OrchestratorError::Completion(e.to_string()));
                     }
                 }
             }
 
-            let combined = results_for_context.join("\n\n");
-            context.push_tool_result(
-                &tool_calls
-                    .iter()
-                    .map(|tc| tc.function.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join("+"),
-                &combined,
-            );
-        } else {
-            // Final answer — already streamed token-by-token via Content events
-            let final_text = text_parts.join("");
-            context.push_assistant(&final_text);
+            if !tool_calls.is_empty() {
+                if streamed_text {
+                    let _ = tx.send(OrchestratorEvent::Thinking {
+                        content: text_parts.join(""),
+                    }).await;
+                }
 
-            let _ = tx.send(OrchestratorEvent::Done {
-                turns: turn_idx + 1,
-                context_compacted,
-            }).await;
+                let mut results_for_context = Vec::new();
 
-            return Ok(());
-        }
+                for tc in &tool_calls {
+                    let name = &tc.function.name;
+                    let args_str = tc.function.arguments.to_string();
+
+                    let msg = tc.function.arguments
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let agent_display = name
+                        .strip_prefix("call_agent_")
+                        .unwrap_or(name)
+                        .replace('_', "-");
+
+                    if let Some(g) = guard
+                        && let Err(reason) = g.before_call(&agent_display).await {
+                            let _ = tx.send(OrchestratorEvent::PolicyRejected {
+                                agent: agent_display.clone(),
+                                reason: reason.clone(),
+                                turn: turn_idx + 1,
+                            }).await;
+                            results_for_context.push(format!(
+                                "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+                                name, reason
+                            ));
+                            continue;
+                        }
+
+                    let _ = tx.send(OrchestratorEvent::ToolCall {
+                        agent: agent_display.clone(),
+                        message: msg,
+                        turn: turn_idx + 1,
+                    }).await;
+
+                    let result = toolset.call(name, args_str).await;
+
+                    match &result {
+                        Ok(output) => {
+                            if let Some(g) = guard {
+                                g.after_call(&agent_display, 0).await;
+                            }
+                            let _ = tx.send(OrchestratorEvent::ToolResult {
+                                agent: agent_display,
+                                result: output.clone(),
+                                success: true,
+                                turn: turn_idx + 1,
+                            }).await;
+                            results_for_context.push(format!("[{}] Result: {}", name, output));
+                        }
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            let _ = tx.send(OrchestratorEvent::ToolResult {
+                                agent: agent_display,
+                                result: err_str.clone(),
+                                success: false,
+                                turn: turn_idx + 1,
+                            }).await;
+                            results_for_context.push(format!("[{}] Error: {}", name, err_str));
+                        }
+                    }
+                }
+
+                let combined = results_for_context.join("\n\n");
+                context.push_tool_result(
+                    &tool_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    &combined,
+                );
+            } else {
+                // Final answer — already streamed token-by-token via Content events
+                let final_text = text_parts.join("");
+                context.push_assistant(&final_text);
+
+                let _ = tx.send(OrchestratorEvent::Done {
+                    turns: turn_idx + 1,
+                    context_compacted,
+                }).await;
+
+                return Ok(());
+            }
+        } // end streaming else branch
 
         if context.needs_compaction() {
             context.compact_simple();

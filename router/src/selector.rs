@@ -17,6 +17,11 @@ impl AgentSelector {
         Self { provider, model }
     }
 
+    /// Returns the model name used for agent selection.
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
     /// Select best agent using structured output (response_format json_schema).
     pub async fn select_agent(
         &self,
@@ -65,8 +70,8 @@ impl AgentSelector {
             .map_err(|e| SelectorError::ParseError(e.to_string()))?;
 
         // Validate agent UUID exists in the candidate list; fall back to first if hallucinated.
-        if !agents.iter().any(|a| a.id == selection.agent_id) {
-            if let Some(first) = agents.first() {
+        if !agents.iter().any(|a| a.id == selection.agent_id)
+            && let Some(first) = agents.first() {
                 return Ok((
                     AgentSelection {
                         agent_id: first.id,
@@ -79,7 +84,6 @@ impl AgentSelector {
                     result,
                 ));
             }
-        }
 
         Ok((selection, result))
     }

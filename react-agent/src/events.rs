@@ -38,6 +38,13 @@ pub enum OrchestratorEvent {
         turn: usize,
     },
 
+    /// Token usage from an LLM call (emitted per non-streaming turn).
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+        model: String,
+    },
+
     /// An error occurred during orchestration.
     Error { message: String },
 }

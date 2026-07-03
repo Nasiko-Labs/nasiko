@@ -1,5 +1,6 @@
 import { icons } from '/common/utils/icons.js';
 import { fetchApi } from '/common/services/api.js';
+import { showToast } from '/common/utils/toast.js';
 import styles from './agent-card-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -8,11 +9,30 @@ const TABS = [
   { key: 'settings', label: 'Settings', icon: 'settings' },
 ];
 
+/** Deterministic color from a string hash, mapped to pleasant palette. */
+function avatarColor(name) {
+  const colors = [
+    'var(--color-primary)',
+    'var(--color-success)',
+    'var(--color-warning)',
+    'var(--color-error)',
+    'var(--color-info)',
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+  }
+  return colors[Math.abs(hash) % colors.length];
+}
+
 class AgentCardPage extends HTMLElement {
+  #initialized = false;
   #agent = null;
   #agentId = null;
 
   connectedCallback() {
+    if (this.#initialized) return;
+    this.#initialized = true;
     this.#agentId = new URLSearchParams(location.search).get('id');
     if (!this.#agentId) {
       this.innerHTML = '<p style="color:var(--color-text-muted);">No agent ID specified.</p>';
@@ -38,6 +58,10 @@ class AgentCardPage extends HTMLElement {
 
   #render() {
     const a = this.#agent;
+    const displayName = a.display_name || a.name;
+    const initial = (displayName || '?')[0].toUpperCase();
+    const bgColor = avatarColor(displayName);
+
     const tagsHtml = (a.tags || []).slice(0, 3).map(t =>
       `<span class="acp-tag">${this.#esc(t)}</span>`
     ).join('');
@@ -45,28 +69,37 @@ class AgentCardPage extends HTMLElement {
     const moreTag = extraTagCount > 0 ? `<span class="acp-tag acp-tag--more">+${extraTagCount}</span>` : '';
 
     const skills = a.skills || [];
-    const skillsHtml = skills.map(s => `
-      <div class="acp-skill-card">
+    const skillsHtml = skills.map(s => {
+      const href = s.sample_query
+        ? `/chat.html?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}`
+        : null;
+      const wrapper = href ? 'a' : 'div';
+      const hrefAttr = href ? ` href="${this.#escAttr(href)}"` : '';
+      return `
+      <${wrapper} class="acp-skill-card"${hrefAttr}>
         <div class="acp-skill-name">${this.#esc(s.name)}</div>
         <div class="acp-skill-desc">${this.#esc(s.description || '')}</div>
         ${s.sample_query ? `
         <div class="acp-skill-sample">
           <span class="acp-skill-sample-icon">${icons.send('', 14)}</span>
-          <span class="acp-skill-sample-text">Sample query: ${this.#esc(s.sample_query)}</span>
-          <a class="acp-skill-sample-go" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}">${icons.externalLink('', 14)}</a>
+          <span class="acp-skill-sample-text">${this.#esc(s.sample_query)}</span>
         </div>` : ''}
-      </div>
-    `).join('');
+      </${wrapper}>`;
+    }).join('');
 
     const caps = a.capabilities || {};
 
     this.innerHTML = `
       <div class="acp-page">
         <div class="acp-header">
-          <button class="acp-back" onclick="history.back()" title="Go back">${icons.chevronLeft('', 20)}</button>
+          <a class="acp-back" href="/your-agents.html" title="Back to Your Agents">
+            ${icons.chevronLeft('', 18)}
+            <span class="acp-back-text">Your Agents</span>
+          </a>
           <div class="acp-header-main">
             <div class="acp-header-title">
-              <h1 class="acp-name">${this.#esc(a.display_name || a.name)}</h1>
+              <div class="acp-avatar" style="background:${bgColor}">${initial}</div>
+              <h1 class="acp-name">${this.#esc(displayName)}</h1>
               <span class="acp-version">v${this.#esc(a.version || '?')}</span>
             </div>
             <div class="acp-header-tags">${tagsHtml}${moreTag}</div>
@@ -74,7 +107,7 @@ class AgentCardPage extends HTMLElement {
           <div class="acp-header-actions">
             ${a.status === 'running' ? `<button class="acp-action-btn" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</button>` : ''}
             <button class="acp-action-btn acp-action-btn--danger" data-action="delete" title="Delete agent">${icons.trash('', 14)} Delete</button>
-            <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(a.display_name || a.name)}">
+            <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
               Start session ${icons.send('', 16)}
             </a>
           </div>
@@ -83,14 +116,14 @@ class AgentCardPage extends HTMLElement {
         <p class="acp-description">${this.#esc(a.description || '')}</p>
 
         <nav class="acp-tabs">
-          ${TABS.map(t => `<button class="acp-tab${t.key === 'overview' ? ' is-active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
+          ${TABS.map(t => `<button class="acp-tab${t.key === 'overview' ? ' is-active' : ''}" data-tab="${t.key}">${icons[t.icon]('acp-tab-icon', 16)} ${t.label}</button>`).join('')}
         </nav>
 
         <div class="acp-panel is-active" data-panel="overview">
           ${skills.length ? `
           <section class="acp-section">
             <h2 class="acp-section-title">Skills</h2>
-            <p class="acp-section-sub">What this agent can do. Click a capability to auto-fill a query.</p>
+            <p class="acp-section-sub">What this agent can do. Click a skill to start a session with a sample query.</p>
             <div class="acp-skills-grid">${skillsHtml}</div>
           </section>` : ''}
 
@@ -98,10 +131,10 @@ class AgentCardPage extends HTMLElement {
             <h2 class="acp-section-title">Quick performance</h2>
             <p class="acp-section-sub">Recent runtime metrics for this agent.</p>
             <div class="acp-stats-grid" id="acp-stats">
-              <div class="acp-stat"><div class="acp-stat-label">Total executions</div><div class="acp-stat-value">—</div></div>
-              <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">—</div></div>
-              <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">—</div></div>
-              <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">—</div></div>
+              <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
+              <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
+              <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
+              <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
             </div>
           </section>
 
@@ -130,6 +163,14 @@ class AgentCardPage extends HTMLElement {
               </dl>
             </section>
           </div>
+
+          <section class="acp-section" id="acp-acl">
+            <h2 class="acp-section-title">${icons.key('acp-acl-icon', 16)} Access Control</h2>
+            <p class="acp-section-sub">Which agents and users can interact with this agent.</p>
+            <div class="acp-acl-content">
+              <app-skeleton height="80px"></app-skeleton>
+            </div>
+          </section>
         </div>
 
         <div class="acp-panel" data-panel="settings">
@@ -161,26 +202,37 @@ class AgentCardPage extends HTMLElement {
       const action = btn.dataset.action;
 
       if (action === 'stop') {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = 'Stopping...';
         try {
           const res = await fetch(`/api/containers/${encodeURIComponent(a.name)}/stop`, { method: 'POST' });
           if (!res.ok) throw new Error(await res.text());
           location.reload();
         } catch (err) {
-          alert(`Failed to stop: ${err.message}`);
+          showToast(`Failed to stop: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = original;
         }
       } else if (action === 'delete') {
-        if (!confirm(`Delete "${a.display_name || a.name}"? This removes the agent from the registry and stops its container.`)) return;
+        if (!confirm(`Delete "${displayName}"? This removes the agent from the registry and stops its container.`)) return;
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = 'Deleting...';
         try {
           const res = await fetch(`/api/catalog/agents/${encodeURIComponent(a.id)}`, { method: 'DELETE' });
           if (!res.ok) throw new Error(await res.text());
           location.href = '/your-agents.html';
         } catch (err) {
-          alert(`Failed to delete: ${err.message}`);
+          showToast(`Failed to delete: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = original;
         }
       }
     });
 
     this.#loadStats();
+    this.#loadAcl();
   }
 
   async #loadStats() {
@@ -188,14 +240,147 @@ class AgentCardPage extends HTMLElement {
       const s = await fetchApi(`/observe/agents/${this.#agentId}/stats`);
       const el = this.querySelector('#acp-stats');
       if (!el || !s) return;
-      const fmt = (n, dec = 0) => (n == null ? '—' : (+n).toFixed(dec));
+
+      const hasData = (s.total_requests != null && s.total_requests > 0) ||
+                      (s.total_cost != null && s.total_cost > 0);
+
+      if (!hasData) {
+        el.innerHTML = `
+          <div class="acp-stats-empty">
+            <app-empty-state
+              title="No usage data yet"
+              description="Stats will appear after the first request to this agent."
+              icon="${this.#escAttr(icons.trace('', 32))}">
+            </app-empty-state>
+          </div>`;
+        return;
+      }
+
+      const fmtInt = (n) => n == null ? '—' : Number(n).toLocaleString();
+      const fmtCost = (n) => {
+        if (n == null) return '—';
+        const v = +n;
+        if (v === 0) return '$0';
+        if (v < 0.01) return `$${v.toFixed(4)}`;
+        return `$${v.toFixed(2)}`;
+      };
+      const fmtMs = (n) => n == null ? '—' : `${Math.round(n)} ms`;
+
       el.innerHTML = `
-        <div class="acp-stat"><div class="acp-stat-label">Total executions</div><div class="acp-stat-value">${fmt(s.total_requests)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">$${fmt(s.total_cost || 0, 5)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">${s.p50_latency_ms != null ? fmt(s.p50_latency_ms) + ' ms' : '—'}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">${s.p95_latency_ms != null ? fmt(s.p95_latency_ms) + ' ms' : '—'}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">Total executions</div><div class="acp-stat-value">${fmtInt(s.total_requests)}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">${fmtCost(s.total_cost)}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">${fmtMs(s.p50_latency_ms)}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">${fmtMs(s.p95_latency_ms)}</div></div>
       `;
-    } catch {}
+    } catch {
+      /* stats are optional — fail silently */
+    }
+  }
+
+  async #loadAcl() {
+    const el = this.querySelector('.acp-acl-content');
+    if (!el) return;
+
+    try {
+      // Fetch agent-to-agent ACL (OSS: allowed targets this agent can call)
+      const [acl, visibility] = await Promise.all([
+        fetchApi(`/agents/${this.#agentId}/acl`).catch(() => null),
+        fetchApi(`/agents/${this.#agentId}/visibility`).catch(() => null),
+      ]);
+
+      const sections = [];
+
+      // Agent-to-agent section (OSS)
+      if (acl) {
+        const targets = acl.allowed || [];
+        if (targets.length > 0) {
+          const badges = targets.map(id =>
+            `<app-badge variant="info">${this.#esc(id)}</app-badge>`
+          ).join(' ');
+          sections.push(`
+            <div class="acp-acl-group">
+              <h3 class="acp-acl-group-title">${icons.send('acp-acl-group-icon', 14)} Can invoke</h3>
+              <p class="acp-acl-group-desc">Agents this one is allowed to call.</p>
+              <div class="acp-acl-badges">${badges}</div>
+            </div>
+          `);
+        } else {
+          sections.push(`
+            <div class="acp-acl-group">
+              <h3 class="acp-acl-group-title">${icons.send('acp-acl-group-icon', 14)} Can invoke</h3>
+              <p class="acp-acl-group-desc">No outbound agent-to-agent permissions configured. This agent cannot call other agents.</p>
+            </div>
+          `);
+        }
+      }
+
+      // EE: visibility/grants (user, team, department, public)
+      if (visibility) {
+        const grants = visibility.grants || [];
+        const isPublic = visibility.is_public;
+
+        if (isPublic) {
+          sections.push(`
+            <div class="acp-acl-group">
+              <h3 class="acp-acl-group-title">${icons.eye('acp-acl-group-icon', 14)} Visibility</h3>
+              <div class="acp-acl-badges"><app-badge variant="success">Public</app-badge></div>
+            </div>
+          `);
+        } else {
+          const userGrants = grants.filter(g => g.grant_type === 'user');
+          const teamGrants = grants.filter(g => g.grant_type === 'team');
+          const deptGrants = grants.filter(g => g.grant_type === 'department');
+          const agentGrants = grants.filter(g => g.grant_type === 'agent');
+
+          const parts = [];
+          if (userGrants.length > 0) {
+            parts.push(`<app-badge variant="neutral">${userGrants.length} user${userGrants.length > 1 ? 's' : ''}</app-badge>`);
+          }
+          if (teamGrants.length > 0) {
+            parts.push(`<app-badge variant="info">${teamGrants.length} team${teamGrants.length > 1 ? 's' : ''}</app-badge>`);
+          }
+          if (deptGrants.length > 0) {
+            parts.push(`<app-badge variant="warning">${deptGrants.length} department${deptGrants.length > 1 ? 's' : ''}</app-badge>`);
+          }
+          if (agentGrants.length > 0) {
+            parts.push(`<app-badge variant="info">${agentGrants.length} agent${agentGrants.length > 1 ? 's' : ''}</app-badge>`);
+          }
+
+          if (parts.length > 0) {
+            sections.push(`
+              <div class="acp-acl-group">
+                <h3 class="acp-acl-group-title">${icons.users('acp-acl-group-icon', 14)} Granted access</h3>
+                <p class="acp-acl-group-desc">Who can interact with this agent.</p>
+                <div class="acp-acl-badges">${parts.join(' ')}</div>
+              </div>
+            `);
+          } else {
+            sections.push(`
+              <div class="acp-acl-group">
+                <h3 class="acp-acl-group-title">${icons.lock('acp-acl-group-icon', 14)} Visibility</h3>
+                <p class="acp-acl-group-desc">Private. Only the owner has access.</p>
+                <div class="acp-acl-badges"><app-badge variant="warning">Private</app-badge></div>
+              </div>
+            `);
+          }
+        }
+      }
+
+      if (sections.length === 0) {
+        el.innerHTML = `
+          <div class="acp-acl-empty">
+            <app-empty-state
+              title="No access data"
+              description="Access control information is not available for this agent.">
+            </app-empty-state>
+          </div>`;
+        return;
+      }
+
+      el.innerHTML = `<div class="acp-acl-grid">${sections.join('')}</div>`;
+    } catch {
+      el.innerHTML = '';
+    }
   }
 
   #esc(s) {

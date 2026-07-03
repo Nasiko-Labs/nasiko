@@ -67,18 +67,18 @@ pub fn protected_router() -> Router<AppState> {
         .route("/finops/insights", post(handler::get_finops_insights))
 }
 
-/// Observe endpoints — mounted under `/api/v1/observability` (auth required via middleware).
+/// Observe endpoints — mounted under `/api` (auth required via middleware).
 ///
 /// Path params that contain `{agent_ref}` accept either a UUID or an agent name,
 /// so both the UI (UUID) and CLI (`nasiko logs my-agent`) work without pre-resolving.
 pub fn observe_router() -> Router<AppState> {
     Router::new()
-        .route("/observability/agents/{agent_ref}/logs", get(agent_logs))
-        .route("/observability/agents/{agent_ref}/logs/stream", get(agent_logs_stream))
-        .route("/observability/agents/{agent_ref}/stats", get(agent_stats))
-        .route("/observability/traces", get(list_traces))
-        .route("/observability/traces/{trace_id}", get(get_trace))
-        .route("/observability/finops", get(finops))
+        .route("/observe/agents/{agent_ref}/logs", get(agent_logs))
+        .route("/observe/agents/{agent_ref}/logs/stream", get(agent_logs_stream))
+        .route("/observe/agents/{agent_ref}/stats", get(agent_stats))
+        .route("/observe/traces", get(list_traces))
+        .route("/observe/traces/{trace_id}", get(get_trace))
+        .route("/observe/finops", get(finops))
 }
 
 // ---------------------------------------------------------------------------
@@ -453,26 +453,130 @@ async fn list_traces(
 /// `GET /api/observe/traces/{trace_id}`
 ///
 /// Returns full trace detail with all spans.
-/// Returns 503 when no observability backend is configured.
+///
+/// Data sources (tried in order):
+///   1. Tempo (when observability backend is configured via TEMPO_URL + LOKI_URL)
+///   2. `flows` + `flow_steps` DB tables (always available as fallback)
+///
+/// This ensures the trace page renders useful data even without a Tempo deployment.
 async fn get_trace(State(state): State<AppState>, Path(trace_id): Path<String>) -> Response {
-    let Some(ref obs) = state.observability else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Observability backend not configured (set TEMPO_URL + LOKI_URL)",
-        ).into_response();
-    };
-
-    match obs.get_trace(&trace_id).await {
-        Ok(trace) => Json(trace).into_response(),
-        Err(e) => {
-            let status = if e.to_string().contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (status, e.to_string()).into_response()
+    // ── Try Tempo first ─────────────────────────────────────────────────────
+    if let Some(ref obs) = state.observability {
+        match obs.get_trace(&trace_id).await {
+            Ok(trace) => return Json(trace).into_response(),
+            Err(e) => {
+                // If Tempo returned a real error (not just "not found"), log and fall through
+                // to the DB fallback so the user still sees flow-level data.
+                tracing::debug!(trace_id = %trace_id, error = %e, "Tempo get_trace failed, falling back to DB");
+            }
         }
     }
+
+    // ── Fallback: build TraceDetails from flows + flow_steps ────────────────
+    let flow_row = sqlx::query_as::<_, (String, Option<String>, Option<i64>, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)>(
+        r#"SELECT flow_id, root_agent_name, duration_ms, created_at, completed_at
+           FROM flows WHERE flow_id = $1"#,
+    )
+    .bind(&trace_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((flow_id, root_agent, duration_ms, created_at, completed_at)) = flow_row else {
+        return (StatusCode::NOT_FOUND, "Trace not found").into_response();
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct StepRow {
+        step_order: i32,
+        agent_name: String,
+        caller_agent_name: Option<String>,
+        input_summary: Option<String>,
+        output_summary: Option<String>,
+        status: String,
+        tokens_used: i32,
+        latency_ms: Option<i32>,
+        created_at: chrono::DateTime<Utc>,
+        completed_at: Option<chrono::DateTime<Utc>>,
+    }
+
+    let steps: Vec<StepRow> = sqlx::query_as(
+        "SELECT step_order, agent_name, caller_agent_name, input_summary, output_summary, status, tokens_used, latency_ms, created_at, completed_at FROM flow_steps WHERE flow_id = $1 ORDER BY step_order ASC",
+    )
+    .bind(&flow_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    use nasiko_observability::types::{Span, TraceDetails};
+    use std::collections::HashMap;
+
+    // Build a root span representing the orchestrator flow.
+    let root_span_id = format!("{:016x}", 1u64);
+    let root_service = root_agent.unwrap_or_else(|| "orchestrator".into());
+
+    let mut spans = vec![Span {
+        span_id: root_span_id.clone(),
+        parent_span_id: None,
+        name: format!("flow {}", &flow_id[..12.min(flow_id.len())]),
+        started_at: created_at,
+        ended_at: completed_at,
+        duration_ms: duration_ms.map(|d| d as u64),
+        service_name: root_service,
+        kind: 2, // server
+        status_code: 0,
+        status_message: String::new(),
+        attributes: HashMap::new(),
+    }];
+
+    for step in &steps {
+        let span_id = format!("{:016x}", step.step_order as u64 + 1);
+        let step_duration = step.latency_ms.map(|ms| ms as u64).or_else(|| {
+            step.completed_at.map(|end| (end - step.created_at).num_milliseconds().max(0) as u64)
+        });
+
+        let mut attrs: HashMap<String, serde_json::Value> = HashMap::new();
+        if let Some(ref input) = step.input_summary {
+            attrs.insert("input_summary".into(), serde_json::Value::String(input.clone()));
+        }
+        if let Some(ref output) = step.output_summary {
+            attrs.insert("output_summary".into(), serde_json::Value::String(output.clone()));
+        }
+        if step.tokens_used > 0 {
+            attrs.insert("gen_ai.usage.input_tokens".into(), serde_json::json!(step.tokens_used));
+        }
+        if step.status == "error" || step.status == "failed" {
+            attrs.insert("otel.status_code".into(), serde_json::Value::String("ERROR".into()));
+        }
+        if let Some(ref caller) = step.caller_agent_name {
+            attrs.insert("caller".into(), serde_json::Value::String(caller.clone()));
+        }
+
+        spans.push(Span {
+            span_id,
+            parent_span_id: Some(root_span_id.clone()),
+            name: step.agent_name.clone(),
+            started_at: step.created_at,
+            ended_at: step.completed_at,
+            duration_ms: step_duration,
+            service_name: step.agent_name.clone(),
+            kind: 3, // client (calling out to agent)
+            status_code: if step.status == "error" || step.status == "failed" { 2 } else { 0 },
+            status_message: String::new(),
+            attributes: attrs,
+        });
+    }
+
+    let trace = TraceDetails {
+        trace_id: flow_id,
+        spans,
+        started_at: Some(created_at),
+        ended_at: completed_at,
+        duration_ms: duration_ms.map(|d| d as u64),
+    };
+
+    Json(trace).into_response()
 }
 
 /// `GET /api/observe/finops?since=<iso8601>&agent_ids=<uuid,uuid,...>`

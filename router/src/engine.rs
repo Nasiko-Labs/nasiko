@@ -141,24 +141,32 @@ impl RoutingEngine for OssRoutingEngine {
             .map(|m| ConversationMessage { role: m.role, content: m.content })
             .collect();
 
-        let (selected_agent, fallback_used, reasoning) =
+        let (selected_agent, fallback_used, reasoning, selector_usage) =
             match self.selector.select_agent(&req.query, &history_msgs, &summaries).await {
-                Ok((sel, _)) => {
+                Ok((sel, completion_result)) => {
                     let agent = candidates
                         .iter()
                         .find(|a| a.id == sel.agent_id)
                         .cloned()
                         .unwrap_or_else(|| candidates[0].clone());
                     let reasoning = sel.reasoning.clone();
-                    (agent, false, reasoning)
+                    let usage = Some(completion_result);
+                    (agent, false, reasoning, usage)
                 }
                 Err(e) => {
                     tracing::warn!(%e, "Stage 3 selector failed, using first candidate as fallback");
-                    (candidates[0].clone(), true, format!("fallback: {e}"))
+                    (candidates[0].clone(), true, format!("fallback: {e}"), None)
                 }
             };
         let stage3_ms = t3.elapsed().as_millis() as i32;
         let total_ms = t0.elapsed().as_millis() as i32;
+
+        // Write selector token usage to the token_usage table (fire-and-forget)
+        let selection_token_usage_id: Option<Uuid> = if let Some(ref cr) = selector_usage {
+            write_selector_token_usage(pool, req.user_id, &req.session_id, cr).await
+        } else {
+            None
+        };
 
         // Fire-and-forget log insert (never blocks the response)
         let entry = RouterLogEntry {
@@ -178,6 +186,7 @@ impl RoutingEngine for OssRoutingEngine {
             embedding_model: Some(self.embedding_model.clone()),
             selection_llm_ms: Some(stage3_ms),
             file_count: req.file_parts.len() as i32,
+            selection_token_usage_id,
         };
         let pool2 = pool.clone();
         tokio::spawn(async move {
@@ -195,17 +204,17 @@ pub async fn write_router_log(pool: &PgPool, e: RouterLogEntry) {
         r#"INSERT INTO router_request_log (
             request_id, user_id, session_id, query,
             agents_considered, selected_agent_id, selected_agent_name,
-            selection_reasoning, fallback_used,
+            selection_reasoning, fallback_used, selection_token_usage_id,
             total_latency_ms, registry_fetch_ms, selection_llm_ms,
             stage1_candidates, stage2_candidates, embedding_model,
             success, file_count, streaming
         ) VALUES (
             $1, $2, $3, $4,
             $5, $6, $7,
-            $8, $9,
-            $10, $11, $12,
-            $13, $14, $15,
-            true, $16, false
+            $8, $9, $10,
+            $11, $12, $13,
+            $14, $15, $16,
+            true, $17, false
         )"#,
     )
     .bind(&e.request_id)
@@ -217,6 +226,7 @@ pub async fn write_router_log(pool: &PgPool, e: RouterLogEntry) {
     .bind(&e.selected_agent_name)
     .bind(&e.selection_reasoning)
     .bind(e.fallback_used)
+    .bind(e.selection_token_usage_id)
     .bind(e.total_latency_ms)
     .bind(e.registry_fetch_ms)
     .bind(e.selection_llm_ms)
@@ -229,6 +239,46 @@ pub async fn write_router_log(pool: &PgPool, e: RouterLogEntry) {
 
     if let Err(err) = result {
         tracing::warn!(%err, "failed to write router log (non-fatal)");
+    }
+}
+
+/// Writes the Stage 3 selector's token usage to the `token_usage` table.
+/// Returns the UUID of the inserted row, or None on failure.
+async fn write_selector_token_usage(
+    pool: &PgPool,
+    user_id: Uuid,
+    session_id: &str,
+    cr: &crate::providers::CompletionResult,
+) -> Option<Uuid> {
+    let input = cr.usage.prompt_tokens;
+    let output = cr.usage.completion_tokens;
+    let total = cr.usage.total_tokens;
+
+    let result = sqlx::query_scalar::<_, Uuid>(
+        r#"INSERT INTO token_usage (
+            user_id, operation_type, session_id, provider, model,
+            input_tokens, output_tokens, total_tokens,
+            latency_ms, streaming, metadata
+        ) VALUES ($1, 'router_selection', $2, $3, $4, $5, $6, $7, $8, false, '{}'::jsonb)
+        RETURNING id"#,
+    )
+    .bind(user_id)
+    .bind(session_id)
+    .bind(&cr.provider)
+    .bind(&cr.model)
+    .bind(input)
+    .bind(output)
+    .bind(total)
+    .bind(cr.latency_ms)
+    .fetch_one(pool)
+    .await;
+
+    match result {
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to write selector token usage (non-fatal)");
+            None
+        }
     }
 }
 

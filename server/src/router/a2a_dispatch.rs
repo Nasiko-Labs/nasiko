@@ -10,6 +10,7 @@ use axum::{
 use futures::StreamExt;
 use serde_json::json;
 use std::convert::Infallible;
+use std::time::Instant;
 use uuid::Uuid;
 
 use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
@@ -18,12 +19,14 @@ use nasiko_react_agent::{
     RegistrySource,
 };
 
-use nasiko_router::{AgentSelector, FilePart, RouteRequest, RouterError, SessionHistory};
+use nasiko_router::{AgentSelector, SessionHistory};
+
 use nasiko_flow::FlowContext;
 
 use crate::acl::CpCallGuard;
 use crate::auth::Claims;
 use crate::state::AppState;
+use crate::usage::TokenUsageBuilder;
 
 // TODO: Implement `AgentExecutor` trait from a2a-server-lf to replace manual Axum routing.
 // The trait has two methods: execute(&self, ctx: ExecutorContext) -> BoxStream<StreamResponse>
@@ -82,8 +85,7 @@ pub async fn a2a_dispatch_handler(
         .and_then(|m| m.get("session_id"))
         .and_then(|v| v.as_str())
         .map(String::from);
-    let is_orchestrator = agent_id.as_deref() == Some("orchestrator");
-    let use_router = agent_id.is_none();
+    let is_orchestrator = agent_id.is_none() || agent_id.as_deref() == Some("orchestrator");
 
     let user_id: Uuid = claims.sub.parse().unwrap_or(Uuid::nil());
 
@@ -95,22 +97,7 @@ pub async fn a2a_dispatch_handler(
 
     let query = history.with_current_query(&text);
 
-    if use_router {
-        let sid = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let route_req = RouteRequest {
-            query: text,
-            user_id,
-            session_id: sid,
-            file_parts: vec![],
-        };
-        match state.routing_engine.route(route_req, &state.db).await {
-            Ok(result) => {
-                agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
-            }
-            Err(RouterError::NoAgentsAvailable) => Err(A2aDispatchError::NoAgents),
-            Err(e) => Err(A2aDispatchError::Internal(e.to_string())),
-        }
-    } else if is_orchestrator {
+    if is_orchestrator {
         orchestrator_stream(&state, &query, &task_id, &context_id, user_id, claims.is_superuser).await
     } else {
         let target = agent_id.as_deref().unwrap();
@@ -231,9 +218,21 @@ async fn orchestrator_stream(
     let mut flow_rx = state.flow_events.subscribe(&flow_id).await;
     let flow_id_cleanup = flow_id.clone();
     let db = state.db.clone();
+    let usage_tracker = state.usage_tracker.clone();
+    let genai_metrics = state.genai_metrics.clone();
+    let orchestrator_model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
+    let orchestrator_start = Instant::now();
 
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
+
+        // Emit trace_id so the UI can link this response to its distributed trace.
+        {
+            let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                "type": "trace_meta", "trace_id": flow_id,
+            })));
+            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
+        }
 
         let mut content_started = false;
 
@@ -259,6 +258,9 @@ async fn orchestrator_stream(
                             .bind(&message)
                             .execute(&db)
                             .await;
+
+                            // Record agent invocation in OTel
+                            genai_metrics.record_invocation(&agent, "");
 
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
                                 "type": "tool_call",
@@ -301,13 +303,59 @@ async fn orchestrator_stream(
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
+                        OrchestratorEvent::Usage { input_tokens, output_tokens, model } => {
+                            // Fire-and-forget: track token usage in DB
+                            let tracker = usage_tracker.clone();
+                            let uid = user_id;
+                            let fid = flow_id_cleanup.clone();
+                            let m = model.clone();
+                            tokio::spawn(async move {
+                                let usage = TokenUsageBuilder::new(
+                                    uid,
+                                    "orchestrator",
+                                    "openai",
+                                    &m,
+                                )
+                                .tokens(input_tokens as i32, output_tokens as i32)
+                                .session_id(&fid)
+                                .streaming(false)
+                                .build();
+                                if let Err(e) = tracker.track_tokens(usage).await {
+                                    tracing::warn!(error = %e, "failed to track orchestrator token usage");
+                                }
+                            });
+
+                            // Also record in OTel GenAI metrics
+                            genai_metrics.record_tokens(
+                                input_tokens,
+                                output_tokens,
+                                &model,
+                                "orchestrator",
+                                "",
+                            );
+                        }
                         OrchestratorEvent::Content { content } => {
                             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
-                                &task_id, &context_id, &artifact_id, &content, content_started, true,
+                                &task_id, &context_id, &artifact_id, &content, content_started, false,
                             ))));
                             content_started = true;
                         }
                         OrchestratorEvent::Done { .. } => {
+                            if content_started {
+                                yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
+                                    &task_id, &context_id, &artifact_id, "", true, true,
+                                ))));
+                            }
+
+                            // Record overall operation duration in OTel
+                            genai_metrics.record_operation(
+                                orchestrator_start.elapsed().as_secs_f64(),
+                                "orchestrate",
+                                &orchestrator_model,
+                                "orchestrator",
+                                "",
+                            );
+
                             yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
                             break;
                         }
@@ -422,6 +470,14 @@ async fn agent_stream(
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
 
+            // Emit trace_id so the UI can link this response to its distributed trace.
+            {
+                let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                    "type": "trace_meta", "trace_id": flow_id_cleanup,
+                })));
+                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
+            }
+
             let mut buffer = String::new();
             let mut pinned = std::pin::pin!(byte_stream);
             let mut agent_done = false;
@@ -494,6 +550,14 @@ async fn agent_stream(
 
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
+
+            // Emit trace_id so the UI can link this response to its distributed trace.
+            {
+                let meta_msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                    "type": "trace_meta", "trace_id": flow_id_cleanup,
+                })));
+                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, meta_msg))));
+            }
 
             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                 &task_id, &context_id, &artifact_id, &text, false, true,
@@ -582,15 +646,14 @@ struct StatsRow {
 /// - `query`   (text field, required) — the user's question
 /// - Any number of additional fields treated as file attachments
 ///
-/// Each file is base64-encoded into a `FilePart` data URI and forwarded
-/// alongside the query to the routing engine.
+/// Each file is base64-encoded and forwarded alongside the query to the orchestrator.
 pub async fn a2a_upload_handler(
     State(state): State<AppState>,
     claims: Claims,
     mut multipart: Multipart,
 ) -> Result<Response, A2aDispatchError> {
     let mut query = String::new();
-    let mut file_parts: Vec<FilePart> = Vec::new();
+    let mut file_count = 0usize;
 
     while let Some(field) = multipart
         .next_field()
@@ -598,11 +661,6 @@ pub async fn a2a_upload_handler(
         .map_err(|e| A2aDispatchError::InvalidRequest(format!("multipart error: {e}")))?
     {
         let field_name = field.name().unwrap_or("").to_string();
-        let filename = field.file_name().map(str::to_string);
-        let content_type = field
-            .content_type()
-            .unwrap_or("application/octet-stream")
-            .to_string();
 
         let bytes = field
             .bytes()
@@ -613,8 +671,7 @@ pub async fn a2a_upload_handler(
             query = String::from_utf8(bytes.to_vec())
                 .map_err(|_| A2aDispatchError::InvalidRequest("query must be valid UTF-8".into()))?;
         } else {
-            let name = filename.unwrap_or_else(|| field_name.clone());
-            file_parts.push(FilePart::encode(name, &bytes, content_type));
+            file_count += 1;
         }
     }
 
@@ -630,24 +687,12 @@ pub async fn a2a_upload_handler(
 
     tracing::info!(
         user_id = %user_id,
-        file_count = file_parts.len(),
-        "a2a dispatch upload: routing query with {} file(s)",
-        file_parts.len()
+        file_count,
+        "a2a dispatch upload: orchestrating query with {} file(s)",
+        file_count
     );
 
-    let route_req = RouteRequest {
-        query: query.clone(),
-        user_id,
-        session_id: Uuid::new_v4().to_string(),
-        file_parts,
-    };
-    match state.routing_engine.route(route_req, &state.db).await {
-        Ok(result) => {
-            agent_stream(&state, &result.agent.id.to_string(), &query, &task_id, &context_id, user_id).await
-        }
-        Err(RouterError::NoAgentsAvailable) => Err(A2aDispatchError::NoAgents),
-        Err(e) => Err(A2aDispatchError::Internal(e.to_string())),
-    }
+    orchestrator_stream(&state, &query, &task_id, &context_id, user_id, claims.is_superuser).await
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -657,6 +702,31 @@ fn to_sse(event: StreamResponse) -> Event {
 }
 
 async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
+    // Prefer live runtime endpoint (Docker port mapping can change on restart).
+    let container_id = nasiko_runtime::ContainerId::new(agent_name.to_owned());
+    match state.runtime.endpoint(&container_id).await {
+        Ok(endpoint) => {
+            let base = endpoint.trim_end_matches('/');
+            return Ok(format!("{base}/jsonrpc"));
+        }
+        Err(_) => {
+            // Container not reachable via runtime — check if it's actually stopped.
+            if let Ok(status) = state.runtime.status(&container_id).await {
+                if status.state != nasiko_runtime::RuntimeState::Running {
+                    // Mark as stopped so future routing skips it.
+                    let _ = sqlx::query(
+                        "UPDATE agents SET status = 'stopped' WHERE name = $1 AND status = 'running'",
+                    )
+                    .bind(agent_name)
+                    .execute(&state.db)
+                    .await;
+                    return Err(format!("agent '{agent_name}' is not running"));
+                }
+            }
+        }
+    }
+
+    // Fall back to stored URL (e.g. external agents, K8s with stable DNS).
     let stored_url: Option<String> = sqlx::query_scalar(
         "SELECT url FROM agents WHERE name = $1 AND status = 'running'",
     )
@@ -669,18 +739,10 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     if let Some(ref url) = stored_url
         && !url.is_empty() {
             let u = url.trim_end_matches('/');
-            return Ok(format!("{u}/"));
+            return Ok(format!("{u}/jsonrpc"));
         }
 
-    let container_id = nasiko_runtime::ContainerId::new(agent_name);
-    let endpoint = state
-        .runtime
-        .endpoint(&container_id)
-        .await
-        .map_err(|e| format!("runtime endpoint: {e}"))?;
-
-    let e = endpoint.trim_end_matches('/');
-    Ok(format!("{e}/"))
+    Err(format!("no endpoint found for agent '{agent_name}'"))
 }
 
 /// Normalize a Python a2a-sdk JSONRPC event to CP native StreamResponse format.
@@ -689,7 +751,10 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
         return data.to_string();
     };
 
-    if parsed.get("statusUpdate").is_some() || parsed.get("artifactUpdate").is_some() {
+    // Already in the expected format (no JSON-RPC wrapper)
+    if parsed.get("statusUpdate").is_some() || parsed.get("artifactUpdate").is_some()
+        || parsed.get("task").is_some() || parsed.get("message").is_some()
+    {
         return data.to_string();
     }
 

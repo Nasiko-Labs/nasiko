@@ -1,3 +1,11 @@
+@keyframes skel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes skel-pulse { from, to { opacity: 1; } }
+}
+
 @scope (your-agents-page) {
   :scope {
     display: block;
@@ -29,37 +37,47 @@
   /* ── Stats bar ───────────────────────────────────────────────────────────── */
   .stats-bar {
     display: flex;
-    gap: var(--space-md);
+    gap: var(--space-sm);
     flex-wrap: wrap;
+    align-items: center;
   }
   .stat-chip {
+    background: none;
+    border: 2px solid transparent;
+    border-radius: var(--radius-md);
+    padding: var(--space-2xs) var(--space-xs);
+    cursor: pointer;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+  }
+  .stat-chip:hover {
+    border-color: var(--color-border);
+    background: color-mix(in srgb, var(--color-border) 20%, transparent);
+  }
+  .stat-chip--active {
+    border-color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+    box-shadow: 0 0 0 1px var(--color-primary-ring);
+  }
+  .stat-total {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    padding: 4px 12px;
-    border-radius: var(--radius-sm);
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
+    font-weight: 600;
+    margin-left: var(--space-sm);
   }
-  .stat-chip--total { font-weight: 600; color: var(--color-text-main); }
-  .stat-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .stat-dot--running { background: var(--color-success); }
-  .stat-dot--stopped { background: var(--color-warning); }
-  .stat-dot--error { background: var(--color-error); }
 
   /* ── Toolbar ─────────────────────────────────────────────────────────────── */
   .toolbar {
+    display: flex;
+    gap: var(--space-md);
+    align-items: flex-end;
+    flex-wrap: wrap;
     margin-bottom: var(--space-lg);
   }
   .search-wrap {
     position: relative;
+    flex: 1;
+    min-width: 180px;
     max-width: 360px;
   }
   .search-icon {
@@ -70,16 +88,62 @@
     color: var(--color-text-muted);
     pointer-events: none;
   }
+  .search-wrap:focus-within .search-icon { color: var(--color-primary); }
   .search-wrap input {
     width: 100%;
-    padding: var(--space-sm) var(--space-md) var(--space-sm) 38px;
+    padding: var(--space-sm) var(--space-xl) var(--space-sm) 38px;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-bg-surface);
     font-size: var(--font-size-sm);
     color: var(--color-text-main);
+    font-family: inherit;
   }
   .search-wrap input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-ring);
+  }
+  .search-wrap input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+  .search-clear {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    padding: var(--space-xs);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .search-clear:hover { color: var(--color-text-main); }
+
+  .sort-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+  .sort-label {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    font-weight: 500;
+  }
+  .sort-select {
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    cursor: pointer;
+    min-width: 140px;
+  }
+  .sort-select:focus {
     outline: none;
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px var(--color-primary-ring);
@@ -91,12 +155,30 @@
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: var(--space-md);
   }
-  .empty-state {
+  .empty-wrap {
     grid-column: 1 / -1;
-    text-align: center;
-    padding: var(--space-2xl);
-    color: var(--color-text-muted);
-    font-style: italic;
+  }
+  .empty-action-link {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-xs) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    text-decoration: none;
+  }
+  .empty-action-link:hover { background: var(--color-primary-hover); }
+  .empty-action-link--secondary {
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-main);
+  }
+  .empty-action-link--secondary:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+    background: var(--color-bg-surface);
   }
 
   /* ── Card ────────────────────────────────────────────────────────────────── */
@@ -108,7 +190,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    transition: border-color 0.15s, box-shadow 0.15s;
   }
   .agent-card:hover {
     border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
@@ -123,35 +204,16 @@
     align-items: center;
     justify-content: space-between;
   }
-  .agent-card-icon {
+  .agent-avatar {
     width: 36px;
     height: 36px;
     border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--color-primary) 12%, transparent);
-    color: var(--color-primary);
     display: flex;
     align-items: center;
     justify-content: center;
-  }
-  .agent-card-status {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-  .status-dot--running { background: var(--color-success); }
-  .status-dot--stopped { background: var(--color-warning); }
-  .status-dot--error, .status-dot--failed { background: var(--color-error); }
-  .status-dot--deploying, .status-dot--starting { background: var(--color-info); }
-  .status-dot--registered { background: var(--color-neutral); }
-  .status-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    text-transform: capitalize;
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    flex-shrink: 0;
   }
   .agent-card-name {
     font-size: var(--font-size-base);
@@ -174,9 +236,18 @@
     color: var(--color-text-muted);
     border: 1px solid var(--color-border);
   }
-  .agent-card-version {
+  .agent-card-error {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-error);
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-error-bg);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-error-border);
+  }
+  .error-logs-link {
+    color: var(--color-error);
+    font-weight: 500;
+    text-decoration: underline;
   }
   .agent-card-actions {
     display: flex;
@@ -221,7 +292,53 @@
     background: color-mix(in srgb, var(--color-error) 8%, transparent);
   }
 
-  /* ── Modal styles (kept from before) ─────────────────────────────────────── */
+  /* ── Skeleton cards ──────────────────────────────────────────────────────── */
+  .skeleton-card { min-height: 180px; }
+  .skel-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+  .skel-badge {
+    width: 60px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+  .skel-line {
+    height: 0.85em;
+    border-radius: var(--radius-sm);
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+  .skel-line--name { width: 50%; height: 1em; }
+  .skel-line--image { width: 120px; }
+  .skel-line--version { width: 40px; }
+  .skel-meta {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: center;
+  }
+  .skel-actions {
+    display: flex;
+    gap: var(--space-xs);
+    margin-top: auto;
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
+  }
+  .skel-btn {
+    width: 70px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+  .skel-btn--sm { width: 50px; margin-left: auto; }
+
+  /* ── Modal styles ────────────────────────────────────────────────────────── */
   .env-row {
     display: grid;
     grid-template-columns: 1fr 1fr auto;

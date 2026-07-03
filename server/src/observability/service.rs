@@ -10,12 +10,20 @@ use sqlx::PgPool;
 
 // ─── Model pricing (USD per million tokens) ───────────────────────────────────
 
+/// Fallback pricing when the model is not found in the `model_pricing` DB table.
+/// The DB trigger (`calculate_token_cost`) handles cost for rows in `token_usage`;
+/// this function is only used for Tempo-sourced span cost estimation.
 fn model_pricing(model: &str) -> (f64, f64) {
     match model {
         "gpt-4o" | "gpt-4o-2024-08-06" | "gpt-4o-2024-11-20" => (2.50, 10.00),
         "gpt-4o-mini" | "gpt-4o-mini-2024-07-18" => (0.15, 0.60),
         "gpt-4-turbo" => (10.00, 30.00),
         "gpt-3.5-turbo" => (0.50, 1.50),
+        "deepseek-v4-flash" | "deepseek-chat" => (0.14, 0.28),
+        "deepseek-reasoner" => (0.55, 2.19),
+        "claude-sonnet-4-20250514" | "claude-4-sonnet" => (3.00, 15.00),
+        "claude-opus-4-20250514" | "claude-4-opus" => (15.00, 75.00),
+        "claude-3-5-haiku-20241022" => (0.80, 4.00),
         _ => (2.50, 10.00),
     }
 }
@@ -23,6 +31,55 @@ fn model_pricing(model: &str) -> (f64, f64) {
 /// Returns (prompt_cost, completion_cost, total_cost) in USD.
 fn compute_cost(input: u64, output: u64, model: Option<&str>) -> (f64, f64, f64) {
     let (in_p, out_p) = model_pricing(model.unwrap_or("gpt-4o"));
+    let prompt = round6(input as f64 / 1_000_000.0 * in_p);
+    let completion = round6(output as f64 / 1_000_000.0 * out_p);
+    (prompt, completion, round6(prompt + completion))
+}
+
+/// Query the `model_pricing` DB table for the current price of a model.
+/// Returns (input_price_per_1m, output_price_per_1m) or None if not found.
+#[allow(dead_code)]
+async fn lookup_model_pricing(db: &PgPool, model: &str) -> Option<(f64, f64)> {
+    #[derive(sqlx::FromRow)]
+    struct PricingRow {
+        input_price_per_1m: rust_decimal::Decimal,
+        output_price_per_1m: rust_decimal::Decimal,
+    }
+
+    let row = sqlx::query_as::<_, PricingRow>(
+        r#"SELECT input_price_per_1m, output_price_per_1m
+           FROM model_pricing
+           WHERE model = $1
+             AND (effective_until IS NULL OR effective_until > now())
+           ORDER BY effective_from DESC
+           LIMIT 1"#,
+    )
+    .bind(model)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()?;
+
+    use rust_decimal::prelude::ToPrimitive;
+    Some((
+        row.input_price_per_1m.to_f64().unwrap_or(2.50),
+        row.output_price_per_1m.to_f64().unwrap_or(10.00),
+    ))
+}
+
+/// Compute cost using DB pricing when available, falling back to hardcoded pricing.
+#[allow(dead_code)]
+async fn compute_cost_with_db(
+    db: &PgPool,
+    input: u64,
+    output: u64,
+    model: Option<&str>,
+) -> (f64, f64, f64) {
+    let model_name = model.unwrap_or("gpt-4o");
+    let (in_p, out_p) = match lookup_model_pricing(db, model_name).await {
+        Some(prices) => prices,
+        None => model_pricing(model_name),
+    };
     let prompt = round6(input as f64 / 1_000_000.0 * in_p);
     let completion = round6(output as f64 / 1_000_000.0 * out_p);
     (prompt, completion, round6(prompt + completion))

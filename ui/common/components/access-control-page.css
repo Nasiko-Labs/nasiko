@@ -1,0 +1,114 @@
+@scope (access-control-page) {
+  :scope {
+    display: block;
+  }
+
+  .stats-bar {
+    display: flex;
+    gap: var(--space-lg);
+    padding: var(--space-md) var(--space-lg);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-lg);
+    overflow-x: auto;
+  }
+
+  .stat-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-width: 72px;
+    flex: 1;
+  }
+
+  .stat-value {
+    font-size: var(--font-size-2xl);
+    font-weight: 700;
+    color: var(--color-text-main);
+    line-height: 1.2;
+  }
+
+  .stat-label {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  .warnings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: var(--space-md);
+    margin-bottom: var(--space-xl);
+  }
+
+  .warning-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding: var(--space-md) var(--space-lg);
+    border: 1px solid var(--color-border);
+    border-left-width: 4px;
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+  }
+
+  .warning-card.is-warning {
+    border-left-color: var(--color-warning);
+    background: color-mix(in srgb, var(--color-warning) 4%, var(--color-bg-surface));
+  }
+
+  .warning-card.is-error {
+    border-left-color: var(--color-error);
+    background: color-mix(in srgb, var(--color-error) 4%, var(--color-bg-surface));
+  }
+
+  .warning-card.is-info {
+    border-left-color: var(--color-info);
+  }
+
+  .warning-count {
+    font-size: var(--font-size-2xl);
+    font-weight: 700;
+    color: var(--color-text-main);
+    line-height: 1.2;
+  }
+
+  .warning-label {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    line-height: 1.4;
+  }
+
+  .section {
+    margin-bottom: var(--space-xl);
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-md);
+    padding-top: var(--space-sm);
+  }
+
+  .section-header h2 {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin: 0;
+  }
+
+  .error-message {
+    text-align: center;
+    padding: var(--space-xl);
+    color: var(--color-error);
+    font-size: var(--font-size-sm);
+    background: var(--color-error-bg);
+    border: 1px solid var(--color-error-border);
+    border-radius: var(--radius-md);
+  }
+}

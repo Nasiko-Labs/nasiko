@@ -1,17 +1,30 @@
 import styles from './sessions-page.css' with { type: 'css' };
+import { icons } from '../utils/icons.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class SessionsPage extends HTMLElement {
+  #initialized = false;
+  #sessions = [];
+
   connectedCallback() {
+    if (this.#initialized) return;
+    this.#initialized = true;
+    this.#render();
+    this.#load();
+  }
+
+  #render() {
     this.innerHTML = `
       <div class="sessions-header">
         <h1>Sessions</h1>
         <app-button variant="primary" size="sm" id="btn-new">New Chat</app-button>
       </div>
+      <div class="sessions-search-wrap">
+        <span class="sessions-search-icon">${icons.search('', 16)}</span>
+        <input type="search" class="sessions-search" placeholder="Filter sessions..." aria-label="Filter sessions" />
+      </div>
       <div class="session-list" id="session-list">
-        <app-skeleton height="60px"></app-skeleton>
-        <app-skeleton height="60px"></app-skeleton>
-        <app-skeleton height="60px"></app-skeleton>
+        ${this.#renderSkeletons()}
       </div>
     `;
 
@@ -19,7 +32,21 @@ class SessionsPage extends HTMLElement {
       window.location.href = '/chat.html';
     });
 
-    this.#load();
+    this.querySelector('.sessions-search')?.addEventListener('input', (e) => {
+      this.#filterSessions(e.target.value);
+    });
+  }
+
+  #renderSkeletons() {
+    const skeleton = `<div class="session-card-skeleton">
+      <div class="skeleton-avatar"></div>
+      <div class="skeleton-info">
+        <div class="skeleton-line skeleton-line--short"></div>
+        <div class="skeleton-line skeleton-line--long"></div>
+      </div>
+      <div class="skeleton-line skeleton-line--time"></div>
+    </div>`;
+    return skeleton.repeat(4);
   }
 
   async #load() {
@@ -27,31 +54,154 @@ class SessionsPage extends HTMLElement {
     try {
       const result = await window.fetchSessions('', 1, 50);
       const sessions = result?.data || [];
-
-      if (!sessions.length) {
-        list.innerHTML = '<div class="empty">No chat sessions yet. Start one from the orchestrator or an agent page.</div>';
-        return;
-      }
-
-      list.innerHTML = sessions.map(s => {
-        const agentName = s.agent_name || 'Orchestrator';
-        const preview = s.last_message || '';
-        const time = s.updated_at || s.created_at;
-        const timeStr = time ? this.#relativeTime(new Date(time)) : '';
-        const sessionId = s.session_id || s.id;
-        const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
-
-        return `<a class="session-card" href="${href}">
-          <div class="session-info">
-            <div class="session-agent">${this.#esc(agentName)}</div>
-            ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 100))}</div>` : ''}
-          </div>
-          <div class="session-time">${timeStr}</div>
-        </a>`;
-      }).join('');
+      this.#sessions = sessions;
+      this.#renderSessions(sessions);
     } catch {
-      list.innerHTML = '<div class="empty">Failed to load sessions.</div>';
+      list.innerHTML = `<app-empty-state
+        title="Failed to load sessions"
+        description="Something went wrong while loading your chat sessions."
+        icon='${icons.xCircle()}'>
+        <app-button variant="secondary" size="sm" id="btn-retry">Retry</app-button>
+      </app-empty-state>`;
+      this.querySelector('#btn-retry')?.addEventListener('click', () => {
+        list.innerHTML = this.#renderSkeletons();
+        this.#load();
+      });
     }
+  }
+
+  #filterSessions(query) {
+    const q = (query || '').toLowerCase().trim();
+    if (!q) {
+      this.#renderSessions(this.#sessions);
+      return;
+    }
+    const filtered = this.#sessions.filter(s => {
+      const agent = (s.agent_name || 'Orchestrator').toLowerCase();
+      const msg = (s.last_message || '').toLowerCase();
+      return agent.includes(q) || msg.includes(q);
+    });
+    this.#renderSessions(filtered);
+  }
+
+  #renderSessions(sessions) {
+    const list = this.querySelector('#session-list');
+    if (!sessions.length) {
+      if (this.#sessions.length > 0) {
+        list.innerHTML = `<app-empty-state
+          title="No matching sessions"
+          description="Try a different search term."
+          icon='${icons.search()}'>
+        </app-empty-state>`;
+      } else {
+        list.innerHTML = `<app-empty-state
+          title="No sessions yet"
+          description="Start a conversation from the orchestrator or an agent page."
+          icon='${icons.send()}'>
+          <app-button variant="primary" size="sm" onclick="window.location.href='/index.html'">Start a Chat</app-button>
+        </app-empty-state>`;
+      }
+      return;
+    }
+
+    const groups = this.#groupByDate(sessions);
+    let html = '';
+    for (const [label, items] of groups) {
+      html += `<div class="session-group-header">${this.#esc(label)}</div>`;
+      html += items.map(s => this.#renderCard(s)).join('');
+    }
+    list.innerHTML = html;
+
+    list.querySelectorAll('.session-delete').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sessionId = btn.dataset.sessionId;
+        this.#deleteSession(sessionId);
+      });
+    });
+  }
+
+  #renderCard(s) {
+    const agentName = s.agent_name || 'Orchestrator';
+    const preview = s.last_message || '';
+    const time = s.updated_at || s.created_at;
+    const timeStr = time ? this.#relativeTime(new Date(time)) : '';
+    const sessionId = s.session_id || s.id;
+    const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
+    const avatarColor = this.#avatarColor(agentName);
+    const initial = agentName.charAt(0).toUpperCase();
+    const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
+
+    return `<a class="session-card" href="${href}">
+      <div class="session-avatar" style="background:${avatarColor}">${initial}</div>
+      <div class="session-info">
+        <div class="session-agent">${this.#esc(agentName)}${msgCount}</div>
+        ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 120))}</div>` : ''}
+      </div>
+      <div class="session-meta">
+        <span class="session-time">${timeStr}</span>
+        <button class="session-delete" data-session-id="${this.#esc(sessionId)}" title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>
+      </div>
+    </a>`;
+  }
+
+  #groupByDate(sessions) {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const weekAgo = new Date(today);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+
+    const groups = new Map();
+    for (const s of sessions) {
+      const time = s.updated_at || s.created_at;
+      const date = time ? new Date(time) : new Date(0);
+      let label;
+      if (date >= today) {
+        label = 'Today';
+      } else if (date >= yesterday) {
+        label = 'Yesterday';
+      } else if (date >= weekAgo) {
+        label = 'This Week';
+      } else {
+        label = 'Older';
+      }
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(s);
+    }
+    return groups;
+  }
+
+  async #deleteSession(sessionId) {
+    let card = null;
+    for (const btn of this.querySelectorAll('.session-delete')) {
+      if (btn.dataset.sessionId === sessionId) {
+        card = btn.closest('.session-card');
+        break;
+      }
+    }
+    if (card) card.style.opacity = '0.4';
+    try {
+      if (window.deleteSession) {
+        await window.deleteSession(sessionId);
+      }
+      this.#sessions = this.#sessions.filter(s => (s.session_id || s.id) !== sessionId);
+      const query = this.querySelector('.sessions-search')?.value || '';
+      this.#filterSessions(query);
+    } catch {
+      if (card) card.style.opacity = '1';
+    }
+  }
+
+  #avatarColor(name) {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const hue = Math.abs(hash) % 360;
+    return `hsl(${hue}, 55%, 45%)`;
   }
 
   #relativeTime(date) {

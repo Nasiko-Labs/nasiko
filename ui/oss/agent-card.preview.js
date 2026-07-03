@@ -51,11 +51,64 @@ export default {
       period_start: "2026-07-01T00:00:00Z",
       source: "tempo",
     }],
+    [{ method: "GET", path: /^\/api\/agents\/.*\/acl$/ }, {
+      unrestricted: false,
+      allowed: [
+        "b-002-monitoring-agent",
+        "c-003-logging-agent",
+        "d-004-alerting-agent",
+      ],
+    }],
+    [{ method: "GET", path: /^\/api\/agents\/.*\/visibility$/ }, {
+      agent_id: "a-001",
+      is_public: false,
+      grants: [
+        { id: "g-001", agent_id: "a-001", grant_type: "team", grantee_id: "team-platform", granted_by: null, created_at: "2026-06-15T10:00:00Z" },
+        { id: "g-002", agent_id: "a-001", grant_type: "team", grantee_id: "team-infra", granted_by: null, created_at: "2026-06-16T10:00:00Z" },
+        { id: "g-003", agent_id: "a-001", grant_type: "user", grantee_id: "user-alice", granted_by: null, created_at: "2026-06-17T10:00:00Z" },
+        { id: "g-004", agent_id: "a-001", grant_type: "department", grantee_id: "dept-engineering", granted_by: null, created_at: "2026-06-18T10:00:00Z" },
+      ],
+    }],
   ],
   scenarios: {
+    "overview": async (page) => {
+      const url = new URL(page.url());
+      url.searchParams.set('id', 'a-001');
+      await page.goto(url.toString(), { waitUntil: 'networkidle' });
+      await page.waitForSelector('.acp-page', { timeout: 5000 });
+      await page.waitForSelector('.acp-acl-grid', { timeout: 5000 });
+    },
+    "access-control": async (page) => {
+      const url = new URL(page.url());
+      url.searchParams.set('id', 'a-001');
+      await page.goto(url.toString(), { waitUntil: 'networkidle' });
+      await page.waitForSelector('.acp-acl-grid', { timeout: 5000 });
+      await page.evaluate(() => document.querySelector('#acp-acl').scrollIntoView());
+    },
     "settings-tab": async (page) => {
+      const url = new URL(page.url());
+      url.searchParams.set('id', 'a-001');
+      await page.goto(url.toString(), { waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-tab="settings"]', { timeout: 5000 });
       await page.click('[data-tab="settings"]');
       await page.waitForSelector('[data-panel="settings"].is-active');
+    },
+    "with-stats": async (page) => {
+      const url = new URL(page.url());
+      url.searchParams.set('id', 'a-001');
+      await page.goto(url.toString(), { waitUntil: 'networkidle' });
+      await page.waitForSelector('#acp-stats', { timeout: 5000 });
+      await page.evaluate(() => {
+        const el = document.querySelector('#acp-stats');
+        if (!el) return;
+        el.innerHTML = `
+          <div class="acp-stat"><div class="acp-stat-label">Total executions</div><div class="acp-stat-value">312</div></div>
+          <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">$0.12</div></div>
+          <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">980 ms</div></div>
+          <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">3,200 ms</div></div>
+        `;
+      });
+      await page.waitForSelector('.acp-stat-value');
     },
   },
 };

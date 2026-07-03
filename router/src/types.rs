@@ -52,4 +52,6 @@ pub struct RouterLogEntry {
     pub stage2_candidates: Option<i32>,
     pub embedding_model: Option<String>,
     pub file_count: i32,
+    /// UUID of token_usage record tracking the Stage 3 LLM selector call.
+    pub selection_token_usage_id: Option<Uuid>,
 }

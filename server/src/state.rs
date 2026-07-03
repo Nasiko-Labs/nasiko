@@ -159,7 +159,8 @@ impl AppState {
         state
     }
 
-    /// Run one-time initialization: bootstrap admin user, spawn seed agents in background.
+    /// Run one-time initialization: bootstrap admin user, spawn seed agents in background,
+    /// and start periodic materialized view refresh.
     pub async fn init(&self) {
         if let (Ok(admin_user), Ok(admin_pass)) = (
             std::env::var("ADMIN_USERNAME"),
@@ -173,6 +174,26 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
+        });
+
+        // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // first tick fires immediately — skip it to avoid startup load
+            loop {
+                interval.tick().await;
+                let views = [
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY token_usage_daily",
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY agent_selection_stats",
+                ];
+                for sql in views {
+                    if let Err(e) = sqlx::query(sql).execute(&db).await {
+                        tracing::warn!(view = sql, error = %e, "materialized view refresh failed (non-fatal)");
+                    }
+                }
+                tracing::debug!("materialized views refreshed");
+            }
         });
     }
 }

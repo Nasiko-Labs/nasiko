@@ -78,19 +78,39 @@ class UsagePage extends HTMLElement {
       chart.innerHTML = '<p style="color:var(--color-text-muted);text-align:center;padding:var(--space-xl);">No usage data yet.</p>';
       return;
     }
-    const max = Math.max(...data.map(d => d.total_tokens || 0));
+
+    const days = this.#padToWeek(data);
+    const max = Math.max(...days.map(d => d.total_tokens || 0));
     const barHeight = 140;
     chart.innerHTML = `
       <div style="display:flex;align-items:flex-end;gap:var(--space-xs);height:${barHeight + 24}px;padding:0 var(--space-sm);">
-        ${data.map(d => {
-          const h = max > 0 ? Math.max(2, Math.round(((d.total_tokens || 0) / max) * barHeight)) : 2;
+        ${days.map(d => {
+          const tokens = d.total_tokens || 0;
+          const h = max > 0 ? Math.max(tokens > 0 ? 4 : 0, Math.round((tokens / max) * barHeight)) : 0;
           return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;">
-            <div style="width:100%;background:var(--color-primary);border-radius:var(--radius-sm) var(--radius-sm) 0 0;height:${h}px;transition:height 0.3s;"></div>
-            <span style="font-size:var(--font-size-xs);color:var(--color-text-muted);white-space:nowrap;">${d.date?.slice(5) || ''}</span>
+            <div style="width:100%;background:${tokens > 0 ? 'var(--color-primary)' : 'var(--color-border)'};border-radius:var(--radius-sm) var(--radius-sm) 0 0;height:${Math.max(2, h)}px;opacity:${tokens > 0 ? 1 : 0.4};"></div>
+            <span style="font-size:var(--font-size-xs);color:var(--color-text-muted);white-space:nowrap;">${d.label}</span>
           </div>`;
         }).join('')}
       </div>
     `;
+  }
+
+  #padToWeek(data) {
+    const today = new Date();
+    const days = [];
+    const lookup = new Map(data.map(d => [d.date, d]));
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      const entry = lookup.get(key);
+      days.push({
+        total_tokens: entry?.total_tokens || 0,
+        label: key.slice(5),
+      });
+    }
+    return days;
   }
 
   #setupTable() {

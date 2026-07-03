@@ -25,7 +25,7 @@ class OrchestratorPage extends HTMLElement {
         ></voice-input>
       </div>
       <div class="recent-agents" id="recent-agents">
-        <div class="recent-agents-title">Recent agents</div>
+        <div class="recent-agents-title">RECENT AGENTS</div>
         <div class="recent-agents-grid" id="recent-agents-grid">
           <div class="agent-card-skel"></div>
           <div class="agent-card-skel"></div>
@@ -115,8 +115,10 @@ class OrchestratorPage extends HTMLElement {
           }).catch(() => {});
         }
 
-        continueLink.href = `/chat.html?session_id=${sessionId || ''}&agent_name=Orchestrator`;
-        continueLink.style.display = '';
+        if (sessionId) {
+          continueLink.href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_name=Orchestrator`;
+          continueLink.style.display = '';
+        }
       } catch (err) {
         streamStatus.classList.add('is-done');
         responseContent.classList.add('is-visible');

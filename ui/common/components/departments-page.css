@@ -1,0 +1,96 @@
+@scope (departments-page) {
+  :scope {
+    display: block;
+  }
+
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    margin-bottom: var(--space-md);
+  }
+
+  .warning-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-warning-bg);
+    border: 1px solid var(--color-warning-border);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-md);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+
+    &[hidden] { display: none; }
+  }
+  .warning-banner svg {
+    flex-shrink: 0;
+    color: var(--color-warning);
+  }
+
+  .dept-stats {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-md);
+  }
+  .dept-stats .count {
+    font-weight: 600;
+    color: var(--color-text-main);
+  }
+
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .modal-form label {
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .modal-form input, .modal-form textarea {
+    width: 100%;
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    min-height: 36px;
+
+    &:focus {
+      outline: none;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px var(--color-primary-ring);
+    }
+  }
+  .modal-form textarea {
+    min-height: 80px;
+    resize: vertical;
+  }
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+  }
+
+  .name-cell {
+    font-weight: 500;
+    color: var(--color-text-main);
+  }
+  .muted {
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+}
