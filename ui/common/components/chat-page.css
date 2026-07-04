@@ -314,8 +314,7 @@ chat-page:not(:defined) {
   .msg-skel-line {
     height: 36px;
     border-radius: var(--radius-md);
-    background: var(--color-border);
-    opacity: 0.5;
+    background: color-mix(in srgb, var(--color-text-muted) 15%, var(--color-bg-surface));
     animation: chat-skel-pulse 1.4s ease-in-out infinite;
   }
 

@@ -1,6 +1,17 @@
 import "./voice-input.js";
 import { icons } from '/common/utils/icons.js';
 
+if (!window.transcribeAudio) {
+  window.transcribeAudio = async (blob) => {
+    const form = new FormData();
+    form.append('file', blob, 'audio.webm');
+    const res = await fetch('/api/transcribe', { method: 'POST', body: form });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    return data.text;
+  };
+}
+
 import styles from './chat-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -345,11 +356,14 @@ class ChatPage extends HTMLElement {
   async #loadMessages(messagesEl) {
     try {
       const res = await fetch(`/api/chat/sessions/${this.#sessionId}/messages`);
-      messagesEl.innerHTML = '';
-      if (!res.ok) return;
+      if (!res.ok) {
+        messagesEl.innerHTML = '';
+        return;
+      }
       const result = await res.json();
       const msgs = result.data || result;
-      if (Array.isArray(msgs)) {
+      messagesEl.innerHTML = '';
+      if (Array.isArray(msgs) && msgs.length) {
         for (const m of msgs) {
           this.#appendMsg(messagesEl, m.role, m.content, m.trace_id);
           if (m.role === 'user') this.#lastUserContent = m.content;
