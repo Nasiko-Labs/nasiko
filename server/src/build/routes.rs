@@ -88,9 +88,9 @@ async fn create_build(
     claims: Claims,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let mut agent_id: Option<Uuid> = None;
@@ -374,14 +374,6 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
             }
         };
 
-        // Zip bomb guard (check declared uncompressed size before extraction)
-        uncompressed_total = uncompressed_total.saturating_add(file.size());
-        if uncompressed_total > MAX_ZIP_UNCOMPRESSED {
-            return Err(format!(
-                "zip uncompressed size exceeds {MAX_ZIP_UNCOMPRESSED} bytes — possible zip bomb"
-            ));
-        }
-
         let path = dest.join(&safe_path);
 
         // Belt-and-suspenders: verify the resolved path stays inside dest
@@ -396,7 +388,18 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             let mut out = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-            std::io::copy(&mut file, &mut out).map_err(|e| e.to_string())?;
+            // Zip-bomb guard: bound the ACTUAL bytes written, not the declared
+            // `file.size()` (a bomb declares 0 while inflating to gigabytes).
+            // Read at most `remaining + 1` so an over-limit entry is detected.
+            let remaining = MAX_ZIP_UNCOMPRESSED.saturating_sub(uncompressed_total);
+            let written = std::io::copy(&mut std::io::Read::take(&mut file, remaining + 1), &mut out)
+                .map_err(|e| e.to_string())?;
+            uncompressed_total = uncompressed_total.saturating_add(written);
+            if uncompressed_total > MAX_ZIP_UNCOMPRESSED {
+                return Err(format!(
+                    "zip uncompressed size exceeds {MAX_ZIP_UNCOMPRESSED} bytes — possible zip bomb"
+                ));
+            }
         }
     }
     Ok(())
@@ -506,7 +509,10 @@ async fn list_all_builds(
     claims: Claims,
     Query(q): Query<ListAllQuery>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = claims.sub.parse().unwrap_or_default();
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
 
     // Superusers see all builds; others see only builds for their own agents
     let rows = if claims.is_superuser {
@@ -556,9 +562,9 @@ async fn list_builds(
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // Superusers see all; others must own the agent.
@@ -599,7 +605,7 @@ pub async fn auto_generate_capabilities_pub(
     agent_name: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
-    use nasiko_orchestrator::providers::LLMProvider;
+    use nasiko_router::providers::LLMProvider;
 
     let data = match oci_storage.get_blob(source_key).await {
         Ok(d) => d,

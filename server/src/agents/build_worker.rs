@@ -105,16 +105,25 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 /// embedding it as a string literal in two separate SQL statements.
 async fn recover_stuck_jobs(db: &PgPool) {
     // Permanently fail exhausted jobs (>= MAX_ATTEMPTS attempts already made).
-    if let Err(e) = sqlx::query(
+    // RETURNING agent_id so we can also drive those agents to a terminal state
+    // (RUN-4) — otherwise agent_builds stays 'building' / agents 'deploying' and
+    // the deploy SSE waits forever.
+    match sqlx::query_as::<_, (Uuid,)>(
         "UPDATE build_jobs SET status = 'failed', error_msg = 'max attempts exceeded', completed_at = now()
-         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt >= $1",
+         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt >= $1
+         RETURNING agent_id",
     )
     .bind(MAX_ATTEMPTS)
     .bind(STUCK_JOB_MINS)
-    .execute(db)
+    .fetch_all(db)
     .await
     {
-        tracing::error!(%e, "build worker: exhausted-job recovery query failed");
+        Ok(rows) => {
+            for (agent_id,) in rows {
+                fail_agent_terminal(db, agent_id).await;
+            }
+        }
+        Err(e) => tracing::error!(%e, "build worker: exhausted-job recovery query failed"),
     }
 
     // Reset remaining stuck jobs so they get another try.
@@ -222,6 +231,9 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 image_tag,
                 ports,
                 env,
+                // Inject server LLM secrets at execution — not persisted in the payload (RUN-5).
+                state.config.openai_api_key.clone(),
+                state.config.openai_base_url.clone(),
             )
             .await;
         }
@@ -345,6 +357,16 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
 async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
     if old_attempt >= MAX_ATTEMPTS {
         mark_job(db, job_id, "failed", Some("job panicked during execution")).await;
+        // Also terminalize the agent/build so the deploy SSE stops waiting (RUN-4).
+        if let Ok(Some((agent_id,))) = sqlx::query_as::<_, (Uuid,)>(
+            "SELECT agent_id FROM build_jobs WHERE id = $1",
+        )
+        .bind(job_id)
+        .fetch_optional(db)
+        .await
+        {
+            fail_agent_terminal(db, agent_id).await;
+        }
     } else if let Err(e) = sqlx::query(
         "UPDATE build_jobs SET status = 'pending', picked_at = NULL WHERE id = $1",
     )
@@ -356,6 +378,28 @@ async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
     } else {
         tracing::warn!(job_id = %job_id, attempt = old_attempt + 1, "build worker: panicked job reset to pending");
     }
+}
+
+/// Drive an agent to a terminal state after its build job is permanently failed
+/// (exhaustion or panic), so the deploy-status SSE terminates (RUN-4). The normal
+/// per-job failure path already marks `agent_builds` via the execute functions;
+/// this covers the paths where execution never completed and left the build stuck
+/// `building` / the agent `deploying`. Idempotent + status-guarded.
+async fn fail_agent_terminal(db: &PgPool, agent_id: Uuid) {
+    let _ = sqlx::query(
+        "UPDATE agent_builds SET status = 'failed', updated_at = now() \
+         WHERE agent_id = $1 AND status = 'building'",
+    )
+    .bind(agent_id)
+    .execute(db)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE agents SET status = 'failed', updated_at = now() \
+         WHERE id = $1 AND status = 'deploying'",
+    )
+    .bind(agent_id)
+    .execute(db)
+    .await;
 }
 
 async fn mark_job(db: &PgPool, id: Uuid, status: &str, error: Option<&str>) {

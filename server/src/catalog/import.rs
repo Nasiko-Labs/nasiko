@@ -114,9 +114,13 @@ pub(crate) async fn build_and_deploy(
     // Register agent in catalog and sync skills projection atomically.
     let mut tx = state.db.begin().await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("begin tx: {e}")))?;
+    // Run the existence check and the update on the SAME transaction as the
+    // INSERT/skills/build-record writes — otherwise a later commit failure leaves
+    // the agent pointing at a rolled-back build (CAT-1), and two concurrent
+    // same-name imports both read None and race.
     let existing_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM agents WHERE name = $1")
         .bind(&meta.name)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("lookup agent: {e}")))?;
 
@@ -125,7 +129,7 @@ pub(crate) async fn build_and_deploy(
             .bind(&meta.version)
             .bind(&image_tag)
             .bind(id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("update agent: {e}")))?;
         id
@@ -227,11 +231,9 @@ async fn import_upload(
     claims: Claims,
     mut multipart: Multipart
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
+        Err(e) => return e.into_response(),
     };
 
     const MAX_UPLOAD_BYTES: usize = 200 * 1024 * 1024;
@@ -301,11 +303,9 @@ async fn import_github(
     claims: Claims,
     Json(req): Json<GithubImportRequest>
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
+        Err(e) => return e.into_response(),
     };
 
     // Validate repository name: must be "owner/repo" with safe characters only.
@@ -421,11 +421,9 @@ async fn import_registry(
     claims: Claims,
     Json(req): Json<RegistryImportRequest>
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
+        Err(e) => return e.into_response(),
     };
 
     // Parse OCI reference: "registry.host/owner/name:tag"
@@ -601,27 +599,36 @@ async fn import_registry(
         );
         let image_with_tag = format!("{}:{}", image_ref, tag);
 
-        // Use docker pull to fetch the image
-        let pull_result = tokio::process::Command
-            ::new("docker")
+        // Use docker pull to fetch the image, bounded by a timeout so a hung/slow
+        // registry can't block the handler indefinitely (CAT-5; mirrors the
+        // git-clone path which already wraps in tokio::time::timeout).
+        const PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+        let pull_fut = tokio::process::Command::new("docker")
             .args(["pull", &image_with_tag])
-            .output().await;
+            .output();
 
-        match pull_result {
-            Ok(output) if !output.status.success() => {
+        match tokio::time::timeout(PULL_TIMEOUT, pull_fut).await {
+            Err(_) => {
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "docker pull timed out",
+                ).into_response();
+            }
+            Ok(Ok(output)) if !output.status.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return (
                     StatusCode::BAD_GATEWAY,
                     format!("docker pull failed: {stderr}"),
                 ).into_response();
             }
-            Err(e) => {
+            Ok(Err(e)) => {
+                tracing::error!(%e, "import_registry: docker pull spawn error");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("docker pull error: {e}"),
+                    "internal error",
                 ).into_response();
             }
-            _ => {}
+            Ok(Ok(_)) => {}
         }
 
         // Derive agent name from repo

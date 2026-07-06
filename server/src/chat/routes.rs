@@ -72,9 +72,9 @@ async fn list_sessions(
     claims: Claims,
     Query(params): Query<ListSessionsParams>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let limit = params.limit.clamp(1, 100);
@@ -198,9 +198,9 @@ async fn create_session(
     claims: Claims,
     Json(body): Json<CreateSession>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let agent_id: Option<Uuid> = match &body.agent_id {
@@ -237,10 +237,7 @@ async fn create_session(
 
     match result {
         Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
-        Err(e) => {
-            tracing::error!(%e, "create_session failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -249,9 +246,9 @@ async fn get_session(
     claims: Claims,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     match sqlx::query_as::<_, ChatSession>(
@@ -274,9 +271,9 @@ async fn update_session(
     Path(session_id): Path<String>,
     Json(body): Json<UpdateSession>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let result = sqlx::query_as::<_, ChatSession>(
@@ -303,9 +300,9 @@ async fn delete_session(
     claims: Claims,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // FIX: verify ownership BEFORE touching any files — prevents IDOR where an
@@ -393,9 +390,9 @@ async fn list_messages(
     Path(session_id): Path<String>,
     Query(params): Query<ListMessagesParams>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let owns = match sqlx::query_scalar::<_, bool>(
@@ -417,39 +414,47 @@ async fn list_messages(
     let limit = params.limit.clamp(1, 500);
     let fetch = limit + 1;
 
-    // Cursor tokens take precedence over raw timestamps.
+    // Keyset on the COMPOSITE (timestamp, id), not timestamp alone — multiple
+    // messages can share one `now()` tick, and a timestamp-only keyset silently
+    // skips the ones straddling a page boundary (SRV-1). The cursor carries the id;
+    // a raw before/after timestamp (no id) uses a sentinel id so the composite
+    // comparison reduces to a pure `timestamp` bound (MAX for `>`, nil for `<`).
     let before = params.prev_cursor.as_deref()
-        .and_then(|c| decode_cursor(c).map(|(ts, _)| ts))
-        .or(params.before);
+        .and_then(decode_cursor)
+        .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
+        .or(params.before.map(|ts| (ts, Uuid::nil())));
     let after = params.next_cursor.as_deref()
-        .and_then(|c| decode_cursor(c).map(|(ts, _)| ts))
-        .or(params.after);
+        .and_then(decode_cursor)
+        .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
+        .or(params.after.map(|ts| (ts, Uuid::from_u128(u128::MAX))));
 
     // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
     let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) = match (before, after) {
-        (_, Some(after_ts)) => {
+        (_, Some((after_ts, after_id))) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND timestamp > $2
-                   ORDER BY timestamp ASC
-                   LIMIT $3"#,
+                   WHERE session_id = $1 AND (timestamp, id) > ($2, $3)
+                   ORDER BY timestamp ASC, id ASC
+                   LIMIT $4"#,
             )
             .bind(&session_id)
             .bind(after_ts)
+            .bind(after_id)
             .bind(fetch)
             .fetch_all(&state.db)
             .await;
             (r, true)
         }
-        (Some(before_ts), None) => {
+        (Some((before_ts, before_id)), None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND timestamp < $2
-                   ORDER BY timestamp DESC
-                   LIMIT $3"#,
+                   WHERE session_id = $1 AND (timestamp, id) < ($2, $3)
+                   ORDER BY timestamp DESC, id DESC
+                   LIMIT $4"#,
             )
             .bind(&session_id)
             .bind(before_ts)
+            .bind(before_id)
             .bind(fetch)
             .fetch_all(&state.db)
             .await;
@@ -459,7 +464,7 @@ async fn list_messages(
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
                    WHERE session_id = $1
-                   ORDER BY timestamp DESC
+                   ORDER BY timestamp DESC, id DESC
                    LIMIT $2"#,
             )
             .bind(&session_id)
@@ -506,9 +511,9 @@ async fn send_message(
     Path(session_id): Path<String>,
     Json(body): Json<SendMessage>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let owns = match sqlx::query_scalar::<_, bool>(
@@ -633,9 +638,9 @@ async fn upload_files(
     Path(session_id): Path<String>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let owns = match sqlx::query_scalar::<_, bool>(
@@ -739,9 +744,9 @@ async fn list_message_files(
     claims: Claims,
     Path((session_id, message_id)): Path<(String, Uuid)>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let owns = match sqlx::query_scalar::<_, bool>(
@@ -778,9 +783,9 @@ async fn download_file(
     claims: Claims,
     Path(file_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let row = sqlx::query_as::<_, ChatMessageFile>(
@@ -819,9 +824,9 @@ async fn delete_file(
     claims: Claims,
     Path(file_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let row = sqlx::query_as::<_, ChatMessageFile>(

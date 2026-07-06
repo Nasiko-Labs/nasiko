@@ -340,13 +340,10 @@ async fn upload_and_deploy(
 
     let upload_id = build_id.to_string();
 
-    // ── Inject server-level defaults into agent env (caller values take precedence) ──
-    if let Some(key) = &state.config.openai_api_key {
-        env.entry("OPENAI_API_KEY".to_owned()).or_insert_with(|| key.clone());
-    }
-    if let Some(url) = &state.config.openai_base_url {
-        env.entry("OPENAI_BASE_URL".to_owned()).or_insert_with(|| url.clone());
-    }
+    // NOTE: server-level secrets (OPENAI_API_KEY / OPENAI_BASE_URL) are deliberately
+    // NOT injected here — that would serialize the server API key in cleartext into
+    // build_jobs.payload (RUN-5). The worker injects them from live config at
+    // execution time (see execute_upload_and_deploy), mirroring update/rollback.
 
     // ── Insert build job (worker picks this up via SKIP LOCKED) ──────────────
     let payload = BuildJobPayload::Upload {
@@ -448,8 +445,18 @@ pub async fn execute_upload_and_deploy(
     zip_path: PathBuf,
     image_tag: String,
     ports: Vec<u16>,
-    env: HashMap<String, String>,
+    mut env: HashMap<String, String>,
+    // Server-level LLM defaults, injected here (not baked into the DB payload) so
+    // the API key is never persisted in cleartext (RUN-5). Caller env wins.
+    openai_api_key: Option<String>,
+    openai_base_url: Option<String>,
 ) {
+    if let Some(key) = openai_api_key {
+        env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
+    }
+    if let Some(url) = openai_base_url {
+        env.entry("OPENAI_BASE_URL".to_owned()).or_insert(url);
+    }
     set_build_status(&db, build_id, BuildStatus::Building).await;
     set_upload_status(&db, &upload_id, &name, owner_id, "initiated", None, None).await;
 

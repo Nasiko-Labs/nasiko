@@ -591,6 +591,13 @@ const USER_SCORE_SQL: &str =
     )
 "#;
 
+/// Escape LIKE/ILIKE wildcards in a user-supplied search term so `%`/`_` can't be
+/// injected (a bare `%` collapses the scoring CASEs to match-all). Postgres's
+/// default LIKE escape character is backslash, so no `ESCAPE` clause is needed.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
 // ── /agents/search ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -668,7 +675,7 @@ async fn search(
 
     let result = sqlx
         ::query_as::<_, AgentSearchResult>(&sql)
-        .bind(&q)
+        .bind(escape_like(&q))
         .bind(sq.limit.clamp(1, 50))
         .bind(owner_filter)
         .fetch_all(&state.db).await;
@@ -717,13 +724,22 @@ struct UserSearchResponse {
 
 async fn search_users(
     State(state): State<AppState>,
+    claims: Claims,
     Query(sq): Query<UserSearchQuery>
 ) -> impl IntoResponse {
+    // The user directory (usernames + emails) is sensitive — restrict to superusers
+    // (CAT-4). Previously any authenticated caller could enumerate every user's email.
+    if !claims.is_superuser {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let q = sq.q.trim().to_string();
     if q.len() < 2 {
         return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
     }
 
+    // Escaped term + a hard LIMIT so the endpoint can't be turned into a full-table
+    // dump via a wildcard.
     let sql = format!(
         r#"SELECT id, username, display_name, email, score FROM (
                SELECT id, username, display_name, email,
@@ -732,12 +748,13 @@ async fn search_users(
                WHERE deleted_at IS NULL
            ) _s
            WHERE score > 0
-           ORDER BY score DESC, username ASC"#
+           ORDER BY score DESC, username ASC
+           LIMIT 50"#
     );
 
     let result = sqlx
         ::query_as::<_, UserSearchResult>(&sql)
-        .bind(&q)
+        .bind(escape_like(&q))
         .fetch_all(&state.db).await;
 
     match result {
