@@ -278,30 +278,17 @@ async fn upload_and_deploy(
     // agent images' EXPOSE); never default to 5000 here.
 
     // ── Upsert agent ──────────────────────────────────────────────────────────
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM agents WHERE owner_id = $1 AND name = $2 LIMIT 1",
-    )
-    .bind(owner_id)
-    .bind(&name)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
-
-    let agent_id = if let Some(id) = existing {
-        let _ = sqlx::query(
-            "UPDATE agents SET version = $2, image = $3, status = 'deploying', updated_at = now() WHERE id = $1",
-        )
-        .bind(id)
-        .bind(&version_tag)
-        .bind(&image_tag)
-        .execute(&state.db)
-        .await;
-        id
-    } else {
+    // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
+    // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
+    // concurrent same-name uploads create duplicate rows (SRV-2).
+    let agent_id = {
         match sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO agents (name, owner_id, version, image, status) \
-             VALUES ($1, $2, $3, $4, 'deploying') RETURNING id",
+             VALUES ($1, $2, $3, $4, 'deploying') \
+             ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
+             DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
+                           status = 'deploying', updated_at = now() \
+             RETURNING id",
         )
         .bind(&name)
         .bind(owner_id)

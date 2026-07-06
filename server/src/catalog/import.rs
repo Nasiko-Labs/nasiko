@@ -638,11 +638,13 @@ async fn import_registry(
         let agent_id: Uuid = match
             sqlx
                 ::query_scalar(
+                    // Conflict target is the (owner_id, name) partial unique index
+                    // (migration 015); the owner is part of the key, so a conflict
+                    // only ever updates the same owner's row (no cross-owner takeover).
                     r#"INSERT INTO agents (name, display_name, owner_id, version, image)
                VALUES ($1, $1, $2, $3, $4)
-               ON CONFLICT (name) DO UPDATE
+               ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE
                  SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
-                 WHERE agents.owner_id = EXCLUDED.owner_id
                RETURNING id"#
                 )
                 .bind(&agent_name)

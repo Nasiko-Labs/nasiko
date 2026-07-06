@@ -31,7 +31,11 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/chat/sessions/{session_id}/files",
-            axum::routing::post(upload_files),
+            // Bound the multipart body to the file policy (count × per-file cap +
+            // small overhead) so a chat upload can't buffer unbounded bytes (SRV-4).
+            axum::routing::post(upload_files).layer(axum::extract::DefaultBodyLimit::max(
+                MAX_FILES_PER_UPLOAD * MAX_FILE_BYTES + 1024 * 1024,
+            )),
         )
         .route(
             "/chat/sessions/{session_id}/messages/{message_id}/files",

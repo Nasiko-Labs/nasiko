@@ -19,10 +19,16 @@ use crate::state::AppState;
 
 use super::utils::{set_build_status, set_upload_status};
 
+/// Max multipart body for an agent update (mirrors the upload router). Without
+/// this the update route inherited axum's 2 MiB default, and `field.bytes()`
+/// buffering was otherwise unbounded (SRV-4).
+const MAX_UPDATE_BYTES: usize = 100 * 1024 * 1024; // 100 MiB
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/{id}/update", put(update_agent))
         .route("/{id}/rollback", post(rollback_agent))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_UPDATE_BYTES))
 }
 
 #[derive(Debug, Serialize)]
