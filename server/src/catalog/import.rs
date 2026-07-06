@@ -98,6 +98,28 @@ where
         .map_err(|e| format!("background task failed: {e}"))?
 }
 
+/// Find the caller's own agent by name, if any.
+///
+/// Scoped to `owner_id` — agent names are only unique **per owner**, per migration
+/// 015's partial unique index `(owner_id, name) WHERE deleted_at IS NULL`. Without
+/// this scope, importing a name another owner already uses would match THEIR row,
+/// and the caller's subsequent `UPDATE` would silently rewrite that owner's agent's
+/// version/image, redeploying it under the importer's build (cross-owner takeover).
+async fn find_owned_agent<'e, E>(
+    executor: E,
+    name: &str,
+    owner_id: Uuid,
+) -> Result<Option<Uuid>, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL")
+        .bind(name)
+        .bind(owner_id)
+        .fetch_optional(executor)
+        .await
+}
+
 pub(crate) async fn build_and_deploy(
     source_dir: &std::path::Path,
     meta: &AgentMetadata,
@@ -118,17 +140,15 @@ pub(crate) async fn build_and_deploy(
     // INSERT/skills/build-record writes — otherwise a later commit failure leaves
     // the agent pointing at a rolled-back build (CAT-1), and two concurrent
     // same-name imports both read None and race.
-    let existing_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM agents WHERE name = $1")
-        .bind(&meta.name)
-        .fetch_optional(&mut *tx)
-        .await
+    let existing_id = find_owned_agent(&mut *tx, &meta.name, owner_id).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("lookup agent: {e}")))?;
 
     let agent_id: Uuid = if let Some(id) = existing_id {
-        sqlx::query("UPDATE agents SET version = $1, image = $2, updated_at = now() WHERE id = $3")
+        sqlx::query("UPDATE agents SET version = $1, image = $2, updated_at = now() WHERE id = $3 AND owner_id = $4")
             .bind(&meta.version)
             .bind(&image_tag)
             .bind(id)
+            .bind(owner_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("update agent: {e}")))?;
@@ -703,7 +723,61 @@ async fn import_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::read_agent_card;
+    use super::{find_owned_agent, read_agent_card};
+
+    /// `find_owned_agent` must never see another owner's agent, even when the
+    /// name collides — otherwise `build_and_deploy`'s subsequent UPDATE would
+    /// silently rewrite a different owner's agent (cross-owner takeover).
+    ///
+    /// Requires a live Postgres reachable via `DATABASE_URL` (same convention
+    /// as `oss/server/tests/*`); skipped if unset so `cargo test --lib` still
+    /// runs everywhere else in this module without infra.
+    #[tokio::test]
+    async fn find_owned_agent_never_matches_a_different_owner() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&database_url).await.expect("connect to test DB");
+
+        let owner_a = uuid::Uuid::new_v4();
+        let owner_b = uuid::Uuid::new_v4();
+        let shared_name = format!("takeover-test-{}", uuid::Uuid::new_v4());
+
+        for owner in [owner_a, owner_b] {
+            sqlx::query(
+                "INSERT INTO users (id, username, email, is_superuser) VALUES ($1, $2, $3, false)",
+            )
+            .bind(owner)
+            .bind(format!("takeover-test-user-{owner}"))
+            .bind(format!("takeover-test-{owner}@example.com"))
+            .execute(&pool)
+            .await
+            .expect("insert test user");
+        }
+
+        let agent_a: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1') RETURNING id",
+        )
+        .bind(&shared_name)
+        .bind(owner_a)
+        .fetch_one(&pool)
+        .await
+        .expect("insert owner A's agent");
+
+        // Owner B imports the SAME name — must find nothing of Owner A's.
+        let found_by_b = find_owned_agent(&pool, &shared_name, owner_b).await.unwrap();
+        assert_eq!(found_by_b, None, "owner B must not see owner A's agent by name collision");
+
+        // Owner A re-importing the same name must still find their own row.
+        let found_by_a = find_owned_agent(&pool, &shared_name, owner_a).await.unwrap();
+        assert_eq!(found_by_a, Some(agent_a), "owner A must find their own existing agent");
+
+        let _ = sqlx::query("DELETE FROM agents WHERE id = $1").bind(agent_a).execute(&pool).await;
+        for owner in [owner_a, owner_b] {
+            let _ = sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await;
+        }
+    }
 
     fn write_card(dir: &std::path::Path, version: &str) {
         std::fs::create_dir_all(dir).unwrap();

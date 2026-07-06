@@ -6,13 +6,16 @@ use axum::{
 };
 
 use crate::OciState;
+use crate::authz::{check_repo_access, check_repo_delete_access, CallerIdentity};
 use crate::error::Result;
 use crate::ops;
 
 pub async fn get_manifest(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo, reference)): Path<(String, String, String)>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     let m = ops::get_manifest(&state, &name, &reference).await?;
 
@@ -29,9 +32,11 @@ pub async fn get_manifest(
 
 pub async fn put_manifest(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo, reference)): Path<(String, String, String)>,
     request: Request<Body>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     let content_type = request
         .headers()
@@ -62,8 +67,10 @@ pub async fn put_manifest(
 
 pub async fn delete_manifest(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo, reference)): Path<(String, String, String)>,
 ) -> Result<Response> {
+    check_repo_delete_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     ops::delete_manifest(&state, &name, &reference).await?;
     Ok((StatusCode::ACCEPTED, "").into_response())
@@ -71,8 +78,10 @@ pub async fn delete_manifest(
 
 pub async fn get_referrers(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo, subject_digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     let entries = ops::get_referrers(&state, &name, &subject_digest).await?;
 

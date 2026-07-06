@@ -19,6 +19,9 @@ pub enum OciError {
 
     #[error("storage error: {0}")]
     Storage(String),
+
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 impl IntoResponse for OciError {
@@ -34,6 +37,7 @@ impl IntoResponse for OciError {
                 tracing::error!("oci registry storage error: {m}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "storage error".into())
             }
+            OciError::Forbidden(m) => (StatusCode::FORBIDDEN, m.clone()),
         };
         (status, Json(json!({"errors": [{"code": "UNKNOWN", "message": message}]}))).into_response()
     }

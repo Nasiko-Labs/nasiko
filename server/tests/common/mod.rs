@@ -262,6 +262,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
             "bitbucket.org".to_owned(),
         ],
         registry_import_allowed_hosts: vec![],
+        cors_allowed_origins: vec![],
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
     }

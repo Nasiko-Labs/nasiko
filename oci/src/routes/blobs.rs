@@ -8,13 +8,16 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::OciState;
+use crate::authz::{check_repo_access, check_repo_delete_access, CallerIdentity};
 use crate::error::{OciError, Result};
 use crate::ops;
 
 pub async fn head_blob(
     State(state): State<OciState>,
-    Path((_owner, _repo, digest)): Path<(String, String, String)>,
+    caller: CallerIdentity,
+    Path((_owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let size = state.storage.blob_size(&digest).await?;
     let size_str = size.to_string();
     Ok((
@@ -31,24 +34,30 @@ pub async fn head_blob(
 
 pub async fn get_blob(
     State(state): State<OciState>,
-    Path((_owner, _repo, digest)): Path<(String, String, String)>,
+    caller: CallerIdentity,
+    Path((_owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let url = ops::get_blob_redirect_url(&state, &digest).await?;
     Ok(Redirect::temporary(&url).into_response())
 }
 
 pub async fn delete_blob(
     State(state): State<OciState>,
-    Path((_owner, _repo, digest)): Path<(String, String, String)>,
+    caller: CallerIdentity,
+    Path((_owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
+    check_repo_delete_access(&state, &caller, &repo).await?;
     ops::delete_blob(&state, &digest).await?;
     Ok((StatusCode::ACCEPTED, "").into_response())
 }
 
 pub async fn initiate_upload(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo)): Path<(String, String)>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     let upload_id = ops::initiate_upload(&state, &name).await?;
 
@@ -69,9 +78,11 @@ pub async fn initiate_upload(
 
 pub async fn patch_upload(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo, upload_uuid)): Path<(String, String, String)>,
     request: Request<Body>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     let upload_id: Uuid = upload_uuid
         .parse()
@@ -106,10 +117,12 @@ pub struct CompleteUploadParams {
 
 pub async fn complete_upload(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo, upload_uuid)): Path<(String, String, String)>,
     Query(params): Query<CompleteUploadParams>,
     request: Request<Body>,
 ) -> Result<Response> {
+    check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     let upload_id: Uuid = upload_uuid
         .parse()

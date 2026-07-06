@@ -5,6 +5,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::OciState;
+use crate::authz::{check_repo_access, CallerIdentity};
 use crate::error::Result;
 use crate::ops;
 
@@ -22,9 +23,11 @@ pub struct TagList {
 
 pub async fn list_tags(
     State(state): State<OciState>,
+    caller: CallerIdentity,
     Path((owner, repo)): Path<(String, String)>,
     Query(params): Query<TagListParams>,
 ) -> Result<Json<TagList>> {
+    check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     let limit = params.n.unwrap_or(100);
     let tags = ops::list_tags(&state, &name, params.last.as_deref(), limit).await?;

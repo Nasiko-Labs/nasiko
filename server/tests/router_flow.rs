@@ -497,4 +497,72 @@ async fn test_routing_with_file_upload() {
     server.cleanup().await;
 }
 
+// ─── direct-agent authorization (A2A name-target ACL bypass regression) ─────
+
+const NON_OWNER_ID: &str = "9a3d9f0c-9e0a-4b1a-8f0b-4d6c1a2b3c4d";
+
+/// Insert a second, non-owner, non-superuser user so a member token can be
+/// signed for them.
+async fn insert_non_owner_user(db: &PgPool) {
+    sqlx::query(
+        "INSERT INTO users (id, username, email, is_superuser)
+         VALUES ($1, 'nonowner', 'nonowner@orchestrator-test.com', false)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(Uuid::parse_str(NON_OWNER_ID).unwrap())
+    .execute(db)
+    .await
+    .expect("insert non-owner test user");
+}
+
+/// A non-owner, non-grantee, non-superuser caller must be denied access to a
+/// private agent — whether addressed by UUID or by name. Previously the
+/// authorization check only ran when the target parsed as a UUID; a
+/// name-addressed request (the common case from the UI/CLI) skipped it
+/// entirely and reached the agent.
+#[tokio::test]
+#[serial]
+async fn test_direct_agent_by_name_denies_non_owner() {
+    let server = common::TestServer::start().await;
+    insert_test_user(&server.db).await;
+    insert_non_owner_user(&server.db).await;
+    let agent_id = insert_running_agent(&server.db, "acl-bypass-test-agent").await;
+
+    // By name — this is the path that previously bypassed the check entirely.
+    // Denied access is reported as the SAME AgentNotFound response as "no such
+    // agent" (404, not 403) — a distinct Forbidden response would let a caller
+    // enumerate which agent names exist by observing 403 vs 404.
+    let resp_by_name = common::as_member(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&stream_body_for_agent("hello", "acl-bypass-test-agent")),
+        NON_OWNER_ID,
+        "nonowner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp_by_name.status(), 404, "name-addressed request to a private agent must be denied for a non-owner");
+    let body: Value = resp_by_name.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32604);
+
+    // By UUID — this path was already correctly denied; keep it covered so a
+    // future refactor can't regress it while "fixing" the name path.
+    let resp_by_uuid = common::as_member(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&stream_body_for_agent("hello", &agent_id.to_string())),
+        NON_OWNER_ID,
+        "nonowner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp_by_uuid.status(), 404, "UUID-addressed request to a private agent must be denied for a non-owner");
+
+    server.cleanup().await;
+}
+
 

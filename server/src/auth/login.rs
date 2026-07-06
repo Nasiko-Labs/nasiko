@@ -12,13 +12,24 @@ use crate::state::AppState;
 
 const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 
-/// Public routes — no auth required (merged outside the protected router).
+/// Public routes — no auth required (merged outside the protected orchestrator).
 /// token_validate is here because callers supply the token in the request body;
 /// there is no authenticated "caller" to require.
-pub fn public_router() -> Router<AppState> {
-    Router::new()
+///
+/// `login_limiter` bounds bcrypt-cost-12 CPU burn from a runaway loop against
+/// `login`/`initialize_admin` — there's no caller identity yet to key on
+/// individually, so this is one shared, global bucket (see
+/// `rate_limit::limit_globally`'s doc comment for why that's the appropriate
+/// tradeoff here). `token_validate` is cheap (JWT decode + one indexed lookup)
+/// and not limited.
+pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
+    let credential_routes = Router::new()
         .route("/api/auth/login", post(login))
         .route("/api/auth/initialize-admin", post(initialize_admin))
+        .layer(axum::middleware::from_fn_with_state(login_limiter, crate::rate_limit::limit_globally));
+
+    Router::new()
+        .merge(credential_routes)
         .route("/api/auth/tokens/validate", post(token_validate))
 }
 
@@ -29,16 +40,13 @@ pub fn protected_router() -> Router<AppState> {
         .route("/auth/system/users-for-search", get(users_for_search))
 }
 
+/// Accepts either `{username, password}` or `{access_key, access_secret}`.
+/// The auth service handles both via its credential lookup query.
 #[derive(Deserialize)]
-struct LoginRequest {
-    // The system authenticates by access-key/secret (authenticate() matches arg1
-    // against access_key OR username, arg2 against access_secret_hash). Accept both
-    // key sets: CLI callers send {username,password}; the web/test clients send
-    // {access_key,access_secret}.
-    #[serde(alias = "access_key")]
-    username: String,
-    #[serde(alias = "access_secret")]
-    password: String,
+#[serde(untagged)]
+enum LoginRequest {
+    Credentials { username: String, password: String },
+    AccessKey { access_key: String, access_secret: String },
 }
 
 #[derive(Serialize)]
@@ -47,7 +55,6 @@ struct LoginResponse {
     user_id: String,
     username: String,
     is_superuser: bool,
-    role: String,
     expires_in: u64,
 }
 
@@ -69,7 +76,11 @@ async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    match state.auth.authenticate(&req.username, &req.password).await {
+    let (key, secret) = match req {
+        LoginRequest::Credentials { username, password } => (username, password),
+        LoginRequest::AccessKey { access_key, access_secret } => (access_key, access_secret),
+    };
+    match state.auth.authenticate(&key, &secret).await {
         Ok(result) => {
             let cookie = set_token_cookie(&result.token);
             (
@@ -79,10 +90,10 @@ async fn login(
                     user_id: result.user_id,
                     username: result.username,
                     is_superuser: result.is_superuser,
-                    role: result.role,
                     expires_in: result.expires_in,
                 }),
-            ).into_response()
+            )
+                .into_response()
         }
         Err(nasiko_auth::AuthError::Disabled) => {
             (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "account disabled"}))).into_response()
@@ -151,7 +162,7 @@ async fn initialize_admin_inner(
 
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = nasiko_auth::hash_password_blocking(access_secret.clone()).await
+    let access_secret_hash = nasiko_auth::hash_password_async(&access_secret).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
 
     let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
@@ -191,12 +202,19 @@ async fn initialize_admin_inner(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
 
-    // Authenticate with the freshly-created credentials to obtain a token that is
-    // also RECORDED in auth_tokens (so it is revocable). `issue_token` alone mints a
-    // JWT but does not record its JTI; `authenticate` (the login path) does both.
-    let login = state.auth.authenticate(username, &access_secret).await
+    // `issue_token` records the JWT's JTI in auth_tokens, so the admin token minted
+    // here is revocable (previously init-admin tokens were unrevocable).
+    let identity = nasiko_auth::Identity {
+        user_id: user_id.to_string(),
+        username: username.to_owned(),
+        is_superuser: true,
+    };
+
+    let token = state.auth.issue_token(&identity).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
-    let token = login.token;
+
+    // Belt-and-suspenders record (ON CONFLICT DO NOTHING) so counting/revocation work.
+    let _ = state.auth.record_user_token(&token, &user_id.to_string()).await;
 
     let cookie = set_token_cookie(&token);
     Ok((
@@ -266,7 +284,6 @@ async fn token_validate(
         "user_id": identity.user_id,
         "username": identity.username,
         "is_superuser": identity.is_superuser,
-        "role": identity.role.as_ref().and_then(|r| serde_json::to_value(r).ok()),
     }))
     .into_response()
 }

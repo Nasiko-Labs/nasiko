@@ -38,9 +38,8 @@ use crate::usage::TokenUsageBuilder;
 /// Dispatches to the routing engine (no agent_id), ReAct orchestrator (agent_id=orchestrator),
 /// or a specific agent directly.
 ///
-/// Note: the gateway has its own `orchestrator.rs` for the production A2A path (with auth,
-/// rate limiting, CORS). This handler lives in the server for direct access and integration
-/// testing without the gateway layer.
+/// No gateway required: the server validates the JWT and enforces authorization itself
+/// (see `require_auth`/`Claims`). This handler is the production A2A path.
 pub async fn a2a_dispatch_handler(
     State(state): State<AppState>,
     claims: Claims,
@@ -87,7 +86,10 @@ pub async fn a2a_dispatch_handler(
         .map(String::from);
     let is_orchestrator = agent_id.is_none() || agent_id.as_deref() == Some("orchestrator");
 
-    let user_id: Uuid = claims.sub.parse().unwrap_or(Uuid::nil());
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return Ok(e.into_response()),
+    };
 
     let history = if let Some(ref sid) = session_id {
         SessionHistory::fetch(sid, &state.db, 20).await
@@ -101,11 +103,21 @@ pub async fn a2a_dispatch_handler(
         orchestrator_stream(&state, &query, &task_id, &context_id, user_id, claims.is_superuser).await
     } else {
         let target = agent_id.as_deref().unwrap();
-        if let Ok(target_uuid) = target.parse::<Uuid>()
-            && !claims.is_superuser && !crate::acl::user_can_access_agent(&state.db, user_id, target_uuid).await {
-            return Err(A2aDispatchError::Forbidden);
+        // Resolve the target (UUID or name) to a concrete agent row FIRST, then
+        // authorize on the resolved id unconditionally. Gating the authz check
+        // behind "does target happen to parse as a UUID" let any name-addressed
+        // request (the common case from the UI/CLI) skip the check entirely.
+        let agent = resolve_agent(&state, target).await?;
+        // Edition-aware view access (superuser short-circuit lives inside the check).
+        //
+        // Deliberately returns the SAME AgentNotFound response as "no such agent"
+        // rather than Forbidden — otherwise a caller could distinguish "exists,
+        // but you can't access it" from "doesn't exist", enabling agent-name
+        // enumeration by a non-grantee.
+        if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
+            return Err(A2aDispatchError::AgentNotFound(target.to_string()));
         }
-        agent_stream(&state, target, &query, &task_id, &context_id, user_id).await
+        agent_stream(&state, agent, &query, &task_id, &context_id, user_id).await
     }
 }
 
@@ -127,9 +139,17 @@ async fn orchestrator_stream(
     let agent_summaries = if is_superuser {
         all_agents
     } else {
+        // Edition-aware access filter. This branch is non-superuser only, so build a
+        // minimal identity (username unused by can_access_agent) and delegate to the
+        // trait — honoring OSS user-grants and EE team/dept grants alike.
+        let identity = nasiko_auth::Identity {
+            user_id: user_id.to_string(),
+            username: String::new(),
+            is_superuser: false,
+        };
         let mut accessible = Vec::new();
         for summary in all_agents {
-            if crate::acl::user_can_access_agent(&state.db, user_id, summary.id).await {
+            if state.auth.can_access_agent(&identity, &summary.id.to_string()).await {
                 accessible.push(summary);
             }
         }
@@ -391,23 +411,28 @@ async fn orchestrator_stream(
 
 // ─── Direct Agent Path ───────────────────────────────────────────────────────
 
-async fn agent_stream(
-    state: &AppState,
-    target: &str,
-    query: &str,
-    task_id: &str,
-    context_id: &str,
-    user_id: Uuid,
-) -> Result<Response, A2aDispatchError> {
-    let agent = sqlx::query_as::<_, AgentRow>(
+/// Resolve a caller-supplied target (either the agent's UUID or its name) to a
+/// concrete, running agent row. Callers MUST authorize on the returned `id`
+/// before using it — this function does no access control of its own.
+async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDispatchError> {
+    sqlx::query_as::<_, AgentRow>(
         "SELECT id, name, status FROM agents WHERE (id::text = $1 OR name = $1) AND status = 'running'",
     )
     .bind(target)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
-    .ok_or_else(|| A2aDispatchError::AgentNotFound(target.to_string()))?;
+    .ok_or_else(|| A2aDispatchError::AgentNotFound(target.to_string()))
+}
 
+async fn agent_stream(
+    state: &AppState,
+    agent: AgentRow,
+    query: &str,
+    task_id: &str,
+    context_id: &str,
+    user_id: Uuid,
+) -> Result<Response, A2aDispatchError> {
     let endpoint = resolve_endpoint(state, &agent.name)
         .await
         .map_err(A2aDispatchError::Internal)?;
@@ -682,7 +707,10 @@ pub async fn a2a_upload_handler(
 
     let task_id = Uuid::new_v4().to_string();
     let context_id = Uuid::new_v4().to_string();
-    let user_id: Uuid = claims.sub.parse().unwrap_or(Uuid::nil());
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return Ok(e.into_response()),
+    };
 
     tracing::info!(
         user_id = %user_id,
@@ -711,7 +739,8 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
         Err(_) => {
             // Container not reachable via runtime — check if it's actually stopped.
             if let Ok(status) = state.runtime.status(&container_id).await
-                && status.state != nasiko_runtime::RuntimeState::Running {
+                && status.state != nasiko_runtime::RuntimeState::Running
+            {
                 // Mark as stopped so future routing skips it.
                 let _ = sqlx::query(
                     "UPDATE agents SET status = 'stopped' WHERE name = $1 AND status = 'running'",
@@ -808,7 +837,6 @@ struct AgentRow {
 pub enum A2aDispatchError {
     InvalidRequest(String),
     NoAgents,
-    Forbidden,
     AgentNotFound(String),
     Internal(String),
 }
@@ -822,7 +850,6 @@ impl IntoResponse for A2aDispatchError {
                 -32603,
                 "no agents available".into(),
             ),
-            Self::Forbidden => (StatusCode::FORBIDDEN, -32605, "access to this agent is not permitted".into()),
             Self::AgentNotFound(name) => (
                 StatusCode::NOT_FOUND,
                 -32604,
