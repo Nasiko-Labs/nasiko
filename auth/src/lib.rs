@@ -1,10 +1,6 @@
-pub mod headers;
 pub mod jwt;
 pub mod service;
-#[cfg(test)]
-mod tests;
 
-pub use headers::*;
 pub use service::AuthServiceImpl;
 
 use async_trait::async_trait;
@@ -43,6 +39,7 @@ pub trait AuthService: Send + Sync + 'static {
     async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError>;
     async fn upsert_oauth_user(&self, provider: &str, provider_id: &str, username: &str) -> Result<LoginResult, AuthError>;
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
+    async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError>;
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError>;
     async fn revoke_all_tokens(&self) -> Result<u64, AuthError>;
     async fn revoke_tokens_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
@@ -73,18 +70,20 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     bcrypt::verify(password, hash).unwrap_or(false)
 }
 
-/// Async wrapper for [`hash_password`] — bcrypt cost-12 is ~50-100ms of CPU, so it
-/// runs on the blocking pool to avoid stalling a tokio worker under concurrent logins.
-pub async fn hash_password_blocking(password: String) -> Result<String, AuthError> {
-    tokio::task::spawn_blocking(move || hash_password(&password))
+/// Hash a password off the async executor (bcrypt is ~50-100ms CPU).
+pub async fn hash_password_async(password: &str) -> Result<String, AuthError> {
+    let pw = password.to_owned();
+    tokio::task::spawn_blocking(move || bcrypt::hash(&pw, 12))
         .await
-        .map_err(|e| AuthError::InvalidToken(format!("password hashing task failed: {e}")))?
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))?
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))
 }
 
-/// Async wrapper for [`verify_password`] — runs the bcrypt comparison on the
-/// blocking pool. A join failure verifies as `false` (deny).
-pub async fn verify_password_blocking(password: String, hash: String) -> bool {
-    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+/// Verify a bcrypt password off the async executor.
+pub async fn verify_password_async(password: &str, hash: &str) -> bool {
+    let pw = password.to_owned();
+    let h = hash.to_owned();
+    tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &h).unwrap_or(false))
         .await
         .unwrap_or(false)
 }
@@ -153,7 +152,7 @@ impl AuthService for SimpleJwtAuth {
     }
 
     async fn authenticate(&self, _username: &str, _password: &str) -> Result<LoginResult, AuthError> {
-        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+        Err(AuthError::InvalidToken("not supported by SimpleJwtAuth".into()))
     }
 
     async fn bootstrap_admin(&self, _username: &str, _password: &str) -> Result<(), AuthError> {
@@ -161,15 +160,19 @@ impl AuthService for SimpleJwtAuth {
     }
 
     async fn issue_agent_token(&self, _agent_id: &str) -> Result<String, AuthError> {
-        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+        Err(AuthError::InvalidToken("not supported by SimpleJwtAuth".into()))
     }
 
     async fn upsert_oauth_user(&self, _provider: &str, _provider_id: &str, _username: &str) -> Result<LoginResult, AuthError> {
-        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+        Err(AuthError::InvalidToken("not supported by SimpleJwtAuth".into()))
     }
 
     async fn lookup_user(&self, _user_id: &str) -> Result<Identity, AuthError> {
-        Err(AuthError::InvalidToken("not supported by gateway auth".into()))
+        Err(AuthError::InvalidToken("not supported by SimpleJwtAuth".into()))
+    }
+
+    async fn record_user_token(&self, _token: &str, _user_id: &str) -> Result<(), AuthError> {
+        Ok(())
     }
 
     async fn revoke_tokens_for_user(&self, _user_id: &str) -> Result<u64, AuthError> {

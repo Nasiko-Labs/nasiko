@@ -30,78 +30,73 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_user(server: &common::TestServer, admin_id: &str, username: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/users"))
-        .header("x-user-id", admin_id)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"username": username, "email": format!("{username}@test.local")}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": username, "email": format!("{username}@test.local")}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn create_session(server: &common::TestServer, uid: &str, title: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/chat/sessions"))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"title": title}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/chat/sessions")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"title": title}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn send_message(server: &common::TestServer, uid: &str, sid: &str, content: &str) -> Value {
-    server
-        .client
-        .post(server.url(&format!("/api/chat/sessions/{sid}/messages")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"role": "user", "content": content}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        uid,
+        "admin",
+    )
+    .json(&json!({"role": "user", "content": content}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn list_sessions(server: &common::TestServer, uid: &str, query: &str) -> Value {
-    server
-        .client
-        .get(server.url(&format!("/api/chat/sessions{query}")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.get(server.url(&format!("/api/chat/sessions{query}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn list_messages(server: &common::TestServer, uid: &str, sid: &str, query: &str) -> reqwest::Response {
-    server
-        .client
-        .get(server.url(&format!("/api/chat/sessions/{sid}/messages{query}")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages{query}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
 }
 
 // ─── Session cursor pagination ───────────────────────────────────────────────
@@ -162,16 +157,15 @@ async fn list_sessions_scoped_to_owner() {
     create_session(&server, uid, "admin-session").await;
 
     // other user creates their own session (non-superuser)
-    server
-        .client
-        .post(server.url("/api/chat/sessions"))
-        .header("x-user-id", other_id)
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .json(&json!({"title": "other-session"}))
-        .send()
-        .await
-        .unwrap();
+    common::as_member(
+        server.client.post(server.url("/api/chat/sessions")),
+        other_id,
+        "other-sess",
+    )
+    .json(&json!({"title": "other-session"}))
+    .send()
+    .await
+    .unwrap();
 
     // Admin sees only their own session, not other's.
     let page = list_sessions(&server, uid, "").await;
@@ -246,15 +240,14 @@ async fn list_messages_returns_404_for_other_users_session() {
     let other_id = other["id"].as_str().unwrap();
 
     // Other user tries to read admin's messages — must get 404, not the messages.
-    let res = server
-        .client
-        .get(server.url(&format!("/api/chat/sessions/{sid}/messages")))
-        .header("x-user-id", other_id)
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        other_id,
+        "eavesdropper",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 404, "other user must not read another user's messages");
 
     server.cleanup().await;

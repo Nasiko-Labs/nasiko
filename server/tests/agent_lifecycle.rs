@@ -33,29 +33,22 @@ async fn init_admin(server: &common::TestServer) -> Value {
 
 /// POST /api/agents as superuser; returns the created agent JSON.
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str, version: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"name": name, "version": version}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"name": name, "version": version}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn get_as_superuser(server: &common::TestServer, uid: &str, path: &str) -> reqwest::Response {
-    server
-        .client
-        .get(server.url(path))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+    common::as_superuser(server.client.get(server.url(path)), uid, "admin")
         .send()
         .await
         .unwrap()
@@ -283,20 +276,18 @@ async fn list_upload_agents_scoped_to_owner() {
     let uid_uuid: Uuid = uid.parse().unwrap();
 
     // Create a real second user so upload_status.owner_id FK is satisfied.
-    let other_resp: Value = server
-        .client
-        .post(server.url("/api/users"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"username": "other", "email": "other@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let other_resp: Value = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"username": "other", "email": "other@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let other_user: Uuid = other_resp["id"].as_str().unwrap().parse().unwrap();
 
     sqlx::query(
@@ -313,16 +304,14 @@ async fn list_upload_agents_scoped_to_owner() {
     .unwrap();
 
     // Non-superuser sees only their own record.
-    let res = server
-        .client
-        .get(server.url("/api/agents/my-uploads"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "team_member")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        server.client.get(server.url("/api/agents/my-uploads")),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     let records = body.as_array().unwrap();

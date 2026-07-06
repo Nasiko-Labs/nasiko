@@ -7,3 +7,7 @@ version.workspace = true
 sqlx = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+uuid = { workspace = true }

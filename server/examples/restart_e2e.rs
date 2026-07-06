@@ -26,7 +26,6 @@ use serde_json::Value;
 
 struct Args {
     server:        String,
-    user_id:       Option<String>,
     access_key:    Option<String>,
     access_secret: Option<String>,
     agent_id:      Option<String>,
@@ -34,7 +33,6 @@ struct Args {
 
 fn parse_args() -> Args {
     let mut server        = "http://localhost:9090".to_string();
-    let mut user_id       = None;
     let mut access_key    = None;
     let mut access_secret = None;
     let mut agent_id      = None;
@@ -42,23 +40,21 @@ fn parse_args() -> Args {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--server"        => { server        = it.next().unwrap_or(server); }
-            "--user-id"       => { user_id       = it.next(); }
             "--access-key"    => { access_key    = it.next(); }
             "--access-secret" => { access_secret = it.next(); }
             "--agent-id"      => { agent_id      = it.next(); }
             _ => {}
         }
     }
-    Args { server, user_id, access_key, access_secret, agent_id }
+    Args { server, access_key, access_secret, agent_id }
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-async fn list_deployments(client: &reqwest::Client, server: &str, uid: &str) -> Vec<Value> {
+async fn list_deployments(client: &reqwest::Client, server: &str, token: &str) -> Vec<Value> {
     let res = client
         .get(format!("{server}/api/agents/deployments"))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
+        .bearer_auth(token)
         .send()
         .await;
 
@@ -71,13 +67,12 @@ async fn list_deployments(client: &reqwest::Client, server: &str, uid: &str) -> 
 async fn restart_deployment(
     client: &reqwest::Client,
     server: &str,
-    uid: &str,
+    token: &str,
     deployment_id: &str,
 ) -> Result<reqwest::Response, String> {
     client
         .post(format!("{server}/api/agents/deployment/{deployment_id}/restart"))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
+        .bearer_auth(token)
         .send()
         .await
         .map_err(|e| e.to_string())
@@ -118,36 +113,35 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // 2. Get admin user_id (creates admin on first run, logs in on subsequent runs).
-    let uid = match common::get_admin_uid(
+    // 2. Get admin auth (creates admin on first run, logs in on subsequent runs).
+    let (_uid, token) = match common::get_admin_auth(
         &client,
         &args.server,
-        args.user_id.as_deref(),
         args.access_key.as_deref(),
         args.access_secret.as_deref(),
     )
     .await
     {
-        Ok(id) => {
-            println!("[ PASS ] init/login admin                      → uid={id}");
+        Ok((uid, token)) => {
+            println!("[ PASS ] init/login admin                      → uid={uid}");
             passed += 1;
-            id
+            (uid, token)
         }
         Err(e) => {
             println!("[ FAIL ] init/login admin                      → {e}");
             failed += 1;
-            String::new()
+            (String::new(), String::new())
         }
     };
 
-    if uid.is_empty() {
+    if token.is_empty() {
         println!("\n0/{} passed   {} failed", passed + failed, failed);
         std::process::exit(1);
     }
 
     // 3. Restart an unknown deployment — must return 404.
     let fake_id = uuid::Uuid::new_v4();
-    match restart_deployment(&client, &args.server, &uid, &fake_id.to_string()).await {
+    match restart_deployment(&client, &args.server, &token, &fake_id.to_string()).await {
         Ok(res) if res.status() == 404 => {
             println!("[ PASS ] restart unknown deployment → 404      → not-found guard works");
             passed += 1;
@@ -164,7 +158,7 @@ async fn main() {
 
     // 4. Discover deployments (filtered to --agent-id if given).
     println!("[ INFO ] fetching current deployments...");
-    let all_deployments = list_deployments(&client, &args.server, &uid).await;
+    let all_deployments = list_deployments(&client, &args.server, &token).await;
     let deployments: Vec<&Value> = if let Some(ref aid) = args.agent_id {
         let filtered: Vec<&Value> = all_deployments.iter()
             .filter(|d| d["agent_id"].as_str() == Some(aid.as_str()))
@@ -185,7 +179,7 @@ async fn main() {
         Some(dep) => {
             let did = dep["id"].as_str().unwrap_or("");
             let name = dep["name"].as_str().or(dep["agent_name"].as_str()).unwrap_or("?");
-            match restart_deployment(&client, &args.server, &uid, did).await {
+            match restart_deployment(&client, &args.server, &token, did).await {
                 Ok(res) if res.status() == 409 => {
                     println!("[ PASS ] restart running agent → 409           → conflict guard works (agent={name})");
                     passed += 1;
@@ -224,7 +218,7 @@ async fn main() {
             let did = dep["id"].as_str().unwrap_or("");
             let status = dep["status"].as_str().unwrap_or("?");
             let name = dep["name"].as_str().or(dep["agent_name"].as_str()).unwrap_or("?");
-            match restart_deployment(&client, &args.server, &uid, did).await {
+            match restart_deployment(&client, &args.server, &token, did).await {
                 Ok(res) if res.status() == 200 => {
                     let body: serde_json::Value = res.json().await.unwrap_or_default();
                     let new_did = body["deployment_id"].as_str().unwrap_or("").to_string();
@@ -234,7 +228,7 @@ async fn main() {
                     // Verify the new deployment row is in a live state.
                     if !new_did.is_empty() {
                         tokio::time::sleep(Duration::from_millis(500)).await;
-                        let refreshed = list_deployments(&client, &args.server, &uid).await;
+                        let refreshed = list_deployments(&client, &args.server, &token).await;
                         if let Some(new_dep) = refreshed.iter().find(|d| d["id"].as_str() == Some(new_did.as_str())) {
                             let new_status = new_dep["status"].as_str().unwrap_or("?");
                             if matches!(new_status, "running" | "starting") {

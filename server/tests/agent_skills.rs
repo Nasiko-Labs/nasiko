@@ -24,35 +24,31 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_user(server: &common::TestServer, admin_id: &str, username: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/users"))
-        .header("x-user-id", admin_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"username": username, "email": format!("{username}@test.local")}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": username, "email": format!("{username}@test.local")}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 /// POST /api/agents as a superuser; returns the created agent JSON.
 async fn create_agent(server: &common::TestServer, uid: &str, body: Value) -> Value {
-    let res = server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        uid,
+        "admin",
+    )
+    .json(&body)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 201, "create agent should succeed");
     res.json::<Value>().await.unwrap()
 }
@@ -64,16 +60,15 @@ async fn by_skill(
     is_super: bool,
     query: &str,
 ) -> (u16, Vec<String>) {
-    let res = server
-        .client
-        .get(server.url(&format!("/api/agents/by-skill?{query}")))
-        .header("x-user-id", uid)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_super { "true" } else { "false" })
-        .header("x-user-role", if is_super { "admin" } else { "member" })
-        .send()
-        .await
-        .unwrap();
+    let rb = server.client.get(server.url(&format!("/api/agents/by-skill?{query}")));
+    let res = if is_super {
+        common::as_superuser(rb, uid, "u")
+    } else {
+        common::as_member(rb, uid, "u")
+    }
+    .send()
+    .await
+    .unwrap();
     let status = res.status().as_u16();
     if status != 200 {
         return (status, vec![]);
@@ -132,17 +127,15 @@ async fn update_resyncs_skill_tags() {
     let id = agent["id"].as_str().unwrap();
 
     // Replace skills: drop "nlp", add "vision".
-    let res = server
-        .client
-        .put(server.url(&format!("/api/agents/{id}")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"skills": [skill("s1", &["vision"])]}))
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.put(server.url(&format!("/api/agents/{id}"))),
+        uid,
+        "admin",
+    )
+    .json(&json!({"skills": [skill("s1", &["vision"])]}))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200);
 
     let (_, nlp) = by_skill(&server, uid, true, "tag=nlp").await;

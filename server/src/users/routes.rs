@@ -42,8 +42,8 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
     None
 }
 
-/// Full user router — list, get, and all management routes including role changes.
-/// Used by the OSS server. EE provides its own router (ee/server/src/users.rs)
+/// Full user orchestrator — list, get, and all management routes including role changes.
+/// Used by the OSS server. EE provides its own orchestrator (ee/server/src/users.rs)
 /// that merges management_router() and supplies EE-aware handlers + the cascade
 /// role-change endpoint.
 pub fn router() -> Router<AppState> {
@@ -59,7 +59,7 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
-/// Management-only router — create/update/delete users and related operations.
+/// Management-only orchestrator — create/update/delete users and related operations.
 /// The role-change endpoint is registered separately so it can be overridden
 /// without causing a duplicate-route panic.
 pub fn management_router() -> Router<AppState> {
@@ -177,14 +177,15 @@ struct CreateUser {
     email: String,
     display_name: Option<String>,
     role: Option<String>,
-    password: String,
 }
 
 async fn create_user(
     State(state): State<AppState>,
     Json(body): Json<CreateUser>,
 ) -> impl IntoResponse {
-    let access_secret_hash = match nasiko_auth::hash_password(&body.password) {
+    let access_key = nasiko_auth::generate_access_key();
+    let access_secret = nasiko_auth::generate_access_secret();
+    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -210,7 +211,7 @@ async fn create_user(
                    VALUES ($1, $2, $3)"#,
             )
             .bind(id)
-            .bind(body.username.as_str())
+            .bind(&access_key)
             .bind(&access_secret_hash)
             .execute(&state.db)
             .await;
@@ -221,6 +222,9 @@ async fn create_user(
                     Json(serde_json::json!({
                         "id": id,
                         "username": body.username,
+                        "access_key": access_key,
+                        "access_secret": access_secret,
+                        "message": "Store access_secret securely — it won't be shown again.",
                     })),
                 ).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -269,7 +273,7 @@ async fn update_user(
 
     // Hash password if provided
     let password_hash = match &body.password {
-        Some(p) => match nasiko_auth::hash_password(p) {
+        Some(p) => match nasiko_auth::hash_password_async(p).await {
             Ok(h) => Some(h),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
@@ -421,7 +425,7 @@ async fn regenerate_credentials(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password(&access_secret) {
+    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
         Ok(h) => h,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };

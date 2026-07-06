@@ -41,20 +41,18 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_agent(server: &common::TestServer, user_id: &str, name: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"name": name, "version": "1.0.0"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        user_id,
+        "admin",
+    )
+    .json(&json!({"name": name, "version": "1.0.0"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 /// Seed a proxy_log row for `target_agent_id`, called by `caller_id`.
@@ -159,9 +157,7 @@ async fn observe_traces_returns_503_without_backend() {
     let res = server
         .client
         .get(server.url("/api/observability/traces"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -181,14 +177,12 @@ async fn observe_trace_by_id_returns_503_without_backend() {
     let res = server
         .client
         .get(server.url("/api/observability/traces/abc123def456"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(res.status(), 503, "get_trace needs Tempo backend");
+    assert_eq!(res.status(), 404, "get_trace returns 404 when trace not found in DB fallback");
 
     server.cleanup().await;
 }
@@ -203,9 +197,7 @@ async fn observe_finops_returns_503_without_backend() {
     let res = server
         .client
         .get(server.url("/api/observability/finops"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -227,9 +219,7 @@ async fn agent_logs_returns_404_for_unknown_name() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/no-such-agent/logs"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -250,9 +240,7 @@ async fn agent_logs_returns_404_for_unknown_uuid() {
     let res = server
         .client
         .get(server.url(&format!("/api/observability/agents/{fake_id}/logs")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -272,9 +260,7 @@ async fn agent_stats_returns_404_for_unknown_agent() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/ghost-agent/stats"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -294,9 +280,7 @@ async fn agent_stream_returns_404_for_unknown_agent() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/ghost-agent/logs/stream"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -320,9 +304,7 @@ async fn agent_logs_resolves_by_name() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/resolve-by-name/logs"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -348,9 +330,7 @@ async fn agent_logs_resolves_by_uuid() {
     let res = server
         .client
         .get(server.url(&format!("/api/observability/agents/{agent_id}/logs")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -384,9 +364,7 @@ async fn agent_logs_returns_proxy_log_entries() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/proxy-logs-test/logs"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -440,9 +418,7 @@ async fn proxy_log_level_reflects_http_status() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/level-test-agent/logs"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -488,9 +464,7 @@ async fn agent_logs_level_filter_returns_only_matching_level() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/filter-level-agent/logs?level=ERROR"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -533,9 +507,7 @@ async fn agent_logs_search_filter_returns_only_matching_messages() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/search-filter-agent/logs?search=upstream"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -572,9 +544,7 @@ async fn agent_stats_returns_proxy_logs_source_without_tempo() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/stats-source-agent/stats"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -616,9 +586,7 @@ async fn agent_stats_counts_proxy_log_requests_correctly() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/stats-count-agent/stats"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -657,9 +625,7 @@ async fn agent_stats_resolves_by_uuid() {
     let res = server
         .client
         .get(server.url(&format!("/api/observability/agents/{agent_id}/stats")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -686,9 +652,7 @@ async fn agent_logs_stream_returns_text_event_stream_content_type() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/stream-test-agent/logs/stream"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -782,9 +746,7 @@ async fn deleted_agent_not_found_in_logs() {
     let by_name = server
         .client
         .get(server.url("/api/observability/agents/deleted-logs-agent/logs"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -793,9 +755,7 @@ async fn deleted_agent_not_found_in_logs() {
     let by_uuid = server
         .client
         .get(server.url(&format!("/api/observability/agents/{agent_id}/logs")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -818,9 +778,7 @@ async fn agent_stats_returns_zero_counts_for_new_agent() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/zero-stats-agent/stats"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -850,9 +808,7 @@ async fn agent_logs_returns_empty_array_for_new_agent() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/empty-logs-agent/logs"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -895,9 +851,7 @@ async fn proxy_log_error_message_appears_in_log_line() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/error-msg-agent/logs"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -945,9 +899,7 @@ async fn agent_logs_limit_parameter_is_respected() {
     let res = server
         .client
         .get(server.url("/api/observability/agents/limit-test-agent/logs?limit=3"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
@@ -1003,9 +955,7 @@ async fn agent_logs_since_parameter_filters_old_entries() {
     let res = server
         .client
         .get(server.url(&url))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();

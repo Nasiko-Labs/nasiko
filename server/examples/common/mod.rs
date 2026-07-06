@@ -108,22 +108,19 @@ pub fn make_oversize_zip() -> Vec<u8> {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-/// Get the admin user_id.
+/// Get the admin user_id and JWT token.
 ///
 /// Priority:
-/// 1. `--user-id` override — skips all auth, use when you already know the UUID.
-/// 2. `initialize-admin` — creates admin on first run, prints credentials to save.
-/// 3. `login` fallback — when admin already exists, uses access_key + access_secret.
-pub async fn get_admin_uid(
+/// 1. `initialize-admin` — creates admin on first run, prints credentials to save.
+/// 2. `login` fallback — when admin already exists, uses access_key + access_secret.
+///
+/// Returns `(user_id, token)`.
+pub async fn get_admin_auth(
     client: &reqwest::Client,
     server: &str,
-    user_id: Option<&str>,
     access_key: Option<&str>,
     access_secret: Option<&str>,
-) -> Result<String, String> {
-    if let Some(uid) = user_id {
-        return Ok(uid.to_string());
-    }
+) -> Result<(String, String), String> {
     let res = client
         .post(format!("{server}/api/auth/initialize-admin"))
         .json(&serde_json::json!({"username": "admin", "email": "admin@e2e.local"}))
@@ -141,10 +138,13 @@ pub async fn get_admin_uid(
             println!("[ INFO ]   --access-key {key}");
             println!("[ INFO ]   --access-secret {secret}");
         }
-        return body["user_id"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| format!("no user_id in initialize-admin response: {body}"));
+        let uid = body["user_id"].as_str()
+            .ok_or_else(|| format!("no user_id in initialize-admin response: {body}"))?
+            .to_string();
+        let token = body["token"].as_str()
+            .ok_or_else(|| format!("no token in initialize-admin response: {body}"))?
+            .to_string();
+        return Ok((uid, token));
     }
 
     // 409 = admin already exists — fall back to login.
@@ -153,7 +153,7 @@ pub async fn get_admin_uid(
             (Some(k), Some(s)) => (k, s),
             _ => {
                 return Err(
-                    "admin already exists. Options:\n  --access-key <key> --access-secret <secret>   (from first-run output)\n  --user-id <uuid>                               (from: psql $DATABASE_URL -c 'SELECT id FROM users LIMIT 1;')"
+                    "admin already exists. Options:\n  --access-key <key> --access-secret <secret>   (from first-run output)"
                         .to_string(),
                 );
             }
@@ -165,20 +165,39 @@ pub async fn get_admin_uid(
             .await
             .map_err(|e| e.to_string())?;
         let login_body: serde_json::Value = login_res.json().await.map_err(|e| e.to_string())?;
-        return login_body["user_id"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| format!("login failed: {login_body}"));
+        let uid = login_body["user_id"].as_str()
+            .ok_or_else(|| format!("login failed: {login_body}"))?
+            .to_string();
+        let token = login_body["token"].as_str()
+            .ok_or_else(|| format!("no token in login response: {login_body}"))?
+            .to_string();
+        return Ok((uid, token));
     }
 
     Err(format!("initialize-admin returned {status}: {body}"))
+}
+
+/// Backwards-compat alias that returns only the user_id.
+pub async fn get_admin_uid(
+    client: &reqwest::Client,
+    server: &str,
+    user_id: Option<&str>,
+    access_key: Option<&str>,
+    access_secret: Option<&str>,
+) -> Result<String, String> {
+    if let Some(uid) = user_id {
+        return Ok(uid.to_string());
+    }
+    get_admin_auth(client, server, access_key, access_secret)
+        .await
+        .map(|(uid, _)| uid)
 }
 
 /// POST a multipart upload-and-deploy request.
 pub async fn upload(
     client: &reqwest::Client,
     server: &str,
-    uid: &str,
+    token: &str,
     name: &str,
     zip: Vec<u8>,
 ) -> Result<reqwest::Response, String> {
@@ -191,9 +210,7 @@ pub async fn upload(
         );
     client
         .post(format!("{server}/api/agents/upload-and-deploy"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
+        .bearer_auth(token)
         .multipart(form)
         .send()
         .await
@@ -204,7 +221,7 @@ pub async fn upload(
 pub async fn poll_build_status(
     client: &reqwest::Client,
     server: &str,
-    uid: &str,
+    token: &str,
     build_id: &str,
     timeout_secs: u64,
 ) -> Result<String, String> {
@@ -212,8 +229,7 @@ pub async fn poll_build_status(
     loop {
         let res = client
             .get(format!("{server}/api/build/builds/{build_id}"))
-            .header("x-user-id", uid)
-            .header("x-is-superuser", "true")
+            .bearer_auth(token)
             .send()
             .await
             .map_err(|e| e.to_string())?;

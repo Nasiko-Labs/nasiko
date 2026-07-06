@@ -5,9 +5,8 @@
 //!   POST /api/agents/upload
 //!   GET  /api/builds/agent/{agent_id}  (ownership scoping)
 //!
-//! The server trusts gateway-injected headers (x-user-id, x-user-role, x-is-superuser).
-//! Tests set these directly to simulate different identity contexts without needing
-//! real JWT tokens.
+//! The server validates JWT Bearer tokens directly.
+//! Tests use the common JWT helpers to simulate different identity contexts.
 //!
 //! Requires: `docker compose --profile infra up -d postgres redis`
 //! Run: `cargo test -p nasiko-server --test build_rbac -- --test-threads=1`
@@ -34,38 +33,34 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_user(server: &common::TestServer, admin_id: &str, username: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/users"))
-        .header("x-user-id", admin_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"username": username, "email": format!("{username}@test.local")}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": username, "email": format!("{username}@test.local")}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 /// Create an agent owned by the given user (superuser headers).
 async fn create_agent(server: &common::TestServer, owner_id: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", owner_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"name": format!("agent-{}", Uuid::new_v4().simple())}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        owner_id,
+        "admin",
+    )
+    .json(&json!({"name": format!("agent-{}", Uuid::new_v4().simple())}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 /// POST /api/builds with given identity; multipart role check only (no real zip).
@@ -79,13 +74,11 @@ async fn try_trigger_build(
     let form = reqwest::multipart::Form::new()
         .text("agent_id", agent_id.to_string())
         .text("version_tag", "v1");
+    let token = common::sign_token(user_id, "u", is_superuser, role);
     server
         .client
         .post(server.url("/api/builds"))
-        .header("x-user-id", user_id)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_superuser { "true" } else { "false" })
-        .header("x-user-role", role)
+        .bearer_auth(token)
         .multipart(form)
         .send()
         .await
@@ -102,13 +95,11 @@ async fn try_upload_deploy(
     role: &str,
 ) -> u16 {
     let form = reqwest::multipart::Form::new().text("name", "test-agent");
+    let token = common::sign_token(user_id, "u", is_superuser, role);
     server
         .client
         .post(server.url("/api/agents/upload"))
-        .header("x-user-id", user_id)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_superuser { "true" } else { "false" })
-        .header("x-user-role", role)
+        .bearer_auth(token)
         .multipart(form)
         .send()
         .await
@@ -125,13 +116,11 @@ async fn try_list_builds(
     role: &str,
     agent_id: &str,
 ) -> u16 {
+    let token = common::sign_token(user_id, "u", is_superuser, role);
     server
         .client
         .get(server.url(&format!("/api/builds/agent/{agent_id}")))
-        .header("x-user-id", user_id)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_superuser { "true" } else { "false" })
-        .header("x-user-role", role)
+        .bearer_auth(token)
         .send()
         .await
         .unwrap()

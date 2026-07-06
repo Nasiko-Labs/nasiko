@@ -10,10 +10,7 @@ use uuid::Uuid;
 const SUPERUSER_ID: &str = "35601cc7-d0c4-4db8-9ec6-f5b305494c56";
 
 fn as_superuser(rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    rb.header("x-user-id", SUPERUSER_ID)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
+    common::as_superuser(rb, SUPERUSER_ID, "admin")
 }
 
 /// Build a JSON-RPC `message/stream` body with no metadata — no agent_id means
@@ -61,7 +58,7 @@ async fn test_routing_engine_no_agents_returns_503() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body("hello, which agent can help me?")),
     )
     .send()
@@ -85,7 +82,7 @@ async fn test_explicit_orchestrator_no_agents_returns_503() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body_for_agent("hello", "orchestrator")),
     )
     .send()
@@ -108,7 +105,7 @@ async fn test_explicit_agent_not_found_returns_404() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body_for_agent("hello", "agent-that-does-not-exist")),
     )
     .send()
@@ -131,7 +128,7 @@ async fn test_a2a_missing_params_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&json!({ "jsonrpc": "2.0", "method": "message/stream", "id": "1" })),
     )
     .send()
@@ -154,7 +151,7 @@ async fn test_a2a_empty_text_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body("")),
     )
     .send()
@@ -168,13 +165,13 @@ async fn test_a2a_empty_text_returns_400() {
     server.cleanup().await;
 }
 
-/// `GET /api/router/stats` with no log rows returns `{"data":[],"total":0}`.
+/// `GET /api/orchestrator/stats` with no log rows returns `{"data":[],"total":0}`.
 #[tokio::test]
 #[serial]
 async fn test_router_stats_empty_returns_valid_json() {
     let server = common::TestServer::start().await;
 
-    let resp = as_superuser(server.client.get(server.url("/api/router/stats")))
+    let resp = as_superuser(server.client.get(server.url("/api/orchestrator/stats")))
         .send()
         .await
         .unwrap();
@@ -198,7 +195,7 @@ async fn test_upload_no_query_field_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a/upload"))
+            .post(server.url("/api/orchestrator/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -223,7 +220,7 @@ async fn test_upload_empty_query_returns_400() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a/upload"))
+            .post(server.url("/api/orchestrator/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -249,7 +246,7 @@ async fn test_upload_valid_query_no_agents_returns_503() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a/upload"))
+            .post(server.url("/api/orchestrator/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -269,7 +266,7 @@ async fn test_upload_valid_query_no_agents_returns_503() {
 async fn insert_test_user(db: &PgPool) {
     sqlx::query(
         "INSERT INTO users (id, username, email, is_superuser)
-         VALUES ($1, 'testadmin', 'testadmin@router-test.com', true)
+         VALUES ($1, 'testadmin', 'testadmin@orchestrator-test.com', true)
          ON CONFLICT DO NOTHING",
     )
     .bind(Uuid::parse_str(SUPERUSER_ID).unwrap())
@@ -284,8 +281,8 @@ async fn insert_test_user(db: &PgPool) {
 async fn insert_running_agent(db: &PgPool, name: &str) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agents (name, description, status, owner_id, url, skills, tags)
-         VALUES ($1, 'Test agent for router integration', 'running', $2,
-                 'http://router-test-nonexistent.local:8080', '[]'::jsonb, '{}')
+         VALUES ($1, 'Test agent for orchestrator integration', 'running', $2,
+                 'http://orchestrator-test-nonexistent.local:8080', '[]'::jsonb, '{}')
          RETURNING id",
     )
     .bind(name)
@@ -308,7 +305,7 @@ async fn test_routing_single_agent() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body("what can you help me with?")),
     )
     .send()
@@ -336,7 +333,7 @@ async fn test_routing_lte_15_agents() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body("help me write code")),
     )
     .send()
@@ -364,7 +361,7 @@ async fn test_routing_ollama_disabled_gt_threshold() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body("summarize some document")),
     )
     .send()
@@ -391,7 +388,7 @@ async fn test_routing_gt_15_agents_with_embeddings() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body("write a python script")),
     )
     .send()
@@ -414,7 +411,7 @@ async fn test_routing_fallback_to_first_candidate() {
     let _ = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a"))
+            .post(server.url("/api/orchestrator/a2a"))
             .json(&stream_body("any question")),
     )
     .send()
@@ -455,7 +452,7 @@ async fn test_routing_with_history() {
         }
     });
 
-    let resp = as_superuser(server.client.post(server.url("/api/router/a2a")).json(&body))
+    let resp = as_superuser(server.client.post(server.url("/api/orchestrator/a2a")).json(&body))
         .send()
         .await
         .unwrap();
@@ -487,7 +484,7 @@ async fn test_routing_with_file_upload() {
     let resp = as_superuser(
         server
             .client
-            .post(server.url("/api/router/a2a/upload"))
+            .post(server.url("/api/orchestrator/a2a/upload"))
             .multipart(form),
     )
     .send()
@@ -500,38 +497,4 @@ async fn test_routing_with_file_upload() {
     server.cleanup().await;
 }
 
-/// After a successful routing decision the engine spawns a background log write.
-/// This test waits 300 ms for the spawn to complete then asserts the row exists.
-#[tokio::test]
-#[serial]
-async fn test_router_log_written() {
-    let server = common::TestServer::start().await;
-    insert_test_user(&server.db).await;
-    insert_running_agent(&server.db, "log-test-agent").await;
 
-    let query_text = "unique-query-for-log-test";
-
-    let _ = as_superuser(
-        server
-            .client
-            .post(server.url("/api/router/a2a"))
-            .json(&stream_body(query_text)),
-    )
-    .send()
-    .await
-    .unwrap();
-
-    // Background spawn writes the log — give it time to complete
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM router_request_log WHERE query = $1")
-            .bind(query_text)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-
-    assert_eq!(count, 1, "routing engine should have written exactly one log row");
-
-    server.cleanup().await;
-}

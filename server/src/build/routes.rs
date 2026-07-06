@@ -599,7 +599,7 @@ pub async fn auto_generate_capabilities_pub(
     agent_name: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
-    use crate::router::providers::LLMProvider;
+    use nasiko_orchestrator::providers::LLMProvider;
 
     let data = match oci_storage.get_blob(source_key).await {
         Ok(d) => d,

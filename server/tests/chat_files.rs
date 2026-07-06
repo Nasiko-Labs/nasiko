@@ -34,37 +34,34 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_user(server: &common::TestServer, admin_id: &str, username: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/users"))
-        .header("x-user-id", admin_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"username": username, "email": format!("{username}@test.local")}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": username, "email": format!("{username}@test.local")}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn create_session(server: &common::TestServer, user_id: &str, is_super: bool) -> Value {
-    server
-        .client
-        .post(server.url("/api/chat/sessions"))
-        .header("x-user-id", user_id)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_super { "true" } else { "false" })
-        .header("x-user-role", if is_super { "admin" } else { "member" })
-        .json(&json!({"title": "test session"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    let rb = server.client.post(server.url("/api/chat/sessions"));
+    if is_super {
+        common::as_superuser(rb, user_id, "u")
+    } else {
+        common::as_member(rb, user_id, "u")
+    }
+    .json(&json!({"title": "test session"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 /// Upload a single small text file; returns the file record.
@@ -82,17 +79,16 @@ async fn upload_file(
         .unwrap();
     let form = reqwest::multipart::Form::new().part("file", part);
 
-    let res = server
-        .client
-        .post(server.url(&format!("/api/chat/sessions/{session_id}/files")))
-        .header("x-user-id", user_id)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_super { "true" } else { "false" })
-        .header("x-user-role", if is_super { "admin" } else { "member" })
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    let rb = server.client.post(server.url(&format!("/api/chat/sessions/{session_id}/files")));
+    let res = if is_super {
+        common::as_superuser(rb, user_id, "u")
+    } else {
+        common::as_member(rb, user_id, "u")
+    }
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
 
     let status = res.status().as_u16();
     let body: Value = res.json().await.unwrap_or(Value::Null);
@@ -106,17 +102,16 @@ async fn send_message_with_files(
     session_id: &str,
     file_ids: Vec<&str>,
 ) -> (u16, Value) {
-    let res = server
-        .client
-        .post(server.url(&format!("/api/chat/sessions/{session_id}/messages")))
-        .header("x-user-id", user_id)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_super { "true" } else { "false" })
-        .header("x-user-role", if is_super { "admin" } else { "member" })
-        .json(&json!({"role": "user", "content": "see attached", "file_ids": file_ids}))
-        .send()
-        .await
-        .unwrap();
+    let rb = server.client.post(server.url(&format!("/api/chat/sessions/{session_id}/messages")));
+    let res = if is_super {
+        common::as_superuser(rb, user_id, "u")
+    } else {
+        common::as_member(rb, user_id, "u")
+    }
+    .json(&json!({"role": "user", "content": "see attached", "file_ids": file_ids}))
+    .send()
+    .await
+    .unwrap();
     let status = res.status().as_u16();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     (status, body)
@@ -182,15 +177,14 @@ async fn list_files_for_message() {
     let (_, msg) = send_message_with_files(&server, uid, true, sid, vec![file_id]).await;
     let msg_id = msg["id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200);
     let listed: Value = res.json().await.unwrap();
     let arr = listed.as_array().unwrap();
@@ -213,14 +207,14 @@ async fn download_returns_redirect() {
     let (_, files) = upload_file(&server, uid, true, sid, "abc", "abc.txt").await;
     let file_id = files[0]["id"].as_str().unwrap();
 
-    let res = no_redirect_client()
-        .get(server.url(&format!("/api/chat/files/{file_id}/download")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        no_redirect_client().get(server.url(&format!("/api/chat/files/{file_id}/download"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 307, "expect redirect to presigned URL");
     let location = res.headers().get("location").unwrap().to_str().unwrap();
@@ -270,14 +264,14 @@ async fn cannot_access_other_users_file() {
     let alice = create_user(&server, admin_id, "alice-files").await;
     let alice_id = alice["id"].as_str().unwrap();
 
-    let res = no_redirect_client()
-        .get(server.url(&format!("/api/chat/files/{file_id}/download")))
-        .header("x-user-id", alice_id)
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        no_redirect_client().get(server.url(&format!("/api/chat/files/{file_id}/download"))),
+        alice_id,
+        "alice-files",
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 404, "IDOR: other user must not access file");
 
@@ -297,26 +291,25 @@ async fn delete_removes_file() {
     let (_, files) = upload_file(&server, uid, true, sid, "bye", "bye.txt").await;
     let file_id = files[0]["id"].as_str().unwrap();
 
-    let del = server
-        .client
-        .delete(server.url(&format!("/api/chat/files/{file_id}")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let del = common::as_superuser(
+        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(del.status(), 204);
 
     // Subsequent download should 404.
-    let res = no_redirect_client()
-        .get(server.url(&format!("/api/chat/files/{file_id}/download")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        no_redirect_client().get(server.url(&format!("/api/chat/files/{file_id}/download"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 404);
 
     server.cleanup().await;
@@ -336,26 +329,25 @@ async fn session_delete_cleans_up_files() {
     let file_id = files[0]["id"].as_str().unwrap();
 
     // Delete the session.
-    let del = server
-        .client
-        .delete(server.url(&format!("/api/chat/sessions/{sid}")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let del = common::as_superuser(
+        server.client.delete(server.url(&format!("/api/chat/sessions/{sid}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(del.status(), 204);
 
     // File should be gone from DB.
-    let res = no_redirect_client()
-        .get(server.url(&format!("/api/chat/files/{file_id}/download")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        no_redirect_client().get(server.url(&format!("/api/chat/files/{file_id}/download"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 404, "file gone after session delete");
 
     server.cleanup().await;
@@ -381,16 +373,15 @@ async fn too_many_files_rejected() {
         form = form.part(format!("file{i}"), part);
     }
 
-    let res = server
-        .client
-        .post(server.url(&format!("/api/chat/sessions/{sid}/files")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url(&format!("/api/chat/sessions/{sid}/files"))),
+        uid,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 400, "11 files should be rejected");
 
@@ -419,15 +410,14 @@ async fn multiple_files_attached_to_one_message() {
     assert_eq!(msg["has_file_parts"], true);
 
     let msg_id = msg["id"].as_str().unwrap();
-    let res = server
-        .client
-        .get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     let listed: Value = res.json().await.unwrap();
     assert_eq!(listed.as_array().unwrap().len(), 2, "both files listed");
 
@@ -449,15 +439,14 @@ async fn cannot_delete_other_users_file() {
     let alice = create_user(&server, admin_id, "alice-del").await;
     let alice_id = alice["id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .delete(server.url(&format!("/api/chat/files/{file_id}")))
-        .header("x-user-id", alice_id)
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        alice_id,
+        "alice-del",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 404, "IDOR: other user must not delete file");
 
     server.cleanup().await;
@@ -482,15 +471,14 @@ async fn cannot_list_files_for_other_users_session() {
     let alice = create_user(&server, admin_id, "alice-list").await;
     let alice_id = alice["id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files")))
-        .header("x-user-id", alice_id)
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        alice_id,
+        "alice-list",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 404, "IDOR: other user must not list message files");
 
     server.cleanup().await;
@@ -567,28 +555,26 @@ async fn delete_last_file_clears_has_file_parts() {
     let msg_id = msg["id"].as_str().unwrap();
     assert_eq!(msg["has_file_parts"], true);
 
-    server
-        .client
-        .delete(server.url(&format!("/api/chat/files/{file_id}")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    common::as_superuser(
+        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
-    let msgs: Value = server
-        .client
-        .get(server.url(&format!("/api/chat/sessions/{sid}/messages")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let msgs: Value = common::as_superuser(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let updated = msgs["data"].as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
     assert_eq!(updated["has_file_parts"], false, "has_file_parts cleared after last file deleted");
 
@@ -609,50 +595,47 @@ async fn delete_file_keeps_has_file_parts_when_inline_parts_present() {
     let file_id = files[0]["id"].as_str().unwrap();
 
     // Send a message with both an S3-backed file AND inline file_parts.
-    let msg: Value = server
-        .client
-        .post(server.url(&format!("/api/chat/sessions/{sid}/messages")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({
-            "role": "user",
-            "content": "mixed",
-            "file_parts": [{"type": "image_url", "url": "https://example.com/img.png"}],
-            "file_ids": [file_id]
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let msg: Value = common::as_superuser(
+        server.client.post(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        uid,
+        "admin",
+    )
+    .json(&json!({
+        "role": "user",
+        "content": "mixed",
+        "file_parts": [{"type": "image_url", "url": "https://example.com/img.png"}],
+        "file_ids": [file_id]
+    }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let msg_id = msg["id"].as_str().unwrap();
     assert_eq!(msg["has_file_parts"], true);
 
     // Delete only the S3 file — inline file_parts still present.
-    server
-        .client
-        .delete(server.url(&format!("/api/chat/files/{file_id}")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    common::as_superuser(
+        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
-    let msgs: Value = server
-        .client
-        .get(server.url(&format!("/api/chat/sessions/{sid}/messages")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let msgs: Value = common::as_superuser(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let updated = msgs["data"].as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
     assert_eq!(
         updated["has_file_parts"], true,
@@ -676,25 +659,24 @@ async fn unattached_file_can_be_downloaded_and_deleted() {
     let (_, files) = upload_file(&server, uid, true, sid, "pending", "pending.txt").await;
     let file_id = files[0]["id"].as_str().unwrap();
 
-    let dl = no_redirect_client()
-        .get(server.url(&format!("/api/chat/files/{file_id}/download")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let dl = common::as_superuser(
+        no_redirect_client().get(server.url(&format!("/api/chat/files/{file_id}/download"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(dl.status(), 307, "unattached file should be downloadable");
 
-    let del = server
-        .client
-        .delete(server.url(&format!("/api/chat/files/{file_id}")))
-        .header("x-user-id", uid)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let del = common::as_superuser(
+        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(del.status(), 204, "unattached file should be deletable");
 
     server.cleanup().await;

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::catalog::models::Skill;
-use nasiko_router::models::*;
-use nasiko_router::providers::{CompletionResult, LLMProvider, ProviderError};
+use nasiko_orchestrator::models::*;
+use nasiko_orchestrator::providers::{CompletionResult, LLMProvider, ProviderError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedCard {

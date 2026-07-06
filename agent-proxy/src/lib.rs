@@ -68,29 +68,3 @@ struct AgentRow {
     status: String,
     url: Option<String>,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_host_port_with_port() {
-        let (host, port) = parse_host_port("http://10.0.0.1:9000/path");
-        assert_eq!(host, "10.0.0.1");
-        assert_eq!(port, 9000);
-    }
-
-    #[test]
-    fn parse_host_port_without_port() {
-        let (host, port) = parse_host_port("http://my-agent");
-        assert_eq!(host, "my-agent");
-        assert_eq!(port, 8000);
-    }
-
-    #[test]
-    fn parse_host_port_bare() {
-        let (host, port) = parse_host_port("container-name:8080");
-        assert_eq!(host, "container-name");
-        assert_eq!(port, 8080);
-    }
-}

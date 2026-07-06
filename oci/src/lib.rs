@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 /// Shared state for the OCI registry.
 /// Construct this in the host binary. Pass to `axum_routes()` for the default
-/// router, or use the `ops` module directly for custom route wiring.
+/// orchestrator, or use the `ops` module directly for custom route wiring.
 #[derive(Clone)]
 pub struct OciState {
     pub pool: PgPool,
@@ -32,8 +32,8 @@ impl OciState {
     }
 }
 
-/// Returns an Axum router implementing the OCI Distribution Spec v2.
-/// Routes are prefixed with `/v2/`. The returned router has its state
+/// Returns an Axum orchestrator implementing the OCI Distribution Spec v2.
+/// Routes are prefixed with `/v2/`. The returned orchestrator has its state
 /// already applied (`Router<()>`), so it can be merged into any app.
 pub fn axum_routes(state: OciState) -> Router {
     routes::router(state)

@@ -46,29 +46,26 @@ async fn upload(
     if let Some(zip) = source {
         form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
     }
-    server
-        .client
-        .post(server.url("/api/agents/upload"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/agents/upload")),
+        user_id,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap()
 }
 
 async fn get_build(server: &common::TestServer, user_id: &str, build_id: &str) -> reqwest::Response {
-    server
-        .client
-        .get(server.url(&format!("/api/builds/{build_id}")))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .send()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.get(server.url(&format!("/api/builds/{build_id}"))),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
 }
 
 #[allow(dead_code)]
@@ -140,7 +137,7 @@ async fn upload_without_identity_returns_401() {
     let server = common::TestServer::start().await;
     let _ = init_admin(&server).await;
 
-    // No x-user-id header → require_auth rejects before the handler.
+    // No auth token → require_auth rejects before the handler.
     let zip = common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
     let form = reqwest::multipart::Form::new()
         .text("name", "demo")
@@ -185,18 +182,17 @@ async fn upload_persists_agent_and_build_record() {
     assert_eq!(body["status"], "queued");
 
     // Agent persisted in the catalog.
-    let agents: Value = server
-        .client
-        .get(server.url("/api/agents"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let agents: Value = common::as_superuser(
+        server.client.get(server.url("/api/agents")),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let names: Vec<&str> = agents
         .as_array()
         .unwrap()
@@ -291,15 +287,14 @@ async fn deploy_status_unknown_build_reports_not_found() {
     let uid = admin["user_id"].as_str().unwrap();
 
     let random = uuid::Uuid::new_v4();
-    let res = server
-        .client
-        .get(server.url(&format!("/api/agents/deploys/{random}/stream")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url(&format!("/api/agents/deploys/{random}/stream"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 200);
     // Unknown build → the stream emits a single not_found event and closes.

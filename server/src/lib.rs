@@ -1,5 +1,6 @@
 pub mod acl;
 pub mod admin;
+pub mod agent_proxy;
 pub mod agents;
 pub mod auth;
 pub mod build;
@@ -21,7 +22,7 @@ pub mod transcribe;
 pub mod usage;
 pub mod users;
 
-use axum::{Json, Router, middleware, routing::get};
+use axum::{Json, Router, middleware, routing::{any, get}};
 use axum::handler::Handler;
 use serde::Serialize;
 use tower_http::cors::CorsLayer;
@@ -55,9 +56,9 @@ where
     build_app_with_user_router(state.clone(), fallback, users::router())
 }
 
-/// Build the full control plane Axum application with a custom user router.
-/// EE server passes its own org-aware user router (which merges management_router
-/// and provides EE list/get handlers); OSS `build_app` passes `users::router()`.
+/// Build the full control plane Axum application with a custom user orchestrator.
+/// EE server passes its own org-aware user orchestrator (which merges management_router
+/// and provides EE list/get handlers); OSS `build_app` passes `users::orchestrator()`.
 pub fn build_app_with_user_router<F, T>(
     state: AppState,
     fallback: F,
@@ -84,7 +85,6 @@ where
     // Agent deploy routes (upload, deploy-status, deployments, ACL): deployer+ only.
     let agent_deploy_routes = Router::new()
         .nest("/agents", agents::router())
-        .nest("/agents", agents::user_routes())
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     // Build routes (trigger builds, view build history): deployer+ only
@@ -93,9 +93,12 @@ where
         .layer(middleware::from_fn(auth::rbac::require_deployer));
 
     let protected = Router::new()
+        .route("/agents/{id}/{*rest}", any(agent_proxy::agent_proxy))
+        .route("/agents/{id}", any(agent_proxy::agent_proxy))
         .route("/me", get(me))
         .merge(router::router_routes())
         .merge(agent_deploy_routes)
+        .nest("/agents", agents::user_routes())
         .merge(catalog::router())
         .merge(container_routes)
         .merge(pool_routes)
@@ -118,7 +121,11 @@ where
         ));
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
-    let oci_routes = nasiko_oci::axum_routes(oci_state);
+    let oci_routes = nasiko_oci::axum_routes(oci_state)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
 
     Router::new()
         .route("/health", get(health))

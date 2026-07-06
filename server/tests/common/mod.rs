@@ -271,6 +271,44 @@ async fn fallback() -> axum::http::StatusCode {
     axum::http::StatusCode::NOT_FOUND
 }
 
+// ─── JWT test helpers ─────────────────────────────────────────────────────────
+
+/// JWT secret used in all OSS integration tests — must match test_config().
+pub const TEST_JWT_SECRET: &str = "test-secret-for-nasiko-tests";
+
+/// Sign a short-lived JWT for a test identity using the known test secret.
+#[allow(dead_code)]
+pub fn sign_token(user_id: &str, username: &str, is_superuser: bool, role: &str) -> String {
+    let identity = nasiko_auth::Identity {
+        user_id: user_id.to_owned(),
+        username: username.to_owned(),
+        is_superuser,
+        role: serde_json::from_value(serde_json::Value::String(role.to_owned())).ok(),
+    };
+    nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
+        .expect("test JWT signing failed")
+}
+
+/// Attach a superuser (admin role) JWT to a request builder.
+#[allow(dead_code)]
+pub fn as_superuser(
+    rb: reqwest::RequestBuilder,
+    user_id: &str,
+    username: &str,
+) -> reqwest::RequestBuilder {
+    rb.bearer_auth(sign_token(user_id, username, true, "admin"))
+}
+
+/// Attach a member JWT to a request builder.
+#[allow(dead_code)]
+pub fn as_member(
+    rb: reqwest::RequestBuilder,
+    user_id: &str,
+    username: &str,
+) -> reqwest::RequestBuilder {
+    rb.bearer_auth(sign_token(user_id, username, false, "member"))
+}
+
 /// Build an in-memory zip archive from `(path, bytes)` pairs.
 #[allow(dead_code)]
 pub fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {

@@ -31,91 +31,84 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_user(server: &common::TestServer, admin_id: &str, username: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/users"))
-        .header("x-user-id", admin_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"username": username, "email": format!("{username}@test.local")}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": username, "email": format!("{username}@test.local")}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn create_agent(server: &common::TestServer, uid: &str, body: Value) -> Value {
-    let res = server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        uid,
+        "admin",
+    )
+    .json(&body)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 201, "create agent should succeed");
     res.json::<Value>().await.unwrap()
 }
 
 async fn get_agent(server: &common::TestServer, uid: &str, is_super: bool, id: &str) -> reqwest::Response {
-    server
-        .client
-        .get(server.url(&format!("/api/agents/{id}")))
-        .header("x-user-id", uid)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_super { "true" } else { "false" })
-        .header("x-user-role", if is_super { "admin" } else { "member" })
-        .send()
-        .await
-        .unwrap()
+    let rb = server.client.get(server.url(&format!("/api/agents/{id}")));
+    if is_super {
+        common::as_superuser(rb, uid, "u")
+    } else {
+        common::as_member(rb, uid, "u")
+    }
+    .send()
+    .await
+    .unwrap()
 }
 
 async fn list_versions(server: &common::TestServer, uid: &str, is_super: bool, agent_id: &str) -> reqwest::Response {
-    server
-        .client
-        .get(server.url(&format!("/api/agents/{agent_id}/versions")))
-        .header("x-user-id", uid)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_super { "true" } else { "false" })
-        .header("x-user-role", if is_super { "admin" } else { "member" })
-        .send()
-        .await
-        .unwrap()
+    let rb = server.client.get(server.url(&format!("/api/agents/{agent_id}/versions")));
+    if is_super {
+        common::as_superuser(rb, uid, "u")
+    } else {
+        common::as_member(rb, uid, "u")
+    }
+    .send()
+    .await
+    .unwrap()
 }
 
 async fn search(server: &common::TestServer, uid: &str, is_super: bool, q: &str) -> Vec<Value> {
-    let res = server
-        .client
-        .get(server.url(&format!("/api/search/agents?q={q}")))
-        .header("x-user-id", uid)
-        .header("x-username", "u")
-        .header("x-is-superuser", if is_super { "true" } else { "false" })
-        .header("x-user-role", if is_super { "admin" } else { "member" })
-        .send()
-        .await
-        .unwrap();
+    let rb = server.client.get(server.url(&format!("/api/search/agents?q={q}")));
+    let res = if is_super {
+        common::as_superuser(rb, uid, "u")
+    } else {
+        common::as_member(rb, uid, "u")
+    }
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200);
-    res.json::<Vec<Value>>().await.unwrap()
+    // Agent search returns a {agents, total, max_score} envelope (Python parity).
+    let body: Value = res.json().await.unwrap();
+    body["agents"].as_array().cloned().unwrap_or_default()
 }
 
 async fn update_agent(server: &common::TestServer, uid: &str, agent_id: &str, body: Value) -> Value {
-    let res = server
-        .client
-        .put(server.url(&format!("/api/agents/{agent_id}")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.put(server.url(&format!("/api/agents/{agent_id}"))),
+        uid,
+        "admin",
+    )
+    .json(&body)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200, "update agent should succeed");
     res.json::<Value>().await.unwrap()
 }
@@ -238,17 +231,15 @@ async fn search_is_owner_scoped() {
     // Admin owns one agent; other user owns a second one (created via admin elevation).
     create_agent(&server, uid, json!({"name": "srch-admin-agent", "version": "1.0.0"})).await;
 
-    let other_agent = server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", other_id)
-        .header("x-username", "srch-other")
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
-        .json(&json!({"name": "srch-other-agent", "version": "1.0.0"}))
-        .send()
-        .await
-        .unwrap();
+    let other_agent = common::as_member(
+        server.client.post(server.url("/api/agents")),
+        other_id,
+        "srch-other",
+    )
+    .json(&json!({"name": "srch-other-agent", "version": "1.0.0"}))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(other_agent.status(), 201);
 
     // Non-superuser search: only their own agent.

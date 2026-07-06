@@ -37,17 +37,15 @@ async fn init_admin(server: &common::TestServer) -> Value {
 
 /// Create an agent via catalog and return its JSON (synchronous, no Docker).
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str, version: &str) -> Value {
-    let res = server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"name": name, "version": version}))
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"name": name, "version": version}))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 201, "create_agent failed");
     res.json::<Value>().await.unwrap()
 }
@@ -68,17 +66,15 @@ async fn do_update(
     if let Some(zip) = source {
         form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
     }
-    server
-        .client
-        .put(server.url(&format!("/api/agents/{agent_id}/update")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        uid,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap()
 }
 
 /// POST /api/agents/{id}/rollback as superuser.
@@ -88,13 +84,11 @@ async fn do_rollback(
     agent_id: &str,
     body: Option<Value>,
 ) -> reqwest::Response {
-    let req = server
-        .client
-        .post(server.url(&format!("/api/agents/{agent_id}/rollback")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin");
+    let req = common::as_superuser(
+        server.client.post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
+        uid,
+        "admin",
+    );
     match body {
         Some(b) => req.json(&b).send().await.unwrap(),
         None => req.send().await.unwrap(),
@@ -108,15 +102,14 @@ async fn wait_for_terminal_build(
     build_id: &str,
 ) -> String {
     for _ in 0..60 {
-        let res = server
-            .client
-            .get(server.url(&format!("/api/builds/{build_id}")))
-            .header("x-user-id", uid)
-            .header("x-username", "admin")
-            .header("x-is-superuser", "true")
-            .send()
-            .await
-            .unwrap();
+        let res = common::as_superuser(
+            server.client.get(server.url(&format!("/api/builds/{build_id}"))),
+            uid,
+            "admin",
+        )
+        .send()
+        .await
+        .unwrap();
         if res.status() == 200 {
             let body: Value = res.json().await.unwrap();
             if let Some(s) = body["status"].as_str()
@@ -189,16 +182,15 @@ async fn update_rejects_non_zip_extension() {
         // .tar.gz instead of .zip → 400
         reqwest::multipart::Part::bytes(b"fake data".to_vec()).file_name("agent.tar.gz"),
     );
-    let res = server
-        .client
-        .put(server.url(&format!("/api/agents/{agent_id}/update")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        uid,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 400);
 
     server.cleanup().await;
@@ -397,18 +389,17 @@ async fn update_marks_build_failed_without_dockerfile() {
     assert_eq!(status, "failed", "build without Dockerfile must fail");
 
     // Agent version should be rolled back to the original.
-    let agent_res: Value = server
-        .client
-        .get(server.url(&format!("/api/agents/{agent_id}")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let agent_res: Value = common::as_superuser(
+        server.client.get(server.url(&format!("/api/agents/{agent_id}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     assert_eq!(
         agent_res["version"].as_str().unwrap(),
         "1.0.0",
@@ -482,17 +473,16 @@ async fn rollback_malformed_json_returns_422() {
     let agent = create_agent(&server, uid, "bad-json-rollback-agent", "1.0.0").await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .post(server.url(&format!("/api/agents/{agent_id}/rollback")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("content-type", "application/json")
-        .body("{not valid json}")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
+        uid,
+        "admin",
+    )
+    .header("content-type", "application/json")
+    .body("{not valid json}")
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 422);
 
     server.cleanup().await;

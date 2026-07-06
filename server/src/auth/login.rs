@@ -12,7 +12,7 @@ use crate::state::AppState;
 
 const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 
-/// Public routes — no auth required (merged outside the protected router).
+/// Public routes — no auth required (merged outside the protected orchestrator).
 /// token_validate is here because callers supply the token in the request body;
 /// there is no authenticated "caller" to require.
 pub fn public_router() -> Router<AppState> {
@@ -29,10 +29,13 @@ pub fn protected_router() -> Router<AppState> {
         .route("/auth/system/users-for-search", get(users_for_search))
 }
 
+/// Accepts either `{username, password}` or `{access_key, access_secret}`.
+/// The auth service handles both via its credential lookup query.
 #[derive(Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
+#[serde(untagged)]
+enum LoginRequest {
+    Credentials { username: String, password: String },
+    AccessKey { access_key: String, access_secret: String },
 }
 
 #[derive(Serialize)]
@@ -63,7 +66,11 @@ async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    match state.auth.authenticate(&req.username, &req.password).await {
+    let (key, secret) = match req {
+        LoginRequest::Credentials { username, password } => (username, password),
+        LoginRequest::AccessKey { access_key, access_secret } => (access_key, access_secret),
+    };
+    match state.auth.authenticate(&key, &secret).await {
         Ok(result) => {
             let cookie = set_token_cookie(&result.token);
             (
@@ -76,7 +83,8 @@ async fn login(
                     role: result.role,
                     expires_in: result.expires_in,
                 }),
-            ).into_response()
+            )
+                .into_response()
         }
         Err(nasiko_auth::AuthError::InvalidToken(msg)) if msg == "account disabled" => {
             (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "account disabled"}))).into_response()
@@ -101,14 +109,18 @@ async fn logout(
 #[derive(Deserialize)]
 struct InitAdminRequest {
     username: String,
-m    password: String,
+    email: String,
 }
 
 async fn initialize_admin(
     State(state): State<AppState>,
     Json(req): Json<InitAdminRequest>,
 ) -> impl IntoResponse {
-    match initialize_admin_inner(&state, &req.username, &req.password).await {
+    // bootstrap_admin doesn't return credentials — use initialize_admin_full for that
+    let _ = state.auth.authenticate(&req.username, &req.email).await;
+    // The actual initialize-admin endpoint uses a different flow:
+    // it creates the admin user and returns credentials.
+    match initialize_admin_inner(&state, &req.username, &req.email).await {
         Ok(resp) => resp,
         Err(resp) => resp,
     }
@@ -117,7 +129,7 @@ async fn initialize_admin(
 async fn initialize_admin_inner(
     state: &AppState,
     username: &str,
-    password: &str,
+    email: &str,
 ) -> Result<axum::response::Response, axum::response::Response> {
     // Check if admin exists
     let admin_count: i64 = sqlx::query_scalar(
@@ -134,10 +146,10 @@ async fn initialize_admin_inner(
         ).into_response());
     }
 
-    let access_secret_hash = nasiko_auth::hash_password(password)
+    let access_key = nasiko_auth::generate_access_key();
+    let access_secret = nasiko_auth::generate_access_secret();
+    let access_secret_hash = nasiko_auth::hash_password_async(&access_secret).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
-
-    let email = format!("{}@localhost", username);
 
     let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
         r#"INSERT INTO users (username, email, is_superuser, is_active, role)
@@ -145,7 +157,7 @@ async fn initialize_admin_inner(
            RETURNING id"#,
     )
     .bind(username)
-    .bind(&email)
+    .bind(email)
     .fetch_one(&state.db)
     .await;
 
@@ -170,7 +182,7 @@ async fn initialize_admin_inner(
            VALUES ($1, $2, $3)"#,
     )
     .bind(user_id)
-    .bind(username)
+    .bind(&access_key)
     .bind(&access_secret_hash)
     .execute(&state.db)
     .await
@@ -186,6 +198,9 @@ async fn initialize_admin_inner(
     let token = state.auth.issue_token(&identity).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
 
+    // Record the issued token so revocation and counting work correctly.
+    let _ = state.auth.record_user_token(&token, &user_id.to_string()).await;
+
     let cookie = set_token_cookie(&token);
     Ok((
         StatusCode::CREATED,
@@ -194,6 +209,9 @@ async fn initialize_admin_inner(
             "user_id": user_id.to_string(),
             "username": username,
             "token": token,
+            "access_key": access_key,
+            "access_secret": access_secret,
+            "message": "Admin created. Store access_secret securely — it won't be shown again.",
         })),
     ).into_response())
 }

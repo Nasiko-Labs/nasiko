@@ -42,16 +42,14 @@ async fn test_github_status_reports_not_configured_when_oauth_not_set() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .get(server.url("/api/github/user"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url("/api/github/user")),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
@@ -73,19 +71,17 @@ async fn test_github_status_reports_not_connected_when_no_token_stored() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let body: serde_json::Value = server
-        .client
-        .get(server.url("/api/github/user"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let body: serde_json::Value = common::as_superuser(
+        server.client.get(server.url("/api/github/user")),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
 
     // Either not-configured or not-connected — both have connected=false
     assert_eq!(body["connected"], false);
@@ -119,16 +115,14 @@ async fn test_github_repos_returns_404_when_oauth_not_configured() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .get(server.url("/api/github/repositories"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url("/api/github/repositories")),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 404);
 
@@ -162,16 +156,14 @@ async fn test_github_logout_is_idempotent_when_no_token_stored() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .delete(server.url("/api/github/logout"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.delete(server.url("/api/github/logout")),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
@@ -200,16 +192,14 @@ async fn test_github_logout_clears_stored_token() {
     .unwrap();
 
     // Logout
-    let res = server
-        .client
-        .delete(server.url("/api/github/logout"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.delete(server.url("/api/github/logout")),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200);
 
     // Verify row is gone

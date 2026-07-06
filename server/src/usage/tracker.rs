@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use super::models::{CreateRouterRequestLog, CreateTokenUsage, TokenUsage};
 
-/// Service for tracking token usage and router requests
+/// Service for tracking token usage and orchestrator requests
 #[derive(Clone)]
 pub struct UsageTracker {
     db: PgPool,
@@ -63,7 +63,7 @@ impl UsageTracker {
         Ok(id)
     }
 
-    /// Track a router request
+    /// Track a orchestrator request
     pub async fn track_router_request(&self, log: CreateRouterRequestLog) -> Result<Uuid, sqlx::Error> {
         let id: Uuid = sqlx::query_scalar(
             r#"

@@ -14,31 +14,59 @@ infra-down:
 logs *args:
     {{docker}} compose -f docker-compose.infra.yml logs {{args}}
 
-# Run server + gateway (foreground)
+# Run server (foreground)
 run:
     #!/usr/bin/env bash
     set -euo pipefail
     set -a; source server/.env 2>/dev/null || source server/.env.example; set +a
-    set -a; source gateway/.env 2>/dev/null || source gateway/.env.example; set +a
-    trap 'kill $(jobs -p) 2>/dev/null; wait' INT TERM
-    cargo run -p nasiko-server & cargo run -p nasiko-gateway & wait
+    cargo run -p nasiko-server
 
-# Run server only
+# Run server only (alias)
 run-server:
     #!/usr/bin/env bash
     set -euo pipefail
     set -a; source server/.env 2>/dev/null || source server/.env.example; set +a
     cargo run -p nasiko-server
 
-# Run gateway only
-run-gateway:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    set -a; source gateway/.env 2>/dev/null || source gateway/.env.example; set +a
-    cargo run -p nasiko-gateway
-
-# Release OSS control plane (server + gateway)
+# Release OSS control plane (server)
 release-cp tag="latest":
-    cargo zigbuild --release --target {{target}} -p nasiko-server -p nasiko-gateway
+    cargo zigbuild --release --target {{target}} -p nasiko-server
     {{docker}} buildx build --platform linux/amd64 -t {{user}}/nasiko-server:{{tag}} -f oss/server/Dockerfile --push .
-    {{docker}} buildx build --platform linux/amd64 -t {{user}}/nasiko-gateway:{{tag}} -f oss/gateway/Dockerfile --push .
+
+# ── Quality ───────────────────────────────────────────────────────────────────
+
+# Type-check workspace
+check:
+    cargo check --workspace
+
+# Lint workspace
+clippy:
+    cargo clippy --workspace
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+
+# Phase I — unit tests, no infra required
+test-unit:
+    cargo test \
+      -p nasiko-auth \
+      -p nasiko-secrets \
+      -p nasiko-config \
+      -p nasiko-utils \
+      -p nasiko-types \
+      -p nasiko-flow \
+      -p nasiko-agent-proxy \
+      -p nasiko-orchestrator \
+      -p nasiko-runtime \
+      -p nasiko-observability \
+      -p nasiko-github
+
+# Phase II — server integration tests (run `just infra` first)
+test-server:
+    cargo test -p nasiko-server -- --test-threads=1
+
+# Phase II — single server test file  e.g. `just test-one auth_flow`
+test-one name:
+    cargo test -p nasiko-server --test {{name}} -- --test-threads=1
+
+# All OSS tests: unit + server integration
+test: test-unit test-server

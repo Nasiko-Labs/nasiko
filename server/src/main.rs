@@ -29,17 +29,9 @@ async fn main() {
         .await
         .expect("failed to connect to postgres");
 
-    // Select auth implementation based on whether JWT_SECRET is configured.
-    let auth: Arc<dyn nasiko_auth::AuthService> = match std::env::var("JWT_SECRET") {
-        Ok(jwt_secret) => Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret)),
-        Err(_) => {
-            tracing::warn!("JWT_SECRET not set — using gateway-only JWT auth (dev mode)");
-            Arc::new(nasiko_auth::SimpleJwtAuth {
-                secret: "dev-mode-secret".into(),
-                expiry_secs: nasiko_auth::jwt::DEFAULT_EXPIRY_SECS,
-            })
-        }
-    };
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let auth: Arc<dyn nasiko_auth::AuthService> =
+        Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
     let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = Arc::new(
         nasiko_server::runtime::build_docker_runtime(&config)

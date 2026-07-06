@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
-use nasiko_router::RoutingEngine;
+use nasiko_orchestrator::RoutingEngine;
 use nasiko_observability::ObservabilityProvider;
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
@@ -66,6 +66,7 @@ impl AppState {
             .expect("invalid redis url");
 
         let oci_storage = nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await;
+        oci_storage.ensure_bucket(false).await.ok();
 
         let usage_tracker = UsageTracker::new(db.clone());
 
@@ -76,7 +77,7 @@ impl AppState {
             .expect("failed to build http client");
 
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
-            nasiko_router::OssRoutingEngine::from_config(&config, http_client.clone())
+            nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone())
         );
 
         let flow_config = FlowConfig {

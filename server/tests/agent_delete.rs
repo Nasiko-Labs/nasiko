@@ -31,32 +31,29 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str) -> Value {
-    server
-        .client
-        .post(server.url("/api/agents"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .json(&json!({"name": name, "version": "1.0.0"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"name": name, "version": "1.0.0"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 async fn delete_as_superuser(server: &common::TestServer, uid: &str, agent_id: &str) -> reqwest::Response {
-    server
-        .client
-        .delete(server.url(&format!("/api/agents/{agent_id}")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .send()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.delete(server.url(&format!("/api/agents/{agent_id}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
 }
 
 // ─── auth / guard tests ──────────────────────────────────────────────────────
@@ -105,30 +102,28 @@ async fn delete_agent_by_non_owner_returns_403() {
     let agent_id = agent["id"].as_str().unwrap();
 
     // Create a second user.
-    let other: Value = server
-        .client
-        .post(server.url("/api/users"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .json(&json!({"username": "other", "email": "other@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let other: Value = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"username": "other", "email": "other@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let other_id = other["id"].as_str().unwrap();
 
-    let res = server
-        .client
-        .delete(server.url(&format!("/api/agents/{agent_id}")))
-        .header("x-user-id", other_id)
-        .header("x-username", "other")
-        .header("x-is-superuser", "false")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        server.client.delete(server.url(&format!("/api/agents/{agent_id}"))),
+        other_id,
+        "other",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 403);
 
     server.cleanup().await;

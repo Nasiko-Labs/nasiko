@@ -1,56 +1,76 @@
 use axum::{
     extract::{FromRequestParts, Request, State},
-    http::{StatusCode, request::Parts},
+    http::{StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
-};
-
-use nasiko_auth::{
-    Identity, Role,
-    HEADER_USER_ID, HEADER_USERNAME, HEADER_IS_SUPERUSER, HEADER_USER_ROLE,
 };
 
 use super::Claims;
 use crate::state::AppState;
 
-/// Auth middleware for the server.
+/// Auth middleware — validates the JWT from Authorization: Bearer or access_token cookie.
 ///
-/// Reads identity exclusively from gateway-injected X-User-* headers.
-/// The gateway validates JWTs and strips any client-supplied X-User-* headers
-/// before injecting its own, so the server can unconditionally trust them.
+/// No gateway required: the server validates tokens directly via AuthService.
+/// Revocation is enforced via an O(1) indexed lookup on auth_tokens.token_hash.
 pub async fn require_auth(
-    _state: State<AppState>,
+    State(state): State<AppState>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    let Some(user_id) = req.headers().get(HEADER_USER_ID).and_then(|v| v.to_str().ok()).map(str::to_owned) else {
-        return (StatusCode::UNAUTHORIZED, "missing identity headers").into_response();
+    let Some(token) = extract_token(req.headers()) else {
+        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
     };
 
-    let username = req.headers().get(HEADER_USERNAME)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_owned();
-
-    let is_superuser = req.headers().get(HEADER_IS_SUPERUSER)
-        .and_then(|v| v.to_str().ok())
-        == Some("true");
-
-    let role: Option<Role> = req.headers().get(HEADER_USER_ROLE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok());
-
-    let identity = Identity {
-        user_id,
-        username,
-        is_superuser,
-        role,
+    let identity = match state.auth.validate_token(&token).await {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid token").into_response(),
     };
+
+    // Revocation check — O(1) indexed lookup on token_hash
+    if let Some(jti) = nasiko_auth::jwt::extract_jti(&token) {
+        let hash = nasiko_auth::jwt::hash_jti(&jti);
+        let revoked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM auth_tokens
+                WHERE token_hash = $1 AND revoked_at IS NOT NULL
+            )",
+        )
+        .bind(&hash)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(false);
+
+        if revoked {
+            return (StatusCode::UNAUTHORIZED, "token revoked").into_response();
+        }
+    }
 
     req.extensions_mut().insert(Claims::from(identity));
     next.run(req).await
 }
 
+fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    // Prefer Authorization: Bearer <token>
+    if let Some(auth) = headers.get(header::AUTHORIZATION)
+        && let Ok(value) = auth.to_str()
+        && let Some(token) = value.strip_prefix("Bearer ")
+    {
+        return Some(token.to_string());
+    }
+
+    // Fallback: Cookie: access_token=<token>
+    if let Some(cookie) = headers.get(header::COOKIE)
+        && let Ok(value) = cookie.to_str()
+    {
+        for part in value.split(';') {
+            if let Some(token) = part.trim().strip_prefix("access_token=") {
+                return Some(token.to_string());
+            }
+        }
+    }
+
+    None
+}
 
 impl<S: Send + Sync> FromRequestParts<S> for Claims {
     type Rejection = (StatusCode, &'static str);

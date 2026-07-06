@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use nasiko_router::providers::LLMProvider;
+use nasiko_orchestrator::providers::LLMProvider;
 use crate::state::AppState;
 
 use super::generator::{CapabilityGenerator, GeneratedCard, GeneratorError};

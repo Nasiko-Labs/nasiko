@@ -232,17 +232,15 @@ async fn do_upload(
         form = form.text(k, v);
     }
     form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
-    server
-        .client
-        .post(server.url("/api/agents/upload"))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/agents/upload")),
+        uid,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -307,17 +305,15 @@ async fn update_creates_build_job_in_db() {
     let zip = common::make_zip(&[("README.md", b"no dockerfile")]);
     let form = reqwest::multipart::Form::new()
         .part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
-    let res = server
-        .client
-        .put(server.url(&format!("/api/agents/{agent_id}/update")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        uid,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 202, "update should return 202");
 
     let payload: Option<Value> =
@@ -359,16 +355,14 @@ async fn rollback_creates_build_job_in_db() {
     .await
     .unwrap();
 
-    let res = server
-        .client
-        .post(server.url(&format!("/api/agents/{agent_id}/rollback")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 202, "rollback should return 202");
 
     let payload: Option<Value> =
@@ -601,16 +595,14 @@ async fn call_restart(
     uid: &str,
     deployment_id: Uuid,
 ) -> reqwest::Response {
-    server
-        .client
-        .post(server.url(&format!("/api/agents/deployment/{deployment_id}/restart")))
-        .header("x-user-id", uid)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url(&format!("/api/agents/deployment/{deployment_id}/restart"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
 }
 
 #[tokio::test]

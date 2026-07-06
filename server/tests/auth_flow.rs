@@ -1,5 +1,6 @@
 mod common;
 
+use common::{as_member, as_superuser};
 use serial_test::serial;
 use serde_json::{Value, json};
 
@@ -22,31 +23,13 @@ async fn login(server: &common::TestServer, access_key: &str, access_secret: &st
     server
         .client
         .post(server.url("/api/auth/login"))
-        // Login accepts the access-key as `username` and access-secret as `password`
-        // (authenticate looks up `access_key = $1 OR username = $1`).
-        .json(&json!({"username": access_key, "password": access_secret}))
+        .json(&json!({"access_key": access_key, "access_secret": access_secret}))
         .send()
         .await
         .unwrap()
         .json::<Value>()
         .await
         .unwrap()
-}
-
-/// Simulate the gateway injecting superuser identity headers.
-fn as_superuser(rb: reqwest::RequestBuilder, user_id: &str, username: &str) -> reqwest::RequestBuilder {
-    rb.header("x-user-id", user_id)
-        .header("x-username", username)
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-}
-
-/// Simulate the gateway injecting member identity headers.
-fn as_member(rb: reqwest::RequestBuilder, user_id: &str, username: &str) -> reqwest::RequestBuilder {
-    rb.header("x-user-id", user_id)
-        .header("x-username", username)
-        .header("x-is-superuser", "false")
-        .header("x-user-role", "member")
 }
 
 async fn create_alice(server: &common::TestServer, admin_id: &str) -> Value {
@@ -138,7 +121,7 @@ async fn test_login_with_wrong_secret_is_rejected() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"username": admin["access_key"], "password": "wrong-secret"}))
+        .json(&json!({"access_key": admin["access_key"], "access_secret": "wrong-secret"}))
         .send()
         .await
         .unwrap();
@@ -156,7 +139,7 @@ async fn test_login_with_nonexistent_key_is_rejected() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"username": "NASK_doesnotexist", "password": "anything"}))
+        .json(&json!({"access_key": "NASK_doesnotexist", "access_secret": "anything"}))
         .send()
         .await
         .unwrap();
@@ -166,11 +149,11 @@ async fn test_login_with_nonexistent_key_is_rejected() {
     server.cleanup().await;
 }
 
-// ─── gateway header enforcement ──────────────────────────────────────────────
+// ─── auth enforcement ────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
-async fn test_protected_route_requires_gateway_headers() {
+async fn test_protected_route_requires_auth() {
     let server = common::TestServer::start().await;
 
     let res = server.client.get(server.url("/api/users")).send().await.unwrap();
@@ -181,7 +164,7 @@ async fn test_protected_route_requires_gateway_headers() {
 
 #[tokio::test]
 #[serial]
-async fn test_bearer_jwt_alone_is_rejected() {
+async fn test_bearer_jwt_is_accepted() {
     let server = common::TestServer::start().await;
 
     let admin = init_admin(&server).await;
@@ -195,7 +178,7 @@ async fn test_bearer_jwt_alone_is_rejected() {
         .unwrap()
         .to_owned();
 
-    // Valid JWT but no X-User-* headers — server does not validate JWTs directly
+    // Valid JWT — server now validates JWTs directly
     let res = server
         .client
         .get(server.url("/api/me"))
@@ -204,22 +187,22 @@ async fn test_bearer_jwt_alone_is_rejected() {
         .await
         .unwrap();
 
-    assert_eq!(res.status(), 401);
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["username"], "admin");
 
     server.cleanup().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn test_missing_x_user_id_returns_401() {
+async fn test_no_auth_returns_401() {
     let server = common::TestServer::start().await;
 
-    // Only partial headers — x-user-id is the required field
+    // No auth — request with no credentials should be rejected
     let res = server
         .client
         .get(server.url("/api/me"))
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
         .send()
         .await
         .unwrap();
@@ -257,10 +240,10 @@ async fn test_me_returns_correct_identity() {
 
 #[tokio::test]
 #[serial]
-async fn test_logout_requires_gateway_headers() {
+async fn test_logout_requires_auth() {
     let server = common::TestServer::start().await;
 
-    // No headers — logout is now a protected route
+    // No auth — logout is a protected route
     let res = server
         .client
         .post(server.url("/api/auth/logout"))
@@ -275,7 +258,7 @@ async fn test_logout_requires_gateway_headers() {
 
 #[tokio::test]
 #[serial]
-async fn test_logout_succeeds_with_gateway_headers() {
+async fn test_logout_succeeds_with_jwt() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
@@ -291,10 +274,10 @@ async fn test_logout_succeeds_with_gateway_headers() {
 }
 
 // token_validate is a PUBLIC endpoint — callers supply the token in the body.
-// No X-User-* gateway headers are required or expected.
+// No auth headers are required or expected.
 #[tokio::test]
 #[serial]
-async fn test_tokens_validate_works_without_gateway_headers() {
+async fn test_tokens_validate_works_with_bearer_only() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
 
@@ -308,7 +291,7 @@ async fn test_tokens_validate_works_without_gateway_headers() {
         .unwrap()
         .to_owned();
 
-    // No X-User-* headers required — this is a public endpoint
+    // No auth headers required — this is a public endpoint
     let body: Value = server
         .client
         .post(server.url("/api/auth/tokens/validate"))
@@ -349,8 +332,8 @@ async fn test_tokens_validate_rejects_invalid_token() {
 
 #[tokio::test]
 #[serial]
-async fn test_tokens_validate_still_works_when_gateway_headers_sent() {
-    // Backwards-compat: if someone sends gateway headers anyway, endpoint still works.
+async fn test_tokens_validate_works_with_jwt() {
+    // Backwards-compat: if someone sends auth headers anyway, endpoint still works.
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
@@ -386,7 +369,7 @@ async fn test_tokens_validate_still_works_when_gateway_headers_sent() {
 
 #[tokio::test]
 #[serial]
-async fn test_users_for_search_requires_gateway_headers() {
+async fn test_users_for_search_requires_auth() {
     let server = common::TestServer::start().await;
 
     let res = server
@@ -405,7 +388,7 @@ async fn test_users_for_search_requires_gateway_headers() {
 
 #[tokio::test]
 #[serial]
-async fn test_protected_route_accessible_with_gateway_headers() {
+async fn test_protected_route_accessible_with_jwt() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
@@ -425,7 +408,7 @@ async fn test_protected_route_accessible_with_gateway_headers() {
 
 #[tokio::test]
 #[serial]
-async fn test_admin_can_create_user_with_gateway_headers() {
+async fn test_admin_can_create_user_with_jwt() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let admin_id = admin["user_id"].as_str().unwrap();
@@ -535,8 +518,8 @@ async fn test_deactivated_user_cannot_login() {
         .client
         .post(server.url("/api/auth/login"))
         .json(&json!({
-            "username": alice["access_key"],
-            "password": alice["access_secret"]
+            "access_key": alice["access_key"],
+            "access_secret": alice["access_secret"]
         }))
         .send()
         .await
@@ -618,7 +601,7 @@ async fn test_regenerate_credentials_invalidates_old_ones() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"username": old_key, "password": old_secret}))
+        .json(&json!({"access_key": old_key, "access_secret": old_secret}))
         .send()
         .await
         .unwrap();
@@ -656,8 +639,8 @@ async fn test_admin_can_delete_user() {
         .client
         .post(server.url("/api/auth/login"))
         .json(&json!({
-            "username": alice["access_key"],
-            "password": alice["access_secret"]
+            "access_key": alice["access_key"],
+            "access_secret": alice["access_secret"]
         }))
         .send()
         .await
@@ -702,7 +685,7 @@ async fn test_login_records_token_and_logout_revokes_it() {
         .unwrap();
     assert_eq!(validate_before["valid"], true, "token should be valid before logout");
 
-    // Logout — sets revoked_at in auth_tokens (server side via gateway header simulation)
+    // Logout — sets revoked_at in auth_tokens
     let logout_res = as_superuser(
         server.client.post(server.url("/api/auth/logout")),
         admin_id,

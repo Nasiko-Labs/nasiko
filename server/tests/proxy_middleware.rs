@@ -34,14 +34,13 @@ async fn test_proxy_middleware_does_not_block_non_agent_protected_routes() {
     let user_id = admin["user_id"].as_str().unwrap();
 
     // /api/me is a protected non-agent route — should pass through middleware
-    let res = server.client
-        .get(server.url("/api/me"))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .send().await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url("/api/me")),
+        user_id,
+        "admin",
+    )
+    .send().await
+    .unwrap();
 
     assert_eq!(res.status(), 200);
 
@@ -57,7 +56,7 @@ async fn test_agent_proxy_route_requires_auth() {
     let random_agent_id = Uuid::new_v4();
 
     // Use a registered agent route — auth middleware fires before the handler.
-    // /api/agents/{id}/deployment is a real GET route (deployments::router).
+    // /api/agents/{id}/deployment is a real GET route (deployments::orchestrator).
     let res = server.client
         .get(server.url(&format!("/api/agents/{random_agent_id}/deployment")))
         .send().await
@@ -81,15 +80,14 @@ async fn test_agent_proxy_without_traceparent_returns_404_not_400() {
     let user_id = admin["user_id"].as_str().unwrap();
     let nonexistent_agent = Uuid::new_v4();
 
-    let res = server.client
-        .get(server.url(&format!("/api/agents/{nonexistent_agent}/some/path")))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        // No traceparent header — used to be 400, now should fall back to new_root
-        .send().await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url(&format!("/api/agents/{nonexistent_agent}/some/path"))),
+        user_id,
+        "admin",
+    )
+    // No traceparent header — used to be 400, now should fall back to new_root
+    .send().await
+    .unwrap();
 
     // 404 means the middleware passed the FlowContext step and reached agent lookup
     assert_eq!(
@@ -109,15 +107,14 @@ async fn test_agent_proxy_with_valid_traceparent_also_returns_404_for_unknown_ag
     let user_id = admin["user_id"].as_str().unwrap();
     let nonexistent_agent = Uuid::new_v4();
 
-    let res = server.client
-        .get(server.url(&format!("/api/agents/{nonexistent_agent}/some/path")))
-        .header("x-user-id", user_id)
-        .header("x-username", "admin")
-        .header("x-is-superuser", "true")
-        .header("x-user-role", "admin")
-        .header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
-        .send().await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url(&format!("/api/agents/{nonexistent_agent}/some/path"))),
+        user_id,
+        "admin",
+    )
+    .header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+    .send().await
+    .unwrap();
 
     assert_eq!(res.status(), 404);
 

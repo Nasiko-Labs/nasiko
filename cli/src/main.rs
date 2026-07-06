@@ -198,8 +198,8 @@ enum AgentOpsCommands {
     },
     /// Send a message via A2A protocol
     Chat {
-        /// A2A endpoint URL
-        url: String,
+        /// A2A endpoint URL (uses active cluster if omitted)
+        url: Option<String>,
         /// Message (omit for interactive mode)
         message: Option<String>,
         /// Launch full-screen TUI (ratatui)
@@ -544,10 +544,17 @@ fn main() -> Result<()> {
             AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
             AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
             AgentOpsCommands::Chat { url, message, tui, resume, session_id } => {
+                let resolved = match url {
+                    Some(u) => u,
+                    None => {
+                        let base = config::active_url()?;
+                        format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))
+                    }
+                };
                 if tui || resume.is_some() {
-                    commands::tui::run_tui(&url, resume.as_deref())
+                    commands::tui::run_tui(&resolved, resume.as_deref())
                 } else {
-                    commands::chat::chat(&url, message.as_deref(), session_id.as_deref())
+                    commands::chat::chat(&resolved, message.as_deref(), session_id.as_deref())
                 }
             }
             AgentOpsCommands::Sessions { endpoint, cursor, limit } => {

@@ -47,15 +47,15 @@ async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
 }
 
 // ---------------------------------------------------------------------------
-// Public router factories
+// Public orchestrator factories
 // ---------------------------------------------------------------------------
 
-/// Internal health/metrics endpoints — mounted at router root (no auth required).
+/// Internal health/metrics endpoints — mounted at orchestrator root (no auth required).
 pub fn router() -> Router<AppState> {
     Router::new().route("/metrics", get(metrics)).route("/readiness", get(readiness))
 }
 
-/// Protected router — mounted under /api/v1/observability (auth required).
+/// Protected orchestrator — mounted under /api/v1/observability (auth required).
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/session/list", get(handler::get_all_sessions))
@@ -67,18 +67,18 @@ pub fn protected_router() -> Router<AppState> {
         .route("/finops/insights", post(handler::get_finops_insights))
 }
 
-/// Observe endpoints — mounted under `/api` (auth required via middleware).
+/// Observe endpoints — mounted under `/api/v1/observability` (auth required via middleware).
 ///
 /// Path params that contain `{agent_ref}` accept either a UUID or an agent name,
 /// so both the UI (UUID) and CLI (`nasiko logs my-agent`) work without pre-resolving.
 pub fn observe_router() -> Router<AppState> {
     Router::new()
-        .route("/observe/agents/{agent_ref}/logs", get(agent_logs))
-        .route("/observe/agents/{agent_ref}/logs/stream", get(agent_logs_stream))
-        .route("/observe/agents/{agent_ref}/stats", get(agent_stats))
-        .route("/observe/traces", get(list_traces))
-        .route("/observe/traces/{trace_id}", get(get_trace))
-        .route("/observe/finops", get(finops))
+        .route("/observability/agents/{agent_ref}/logs", get(agent_logs))
+        .route("/observability/agents/{agent_ref}/logs/stream", get(agent_logs_stream))
+        .route("/observability/agents/{agent_ref}/stats", get(agent_stats))
+        .route("/observability/traces", get(list_traces))
+        .route("/observability/traces/{trace_id}", get(get_trace))
+        .route("/observability/finops", get(finops))
 }
 
 // ---------------------------------------------------------------------------

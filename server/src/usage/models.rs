@@ -272,7 +272,7 @@ pub struct RouterRequestLog {
     pub created_at: DateTime<Utc>,
 }
 
-/// Builder for router request logs
+/// Builder for orchestrator request logs
 #[derive(Debug, Clone)]
 pub struct RouterRequestLogBuilder {
     request_id: String,
@@ -433,7 +433,7 @@ impl RouterRequestLogBuilder {
     }
 }
 
-/// Input for creating a router request log
+/// Input for creating a orchestrator request log
 #[derive(Debug, Clone)]
 pub struct CreateRouterRequestLog {
     pub request_id: String,

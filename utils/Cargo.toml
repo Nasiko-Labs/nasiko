@@ -8,3 +8,6 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+
+[dev-dependencies]
+serial_test = { workspace = true }
