@@ -89,7 +89,10 @@ async fn set_secret(
     match result {
         Ok(r) if r.rows_affected() > 0 => StatusCode::CREATED.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "set_secret: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -116,7 +119,10 @@ async fn delete_secret(
     match result {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "delete_secret: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -142,7 +148,10 @@ async fn import_secrets(
 
     match import_user_secrets(&state.db, user_id, agent_id, &body.secret_names).await {
         Ok(count) => Json(serde_json::json!({"imported": count})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "import_secrets: failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 

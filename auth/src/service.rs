@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 
-use crate::{AuthError, AuthService, Identity, LoginResult};
+use crate::{AuthError, AuthService, Identity, LoginResult, Role};
 
 const TOKEN_EXPIRY_SECS: u64 = 12 * 60 * 60; // 12 hours
 
@@ -56,6 +56,10 @@ impl AuthServiceImpl {
     }
 }
 
+fn parse_role(role_str: Option<&str>) -> Option<Role> {
+    role_str.and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok())
+}
+
 #[async_trait]
 impl AuthService for AuthServiceImpl {
     async fn validate_token(&self, token: &str) -> Result<Identity, AuthError> {
@@ -63,7 +67,15 @@ impl AuthService for AuthServiceImpl {
     }
 
     async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError> {
-        crate::jwt::encode_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, identity)
+        let token = crate::jwt::encode_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, identity)?;
+        // Record every issued token in auth_tokens so it is revocable (matches the
+        // EE impl). Previously only `authenticate` recorded, so tokens minted via
+        // `issue_token` directly — e.g. initialize-admin — were unrevocable.
+        // Best-effort + ON CONFLICT DO NOTHING, so it's safe if a caller also records.
+        if let Ok(uid) = identity.user_id.parse::<uuid::Uuid>() {
+            self.record_token(&token, uid).await;
+        }
+        Ok(token)
     }
 
     async fn authenticate(&self, username: &str, password: &str) -> Result<LoginResult, AuthError> {
@@ -73,11 +85,13 @@ impl AuthService for AuthServiceImpl {
             username: String,
             is_superuser: bool,
             is_active: bool,
+            role: Option<String>,
             access_secret_hash: String,
         }
 
         let row: Option<CredRow> = sqlx::query_as(
             r#"SELECT u.id, u.username, u.is_superuser, u.is_active,
+                      u.role::text as role,
                       uc.access_secret_hash
                FROM users u
                JOIN user_credentials uc ON uc.user_id = u.id
@@ -86,16 +100,16 @@ impl AuthService for AuthServiceImpl {
         .bind(username)
         .fetch_optional(&self.db)
         .await
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
-        let row = row.ok_or(AuthError::InvalidToken("invalid credentials".into()))?;
+        let row = row.ok_or(AuthError::InvalidCredentials)?;
 
         if !row.is_active {
-            return Err(AuthError::InvalidToken("account disabled".into()));
+            return Err(AuthError::Disabled);
         }
 
-        if !crate::verify_password_async(password, &row.access_secret_hash).await {
-            return Err(AuthError::InvalidToken("invalid credentials".into()));
+        if !crate::verify_password_blocking(password.to_owned(), row.access_secret_hash.clone()).await {
+            return Err(AuthError::InvalidCredentials);
         }
 
         let _ = sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
@@ -103,20 +117,25 @@ impl AuthService for AuthServiceImpl {
             .execute(&self.db)
             .await;
 
+        let role = parse_role(row.role.as_deref());
+        let role_str = row.role.clone().unwrap_or_else(|| "member".into());
+
         let identity = Identity {
             user_id: row.id.to_string(),
             username: row.username.clone(),
             is_superuser: row.is_superuser,
+            role,
         };
 
+        // issue_token now records the token itself, so no explicit record here.
         let token = self.issue_token(&identity).await?;
-        self.record_token(&token, row.id).await;
 
         Ok(LoginResult {
             token,
             user_id: row.id.to_string(),
             username: row.username,
             is_superuser: row.is_superuser,
+            role: role_str,
             expires_in: TOKEN_EXPIRY_SECS,
             access_key: None,
             access_secret: None,
@@ -135,7 +154,7 @@ impl AuthService for AuthServiceImpl {
             return Ok(());
         }
 
-        let access_secret_hash = crate::hash_password_async(password).await?;
+        let access_secret_hash = crate::hash_password_blocking(password.to_owned()).await?;
 
         let email = format!("{}@localhost", username);
         let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
@@ -153,7 +172,7 @@ impl AuthService for AuthServiceImpl {
             Err(e) if e.to_string().contains("unique") || e.to_string().contains("duplicate") => {
                 return Ok(());
             }
-            Err(e) => return Err(AuthError::InvalidToken(e.to_string())),
+            Err(e) => return Err(AuthError::Database(e)),
         };
 
         sqlx::query(
@@ -165,7 +184,7 @@ impl AuthService for AuthServiceImpl {
         .bind(&access_secret_hash)
         .execute(&self.db)
         .await
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
         Ok(())
     }
@@ -184,13 +203,14 @@ impl AuthService for AuthServiceImpl {
         .unwrap_or(false);
 
         if !exists {
-            return Err(AuthError::InvalidToken("agent not found".into()));
+            return Err(AuthError::NotFound);
         }
 
         let identity = Identity {
             user_id: agent_id.to_owned(),
             username: format!("agent:{}", agent_id),
             is_superuser: false,
+            role: None,
         };
 
         let token = self.issue_token(&identity).await?;
@@ -211,7 +231,7 @@ impl AuthService for AuthServiceImpl {
         .bind(provider_id)
         .fetch_optional(&self.db)
         .await
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
         let user_id = if let Some((uid,)) = existing {
             let _ = sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
@@ -228,7 +248,7 @@ impl AuthService for AuthServiceImpl {
             .bind(&email)
             .fetch_one(&self.db)
             .await
-            .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
             sqlx::query(
                 r#"INSERT INTO user_identities (user_id, provider, provider_id, provider_username)
@@ -241,7 +261,7 @@ impl AuthService for AuthServiceImpl {
             .bind(username)
             .execute(&self.db)
             .await
-            .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
             row.0
         };
@@ -250,6 +270,7 @@ impl AuthService for AuthServiceImpl {
             user_id: user_id.to_string(),
             username: username.to_owned(),
             is_superuser: false,
+            role: Some(Role::Member),
         };
 
         let token = self.issue_token(&identity).await?;
@@ -260,6 +281,7 @@ impl AuthService for AuthServiceImpl {
             user_id: user_id.to_string(),
             username: username.to_owned(),
             is_superuser: false,
+            role: "member".into(),
             expires_in: TOKEN_EXPIRY_SECS,
             access_key: None,
             access_secret: None,
@@ -275,31 +297,29 @@ impl AuthService for AuthServiceImpl {
         struct UserRow {
             is_superuser: bool,
             username: String,
+            role: Option<String>,
         }
 
         let row: Option<UserRow> = sqlx::query_as(
-            "SELECT is_superuser, username FROM users WHERE id = $1 AND deleted_at IS NULL",
+            r#"SELECT is_superuser, username,
+                      role::text as role
+               FROM users WHERE id = $1 AND deleted_at IS NULL"#,
         )
         .bind(user_uuid)
         .fetch_optional(&self.db)
         .await
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
-        let row = row.ok_or(AuthError::InvalidToken("user not found".into()))?;
+        let row = row.ok_or(AuthError::NotFound)?;
+
+        let role = parse_role(row.role.as_deref());
 
         Ok(Identity {
             user_id: user_id.to_owned(),
             username: row.username,
             is_superuser: row.is_superuser,
+            role,
         })
-    }
-
-    async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError> {
-        let user_uuid = user_id
-            .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::InvalidToken("invalid user_id".into()))?;
-        self.record_token(token, user_uuid).await;
-        Ok(())
     }
 
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError> {
@@ -313,7 +333,7 @@ impl AuthService for AuthServiceImpl {
         .bind(user_uuid)
         .execute(&self.db)
         .await
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
         Ok(result.rows_affected())
     }
@@ -324,7 +344,7 @@ impl AuthService for AuthServiceImpl {
         )
         .execute(&self.db)
         .await
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
         Ok(result.rows_affected())
     }
@@ -340,12 +360,46 @@ impl AuthService for AuthServiceImpl {
         .bind(agent_uuid)
         .execute(&self.db)
         .await
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+?;
 
         Ok(result.rows_affected())
     }
 
-    async fn can_access_agent(&self, _identity: &Identity, _agent_id: &str) -> bool {
-        true
+    /// OSS access rule: owner ∪ public ∪ user-grant (superuser sees all).
+    /// Team/department grants are EE-only — `EeAuthService` overrides this with the
+    /// fuller check. This is the single source of truth for per-agent access in OSS;
+    /// handlers reach it via `state.auth.can_access_agent`, so the check is
+    /// edition-aware without duplicating SQL per handler.
+    async fn can_access_agent(&self, identity: &Identity, agent_id: &str) -> bool {
+        if identity.is_superuser {
+            return true;
+        }
+        let Ok(agent_uuid) = agent_id.parse::<uuid::Uuid>() else { return false };
+        let Ok(user_uuid) = identity.user_id.parse::<uuid::Uuid>() else { return false };
+
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                SELECT 1 FROM agents a
+                WHERE a.id = $2
+                  AND a.deleted_at IS NULL
+                  AND (
+                      a.owner_id = $1
+                      OR a.is_public = TRUE
+                      OR EXISTS (
+                          SELECT 1 FROM agent_grants ag
+                          WHERE ag.agent_id = a.id
+                            AND (
+                                (ag.grant_type = 'public' AND ag.grantee_id = '*')
+                             OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text)
+                            )
+                      )
+                  )
+            )"#,
+        )
+        .bind(user_uuid)
+        .bind(agent_uuid)
+        .fetch_one(&self.db)
+        .await
+        .unwrap_or(false)
     }
 }

@@ -248,11 +248,13 @@ async fn update_agent(
     let zip_path = if let Some(ref data) = source_data {
         let zip_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
         if let Err(e) = tokio::fs::create_dir_all(&zip_dir).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("create update dir: {e}")).into_response();
+            tracing::error!(%e, %agent_id, "update: create update dir failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
         let path = zip_dir.join("upload.zip");
         if let Err(e) = tokio::fs::write(&path, data).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("write update zip: {e}")).into_response();
+            tracing::error!(%e, %agent_id, "update: write update zip failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
         Some(path.to_string_lossy().into_owned())
     } else {
@@ -280,7 +282,8 @@ async fn update_agent(
     .execute(&state.db)
     .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue update: {e}")).into_response();
+        tracing::error!(%e, %agent_id, "update: queue build_jobs db error");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
     let _ = state.build_tx.send(()).await;
 
@@ -699,7 +702,8 @@ async fn rollback_agent(
     .execute(&state.db)
     .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue rollback: {e}")).into_response();
+        tracing::error!(%e, %agent_id, "rollback: queue build_jobs db error");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
     let _ = state.build_tx.send(()).await;
 

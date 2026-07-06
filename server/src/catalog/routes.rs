@@ -269,7 +269,8 @@ async fn get_one(
             return StatusCode::NOT_FOUND.into_response();
         }
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            tracing::error!(%e, "get_one: db error");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 
@@ -499,7 +500,10 @@ async fn list_versions(
 
     match result {
         Ok(versions) => Json(versions).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, agent_id = %id, "list_versions: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 

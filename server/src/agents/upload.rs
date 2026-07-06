@@ -16,6 +16,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use nasiko_runtime::DeploymentStatus;
 
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus};
@@ -144,9 +145,9 @@ async fn upload_and_deploy(
     claims: Claims,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let mut name: Option<String> = None;
@@ -168,13 +169,17 @@ async fn upload_and_deploy(
                 let field_name = name.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 let upload_dir = tmp_base.join(format!("nasiko-upload-{field_name}"));
                 if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("create upload dir: {e}")).into_response();
+                    tracing::error!(%e, "upload: create upload dir failed");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
                 }
                 let path = upload_dir.join("upload.zip");
 
                 let mut f = match tokio::fs::File::create(&path).await {
                     Ok(f) => f,
-                    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("create zip file: {e}")).into_response(),
+                    Err(e) => {
+                        tracing::error!(%e, "upload: create zip file failed");
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                    }
                 };
 
                 let mut total_bytes: u64 = 0;
@@ -190,11 +195,15 @@ async fn upload_and_deploy(
                             }
                             use tokio::io::AsyncWriteExt;
                             if let Err(e) = f.write_all(&chunk).await {
-                                return (StatusCode::INTERNAL_SERVER_ERROR, format!("write chunk: {e}")).into_response();
+                                tracing::error!(%e, "upload: write chunk failed");
+                                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
                             }
                         }
                         Ok(None) => break,
-                        Err(e) => return (StatusCode::BAD_REQUEST, format!("read upload: {e}")).into_response(),
+                        Err(e) => {
+                            tracing::warn!(%e, "upload: read multipart chunk failed");
+                            return (StatusCode::BAD_REQUEST, "failed to read upload stream").into_response();
+                        }
                     }
                 }
                 zip_path = Some(path);
@@ -234,7 +243,8 @@ async fn upload_and_deploy(
         .join("validate");
 
     if let Err(e) = std::fs::create_dir_all(&validation_dir) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("create validation dir: {e}")).into_response();
+        tracing::error!(%e, "upload: create validation dir failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
 
     let zip_path_clone = zip_path.clone();
@@ -253,8 +263,9 @@ async fn upload_and_deploy(
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
         Err(e) => {
+            tracing::error!(%e, "upload: validation task join error");
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("validation error: {e}")).into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     }
 
@@ -301,9 +312,9 @@ async fn upload_and_deploy(
         {
             Ok(id) => id,
             Err(e) => {
+                tracing::error!(%e, agent_name = %name, "upload: register agent db error");
                 let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}"))
-                    .into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         }
     };
@@ -321,9 +332,9 @@ async fn upload_and_deploy(
     {
         Ok(id) => id,
         Err(e) => {
+            tracing::error!(%e, %agent_id, "upload: create build record db error");
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("create build record: {e}"))
-                .into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 
@@ -353,7 +364,8 @@ async fn upload_and_deploy(
     let payload_value = match serde_json::to_value(&payload) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize payload: {e}")).into_response();
+            tracing::error!(%e, %agent_id, "upload: serialize build payload failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 
@@ -366,8 +378,9 @@ async fn upload_and_deploy(
     .execute(&state.db)
     .await
     {
+        tracing::error!(%e, %agent_id, "upload: queue build_jobs db error");
         let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue build: {e}")).into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
 
     // Notify the build worker immediately so it doesn't wait for the 5s poll interval.
@@ -442,7 +455,7 @@ pub async fn execute_upload_and_deploy(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
-    let result: Result<(), String> = async {
+    let result: Result<DeploymentStatus, String> = async {
         // Extract zip (with guards — re-run here so the worker is self-contained).
         let zp = zip_path.clone();
         let td = tmp_dir.clone();
@@ -481,14 +494,14 @@ pub async fn execute_upload_and_deploy(
 
         // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
         let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
-        runtime
+        let deploy_status = runtime
             .deploy(&spec)
             .await
             .map_err(|e| format!("deploy: {e}"))?;
 
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
 
-        Ok(())
+        Ok(deploy_status)
     }
     .await;
 
@@ -499,7 +512,7 @@ pub async fn execute_upload_and_deploy(
     }
 
     match result {
-        Ok(()) => {
+        Ok(deploy_status) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
             set_upload_status(&db, &upload_id, &name, owner_id, "completed", Some(agent_id), None).await;
             let _ = sqlx::query(
@@ -511,8 +524,10 @@ pub async fn execute_upload_and_deploy(
             .bind(build_id)
             .execute(&db)
             .await;
-            let _ = sqlx::query("UPDATE agents SET status = 'running', updated_at = now() WHERE id = $1")
+            let agent_url = deploy_status.endpoint.unwrap_or_default();
+            let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
                 .bind(agent_id)
+                .bind(&agent_url)
                 .execute(&db)
                 .await;
             // Record the deployment. k8s_deployment_name stores the ContainerId value
@@ -622,9 +637,9 @@ async fn list_upload_agents(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let rows = if claims.is_superuser {
