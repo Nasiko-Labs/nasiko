@@ -12,6 +12,11 @@ use crate::authz::{check_repo_access, check_repo_delete_access, CallerIdentity};
 use crate::error::{OciError, Result};
 use crate::ops;
 
+/// Per-chunk body-read cap for `patch_upload`/`complete_upload`. Also applied
+/// as a router-level `DefaultBodyLimit` (see `routes::router`) so oversized
+/// requests are rejected before a handler even runs, not just inside it.
+pub(crate) const MAX_CHUNK_BYTES: usize = 512 * 1024 * 1024;
+
 pub async fn head_blob(
     State(state): State<OciState>,
     caller: CallerIdentity,
@@ -88,7 +93,7 @@ pub async fn patch_upload(
         .parse()
         .map_err(|_| OciError::BadRequest("invalid upload UUID".into()))?;
 
-    let chunk = axum::body::to_bytes(request.into_body(), 512 * 1024 * 1024)
+    let chunk = axum::body::to_bytes(request.into_body(), MAX_CHUNK_BYTES)
         .await
         .map_err(|e| OciError::BadRequest(e.to_string()))?;
 
@@ -128,7 +133,7 @@ pub async fn complete_upload(
         .parse()
         .map_err(|_| OciError::BadRequest("invalid upload UUID".into()))?;
 
-    let put_body = axum::body::to_bytes(request.into_body(), 512 * 1024 * 1024)
+    let put_body = axum::body::to_bytes(request.into_body(), MAX_CHUNK_BYTES)
         .await
         .map_err(|e| OciError::BadRequest(e.to_string()))?;
 

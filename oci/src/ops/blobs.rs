@@ -41,6 +41,21 @@ pub struct ChunkResult {
     pub new_offset: i64,
 }
 
+/// Hard cap on the total bytes accumulated in the in-memory upload buffer
+/// (`OciState::upload_buffers: DashMap<Uuid, BytesMut>`) across ALL chunks of
+/// one upload session. Each individual chunk is already bounded to 512 MiB at
+/// the HTTP body-read layer (see `oss/oci/src/routes/blobs.rs`), but nothing
+/// previously stopped a client from sending an unbounded NUMBER of chunks —
+/// the buffer grows without limit until `complete_upload` flushes it, so a
+/// chunked upload could OOM the process well before hitting any per-request
+/// cap. This is a stopgap: the buffer-then-put-at-completion pattern still
+/// holds the whole blob in RAM even under this cap. A true streaming/
+/// multipart upload straight to the storage backend (S3 supports
+/// create_multipart_upload/upload_part/complete_multipart_upload) would
+/// remove the RAM ceiling entirely and is tracked as a follow-up — this cap
+/// only prevents unbounded growth, not the underlying buffering itself.
+const MAX_UPLOAD_TOTAL_BYTES: i64 = 5 * 1024 * 1024 * 1024; // 5 GiB
+
 pub async fn append_chunk(
     state: &OciState,
     repository: &str,
@@ -59,13 +74,28 @@ pub async fn append_chunk(
     let current_offset: i64 = row.try_get("offset_bytes")?;
     let chunk_len = chunk.len() as i64;
 
+    // Reject BEFORE growing the buffer, and tear the upload session down
+    // entirely on overflow so a single misbehaving/malicious client can't
+    // keep an ever-growing allocation (or a dangling DB row) alive by
+    // chunking one upload indefinitely.
+    let new_offset = current_offset + chunk_len;
+    if new_offset > MAX_UPLOAD_TOTAL_BYTES {
+        state.upload_buffers.remove(&upload_id);
+        let _ = sqlx::query("DELETE FROM oci_uploads WHERE uuid = $1 AND repository = $2")
+            .bind(upload_id)
+            .bind(repository)
+            .execute(&state.pool)
+            .await;
+        return Err(OciError::BadRequest(format!(
+            "upload exceeds maximum total size of {MAX_UPLOAD_TOTAL_BYTES} bytes"
+        )));
+    }
+
     state
         .upload_buffers
         .entry(upload_id)
         .or_default()
         .extend_from_slice(&chunk);
-
-    let new_offset = current_offset + chunk_len;
 
     sqlx::query("UPDATE oci_uploads SET offset_bytes = $1 WHERE uuid = $2")
         .bind(new_offset)

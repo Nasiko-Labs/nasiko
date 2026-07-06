@@ -23,7 +23,9 @@ async fn login(server: &common::TestServer, access_key: &str, access_secret: &st
     server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": access_key, "access_secret": access_secret}))
+        // Login accepts the access-key as `username` and access-secret as `password`
+        // (authenticate looks up `access_key = $1 OR username = $1`).
+        .json(&json!({"username": access_key, "password": access_secret}))
         .send()
         .await
         .unwrap()
@@ -121,7 +123,7 @@ async fn test_login_with_wrong_secret_is_rejected() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": admin["access_key"], "access_secret": "wrong-secret"}))
+        .json(&json!({"username": admin["access_key"], "password": "wrong-secret"}))
         .send()
         .await
         .unwrap();
@@ -139,7 +141,7 @@ async fn test_login_with_nonexistent_key_is_rejected() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": "NASK_doesnotexist", "access_secret": "anything"}))
+        .json(&json!({"username": "NASK_doesnotexist", "password": "anything"}))
         .send()
         .await
         .unwrap();
@@ -518,8 +520,8 @@ async fn test_deactivated_user_cannot_login() {
         .client
         .post(server.url("/api/auth/login"))
         .json(&json!({
-            "access_key": alice["access_key"],
-            "access_secret": alice["access_secret"]
+            "username": alice["access_key"],
+            "password": alice["access_secret"]
         }))
         .send()
         .await
@@ -601,7 +603,7 @@ async fn test_regenerate_credentials_invalidates_old_ones() {
     let res = server
         .client
         .post(server.url("/api/auth/login"))
-        .json(&json!({"access_key": old_key, "access_secret": old_secret}))
+        .json(&json!({"username": old_key, "password": old_secret}))
         .send()
         .await
         .unwrap();
@@ -639,9 +641,234 @@ async fn test_admin_can_delete_user() {
         .client
         .post(server.url("/api/auth/login"))
         .json(&json!({
-            "access_key": alice["access_key"],
-            "access_secret": alice["access_secret"]
+            "username": alice["access_key"],
+            "password": alice["access_secret"]
         }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+
+    server.cleanup().await;
+}
+
+// ─── PUT /users/{id} guards (AUTH-2) ────────────────────────────────────────
+
+/// update_user must apply the same self-deactivation guard as the dedicated
+/// /deactivate route when the request body carries `is_active: false`.
+#[tokio::test]
+#[serial]
+async fn test_update_user_cannot_deactivate_self() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+
+    let res = as_superuser(
+        server.client.put(server.url(&format!("/api/users/{admin_id}"))),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"is_active": false}))
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(res.status(), 403);
+
+    // Admin is still active — can still login.
+    let body = login(
+        &server,
+        admin["access_key"].as_str().unwrap(),
+        admin["access_secret"].as_str().unwrap(),
+    )
+    .await;
+    assert!(!body["token"].as_str().unwrap().is_empty());
+
+    server.cleanup().await;
+}
+
+/// update_user must apply the same last-admin guard as /deactivate when the
+/// request body carries `is_active: false` — a caller must not be able to
+/// deactivate the only remaining admin by going through the generic PUT
+/// instead of the dedicated route.
+#[tokio::test]
+#[serial]
+async fn test_update_user_cannot_deactivate_last_admin() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+
+    let alice = create_alice(&server, admin_id).await;
+    let alice_id = alice["id"].as_str().unwrap();
+
+    // Alice is a plain member in the DB, but her JWT here is signed with
+    // is_superuser=true purely so she clears the route-level `require_superuser`
+    // layer as a *different* caller than the target admin — this isolates the
+    // last-admin guard (which reads role/is_superuser from the DB, never the
+    // JWT) from self-deactivation, which is covered separately above.
+    let res = as_superuser(
+        server.client.put(server.url(&format!("/api/users/{admin_id}"))),
+        alice_id,
+        "alice",
+    )
+    .json(&json!({"is_active": false}))
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(res.status(), 409);
+
+    // The last admin is still active — can still login.
+    let body = login(
+        &server,
+        admin["access_key"].as_str().unwrap(),
+        admin["access_secret"].as_str().unwrap(),
+    )
+    .await;
+    assert!(!body["token"].as_str().unwrap().is_empty());
+
+    server.cleanup().await;
+}
+
+/// update_user must revoke live tokens on deactivation, same as /deactivate,
+/// so the deactivated user is immediately locked out rather than lingering
+/// until natural token expiry.
+#[tokio::test]
+#[serial]
+async fn test_update_user_deactivate_blocks_login() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+
+    let alice = create_alice(&server, admin_id).await;
+    let alice_id = alice["id"].as_str().unwrap();
+
+    let res = as_superuser(
+        server.client.put(server.url(&format!("/api/users/{alice_id}"))),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"is_active": false}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 204);
+
+    // Deactivated via update_user — same effect as /deactivate: cannot login.
+    let res = server
+        .client
+        .post(server.url("/api/auth/login"))
+        .json(&json!({
+            "username": alice["access_key"],
+            "password": alice["access_secret"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+
+    server.cleanup().await;
+}
+
+/// P3 regression: re-applying `is_active: false` to an admin who is ALREADY
+/// inactive, while another admin remains active, must not be spuriously
+/// blocked as a "last admin" scenario. Before the fix, `check_last_admin`
+/// counted active admins without excluding the target by id — which happened
+/// to equal "other active admins" only when the target itself was active. For
+/// an already-inactive target, that same count silently became "other active
+/// admins" too, but the `<= 1` threshold (meant for the target-included case)
+/// then over-blocked whenever exactly one other active admin existed.
+#[tokio::test]
+#[serial]
+async fn test_update_user_can_redeactivate_already_inactive_admin_with_other_active_admin() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+
+    let alice = create_alice(&server, admin_id).await;
+    let alice_id = alice["id"].as_str().unwrap();
+
+    // Promote alice to admin, then deactivate her — she is now an inactive
+    // admin while the original admin remains the sole ACTIVE admin.
+    let res = as_superuser(
+        server.client.put(server.url(&format!("/api/users/{alice_id}/role"))),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"role": "admin"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 204);
+
+    let res = as_superuser(
+        server.client.post(server.url(&format!("/api/users/{alice_id}/deactivate"))),
+        admin_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 204);
+
+    // Re-issuing is_active:false on the already-inactive admin must succeed —
+    // the original admin is still there as an active admin, so this is safe.
+    let res = as_superuser(
+        server.client.put(server.url(&format!("/api/users/{alice_id}"))),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"is_active": false}))
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        res.status(),
+        204,
+        "deactivating an already-inactive admin with another active admin present must not be blocked"
+    );
+
+    server.cleanup().await;
+}
+
+/// AUTH-2(b) regression: a password change via update_user must actually take
+/// effect on login. Before the fix, the hash was written to users.password_hash,
+/// a column `authenticate()` never reads (it verifies exclusively against
+/// user_credentials.access_secret_hash) — so the old password kept working and
+/// the new one did nothing.
+#[tokio::test]
+#[serial]
+async fn test_update_user_password_change_takes_effect_on_login() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+
+    let alice = create_alice(&server, admin_id).await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let alice_key = alice["access_key"].as_str().unwrap().to_owned();
+    let old_secret = alice["access_secret"].as_str().unwrap().to_owned();
+
+    let res = as_superuser(
+        server.client.put(server.url(&format!("/api/users/{alice_id}"))),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"password": "brand-new-password123"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 204);
+
+    // New password works.
+    let body = login(&server, &alice_key, "brand-new-password123").await;
+    assert!(!body["token"].as_str().unwrap().is_empty());
+
+    // Old secret no longer works — it was rotated, not merely supplemented.
+    let res = server
+        .client
+        .post(server.url("/api/auth/login"))
+        .json(&json!({"username": alice_key, "password": old_secret}))
         .send()
         .await
         .unwrap();

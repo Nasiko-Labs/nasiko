@@ -68,7 +68,10 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 if image_changed || force_pull {
                     true
                 } else {
-                    let container_id = ContainerId::new(agent_name.clone());
+                    // UUID-keyed (see agents::build_agent_spec / RUN-2c) — the deploy a
+                    // few lines below keys on the same UUID, so the liveness probe must
+                    // too or it always reports "not found" and redeploys every run.
+                    let container_id = ContainerId::from_uuid(agent.id);
                     match state.runtime.status(&container_id).await {
                         Ok(status) => status.state != RuntimeState::Running,
                         Err(_) => true,
@@ -190,8 +193,8 @@ async fn register_agent(
     owner_id: Uuid,
 ) -> Result<Agent, sqlx::Error> {
     sqlx::query_as::<_, Agent>(
-        r#"INSERT INTO agents (name, owner_id, image, status, metadata)
-           VALUES ($1, $2, $3, 'deploying', '{"seed": true}')
+        r#"INSERT INTO agents (name, owner_id, image, status, is_public, metadata)
+           VALUES ($1, $2, $3, 'deploying', true, '{"seed": true}')
            RETURNING *"#,
     )
     .bind(name)

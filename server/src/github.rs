@@ -5,7 +5,9 @@ use axum::{
     response::{IntoResponse, Redirect},
     routing::{delete, get, post},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::warn;
 use uuid::Uuid;
@@ -62,6 +64,50 @@ pub(crate) async fn load_github_token(db: &PgPool, user_id: Uuid) -> Option<Stri
             None
         }
     }
+}
+
+/// Mirrors `oss/github`'s own `OAUTH_STATE_MAX_AGE_SECS` — the Redis single-use
+/// marker never needs to outlive the window during which the signed state is
+/// itself still considered valid.
+const OAUTH_STATE_TTL_SECS: i64 = 600;
+
+/// Atomically mark an OAuth `state` value as consumed so a captured/replayed
+/// `state` cannot be used a second time even though it is still a validly
+/// signed, non-expired token (the HMAC + expiry checks in
+/// `GitHubService::verify_state` only prove the state hasn't been *tampered
+/// with*, not that it hasn't been *reused*).
+///
+/// Uses a single `SET key 1 NX EX ttl` Redis command — atomic across
+/// concurrent callback requests racing on the same `state`, so two requests
+/// replaying one captured value cannot both win. The key is the SHA-256 of the
+/// raw state string (bounded length, safe charset) rather than the state
+/// itself, to keep Redis keys short and avoid depending on the state's own
+/// encoding.
+///
+/// Returns `Ok(true)` on first use (proceed), `Ok(false)` if already consumed
+/// (reject as a replay).
+async fn consume_oauth_state(
+    redis: &redis::Client,
+    raw_state: &str,
+) -> redis::RedisResult<bool> {
+    let mut hasher = Sha256::new();
+    hasher.update(raw_state.as_bytes());
+    let key = format!(
+        "oauth:github:state:used:{}",
+        URL_SAFE_NO_PAD.encode(hasher.finalize())
+    );
+
+    let mut conn = redis.get_multiplexed_async_connection().await?;
+    let set: Option<String> = redis::cmd("SET")
+        .arg(&key)
+        .arg("1")
+        .arg("NX")
+        .arg("EX")
+        .arg(OAUTH_STATE_TTL_SECS)
+        .query_async(&mut conn)
+        .await?;
+
+    Ok(set.is_some())
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -174,6 +220,23 @@ async fn github_callback(
         }
     };
 
+    // Single-use enforcement: a validly signed, non-expired `state` must still
+    // only be usable ONCE. Without this, a captured `state` (e.g. via referrer
+    // leakage or a logged URL) could be replayed to re-trigger the callback
+    // flow for up to 10 minutes. Fail OPEN on a Redis error (log + continue) —
+    // this is defense-in-depth on top of the HMAC + expiry checks already
+    // performed by `verify_state`, not the only line of defense.
+    match consume_oauth_state(&state.redis, &params.state).await {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(user_id = %user_id, "GitHub OAuth callback: state replay detected — rejecting");
+            return (StatusCode::BAD_REQUEST, "oauth state already used").into_response();
+        }
+        Err(e) => {
+            warn!(%e, user_id = %user_id, "oauth state single-use check failed (redis error) — proceeding without replay protection");
+        }
+    }
+
     // Exchange the authorization code for an access token + user profile.
     let (token, user) = match svc.exchange_code(&params.code).await {
         Ok(t) => t,
@@ -192,15 +255,26 @@ async fn github_callback(
         "avatar_url": user.avatar_url,
     });
 
-    // Upsert: ON CONFLICT on (provider, provider_id) so reconnecting the
-    // same GitHub account refreshes the stored token.
+    // Upsert: ON CONFLICT on (provider, provider_id) so reconnecting the same
+    // GitHub account refreshes the stored token — but ONLY when the existing
+    // row already belongs to this same `user_id`. Without the `WHERE` guard,
+    // a SECOND user linking a GitHub account already linked to a FIRST user
+    // would silently overwrite provider_metadata (and thus the encrypted
+    // access token) on the FIRST user's row while leaving `user_id` untouched
+    // — leaving a row whose token is encrypted under user B's per-user key
+    // (see `SecretsCrypto::for_user`) but keyed to user A's `user_id`, and
+    // silently reassigning a GitHub identity to a different Nasiko account
+    // with no audit trail. We reject that silently (rows_affected() == 0)
+    // rather than reassigning, since reassignment is a bigger decision than a
+    // token-refresh upsert should make implicitly.
     match sqlx::query(
         r#"INSERT INTO user_identities
                (user_id, provider, provider_id, provider_username, provider_metadata)
            VALUES ($1, 'github', $2, $3, $4)
            ON CONFLICT (provider, provider_id) DO UPDATE
                SET provider_metadata = EXCLUDED.provider_metadata,
-                   provider_username  = EXCLUDED.provider_username"#,
+                   provider_username  = EXCLUDED.provider_username
+               WHERE user_identities.user_id = EXCLUDED.user_id"#,
     )
     .bind(user_id)
     .bind(user.id.to_string())
@@ -209,7 +283,21 @@ async fn github_callback(
     .execute(&state.db)
     .await
     {
-        Ok(_) => Redirect::temporary("/add-agent.html?github_connected=true").into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            Redirect::temporary("/add-agent.html?github_connected=true").into_response()
+        }
+        Ok(_) => {
+            warn!(
+                user_id = %user_id,
+                github_login = %user.login,
+                "GitHub account already linked to a different Nasiko user — refusing to reassign"
+            );
+            (
+                StatusCode::CONFLICT,
+                "this GitHub account is already linked to a different Nasiko account",
+            )
+                .into_response()
+        }
         Err(e) => {
             warn!(%e, user_id = %user_id, "failed to persist GitHub token");
             (StatusCode::INTERNAL_SERVER_ERROR, "failed to save GitHub credentials")
@@ -419,5 +507,40 @@ async fn github_clone(
         )
             .into_response(),
         Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Requires a live Redis (see module-level test infra requirements in
+    /// oss/server/tests/*). Verifies the OAuth `state` single-use marker
+    /// (SEC fix #5): a fresh state may be consumed exactly once, and a second
+    /// consumption attempt of the SAME state must be rejected as a replay.
+    #[tokio::test]
+    async fn oauth_state_is_single_use() {
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+        let client = redis::Client::open(redis_url).expect("redis client");
+        let state_value = format!("test-replay-{}", Uuid::new_v4());
+
+        let first = consume_oauth_state(&client, &state_value)
+            .await
+            .expect("redis reachable");
+        assert!(first, "first use of a fresh state must succeed");
+
+        let second = consume_oauth_state(&client, &state_value)
+            .await
+            .expect("redis reachable");
+        assert!(!second, "replaying the same state must be rejected");
+
+        // A different state value must be independent (not accidentally
+        // sharing a key with the first).
+        let other_state_value = format!("test-replay-{}", Uuid::new_v4());
+        let third = consume_oauth_state(&client, &other_state_value)
+            .await
+            .expect("redis reachable");
+        assert!(third, "a distinct state value must not be affected by another's use");
     }
 }

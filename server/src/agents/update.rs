@@ -381,7 +381,7 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
-    let result: Result<DeploymentStatus, String> = async {
+    let result: Result<(DeploymentStatus, Vec<i32>), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
             let tmp = tmp_dir.clone();
@@ -452,17 +452,20 @@ pub async fn execute_agent_update(
         // Key on the agent UUID (not name) so the update re-targets the existing
         // workload instead of spawning an orphaned name-keyed duplicate (RUN-2/7).
         let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), vec![], secrets, None);
+        // Capture the ports build_agent_spec actually resolved (defaults empty -> 8000)
+        // so they can be persisted below (RUN-3b) — restart reads this back.
+        let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
         let deploy_status = state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
 
         set_upload_status(db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
-        Ok(deploy_status)
+        Ok((deploy_status, spec_ports))
     }
     .await;
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     match result {
-        Ok(deploy_status) => {
+        Ok((deploy_status, spec_ports)) => {
             // Archive the previously active version, insert the new one, mark old as rollback-eligible.
             let _ = sqlx::query(
                 "UPDATE agent_versions SET is_active = false, status = 'archived' \
@@ -508,19 +511,20 @@ pub async fn execute_agent_update(
             .execute(db)
             .await;
 
-            // Persist k8s_deployment_name (= agent UUID string) + spec_image so the
-            // crash guardian and restart can find/rebuild this workload after an
-            // update (RUN-3); without it these columns were NULL and the deployment
-            // was invisible to the guardian and restarted on the wrong runtime path.
+            // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
+            // so the crash guardian and restart can find/rebuild this workload after an
+            // update (RUN-3/RUN-3b); without spec_ports, restart_deployment falls back
+            // to a hardcoded port 8000 guess instead of the port this deploy actually used.
             let _ = sqlx::query(
-                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image) \
-                 VALUES ($1, $2, 'running', $3, $4, $5)",
+                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
+                 VALUES ($1, $2, 'running', $3, $4, $5, $6)",
             )
             .bind(agent_id)
             .bind(build_id)
             .bind(owner_id)
             .bind(agent_id.to_string())
             .bind(&image_tag)
+            .bind(&spec_ports)
             .execute(db)
             .await;
 
@@ -749,6 +753,8 @@ pub async fn execute_agent_rollback(
     let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
     // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
     let spec = crate::agents::build_agent_spec(agent_id, &agent_name, target.image_tag.clone(), vec![], secrets, None);
+    // Capture the resolved ports so they can be persisted below (RUN-3b).
+    let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
 
     match state.runtime.deploy(&spec).await {
         Ok(deploy_status) => {
@@ -782,16 +788,17 @@ pub async fn execute_agent_rollback(
             .execute(db)
             .await;
 
-            // Persist identity + image for guardian/restart (RUN-3), as on update.
+            // Persist identity + image + ports for guardian/restart (RUN-3/RUN-3b), as on update.
             let _ = sqlx::query(
-                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image) \
-                 VALUES ($1, $2, 'running', $3, $4, $5)",
+                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
+                 VALUES ($1, $2, 'running', $3, $4, $5, $6)",
             )
             .bind(agent_id)
             .bind(rollback_build_id)
             .bind(caller_id)
             .bind(agent_id.to_string())
             .bind(&target.image_tag)
+            .bind(&spec_ports)
             .execute(db)
             .await;
 

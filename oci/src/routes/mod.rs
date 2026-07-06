@@ -5,6 +5,7 @@ pub mod tags;
 
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     http::StatusCode,
     response::IntoResponse,
     routing::{get, patch, post, put},
@@ -26,6 +27,12 @@ pub fn router(state: OciState) -> Router {
         .route("/v2/{owner}/{repo}/blobs/uploads/{uuid}", patch(blobs::patch_upload))
         .route("/v2/{owner}/{repo}/blobs/uploads/{uuid}", put(blobs::complete_upload))
         .route("/v2/{owner}/{repo}/tags/list", get(tags::list_tags))
+        // Defense-in-depth: reject oversized request bodies at the router/
+        // middleware layer, before a handler (and its manual
+        // `axum::body::to_bytes(.., MAX_CHUNK_BYTES)` call) even runs. Mirrors
+        // the same per-chunk cap used inside `blobs::patch_upload` /
+        // `blobs::complete_upload` so both layers agree.
+        .layer(DefaultBodyLimit::max(blobs::MAX_CHUNK_BYTES))
         .with_state(state)
 }
 

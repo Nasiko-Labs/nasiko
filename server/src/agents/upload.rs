@@ -291,7 +291,21 @@ async fn upload_and_deploy(
     // Empty → canonical default is applied by build_agent_spec (8000, matching the
     // agent images' EXPOSE); never default to 5000 here.
 
-    // ── Upsert agent ──────────────────────────────────────────────────────────
+    // ── Upsert agent + build record + job (one transaction — SRV-5) ───────────
+    // These 3 writes must succeed or fail together: if the build_jobs insert
+    // failed after the agent/build rows committed separately, the agent was
+    // left stuck in "deploying" with no job that would ever move it out of
+    // that state. A single transaction, committed only after the job row is
+    // queued, closes that gap.
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(%e, agent_name = %name, "upload: begin transaction failed");
+            let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
     // concurrent same-name uploads create duplicate rows (SRV-2).
@@ -308,7 +322,7 @@ async fn upload_and_deploy(
         .bind(owner_id)
         .bind(&version_tag)
         .bind(&image_tag)
-        .fetch_one(&state.db)
+        .fetch_one(&mut *tx)
         .await
         {
             Ok(id) => id,
@@ -328,7 +342,7 @@ async fn upload_and_deploy(
     .bind(agent_id)
     .bind(&version_tag)
     .bind(&image_tag)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await
     {
         Ok(id) => id,
@@ -373,10 +387,16 @@ async fn upload_and_deploy(
     .bind(agent_id)
     .bind(owner_id)
     .bind(&payload_value)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     {
         tracing::error!(%e, %agent_id, "upload: queue build_jobs db error");
+        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    }
+
+    if let Err(e) = tx.commit().await {
+        tracing::error!(%e, %agent_id, "upload: commit transaction failed");
         let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }

@@ -192,9 +192,13 @@ async fn list_sessions(
     } else {
         None
     };
-    let prev_cursor = rows.first().map(|r| encode_cursor(r.updated_at, &r.session_id));
 
-    Json(CursorPage { data: rows, has_more, next_cursor, prev_cursor }).into_response()
+    // No `prev_cursor` here: unlike `list_messages` (which has a real `before`
+    // cursor param and backward-paging query branch), `ListSessionsParams` has
+    // no backward-paging input at all — a value here would be dead API surface
+    // implying a capability that doesn't exist. The UI doesn't read this field
+    // (grepped `oss/ui` — no references), so omitting it is a pure cleanup.
+    Json(CursorPage { data: rows, has_more, next_cursor, prev_cursor: None }).into_response()
 }
 
 async fn create_session(
@@ -207,18 +211,47 @@ async fn create_session(
         Err(e) => return e.into_response(),
     };
 
-    let agent_id: Option<Uuid> = match &body.agent_id {
-        None => None,
+    // Resolve + authorize the agent server-side. `agent_url` is NEVER taken
+    // from the client (stored-SSRF risk): the canonical URL is always the one
+    // registered on the agent's own row, resolved here — never trusted from
+    // request input. `agent_id` is validated to (a) actually exist and (b) be
+    // accessible to the caller via the same `can_access_agent` check used by
+    // every other agent-scoped handler, closing the gap where a client could
+    // previously supply an arbitrary UUID or name with no existence/ownership
+    // check at all.
+    let (agent_id, agent_url): (Option<Uuid>, Option<String>) = match &body.agent_id {
+        None => (None, None),
         Some(id_or_name) => {
-            if let Ok(uuid) = id_or_name.parse::<Uuid>() {
-                Some(uuid)
+            let row = if let Ok(uuid) = id_or_name.parse::<Uuid>() {
+                sqlx::query_as::<_, (Uuid, Option<String>)>(
+                    "SELECT id, url FROM agents WHERE id = $1",
+                )
+                .bind(uuid)
+                .fetch_optional(&state.db)
+                .await
             } else {
-                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
-                    .bind(id_or_name)
-                    .fetch_optional(&state.db)
-                    .await
-                    .ok()
-                    .flatten()
+                sqlx::query_as::<_, (Uuid, Option<String>)>(
+                    "SELECT id, url FROM agents WHERE name = $1",
+                )
+                .bind(id_or_name)
+                .fetch_optional(&state.db)
+                .await
+            };
+
+            match row {
+                Ok(Some((id, url))) => {
+                    if !crate::acl::can_access_agent(&state, &claims, id).await {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                    (Some(id), url)
+                }
+                Ok(None) => {
+                    return (StatusCode::BAD_REQUEST, "agent not found").into_response();
+                }
+                Err(e) => {
+                    tracing::error!(%e, "create_session: agent lookup failed");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
             }
         }
     };
@@ -234,14 +267,17 @@ async fn create_session(
     .bind(&session_id)
     .bind(user_id)
     .bind(agent_id)
-    .bind(&body.agent_url)
+    .bind(&agent_url)
     .bind(&title)
     .fetch_one(&state.db)
     .await;
 
     match result {
         Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(%e, "create_session failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 
@@ -536,7 +572,20 @@ async fn send_message(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let file_ids = body.file_ids.as_deref().unwrap_or(&[]);
+    // Dedupe: a client sending the same file_id twice would otherwise cause
+    // `claimed != file_ids.len()` to false-positive (the UPDATE affects each
+    // distinct row once, but `ANY($2)` with a duplicate doesn't double-count
+    // rows_affected), producing a spurious 400 on an otherwise-valid request.
+    let file_ids: Vec<Uuid> = body
+        .file_ids
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let file_ids = file_ids.as_slice();
     let has_files = !file_ids.is_empty();
     // FIX: filter out JSON null so it stores as SQL NULL, not 'null'::jsonb.
     // 'null'::jsonb IS NOT NULL in Postgres, which would defeat the AND file_parts IS NULL

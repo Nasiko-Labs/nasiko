@@ -684,6 +684,46 @@ async fn unattached_file_can_be_downloaded_and_deleted() {
 
 #[tokio::test]
 #[serial]
+async fn duplicate_file_ids_in_send_message_do_not_cause_spurious_400() {
+    // Regression for SEC fix #4: a client sending the same file_id twice
+    // previously caused `claimed != file_ids.len()` to false-positive (the
+    // UPDATE only affects each distinct row once, so `rows_affected()` never
+    // reaches the inflated length of a list containing a duplicate),
+    // producing a spurious 400 on an otherwise-valid single-file attach.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let session = create_session(&server, uid, true).await;
+    let sid = session["session_id"].as_str().unwrap();
+
+    let (_, files) = upload_file(&server, uid, true, sid, "dup", "dup.txt").await;
+    let file_id = files[0]["id"].as_str().unwrap();
+
+    // Same file_id listed three times.
+    let (status, msg) =
+        send_message_with_files(&server, uid, true, sid, vec![file_id, file_id, file_id]).await;
+    assert_eq!(status, 201, "duplicate file_ids must not cause a spurious 400: {msg}");
+    assert_eq!(msg["has_file_parts"], true);
+
+    // Exactly one file attached — not zero, not three.
+    let msg_id = msg["id"].as_str().unwrap();
+    let res = common::as_superuser(
+        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    let listed: Value = res.json().await.unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1, "file attached exactly once despite duplicates");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn upload_to_another_users_session_rejected() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

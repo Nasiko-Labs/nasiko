@@ -213,6 +213,45 @@ async fn upload_persists_agent_and_build_record() {
 
 #[tokio::test]
 #[serial]
+async fn upload_persists_build_job_atomically_with_agent_and_build() {
+    // Regression for SRV-5: the agent upsert, build record insert, and build_jobs
+    // insert now commit as one transaction. Before that fix these were 3 separate
+    // pool statements — if the build_jobs insert failed after the first two
+    // committed, the agent was stuck in "deploying" with no job that would ever
+    // move it out of that state. Assert the job row exists right alongside the
+    // agent/build rows the 202 response reports.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let zip = make_valid_structure_zip();
+    let res = upload(
+        &server,
+        uid,
+        vec![("name", "atomic-agent".into()), ("version_tag", "v1".into())],
+        Some(zip),
+    )
+    .await;
+
+    assert_eq!(res.status(), 202);
+    let body: Value = res.json().await.unwrap();
+    let agent_id: uuid::Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
+
+    let job_count: i64 = sqlx::query_scalar("SELECT count(*) FROM build_jobs WHERE agent_id = $1")
+        .bind(agent_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        job_count, 1,
+        "build_jobs row should have committed atomically alongside the agent/build rows"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn upload_reuses_agent_on_repeat_name() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

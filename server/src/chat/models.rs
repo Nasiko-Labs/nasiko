@@ -52,7 +52,9 @@ pub struct ChatMessage {
 #[derive(Debug, Deserialize)]
 pub struct CreateSession {
     pub agent_id: Option<String>,
-    pub agent_url: Option<String>,
+    // NOTE: `agent_url` is intentionally NOT a client input (stored-SSRF risk —
+    // see `create_session`). The canonical URL is always resolved server-side
+    // from the `agents` table once `agent_id` is validated.
     pub title: Option<String>,
 }
 

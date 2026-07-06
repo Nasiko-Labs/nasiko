@@ -144,7 +144,10 @@ async fn status(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = ContainerId::new(&name);
+    let id = match resolve_container_id(&state, &name).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     match state.runtime.status(&id).await {
         Ok(s) => Json(s).into_response(),
         Err(e) => {
@@ -158,7 +161,10 @@ async fn destroy(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = ContainerId::new(&name);
+    let id = match resolve_container_id(&state, &name).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     match state.runtime.destroy(&id).await {
         Ok(()) => {
             if let Some(agent_id) = resolve_agent_id_by_name(&state, &name).await {
@@ -186,7 +192,10 @@ async fn stop(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = ContainerId::new(&name);
+    let id = match resolve_container_id(&state, &name).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     match state.runtime.scale(&id, 0).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
@@ -200,7 +209,10 @@ async fn start(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = ContainerId::new(&name);
+    let id = match resolve_container_id(&state, &name).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     match state.runtime.scale(&id, 1).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
@@ -268,7 +280,10 @@ async fn scale(
     Path(name): Path<String>,
     Json(req): Json<ScaleRequest>,
 ) -> impl IntoResponse {
-    let id = ContainerId::new(&name);
+    let id = match resolve_container_id(&state, &name).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     match state.runtime.scale(&id, req.replicas).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
@@ -290,7 +305,10 @@ async fn logs(
     Path(name): Path<String>,
     axum::extract::Query(q): axum::extract::Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let id = ContainerId::new(&name);
+    let id = match resolve_container_id(&state, &name).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     match state.runtime.logs(&id, q.tail).await {
         Ok(lines) => Json(lines).into_response(),
         Err(e) => {
@@ -307,6 +325,21 @@ async fn resolve_agent_id_by_name(state: &AppState, name: &str) -> Option<Uuid> 
         .await
         .ok()
         .flatten()
+}
+
+/// Resolve `name` to its catalog agent UUID and return the UUID-keyed `ContainerId`
+/// that `build_agent_spec`/`deploy` used at deploy time (RUN-2b). Every admin
+/// lifecycle op (status/destroy/stop/start/scale/logs) must key on this — not on
+/// `ContainerId::new(name)` — or it silently targets a container name that no
+/// deploy ever created.
+async fn resolve_container_id(
+    state: &AppState,
+    name: &str,
+) -> Result<ContainerId, axum::response::Response> {
+    match resolve_agent_id_by_name(state, name).await {
+        Some(agent_id) => Ok(ContainerId::from_uuid(agent_id)),
+        None => Err((StatusCode::NOT_FOUND, "agent not found").into_response()),
+    }
 }
 
 /// Resolve the full env for an agent: vault secrets (base) + agent secrets (override).

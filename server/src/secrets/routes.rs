@@ -19,6 +19,51 @@ pub fn router() -> Router<AppState> {
         .route("/secrets/{name}", get(get_secret).put(update_secret).delete(delete_secret))
 }
 
+/// Validate a secret name against the POSIX environment-variable-name
+/// convention and reject reserved/dangerous names.
+///
+/// Secret names become container environment-variable KEYS at agent deploy
+/// time (see `agent_secrets::resolve_agent_env` and `build_agent_spec`), so an
+/// attacker-chosen name like `LD_PRELOAD` or `PATH` could inject a malicious
+/// env var that changes how the agent's container runtime behaves. Modeled on
+/// `validate_version_tag` in `build/routes.rs`.
+pub(crate) fn validate_secret_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 128 {
+        return Err("secret name must be 1-128 characters".into());
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_uppercase() && first != '_' {
+        return Err("secret name must start with [A-Z_]".into());
+    }
+    if !chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+        return Err("secret name may only contain [A-Z0-9_]".into());
+    }
+
+    const RESERVED: &[&str] = &[
+        "PATH",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "IFS",
+        "HOME",
+        "SHELL",
+        "BASH_ENV",
+        "ENV",
+        "PYTHONPATH",
+        "NODE_OPTIONS",
+        "PERL5LIB",
+        "GIT_SSH_COMMAND",
+    ];
+    if RESERVED.contains(&name) {
+        return Err(format!("'{name}' is a reserved environment variable name"));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct SecretEntry {
     id: Uuid,
@@ -77,6 +122,10 @@ async fn create_secret(
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
+
+    if let Err(msg) = validate_secret_name(&body.name) {
+        return (StatusCode::UNPROCESSABLE_ENTITY, msg).into_response();
+    }
 
     let crypto = SecretsCrypto::for_user(user_id);
     let encrypted = crypto.encrypt(&body.value);

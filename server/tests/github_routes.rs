@@ -215,3 +215,140 @@ async fn test_github_logout_clears_stored_token() {
 
     server.cleanup().await;
 }
+
+// ─── Identity upsert — cross-user relink rejection (SEC fix #1) ─────────────
+
+#[tokio::test]
+#[serial]
+async fn test_github_identity_upsert_rejects_cross_user_relink() {
+    // Regression for SEC fix #1: the `ON CONFLICT (provider, provider_id) DO
+    // UPDATE` clause in `github_callback` must NOT reassign `user_id` to a
+    // different user when a second user attempts to link a GitHub account
+    // already linked to a first user. Without the `WHERE user_identities.user_id
+    // = EXCLUDED.user_id` guard, the row's `provider_metadata` (and thus the
+    // encrypted access token) would be silently overwritten under the SECOND
+    // user's data while the row stayed keyed to the FIRST user's `user_id` —
+    // an internally inconsistent, security-sensitive credential row.
+    //
+    // This exercises the exact upsert statement used by `github_callback`
+    // directly against the DB, since the callback itself requires a
+    // configured `github_svc` (not set up in the test harness) to reach that
+    // code path via HTTP.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let user_a: uuid::Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
+
+    let user_b = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &user_a.to_string(),
+        "admin",
+    )
+    .json(&serde_json::json!({"username": "user-b-relink", "email": "user-b-relink@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<serde_json::Value>()
+    .await
+    .unwrap();
+    let user_b_id: uuid::Uuid = user_b["id"].as_str().unwrap().parse().unwrap();
+
+    let provider_id = "gh_shared_account_12345";
+    let upsert_sql = r#"INSERT INTO user_identities
+               (user_id, provider, provider_id, provider_username, provider_metadata)
+           VALUES ($1, 'github', $2, $3, $4)
+           ON CONFLICT (provider, provider_id) DO UPDATE
+               SET provider_metadata = EXCLUDED.provider_metadata,
+                   provider_username  = EXCLUDED.provider_username
+               WHERE user_identities.user_id = EXCLUDED.user_id"#;
+
+    // User A links first — fresh insert, 1 row affected.
+    let r1 = sqlx::query(upsert_sql)
+        .bind(user_a)
+        .bind(provider_id)
+        .bind("alice")
+        .bind(serde_json::json!({"access_token": "a-token"}))
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(r1.rows_affected(), 1, "first link should insert a fresh row");
+
+    // User B attempts to link the SAME GitHub account — must be rejected
+    // (0 rows affected), not silently reassigned.
+    let r2 = sqlx::query(upsert_sql)
+        .bind(user_b_id)
+        .bind(provider_id)
+        .bind("bob")
+        .bind(serde_json::json!({"access_token": "b-token"}))
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        r2.rows_affected(),
+        0,
+        "cross-user relink must be rejected (0 rows affected), not reassigned"
+    );
+
+    // Row still belongs to user A with A's original metadata untouched.
+    let (owner, meta): (uuid::Uuid, serde_json::Value) = sqlx::query_as(
+        "SELECT user_id, provider_metadata FROM user_identities WHERE provider = 'github' AND provider_id = $1",
+    )
+    .bind(provider_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(owner, user_a, "row must still belong to the original linking user");
+    assert_eq!(meta["access_token"], "a-token", "original token must be untouched");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_github_identity_upsert_allows_same_user_refresh() {
+    // Sanity check: the SAME user re-linking (e.g. re-authorizing after a
+    // token expiry) must still work — the WHERE guard only blocks
+    // cross-user reassignment, not same-user token refresh.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let user_a: uuid::Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
+
+    let provider_id = "gh_same_user_refresh_67890";
+    let upsert_sql = r#"INSERT INTO user_identities
+               (user_id, provider, provider_id, provider_username, provider_metadata)
+           VALUES ($1, 'github', $2, $3, $4)
+           ON CONFLICT (provider, provider_id) DO UPDATE
+               SET provider_metadata = EXCLUDED.provider_metadata,
+                   provider_username  = EXCLUDED.provider_username
+               WHERE user_identities.user_id = EXCLUDED.user_id"#;
+
+    let r1 = sqlx::query(upsert_sql)
+        .bind(user_a)
+        .bind(provider_id)
+        .bind("alice")
+        .bind(serde_json::json!({"access_token": "old-token"}))
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(r1.rows_affected(), 1);
+
+    let r2 = sqlx::query(upsert_sql)
+        .bind(user_a)
+        .bind(provider_id)
+        .bind("alice")
+        .bind(serde_json::json!({"access_token": "refreshed-token"}))
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(r2.rows_affected(), 1, "same-user refresh must still update the row");
+
+    let meta: serde_json::Value = sqlx::query_scalar(
+        "SELECT provider_metadata FROM user_identities WHERE provider = 'github' AND provider_id = $1",
+    )
+    .bind(provider_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(meta["access_token"], "refreshed-token");
+
+    server.cleanup().await;
+}

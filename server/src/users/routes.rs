@@ -16,6 +16,9 @@ use crate::Paginated;
 
 /// Returns 409 if `target_id` is the only active admin left.
 async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::response::Response> {
+    // "Is admin" deliberately ignores is_active: we're asking whether the TARGET
+    // currently holds admin rights at all, since that's what's about to be
+    // revoked/demoted — an already-inactive admin still holds the role.
     let is_admin: Option<bool> = sqlx::query_scalar(
         "SELECT (role = 'admin' OR is_superuser) FROM users WHERE id = $1 AND deleted_at IS NULL",
     )
@@ -26,14 +29,23 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
     .flatten();
 
     if is_admin == Some(true) {
-        let admin_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM users WHERE (role = 'admin' OR is_superuser) AND is_active = true AND deleted_at IS NULL",
+        // Count OTHER active admins (explicitly excluding target_id by id, not
+        // just relying on an is_active filter). Excluding only by is_active
+        // happened to work when the target itself was active (it was naturally
+        // included in the count, so "<=1" meant "no one but me"), but undercounted
+        // "remaining" admins when the target was already inactive (e.g. demoting
+        // role on an inactive admin, or calling deactivate twice) — in that case
+        // the target was never in the count, so the same "<=1" threshold could
+        // block an operation even when exactly one OTHER active admin remained.
+        let other_active_admins: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM users WHERE id != $1 AND (role = 'admin' OR is_superuser) AND is_active = true AND deleted_at IS NULL",
         )
+        .bind(target_id)
         .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
-        if admin_count <= 1 {
+        if other_active_admins == 0 {
             return Some(
                 (StatusCode::CONFLICT, Json(serde_json::json!({"error": "cannot deactivate the last admin"}))).into_response(),
             );
@@ -283,6 +295,7 @@ pub struct ChangeRoleRequest {
 
 async fn update_user(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateUser>,
 ) -> impl IntoResponse {
@@ -298,8 +311,25 @@ async fn update_user(
             return (StatusCode::BAD_REQUEST, "password must be at least 8 characters").into_response();
         }
 
-    // Hash password if provided
-    let password_hash = match &body.password {
+    // AUTH-2: an `is_active: false` transition through this generic PUT must go
+    // through the exact same guards as the dedicated /deactivate route — otherwise
+    // a caller could deactivate the last admin, or themselves, by smuggling
+    // `is_active: false` into an update instead of using /deactivate.
+    if body.is_active == Some(false) {
+        if claims.sub == id.to_string() {
+            return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot deactivate your own account"}))).into_response();
+        }
+        if let Some(err) = check_last_admin(&state, id).await {
+            return err;
+        }
+    }
+
+    // Hash password if provided. This is written to user_credentials.access_secret_hash
+    // below — NOT users.password_hash — because `authenticate()` (oss/auth/src/service.rs)
+    // verifies exclusively against user_credentials.access_secret_hash and never reads
+    // users.password_hash. Writing there was dead code that looked like a working
+    // "change password" flow but had zero effect on login.
+    let access_secret_hash = match &body.password {
         Some(p) => match nasiko_auth::hash_password_async(p).await {
             Ok(h) => Some(h),
             Err(e) => {
@@ -316,8 +346,7 @@ async fn update_user(
              username = COALESCE($2, username),
              email = COALESCE($3, email),
              display_name = COALESCE($4, display_name),
-             password_hash = COALESCE($5, password_hash),
-             is_active = COALESCE($6, is_active),
+             is_active = COALESCE($5, is_active),
              updated_at = now()
            WHERE id = $1"#,
     )
@@ -325,14 +354,44 @@ async fn update_user(
     .bind(&body.username)
     .bind(&body.email)
     .bind(&body.display_name)
-    .bind(&password_hash)
     .bind(body.is_active)
     .execute(&state.db)
     .await;
 
     match result {
         Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, "user not found").into_response(),
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            if let Some(hash) = access_secret_hash {
+                match sqlx::query(
+                    "UPDATE user_credentials SET access_secret_hash = $2, updated_at = now() WHERE user_id = $1",
+                )
+                .bind(id)
+                .bind(&hash)
+                .execute(&state.db)
+                .await
+                {
+                    Ok(r) if r.rows_affected() == 0 => {
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(serde_json::json!({"error": "user has no local credentials to set a password for"})),
+                        ).into_response();
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(%e, %id, "update_user: credential update failed");
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                    }
+                }
+            }
+
+            // Mirror deactivate's token revocation: stale JWTs must stop working
+            // immediately, not linger until natural expiry.
+            if body.is_active == Some(false) {
+                let _ = state.auth.revoke_tokens_for_user(&id.to_string()).await;
+            }
+
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             if e.to_string().contains("duplicate key") {
                 (StatusCode::CONFLICT, "username or email already taken").into_response()

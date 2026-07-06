@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::auth::Claims;
 use crate::secrets::crypto::SecretsCrypto;
+use crate::secrets::validate_secret_name;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -69,6 +70,10 @@ async fn set_secret(
 ) -> impl IntoResponse {
     if !can_manage_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
+    }
+
+    if let Err(msg) = validate_secret_name(&body.name) {
+        return (StatusCode::UNPROCESSABLE_ENTITY, msg).into_response();
     }
 
     let crypto = SecretsCrypto::for_agent(agent_id);

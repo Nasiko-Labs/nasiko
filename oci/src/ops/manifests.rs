@@ -31,12 +31,42 @@ pub async fn get_manifest(
     .await?
     .ok_or_else(|| OciError::NotFound(format!("manifest {repository}:{reference} not found")))?;
 
-    Ok(ManifestData {
+    let manifest = ManifestData {
         digest: row.try_get("digest")?,
         media_type: row.try_get("media_type")?,
         content: row.try_get("content")?,
         size_bytes: row.try_get("size_bytes")?,
-    })
+    };
+
+    // Pull-by-digest integrity check: when the caller addressed this manifest
+    // by its content digest (not a mutable tag — OCI tags can never contain
+    // ':', so any `reference` containing one is unambiguously a digest), the
+    // returned bytes MUST hash to exactly the digest requested. This defends
+    // against the DB's own `digest` column somehow not matching its `content`
+    // (e.g. row-level corruption or a future code path that updates one
+    // without the other) — a mismatch here is an integrity violation on a
+    // security-sensitive path (image pull), not merely a "not found".
+    // Tag lookups are intentionally NOT verified this way: tags are mutable
+    // pointers by design, so "the content changed" is expected, not a defect.
+    if is_digest_reference(reference) {
+        let mut hasher = Sha256::new();
+        hasher.update(manifest.content.as_bytes());
+        let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
+        if computed != reference {
+            return Err(OciError::Storage(format!(
+                "manifest {repository}@{reference}: stored content digest ({computed}) does not match requested digest — integrity check failed"
+            )));
+        }
+    }
+
+    Ok(manifest)
+}
+
+/// OCI tag names may never contain `:` (spec: `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`),
+/// so any `reference` containing one is unambiguously a content digest
+/// (`<algorithm>:<hex>`), not a tag.
+fn is_digest_reference(reference: &str) -> bool {
+    reference.contains(':')
 }
 
 pub struct PutManifestResult {

@@ -221,6 +221,144 @@ async fn list_messages_cursor_round_trip() {
     server.cleanup().await;
 }
 
+// ─── list_sessions: no dead prev_cursor (fix #3) ────────────────────────────
+
+#[tokio::test]
+#[serial]
+async fn list_sessions_response_has_no_prev_cursor() {
+    // Regression: `list_sessions` has no backward-paging input at all
+    // (`ListSessionsParams` only has a forward `cursor`), so emitting a
+    // `prev_cursor` implied a capability the API doesn't actually have. The
+    // field must now always be null for this endpoint.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    create_session(&server, uid, "solo-session").await;
+
+    let page = list_sessions(&server, uid, "").await;
+    assert!(
+        page["prev_cursor"].is_null(),
+        "list_sessions must not emit a usable prev_cursor: {page}"
+    );
+
+    server.cleanup().await;
+}
+
+// ─── create_session: agent_id validation + agent_url SSRF (fix #2) ─────────
+
+#[tokio::test]
+#[serial]
+async fn create_session_rejects_nonexistent_agent_id() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let fake_agent_id = uuid::Uuid::new_v4().to_string();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/chat/sessions")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"agent_id": fake_agent_id, "title": "t"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400, "non-existent agent_id must be rejected");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn create_session_ignores_client_supplied_agent_url() {
+    // Regression for SEC fix #2 (stored-SSRF): `agent_url` must never be taken
+    // from client input — the canonical URL is always resolved server-side
+    // from the agent's own row, never from the request body.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let agent: Value = common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"name": "ssrf-target-agent", "version": "1.0.0"}))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let session: Value = common::as_superuser(
+        server.client.post(server.url("/api/chat/sessions")),
+        uid,
+        "admin",
+    )
+    .json(&json!({
+        "agent_id": agent_id,
+        "agent_url": "http://169.254.169.254/latest/meta-data/",
+        "title": "ssrf-attempt"
+    }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    assert_eq!(session["agent_id"], agent_id);
+    assert_ne!(
+        session["agent_url"], "http://169.254.169.254/latest/meta-data/",
+        "client-supplied agent_url must never be persisted verbatim"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn create_session_rejects_inaccessible_agent() {
+    // A non-superuser with no grant on someone else's private agent must not
+    // be able to pin a chat session to it.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+
+    let agent: Value = common::as_superuser(
+        server.client.post(server.url("/api/agents")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"name": "private-agent-for-session-test", "version": "1.0.0"}))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let other = create_user(&server, admin_id, "session-other").await;
+    let other_id = other["id"].as_str().unwrap();
+
+    let res = common::as_member(
+        server.client.post(server.url("/api/chat/sessions")),
+        other_id,
+        "session-other",
+    )
+    .json(&json!({"agent_id": agent_id, "title": "nope"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 403, "inaccessible agent_id must be rejected");
+
+    server.cleanup().await;
+}
+
 // ─── Ownership ───────────────────────────────────────────────────────────────
 
 #[tokio::test]

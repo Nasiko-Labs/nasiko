@@ -226,8 +226,11 @@ async fn restart_deployment(
             tracing::warn!(%e, %deployment_id, k8s_name, "restart: failed to refresh K8s secret (using existing values)");
         }
 
-        if let Err(e) = state.runtime.scale(&k8s_id, 1).await {
-            tracing::error!(%e, %deployment_id, k8s_name, "restart_deployment: scale-to-1 failed");
+        // Use restart() (not scale(1)) so the KEDA ScaledObject the crash-loop
+        // guardian may have deleted before scaling to 0 gets re-applied on the way
+        // back up (RUN-8) — calling scale() directly here bypassed that recovery.
+        if let Err(e) = state.runtime.restart(&k8s_id).await {
+            tracing::error!(%e, %deployment_id, k8s_name, "restart_deployment: restart failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     } else {
@@ -259,13 +262,19 @@ async fn restart_deployment(
         match state.runtime.deploy(&spec).await {
             Ok(status) => {
                 let agent_url = status.endpoint.unwrap_or_default();
-                let _ = sqlx::query(
+                if let Err(e) = sqlx::query(
                     "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
                 )
                 .bind(info.agent_id)
                 .bind(&agent_url)
                 .execute(&state.db)
-                .await;
+                .await
+                {
+                    // Runtime redeploy already succeeded — this only means the catalog
+                    // row's status/url is stale until the next reconcile. Surface it in
+                    // logs (SRV-5) rather than silently swallowing it.
+                    tracing::error!(%e, %deployment_id, agent_id = %info.agent_id, "restart_deployment: failed to update agent status/url after successful redeploy — catalog row stale until next reconcile");
+                }
             }
             Err(e) => {
                 tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
@@ -274,18 +283,27 @@ async fn restart_deployment(
         }
     }
 
-    // Mark old deployment stopped, insert new deployment row.
-    let _ = sqlx::query(
+    // Mark old deployment stopped, insert new deployment row. The runtime-level
+    // restart/redeploy above already succeeded at this point — these are DB
+    // bookkeeping writes. Log (rather than silently swallow, SRV-5) any failure so
+    // an inconsistent agent_deployments row is visible instead of invisible.
+    let mut warnings: Vec<&'static str> = Vec::new();
+
+    if let Err(e) = sqlx::query(
         "UPDATE agent_deployments SET status = 'stopped', updated_at = now() WHERE id = $1",
     )
     .bind(deployment_id)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::error!(%e, %deployment_id, "restart_deployment: failed to mark previous deployment stopped");
+        warnings.push("failed to mark previous deployment stopped");
+    }
 
     // Carry identity + spec forward so the guardian and a subsequent restart keep
     // working after this restart (RUN-3): k8s_deployment_name = agent UUID string,
     // plus the ports/image this deployment actually used.
-    let new_deploy_id: Option<Uuid> = sqlx::query_scalar(
+    let new_deploy_id: Option<Uuid> = match sqlx::query_scalar(
         "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_ports, spec_image)
          VALUES ($1, $2, 'running', $3, $4, $5, $6)
          RETURNING id",
@@ -298,12 +316,21 @@ async fn restart_deployment(
     .bind(&image)
     .fetch_optional(&state.db)
     .await
-    .ok()
-    .flatten();
+    {
+        Ok(id) => id,
+        Err(e) => {
+            // Worst of the four: the runtime restart succeeded but no live
+            // agent_deployments row now exists for this agent, so the crash guardian
+            // and a subsequent restart call lose track of it until reconciled.
+            tracing::error!(%e, %deployment_id, agent_id = %info.agent_id, "restart_deployment: failed to record new deployment row — agent is running but untracked, needs reconciliation");
+            warnings.push("failed to record new deployment row; agent is running but untracked — needs reconciliation");
+            None
+        }
+    };
 
     // Clear crash fields on the new deployment row.
     if let Some(new_id) = new_deploy_id {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE agent_deployments SET
                crash_reason = NULL, crashed_at = NULL, last_logs = NULL,
                restart_count = 0, pod_name = NULL
@@ -311,12 +338,21 @@ async fn restart_deployment(
         )
         .bind(new_id)
         .execute(&state.db)
-        .await;
-        tracing::info!(agent_id = %info.agent_id, "restart: crash fields cleared");
+        .await
+        {
+            tracing::error!(%e, %new_id, "restart_deployment: failed to clear crash fields on new deployment row");
+            warnings.push("failed to clear crash fields on new deployment row");
+        } else {
+            tracing::info!(agent_id = %info.agent_id, "restart: crash fields cleared");
+        }
     }
 
-    match new_deploy_id {
-        Some(id) => (StatusCode::OK, Json(serde_json::json!({ "deployment_id": id }))).into_response(),
-        None => StatusCode::OK.into_response(),
+    let mut body = serde_json::json!({});
+    if let Some(id) = new_deploy_id {
+        body["deployment_id"] = serde_json::json!(id);
     }
+    if !warnings.is_empty() {
+        body["warnings"] = serde_json::json!(warnings);
+    }
+    (StatusCode::OK, Json(body)).into_response()
 }
