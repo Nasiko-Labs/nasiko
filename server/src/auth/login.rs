@@ -44,7 +44,6 @@ struct LoginResponse {
     user_id: String,
     username: String,
     is_superuser: bool,
-    role: String,
     expires_in: u64,
 }
 
@@ -80,7 +79,6 @@ async fn login(
                     user_id: result.user_id,
                     username: result.username,
                     is_superuser: result.is_superuser,
-                    role: result.role,
                     expires_in: result.expires_in,
                 }),
             )
@@ -192,7 +190,6 @@ async fn initialize_admin_inner(
         user_id: user_id.to_string(),
         username: username.to_owned(),
         is_superuser: true,
-        role: Some(nasiko_auth::Role::Admin),
     };
 
     let token = state.auth.issue_token(&identity).await
@@ -269,7 +266,6 @@ async fn token_validate(
         "user_id": identity.user_id,
         "username": identity.username,
         "is_superuser": identity.is_superuser,
-        "role": identity.role.as_ref().and_then(|r| serde_json::to_value(r).ok()),
     }))
     .into_response()
 }

@@ -2,7 +2,7 @@ use chrono::Utc;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
-use crate::{AuthError, Identity, Role};
+use crate::{AuthError, Identity};
 
 pub const DEFAULT_EXPIRY_SECS: u64 = 12 * 60 * 60; // 12 hours
 
@@ -16,8 +16,6 @@ pub(crate) struct JwtClaims {
     pub iat: u64,
     pub username: String,
     pub is_superuser: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
 }
 
 pub fn encode_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result<String, AuthError> {
@@ -29,12 +27,6 @@ pub fn encode_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result
         iat: now,
         username: identity.username.clone(),
         is_superuser: identity.is_superuser,
-        role: identity.role.as_ref().map(|r| {
-            serde_json::to_value(r)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_default()
-        }),
     };
     encode(
         &Header::default(),
@@ -61,16 +53,10 @@ pub fn decode_jwt(secret: &str, token: &str) -> Result<Identity, AuthError> {
     })?;
 
     let c = data.claims;
-    let role: Option<Role> = c
-        .role
-        .as_deref()
-        .and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok());
-
     Ok(Identity {
         user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
-        role,
     })
 }
 
@@ -93,16 +79,10 @@ pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, Strin
 
     let c = data.claims;
     let jti = c.jti.clone();
-    let role: Option<crate::Role> = c
-        .role
-        .as_deref()
-        .and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok());
-
     let identity = Identity {
         user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
-        role,
     };
 
     Ok((identity, jti))

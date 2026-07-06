@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Claims extracted from gateway-injected headers — local to cp-lib so we can impl axum extractors.
-use nasiko_auth::Role;
-
+/// Mirrors the shared `nasiko_auth::Identity`: no enterprise fields (role/team/dept).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
@@ -10,8 +9,6 @@ pub struct Claims {
     pub username: String,
     #[serde(default)]
     pub is_superuser: bool,
-    #[serde(default)]
-    pub role: Option<Role>,
 }
 
 impl From<nasiko_auth::Identity> for Claims {
@@ -20,7 +17,6 @@ impl From<nasiko_auth::Identity> for Claims {
             sub: c.user_id,
             username: c.username,
             is_superuser: c.is_superuser,
-            role: c.role,
         }
     }
 }
@@ -31,7 +27,6 @@ impl From<Claims> for nasiko_auth::Identity {
             user_id: c.sub,
             username: c.username,
             is_superuser: c.is_superuser,
-            role: c.role,
         }
     }
 }

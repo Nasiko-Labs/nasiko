@@ -1,7 +1,7 @@
 //! Integration tests for JWT encoding, decoding, and related helpers.
 
 use nasiko_auth::{
-    AuthError, AuthService, Identity, Role, SimpleJwtAuth,
+    AuthError, AuthService, Identity, SimpleJwtAuth,
     jwt::{DEFAULT_EXPIRY_SECS, decode_jwt, encode_jwt, extract_jti, hash_jti},
 };
 
@@ -10,7 +10,6 @@ fn make_identity(user_id: &str) -> Identity {
         user_id: user_id.to_owned(),
         username: "testuser".to_owned(),
         is_superuser: false,
-        role: Some(Role::TeamMember),
     }
 }
 
@@ -41,50 +40,24 @@ fn jwt_roundtrip_preserves_superuser_false() {
 }
 
 #[test]
-fn jwt_roundtrip_preserves_superuser_true_and_admin_role() {
+fn jwt_roundtrip_preserves_superuser_true() {
     let mut id = make_identity("aaaaaaaa-0000-0000-0000-000000000004");
     id.is_superuser = true;
-    id.role = Some(Role::Admin);
     let token = encode_jwt("supersecret", DEFAULT_EXPIRY_SECS, &id).unwrap();
     let decoded = decode_jwt("supersecret", &token).unwrap();
     assert!(decoded.is_superuser);
-    assert_eq!(decoded.role, Some(Role::Admin));
 }
 
 #[test]
-fn jwt_roundtrip_preserves_department_manager_role() {
-    let mut id = make_identity("aaaaaaaa-0000-0000-0000-000000000005");
-    id.role = Some(Role::DepartmentManager);
+fn jwt_identity_has_no_enterprise_fields() {
+    // The shared Identity must never carry role/team_id/department_id.
+    let id = make_identity("aaaaaaaa-0000-0000-0000-000000000006");
     let token = encode_jwt("s", DEFAULT_EXPIRY_SECS, &id).unwrap();
     let decoded = decode_jwt("s", &token).unwrap();
-    assert_eq!(decoded.role, Some(Role::DepartmentManager));
-}
-
-#[test]
-fn jwt_roundtrip_with_no_role() {
-    let mut id = make_identity("aaaaaaaa-0000-0000-0000-000000000006");
-    id.role = None;
-    let token = encode_jwt("s", DEFAULT_EXPIRY_SECS, &id).unwrap();
-    let decoded = decode_jwt("s", &token).unwrap();
-    assert_eq!(decoded.role, None);
-}
-
-#[test]
-fn jwt_all_roles_roundtrip() {
-    let roles = [
-        Role::Member,
-        Role::TeamMember,
-        Role::TeamLead,
-        Role::DepartmentManager,
-        Role::Admin,
-    ];
-    for role in roles {
-        let mut id = make_identity("aaaaaaaa-0000-0000-0000-000000000030");
-        id.role = Some(role.clone());
-        let token = encode_jwt("s", DEFAULT_EXPIRY_SECS, &id).unwrap();
-        let decoded = decode_jwt("s", &token).unwrap();
-        assert_eq!(decoded.role, Some(role.clone()), "role {:?} did not survive JWT roundtrip", role);
-    }
+    let json = serde_json::to_value(&decoded).unwrap();
+    assert!(json.get("role").is_none(), "Identity must not expose role");
+    assert!(json.get("team_id").is_none(), "Identity must not expose team_id");
+    assert!(json.get("department_id").is_none(), "Identity must not expose department_id");
 }
 
 // ─── Wrong secret ─────────────────────────────────────────────────────────────

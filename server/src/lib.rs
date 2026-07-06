@@ -71,12 +71,12 @@ where
     // Container lifecycle routes: deployer+ only
     let container_routes = Router::new()
         .nest("/containers", admin::router())
-        .layer(middleware::from_fn(auth::rbac::require_deployer));
+        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
 
     // Pool/scaling routes: require admin+ role
     let pool_routes = Router::new()
         .nest("/pool", pool::router())
-        .layer(middleware::from_fn(auth::rbac::require_admin));
+        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_admin));
 
     // User management: superuser only
     let user_routes = user_router
@@ -85,12 +85,12 @@ where
     // Agent deploy routes (upload, deploy-status, deployments, ACL): deployer+ only.
     let agent_deploy_routes = Router::new()
         .nest("/agents", agents::router())
-        .layer(middleware::from_fn(auth::rbac::require_deployer));
+        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
 
     // Build routes (trigger builds, view build history): deployer+ only
     let build_routes = Router::new()
         .merge(build::router())
-        .layer(middleware::from_fn(auth::rbac::require_deployer));
+        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
 
     let protected = Router::new()
         .route("/agents/{id}/{*rest}", any(agent_proxy::agent_proxy))

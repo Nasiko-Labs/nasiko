@@ -60,8 +60,6 @@ pub async fn get_all_sessions(
     Query(params): Query<SessionListParams>,
 ) -> impl IntoResponse {
 
-    let role = claims.role.as_ref().map(|r| format!("{r:?}"));
-
     tracing::info!(
         input_tokens = 120u64,
         output_tokens = 80u64,
@@ -74,9 +72,9 @@ pub async fn get_all_sessions(
     match svc(&state)
         .get_all_sessions(
             &claims.sub,
-            role.as_deref(),
-            claims.department_id.as_deref(),
-            claims.team_id.as_deref(),
+            None, // role gating handled by the EE observability provider, not the identity
+            None,
+            None,
             params.start_time.as_deref(),
         )
         .await
@@ -159,13 +157,12 @@ pub async fn get_finops_dashboard(
     claims: Claims,
     Query(params): Query<FinopsParams>,
 ) -> impl IntoResponse {
-    let role = claims.role.as_ref().map(|r| format!("{r:?}"));
     match svc(&state)
         .get_finops_dashboard(
             &claims.sub,
-            role.as_deref(),
-            claims.department_id.as_deref(),
-            claims.team_id.as_deref(),
+            None, // role gating handled by the EE observability provider, not the identity
+            None,
+            None,
             params.start_time.as_deref(),
         )
         .await

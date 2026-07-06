@@ -91,12 +91,6 @@ pub async fn agent_proxy(
             "x-is-superuser",
             if claims.is_superuser { "true" } else { "false" },
         );
-    if let Some(ref role) = claims.role
-        && let Ok(v) = serde_json::to_value(role)
-        && let Some(s) = v.as_str()
-    {
-        forwarded = forwarded.header("x-user-role", s);
-    }
 
     if !body_bytes.is_empty() {
         forwarded = forwarded.body(body_bytes);

@@ -6,18 +6,12 @@ pub use service::AuthServiceImpl;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// Organizational role — determines what a user can do.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Member,
-    TeamMember,
-    TeamLead,
-    DepartmentManager,
-    Admin,
-}
-
 /// Identity extracted after authentication.
+///
+/// Only carries the minimal fields shared across OSS and EE. Enterprise concepts
+/// (role, team, department) are internal EE details resolved from the DB by the
+/// EE `AuthService` implementation — they are never part of this shared interface
+/// nor exposed in any public API response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub user_id: String,
@@ -25,11 +19,14 @@ pub struct Identity {
     pub username: String,
     #[serde(default)]
     pub is_superuser: bool,
-    #[serde(default)]
-    pub role: Option<Role>,
 }
 
 /// Consolidated auth trait — replaces AuthProvider, Authorizer, UserAuthService, TokenService.
+///
+/// Permission checks (`can_*`) are async so the EE implementation can resolve the
+/// user's role from the database. The default implementations grant everything,
+/// matching the OSS single-user model (no RBAC); EE overrides them with DB-backed
+/// hierarchy checks.
 #[async_trait]
 pub trait AuthService: Send + Sync + 'static {
     async fn validate_token(&self, token: &str) -> Result<Identity, AuthError>;
@@ -44,6 +41,29 @@ pub trait AuthService: Send + Sync + 'static {
     async fn revoke_all_tokens(&self) -> Result<u64, AuthError>;
     async fn revoke_tokens_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
     async fn can_access_agent(&self, identity: &Identity, agent_id: &str) -> bool;
+
+    // ─── Permission checks (OSS: allow-all; EE: DB-backed RBAC) ──────────────────
+
+    /// May the identity deploy/build agents and manage containers? (EE: ≥ team_member)
+    async fn can_deploy(&self, identity: &Identity) -> bool {
+        let _ = identity;
+        true
+    }
+    /// May the identity manage agent secrets? (EE: ≥ team_lead)
+    async fn can_manage_secrets(&self, identity: &Identity) -> bool {
+        let _ = identity;
+        true
+    }
+    /// May the identity manage users? (EE: ≥ admin)
+    async fn can_manage_users(&self, identity: &Identity) -> bool {
+        let _ = identity;
+        true
+    }
+    /// May the identity manage the VM pool / scaling? (EE: ≥ admin)
+    async fn can_manage_pool(&self, identity: &Identity) -> bool {
+        let _ = identity;
+        true
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,7 +139,6 @@ pub struct LoginResult {
     pub user_id: String,
     pub username: String,
     pub is_superuser: bool,
-    pub role: String,
     pub expires_in: u64,
     pub access_key: Option<String>,
     pub access_secret: Option<String>,

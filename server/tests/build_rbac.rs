@@ -130,20 +130,21 @@ async fn try_list_builds(
 
 // ─── Tests: POST /api/builds ──────────────────────────────────────────
 
-/// Member role (lowest) must be rejected by the RBAC middleware before the
-/// handler even runs — the response is 403 regardless of request body validity.
+/// OSS has no role-based RBAC — the `AuthService` grants every permission, so any
+/// authenticated identity reaches the build handler (404/400 for bad input, never
+/// a 403 role gate). Role-based blocking only exists in the EE `EeAuthService`.
 #[tokio::test]
 #[serial]
-async fn member_cannot_trigger_build() {
+async fn oss_any_identity_reaches_build_handler() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let admin_id = admin["user_id"].as_str().unwrap();
 
-    let member = create_user(&server, admin_id, "member-build").await;
-    let member_id = member["id"].as_str().unwrap();
+    let user = create_user(&server, admin_id, "user-build").await;
+    let user_id = user["id"].as_str().unwrap();
 
-    let status = try_trigger_build(&server, member_id, false, "member", &Uuid::new_v4().to_string()).await;
-    assert_eq!(status, 403, "member must be blocked from triggering builds");
+    let status = try_trigger_build(&server, user_id, false, "member", &Uuid::new_v4().to_string()).await;
+    assert_ne!(status, 403, "OSS allow-all authorizer must not block any identity with a 403");
 
     server.cleanup().await;
 }
@@ -185,16 +186,16 @@ async fn superuser_can_trigger_build() {
 
 #[tokio::test]
 #[serial]
-async fn member_cannot_upload_and_deploy() {
+async fn oss_any_identity_reaches_upload_handler() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let admin_id = admin["user_id"].as_str().unwrap();
 
-    let member = create_user(&server, admin_id, "member-upload").await;
-    let member_id = member["id"].as_str().unwrap();
+    let user = create_user(&server, admin_id, "user-upload").await;
+    let user_id = user["id"].as_str().unwrap();
 
-    let status = try_upload_deploy(&server, member_id, false, "member").await;
-    assert_eq!(status, 403, "member must be blocked from upload-and-deploy");
+    let status = try_upload_deploy(&server, user_id, false, "member").await;
+    assert_ne!(status, 403, "OSS allow-all authorizer must not block any identity with a 403");
 
     server.cleanup().await;
 }

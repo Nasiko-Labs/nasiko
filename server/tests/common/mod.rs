@@ -278,12 +278,13 @@ pub const TEST_JWT_SECRET: &str = "test-secret-for-nasiko-tests";
 
 /// Sign a short-lived JWT for a test identity using the known test secret.
 #[allow(dead_code)]
-pub fn sign_token(user_id: &str, username: &str, is_superuser: bool, role: &str) -> String {
+pub fn sign_token(user_id: &str, username: &str, is_superuser: bool, _role: &str) -> String {
+    // _role is accepted for call-site compatibility but no longer part of Identity —
+    // role is an internal EE detail resolved from the DB, never carried in the token.
     let identity = nasiko_auth::Identity {
         user_id: user_id.to_owned(),
         username: username.to_owned(),
         is_superuser,
-        role: serde_json::from_value(serde_json::Value::String(role.to_owned())).ok(),
     };
     nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
         .expect("test JWT signing failed")
