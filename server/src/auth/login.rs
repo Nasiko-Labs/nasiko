@@ -269,16 +269,28 @@ async fn token_validate(
         }
     };
 
-    // Step 2: check revocation — same logic as the gateway so validate is consistent.
+    // Step 2: check revocation — same logic as require_auth so validate is consistent.
+    // Fail CLOSED (AUTH-5): if the lookup errors we cannot prove the token is
+    // still valid, so we deny rather than let a possibly-revoked token through.
     if let Some(jti) = nasiko_auth::jwt::extract_jti(&req.token) {
         let hash = nasiko_auth::jwt::hash_jti(&jti);
-        let revoked: bool = sqlx::query_scalar(
+        let revoked: bool = match sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM auth_tokens WHERE token_hash = $1 AND revoked_at IS NOT NULL)",
         )
         .bind(&hash)
         .fetch_one(&state.db)
         .await
-        .unwrap_or(false);
+        {
+            Ok(revoked) => revoked,
+            Err(e) => {
+                tracing::error!(%e, "token_validate: revocation lookup failed; failing closed");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"valid": false, "error": "token validation unavailable"})),
+                )
+                    .into_response();
+            }
+        };
 
         if revoked {
             return (

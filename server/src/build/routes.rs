@@ -711,7 +711,7 @@ fn extract_source_text(data: &[u8]) -> Option<String> {
 
     let mut combined = String::new();
     for i in 0..archive.len() {
-        let mut file = match archive.by_index(i) {
+        let file = match archive.by_index(i) {
             Ok(f) => f,
             Err(_) => continue,
         };
@@ -723,8 +723,12 @@ fn extract_source_text(data: &[u8]) -> Option<String> {
         if !code_extensions.contains(&ext.as_str()) && !name.to_lowercase().contains("dockerfile") {
             continue;
         }
+        // `file.size()` above is the DECLARED size from the zip's central
+        // directory — a crafted entry can under-report it while its deflate
+        // stream actually decompresses to far more (zip bomb). Bound the
+        // real read too, not just the declared-size check.
         let mut contents = String::new();
-        if file.read_to_string(&mut contents).is_ok() {
+        if file.take(50_000).read_to_string(&mut contents).is_ok() {
             combined.push_str(&format!("\n--- {name} ---\n"));
             combined.push_str(&contents);
         }
@@ -734,5 +738,51 @@ fn extract_source_text(data: &[u8]) -> Option<String> {
         None
     } else {
         Some(combined)
+    }
+}
+
+#[cfg(test)]
+mod extract_source_text_tests {
+    use super::extract_source_text;
+    use std::io::Write;
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let mut zw = zip::ZipWriter::new(&mut cursor);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, content) in entries {
+            zw.start_file(*name, opts).unwrap();
+            zw.write_all(content).unwrap();
+        }
+        zw.finish().unwrap();
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn reads_small_source_file_content_in_full() {
+        let zip = make_zip(&[("main.py", b"print('hello')\n")]);
+        let text = extract_source_text(&zip).expect("should extract source text");
+        assert!(text.contains("print('hello')"), "small file content must round-trip untruncated");
+    }
+
+    #[test]
+    fn ignores_non_code_extensions() {
+        let zip = make_zip(&[("data.bin", b"\x00\x01\x02\x03")]);
+        assert!(extract_source_text(&zip).is_none(), "non-code extensions should be skipped");
+    }
+
+    #[test]
+    fn reads_a_file_exactly_at_the_size_cap_in_full() {
+        // The declared-size guard is `file.size() > 50_000` (strictly greater),
+        // so a 50,000-byte file passes it and reaches the `.take(50_000)` read.
+        // This proves that bound doesn't off-by-one truncate legitimate content
+        // sitting right at the boundary. Uses 'q' as filler (not present in the
+        // filename or the "--- name ---" header) so a plain byte-count of the
+        // combined output isn't polluted by boilerplate text.
+        let content = vec![b'q'; 50_000];
+        let zip = make_zip(&[("boundary.md", &content)]);
+        let text = extract_source_text(&zip).expect("should extract source text");
+        let q_count = text.bytes().filter(|&b| b == b'q').count();
+        assert_eq!(q_count, 50_000, "a file exactly at the cap must be read in full, not truncated early");
     }
 }

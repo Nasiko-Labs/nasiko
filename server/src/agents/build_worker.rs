@@ -79,6 +79,12 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             // Inline attempt cap: fail immediately if this claim pushed attempt over the limit.
             if old_attempt >= MAX_ATTEMPTS {
                 mark_job(&state.db, job_id, "failed", Some("max attempts exceeded")).await;
+                // Must also terminalize the agent here, not just the job row: once this
+                // row is 'failed' it falls outside recover_stuck_jobs's exhausted-job
+                // query (which only re-scans rows still 'in_progress'), so without this
+                // call the agent would stay 'deploying' forever with no path back to a
+                // terminal state (RUN-4).
+                fail_agent_terminal(&state.db, job.agent_id).await;
                 tracing::warn!(job_id = %job_id, attempt = old_attempt + 1, "build worker: job exceeded max attempts");
                 continue; // try next job
             }

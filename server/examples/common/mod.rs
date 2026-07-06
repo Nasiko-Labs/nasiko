@@ -209,7 +209,7 @@ pub async fn upload(
             reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
         );
     client
-        .post(format!("{server}/api/agents/upload-and-deploy"))
+        .post(format!("{server}/api/agents/upload"))
         .bearer_auth(token)
         .multipart(form)
         .send()
@@ -217,7 +217,7 @@ pub async fn upload(
         .map_err(|e| e.to_string())
 }
 
-/// Poll `GET /api/build/builds/{build_id}` until status is terminal or timeout.
+/// Poll `GET /api/builds/{build_id}` until status is terminal or timeout.
 pub async fn poll_build_status(
     client: &reqwest::Client,
     server: &str,
@@ -228,7 +228,7 @@ pub async fn poll_build_status(
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         let res = client
-            .get(format!("{server}/api/build/builds/{build_id}"))
+            .get(format!("{server}/api/builds/{build_id}"))
             .bearer_auth(token)
             .send()
             .await

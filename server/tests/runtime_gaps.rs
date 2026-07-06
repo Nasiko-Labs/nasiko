@@ -875,6 +875,97 @@ async fn build_worker_transitions_job_to_terminal_state() {
     server.cleanup().await;
 }
 
+/// RUN-4 residual: a job whose `attempt` is ALREADY at `MAX_ATTEMPTS` when
+/// claimed is caught by the worker's inline cap (not the periodic stuck-job
+/// sweep) — that path must also drive the agent/build rows to a terminal
+/// state, not just the `build_jobs` row, or the agent is stuck 'deploying'
+/// forever (the periodic sweep only re-scans rows still 'in_progress', and
+/// this path leaves the row 'failed').
+#[tokio::test]
+#[serial]
+async fn build_worker_inline_exhaustion_terminalizes_agent() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let agent_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO agents (name, owner_id, image, status)
+         VALUES ('inline-exhaustion-ng', $1, 'test:latest', 'deploying') RETURNING id",
+    )
+    .bind(owner_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO agent_builds (agent_id, version_tag, image_reference, status)
+         VALUES ($1, '1.0.0', 'inline-exhaustion-ng:latest', 'building')",
+    )
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let payload = json!({
+        "build_id": Uuid::new_v4(),
+        "agent_id": agent_id,
+        "owner_id": owner_id,
+        "upload_id": Uuid::new_v4().to_string(),
+        "name": "inline-exhaustion-ng",
+        "zip_path": "/tmp/nonexistent.zip",
+        "image_tag": "inline-exhaustion-ng:latest",
+        "ports": [8000u16],
+        "env": {}
+    });
+
+    // attempt = 3 == MAX_ATTEMPTS: the worker's claim increments it to 4 in the
+    // DB, but reads back the PRE-increment value (3) to decide whether this
+    // claim pushed it over the limit — so seeding 3 here hits the inline cap
+    // on the very first claim, not after 3 real attempts.
+    let job_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO build_jobs (agent_id, owner_id, payload, status, attempt)
+         VALUES ($1, $2, $3, 'pending', 3)
+         RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(owner_id)
+    .bind(&payload)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    // The worker has no notify signal for a directly-inserted row — it picks
+    // this up via the 5s poll fallback, so give it a bit more than that.
+    let mut job_status = "pending".to_string();
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        job_status = sqlx::query_scalar("SELECT status FROM build_jobs WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+        if job_status == "failed" {
+            break;
+        }
+    }
+    assert_eq!(job_status, "failed", "job should be marked failed by the inline attempt cap");
+
+    let (agent_status, build_status): (String, String) = sqlx::query_as(
+        "SELECT a.status::text, b.status::text FROM agents a
+         JOIN agent_builds b ON b.agent_id = a.id
+         WHERE a.id = $1",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(agent_status, "failed", "agent must reach a terminal state, not stay 'deploying' forever");
+    assert_eq!(build_status, "failed", "agent_builds must reach a terminal state, not stay 'building' forever");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn build_worker_stuck_job_recovery_sql() {

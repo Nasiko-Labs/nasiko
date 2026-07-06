@@ -29,7 +29,6 @@ use std::time::Duration;
 
 struct Args {
     server:        String,
-    user_id:       Option<String>,
     access_key:    Option<String>,
     access_secret: Option<String>,
     test_large:    bool,
@@ -38,7 +37,6 @@ struct Args {
 
 fn parse_args() -> Args {
     let mut server        = "http://localhost:9090".to_string();
-    let mut user_id       = None;
     let mut access_key    = None;
     let mut access_secret = None;
     let mut test_large    = false;
@@ -47,7 +45,6 @@ fn parse_args() -> Args {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--server"         => { server        = it.next().unwrap_or(server); }
-            "--user-id"        => { user_id       = it.next(); }
             "--access-key"     => { access_key    = it.next(); }
             "--access-secret"  => { access_secret = it.next(); }
             "--test-large"     => { test_large    = true; }
@@ -55,7 +52,7 @@ fn parse_args() -> Args {
             _                  => {}
         }
     }
-    Args { server, user_id, access_key, access_secret, test_large, no_poll }
+    Args { server, access_key, access_secret, test_large, no_poll }
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -93,29 +90,31 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // 2. Get admin user_id (creates admin on first run, logs in on subsequent runs).
-    let uid = match common::get_admin_uid(
+    // 2. Get admin user_id + JWT token (creates admin on first run, logs in on
+    //    subsequent runs). Every upload call below needs the actual bearer
+    //    token, not just the user_id — get_admin_uid() discards the token and
+    //    cannot be used here.
+    let (_uid, token) = match common::get_admin_auth(
         &client,
         &args.server,
-        args.user_id.as_deref(),
         args.access_key.as_deref(),
         args.access_secret.as_deref(),
     )
     .await
     {
-        Ok(id) => {
+        Ok((id, tok)) => {
             println!("[ PASS ] init/login admin                      → uid={id}");
             passed += 1;
-            id
+            (id, tok)
         }
         Err(e) => {
             println!("[ FAIL ] init/login admin                      → {e}");
             failed += 1;
-            String::new()
+            (String::new(), String::new())
         }
     };
 
-    if uid.is_empty() {
+    if token.is_empty() {
         println!("\nCannot proceed without an admin user.\n");
         println!("0/{} passed   {} failed", passed + failed, failed);
         std::process::exit(1);
@@ -123,7 +122,7 @@ async fn main() {
 
     // 3. Upload a valid agent zip — expect 202 + queued build.
     let (first_agent_id, first_build_id) = {
-        match common::upload(&client, &args.server, &uid, "e2e-upload-agent", common::make_valid_zip()).await {
+        match common::upload(&client, &args.server, &token, "e2e-upload-agent", common::make_valid_zip()).await {
             Ok(res) if res.status() == 202 => {
                 let body: serde_json::Value = res.json().await.unwrap_or_default();
                 let aid = body["agent_id"].as_str().unwrap_or("").to_string();
@@ -153,7 +152,7 @@ async fn main() {
 
     // 4. Upload same name again — expect same agent_id (owner-scoped upsert).
     if !first_agent_id.is_empty() {
-        match common::upload(&client, &args.server, &uid, "e2e-upload-agent", common::make_valid_zip()).await {
+        match common::upload(&client, &args.server, &token, "e2e-upload-agent", common::make_valid_zip()).await {
             Ok(res) if res.status() == 202 => {
                 let body: serde_json::Value = res.json().await.unwrap_or_default();
                 let aid = body["agent_id"].as_str().unwrap_or("");
@@ -186,7 +185,7 @@ async fn main() {
     match common::upload(
         &client,
         &args.server,
-        &uid,
+        &token,
         "e2e-no-dockerfile",
         common::make_zip(&[("README.md", b"no dockerfile here")]),
     )
@@ -216,7 +215,7 @@ async fn main() {
     match common::upload(
         &client,
         &args.server,
-        &uid,
+        &token,
         "e2e-traversal",
         common::make_traversal_zip(),
     )
@@ -246,7 +245,7 @@ async fn main() {
     match common::upload(
         &client,
         &args.server,
-        &uid,
+        &token,
         "e2e-at-limit-files",
         common::make_many_files_zip(998),
     )
@@ -282,7 +281,7 @@ async fn main() {
     match common::upload(
         &client,
         &args.server,
-        &uid,
+        &token,
         "e2e-over-limit-files",
         common::make_many_files_zip(999),
     )
@@ -312,7 +311,7 @@ async fn main() {
             .timeout(Duration::from_secs(120))
             .build()
             .unwrap();
-        match common::upload(&big_client, &args.server, &uid, "e2e-oversize", large).await {
+        match common::upload(&big_client, &args.server, &token, "e2e-oversize", large).await {
             Ok(res) if matches!(res.status().as_u16(), 400 | 413) => {
                 println!("[ PASS ] upload {size_mib} MiB → {}              → size guard fired", res.status());
                 passed += 1;
@@ -334,7 +333,7 @@ async fn main() {
     //    In dev the Docker build will fail (no real base image) — 'failed' is a valid terminal state.
     if !first_build_id.is_empty() && !args.no_poll {
         println!("[ INFO ] polling build/{:.8}.. (up to 90s, Docker build expected to fail fast)...", first_build_id);
-        match common::poll_build_status(&client, &args.server, &uid, &first_build_id, 90).await {
+        match common::poll_build_status(&client, &args.server, &token, &first_build_id, 90).await {
             Ok(status) => {
                 println!("[ PASS ] build reaches terminal state          → status={status}");
                 passed += 1;
