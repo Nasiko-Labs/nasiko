@@ -191,7 +191,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(job_id = %job.id, %e, "build worker: invalid payload, marking failed");
-            mark_job(&state.db, job.id, "failed", Some(&e.to_string())).await;
+            mark_job(&state.db, job.id, "failed", Some("invalid job payload")).await;
             return;
         }
     };
@@ -255,7 +255,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                     Ok(data) => Some(data),
                     Err(e) => {
                         tracing::error!(job_id = %job.id, %path, %e, "build worker: cannot read update zip");
-                        mark_job(&state.db, job.id, "failed", Some(&format!("read zip: {e}"))).await;
+                        mark_job(&state.db, job.id, "failed", Some("failed to read update source")).await;
                         return;
                     }
                 },

@@ -327,6 +327,27 @@ fn extract_endpoint(
         .map(|hp| format!("http://localhost:{hp}"))
 }
 
+/// Label recording the JSON-serialized `DeploymentSpec::env_vars` applied at
+/// container-creation time, so `deploy()` can detect env/secret changes on a
+/// redeploy with an unchanged image tag (RUN-10a).
+///
+/// `inspect_container().config.env` is NOT usable for this: it reports the full
+/// *merged* env (image-declared vars like `PATH` plus what we passed in), which is
+/// always a superset of `spec.env_vars` — comparing against it produces a false
+/// "changed" on every deploy. Recording exactly what we asked for, and diffing
+/// against that, avoids the false positive.
+const ENV_VARS_LABEL: &str = "nasiko.com/env-vars";
+
+/// Read back the env vars recorded in [`ENV_VARS_LABEL`] on a running container.
+/// Returns `None` if the label is missing (pre-fix container) or fails to parse —
+/// callers should treat that as "unknown, assume changed" rather than as "unchanged".
+fn stored_env_vars(config: Option<&bollard::models::ContainerConfig>) -> Option<HashMap<String, String>> {
+    config
+        .and_then(|c| c.labels.as_ref())
+        .and_then(|l| l.get(ENV_VARS_LABEL))
+        .and_then(|v| serde_json::from_str(v).ok())
+}
+
 // ── Deploy helpers ─────────────────────────────────────────────────────────────
 
 /// Create and start a container from a `DeploymentSpec`.
@@ -377,11 +398,18 @@ async fn create_and_start(
         ..Default::default()
     };
 
+    // Record the env vars we actually asked for as a label (see ENV_VARS_LABEL) so a
+    // later deploy() can detect changes without being confused by image-baked-in vars
+    // (e.g. PATH) that `inspect_container` reports as part of the merged env.
+    let env_json = serde_json::to_string(&spec.env_vars).unwrap_or_default();
+    let labels = HashMap::from([(ENV_VARS_LABEL.to_owned(), env_json)]);
+
     let config = Config {
         image: Some(spec.image.clone()),
         env: Some(env_vec),
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
+        labels: Some(labels),
         ..Default::default()
     };
 
@@ -508,9 +536,18 @@ impl ContainerRuntime for DockerRuntime {
                     .as_ref()
                     .and_then(|c| c.image.as_deref())
                     .unwrap_or("");
+                // Docker containers can't have their env vars updated in-place — the only
+                // way to apply changed env/secrets is to recreate the container. Without
+                // this check, redeploying with the same image tag but rotated secrets was
+                // a silent no-op (RUN-10a). K8s handles this correctly via its Secret +
+                // Deployment reconcile; this mirrors that behavior for Docker.
+                // A missing/unparseable label (pre-fix container) is treated as "changed"
+                // — recreating once is safe; silently keeping stale env is not.
+                let env_changed = stored_env_vars(existing.config.as_ref())
+                    .is_none_or(|stored| stored != spec.env_vars);
 
-                if existing_image == spec.image {
-                    // Same image: ensure the container is running (idempotent)
+                if existing_image == spec.image && !env_changed {
+                    // Same image, same env: ensure the container is running (idempotent)
                     let current_status = existing
                         .state
                         .as_ref()
@@ -526,7 +563,10 @@ impl ContainerRuntime for DockerRuntime {
                         .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
                     }
                 } else {
-                    // Different image: stop → remove → recreate
+                    // Different image or changed env/secrets: stop → remove → recreate.
+                    // Same container name is reused, so nothing else in the system (which
+                    // addresses the agent by ContainerId → container name) needs to know
+                    // the container was recreated rather than left running.
                     tokio::time::timeout(
                         timeout,
                         self.client.stop_container(&name, None::<StopContainerOptions>),

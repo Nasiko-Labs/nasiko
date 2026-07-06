@@ -162,7 +162,8 @@ async fn github_callback(
     let oauth_claims = match svc.verify_state(&params.state) {
         Ok(c) => c,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("invalid oauth state: {e}")).into_response()
+            tracing::error!(%e, "invalid oauth state");
+            return (StatusCode::BAD_REQUEST, "invalid oauth state").into_response()
         }
     };
 
@@ -178,7 +179,7 @@ async fn github_callback(
         Ok(t) => t,
         Err(e) => {
             warn!(user_id = %user_id, %e, "GitHub code exchange failed");
-            return (StatusCode::BAD_GATEWAY, format!("GitHub OAuth failed: {e}")).into_response();
+            return (StatusCode::BAD_GATEWAY, "GitHub OAuth failed").into_response();
         }
     };
 
@@ -218,9 +219,9 @@ async fn github_callback(
 }
 
 async fn github_status(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let Some(svc) = state.github_svc.as_ref() else {
@@ -252,9 +253,9 @@ async fn github_repos(State(state): State<AppState>, claims: Claims) -> impl Int
         return (StatusCode::NOT_FOUND, "GitHub OAuth not configured").into_response();
     };
 
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let Some(token) = load_github_token(&state.db, user_id).await else {
@@ -273,15 +274,15 @@ async fn github_repos(State(state): State<AppState>, claims: Claims) -> impl Int
         }
         Err(e) => {
             warn!(%e, "failed to list GitHub repositories");
-            (StatusCode::BAD_GATEWAY, e.to_string()).into_response()
+            (StatusCode::BAD_GATEWAY, "failed to list GitHub repositories").into_response()
         }
     }
 }
 
 async fn github_logout(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user identity").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     match sqlx::query(
@@ -338,9 +339,9 @@ async fn github_clone(
         return (StatusCode::SERVICE_UNAVAILABLE, "GitHub OAuth not configured").into_response();
     };
 
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let Some(token) = load_github_token(&state.db, user_id).await else {
@@ -358,7 +359,7 @@ async fn github_clone(
         Ok(a) => a,
         Err(e) => {
             warn!(repo = %body.repository, branch, %e, "git clone failed");
-            return (StatusCode::BAD_GATEWAY, format!("clone failed: {e}")).into_response();
+            return (StatusCode::BAD_GATEWAY, "clone failed").into_response();
         }
     };
 
@@ -374,21 +375,29 @@ async fn github_clone(
         warn!(s3_key, %e, "failed to upload clone archive to S3 — continuing with build");
     }
 
-    // Extract to a temp directory and run the standard build+deploy pipeline.
+    // Extract + parse on the blocking pool — a large repo archive must not
+    // gzip-decompress + untar on a tokio worker thread.
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-clone-{}", Uuid::new_v4()));
-    if let Err(e) = crate::build::extract_tar_gzip(&archive.archive_bytes, &tmp_dir) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to extract archive: {e}"),
-        )
-            .into_response();
-    }
-
-    let meta = match crate::catalog::import::read_agent_card(&tmp_dir) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-            return (StatusCode::BAD_REQUEST, e).into_response();
+    let meta = {
+        let bytes = archive.archive_bytes;
+        let tmp = tmp_dir.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::build::extract_tar_gzip(&bytes, &tmp)?;
+            crate::catalog::import::read_agent_card(&tmp)
+        })
+        .await
+        {
+            Ok(Ok(m)) => m,
+            Ok(Err(e)) => {
+                let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+                tracing::error!(%e, repo = %body.repository, branch, "failed to import cloned repo");
+                return (StatusCode::BAD_REQUEST, "failed to import cloned repo").into_response();
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+                tracing::error!(%e, repo = %body.repository, branch, "extract task failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
         }
     };
 

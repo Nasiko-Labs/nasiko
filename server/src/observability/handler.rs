@@ -17,13 +17,19 @@ use super::service::{InsightsRequest, ObservabilityService};
 fn obs_err(e: ObservabilityError) -> Response {
     match e {
         ObservabilityError::NotFound(msg) => {
+            // `msg` here is a hand-authored, safe description (e.g. "span 'x' in
+            // trace 'y'") — not a raw underlying error — so it's fine to return.
             (StatusCode::NOT_FOUND, msg).into_response()
         }
-        ObservabilityError::Deserialization(msg) => {
-            (StatusCode::BAD_GATEWAY, msg).into_response()
+        ObservabilityError::Deserialization(_) => {
+            tracing::error!(error = %e, "observability: failed to deserialize upstream response");
+            (StatusCode::BAD_GATEWAY, "observability backend returned an invalid response").into_response()
         }
         other => {
-            (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()).into_response()
+            // Catches `Internal` and any future variants — these wrap raw
+            // Tempo/Loki client/HTTP errors that must not reach the client.
+            tracing::error!(error = %other, "observability request failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
 }

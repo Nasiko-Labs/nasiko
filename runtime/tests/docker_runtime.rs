@@ -216,3 +216,104 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         .await
         .expect("destroy should succeed");
 }
+
+// ─── RUN-10a: deploy() must recreate the container when env vars change ──────
+
+/// Shells out to `docker inspect` rather than adding a `bollard` dev-dependency
+/// just for test assertions — mirrors what an operator would check by hand.
+fn docker_container_id(name: &str) -> String {
+    let out = std::process::Command::new("docker")
+        .args(["inspect", "--format", "{{.Id}}", name])
+        .output()
+        .expect("docker inspect should run");
+    String::from_utf8(out.stdout).expect("utf8").trim().to_owned()
+}
+
+fn docker_container_env(name: &str) -> Vec<String> {
+    let out = std::process::Command::new("docker")
+        .args(["inspect", "--format", "{{json .Config.Env}}", name])
+        .output()
+        .expect("docker inspect should run");
+    serde_json::from_slice(&out.stdout).unwrap_or_default()
+}
+
+#[tokio::test]
+#[ignore]
+async fn docker_runtime_deploy_recreates_container_when_env_changes() {
+    use nasiko_runtime::ContainerRuntime;
+
+    let cfg = DockerRuntimeConfig::default();
+    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let id = ContainerId::new("test-run10a-env-change");
+    let _ = runtime.destroy(&id).await;
+
+    let mut spec = DeploymentSpec {
+        container_id: id.clone(),
+        name: "test-run10a-env-change".to_owned(),
+        image: "alpine:latest".to_owned(),
+        min_replicas: 1,
+        max_replicas: 1,
+        env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
+        ports: vec![9998],
+        resources: None,
+    };
+
+    runtime.deploy(&spec).await.expect("initial deploy");
+    let container_name = "nasiko-agent-test-run10a-env-change";
+    let id_before = docker_container_id(container_name);
+
+    // Same image tag, changed env — this used to be a silent no-op (RUN-10a).
+    spec.env_vars.insert("SECRET".to_owned(), "v2".to_owned());
+    runtime.deploy(&spec).await.expect("redeploy with changed env");
+
+    let id_after = docker_container_id(container_name);
+    assert_ne!(
+        id_before, id_after,
+        "container must be recreated when env changes, even with an unchanged image tag"
+    );
+
+    let env_after = docker_container_env(container_name);
+    assert!(
+        env_after.contains(&"SECRET=v2".to_owned()),
+        "recreated container must have the new env value, got: {env_after:?}"
+    );
+
+    runtime.destroy(&id).await.expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore]
+async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
+    // Sanity check for the RUN-10a fix: deploy() must remain a no-op (not recreate
+    // the container) when neither the image nor the env vars changed.
+    use nasiko_runtime::ContainerRuntime;
+
+    let cfg = DockerRuntimeConfig::default();
+    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let id = ContainerId::new("test-run10a-no-change");
+    let _ = runtime.destroy(&id).await;
+
+    let spec = DeploymentSpec {
+        container_id: id.clone(),
+        name: "test-run10a-no-change".to_owned(),
+        image: "alpine:latest".to_owned(),
+        min_replicas: 1,
+        max_replicas: 1,
+        env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
+        ports: vec![9997],
+        resources: None,
+    };
+
+    runtime.deploy(&spec).await.expect("initial deploy");
+    let container_name = "nasiko-agent-test-run10a-no-change";
+    let id_before = docker_container_id(container_name);
+
+    runtime.deploy(&spec).await.expect("redeploy, unchanged spec");
+    let id_after = docker_container_id(container_name);
+    assert_eq!(
+        id_before, id_after,
+        "deploy() must not recreate the container when image and env are unchanged"
+    );
+
+    runtime.destroy(&id).await.expect("cleanup");
+}

@@ -446,7 +446,10 @@ async fn list_traces(
 
     match obs.list_sessions(&agent_ids, since, params.limit).await {
         Ok(sessions) => Json(sessions).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list_traces: observability provider error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -634,7 +637,10 @@ async fn finops(State(state): State<AppState>, Query(params): Query<FinOpsParams
 
     match obs.get_finops_dashboard(&agent_ids, since).await {
         Ok(dashboard) => Json(dashboard).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "finops: observability provider error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 

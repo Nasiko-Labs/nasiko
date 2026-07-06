@@ -9,6 +9,7 @@ async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono = { workspace = true, features = ["serde"] }
+dashmap.workspace = true
 futures.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
@@ -20,3 +21,6 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 nasiko-config.workspace = true
 nasiko-types.workspace = true
+
+[dev-dependencies]
+mockito.workspace = true

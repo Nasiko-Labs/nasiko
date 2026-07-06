@@ -228,7 +228,7 @@ async fn restart_deployment(
 
         if let Err(e) = state.runtime.scale(&k8s_id, 1).await {
             tracing::error!(%e, %deployment_id, k8s_name, "restart_deployment: scale-to-1 failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("scale failed: {e}")).into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     } else {
         // ── Docker path: destroy + recreate (UUID-keyed) ─────────────────────────────
@@ -269,7 +269,7 @@ async fn restart_deployment(
             }
             Err(e) => {
                 tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy failed: {e}")).into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         }
     }

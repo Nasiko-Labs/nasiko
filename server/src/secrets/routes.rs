@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-use nasiko_secrets::SecretsCrypto;
+use super::crypto::SecretsCrypto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -48,9 +48,9 @@ async fn list_secrets(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     match sqlx::query_as::<_, SecretEntry>(
@@ -61,7 +61,10 @@ async fn list_secrets(
     .await
     {
         Ok(secrets) => Json(secrets).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "list_secrets: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -70,9 +73,9 @@ async fn create_secret(
     claims: Claims,
     Json(body): Json<CreateSecret>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let crypto = SecretsCrypto::for_user(user_id);
@@ -92,7 +95,10 @@ async fn create_secret(
 
     match result {
         Ok(entry) => (StatusCode::CREATED, Json(entry)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "create_secret: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -101,9 +107,9 @@ async fn get_secret(
     claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let encrypted: Option<String> = sqlx::query_scalar(
@@ -121,7 +127,10 @@ async fn get_secret(
             let crypto = SecretsCrypto::for_user(user_id);
             match crypto.decrypt(&enc) {
                 Ok(value) => Json(SecretValue { name, value }).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    tracing::error!(%e, %user_id, "get_secret: decrypt failed");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+                }
             }
         }
         None => StatusCode::NOT_FOUND.into_response(),
@@ -134,9 +143,9 @@ async fn update_secret(
     Path(name): Path<String>,
     Json(body): Json<UpdateSecret>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let crypto = SecretsCrypto::for_user(user_id);
@@ -154,7 +163,10 @@ async fn update_secret(
     match result {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, %name, "update_secret: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -163,9 +175,9 @@ async fn delete_secret(
     claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let result = sqlx::query(
@@ -179,6 +191,9 @@ async fn delete_secret(
     match result {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, %name, "delete_secret: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }

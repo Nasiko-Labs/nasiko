@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use dashmap::DashMap;
 use reqwest::Client;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use crate::reranker::Reranker;
 use crate::selector::AgentSelector;
 use crate::session_history::SessionHistory;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
-use crate::vector_store::VectorStore;
+use crate::vector_store::{EmbeddingCache, VectorStore};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,11 @@ pub struct OssRoutingEngine {
     api_key: String,
     base_url: String,
     embedding_model: String,
+    /// Cache of agent embeddings shared across `route()` calls. Without this,
+    /// Stage 1 would re-embed the entire agent catalog against Ollama/OpenAI on
+    /// every incoming request. See `EmbeddingCache` docs for the invalidation
+    /// strategy (TTL + content-hash).
+    embedding_cache: EmbeddingCache,
 }
 
 impl OssRoutingEngine {
@@ -66,7 +72,14 @@ impl OssRoutingEngine {
     ) -> Self {
         let provider = LLMProvider::new(http_client, api_key.clone(), base_url.clone());
         let selector = AgentSelector::new(provider, router_model);
-        Self { config, selector, api_key, base_url, embedding_model }
+        Self {
+            config,
+            selector,
+            api_key,
+            base_url,
+            embedding_model,
+            embedding_cache: Arc::new(DashMap::new()),
+        }
     }
 
     pub fn from_config(config: &nasiko_config::Config, http_client: Client) -> Self {
@@ -106,15 +119,21 @@ impl RoutingEngine for OssRoutingEngine {
 
         // Stage 1 — vector store semantic shortlist (OpenAI embeddings, skipped if no key)
         let t1 = Instant::now();
-        let store = Arc::new(
+        let store = Arc::new(if agents.len() < self.config.shortlist_threshold {
+            // Catalog too small for semantic shortlisting to matter — skip
+            // embedding entirely rather than paying for embeddings API calls
+            // we're going to throw away (shortlist() would return `all` anyway).
+            VectorStore::disabled_from(agents.clone())
+        } else {
             VectorStore::build(
                 agents.clone(),
                 self.api_key.clone(),
                 self.base_url.clone(),
                 self.embedding_model.clone(),
+                &self.embedding_cache,
             )
-            .await,
-        );
+            .await
+        });
         let shortlist = store
             .shortlist(&req.query, self.config.shortlist_size, self.config.shortlist_threshold)
             .await;

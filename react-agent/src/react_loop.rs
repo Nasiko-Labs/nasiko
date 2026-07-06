@@ -234,6 +234,13 @@ impl Orchestrator {
                                 .push(format!("[{}] Result: {}", name, output));
                         }
                         Err(e) => {
+                            // Balance the before_call() depth increment even on
+                            // failure — otherwise a failed tool call permanently
+                            // leaks flow-depth and later legitimate calls in the
+                            // same flow get falsely rejected with MaxDepthExceeded.
+                            if let Some(g) = &self.guard {
+                                g.after_call(&agent_display, 0).await;
+                            }
                             tracing::warn!(tool = %name, error = %e, "tool failed");
                             results_for_context
                                 .push(format!("[{}] Error: {}", name, e));
@@ -622,6 +629,13 @@ async fn run_stream_inner(
                             results_for_context.push(format!("[{}] Result: {}", name, output));
                         }
                         Err(e) => {
+                            // Balance the before_call() depth increment even on
+                            // failure — otherwise a failed tool call permanently
+                            // leaks flow-depth and later legitimate calls in the
+                            // same flow get falsely rejected with MaxDepthExceeded.
+                            if let Some(g) = guard {
+                                g.after_call(&agent_display, 0).await;
+                            }
                             let err_str = e.to_string();
                             let _ = tx.send(OrchestratorEvent::ToolResult {
                                 agent: agent_display,
@@ -771,6 +785,13 @@ async fn run_stream_inner(
                             results_for_context.push(format!("[{}] Result: {}", name, output));
                         }
                         Err(e) => {
+                            // Balance the before_call() depth increment even on
+                            // failure — otherwise a failed tool call permanently
+                            // leaks flow-depth and later legitimate calls in the
+                            // same flow get falsely rejected with MaxDepthExceeded.
+                            if let Some(g) = guard {
+                                g.after_call(&agent_display, 0).await;
+                            }
                             let err_str = e.to_string();
                             let _ = tx.send(OrchestratorEvent::ToolResult {
                                 agent: agent_display,

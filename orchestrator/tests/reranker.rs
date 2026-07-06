@@ -162,8 +162,9 @@ async fn with_history_and_live_store_returns_scored_results() {
         },
     ];
 
+    let cache = Default::default();
     let store = Arc::new(
-        VectorStore::build(agents.clone(), api_key, base_url, model).await,
+        VectorStore::build(agents.clone(), api_key, base_url, model, &cache).await,
     );
     let reranker = Reranker::new(store);
     let history = SessionHistory {

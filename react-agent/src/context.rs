@@ -125,8 +125,13 @@ impl ContextManager {
                 ContextRole::ToolResult { tool_name } => format!("Tool({tool_name})"),
                 ContextRole::System => "System".to_string(),
             };
-            let truncated = if entry.content.len() > 300 {
-                format!("{}…", &entry.content[..300])
+            // Truncate by character count, not byte count — `entry.content` holds
+            // LLM/tool output which is attacker-influenceable and may contain
+            // multi-byte UTF-8 chars. A raw `&entry.content[..300]` byte slice can
+            // land mid-character and panic ("byte index N is not a char boundary").
+            let truncated = if entry.content.chars().count() > 300 {
+                let head: String = entry.content.chars().take(300).collect();
+                format!("{head}…")
             } else {
                 entry.content.clone()
             };
@@ -235,5 +240,58 @@ impl ContextWindow {
         }
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn small_keep_recent_config() -> ContextConfig {
+        ContextConfig {
+            max_context_tokens: 1_000_000,
+            keep_recent: 1,
+            chars_per_token: 4,
+        }
+    }
+
+    #[test]
+    fn compact_simple_truncates_multibyte_content_without_panicking() {
+        let mut ctx = ContextManager::new(small_keep_recent_config());
+
+        // 299 ASCII chars followed by a 3-byte '€' character then more ASCII.
+        // Byte index 300 lands mid-way through the '€' character's UTF-8
+        // encoding — a naive `&content[..300]` byte slice panics here with
+        // "byte index 300 is not a char boundary". Truncating by character
+        // count instead must not panic.
+        let content = format!("{}{}", "a".repeat(299), "€bbbb");
+        assert!(content.chars().count() > 300);
+
+        ctx.push_tool_result("tool", &content);
+        // A second, recent entry so compact_simple() has something to fold
+        // into the summary (the tool result) and something to keep verbatim.
+        ctx.push_user("recent turn");
+
+        ctx.compact_simple(); // must not panic
+
+        let summary = ctx.window().summary.expect("summary should be set");
+        assert!(summary.contains('…'), "expected truncation marker in summary: {summary}");
+        assert!(
+            !summary.contains("bbbb"),
+            "content past the 300-char cutoff should have been dropped: {summary}"
+        );
+    }
+
+    #[test]
+    fn compact_simple_leaves_short_content_untruncated() {
+        let mut ctx = ContextManager::new(small_keep_recent_config());
+        ctx.push_tool_result("tool", "short result");
+        ctx.push_user("recent turn");
+
+        ctx.compact_simple();
+
+        let summary = ctx.window().summary.expect("summary should be set");
+        assert!(summary.contains("short result"));
+        assert!(!summary.contains('…'));
     }
 }

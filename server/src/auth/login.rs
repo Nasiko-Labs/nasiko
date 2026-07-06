@@ -163,7 +163,10 @@ async fn initialize_admin_inner(
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
     let access_secret_hash = nasiko_auth::hash_password_async(&access_secret).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+        .map_err(|e| {
+            tracing::error!(%e, "initialize_admin: password hash failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        })?;
 
     let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
         r#"INSERT INTO users (username, email, is_superuser, is_active, role)
@@ -184,9 +187,10 @@ async fn initialize_admin_inner(
             ).into_response());
         }
         Err(e) => {
+            tracing::error!(%e, "initialize_admin: insert user failed");
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": e.to_string()})),
+                Json(serde_json::json!({"error": "internal error"})),
             ).into_response());
         }
     };
@@ -200,7 +204,10 @@ async fn initialize_admin_inner(
     .bind(&access_secret_hash)
     .execute(&state.db)
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+    .map_err(|e| {
+        tracing::error!(%e, %user_id, "initialize_admin: insert credentials failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+    })?;
 
     // `issue_token` records the JWT's JTI in auth_tokens, so the admin token minted
     // here is revocable (previously init-admin tokens were unrevocable).
@@ -211,7 +218,10 @@ async fn initialize_admin_inner(
     };
 
     let token = state.auth.issue_token(&identity).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response())?;
+        .map_err(|e| {
+            tracing::error!(%e, %user_id, "initialize_admin: issue token failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        })?;
 
     // Belt-and-suspenders record (ON CONFLICT DO NOTHING) so counting/revocation work.
     let _ = state.auth.record_user_token(&token, &user_id.to_string()).await;
@@ -308,6 +318,9 @@ async fn users_for_search(State(state): State<AppState>) -> impl IntoResponse {
             let count = users.len();
             Json(serde_json::json!({"count": count, "users": users})).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "users_for_search: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
     }
 }

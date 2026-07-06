@@ -15,12 +15,19 @@ pub fn push_image(image: &str, repo: &str, tag: &str) -> Result<()> {
     let oci = OciClient::for_cp()?;
     let tar_data = docker_save(image)?;
     let entries = parse_docker_tar(&tar_data)?;
+    // `entries` holds its own copies of the config/layer bytes extracted from the tar —
+    // the raw `docker save` output is no longer needed. Drop it now (rather than at the
+    // end of the function) so we're not holding ~2x the image size in memory while
+    // pushing blobs.
+    // TODO(perf follow-up): stream `docker save` output directly into the tar parser and
+    // straight through to the registry PUT instead of buffering the whole image twice.
+    drop(tar_data);
 
-    // Push layer blobs
-    for layer in &entries.layers {
-        let digest = sha256_digest(layer);
+    // Push layer blobs. Reuse the digests already computed in `parse_docker_tar` — the
+    // manifest builder needs them too, so hashing again here would be wasted work.
+    for (layer, digest) in entries.layers.iter().zip(&entries.layer_digests) {
         eprint!("  pushing layer {}... ", &digest[7..19]);
-        oci.push_blob(repo, &digest, layer)?;
+        oci.push_blob(repo, digest, layer)?;
         eprintln!("done ({} bytes)", layer.len());
     }
 

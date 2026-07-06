@@ -1,5 +1,10 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
 use reqwest::Client;
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::error::RouterError;
 use crate::types::AgentCard;
@@ -7,6 +12,41 @@ use crate::types::AgentCard;
 pub struct EmbeddedAgent {
     pub agent: AgentCard,
     pub embedding: Vec<f32>,
+}
+
+/// One cached embedding, keyed by agent id in `EmbeddingCache`. Fields are
+/// private — this type is only nameable because it appears inside the public
+/// `EmbeddingCache` alias, not meant to be constructed or inspected directly.
+pub struct CachedEmbedding {
+    /// Hash of the text that was embedded (name + description + tags). If the
+    /// agent's catalog entry changes, the hash no longer matches and the entry
+    /// is treated as stale even before the TTL expires.
+    content_hash: u64,
+    embedding: Vec<f32>,
+    cached_at: Instant,
+}
+
+/// Shared cache of agent embeddings, keyed by agent id. This is held on
+/// `OssRoutingEngine` (not on `VectorStore`, which is rebuilt per request) so
+/// embeddings survive across requests instead of re-embedding the whole
+/// catalog against Ollama/OpenAI on every single `route()` call.
+///
+/// Invalidation strategy: there's no cheap signal available here for "the
+/// catalog changed", so entries are considered stale after
+/// `EMBEDDING_CACHE_TTL` elapses, in addition to being invalidated immediately
+/// if the embedded fields change (via `content_hash`). A TTL is simpler to
+/// reason about than wiring up exact change-tracking (e.g. a DB trigger or a
+/// version column) and is good enough since catalog edits are infrequent
+/// relative to the window.
+pub type EmbeddingCache = Arc<DashMap<Uuid, CachedEmbedding>>;
+
+const EMBEDDING_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
+
+fn hash_prompt(prompt: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    prompt.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub struct VectorStore {
@@ -31,7 +71,17 @@ impl VectorStore {
     /// Build an embedded store from a list of agents using the OpenAI embeddings API.
     /// If the API key is empty or the call fails, falls back to disabled mode —
     /// shortlist() returns all agents unchanged.
-    pub async fn build(agents: Vec<AgentCard>, api_key: String, base_url: String, model: String) -> Self {
+    ///
+    /// `cache` is consulted per-agent before making a network call: a cache hit
+    /// (matching content hash, not yet past `EMBEDDING_CACHE_TTL`) skips the
+    /// embeddings API entirely for that agent. See `EmbeddingCache` docs.
+    pub async fn build(
+        agents: Vec<AgentCard>,
+        api_key: String,
+        base_url: String,
+        model: String,
+        cache: &EmbeddingCache,
+    ) -> Self {
         if api_key.is_empty() {
             tracing::debug!("No OpenAI API key configured — Stage 1 (vector store) disabled");
             return Self::disabled_from(agents);
@@ -42,11 +92,34 @@ impl VectorStore {
 
         for agent in &agents {
             let prompt = format!("{} {} {}", agent.name, agent.description, agent.tags.join(" "));
-            match embed_text(&client, &api_key, &base_url, &model, &prompt).await {
-                Ok(emb) => embedded.push(EmbeddedAgent {
+            let content_hash = hash_prompt(&prompt);
+
+            if let Some(cached) = cache.get(&agent.id)
+                && cached.content_hash == content_hash
+                && cached.cached_at.elapsed() < EMBEDDING_CACHE_TTL
+            {
+                embedded.push(EmbeddedAgent {
                     agent: agent.clone(),
-                    embedding: emb,
-                }),
+                    embedding: cached.embedding.clone(),
+                });
+                continue;
+            }
+
+            match embed_text(&client, &api_key, &base_url, &model, &prompt).await {
+                Ok(emb) => {
+                    cache.insert(
+                        agent.id,
+                        CachedEmbedding {
+                            content_hash,
+                            embedding: emb.clone(),
+                            cached_at: Instant::now(),
+                        },
+                    );
+                    embedded.push(EmbeddedAgent {
+                        agent: agent.clone(),
+                        embedding: emb,
+                    });
+                }
                 Err(e) => {
                     tracing::warn!(%e, "OpenAI embeddings failed — disabling vector store, Stage 1 will be skipped");
                     return Self::disabled_from(agents);
@@ -208,4 +281,23 @@ async fn embed_text(
         .next()
         .map(|d| d.embedding)
         .ok_or_else(|| RouterError::Embedding("empty embedding response".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_prompt_is_deterministic() {
+        let h1 = hash_prompt("agent-1 does engineering things");
+        let h2 = hash_prompt("agent-1 does engineering things");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn hash_prompt_differs_for_different_content() {
+        let h1 = hash_prompt("agent-1 does engineering things");
+        let h2 = hash_prompt("agent-1 does completely different things");
+        assert_ne!(h1, h2);
+    }
 }

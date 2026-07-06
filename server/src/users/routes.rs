@@ -42,8 +42,8 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
     None
 }
 
-/// Full user router — list, get, and all management routes including role changes.
-/// Used by the OSS server. EE provides its own router (ee/server/src/users.rs)
+/// Full user orchestrator — list, get, and all management routes including role changes.
+/// Used by the OSS server. EE provides its own orchestrator (ee/server/src/users.rs)
 /// that merges management_router() and supplies EE-aware handlers + the cascade
 /// role-change endpoint.
 pub fn router() -> Router<AppState> {
@@ -59,7 +59,7 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
-/// Management-only router — create/update/delete users and related operations.
+/// Management-only orchestrator — create/update/delete users and related operations.
 /// The role-change endpoint is registered separately so it can be overridden
 /// without causing a duplicate-route panic.
 pub fn management_router() -> Router<AppState> {
@@ -159,7 +159,10 @@ async fn list_users(
             };
             Json(Paginated { data, total: total as usize }).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list_users: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -181,7 +184,10 @@ async fn get_user(
     match result {
         Ok(Some(user)) => Json(user).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "user not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "get_user: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -199,9 +205,12 @@ async fn create_user(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
+    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
         Ok(h) => h,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "create_user: password hash failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
     };
 
     let role = body.role.as_deref().unwrap_or("member");
@@ -241,14 +250,18 @@ async fn create_user(
                         "message": "Store access_secret securely — it won't be shown again.",
                     })),
                 ).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    tracing::error!(%e, %id, "create_user: insert credentials failed");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+                }
             }
         }
         Err(e) => {
             if e.to_string().contains("duplicate key") {
                 (StatusCode::CONFLICT, "username or email already exists").into_response()
             } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                tracing::error!(%e, %id, "create_user: insert user failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
             }
         }
     }
@@ -287,9 +300,12 @@ async fn update_user(
 
     // Hash password if provided
     let password_hash = match &body.password {
-        Some(p) => match nasiko_auth::hash_password_blocking(p.clone()).await {
+        Some(p) => match nasiko_auth::hash_password_async(p).await {
             Ok(h) => Some(h),
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => {
+                tracing::error!(%e, %id, "update_user: password hash failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
         },
         None => None,
     };
@@ -321,7 +337,8 @@ async fn update_user(
             if e.to_string().contains("duplicate key") {
                 (StatusCode::CONFLICT, "username or email already taken").into_response()
             } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                tracing::error!(%e, %id, "update_user: db error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
             }
         }
     }
@@ -374,7 +391,10 @@ async fn delete_user(
     {
         Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "user not found"}))).into_response(),
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "delete_user: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
     }
 }
 
@@ -408,7 +428,10 @@ async fn deactivate(
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "deactivate: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
     }
 }
 
@@ -427,7 +450,10 @@ async fn reinstate(
     {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "reinstate: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
     }
 }
 
@@ -439,7 +465,7 @@ async fn regenerate_credentials(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
+    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
         Ok(h) => h,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -472,7 +498,10 @@ async fn regenerate_credentials(
                 "message": "Store access_secret securely — it won't be shown again.",
             }))).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "regenerate_credentials: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
     }
 }
 
@@ -537,7 +566,8 @@ pub async fn change_role(
             return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "user not found"}))).into_response();
         }
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            tracing::error!(%e, %id, "change_role: db error");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response();
         }
         Ok(_) => {}
     }
@@ -567,7 +597,10 @@ async fn list_admins(State(state): State<AppState>) -> impl IntoResponse {
     .await
     {
         Ok(data) => Json(Paginated::new(data)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list_admins: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -614,7 +647,10 @@ async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoRespo
     match result {
         Ok(Some(user)) => Json(user).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "user not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "get_me: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -653,6 +689,9 @@ async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::respo
 
     match rows {
         Ok(data) => Json(Paginated::new(data)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "accessible_agents: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }

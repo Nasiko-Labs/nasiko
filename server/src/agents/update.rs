@@ -242,11 +242,8 @@ async fn update_agent(
     {
         Ok(id) => id,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create build record: {e}"),
-            )
-                .into_response()
+            tracing::error!(%e, %agent_id, "update_agent: create build record");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 
@@ -546,7 +543,11 @@ pub async fn execute_agent_update(
             .await;
 
             set_build_status(db, build_id, BuildStatus::Failed).await;
-            set_upload_status(db, &upload_id, &name, owner_id, "failed", None, Some(&e)).await;
+            // `e` is a detailed internal string (may contain raw docker/tar/IO error
+            // text) — log it, but the `upload_status.error_message` column is read
+            // back by clients via GET /agents/uploads, so store a generic reason there
+            // instead of leaking internals through the status-polling API.
+            set_upload_status(db, &upload_id, &name, owner_id, "failed", None, Some("agent update failed")).await;
             tracing::error!(build_id = %build_id, %agent_id, %e, "agent update failed");
         }
     }
@@ -680,11 +681,8 @@ async fn rollback_agent(
     {
         Ok(id) => id,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create rollback record: {e}"),
-            )
-                .into_response()
+            tracing::error!(%e, %agent_id, "rollback_agent: create rollback record");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 

@@ -74,9 +74,9 @@ async fn generate_and_apply(
     Path(agent_id): Path<Uuid>,
     Json(body): Json<ApplyRequest>,
 ) -> impl IntoResponse {
-    let owner_id: Uuid = match claims.sub.parse() {
+    let owner_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // Fetch agent name and verify ownership
@@ -166,7 +166,10 @@ async fn resolve_source(
         .bind(agent_id)
         .fetch_optional(&state.db)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!(%e, %agent_id, "resolve_source: db error");
+            "internal error".to_string()
+        })?;
 
         let version_tag =
             version_tag.ok_or_else(|| "build not found for this agent".to_string())?;
@@ -176,10 +179,16 @@ async fn resolve_source(
             .oci_storage
             .get_blob(&key)
             .await
-            .map_err(|e| format!("failed to fetch source from S3: {e}"))?;
+            .map_err(|e| {
+                tracing::error!(%e, %agent_id, %key, "resolve_source: failed to fetch source from S3");
+                "failed to fetch build source".to_string()
+            })?;
 
         let text = extract_text_from_zip(&data)
-            .map_err(|e| format!("failed to read source ZIP: {e}"))?;
+            .map_err(|e| {
+                tracing::error!(%e, %agent_id, "resolve_source: failed to read source ZIP");
+                "failed to read build source archive".to_string()
+            })?;
         return Ok(text);
     }
 
@@ -241,9 +250,10 @@ fn make_generator(state: &AppState) -> CapabilityGenerator {
 }
 
 fn error_response(e: GeneratorError) -> axum::response::Response {
-    let status = match &e {
-        GeneratorError::Provider(_) => StatusCode::BAD_GATEWAY,
-        GeneratorError::ParseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    let (status, message) = match &e {
+        GeneratorError::Provider(_) => (StatusCode::BAD_GATEWAY, "capability generator provider error"),
+        GeneratorError::ParseError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     };
-    (status, e.to_string()).into_response()
+    tracing::error!(%e, "capability generation failed");
+    (status, message).into_response()
 }

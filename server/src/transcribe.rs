@@ -28,7 +28,10 @@ async fn transcribe(
             }
             audio_data = Some(
                 field.bytes().await
-                    .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, format!("Failed to read file: {e}")))?
+                    .map_err(|e| {
+                        tracing::error!(%e, "failed to read uploaded audio file");
+                        (axum::http::StatusCode::BAD_REQUEST, "failed to read file".to_string())
+                    })?
                     .to_vec()
             );
         }
@@ -55,16 +58,23 @@ async fn transcribe(
         .multipart(form)
         .send()
         .await
-        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, format!("Transcription request failed: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(%e, "transcription request failed");
+            (axum::http::StatusCode::BAD_GATEWAY, "transcription request failed".to_string())
+        })?;
 
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
-        return Err((axum::http::StatusCode::BAD_GATEWAY, format!("Transcription API error ({status}): {body}")));
+        tracing::error!(%status, %body, "transcription API returned an error");
+        return Err((axum::http::StatusCode::BAD_GATEWAY, "transcription API error".to_string()));
     }
 
     let result: serde_json::Value = res.json().await
-        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, format!("Invalid transcription response: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(%e, "invalid transcription response");
+            (axum::http::StatusCode::BAD_GATEWAY, "invalid transcription response".to_string())
+        })?;
 
     let text = result.get("text")
         .and_then(|v| v.as_str())

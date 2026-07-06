@@ -52,7 +52,10 @@ async fn deploy(
 
     // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
     if let Some(agent_id) = resolved_agent_id {
-        let owner_id: Uuid = claims.sub.parse().unwrap_or_default();
+        let owner_id = match claims.user_uuid() {
+            Ok(id) => id,
+            Err(e) => return e.into_response(),
+        };
         let resolved = resolve_full_env(&state.db, owner_id, agent_id).await;
         // resolved secrets are base; request env overrides
         for (k, v) in resolved {
@@ -120,14 +123,20 @@ async fn deploy(
             }
             (StatusCode::CREATED, Json(status)).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, name = %spec.name, "deploy: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
 async fn list(State(state): State<AppState>) -> impl IntoResponse {
     match state.runtime.list().await {
         Ok(containers) => Json(containers).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -138,7 +147,10 @@ async fn status(
     let id = ContainerId::new(&name);
     match state.runtime.status(&id).await {
         Ok(s) => Json(s).into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "status: runtime error");
+            (StatusCode::NOT_FOUND, "container not found").into_response()
+        }
     }
 }
 
@@ -163,7 +175,10 @@ async fn destroy(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "destroy: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -174,7 +189,10 @@ async fn stop(
     let id = ContainerId::new(&name);
     match state.runtime.scale(&id, 0).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "stop: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -185,7 +203,10 @@ async fn start(
     let id = ContainerId::new(&name);
     match state.runtime.scale(&id, 1).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "start: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -208,7 +229,10 @@ async fn restart(
         let id = ContainerId::new(&name);
         return match state.runtime.restart(&id).await {
             Ok(()) => StatusCode::OK.into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => {
+                tracing::error!(%e, %name, "restart: runtime error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            }
         };
     };
 
@@ -227,7 +251,10 @@ async fn restart(
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => Json(status).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "restart: redeploy failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -244,7 +271,10 @@ async fn scale(
     let id = ContainerId::new(&name);
     match state.runtime.scale(&id, req.replicas).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "scale: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -263,7 +293,10 @@ async fn logs(
     let id = ContainerId::new(&name);
     match state.runtime.logs(&id, q.tail).await {
         Ok(lines) => Json(lines).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "logs: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 

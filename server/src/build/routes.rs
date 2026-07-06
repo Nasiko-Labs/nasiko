@@ -164,7 +164,8 @@ async fn create_build(
     let source_key = if let Some(data) = &source_data {
         let key = format!("sources/{agent_id}/{version_tag}.zip");
         if let Err(e) = state.oci_storage.put_blob(&key, bytes::Bytes::from(data.clone())).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to upload source: {e}")).into_response();
+            tracing::error!(%e, %agent_id, %key, "create_build: failed to upload source");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
         Some(key)
     } else {
@@ -186,7 +187,10 @@ async fn create_build(
 
     let build = match result {
         Ok(b) => b,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "create_build: failed to create build record");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
     };
 
     let payload = BuildJobPayload::StandaloneBuild {
@@ -206,7 +210,8 @@ async fn create_build(
     .execute(&state.db)
     .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue build: {e}")).into_response();
+        tracing::error!(%e, %agent_id, build_id = %build.id, "create_build: failed to queue build job");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
     let _ = state.build_tx.send(()).await;
 
@@ -418,7 +423,10 @@ async fn get_build(
     {
         Ok(Some(build)) => Json(build).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, build_id = %id, "get_build: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -551,7 +559,10 @@ async fn list_all_builds(
 
     match rows {
         Ok(builds) => Json(crate::Paginated::new(builds)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "list_all_builds: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -591,7 +602,10 @@ async fn list_builds(
     .await
     {
         Ok(builds) => Json(builds).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "list_builds: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -605,7 +619,7 @@ pub async fn auto_generate_capabilities_pub(
     agent_name: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
-    use nasiko_router::providers::LLMProvider;
+    use nasiko_orchestrator::providers::LLMProvider;
 
     let data = match oci_storage.get_blob(source_key).await {
         Ok(d) => d,

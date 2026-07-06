@@ -627,7 +627,10 @@ pub async fn router_stats_handler(
     )
     .fetch_all(&state.db)
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {e}")))?;
+    .map_err(|e| {
+        tracing::error!(%e, "router_stats_handler: db error");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
 
     let data: Vec<serde_json::Value> = rows
         .into_iter()
@@ -855,7 +858,17 @@ impl IntoResponse for A2aDispatchError {
                 -32604,
                 format!("agent '{}' not found or not running", name),
             ),
-            Self::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, e),
+            Self::Internal(e) => {
+                // `e` may carry raw DB/IO/upstream error text (see call sites) — log
+                // it server-side and never echo it back to the client (SRV raw-error
+                // leak sweep).
+                tracing::error!(error = %e, "a2a dispatch internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    -32603,
+                    "internal error".to_string(),
+                )
+            }
         };
 
         let body = Json(json!({

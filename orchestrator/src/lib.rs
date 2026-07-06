@@ -18,4 +18,4 @@ pub use reranker::Reranker;
 pub use selector::AgentSelector;
 pub use session_history::SessionHistory;
 pub use types::{AgentCard, FilePart, RouteRequest, RouteResult, RouterLogEntry};
-pub use vector_store::VectorStore;
+pub use vector_store::{EmbeddingCache, VectorStore};

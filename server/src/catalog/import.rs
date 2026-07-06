@@ -95,7 +95,10 @@ where
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|e| format!("background task failed: {e}"))?
+        .map_err(|e| {
+            tracing::error!(%e, "run_blocking: background task join failed");
+            "background task failed".to_string()
+        })?
 }
 
 /// Find the caller's own agent by name, if any.
@@ -135,13 +138,19 @@ pub(crate) async fn build_and_deploy(
 
     // Register agent in catalog and sync skills projection atomically.
     let mut tx = state.db.begin().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("begin tx: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(%e, agent_name = %meta.name, %owner_id, "build_and_deploy: begin tx");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
     // Run the existence check and the update on the SAME transaction as the
     // INSERT/skills/build-record writes — otherwise a later commit failure leaves
     // the agent pointing at a rolled-back build (CAT-1), and two concurrent
     // same-name imports both read None and race.
     let existing_id = find_owned_agent(&mut *tx, &meta.name, owner_id).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("lookup agent: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(%e, agent_name = %meta.name, %owner_id, "build_and_deploy: lookup agent");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
 
     let agent_id: Uuid = if let Some(id) = existing_id {
         sqlx::query("UPDATE agents SET version = $1, image = $2, updated_at = now() WHERE id = $3 AND owner_id = $4")
@@ -151,7 +160,10 @@ pub(crate) async fn build_and_deploy(
             .bind(owner_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("update agent: {e}")))?;
+            .map_err(|e| {
+                tracing::error!(%e, agent_id = %id, "build_and_deploy: update agent");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            })?;
         id
     } else {
         sqlx::query_scalar(
@@ -169,7 +181,10 @@ pub(crate) async fn build_and_deploy(
         .bind(&meta.capabilities)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}")))?
+        .map_err(|e| {
+            tracing::error!(%e, agent_name = %meta.name, %owner_id, "build_and_deploy: register agent");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?
         .ok_or_else(|| (StatusCode::CONFLICT, "agent name already in use by another owner".into()))?
     };
 
@@ -177,7 +192,10 @@ pub(crate) async fn build_and_deploy(
         serde_json::from_value(meta.skills.clone())
             .map_err(|_| (StatusCode::BAD_REQUEST, "skills must be an array of skill objects".into()))?;
     crate::catalog::skills::sync_agent_skills(&mut tx, agent_id, &skills).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sync skills: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(%e, %agent_id, "build_and_deploy: sync skills");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
 
     // Create the build record inside the same transaction so the agent row
     // and its first build record are always committed together.
@@ -191,10 +209,16 @@ pub(crate) async fn build_and_deploy(
     .bind(&image_tag)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create build record: {e}")))?;
+    .map_err(|e| {
+        tracing::error!(%e, %agent_id, "build_and_deploy: create build record");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
 
     tx.commit().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: commit tx");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
 
     // Build image
     // TODO: migrate to new runtime API — build() now takes tar bytes, not a directory path.
@@ -202,13 +226,17 @@ pub(crate) async fn build_and_deploy(
     let source_dir_owned = source_dir.to_path_buf();
     let tar_bytes = run_blocking(move || crate::build::tar_directory(&source_dir_owned))
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("tar source: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: tar source");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
     if let Err(e) = state.runtime.build(&tar_bytes, &image_tag).await {
+        tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: docker build failed");
         let _ = sqlx
             ::query("UPDATE agent_builds SET status = 'failed' WHERE id = $1")
             .bind(build_id)
             .execute(&state.db).await;
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("docker build failed: {e}")));
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()));
     }
 
     // Mark build successful
@@ -296,8 +324,9 @@ async fn import_upload(
         {
             Ok(m) => m,
             Err(e) => {
+                tracing::warn!(%e, %owner_id, "import_upload: invalid package");
                 let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-                return (StatusCode::BAD_REQUEST, format!("invalid package: {e}")).into_response();
+                return (StatusCode::BAD_REQUEST, "invalid package").into_response();
             }
         }
     };
@@ -355,7 +384,8 @@ async fn import_github(
     {
         Ok(b) => b,
         Err(e) => {
-            return (StatusCode::BAD_GATEWAY, e).into_response();
+            tracing::error!(%e, %owner_id, repository = %req.repository, "import_github: download tarball failed");
+            return (StatusCode::BAD_GATEWAY, "failed to download repository archive").into_response();
         }
     };
 
@@ -367,10 +397,11 @@ async fn import_github(
         let bytes = tarball_bytes;
         let tmp = tmp_dir.clone();
         if let Err(e) = run_blocking(move || extract_tar_gzip(&bytes, &tmp)).await {
+            tracing::warn!(%e, %owner_id, "import_github: failed to extract repository archive");
             let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
             return (
                 StatusCode::BAD_REQUEST,
-                format!("failed to extract repository archive: {e}"),
+                "failed to extract repository archive",
             ).into_response();
         }
     }
@@ -480,7 +511,8 @@ async fn import_registry(
     {
         Ok(c) => c,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("http client: {e}")).into_response();
+            tracing::error!(%e, "import_registry: failed to build http client");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 
@@ -502,14 +534,16 @@ async fn import_registry(
             ).into_response();
         }
         Err(e) => {
-            return (StatusCode::BAD_GATEWAY, format!("cannot reach registry: {e}")).into_response();
+            tracing::error!(%e, %registry_url, "import_registry: cannot reach registry");
+            return (StatusCode::BAD_GATEWAY, "cannot reach registry").into_response();
         }
     };
 
     let manifest: serde_json::Value = match manifest_res.json().await {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_GATEWAY, format!("invalid manifest: {e}")).into_response();
+            tracing::warn!(%e, %registry_url, "import_registry: invalid manifest response");
+            return (StatusCode::BAD_GATEWAY, "registry returned an invalid manifest").into_response();
         }
     };
 
@@ -549,7 +583,8 @@ async fn import_registry(
                 ).into_response();
             }
             Err(e) => {
-                return (StatusCode::BAD_GATEWAY, format!("blob fetch error: {e}")).into_response();
+                tracing::error!(%e, %blob_url, "import_registry: blob fetch error");
+                return (StatusCode::BAD_GATEWAY, "failed to fetch registry blob").into_response();
             }
         };
 
@@ -565,9 +600,10 @@ async fn import_registry(
                         break;
                     }
                     Some(Err(e)) => {
+                        tracing::error!(%e, %blob_url, "import_registry: blob read error");
                         return (
                             StatusCode::BAD_GATEWAY,
-                            format!("blob read error: {e}"),
+                            "failed to read registry blob",
                         ).into_response();
                     }
                     Some(Ok(chunk)) => {
@@ -597,8 +633,9 @@ async fn import_registry(
             {
                 Ok(m) => m,
                 Err(e) => {
+                    tracing::warn!(%e, %owner_id, "import_registry: extract source failed");
                     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-                    return (StatusCode::BAD_REQUEST, format!("extract source: {e}")).into_response();
+                    return (StatusCode::BAD_REQUEST, "invalid source artifact").into_response();
                 }
             }
         };
@@ -636,9 +673,10 @@ async fn import_registry(
             }
             Ok(Ok(output)) if !output.status.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::error!(%stderr, %image_with_tag, "import_registry: docker pull failed");
                 return (
                     StatusCode::BAD_GATEWAY,
-                    format!("docker pull failed: {stderr}"),
+                    "docker pull failed",
                 ).into_response();
             }
             Ok(Err(e)) => {
@@ -684,9 +722,10 @@ async fn import_registry(
                 ).into_response();
             }
             Err(e) => {
+                tracing::error!(%e, %agent_name, %owner_id, "import_registry: register agent");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("register agent: {e}"),
+                    "internal error",
                 ).into_response();
             }
         };

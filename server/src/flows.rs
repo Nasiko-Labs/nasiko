@@ -81,9 +81,9 @@ async fn list_flows(
     claims: Claims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let rows = sqlx::query_as::<_, Flow>(
@@ -104,7 +104,10 @@ async fn list_flows(
 
     match rows {
         Ok(data) => Json(crate::Paginated::new(data)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "list_flows: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -113,9 +116,9 @@ async fn get_flow(
     claims: Claims,
     Path(flow_id): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let flow = sqlx::query_as::<_, Flow>(
@@ -143,7 +146,10 @@ async fn get_flow(
             .into_response()
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, %flow_id, "get_flow: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -161,9 +167,9 @@ async fn create_flow(
     claims: Claims,
     Json(body): Json<CreateFlowRequest>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
@@ -184,7 +190,10 @@ async fn create_flow(
 
     match result {
         Ok(flow) => (StatusCode::CREATED, Json(flow)).into_response(),
-        Err(e) => (StatusCode::CONFLICT, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, flow_id = %body.flow_id, "create_flow: db error");
+            (StatusCode::CONFLICT, "flow already exists or invalid reference").into_response()
+        }
     }
 }
 
@@ -204,9 +213,9 @@ async fn complete_flow(
     Path(flow_id): Path<String>,
     Json(body): Json<CompleteFlowRequest>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let result = sqlx::query_as::<_, Flow>(
@@ -236,7 +245,10 @@ async fn complete_flow(
     match result {
         Ok(Some(f)) => Json(f).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, %flow_id, "complete_flow: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -245,9 +257,9 @@ async fn list_steps(
     claims: Claims,
     Path(flow_id): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // Verify ownership
@@ -273,7 +285,10 @@ async fn list_steps(
 
     match steps {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, %flow_id, "list_steps: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -292,9 +307,9 @@ async fn add_step(
     Path(flow_id): Path<String>,
     Json(body): Json<AddStepRequest>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     // Verify ownership
@@ -336,6 +351,9 @@ async fn add_step(
 
     match result {
         Ok(step) => (StatusCode::CREATED, Json(step)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, %flow_id, "add_step: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }

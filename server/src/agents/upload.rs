@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
     response::{
         IntoResponse,
@@ -27,15 +27,16 @@ use super::utils::{set_build_status, set_upload_status};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/upload-and-deploy",        post(upload_and_deploy))
-        .route("/deploy-status/{build_id}", get(deploy_status_sse))
-        .route("/upload-status/{upload_id}", get(get_upload_status))
+        .route("/upload",                          post(upload_and_deploy))
+        .route("/uploads",                         get(list_upload_status))
+        .route("/uploads/{upload_id}",             get(get_upload_status))
+        .route("/deploys/{build_id}/stream",       get(deploy_status_sse))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES as usize))
 }
 
 pub fn user_routes() -> Router<AppState> {
     Router::new()
-        .route("/upload-agents", get(list_upload_agents))
+        .route("/my-uploads", get(list_upload_agents))
 }
 
 #[derive(Debug, Serialize)]
@@ -555,7 +556,10 @@ pub async fn execute_upload_and_deploy(
         }
         Err(e) => {
             set_build_status(&db, build_id, BuildStatus::Failed).await;
-            set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some(&e)).await;
+            // `e` may embed raw docker/tar/IO error text — log it, but
+            // upload_status.error_message is read back by clients via
+            // GET /agents/uploads, so store a generic reason there.
+            set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some("upload and deploy failed")).await;
             let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
                 .bind(agent_id)
                 .execute(&db)
@@ -638,7 +642,67 @@ async fn get_upload_status(
     }
 }
 
-// ─── GET /user/upload-agents ─────────────────────────────────────────────────
+// ─── GET /agents/uploads ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct UploadListQuery {
+    #[serde(default = "default_upload_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_upload_limit() -> i64 {
+    10
+}
+
+async fn list_upload_status(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(q): Query<UploadListQuery>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
+
+    let rows = if claims.is_superuser {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(user_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match rows {
+        Ok(data) => {
+            let total = data.len();
+            Json(serde_json::json!({"data": data, "total": total})).into_response()
+        }
+        Err(e) => {
+            tracing::error!(%e, "list_upload_status db error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+// ─── GET /agents/upload-agents ───────────────────────────────────────────────
 
 async fn list_upload_agents(
     State(state): State<AppState>,

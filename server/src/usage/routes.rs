@@ -45,9 +45,9 @@ async fn summary(
     claims: Claims,
     Query(q): Query<SummaryQuery>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let from = Utc::now() - Duration::days(q.days);
@@ -79,7 +79,10 @@ async fn summary(
             period_days: q.days,
         })
         .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "usage summary: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -114,9 +117,9 @@ async fn history(
     claims: Claims,
     Query(q): Query<HistoryQuery>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let from = Utc::now() - Duration::days(q.days);
@@ -139,7 +142,10 @@ async fn history(
 
     match rows {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "usage history: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -174,9 +180,9 @@ async fn by_agent(
     claims: Claims,
     Query(q): Query<PaginatedQuery>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let from = Utc::now() - Duration::days(q.days);
@@ -209,7 +215,10 @@ async fn by_agent(
 
     match rows {
         Ok(data) => Json(crate::Paginated::new(data)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "usage by-agent: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }
 
@@ -232,9 +241,9 @@ async fn by_model(
     claims: Claims,
     Query(q): Query<PaginatedQuery>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
 
     let from = Utc::now() - Duration::days(q.days);
@@ -264,6 +273,9 @@ async fn by_model(
 
     match rows {
         Ok(data) => Json(crate::Paginated::new(data)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %user_id, "usage by-model: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
 }

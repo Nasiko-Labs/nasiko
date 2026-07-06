@@ -4,6 +4,9 @@
 //!   - GET /api/agents/{id}       — non-owner gets 403, superuser gets through
 //!   - GET /api/agents/{id}/versions — non-owner gets 403
 //!   - GET /api/search/agents     — non-owner only sees their own agents
+//!   - GET /api/agents, /api/agents/by-skill, /api/search/agents — a public or
+//!     user-granted agent (not owned by the caller) is discoverable via listing,
+//!     not just fetchable directly by id (CAT-3 regression coverage)
 //!   - POST /api/agents           — skill tags are merged into agent.tags on create
 //!   - PUT  /api/agents/{id}      — skill tags are merged into agent.tags on update
 //!
@@ -97,6 +100,48 @@ async fn search(server: &common::TestServer, uid: &str, is_super: bool, q: &str)
     // Agent search returns a {agents, total, max_score} envelope (Python parity).
     let body: Value = res.json().await.unwrap();
     body["agents"].as_array().cloned().unwrap_or_default()
+}
+
+async fn list_agents(server: &common::TestServer, uid: &str, is_super: bool) -> Vec<Value> {
+    let rb = server.client.get(server.url("/api/agents"));
+    let res = if is_super {
+        common::as_superuser(rb, uid, "u")
+    } else {
+        common::as_member(rb, uid, "u")
+    }
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    res.json::<Vec<Value>>().await.unwrap()
+}
+
+async fn by_skill(server: &common::TestServer, uid: &str, is_super: bool, tag: &str) -> Vec<Value> {
+    let rb = server
+        .client
+        .get(server.url(&format!("/api/agents/by-skill?tag={tag}")));
+    let res = if is_super {
+        common::as_superuser(rb, uid, "u")
+    } else {
+        common::as_member(rb, uid, "u")
+    }
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    res.json::<Vec<Value>>().await.unwrap()
+}
+
+/// Insert a direct user-grant row so `grantee_id` can access `agent_id` (CAT-3 tests).
+async fn grant_agent_to_user(server: &common::TestServer, agent_id: &str, grantee_id: &str) {
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id) VALUES ($1, 'user', $2)",
+    )
+    .bind(uuid::Uuid::parse_str(agent_id).unwrap())
+    .bind(grantee_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
 }
 
 async fn update_agent(server: &common::TestServer, uid: &str, agent_id: &str, body: Value) -> Value {
@@ -257,6 +302,108 @@ async fn search_is_owner_scoped() {
     server.cleanup().await;
 }
 
+// ─── CAT-3: listing endpoints must surface public/granted agents ────────────
+// `get_one` already allows a non-owner to fetch a public or user-granted agent
+// directly by id (see `public_agent_non_owner_can_read_but_not_mutate` above).
+// `list`, `by_skill`, and `search` must apply the same owner ∪ public ∪
+// user-grant predicate, not a bare owner_id scope — otherwise such an agent is
+// fetchable by id but never discoverable by browsing/searching.
+
+#[tokio::test]
+#[serial]
+async fn list_includes_public_agent_for_non_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let pub_agent = create_agent(&server, uid, json!({"name": "cat3-list-pub", "version": "1.0.0"})).await;
+    let pub_id = pub_agent["id"].as_str().unwrap();
+    sqlx::query("UPDATE agents SET is_public = true WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(pub_id).unwrap())
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let priv_agent = create_agent(&server, uid, json!({"name": "cat3-list-priv", "version": "1.0.0"})).await;
+    let priv_id = priv_agent["id"].as_str().unwrap();
+
+    let bob = create_user(&server, uid, "cat3-list-bob").await;
+    let bob_id = bob["id"].as_str().unwrap();
+
+    let seen = list_agents(&server, bob_id, false).await;
+    let ids: Vec<&str> = seen.iter().filter_map(|a| a["id"].as_str()).collect();
+
+    assert!(ids.contains(&pub_id), "non-owner must see a public agent in the list");
+    assert!(!ids.contains(&priv_id), "non-owner must not see a private, non-granted agent in the list");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn by_skill_includes_user_granted_agent_for_non_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let granted = create_agent(&server, uid, json!({
+        "name": "cat3-skill-granted",
+        "version": "1.0.0",
+        "skills": [skill("cat3-s1", &["cat3-skill-tag"])],
+    }))
+    .await;
+    let granted_id = granted["id"].as_str().unwrap();
+
+    let ungranted = create_agent(&server, uid, json!({
+        "name": "cat3-skill-ungranted",
+        "version": "1.0.0",
+        "skills": [skill("cat3-s2", &["cat3-skill-tag"])],
+    }))
+    .await;
+    let ungranted_id = ungranted["id"].as_str().unwrap();
+
+    let bob = create_user(&server, uid, "cat3-skill-bob").await;
+    let bob_id = bob["id"].as_str().unwrap();
+    grant_agent_to_user(&server, granted_id, bob_id).await;
+
+    let seen = by_skill(&server, bob_id, false, "cat3-skill-tag").await;
+    let ids: Vec<&str> = seen.iter().filter_map(|a| a["id"].as_str()).collect();
+
+    assert!(ids.contains(&granted_id), "non-owner must see a user-granted agent via by-skill");
+    assert!(!ids.contains(&ungranted_id), "non-owner must not see a non-granted agent via by-skill");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn search_includes_public_agent_for_non_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let pub_agent = create_agent(&server, uid, json!({"name": "cat3-search-pub", "version": "1.0.0"})).await;
+    let pub_id = pub_agent["id"].as_str().unwrap();
+    sqlx::query("UPDATE agents SET is_public = true WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(pub_id).unwrap())
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    create_agent(&server, uid, json!({"name": "cat3-search-priv", "version": "1.0.0"})).await;
+
+    let bob = create_user(&server, uid, "cat3-search-bob").await;
+    let bob_id = bob["id"].as_str().unwrap();
+
+    let results = search(&server, bob_id, false, "cat3-search").await;
+    let names: Vec<&str> = results.iter().filter_map(|a| a["name"].as_str()).collect();
+
+    assert!(names.contains(&"cat3-search-pub"), "non-owner must see a public agent via search");
+    assert!(!names.contains(&"cat3-search-priv"), "non-owner must not see a private, non-granted agent via search");
+
+    server.cleanup().await;
+}
+
 // ─── skill-tag dedup ─────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -329,6 +476,59 @@ async fn update_with_skills_merges_skill_tags() {
 
     let added_count = tags.iter().filter(|&&t| t == "added").count();
     assert_eq!(added_count, 1, "'added' must appear exactly once after dedup");
+
+    server.cleanup().await;
+}
+
+// ─── read vs manage split (R3 correction / RUN-9) ────────────────────────────
+// A public (or invoke-granted) agent is READABLE by a non-owner, but must NOT be
+// mutable/destroyable by them — mutations are owner-or-superuser only.
+#[tokio::test]
+#[serial]
+async fn public_agent_non_owner_can_read_but_not_mutate() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let owner_id = admin["user_id"].as_str().unwrap();
+
+    let agent = create_agent(&server, owner_id, json!({"name": "pub-split-agent", "version": "1.0.0"})).await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    // Make it public so view-access (can_access_agent) is true for anyone.
+    sqlx::query("UPDATE agents SET is_public = true WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(agent_id).unwrap())
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let bob = create_user(&server, owner_id, "bobpub").await;
+    let bob_id = bob["id"].as_str().unwrap();
+
+    // READ: allowed for a non-owner because the agent is public.
+    let read = get_agent(&server, bob_id, false, agent_id).await;
+    assert_eq!(read.status(), 200, "non-owner should be able to read a public agent");
+
+    // DELETE: forbidden — destroy is owner-or-superuser (RUN-9 IDOR guard).
+    let del = common::as_member(
+        server.client.delete(server.url(&format!("/api/agents/{agent_id}"))),
+        bob_id,
+        "bobpub",
+    )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 403, "non-owner must NOT delete a public agent");
+
+    // UPDATE: likewise forbidden — an invoke/public grant is not a manage grant.
+    let upd = common::as_member(
+        server.client.put(server.url(&format!("/api/agents/{agent_id}"))),
+        bob_id,
+        "bobpub",
+    )
+        .json(&json!({"description": "hijacked"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upd.status(), 403, "non-owner must NOT update a public agent");
 
     server.cleanup().await;
 }

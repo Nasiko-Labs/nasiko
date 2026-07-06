@@ -139,7 +139,10 @@ impl CallGuard for CpCallGuard {
                 let target_id = resolve_agent_id(&self.db, &target).await?;
                 let allowed = check_agent_acl(&self.db, caller_id, target_id)
                     .await
-                    .map_err(|e| format!("ACL check failed: {e}"))?;
+                    .map_err(|e| {
+                        warn!(%e, %caller_id, %target_id, "ACL check failed");
+                        "ACL check failed".to_string()
+                    })?;
                 if !allowed {
                     return Err(format!("agent ACL denied: caller cannot invoke '{}'", target));
                 }

@@ -14,10 +14,11 @@ uuid = { workspace = true }
 # docker feature
 bollard = { version = "0.17", optional = true }
 futures-util = { version = "0.3", optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = ["docker"]
-docker = ["dep:bollard", "dep:futures-util"]
+docker = ["dep:bollard", "dep:futures-util", "dep:serde_json"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

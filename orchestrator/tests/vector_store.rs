@@ -1,4 +1,4 @@
-use nasiko_orchestrator::{AgentCard, VectorStore};
+use nasiko_orchestrator::{AgentCard, EmbeddingCache, VectorStore};
 use uuid::Uuid;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -135,7 +135,90 @@ async fn build_with_api_key_embeds_agents() {
     let model = "text-embedding-3-small".to_string();
 
     let agents = make_agents(&["coding-agent", "data-agent"]);
-    let store = VectorStore::build(agents, api_key, base_url, model).await;
+    let cache = Default::default();
+    let store = VectorStore::build(agents, api_key, base_url, model, &cache).await;
     let result = store.shortlist("write code", 1, 1).await;
     assert!(!result.is_empty());
+}
+
+// ── embedding cache: repeat build() calls should not re-embed ────────────────
+// Regression test for the redundant-recompute bug: Stage 1 used to call the
+// embeddings API for every agent on every route() call. With a shared
+// `EmbeddingCache`, a second `build()` call for the same agents must reuse the
+// cached vectors instead of hitting the network again.
+
+#[tokio::test]
+async fn build_reuses_cached_embedding_on_second_call() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/embeddings")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"data":[{"embedding":[0.1,0.2,0.3]}]}"#)
+        .expect(1)
+        .create_async().await;
+
+    let agents = make_agents(&["agent-1"]);
+    let cache: EmbeddingCache = Default::default();
+
+    let _store1 = VectorStore::build(
+        agents.clone(),
+        "sk-test".to_string(),
+        server.url(),
+        "test-model".to_string(),
+        &cache,
+    )
+    .await;
+
+    // Second build() with the same agents + cache must be served entirely
+    // from cache — the mock only expects a single call.
+    let _store2 = VectorStore::build(
+        agents,
+        "sk-test".to_string(),
+        server.url(),
+        "test-model".to_string(),
+        &cache,
+    )
+    .await;
+
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn build_re_embeds_when_agent_content_changes() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/embeddings")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"data":[{"embedding":[0.1,0.2,0.3]}]}"#)
+        .expect(2)
+        .create_async().await;
+
+    let mut agents = make_agents(&["agent-1"]);
+    let cache: EmbeddingCache = Default::default();
+
+    let _store1 = VectorStore::build(
+        agents.clone(),
+        "sk-test".to_string(),
+        server.url(),
+        "test-model".to_string(),
+        &cache,
+    )
+    .await;
+
+    // Changing the embedded content (description) invalidates the cache entry
+    // even though the agent id and TTL window are unchanged.
+    agents[0].description = "a brand new description".to_string();
+
+    let _store2 = VectorStore::build(
+        agents,
+        "sk-test".to_string(),
+        server.url(),
+        "test-model".to_string(),
+        &cache,
+    )
+    .await;
+
+    mock.assert_async().await;
 }

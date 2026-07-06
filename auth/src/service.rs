@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 
-use crate::{AuthError, AuthService, Identity, LoginResult, Role};
+use crate::{AuthError, AuthService, Identity, LoginResult};
 
 const TOKEN_EXPIRY_SECS: u64 = 12 * 60 * 60; // 12 hours
 
@@ -56,10 +56,6 @@ impl AuthServiceImpl {
     }
 }
 
-fn parse_role(role_str: Option<&str>) -> Option<Role> {
-    role_str.and_then(|r| serde_json::from_value(serde_json::Value::String(r.to_owned())).ok())
-}
-
 #[async_trait]
 impl AuthService for AuthServiceImpl {
     async fn validate_token(&self, token: &str) -> Result<Identity, AuthError> {
@@ -85,13 +81,11 @@ impl AuthService for AuthServiceImpl {
             username: String,
             is_superuser: bool,
             is_active: bool,
-            role: Option<String>,
             access_secret_hash: String,
         }
 
         let row: Option<CredRow> = sqlx::query_as(
             r#"SELECT u.id, u.username, u.is_superuser, u.is_active,
-                      u.role::text as role,
                       uc.access_secret_hash
                FROM users u
                JOIN user_credentials uc ON uc.user_id = u.id
@@ -108,7 +102,7 @@ impl AuthService for AuthServiceImpl {
             return Err(AuthError::Disabled);
         }
 
-        if !crate::verify_password_blocking(password.to_owned(), row.access_secret_hash.clone()).await {
+        if !crate::verify_password_async(password, &row.access_secret_hash).await {
             return Err(AuthError::InvalidCredentials);
         }
 
@@ -117,14 +111,10 @@ impl AuthService for AuthServiceImpl {
             .execute(&self.db)
             .await;
 
-        let role = parse_role(row.role.as_deref());
-        let role_str = row.role.clone().unwrap_or_else(|| "member".into());
-
         let identity = Identity {
             user_id: row.id.to_string(),
             username: row.username.clone(),
             is_superuser: row.is_superuser,
-            role,
         };
 
         // issue_token now records the token itself, so no explicit record here.
@@ -135,7 +125,6 @@ impl AuthService for AuthServiceImpl {
             user_id: row.id.to_string(),
             username: row.username,
             is_superuser: row.is_superuser,
-            role: role_str,
             expires_in: TOKEN_EXPIRY_SECS,
             access_key: None,
             access_secret: None,
@@ -154,7 +143,7 @@ impl AuthService for AuthServiceImpl {
             return Ok(());
         }
 
-        let access_secret_hash = crate::hash_password_blocking(password.to_owned()).await?;
+        let access_secret_hash = crate::hash_password_async(password).await?;
 
         let email = format!("{}@localhost", username);
         let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
@@ -192,7 +181,7 @@ impl AuthService for AuthServiceImpl {
     async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError> {
         let agent_uuid = agent_id
             .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::InvalidToken("invalid agent_id".into()))?;
+            .map_err(|_| AuthError::NotFound)?;
 
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM agents WHERE id = $1 AND deleted_at IS NULL)",
@@ -210,7 +199,6 @@ impl AuthService for AuthServiceImpl {
             user_id: agent_id.to_owned(),
             username: format!("agent:{}", agent_id),
             is_superuser: false,
-            role: None,
         };
 
         let token = self.issue_token(&identity).await?;
@@ -270,7 +258,6 @@ impl AuthService for AuthServiceImpl {
             user_id: user_id.to_string(),
             username: username.to_owned(),
             is_superuser: false,
-            role: Some(Role::Member),
         };
 
         let token = self.issue_token(&identity).await?;
@@ -281,7 +268,6 @@ impl AuthService for AuthServiceImpl {
             user_id: user_id.to_string(),
             username: username.to_owned(),
             is_superuser: false,
-            role: "member".into(),
             expires_in: TOKEN_EXPIRY_SECS,
             access_key: None,
             access_secret: None,
@@ -291,19 +277,16 @@ impl AuthService for AuthServiceImpl {
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError> {
         let user_uuid = user_id
             .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::InvalidToken("invalid user_id".into()))?;
+            .map_err(|_| AuthError::NotFound)?;
 
         #[derive(sqlx::FromRow)]
         struct UserRow {
             is_superuser: bool,
             username: String,
-            role: Option<String>,
         }
 
         let row: Option<UserRow> = sqlx::query_as(
-            r#"SELECT is_superuser, username,
-                      role::text as role
-               FROM users WHERE id = $1 AND deleted_at IS NULL"#,
+            "SELECT is_superuser, username FROM users WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(user_uuid)
         .fetch_optional(&self.db)
@@ -312,20 +295,25 @@ impl AuthService for AuthServiceImpl {
 
         let row = row.ok_or(AuthError::NotFound)?;
 
-        let role = parse_role(row.role.as_deref());
-
         Ok(Identity {
             user_id: user_id.to_owned(),
             username: row.username,
             is_superuser: row.is_superuser,
-            role,
         })
+    }
+
+    async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError> {
+        let user_uuid = user_id
+            .parse::<uuid::Uuid>()
+            .map_err(|_| AuthError::NotFound)?;
+        self.record_token(token, user_uuid).await;
+        Ok(())
     }
 
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError> {
         let user_uuid = user_id
             .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::InvalidToken("invalid user_id".into()))?;
+            .map_err(|_| AuthError::NotFound)?;
 
         let result = sqlx::query(
             "UPDATE auth_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()",
@@ -352,7 +340,7 @@ impl AuthService for AuthServiceImpl {
     async fn revoke_tokens_for_agent(&self, agent_id: &str) -> Result<u64, AuthError> {
         let agent_uuid = agent_id
             .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::InvalidToken("invalid agent_id".into()))?;
+            .map_err(|_| AuthError::NotFound)?;
 
         let result = sqlx::query(
             "UPDATE auth_tokens SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL AND expires_at > now()",

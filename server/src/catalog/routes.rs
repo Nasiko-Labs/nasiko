@@ -7,6 +7,7 @@ use axum::{
     routing::{ get, post, put },
 };
 use serde::{ Deserialize, Serialize };
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use nasiko_runtime::ContainerId;
@@ -24,9 +25,56 @@ pub fn router() -> Router<AppState> {
         .route("/agents/{id}", put(update))
         .route("/agents/{id}", axum::routing::delete(delete))
         .route("/agents/{id}/versions", get(list_versions))
-        .route("/agents/search", get(search))
+        .route("/agents/{id}/versions/{version}", axum::routing::delete(delete_version))
         .route("/agents/by-skill", get(by_skill))
+        .route("/search/agents", get(search))
         .route("/search/users", get(search_users))
+        .route("/registry/user/agents", get(registry_user_agents))
+        .route("/registries/{id}", get(get_by_registry_id))
+}
+
+/// WHERE-clause fragment implementing the baseline catalog access predicate —
+/// owner ∪ public ∪ user-grant — used to scope the `list`/`by_skill`/`search`
+/// listing endpoints so a discoverable agent (public, or shared to the caller via
+/// a user grant) actually shows up in listings rather than only being fetchable
+/// directly by id via `get_one` (which uses `crate::acl::can_access_agent`) (CAT-3).
+///
+/// Mirrors the OSS `AuthServiceImpl::can_access_agent` SQL (oss/auth/src/service.rs).
+///
+/// `user_bind` is the positional bind parameter carrying the caller's user id as
+/// `Option<Uuid>` — `NULL` short-circuits the whole predicate to "match everything",
+/// which is how each call site already encodes the superuser bypass (see
+/// `owner_filter` at each call site: `None` for superusers, `Some(user_id)`
+/// otherwise). `table_ref` is however the `agents` table is referenced at the call
+/// site (bare table name or a query alias) and must resolve unambiguously from
+/// within the correlated `EXISTS` subquery.
+///
+/// EDITION-AWARE GAP: `EeAuthService::can_access_agent` (ee/auth/src/lib.rs)
+/// additionally grants access via team/department membership, joining on
+/// `users.team_id` / `users.department_id` — columns that only exist after the EE
+/// `1002_org_hierarchy` migration. This file is compiled into and shared by both
+/// the OSS and EE server binaries (`ee/server` wraps this crate's router rather
+/// than forking it — see `nasiko_server::build_app_with_user_router`), so a single
+/// static SQL string here cannot reference those EE-only columns without breaking
+/// at runtime against an OSS-only-migrated database. Expressing the full
+/// edition-aware predicate would require extending the `AuthService` trait
+/// (oss/auth) with a listing-scoped method the EE impl can override, which is out
+/// of scope for this file. Left as a known, intentional gap: under EE, an agent
+/// granted to the caller only via team/department membership (not a direct
+/// user-grant) still will not appear in `list`/`by_skill`/`search`, even though
+/// `get_one`'s `can_access_agent` call allows fetching it directly by id.
+fn agent_access_predicate(user_bind: &str, table_ref: &str) -> String {
+    format!(
+        r#"({user_bind}::uuid IS NULL
+             OR {table_ref}.owner_id = {user_bind}
+             OR {table_ref}.is_public = TRUE
+             OR EXISTS (
+                 SELECT 1 FROM agent_grants ag
+                 WHERE ag.agent_id = {table_ref}.id
+                   AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
+                     OR (ag.grant_type = 'user'   AND ag.grantee_id = {user_bind}::text))
+             ))"#
+    )
 }
 
 #[derive(Deserialize)]
@@ -38,9 +86,10 @@ struct BySkillQuery {
     offset: i64,
 }
 
-/// Discover agents that have a skill tagged `tag`. Owner-scoped like `list`
-/// (superuser → all; otherwise own). Uses the GIN `idx_agent_skills_tags` via
-/// the `@>` containment operator and `EXISTS` (no join fan-out / DISTINCT).
+/// Discover agents that have a skill tagged `tag`. Access-scoped like `list`
+/// (superuser → all; otherwise owner ∪ public ∪ user-grant — see
+/// `agent_access_predicate`). Uses the GIN `idx_agent_skills_tags` via the `@>`
+/// containment operator and `EXISTS` (no join fan-out / DISTINCT).
 async fn by_skill(
     State(state): State<AppState>,
     claims: Claims,
@@ -67,19 +116,22 @@ async fn by_skill(
     // even if the caller passes "Data-Pipeline" instead of "data-pipeline".
     let tag_lower = tag.to_lowercase();
 
-    let result = sqlx
-        ::query_as::<_, AgentSummary>(
-            r#"SELECT a.id, a.name, a.display_name, a.description, a.url, a.icon_url,
+    let sql = format!(
+        r#"SELECT a.id, a.name, a.display_name, a.description, a.url, a.icon_url,
                   a.version, a.status, a.tags, a.created_at
            FROM agents a
-           WHERE ($4::uuid IS NULL OR a.owner_id = $4)
+           WHERE ({access})
              AND EXISTS (
                  SELECT 1 FROM agent_skills s
                  WHERE s.agent_id = a.id AND s.tags @> ARRAY[$1]::text[]
              )
            ORDER BY a.created_at DESC
-           LIMIT $2 OFFSET $3"#
-        )
+           LIMIT $2 OFFSET $3"#,
+        access = agent_access_predicate("$4", "a")
+    );
+
+    let result = sqlx
+        ::query_as::<_, AgentSummary>(&sql)
         .bind(&tag_lower)
         .bind(limit)
         .bind(offset)
@@ -115,10 +167,14 @@ async fn create(
         .map(|t| t.to_lowercase())
         .collect();
     // Merge unique tags declared on each skill into the agent's tag set.
+    // `seen` gives O(1) membership checks so the merge is O(n) overall instead of
+    // O(n·m) from repeated `Vec::contains` scans; `tags` still gets pushed in
+    // original encounter order.
+    let mut seen: HashSet<String> = tags.iter().cloned().collect();
     for skill in &skills_vec {
         for tag in &skill.tags {
             let tag_lower = tag.to_lowercase();
-            if !tags.contains(&tag_lower) {
+            if seen.insert(tag_lower.clone()) {
                 tags.push(tag_lower);
             }
         }
@@ -217,15 +273,18 @@ async fn list(
         }
     };
 
-    let agents = sqlx
-        ::query_as::<_, Agent>(
-            r#"SELECT * FROM agents
+    let sql = format!(
+        r#"SELECT * FROM agents
            WHERE ($1::uuid IS NULL OR owner_id = $1)
-             AND ($3::uuid IS NULL OR owner_id = $3)
+             AND ({access})
              AND ($2::text IS NULL OR status = $2)
            ORDER BY created_at DESC
-           LIMIT $4 OFFSET $5"#
-        )
+           LIMIT $4 OFFSET $5"#,
+        access = agent_access_predicate("$3", "agents")
+    );
+
+    let agents = sqlx
+        ::query_as::<_, Agent>(&sql)
         .bind(q.owner)
         .bind(&q.status)
         .bind(owner_filter)
@@ -303,10 +362,12 @@ async fn update(
             .into_iter()
             .map(|t| t.to_lowercase())
             .collect();
+        // O(n) membership check via HashSet — see the analogous comment in `create`.
+        let mut seen: HashSet<String> = tags.iter().cloned().collect();
         for skill in skill_list {
             for tag in &skill.tags {
                 let tag_lower = tag.to_lowercase();
-                if !tags.contains(&tag_lower) {
+                if seen.insert(tag_lower.clone()) {
                     tags.push(tag_lower);
                 }
             }
@@ -507,6 +568,50 @@ async fn list_versions(
     }
 }
 
+// ── DELETE /agents/{id}/versions/{version} ────────────────────────────────────
+
+async fn delete_version(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path((agent_id, version)): Path<(Uuid, String)>,
+) -> impl IntoResponse {
+    // Deleting a version is destructive — owner-or-superuser only (RUN-9). A public
+    // agent's viewer or an invoke-grantee must not be able to delete its versions.
+    if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // Prevent deleting the currently active version.
+    let is_active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agent_versions WHERE agent_id = $1 AND version = $2 AND is_active = true)",
+    )
+    .bind(agent_id)
+    .bind(&version)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
+
+    if is_active {
+        return (StatusCode::CONFLICT, "cannot delete the active version — rollback first").into_response();
+    }
+
+    match sqlx::query(
+        "DELETE FROM agent_versions WHERE agent_id = $1 AND version = $2",
+    )
+    .bind(agent_id)
+    .bind(&version)
+    .execute(&state.db)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => (StatusCode::NOT_FOUND, "version not found").into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, %version, "delete_version db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
 // ── Scoring helpers ───────────────────────────────────────────────────────────
 //
 //
@@ -666,11 +771,12 @@ async fn search(
         r#"SELECT *, COUNT(*) OVER() AS _total FROM (
                SELECT *, ({AGENT_SCORE_SQL})::double precision AS _score
                FROM agents
-               WHERE ($3::uuid IS NULL OR owner_id = $3)
+               WHERE ({access})
            ) _s
            WHERE _score > 0
            ORDER BY _score DESC, name ASC
-           LIMIT $2"#
+           LIMIT $2"#,
+        access = agent_access_predicate("$3", "agents")
     );
 
     let result = sqlx
@@ -771,4 +877,97 @@ async fn search_users(
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
         }
     }
+}
+
+// ── GET /registry/user/agents ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RegistryUserAgentsQuery {
+    q: Option<String>,
+    status: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+/// Returns agents accessible to the current user: owned + public + explicitly granted.
+/// Supports optional `?q` (name/description search), `?status`, `?limit`, `?offset`.
+/// Superusers see all agents.
+async fn registry_user_agents(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(q): Query<RegistryUserAgentsQuery>,
+) -> impl IntoResponse {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+    };
+
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
+
+    let agents = if claims.is_superuser {
+        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
+        sqlx::query_as::<_, Agent>(
+            r#"SELECT * FROM agents
+               WHERE ($1::text IS NULL OR (name ILIKE $1 OR description ILIKE $1))
+                 AND ($2::text IS NULL OR status = $2)
+               ORDER BY created_at DESC
+               LIMIT $3 OFFSET $4"#,
+        )
+        .bind(&pattern)
+        .bind(&q.status)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
+        sqlx::query_as::<_, Agent>(
+            r#"SELECT * FROM agents
+               WHERE (
+                   owner_id = $1
+                   OR is_public = true
+                   OR EXISTS (
+                       SELECT 1 FROM agent_grants ag
+                       WHERE ag.agent_id = agents.id
+                         AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
+                           OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text))
+                   )
+               )
+                 AND ($2::text IS NULL OR (name ILIKE $2 OR description ILIKE $2))
+                 AND ($3::text IS NULL OR status = $3)
+               ORDER BY created_at DESC
+               LIMIT $4 OFFSET $5"#,
+        )
+        .bind(user_id)
+        .bind(&pattern)
+        .bind(&q.status)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match agents {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => {
+            tracing::error!(%e, "registry_user_agents: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
+// ── GET /registries/{id} ──────────────────────────────────────────────────────
+
+/// Look up an agent by its UUID or name (registry-entry lookup).
+/// Equivalent to GET /agents/{id} but exposed at the /registries/ path for
+/// clients that use the registry-centric URL scheme.
+async fn get_by_registry_id(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    get_one(State(state), claims, Path(id)).await
 }
