@@ -1,20 +1,17 @@
 import logging
 import uuid
 
+from a2a.helpers import new_task_from_user_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import (
     Artifact,
-    InternalError,
     Part,
     TaskState,
     TaskStatus,
     TaskStatusUpdateEvent,
     TaskArtifactUpdateEvent,
-    TextPart,
-    UnsupportedOperationError,
 )
-from a2a.utils.errors import ServerError
 
 from agent import ResearchAgent
 
@@ -28,44 +25,65 @@ class ResearchAgentExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         query = context.get_user_input()
 
+        task = context.current_task or new_task_from_user_message(context.message)
+        await event_queue.enqueue_event(task)
+
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
-                task_id=context.task_id,
-                context_id=context.context_id,
-                status=TaskStatus(state=TaskState.working),
-                final=False,
+                task_id=task.id,
+                context_id=task.context_id,
+                status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
             )
         )
 
         artifact_id = str(uuid.uuid4())
-        first_chunk = True
+        chunks = []
 
         try:
             async for chunk in self.agent.invoke_streaming(query, context.context_id):
+                chunks.append(chunk)
                 await event_queue.enqueue_event(
                     TaskArtifactUpdateEvent(
-                        task_id=context.task_id,
-                        context_id=context.context_id,
+                        task_id=task.id,
+                        context_id=task.context_id,
                         artifact=Artifact(
                             artifact_id=artifact_id,
-                            parts=[Part(root=TextPart(text=chunk))],
+                            parts=[Part(text=chunk)],
                         ),
-                        append=not first_chunk,
+                        append=len(chunks) > 1,
+                        last_chunk=False,
                     )
                 )
-                first_chunk = False
         except Exception as e:
             logger.error(f"Streaming error: {e}")
-            raise ServerError(error=InternalError()) from e
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    task_id=task.id,
+                    context_id=task.context_id,
+                    status=TaskStatus(state=TaskState.TASK_STATE_FAILED),
+                )
+            )
+            return
+
+        # Mark final chunk
+        if chunks:
+            await event_queue.enqueue_event(
+                TaskArtifactUpdateEvent(
+                    task_id=task.id,
+                    context_id=task.context_id,
+                    artifact=Artifact(artifact_id=artifact_id, parts=[]),
+                    append=True,
+                    last_chunk=True,
+                )
+            )
 
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
-                task_id=context.task_id,
-                context_id=context.context_id,
-                status=TaskStatus(state=TaskState.completed),
-                final=True,
+                task_id=task.id,
+                context_id=task.context_id,
+                status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
             )
         )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise ServerError(error=UnsupportedOperationError())
+        pass
