@@ -165,9 +165,11 @@ async fn upload_and_deploy(
             "name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "source" => {
-                // Stream zip to disk rather than buffering it all in RAM.
-                let field_name = name.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let upload_dir = tmp_base.join(format!("nasiko-upload-{field_name}"));
+                // Stream zip to disk rather than buffering it all in RAM. Key the
+                // temp dir on a fresh UUID, never the agent name (RUN-10) — two
+                // concurrent uploads of the same name previously shared one dir and
+                // each other's cleanup deleted the peer's source.
+                let upload_dir = tmp_base.join(format!("nasiko-upload-{}", uuid::Uuid::new_v4()));
                 if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
                     tracing::error!(%e, "upload: create upload dir failed");
                     return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
@@ -231,6 +233,17 @@ async fn upload_and_deploy(
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
     let version_tag = version_tag.unwrap_or_else(|| "latest".to_string());
+
+    // Validate name + version_tag charset (RUN-10): both flow into the OCI image
+    // reference `{name}:{tag}`; unvalidated values allow push-target redirection
+    // (e.g. `/` or `@` smuggling a different registry/digest) when no registry
+    // prefix is configured.
+    if let Err(e) = crate::build::routes::validate_version_tag(&name) {
+        return (StatusCode::BAD_REQUEST, format!("invalid name: {e}")).into_response();
+    }
+    if let Err(e) = crate::build::routes::validate_version_tag(&version_tag) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
     let zip_path = match zip_path {
         Some(p) => p,
         None => return (StatusCode::BAD_REQUEST, "source zip is required").into_response(),

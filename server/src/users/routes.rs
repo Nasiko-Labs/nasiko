@@ -42,8 +42,8 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
     None
 }
 
-/// Full user orchestrator — list, get, and all management routes including role changes.
-/// Used by the OSS server. EE provides its own orchestrator (ee/server/src/users.rs)
+/// Full user router — list, get, and all management routes including role changes.
+/// Used by the OSS server. EE provides its own router (ee/server/src/users.rs)
 /// that merges management_router() and supplies EE-aware handlers + the cascade
 /// role-change endpoint.
 pub fn router() -> Router<AppState> {
@@ -59,7 +59,7 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
-/// Management-only orchestrator — create/update/delete users and related operations.
+/// Management-only router — create/update/delete users and related operations.
 /// The role-change endpoint is registered separately so it can be overridden
 /// without causing a duplicate-route panic.
 pub fn management_router() -> Router<AppState> {
@@ -139,10 +139,24 @@ async fn list_users(
 
     match users {
         Ok(data) => {
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            // Count must match the page query's WHERE (deleted_at + search), else
+            // the total is wrong for filtered/soft-deleted views (AUTH-6).
+            let total: i64 = if let Some(ref search) = q.q {
+                let pattern = format!("%{}%", search);
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM users u WHERE u.deleted_at IS NULL \
+                     AND (u.username ILIKE $1 OR u.email ILIKE $1 OR u.display_name ILIKE $1)",
+                )
+                .bind(&pattern)
                 .fetch_one(&state.db)
                 .await
-                .unwrap_or(0);
+                .unwrap_or(0)
+            } else {
+                sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL")
+                    .fetch_one(&state.db)
+                    .await
+                    .unwrap_or(0)
+            };
             Json(Paginated { data, total: total as usize }).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -185,7 +199,7 @@ async fn create_user(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
+    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -273,7 +287,7 @@ async fn update_user(
 
     // Hash password if provided
     let password_hash = match &body.password {
-        Some(p) => match nasiko_auth::hash_password_async(p).await {
+        Some(p) => match nasiko_auth::hash_password_blocking(p.clone()).await {
             Ok(h) => Some(h),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
@@ -425,7 +439,7 @@ async fn regenerate_credentials(
 ) -> impl IntoResponse {
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
-    let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
+    let access_secret_hash = match nasiko_auth::hash_password_blocking(access_secret.clone()).await {
         Ok(h) => h,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -572,9 +586,9 @@ async fn my_accessible_agents(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
     accessible_agents_impl(&state.db, user_id).await
 }
@@ -582,9 +596,9 @@ async fn my_accessible_agents(
 // ─── GET /users/me ──────────────────────────────────────────────────────────
 
 async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return e.into_response(),
     };
     let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
         r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,

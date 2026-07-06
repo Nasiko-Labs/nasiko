@@ -41,7 +41,7 @@ pub(crate) fn validate_github_url(url: &str, allowed_hosts: &[String]) -> Result
 
 /// Validate an OCI image tag segment.
 /// OCI spec: tag must start with [a-zA-Z0-9_] and contain only [a-zA-Z0-9._-].
-fn validate_version_tag(tag: &str) -> Result<(), String> {
+pub(crate) fn validate_version_tag(tag: &str) -> Result<(), String> {
     if tag.is_empty() || tag.len() > 128 {
         return Err("version_tag must be 1–128 characters".into());
     }
