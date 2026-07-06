@@ -283,11 +283,7 @@ async fn upload_and_deploy(
         }
     }
 
-    let image_tag = if state.config.agent_image_registry.is_empty() {
-        format!("{name}:{version_tag}")
-    } else {
-        format!("{}/{name}:{version_tag}", state.config.agent_image_registry)
-    };
+    let image_tag = crate::agents::build_image_tag(&state.config.agent_image_registry, &name, &version_tag);
     // Empty → canonical default is applied by build_agent_spec (8000, matching the
     // agent images' EXPOSE); never default to 5000 here.
 

@@ -129,7 +129,7 @@ pub(crate) async fn build_and_deploy(
     owner_id: Uuid,
     state: &AppState
 ) -> Result<ImportResult, (StatusCode, String)> {
-    let image_tag = format!("{}:{}", meta.name, meta.version);
+    let image_tag = crate::agents::build_image_tag(&state.config.agent_image_registry, &meta.name, &meta.version);
 
     // Verify Dockerfile exists
     if !source_dir.join("Dockerfile").exists() {

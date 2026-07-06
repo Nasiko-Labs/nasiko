@@ -50,6 +50,20 @@ async fn deploy(
     // UUID-keying so this ad-hoc deploy converges with the upload/update/import paths.
     let resolved_agent_id = resolve_agent_id_by_name(&state, &req.name).await;
 
+    // If this name maps to an existing catalog agent, the caller must own it (or
+    // be superuser) before we resolve and inject ITS secrets (`agent_secrets`,
+    // resolved by the real agent_id regardless of caller identity below) into a
+    // container running an arbitrary caller-supplied image — otherwise any
+    // deployer could exfiltrate another agent's secrets by deploying their own
+    // image under that agent's name and reading them back out. A name with no
+    // catalog entry has no owner to check (first-deploy-wins, same reasoning as
+    // the ad-hoc `restart` fallback below).
+    if let Some(agent_id) = resolved_agent_id
+        && !crate::acl::can_manage_agent(&state, &claims, agent_id).await
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
     if let Some(agent_id) = resolved_agent_id {
         let owner_id = match claims.user_uuid() {
@@ -142,9 +156,10 @@ async fn list(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn status(
     State(state): State<AppState>,
+    claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = match resolve_container_id(&state, &name).await {
+    let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
@@ -159,9 +174,10 @@ async fn status(
 
 async fn destroy(
     State(state): State<AppState>,
+    claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = match resolve_container_id(&state, &name).await {
+    let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
@@ -190,9 +206,10 @@ async fn destroy(
 
 async fn stop(
     State(state): State<AppState>,
+    claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = match resolve_container_id(&state, &name).await {
+    let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
@@ -207,9 +224,10 @@ async fn stop(
 
 async fn start(
     State(state): State<AppState>,
+    claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = match resolve_container_id(&state, &name).await {
+    let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
@@ -224,11 +242,16 @@ async fn start(
 
 async fn restart(
     State(state): State<AppState>,
+    claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    // Look up agent record to get image, owner, and port
-    let agent: Option<(Uuid, Uuid, String, i32)> = sqlx::query_as(
-        "SELECT id, owner_id, image, port FROM agents WHERE name = $1",
+    // Look up agent record to get image and owner. `agents` has no `port` column
+    // (that lives on `agent_deployments.spec_ports`, used by the catalog-aware
+    // `deployments::restart_deployment`) — this ad-hoc router has no deployment
+    // row to read from, so it falls back to the canonical default port, same as
+    // `build_agent_spec` does for any other caller that omits ports.
+    let agent: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT id, owner_id, image FROM agents WHERE name = $1",
     )
     .bind(&name)
     .fetch_optional(&state.db)
@@ -236,8 +259,11 @@ async fn restart(
     .ok()
     .flatten();
 
-    let Some((agent_id, owner_id, image, port)) = agent else {
-        // No agent record — fall back to simple container restart
+    let Some((agent_id, owner_id, image)) = agent else {
+        // No agent record — fall back to simple container restart. No catalog
+        // entity means no owner to check against (same "unclaimed" reasoning
+        // as the OCI registry's own no-existing-row policy); this ad-hoc path
+        // stays open to any deployer, same as `deploy`'s ad-hoc-image branch.
         let id = ContainerId::new(&name);
         return match state.runtime.restart(&id).await {
             Ok(()) => StatusCode::OK.into_response(),
@@ -247,6 +273,10 @@ async fn restart(
             }
         };
     };
+
+    if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
     // Resolve env: vault (base) + agent secrets (override)
     let env = resolve_full_env(&state.db, owner_id, agent_id).await;
@@ -258,8 +288,9 @@ async fn restart(
         let _ = state.runtime.destroy(&ContainerId::new(&name)).await;
     }
 
-    // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec).
-    let spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![port as u16], env, None);
+    // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec). Empty
+    // ports → build_agent_spec defaults to DEFAULT_AGENT_PORT.
+    let spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => Json(status).into_response(),
@@ -277,10 +308,11 @@ struct ScaleRequest {
 
 async fn scale(
     State(state): State<AppState>,
+    claims: Claims,
     Path(name): Path<String>,
     Json(req): Json<ScaleRequest>,
 ) -> impl IntoResponse {
-    let id = match resolve_container_id(&state, &name).await {
+    let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
@@ -302,10 +334,11 @@ fn default_tail() -> u32 { 100 }
 
 async fn logs(
     State(state): State<AppState>,
+    claims: Claims,
     Path(name): Path<String>,
     axum::extract::Query(q): axum::extract::Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let id = match resolve_container_id(&state, &name).await {
+    let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
@@ -327,19 +360,31 @@ async fn resolve_agent_id_by_name(state: &AppState, name: &str) -> Option<Uuid> 
         .flatten()
 }
 
-/// Resolve `name` to its catalog agent UUID and return the UUID-keyed `ContainerId`
-/// that `build_agent_spec`/`deploy` used at deploy time (RUN-2b). Every admin
-/// lifecycle op (status/destroy/stop/start/scale/logs) must key on this — not on
-/// `ContainerId::new(name)` — or it silently targets a container name that no
-/// deploy ever created.
-async fn resolve_container_id(
+/// Resolve `name` to its catalog agent UUID, verify the caller may manage it
+/// (owner ∪ superuser — the same predicate RUN-9 uses for catalog delete), and
+/// return the UUID-keyed `ContainerId` that `build_agent_spec`/`deploy` used at
+/// deploy time (RUN-2b).
+///
+/// Every admin lifecycle op (status/destroy/stop/start/restart/scale/logs) must
+/// go through this, not just `resolve_agent_id_by_name` — this whole router is
+/// gated only by `require_deployer` (a ROLE check), which is not scoped to the
+/// caller's own agents. Without the ownership check here, any deployer-role
+/// user could destroy, stop, or read the logs (which can contain prompts/
+/// secrets) of any OTHER team's agent just by knowing its name. The RUN-2b
+/// keying fix made this more directly reachable — these ops now resolve to the
+/// *correct* container instead of a name-keyed one that likely didn't exist.
+async fn resolve_authorized_container(
     state: &AppState,
+    claims: &Claims,
     name: &str,
 ) -> Result<ContainerId, axum::response::Response> {
-    match resolve_agent_id_by_name(state, name).await {
-        Some(agent_id) => Ok(ContainerId::from_uuid(agent_id)),
-        None => Err((StatusCode::NOT_FOUND, "agent not found").into_response()),
+    let Some(agent_id) = resolve_agent_id_by_name(state, name).await else {
+        return Err((StatusCode::NOT_FOUND, "agent not found").into_response());
+    };
+    if !crate::acl::can_manage_agent(state, claims, agent_id).await {
+        return Err(StatusCode::FORBIDDEN.into_response());
     }
+    Ok(ContainerId::from_uuid(agent_id))
 }
 
 /// Resolve the full env for an agent: vault secrets (base) + agent secrets (override).

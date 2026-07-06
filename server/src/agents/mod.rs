@@ -2,6 +2,7 @@ pub(crate) mod utils;
 pub mod acl;
 pub mod build_worker;
 pub mod deployments;
+pub mod grants;
 pub mod update;
 pub mod upload;
 
@@ -34,6 +35,24 @@ pub(crate) const DEFAULT_AGENT_PORT: u16 = 8000;
 ///
 /// `ports` defaults to `[DEFAULT_AGENT_PORT]` when empty so no path silently
 /// diverges on the service target port (RUN-7: upload used 5000, update 8000).
+/// Build a fully-qualified image tag, applying the configured registry prefix
+/// when one is set.
+///
+/// Every path that builds/pushes/references an agent image (upload / update /
+/// rollback / import) must go through this — `upload.rs` had it right; `update.rs`
+/// and `catalog/import.rs` built an unprefixed `{name}:{tag}` unconditionally.
+/// Latent with the default empty registry, but on K8s with `AGENT_IMAGE_REGISTRY`
+/// set, an update/rollback push or deploy referenced an unqualified tag — wrong
+/// push target, or an ImagePullBackOff since the cluster has no reason to resolve
+/// a bare tag against the configured private registry.
+pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
+    if registry.is_empty() {
+        format!("{name}:{tag}")
+    } else {
+        format!("{registry}/{name}:{tag}")
+    }
+}
+
 pub(crate) fn build_agent_spec(
     agent_id: Uuid,
     name: &str,
@@ -57,8 +76,14 @@ pub(crate) fn build_agent_spec(
 pub fn router() -> Router<AppState> {
     upload::router()
         .merge(deployments::router())
-        .merge(acl::router())
         .merge(update::router())
+    // `grants::router()` is deliberately NOT merged here: EE's `build_ee_app`
+    // builds on top of this router and mounts its own richer grants router
+    // (team/department grants + the live, CLI-consumed request shapes in
+    // ee/cli/src/access.rs) at the same paths. Merging both panics on route
+    // registration conflicts. This OSS-tier grants module has no CLI/UI/test
+    // consumer yet — wire it up (and reconcile it with EE's implementation)
+    // in a dedicated pass rather than mounting two incompatible APIs.
 }
 
 pub fn user_routes() -> Router<AppState> {

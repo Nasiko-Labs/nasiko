@@ -214,7 +214,7 @@ async fn update_agent(
             .into_response();
     }
 
-    let image_tag = format!("{agent_name}:{new_version}");
+    let image_tag = crate::agents::build_image_tag(&state.config.agent_image_registry, &agent_name, &new_version);
 
     // Optimistic write — lets the UI show "deploying to <image_tag>".
     // On failure the background task rolls both version and image back.
