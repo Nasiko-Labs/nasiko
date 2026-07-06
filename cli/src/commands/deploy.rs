@@ -89,7 +89,7 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
     let agent_id = match existing_id {
         Some(id) => {
             // Update existing agent
-            let current: serde_json::Value = client.get_json(&format!("/catalog/agents/{id}"))?;
+            let current: serde_json::Value = client.get_json(&format!("/agents/{id}"))?;
             let current_version = current.get("version").and_then(|v| v.as_str()).unwrap_or("");
             if current_version == version {
                 eprintln!("  ! Redeploying same version ({version}) — consider bumping version in AgentCard.json");
@@ -104,7 +104,7 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
                 "skills": card.get("skills"),
                 "capabilities": card.get("capabilities"),
             });
-            let _: serde_json::Value = client.put_json(&format!("/catalog/agents/{id}"), &update)?;
+            let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
             id
         }
         None => {
@@ -120,7 +120,7 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
                 "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
                 "capabilities": card.get("capabilities"),
             });
-            let resp: serde_json::Value = client.post_json("/catalog/agents", &create)?;
+            let resp: serde_json::Value = client.post_json("/agents", &create)?;
             let id = resp.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
             save_agent_id(&agent_file, &id, &agent_name)?;
             id
@@ -132,7 +132,7 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
     let spec = DeploySpec {
         image: image_ref.clone(),
         name: agent_name.clone(),
-        port: Some(port),
+        ports: vec![port],
         env: env.clone(),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
@@ -159,12 +159,12 @@ fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &
     oci::push_image(image, &repo, version)?;
 
     // Upsert agent in registry: update if exists, create otherwise.
-    let existing: Option<serde_json::Value> = client.get_json(&format!("/catalog/agents/{agent_name}")).ok();
+    let existing: Option<serde_json::Value> = client.get_json(&format!("/agents/{agent_name}")).ok();
     if let Some(existing) = existing {
         let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
         println!("  Updating agent: {agent_name}");
         let update = serde_json::json!({ "version": version, "image": image_ref });
-        let _: serde_json::Value = client.put_json(&format!("/catalog/agents/{id}"), &update)?;
+        let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
     } else {
         println!("  Registering agent: {agent_name}");
         let create = serde_json::json!({
@@ -173,7 +173,7 @@ fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &
             "version": version,
             "image": image_ref,
         });
-        let _: serde_json::Value = client.post_json("/catalog/agents", &create)?;
+        let _: serde_json::Value = client.post_json("/agents", &create)?;
     }
 
     // Deploy container
@@ -181,7 +181,7 @@ fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &
     let spec = DeploySpec {
         image: image_ref,
         name: agent_name.clone(),
-        port: Some(port),
+        ports: vec![port],
         env: env.clone(),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;

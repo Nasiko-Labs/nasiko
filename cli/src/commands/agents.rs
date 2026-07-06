@@ -49,7 +49,7 @@ pub fn logs(agent: &str, tail: u32, follow: bool) -> Result<()> {
     }
 
     // One-shot: fetch structured log lines from the observe endpoint.
-    match client.get_json::<Vec<LogLine>>(&format!("/observe/agents/{agent}/logs?limit={tail}")) {
+    match client.get_json::<Vec<LogLine>>(&format!("/observability/agents/{agent}/logs?limit={tail}")) {
         Ok(lines) => {
             print_log_lines(&lines);
             Ok(())
@@ -74,11 +74,11 @@ fn print_log_lines(lines: &[LogLine]) {
     }
 }
 
-/// Open an SSE stream from `/api/observe/agents/{agent}/logs/stream` and print
+/// Open an SSE stream from `/api/observability/agents/{agent}/logs/stream` and print
 /// each arriving log line to stdout. Blocks until interrupted or server closes.
 fn stream_logs(agent: &str) -> Result<()> {
     let (_, entry) = crate::config::active_cluster()?;
-    let url = format!("{}/api/observe/agents/{}/logs/stream", entry.url, agent);
+    let url = format!("{}/api/observability/agents/{}/logs/stream", entry.url, agent);
 
     let mut resp = ureq::Agent::new_with_defaults()
         .get(&url)

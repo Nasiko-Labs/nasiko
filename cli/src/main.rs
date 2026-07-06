@@ -55,6 +55,7 @@ const HELP_TEXT: &str = "\
   rm         Terminate + deregister agent
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
+  observe    Observability (stats/traces/trace/finops)
 
 \x1b[33mAgents:\x1b[0m
   agents     Manage and browse agents (ls/get/deploy/search/info/frameworks/list-uploaded/chat)
@@ -256,6 +257,11 @@ enum AgentOpsCommands {
         #[command(subcommand)]
         command: AgentsCommands,
     },
+    /// Observability: agent stats, distributed traces, FinOps cost dashboard
+    Observe {
+        #[command(subcommand)]
+        command: ObserveCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -332,6 +338,95 @@ enum GithubCommands {
         /// Branch to clone
         #[arg(long, default_value = "main")]
         branch: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ObserveCommands {
+    /// Show performance stats for an agent (requests, latency, tokens)
+    Stats {
+        /// Agent name or UUID
+        agent: String,
+        /// ISO-8601 start of the reporting window (default: 24 h ago)
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// List recent distributed trace sessions
+    Traces {
+        /// Filter by agent UUID
+        #[arg(long)]
+        agent_id: Option<String>,
+        /// Filter by chat session ID (shows only traces recorded for that session)
+        #[arg(long)]
+        session_id: Option<String>,
+        /// ISO-8601 start time (default: 1 h ago)
+        #[arg(long)]
+        since: Option<String>,
+        /// Maximum number of traces to return
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+    /// Show full span tree for a trace
+    Trace {
+        /// Trace ID (from `nasiko observe traces`)
+        trace_id: String,
+    },
+    /// Show token usage and cost breakdown across agents
+    Finops {
+        /// ISO-8601 start of the cost window (default: 24 h ago)
+        #[arg(long)]
+        since: Option<String>,
+        /// Comma-separated agent UUIDs to include (default: all running agents)
+        #[arg(long)]
+        agent_ids: Option<String>,
+    },
+    /// List sessions across all agents (ObservabilityService / Tempo)
+    Sessions {
+        /// ISO-8601 start of the reporting window (default: 7 days ago)
+        #[arg(long)]
+        start_time: Option<String>,
+    },
+    /// Show full detail for a session (traces, tokens, cost)
+    Session {
+        /// Session ID (trace ID)
+        session_id: String,
+    },
+    /// Show span tree and costs for a trace (ObservabilityService)
+    #[command(name = "trace-detail")]
+    TraceDetail {
+        /// Project / agent ID
+        project_id: String,
+        /// Trace ID
+        trace_id: String,
+    },
+    /// Show detail for a single span including prompt/completion content
+    Span {
+        /// Trace ID
+        trace_id: String,
+        /// Span ID
+        span_id: String,
+    },
+    /// Show project-level stats for an agent (ObservabilityService)
+    #[command(name = "project-stats")]
+    ProjectStats {
+        /// Agent ID (name or UUID)
+        agent_id: String,
+        /// ISO-8601 start of the reporting window (default: 24 h ago)
+        #[arg(long)]
+        start_time: Option<String>,
+    },
+    /// Show FinOps cost dashboard (ObservabilityService)
+    #[command(name = "finops-dashboard")]
+    FinopsDashboard {
+        /// ISO-8601 start of the cost window (default: 24 h ago)
+        #[arg(long)]
+        start_time: Option<String>,
+    },
+    /// Fetch AI-powered cost insights (calls finops-dashboard then LLM)
+    Insights {
+        /// ISO-8601 start of the cost window (default: 24 h ago)
+        #[arg(long)]
+        start_time: Option<String>,
     },
 }
 
@@ -596,6 +691,41 @@ fn main() -> Result<()> {
                 GithubCommands::Disconnect => commands::github::disconnect(),
                 GithubCommands::Clone { repo, branch } => {
                     commands::github::clone(repo.as_deref(), Some(branch.as_str()))
+                }
+            },
+            AgentOpsCommands::Observe { command } => match command {
+                ObserveCommands::Stats { agent, since } => {
+                    commands::observe::stats(&agent, since.as_deref())
+                }
+                ObserveCommands::Traces { agent_id, session_id, since, limit } => {
+                    commands::observe::traces(agent_id.as_deref(), session_id.as_deref(), since.as_deref(), limit)
+                }
+                ObserveCommands::Trace { trace_id } => {
+                    commands::observe::trace(&trace_id)
+                }
+                ObserveCommands::Finops { since, agent_ids } => {
+                    commands::observe::finops(since.as_deref(), agent_ids.as_deref())
+                }
+                ObserveCommands::Sessions { start_time } => {
+                    commands::observe::sessions(start_time.as_deref())
+                }
+                ObserveCommands::Session { session_id } => {
+                    commands::observe::session_detail(&session_id)
+                }
+                ObserveCommands::TraceDetail { project_id, trace_id } => {
+                    commands::observe::trace_detail(&project_id, &trace_id)
+                }
+                ObserveCommands::Span { trace_id, span_id } => {
+                    commands::observe::span_detail(&trace_id, &span_id)
+                }
+                ObserveCommands::ProjectStats { agent_id, start_time } => {
+                    commands::observe::project_stats(&agent_id, start_time.as_deref())
+                }
+                ObserveCommands::FinopsDashboard { start_time } => {
+                    commands::observe::finops_dashboard(start_time.as_deref())
+                }
+                ObserveCommands::Insights { start_time } => {
+                    commands::observe::insights(start_time.as_deref())
                 }
             },
         },

@@ -37,6 +37,7 @@ pub fn init() {
             .with_resource(resource)
             .build();
 
+        opentelemetry::global::set_tracer_provider(tracer_provider.clone());
         let otel_layer = tracing_opentelemetry::layer()
             .with_tracer(tracer_provider.tracer(service_name));
 

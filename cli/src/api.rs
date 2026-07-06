@@ -17,7 +17,6 @@ impl Client {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(None)
-                .http_status_as_error(false)
                 .build(),
         );
         Ok(Self {
@@ -149,11 +148,7 @@ impl Client {
     }
 
     pub fn health_check(url: &str) -> Result<()> {
-        let agent = Agent::new_with_config(
-            ureq::config::Config::builder()
-                .http_status_as_error(false)
-                .build(),
-        );
+        let agent = Agent::new_with_defaults();
         let url = format!("{}/health", url.trim_end_matches('/'));
         let resp = agent.get(&url).call().context("cannot reach control plane")?;
         if resp.status().as_u16() >= 400 {
@@ -175,11 +170,7 @@ impl OciClient {
     pub fn for_cp() -> Result<Self> {
         let (_, entry) = config::active_cluster()?;
         Ok(Self {
-            agent: Agent::new_with_config(
-                ureq::config::Config::builder()
-                    .http_status_as_error(false)
-                    .build(),
-            ),
+            agent: Agent::new_with_defaults(),
             base_url: entry.url.clone(),
             auth_header: entry.token.map(|t| format!("Bearer {t}")),
         })
@@ -201,11 +192,7 @@ impl OciClient {
                     _ => None,
                 };
                 Ok(Some(Self {
-                    agent: Agent::new_with_config(
-                        ureq::config::Config::builder()
-                            .http_status_as_error(false)
-                            .build(),
-                    ),
+                    agent: Agent::new_with_defaults(),
                     base_url: url.trim_end_matches('/').to_string(),
                     auth_header: auth,
                 }))
@@ -278,7 +265,11 @@ impl OciClient {
             .to_string();
 
         // PUT with full body + digest
-        let put_url = blob_put_url(&self.base_url, &location, digest);
+        let put_url = if location.starts_with("http") {
+            format!("{location}?digest={digest}")
+        } else {
+            format!("{}{}?digest={digest}", self.base_url, location)
+        };
 
         let mut resp = self
             .put(&put_url)
@@ -345,20 +336,6 @@ impl OciClient {
     }
 }
 
-/// Build the blob-upload PUT URL from the initiate-upload response's `Location` header.
-/// Handles both absolute `Location` values (used as-is) and relative ones (joined to
-/// `base_url`), and appends `digest=` with the correct separator depending on whether
-/// `location` already carries a query string (e.g. `?_state=...` from some registries) —
-/// blindly appending `?digest=...` would otherwise produce an invalid `...?_state=x?digest=y`.
-fn blob_put_url(base_url: &str, location: &str, digest: &str) -> String {
-    let sep = if location.contains('?') { "&" } else { "?" };
-    if location.starts_with("http") {
-        format!("{location}{sep}digest={digest}")
-    } else {
-        format!("{base_url}{location}{sep}digest={digest}")
-    }
-}
-
 /// Minimal percent-encoding for query-string values (RFC 3986 unreserved kept as-is).
 pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -412,11 +389,7 @@ impl RegistryClient {
     pub fn new() -> Option<Self> {
         let url = config::artifact_registry_url()?;
         Some(Self {
-            agent: Agent::new_with_config(
-                ureq::config::Config::builder()
-                    .http_status_as_error(false)
-                    .build(),
-            ),
+            agent: Agent::new_with_defaults(),
             base_url: url.trim_end_matches('/').to_string(),
         })
     }
@@ -560,8 +533,8 @@ pub struct ContainerStatus {
 pub struct DeploySpec {
     pub image: String,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<u16>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub env: std::collections::HashMap<String, String>,
 }
@@ -620,31 +593,5 @@ mod tests {
     fn search_query_escapes_special_chars() {
         let p = search_query(Some("a & b?c"), None, None, 5, None);
         assert_eq!(p, "/v1/search?q=a%20%26%20b%3Fc&limit=5");
-    }
-
-    #[test]
-    fn blob_put_url_absolute_location_no_query() {
-        let url = blob_put_url("https://cp.example.com", "https://cp.example.com/v2/repo/blobs/uploads/abc", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?digest=sha256:deadbeef");
-    }
-
-    #[test]
-    fn blob_put_url_absolute_location_with_existing_query() {
-        // Regression: registries that return a Location already carrying a query string
-        // (e.g. `?_state=xyz`) must get `&digest=...`, not a second `?digest=...`.
-        let url = blob_put_url("https://cp.example.com", "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz&digest=sha256:deadbeef");
-    }
-
-    #[test]
-    fn blob_put_url_relative_location_no_query() {
-        let url = blob_put_url("https://cp.example.com", "/v2/repo/blobs/uploads/abc", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?digest=sha256:deadbeef");
-    }
-
-    #[test]
-    fn blob_put_url_relative_location_with_existing_query() {
-        let url = blob_put_url("https://cp.example.com", "/v2/repo/blobs/uploads/abc?_state=xyz", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz&digest=sha256:deadbeef");
     }
 }

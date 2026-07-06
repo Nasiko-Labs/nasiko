@@ -55,12 +55,6 @@ pub struct Config {
     /// Comma-separated.  Empty = reject all registry imports (safest default for
     /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
     pub registry_import_allowed_hosts: Vec<String>,
-    /// Browser origins allowed to make cross-origin requests (comma-separated,
-    /// e.g. "https://app.example.com,http://localhost:5173"). Empty (the
-    /// default) allows none — the UI is served same-origin by this binary's
-    /// own static handler in normal deployments, so cross-origin access is
-    /// opt-in only for split dev servers or external integrations.
-    pub cors_allowed_origins: Vec<String>,
     pub admin_username: String,
     pub admin_password: String,
     /// Docker network to attach agent containers to.
@@ -105,7 +99,7 @@ impl Config {
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://host.containers.internal:4317",
+                "http://otel-collector:4318",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
@@ -141,12 +135,6 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             registry_import_allowed_hosts: std::env::var("REGISTRY_IMPORT_ALLOWED_HOSTS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
                 .unwrap_or_default()
                 .split(',')
                 .map(|s| s.trim().to_owned())

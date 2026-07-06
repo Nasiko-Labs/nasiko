@@ -213,12 +213,16 @@ pub fn post_cp_message(
     session_id: &str,
     role: &str,
     content: &str,
+    trace_id: Option<&str>,
 ) -> Result<()> {
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder().timeout_global(None).build(),
     );
     let url = format!("{base_url}/api/chat/sessions/{session_id}/messages");
-    let body = serde_json::json!({ "role": role, "content": content });
+    let mut body = serde_json::json!({ "role": role, "content": content });
+    if let Some(tid) = trace_id {
+        body["trace_id"] = serde_json::Value::String(tid.to_string());
+    }
     http.post(&url)
         .header("Authorization", &format!("Bearer {token}"))
         .header("Content-Type", "application/json")

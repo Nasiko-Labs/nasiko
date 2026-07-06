@@ -116,6 +116,8 @@ struct TracesParams {
     since: Option<String>,
     #[serde(default = "default_traces_limit")]
     limit: usize,
+    /// Filter by chat session ID — returns only traces recorded for messages in that session.
+    session_id: Option<String>,
 }
 
 fn default_traces_limit() -> usize {
@@ -402,22 +404,110 @@ async fn agent_stats(
     Json(resp).into_response()
 }
 
-/// `GET /api/observe/traces?agent_id=<uuid>&since=<iso8601>&limit=<n>`
+/// `GET /api/observe/traces?agent_id=<uuid>&since=<iso8601>&limit=<n>&session_id=<str>`
 ///
 /// Lists recent distributed trace sessions.
-/// Returns 503 when no observability backend is configured.
+///
+/// When `session_id` is provided the response is limited to traces recorded for
+/// messages in that chat session (looked up via `chat_messages.trace_id`).
+/// Returns 503 when no observability backend is configured and `session_id` is
+/// not provided (the session_id path falls back to the DB).
 async fn list_traces(
     State(state): State<AppState>,
     Query(params): Query<TracesParams>
 ) -> Response {
+    let since = params.since.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
+
+    // ── session_id path: resolve trace_ids from chat_messages ────────────────
+    if let Some(ref sid) = params.session_id {
+        let trace_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT trace_id FROM chat_messages \
+             WHERE session_id = $1 AND trace_id IS NOT NULL \
+             ORDER BY trace_id",
+        )
+        .bind(sid)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+        if trace_ids.is_empty() {
+            return Json(Vec::<serde_json::Value>::new()).into_response();
+        }
+
+        // Try Tempo first, fall back to flows table.
+        if let Some(ref obs) = state.observability {
+            let mut sessions = Vec::new();
+            for tid in trace_ids.iter().take(params.limit) {
+                if let Ok(td) = obs.get_trace(tid).await {
+                    use nasiko_observability::types::Session;
+                    let mut agent_ids: Vec<String> = td.spans.iter()
+                        .map(|s| s.service_name.clone())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    agent_ids.sort();
+                    let usage = td.token_usage();
+                    sessions.push(Session {
+                        trace_id: td.trace_id,
+                        agent_ids,
+                        started_at: td.started_at.unwrap_or_else(chrono::Utc::now),
+                        ended_at: td.ended_at,
+                        duration_ms: td.duration_ms,
+                        span_count: td.spans.len() as u32,
+                        total_input_tokens: usage.input_tokens,
+                        total_output_tokens: usage.output_tokens,
+                    });
+                }
+            }
+            return Json(sessions).into_response();
+        }
+
+        // DB fallback: build sessions from the flows table.
+        #[derive(sqlx::FromRow)]
+        struct FlowRow {
+            flow_id: String,
+            root_agent_name: Option<String>,
+            duration_ms: Option<i64>,
+            total_tokens_used: i64,
+            created_at: DateTime<Utc>,
+            completed_at: Option<DateTime<Utc>>,
+        }
+        let flows: Vec<FlowRow> = sqlx::query_as(
+            "SELECT flow_id, root_agent_name, duration_ms, total_tokens_used, \
+                    created_at, completed_at \
+             FROM flows WHERE flow_id = ANY($1) \
+             ORDER BY created_at DESC LIMIT $2",
+        )
+        .bind(&trace_ids)
+        .bind(params.limit as i64)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+        use nasiko_observability::types::Session;
+        let sessions: Vec<Session> = flows
+            .into_iter()
+            .map(|f| Session {
+                trace_id: f.flow_id,
+                agent_ids: f.root_agent_name.into_iter().collect(),
+                started_at: f.created_at,
+                ended_at: f.completed_at,
+                duration_ms: f.duration_ms.map(|d| d as u64),
+                span_count: 0,
+                total_input_tokens: f.total_tokens_used as u64,
+                total_output_tokens: 0,
+            })
+            .collect();
+        return Json(sessions).into_response();
+    }
+
+    // ── normal path: requires observability backend ───────────────────────────
     let Some(ref obs) = state.observability else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "Observability backend not configured (set TEMPO_URL + LOKI_URL)",
         ).into_response();
     };
-
-    let since = params.since.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
     // Build agent_ids list: either the requested one or all running agents.
     let agent_ids: Vec<String> = if let Some(id) = params.agent_id {
@@ -446,10 +536,7 @@ async fn list_traces(
 
     match obs.list_sessions(&agent_ids, since, params.limit).await {
         Ok(sessions) => Json(sessions).into_response(),
-        Err(e) => {
-            tracing::error!(%e, "list_traces: observability provider error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -637,10 +724,7 @@ async fn finops(State(state): State<AppState>, Query(params): Query<FinOpsParams
 
     match obs.get_finops_dashboard(&agent_ids, since).await {
         Ok(dashboard) => Json(dashboard).into_response(),
-        Err(e) => {
-            tracing::error!(%e, "finops: observability provider error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

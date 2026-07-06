@@ -75,6 +75,7 @@ impl EventLoop {
 pub fn send_message_streaming(
     session: &Session,
     text: &str,
+    trace_id: String,
     tx: mpsc::Sender<AppEvent>,
 ) -> thread::JoinHandle<()> {
     let endpoint = session.endpoint.clone();
@@ -82,7 +83,7 @@ pub fn send_message_streaming(
     let text = text.to_string();
 
     thread::spawn(move || {
-        if let Err(e) = do_stream_request(&endpoint, &context_id, &text, &tx) {
+        if let Err(e) = do_stream_request(&endpoint, &context_id, &text, &trace_id, &tx) {
             let _ = tx.send(AppEvent::StreamError(e.to_string()));
         }
     })
@@ -92,6 +93,7 @@ fn do_stream_request(
     endpoint: &str,
     context_id: &str,
     text: &str,
+    trace_id: &str,
     tx: &mpsc::Sender<AppEvent>,
 ) -> anyhow::Result<()> {
     let body = serde_json::json!({
@@ -118,7 +120,6 @@ fn do_stream_request(
             .is_some_and(|u| endpoint.starts_with(&u))
     });
 
-    let trace_id = uuid::Uuid::new_v4().to_string().replace('-', "");
     let span_id = &trace_id[..16];
     let traceparent = format!("00-{trace_id}-{span_id}-01");
 

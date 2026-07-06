@@ -179,6 +179,7 @@ impl ObservabilityProvider for TempoLokiProvider {
         let request_count = results.len() as u64;
         let mut total_input = 0u64;
         let mut total_output = 0u64;
+        let mut total_cost = 0f64;
         let mut total_duration_ms = 0u64;
         let mut error_count = 0u64;
 
@@ -187,6 +188,7 @@ impl ObservabilityProvider for TempoLokiProvider {
             let usage = trace.token_usage();
             total_input += usage.input_tokens;
             total_output += usage.output_tokens;
+            total_cost += usage.estimated_cost_usd;
             if let Some(d) = duration_ms {
                 total_duration_ms += d;
             }
@@ -220,6 +222,7 @@ impl ObservabilityProvider for TempoLokiProvider {
                 input_tokens: total_input,
                 output_tokens: total_output,
                 total_tokens: total_input + total_output,
+                estimated_cost_usd: total_cost,
             },
             avg_latency_ms,
             error_rate,
@@ -261,17 +264,15 @@ impl ObservabilityProvider for TempoLokiProvider {
             let request_count = results.len() as u64;
             let mut input_tokens = 0u64;
             let mut output_tokens = 0u64;
+            let mut estimated_cost = 0f64;
 
             for (trace_id, _, _) in &results {
                 let trace = self.tempo.get_trace(trace_id).await?;
                 let usage = trace.token_usage();
                 input_tokens += usage.input_tokens;
                 output_tokens += usage.output_tokens;
+                estimated_cost += usage.estimated_cost_usd;
             }
-
-            // Rough cost estimate using blended GPT-4o pricing as a baseline.
-            let estimated_cost =
-                (input_tokens as f64 * 0.000_002) + (output_tokens as f64 * 0.000_006);
 
             total_input += input_tokens;
             total_output += output_tokens;

@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::pricing;
+
 /// A single distributed trace session, identified by its W3C trace_id.
 /// In the Nasiko model, one session == one trace_id shared across all agents
 /// that participated in a single user interaction.
@@ -50,15 +52,38 @@ pub struct TraceDetails {
 
 impl TraceDetails {
     /// Aggregate `gen_ai.usage.*_tokens` across all spans in this trace.
+    ///
+    /// Cost is computed per-span using `gen_ai.request.model` so that mixed-model
+    /// traces (e.g. an orchestrator using gpt-4o and a sub-agent using claude-haiku)
+    /// are priced correctly.  Spans with no model attribute use the unknown-model
+    /// fallback in the pricing table.
     pub fn token_usage(&self) -> TokenUsage {
         let mut usage = TokenUsage::default();
         for span in &self.spans {
-            if let Some(v) = span.attributes.get("gen_ai.usage.input_tokens") {
-                usage.input_tokens += v.as_u64().unwrap_or(0);
+            let input = span
+                .attributes
+                .get("gen_ai.usage.input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let output = span
+                .attributes
+                .get("gen_ai.usage.output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            if input == 0 && output == 0 {
+                continue;
             }
-            if let Some(v) = span.attributes.get("gen_ai.usage.output_tokens") {
-                usage.output_tokens += v.as_u64().unwrap_or(0);
-            }
+
+            let model = span
+                .attributes
+                .get("gen_ai.request.model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            usage.input_tokens += input;
+            usage.output_tokens += output;
+            usage.estimated_cost_usd += pricing::estimate_cost(model, input, output);
         }
         usage.total_tokens = usage.input_tokens + usage.output_tokens;
         usage
@@ -75,12 +100,14 @@ pub struct SpanDetails {
     pub completion_content: Option<String>,
 }
 
-/// Aggregated token counts.
+/// Aggregated token counts with cost estimate.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// USD cost estimated from per-span model pricing. Zero when no model info is available.
+    pub estimated_cost_usd: f64,
 }
 
 /// Per-agent performance stats over a time window.

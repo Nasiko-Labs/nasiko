@@ -2,7 +2,29 @@ use std::io::{BufRead, Write as _};
 
 use anyhow::{Context, Result, bail};
 
+use crate::commands::tui::session::{self as cp, CpSession};
 use crate::config;
+
+/// Resolved CP session info used to persist messages.
+struct CpCtx {
+    base_url: String,
+    token: String,
+    session_id: String,
+}
+
+/// Resolve (or create) a CP session for the given endpoint.
+/// Returns None when the endpoint does not belong to the active cluster.
+fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<CpCtx> {
+    let (base_url, token) = cp::cp_credentials(endpoint)?;
+    let sid = match session_id {
+        Some(s) => s.to_string(),
+        None => {
+            let sess: CpSession = cp::create_cp_session(&base_url, &token, endpoint, "New chat").ok()?;
+            sess.session_id
+        }
+    };
+    Some(CpCtx { base_url, token, session_id: sid })
+}
 
 /// Chat with an A2A agent (one-shot or interactive).
 ///
@@ -12,14 +34,19 @@ use crate::config;
 /// - Direct agent:    http://localhost:10010/
 pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
     let endpoint = url.trim_end_matches('/').to_string();
+    let cp_ctx = resolve_cp_ctx(&endpoint, session_id);
 
     match message {
         Some(msg) => {
-            send_message(&endpoint, msg, session_id)?;
+            send_message(&endpoint, msg, cp_ctx.as_ref())?;
             println!();
         }
         None => {
-            println!("Chat with {endpoint} (type /quit to exit)\n");
+            if let Some(ref ctx) = cp_ctx {
+                println!("Chat with {endpoint} (session: {}) (type /quit to exit)\n", &ctx.session_id[..8]);
+            } else {
+                println!("Chat with {endpoint} (type /quit to exit)\n");
+            }
             loop {
                 let input: String = dialoguer::Input::new()
                     .with_prompt("you")
@@ -31,7 +58,7 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Resul
                     break;
                 }
                 println!();
-                match send_message(&endpoint, &input, session_id) {
+                match send_message(&endpoint, &input, cp_ctx.as_ref()) {
                     Ok(_) => println!("\n"),
                     Err(e) => eprintln!("  error: {e}\n"),
                 }
@@ -42,10 +69,12 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Resul
 }
 
 /// Send an A2A message/stream request and handle the response.
-fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<()> {
-    let context_id = session_id
-        .map(|s| s.to_string())
+fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()> {
+    // Use CP session_id as A2A contextId when available
+    let context_id = cp_ctx
+        .map(|c| c.session_id.clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
@@ -80,6 +109,11 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
     let span_id = &trace_id[..16];
     let traceparent = format!("00-{trace_id}-{span_id}-01");
 
+    // Persist user message to CP before sending
+    if let Some(ctx) = cp_ctx {
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text, Some(&trace_id));
+    }
+
     let mut req = http
         .post(endpoint)
         .header("Content-Type", "application/json")
@@ -107,30 +141,37 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
         .unwrap_or("")
         .to_string();
 
-    if content_type.contains("text/event-stream") {
-        handle_sse_stream(resp)?;
+    let agent_text = if content_type.contains("text/event-stream") {
+        handle_sse_stream(resp)?
     } else {
         let resp_json: serde_json::Value =
             resp.body_mut().read_json().context("invalid JSON response")?;
 
         let result = resp_json.get("result").unwrap_or(&resp_json);
-        if let Some(text) = nasiko_types::a2a::extract_text(result) {
-            print!("{text}");
+        if let Some(t) = nasiko_types::a2a::extract_text(result) {
+            print!("{t}");
             std::io::stdout().flush().ok();
+            t
         } else if let Some(err) = resp_json.get("error") {
             bail!("A2A error: {}", err);
         } else {
             bail!("unexpected response: {}", resp_json);
         }
+    };
+
+    // Persist agent reply to CP
+    if let Some(ctx) = cp_ctx {
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "agent", &agent_text, Some(&trace_id));
     }
 
     Ok(())
 }
 
-/// Parse SSE stream and render events to the terminal.
-fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<()> {
+/// Parse SSE stream, render events to the terminal, and return the full agent text.
+fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<String> {
     let (_parts, body) = resp.into_parts();
     let buf = std::io::BufReader::new(body.into_reader());
+    let mut collected = String::new();
 
     for line in buf.lines() {
         let line = line.context("reading SSE stream")?;
@@ -158,17 +199,25 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<()> {
             // Otherwise it's the initial task submission — keep reading.
             let state = task.pointer("/status/state").and_then(|s| s.as_str()).unwrap_or("");
             if matches!(state, "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED") {
-                handle_task_result(task);
+                if let Some(t) = handle_task_result(task) {
+                    collected.push_str(&t);
+                }
                 is_terminal = true;
             }
         } else if let Some(status_update) = result.get("statusUpdate") {
             handle_status_update(status_update);
             is_terminal = is_terminal_state(status_update);
         } else if let Some(artifact_update) = result.get("artifactUpdate") {
-            handle_artifact_update(artifact_update);
+            if let Some(t) = handle_artifact_update(artifact_update) {
+                collected.push_str(&t);
+            }
         } else if let Some(kind) = result.get("kind").and_then(|k| k.as_str()) {
             match kind {
-                "artifact-update" => handle_artifact_update(result),
+                "artifact-update" => {
+                    if let Some(t) = handle_artifact_update(result) {
+                        collected.push_str(&t);
+                    }
+                }
                 "status-update" => {
                     handle_status_update_jsonrpc(result);
                     is_terminal = is_terminal_state(result);
@@ -182,14 +231,14 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(collected)
 }
 
-fn handle_task_result(task: &serde_json::Value) {
-    if let Some(text) = nasiko_types::a2a::extract_text(task) {
-        print!("{text}");
-        std::io::stdout().flush().ok();
-    }
+fn handle_task_result(task: &serde_json::Value) -> Option<String> {
+    let text = nasiko_types::a2a::extract_text(task)?;
+    print!("{text}");
+    std::io::stdout().flush().ok();
+    Some(text)
 }
 
 fn handle_status_update(event: &serde_json::Value) {
@@ -288,21 +337,22 @@ fn is_terminal_state(event: &serde_json::Value) -> bool {
         | "completed" | "failed" | "canceled")
 }
 
-fn handle_artifact_update(event: &serde_json::Value) {
+fn handle_artifact_update(event: &serde_json::Value) -> Option<String> {
     // Support both: {"artifact": {"parts": [...]}} and {"parts": [...]} directly
     let parts = event
         .pointer("/artifact/parts")
         .or_else(|| event.get("parts"))
-        .and_then(|p| p.as_array());
+        .and_then(|p| p.as_array())?;
 
-    if let Some(parts) = parts {
-        for part in parts {
-            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                print!("{text}");
-                std::io::stdout().flush().ok();
-            }
+    let mut buf = String::new();
+    for part in parts {
+        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+            print!("{text}");
+            std::io::stdout().flush().ok();
+            buf.push_str(text);
         }
     }
+    if buf.is_empty() { None } else { Some(buf) }
 }
 
 /// Chat directly with a locally running agent via A2A JSON-RPC (used by `nasiko agents chat`).
