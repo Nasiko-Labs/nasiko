@@ -201,7 +201,9 @@ impl AuthService for AuthServiceImpl {
             is_superuser: false,
         };
 
-        let token = self.issue_token(&identity).await?;
+        // Use encode_agent_jwt so token_type = "agent" — prevents the token from
+        // being accepted by decode_jwt as a human-user credential (AUTH-3).
+        let token = crate::jwt::encode_agent_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, &identity)?;
         self.record_agent_token(&token, agent_uuid).await;
         Ok(token)
     }

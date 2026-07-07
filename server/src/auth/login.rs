@@ -310,18 +310,20 @@ async fn token_validate(
     .into_response()
 }
 
+// Email is intentionally excluded: this is a public mention/autocomplete endpoint
+// accessible to any authenticated principal. Exposing emails would be a
+// cross-user data-leak (AUTH-6).
 async fn users_for_search(State(state): State<AppState>) -> impl IntoResponse {
     #[derive(serde::Serialize, sqlx::FromRow)]
     struct SearchUser {
         id: uuid::Uuid,
         username: String,
-        email: Option<String>,
         display_name: Option<String>,
         is_active: bool,
     }
 
     match sqlx::query_as::<_, SearchUser>(
-        "SELECT id, username, email, display_name, is_active FROM users WHERE deleted_at IS NULL ORDER BY username",
+        "SELECT id, username, display_name, is_active FROM users WHERE deleted_at IS NULL ORDER BY username",
     )
     .fetch_all(&state.db)
     .await
