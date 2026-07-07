@@ -17,19 +17,13 @@ use super::service::{InsightsRequest, ObservabilityService};
 fn obs_err(e: ObservabilityError) -> Response {
     match e {
         ObservabilityError::NotFound(msg) => {
-            // `msg` here is a hand-authored, safe description (e.g. "span 'x' in
-            // trace 'y'") — not a raw underlying error — so it's fine to return.
             (StatusCode::NOT_FOUND, msg).into_response()
         }
-        ObservabilityError::Deserialization(_) => {
-            tracing::error!(error = %e, "observability: failed to deserialize upstream response");
-            (StatusCode::BAD_GATEWAY, "observability backend returned an invalid response").into_response()
+        ObservabilityError::Deserialization(msg) => {
+            (StatusCode::BAD_GATEWAY, msg).into_response()
         }
         other => {
-            // Catches `Internal` and any future variants — these wrap raw
-            // Tempo/Loki client/HTTP errors that must not reach the client.
-            tracing::error!(error = %other, "observability request failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()).into_response()
         }
     }
 }
@@ -66,6 +60,8 @@ pub async fn get_all_sessions(
     Query(params): Query<SessionListParams>,
 ) -> impl IntoResponse {
 
+    let role = claims.role.as_ref().map(|r| format!("{r:?}"));
+
     tracing::info!(
         input_tokens = 120u64,
         output_tokens = 80u64,
@@ -78,7 +74,7 @@ pub async fn get_all_sessions(
     match svc(&state)
         .get_all_sessions(
             &claims.sub,
-            None, // role gating handled by the EE observability provider, not the identity
+            role.as_deref(),
             None,
             None,
             params.start_time.as_deref(),
@@ -103,18 +99,15 @@ pub async fn get_session_details(
     }
 }
 
-// ─── 3. GET /v1/observability/trace/{project_id}/{trace_id} ──────────────────
+// ─── 3. GET /v1/observability/trace/{trace_id} ───────────────────────────────
 
 #[instrument(skip(state))]
 pub async fn get_trace_details(
     State(state): State<AppState>,
     _claims: Claims,
-    Path((project_id, trace_id)): Path<(String, String)>,
+    Path(trace_id): Path<String>,
 ) -> impl IntoResponse {
-    match svc(&state)
-        .get_trace_details(&trace_id, &project_id)
-        .await
-    {
+    match svc(&state).get_trace_details(&trace_id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
@@ -163,10 +156,11 @@ pub async fn get_finops_dashboard(
     claims: Claims,
     Query(params): Query<FinopsParams>,
 ) -> impl IntoResponse {
+    let role = claims.role.as_ref().map(|r| format!("{r:?}"));
     match svc(&state)
         .get_finops_dashboard(
             &claims.sub,
-            None, // role gating handled by the EE observability provider, not the identity
+            role.as_deref(),
             None,
             None,
             params.start_time.as_deref(),

@@ -109,7 +109,6 @@ where
         .merge(usage::routes::router())
         .merge(flows::router())
         .nest("/observability", observability::protected_router())
-        .merge(observability::observe_router())
         .merge(github::router())
         .merge(auth::login::protected_router())
         .merge(transcribe::router())

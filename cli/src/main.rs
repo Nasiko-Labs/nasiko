@@ -343,43 +343,6 @@ enum GithubCommands {
 
 #[derive(Subcommand)]
 enum ObserveCommands {
-    /// Show performance stats for an agent (requests, latency, tokens)
-    Stats {
-        /// Agent name or UUID
-        agent: String,
-        /// ISO-8601 start of the reporting window (default: 24 h ago)
-        #[arg(long)]
-        since: Option<String>,
-    },
-    /// List recent distributed trace sessions
-    Traces {
-        /// Filter by agent UUID
-        #[arg(long)]
-        agent_id: Option<String>,
-        /// Filter by chat session ID (shows only traces recorded for that session)
-        #[arg(long)]
-        session_id: Option<String>,
-        /// ISO-8601 start time (default: 1 h ago)
-        #[arg(long)]
-        since: Option<String>,
-        /// Maximum number of traces to return
-        #[arg(long, default_value = "20")]
-        limit: usize,
-    },
-    /// Show full span tree for a trace
-    Trace {
-        /// Trace ID (from `nasiko observe traces`)
-        trace_id: String,
-    },
-    /// Show token usage and cost breakdown across agents
-    Finops {
-        /// ISO-8601 start of the cost window (default: 24 h ago)
-        #[arg(long)]
-        since: Option<String>,
-        /// Comma-separated agent UUIDs to include (default: all running agents)
-        #[arg(long)]
-        agent_ids: Option<String>,
-    },
     /// List sessions across all agents (ObservabilityService / Tempo)
     Sessions {
         /// ISO-8601 start of the reporting window (default: 7 days ago)
@@ -394,8 +357,6 @@ enum ObserveCommands {
     /// Show span tree and costs for a trace (ObservabilityService)
     #[command(name = "trace-detail")]
     TraceDetail {
-        /// Project / agent ID
-        project_id: String,
         /// Trace ID
         trace_id: String,
     },
@@ -694,26 +655,14 @@ fn main() -> Result<()> {
                 }
             },
             AgentOpsCommands::Observe { command } => match command {
-                ObserveCommands::Stats { agent, since } => {
-                    commands::observe::stats(&agent, since.as_deref())
-                }
-                ObserveCommands::Traces { agent_id, session_id, since, limit } => {
-                    commands::observe::traces(agent_id.as_deref(), session_id.as_deref(), since.as_deref(), limit)
-                }
-                ObserveCommands::Trace { trace_id } => {
-                    commands::observe::trace(&trace_id)
-                }
-                ObserveCommands::Finops { since, agent_ids } => {
-                    commands::observe::finops(since.as_deref(), agent_ids.as_deref())
-                }
                 ObserveCommands::Sessions { start_time } => {
                     commands::observe::sessions(start_time.as_deref())
                 }
                 ObserveCommands::Session { session_id } => {
                     commands::observe::session_detail(&session_id)
                 }
-                ObserveCommands::TraceDetail { project_id, trace_id } => {
-                    commands::observe::trace_detail(&project_id, &trace_id)
+                ObserveCommands::TraceDetail { trace_id } => {
+                    commands::observe::trace_detail(&trace_id)
                 }
                 ObserveCommands::Span { trace_id, span_id } => {
                     commands::observe::span_detail(&trace_id, &span_id)

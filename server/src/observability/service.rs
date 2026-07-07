@@ -232,6 +232,13 @@ struct SpanContent {
 
 // ─── Span tree builder ────────────────────────────────────────────────────────
 
+fn encode_span_id(span_id: &str) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("Span:{span_id}"),
+    )
+}
+
 fn build_span_tree(
     spans: &[nasiko_observability::Span],
 ) -> (Vec<SpanNode>, HashMap<String, SpanNode>) {
@@ -243,14 +250,14 @@ fn build_span_tree(
             (
                 s.span_id.clone(),
                 SpanNode {
-                    id: s.span_id.clone(),
+                    id: encode_span_id(&s.span_id),
                     span_id: s.span_id.clone(),
                     name: s.name.clone(),
                     span_kind: span_kind_str(s.kind).to_string(),
                     status_code: status_code_str(s.status_code).to_string(),
                     start_time: Some(s.started_at.to_rfc3339()),
                     end_time: s.ended_at.map(|t| t.to_rfc3339()),
-                    parent_id: s.parent_span_id.clone(),
+                    parent_id: s.parent_span_id.as_deref().map(encode_span_id),
                     latency_ms: s.duration_ms.map(|d| d as f64),
                     token_count_total: input + output,
                     span_annotation_summaries: vec![],
@@ -303,21 +310,22 @@ fn build_span_tree(
 
     // Detach nodes into tree (we need to move them out of the map)
     // First snapshot so we can rebuild the lookup after tree building
+    // span_lookup keys are base64-encoded span IDs to match the `id` field
     let snapshot: HashMap<String, SpanNode> = spans
         .iter()
         .map(|s| {
             let (input, output, _) = extract_token_attrs(&s.attributes);
             (
-                s.span_id.clone(),
+                encode_span_id(&s.span_id),
                 SpanNode {
-                    id: s.span_id.clone(),
+                    id: encode_span_id(&s.span_id),
                     span_id: s.span_id.clone(),
                     name: s.name.clone(),
                     span_kind: span_kind_str(s.kind).to_string(),
                     status_code: status_code_str(s.status_code).to_string(),
                     start_time: Some(s.started_at.to_rfc3339()),
                     end_time: s.ended_at.map(|t| t.to_rfc3339()),
-                    parent_id: s.parent_span_id.clone(),
+                    parent_id: s.parent_span_id.as_deref().map(encode_span_id),
                     latency_ms: s.duration_ms.map(|d| d as f64),
                     token_count_total: input + output,
                     span_annotation_summaries: vec![],
@@ -369,7 +377,8 @@ pub struct SessionSummary {
     pub first_input: Option<String>,
     pub last_output: Option<String>,
     pub token_usage: TokenUsageSummary,
-    pub trace_latency_ms_p50: Option<u64>,
+    pub trace_latency_ms_p50: Option<f64>,
+    pub trace_latency_ms_p99: Option<f64>,
     pub cost_summary: SimpleCostSummary,
     pub session_annotations: Vec<Value>,
     pub session_annotation_summaries: Vec<Value>,
@@ -466,6 +475,7 @@ pub struct ProjectRef {
 pub struct ContentField {
     pub value: String,
     pub mime_type: String,
+    pub parsed_value: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -484,7 +494,6 @@ pub struct TraceDetailResponse {
 #[derive(Serialize)]
 pub struct TraceDetailData {
     pub trace: TraceDetail,
-    pub project_id: String,
 }
 
 #[derive(Serialize)]
@@ -558,13 +567,26 @@ pub struct SpanDetailData {
 }
 
 #[derive(Serialize)]
+pub struct SpanTraceRef {
+    pub id: String,
+    pub trace_id: String,
+}
+
+#[derive(Serialize)]
+pub struct SpanProjectRef {
+    pub id: String,
+    pub annotation_configs: Value,
+}
+
+#[derive(Serialize)]
 pub struct SpanDetail {
     pub id: String,
     pub span_id: String,
-    pub trace_id: String,
+    pub trace: SpanTraceRef,
     pub name: String,
     pub span_kind: String,
     pub status_code: String,
+    pub code: String,
     pub status_message: String,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
@@ -580,6 +602,7 @@ pub struct SpanDetail {
     pub span_annotation_summaries: Vec<Value>,
     pub document_retrieval_metrics: Vec<Value>,
     pub document_evaluations: Vec<Value>,
+    pub project: SpanProjectRef,
 }
 
 // agent/{agent_id}/stats
@@ -720,30 +743,72 @@ impl ObservabilityService {
         end: DateTime<Utc>,
     ) -> Result<Vec<SessionSummary>, ObservabilityError> {
         let results = self.tempo_search(agent_id, start, end, 30).await?;
-        let sessions = results
-            .into_iter()
-            .map(|(trace_id, started_at, duration_ms)| {
-                let end_time = started_at.zip(duration_ms).map(|(s, d)| {
-                    (s + Duration::milliseconds(d as i64)).to_rfc3339()
-                });
-                SessionSummary {
-                    id: trace_id.clone(),
-                    session_id: trace_id,
-                    agent_id: agent_id.to_string(),
-                    num_traces: None,
-                    start_time: started_at.map(|t| t.to_rfc3339()),
-                    end_time,
-                    duration_ms,
-                    first_input: None,
-                    last_output: None,
-                    token_usage: TokenUsageSummary { total: None },
-                    trace_latency_ms_p50: duration_ms,
-                    cost_summary: SimpleCostSummary { total: CostEntry { cost: None } },
-                    session_annotations: vec![],
-                    session_annotation_summaries: vec![],
+        let mut sessions = Vec::with_capacity(results.len());
+
+        for (trace_id, started_at, duration_ms) in results {
+            let end_time = started_at.zip(duration_ms).map(|(s, d)| {
+                (s + Duration::milliseconds(d as i64)).to_rfc3339()
+            });
+
+            let mut total_input = 0u64;
+            let mut total_output = 0u64;
+            let mut model_used: Option<String> = None;
+            let mut num_chat_spans = 0u32;
+            let mut span_durations: Vec<u64> = Vec::new();
+
+            if let Ok(trace) = self.tempo.get_trace(&trace_id).await {
+                for span in &trace.spans {
+                    let (inp, out, model) = extract_token_attrs(&span.attributes);
+                    if inp > 0 || out > 0 {
+                        total_input += inp;
+                        total_output += out;
+                        if model_used.is_none() {
+                            model_used = model;
+                        }
+                    }
+                    let op = span.attributes.get("gen_ai.operation.name").and_then(|v| v.as_str());
+                    if matches!(op, None | Some("chat")) {
+                        num_chat_spans += 1;
+                        if let Some(d) = span.duration_ms {
+                            span_durations.push(d);
+                        }
+                    }
                 }
-            })
-            .collect();
+            }
+
+            span_durations.sort_unstable();
+            let len = span_durations.len();
+            let p50 = span_durations.get(len / 2).map(|&v| v as f64);
+            let p99 = span_durations
+                .get((len * 99 / 100).saturating_sub(1))
+                .map(|&v| v as f64);
+
+            let total_tokens = total_input + total_output;
+            let (_, _, cost) = compute_cost(total_input, total_output, model_used.as_deref());
+
+            sessions.push(SessionSummary {
+                id: trace_id.clone(),
+                session_id: trace_id,
+                agent_id: agent_id.to_string(),
+                num_traces: Some(num_chat_spans.max(1)),
+                start_time: started_at.map(|t| t.to_rfc3339()),
+                end_time,
+                duration_ms,
+                first_input: None,
+                last_output: None,
+                token_usage: TokenUsageSummary {
+                    total: if total_tokens > 0 { Some(total_tokens) } else { None },
+                },
+                trace_latency_ms_p50: p50,
+                trace_latency_ms_p99: p99,
+                cost_summary: SimpleCostSummary {
+                    total: CostEntry { cost: if cost > 0.0 { Some(cost) } else { None } },
+                },
+                session_annotations: vec![],
+                session_annotation_summaries: vec![],
+            });
+        }
+
         Ok(sessions)
     }
 
@@ -813,8 +878,7 @@ impl ObservabilityService {
             HashMap::new()
         };
 
-        // Pass 1 — aggregate tokens from every span that carries them (no op-name filter).
-        // This avoids missing tokens when instrumentation omits gen_ai.operation.name.
+        // Pass 1 — aggregate tokens from every span (no op-name filter).
         let mut total_input = 0u64;
         let mut total_output = 0u64;
         let mut model_used: Option<String> = None;
@@ -830,19 +894,18 @@ impl ObservabilityService {
             }
         }
 
-        // Pass 2 — build trace entries from gen_ai chat spans only (for the UI table).
+        // Pass 2 — one TraceEntry per chat span.
         let mut latencies: Vec<f64> = Vec::new();
         let mut trace_entries: Vec<TraceEntry> = Vec::new();
 
-        for span in &trace.spans {
+        for (idx, span) in trace.spans.iter().enumerate() {
             let op_name = span.attributes.get("gen_ai.operation.name").and_then(|v| v.as_str());
-            // Include spans that are explicitly "chat" or have no op-name set.
-            // Skip spans with a different op (e.g. "embeddings", "rerank").
             if matches!(op_name, Some(op) if op != "chat") {
                 continue;
             }
 
-            let (inp, out, _) = extract_token_attrs(&span.attributes);
+            let (inp, out, span_model) = extract_token_attrs(&span.attributes);
+            let (_, _, span_cost) = compute_cost(inp, out, span_model.as_deref());
 
             let duration_ms = span.duration_ms.unwrap_or(0) as f64;
             if duration_ms > 0.0 {
@@ -856,11 +919,24 @@ impl ObservabilityService {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
 
+            let cursor = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                format!("connection:{idx}"),
+            );
+            let trace_id_enc = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                format!("Trace:{idx}"),
+            );
+            let span_id_enc = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                format!("Span:{}", &span.span_id),
+            );
+
             trace_entries.push(TraceEntry {
-                id: session_id.to_string(),
+                id: trace_id_enc.clone(),
                 trace_id: session_id.to_string(),
                 root_span: RootSpanEntry {
-                    id: span.span_id.clone(),
+                    id: span_id_enc,
                     span_id: span.span_id.clone(),
                     attributes: serde_json::to_string(&flat_attrs).unwrap_or_default(),
                     cumulative_token_count_total: inp + out,
@@ -872,17 +948,21 @@ impl ObservabilityService {
                     input: ContentField {
                         value: logs.and_then(|l| l.input.clone()).unwrap_or_default(),
                         mime_type: "text".into(),
+                        parsed_value: None,
                     },
                     output: ContentField {
                         value: logs.and_then(|l| l.output.clone()).unwrap_or_default(),
                         mime_type: "text".into(),
+                        parsed_value: None,
                     },
                     trace: TraceRef {
-                        id: session_id.to_string(),
-                        cost_summary: Value::Object(Default::default()),
+                        id: trace_id_enc,
+                        cost_summary: serde_json::json!({
+                            "total": { "cost": span_cost }
+                        }),
                     },
                 },
-                cursor: String::new(),
+                cursor: cursor.clone(),
             });
         }
 
@@ -891,11 +971,9 @@ impl ObservabilityService {
             compute_cost(total_input, total_output, model_used.as_deref());
 
         latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let p50 = if latencies.is_empty() {
-            None
-        } else {
-            Some(latencies[latencies.len() / 2])
-        };
+        let p50 = latencies.get(latencies.len() / 2).copied();
+
+        let end_cursor = trace_entries.last().map(|e| e.cursor.clone());
 
         Ok(SessionDetailResponse {
             data: SessionDetailData {
@@ -911,18 +989,17 @@ impl ObservabilityService {
                     },
                     latency_p50: p50,
                     traces: trace_entries,
-                    pagination: Pagination { end_cursor: None, has_next_page: false },
+                    pagination: Pagination { end_cursor, has_next_page: false },
                 },
             },
         })
     }
 
-    // ── 3. trace/{project_id}/{trace_id} ─────────────────────────────────────
+    // ── 3. trace/{trace_id} ──────────────────────────────────────────────────
 
     pub async fn get_trace_details(
         &self,
         trace_id: &str,
-        _project_id: &str,
     ) -> Result<TraceDetailResponse, ObservabilityError> {
         let trace = self.tempo.get_trace(trace_id).await?;
 
@@ -954,7 +1031,7 @@ impl ObservabilityService {
             .iter()
             .map(|s| RootSpanEdge {
                 span: RootSpanRef {
-                    id: s.span_id.clone(),
+                    id: s.id.clone(),
                     span_id: s.span_id.clone(),
                     parent_id: None,
                     status_code: s.status_code.clone(),
@@ -978,7 +1055,6 @@ impl ObservabilityService {
                     spans: root_nodes,
                     span_lookup,
                 },
-                project_id: String::new(),
             },
         })
     }
@@ -1000,33 +1076,119 @@ impl ObservabilityService {
                 ObservabilityError::NotFound(format!("span '{span_id}' in trace '{trace_id}'"))
             })?;
 
-        // Best-effort Loki fetch for input/output content
+        // Best-effort Loki fetch for input/output content.
+        // service_name comes from resource.service.name in Tempo; fallback to
+        // code.namespace span attribute if the resource attr was not set.
         let logs = {
-            let svc = &span.service_name;
-            if !svc.is_empty() {
-                self.loki
-                    .get_trace_logs(svc, trace_id, trace.started_at, trace.ended_at)
-                    .await
-                    .map(parse_loki_logs)
-                    .ok()
-                    .and_then(|mut m| m.remove(span_id))
+            let svc = if span.service_name.is_empty() {
+                span.attributes
+                    .get("code.namespace")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
             } else {
+                span.service_name.clone()
+            };
+
+            if svc.is_empty() {
+                tracing::warn!(trace_id, span_id, "loki: service_name empty — skipping");
                 None
+            } else {
+                // Pad the time window so slight clock skew doesn't exclude logs.
+                let start = trace.started_at.map(|t| t - chrono::Duration::minutes(1));
+                let end = trace.ended_at.map(|t| t + chrono::Duration::minutes(1));
+
+                tracing::warn!(svc, trace_id, span_id, "loki: querying");
+                match self.loki.get_trace_logs(&svc, trace_id, start, end).await {
+                    Ok(lines) => {
+                        tracing::warn!(
+                            svc,
+                            trace_id,
+                            span_id,
+                            count = lines.len(),
+                            "loki: got lines"
+                        );
+                        let mut map = parse_loki_logs(lines);
+                        let result = map.remove(span_id);
+                        tracing::warn!(
+                            span_id,
+                            found = result.is_some(),
+                            map_keys = ?map.keys().collect::<Vec<_>>(),
+                            "loki: span lookup result"
+                        );
+                        result
+                    }
+                    Err(e) => {
+                        tracing::warn!(svc, trace_id, error = %e, "loki: fetch failed");
+                        None
+                    }
+                }
             }
         };
 
         let (input_tokens, output_tokens, model) = extract_token_attrs(&span.attributes);
         let (_, _, total_cost) = compute_cost(input_tokens, output_tokens, model.as_deref());
 
+        // Span kind: prefer openinference.span.kind (e.g. "LLM"), fallback to OTel kind string
+        let span_kind = span
+            .attributes
+            .get("openinference.span.kind")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_else(|| span_kind_str(span.kind).to_lowercase());
+
+        // Input: prefer span attribute "input.value", fallback to Loki log
+        let input_value = span
+            .attributes
+            .get("input.value")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| logs.as_ref().and_then(|l| l.input.clone()))
+            .unwrap_or_default();
+        let input_mime = span
+            .attributes
+            .get("input.mime_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("text")
+            .to_string();
+        let input_parsed: Option<Value> = serde_json::from_str(&input_value).ok();
+
+        // Output: prefer span attribute "output.value", fallback to Loki log
+        let output_value = span
+            .attributes
+            .get("output.value")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| logs.as_ref().and_then(|l| l.output.clone()))
+            .unwrap_or_default();
+        let output_mime = span
+            .attributes
+            .get("output.mime_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("text")
+            .to_string();
+        let output_parsed: Option<Value> = serde_json::from_str(&output_value).ok();
+
+        let span_id_enc = encode_span_id(&span.span_id);
+        let trace_id_enc = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            format!("Trace:{trace_id}"),
+        );
+        let status = status_code_str(span.status_code).to_string();
+
         Ok(SpanDetailResponse {
             data: SpanDetailData {
                 span: SpanDetail {
-                    id: span.span_id.clone(),
+                    id: span_id_enc,
                     span_id: span.span_id.clone(),
-                    trace_id: trace_id.to_string(),
+                    trace: SpanTraceRef {
+                        id: trace_id_enc,
+                        trace_id: trace_id.to_string(),
+                    },
                     name: span.name.clone(),
-                    span_kind: span_kind_str(span.kind).to_string(),
-                    status_code: status_code_str(span.status_code).to_string(),
+                    span_kind,
+                    code: status.clone(),
+                    status_code: status,
                     status_message: span.status_message.clone(),
                     start_time: Some(span.started_at.to_rfc3339()),
                     end_time: span.ended_at.map(|t| t.to_rfc3339()),
@@ -1037,12 +1199,14 @@ impl ObservabilityService {
                         total: CostEntry { cost: Some(total_cost) },
                     },
                     input: ContentField {
-                        value: logs.as_ref().and_then(|l| l.input.clone()).unwrap_or_default(),
-                        mime_type: "text".into(),
+                        value: input_value,
+                        mime_type: input_mime,
+                        parsed_value: input_parsed,
                     },
                     output: ContentField {
-                        value: logs.as_ref().and_then(|l| l.output.clone()).unwrap_or_default(),
-                        mime_type: "text".into(),
+                        value: output_value,
+                        mime_type: output_mime,
+                        parsed_value: output_parsed,
                     },
                     attributes: span.attributes.clone(),
                     events: vec![],
@@ -1050,6 +1214,10 @@ impl ObservabilityService {
                     span_annotation_summaries: vec![],
                     document_retrieval_metrics: vec![],
                     document_evaluations: vec![],
+                    project: SpanProjectRef {
+                        id: String::new(),
+                        annotation_configs: serde_json::json!({ "edges": [], "configs": [] }),
+                    },
                 },
             },
         })
