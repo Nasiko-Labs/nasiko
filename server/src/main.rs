@@ -42,6 +42,7 @@ async fn main() {
             .expect("failed to create Docker runtime"),
     );
 
+    nasiko_server::state::AppState::run_migrations(&db).await;
     let state =
         nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, db).await;
     state.init().await;

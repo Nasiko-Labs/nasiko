@@ -505,6 +505,7 @@ async fn agent_stream(
             let mut buffer = String::new();
             let mut pinned = std::pin::pin!(byte_stream);
             let mut agent_done = false;
+            let mut agent_error: Option<String> = None;
 
             loop {
                 if agent_done { break; }
@@ -531,6 +532,9 @@ async fn agent_stream(
                                 if data.trim().is_empty() {
                                     continue;
                                 }
+                                if agent_error.is_none() {
+                                    agent_error = extract_failure_message(data);
+                                }
                                 let normalized = normalize_agent_event(data, &task_id, &context_id);
                                 yield Ok(Event::default().data(normalized));
                             }
@@ -545,7 +549,11 @@ async fn agent_stream(
                 }
             }
 
-            yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
+            if let Some(err) = agent_error {
+                yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
+            } else {
+                yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
+            }
 
             let _ = sqlx::query(
                 r#"UPDATE flows SET status = 'completed',
@@ -731,38 +739,13 @@ fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
-/// Determine the JSONRPC URL for an agent by consulting its agent card.
-///
-/// Agents built on the `a2a-server` crate mount JSONRPC at `/`; older agents
-/// exposed `/jsonrpc`. The card's `supportedInterfaces[0].url` is authoritative —
-/// only its path is used (the host in the card is the agent's bind address).
-/// Falls back to `{base}/jsonrpc` when the card can't be fetched or parsed.
-async fn resolve_rpc_url(state: &AppState, base: &str) -> String {
-    let card_url = format!("{base}/.well-known/agent-card.json");
-    let resp = state
-        .http_client
-        .get(&card_url)
-        .timeout(std::time::Duration::from_secs(2))
-        .send()
-        .await;
-    if let Ok(resp) = resp
-        && let Ok(card) = resp.json::<serde_json::Value>().await
-        && let Some(url) = card["supportedInterfaces"][0]["url"].as_str()
-        && let Ok(parsed) = reqwest::Url::parse(url)
-    {
-        let path = parsed.path().trim_end_matches('/');
-        return format!("{base}{path}");
-    }
-    format!("{base}/jsonrpc")
-}
-
 async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
     // Prefer live runtime endpoint (Docker port mapping can change on restart).
     let container_id = nasiko_runtime::ContainerId::new(agent_name.to_owned());
     match state.runtime.endpoint(&container_id).await {
         Ok(endpoint) => {
             let base = endpoint.trim_end_matches('/');
-            return Ok(resolve_rpc_url(state, base).await);
+            return Ok(format!("{base}/jsonrpc"));
         }
         Err(_) => {
             // Container not reachable via runtime — check if it's actually stopped.
@@ -794,13 +777,30 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     if let Some(ref url) = stored_url
         && !url.is_empty() {
             let u = url.trim_end_matches('/');
-            return Ok(resolve_rpc_url(state, u).await);
+            return Ok(format!("{u}/jsonrpc"));
         }
 
     Err(format!("no endpoint found for agent '{agent_name}'"))
 }
 
 /// Normalize a Python a2a-sdk JSONRPC event to CP native StreamResponse format.
+/// Extract the error message if this SSE event represents a TASK_STATE_FAILED status update.
+fn extract_failure_message(data: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
+    let status_update = parsed.get("statusUpdate")
+        .or_else(|| parsed.get("result").and_then(|r| r.get("statusUpdate")))?;
+    let state = status_update.pointer("/status/state")?.as_str()?;
+    if state != "TASK_STATE_FAILED" {
+        return None;
+    }
+    let parts = status_update.pointer("/status/message/parts")?.as_array()?;
+    let text: String = parts.iter()
+        .filter_map(|p| p.get("text")?.as_str())
+        .collect::<Vec<_>>()
+        .join("");
+    if text.is_empty() { None } else { Some(text) }
+}
+
 fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
         return data.to_string();

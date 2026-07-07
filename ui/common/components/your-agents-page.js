@@ -465,17 +465,23 @@ class YourAgentsPage extends HTMLElement {
         modal.open();
       } else if (action === "restart" || action === "stop") {
         const name = btn.dataset.name;
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = action === "restart" ? "Restarting..." : "Stopping...";
         try {
-          await fetch(
+          const res = await fetch(
             `/api/containers/${encodeURIComponent(name)}/${action}`,
             { method: "POST" },
           );
-          this.#load();
+          if (!res.ok) throw new Error(await res.text());
           showToast(
             `${action === "restart" ? "Restarted" : "Stopped"} ${name}`,
           );
+          this.#load();
         } catch (err) {
           showToast(`Failed to ${action}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = original;
         }
       } else if (action === "delete") {
         const name = btn.dataset.name;

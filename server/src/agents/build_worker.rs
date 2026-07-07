@@ -238,7 +238,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 std::path::PathBuf::from(&zip_path),
                 image_tag,
                 ports,
-                env,
+                platform_env,
                 // Inject server LLM secrets at execution — not persisted in the payload (RUN-5).
                 state.config.openai_api_key.clone(),
                 state.config.openai_base_url.clone(),

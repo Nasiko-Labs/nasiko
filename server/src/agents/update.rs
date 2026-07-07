@@ -17,6 +17,7 @@ use crate::github::load_github_token;
 use crate::state::AppState;
 
 use super::utils::{set_build_status, set_upload_status};
+use crate::catalog::agent_secrets;
 
 /// Max multipart body for an agent update (mirrors the upload router). Without
 /// this the update route inherited axum's 2 MiB default, and `field.bytes()`
