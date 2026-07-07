@@ -25,10 +25,12 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+nasiko-auth = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 tracing-subscriber = { workspace = true }
+mockito = { workspace = true }
 
 [[example]]
 name = "test_tools"

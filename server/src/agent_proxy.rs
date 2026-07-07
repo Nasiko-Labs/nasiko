@@ -109,6 +109,17 @@ pub async fn agent_proxy(
             if claims.is_superuser { "true" } else { "false" },
         );
 
+    // Mint a short-lived delegation token so the agent can call back into
+    // `/api/mcp` proving "I am agent_id_str, acting for claims.sub". Minting
+    // is best-effort: if JWT_SECRET is unset, MCP delegation is simply
+    // unavailable to this agent rather than failing the whole proxy call.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+        && let Ok(delegation_token) =
+            nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &claims.sub, &agent_id_str)
+    {
+        forwarded = forwarded.header("x-nasiko-agent-token", delegation_token);
+    }
+
     if !body_bytes.is_empty() {
         forwarded = forwarded.body(body_bytes);
     }

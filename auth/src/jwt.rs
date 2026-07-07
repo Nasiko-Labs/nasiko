@@ -6,6 +6,14 @@ use crate::{AuthError, Identity};
 
 pub const DEFAULT_EXPIRY_SECS: u64 = 12 * 60 * 60; // 12 hours
 
+/// Token type sentinel — distinguishes user sessions from agent service accounts.
+const TOKEN_TYPE_USER: &str = "user";
+const TOKEN_TYPE_AGENT: &str = "agent";
+
+fn default_user_token_type() -> String {
+    TOKEN_TYPE_USER.to_owned()
+}
+
 /// Internal JWT claims — never exposed outside this module.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct JwtClaims {
@@ -16,11 +24,25 @@ pub(crate) struct JwtClaims {
     pub iat: u64,
     pub username: String,
     pub is_superuser: bool,
-    #[serde(default)]
-    pub is_agent: bool,
+    /// "user" | "agent". Defaults to "user" so legacy tokens (pre-AUTH-3)
+    /// decode correctly — they carry no token_type claim.
+    #[serde(default = "default_user_token_type")]
+    pub token_type: String,
 }
 
+/// Encode a user session JWT (token_type = "user").
 pub fn encode_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result<String, AuthError> {
+    encode_jwt_inner(secret, expiry_secs, TOKEN_TYPE_USER, identity)
+}
+
+/// Encode an agent service-account JWT (token_type = "agent").
+/// These tokens are REJECTED by `decode_jwt` / `decode_jwt_with_jti` so they
+/// cannot be used to authenticate as a human user (AUTH-3).
+pub fn encode_agent_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result<String, AuthError> {
+    encode_jwt_inner(secret, expiry_secs, TOKEN_TYPE_AGENT, identity)
+}
+
+fn encode_jwt_inner(secret: &str, expiry_secs: u64, token_type: &str, identity: &Identity) -> Result<String, AuthError> {
     let now = Utc::now().timestamp() as u64;
     let claims = JwtClaims {
         sub: identity.user_id.clone(),
@@ -29,7 +51,7 @@ pub fn encode_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result
         iat: now,
         username: identity.username.clone(),
         is_superuser: identity.is_superuser,
-        is_agent: identity.is_agent,
+        token_type: token_type.to_owned(),
     };
     encode(
         &Header::default(),
@@ -56,11 +78,16 @@ pub fn decode_jwt(secret: &str, token: &str) -> Result<Identity, AuthError> {
     })?;
 
     let c = data.claims;
+    // Agent tokens must not be accepted as human-user credentials (AUTH-3).
+    if c.token_type == TOKEN_TYPE_AGENT {
+        return Err(AuthError::InvalidToken(
+            "agent tokens cannot authenticate as a user".into(),
+        ));
+    }
     Ok(Identity {
         user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
-        is_agent: c.is_agent,
     })
 }
 
@@ -82,12 +109,17 @@ pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, Strin
     })?;
 
     let c = data.claims;
+    // Agent tokens must not be accepted as human-user credentials (AUTH-3).
+    if c.token_type == TOKEN_TYPE_AGENT {
+        return Err(AuthError::InvalidToken(
+            "agent tokens cannot authenticate as a user".into(),
+        ));
+    }
     let jti = c.jti.clone();
     let identity = Identity {
         user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
-        is_agent: c.is_agent,
     };
 
     Ok((identity, jti))
@@ -110,4 +142,66 @@ pub fn extract_jti(token: &str) -> Option<String> {
     let decoded = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     claims.get("jti").and_then(|v| v.as_str()).map(str::to_owned)
+}
+
+/// Delegation token TTL: an agent container presents this to `/api/mcp` to
+/// prove "I am agent `act`, acting on behalf of user `sub`". Kept short-lived
+/// since it's minted per-request and never stored.
+pub const DELEGATION_EXPIRY_SECS: u64 = 5 * 60;
+
+const DELEGATION_AUDIENCE: &str = "mcp";
+
+/// Claims for an MCP delegation token — distinct from `JwtClaims` (user/agent
+/// service-account tokens) since this asserts a (user, acting-agent) pair
+/// rather than a single principal.
+#[derive(Debug, Serialize, Deserialize)]
+struct DelegationClaims {
+    sub: String,
+    act: String,
+    aud: String,
+    exp: u64,
+    iat: u64,
+}
+
+/// Mint a short-lived delegation token asserting that `agent_id` is acting on
+/// behalf of `user_id`. Used when the server forwards a request to an agent
+/// container, so the agent can call back into `/api/mcp` with proof of both
+/// identities.
+pub fn mint_delegation_token(secret: &str, user_id: &str, agent_id: &str) -> Result<String, AuthError> {
+    let now = Utc::now().timestamp() as u64;
+    let claims = DelegationClaims {
+        sub: user_id.to_owned(),
+        act: agent_id.to_owned(),
+        aud: DELEGATION_AUDIENCE.to_owned(),
+        exp: now + DELEGATION_EXPIRY_SECS,
+        iat: now,
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|e| AuthError::InvalidToken(e.to_string()))
+}
+
+/// Validate a delegation token minted by `mint_delegation_token`. Returns
+/// `(user_id, agent_id)` on success. Rejects tokens missing the `mcp`
+/// audience so a user/agent service-account JWT can't be replayed here.
+pub fn validate_delegation_token(secret: &str, token: &str) -> Result<(String, String), AuthError> {
+    let mut validation = Validation::default();
+    validation.set_audience(&[DELEGATION_AUDIENCE]);
+    validation.validate_exp = true;
+    validation.leeway = 0;
+
+    let data = decode::<DelegationClaims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map_err(|e| match e.kind() {
+        jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::Expired,
+        _ => AuthError::InvalidToken(e.to_string()),
+    })?;
+
+    Ok((data.claims.sub, data.claims.act))
 }

@@ -275,6 +275,13 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         cors_allowed_origins: vec![],
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
+        composio_api_key: None,
+        composio_base_url: "https://backend.composio.dev".into(),
+        composio_webhook_secret: None,
+        mcp_gateway_public_url: None,
+        mcp_session_ttl_seconds: 300,
+        mcp_perm_cache_ttl_seconds: 30,
+        mcp_manifest_ttl_seconds: 300,
     }
 }
 
@@ -296,22 +303,23 @@ pub fn sign_token(user_id: &str, username: &str, is_superuser: bool, _role: &str
         user_id: user_id.to_owned(),
         username: username.to_owned(),
         is_superuser,
-        is_agent: false,
     };
     nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
         .expect("test JWT signing failed")
 }
 
-/// Sign a short-lived agent-typed JWT (as minted by `issue_agent_token`).
+/// Sign a short-lived agent-typed JWT (as minted by `issue_agent_token`) —
+/// `encode_agent_jwt` stamps `token_type = "agent"`, which `decode_jwt`/
+/// `decode_jwt_with_jti` reject outright (AUTH-3), so this must never be
+/// usable to authenticate as a user via `require_auth`.
 #[allow(dead_code)]
 pub fn sign_agent_token(agent_id: &str) -> String {
     let identity = nasiko_auth::Identity {
         user_id: agent_id.to_owned(),
         username: format!("agent:{agent_id}"),
         is_superuser: false,
-        is_agent: true,
     };
-    nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
+    nasiko_auth::jwt::encode_agent_jwt(TEST_JWT_SECRET, 3600, &identity)
         .expect("test JWT signing failed")
 }
 

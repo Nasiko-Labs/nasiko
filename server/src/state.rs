@@ -22,6 +22,7 @@ pub struct AppState {
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
+    pub mcp: nasiko_mcp_gateway::McpState,
     pub flow_guard: FlowGuard,
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
@@ -135,6 +136,10 @@ impl AppState {
 
         let (build_tx, build_rx) = mpsc::channel(64);
 
+        // MCP gateway state: reuses the same pool, redis client, and pooled
+        // HTTP client — no duplicated infrastructure.
+        let mcp = nasiko_mcp_gateway::McpState::new(db.clone(), redis.clone(), http_client.clone(), &config);
+
         let state = Self {
             runtime,
             db,
@@ -143,6 +148,7 @@ impl AppState {
             usage_tracker,
             http_client,
             auth,
+            mcp,
             flow_guard,
             flow_events,
             genai_metrics,

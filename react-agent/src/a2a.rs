@@ -74,6 +74,19 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
     ) -> Result<A2aResponse, A2aClientError> {
+        self.send_message_with_headers(endpoint, message, context_id, &[]).await
+    }
+
+    /// Like [`send_message`], plus per-call headers layered on top of the
+    /// client-wide `extra_headers` (e.g. a delegation token scoped to the one
+    /// specific agent being called, which differs per call unlike `traceparent`).
+    pub async fn send_message_with_headers(
+        &self,
+        endpoint: &str,
+        message: &str,
+        context_id: Option<&str>,
+        per_call_headers: &[(String, String)],
+    ) -> Result<A2aResponse, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -104,7 +117,7 @@ impl A2aClient {
             .json(&body)
             .timeout(self.default_timeout);
 
-        for (key, value) in &self.extra_headers {
+        for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
             req = req.header(key, value);
         }
 

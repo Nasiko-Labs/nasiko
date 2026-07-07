@@ -1,0 +1,45 @@
+[package]
+name = "nasiko-mcp-gateway"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "nasiko_mcp_gateway"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime & data
+tokio.workspace = true
+# `json` for JSONB columns (mcp_servers.headers, composio session snapshots).
+sqlx = { workspace = true, features = ["json"] }
+redis.workspace = true
+reqwest.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Common utilities
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+
+# Permissions hash + OAuth (PKCE, HMAC-signed state, webhook verify)
+sha2.workspace = true
+hex.workspace = true
+hmac.workspace = true
+base64.workspace = true
+rand.workspace = true
+
+# Internal crates
+nasiko-config.workspace = true
+nasiko-utils.workspace = true
+nasiko-secrets.workspace = true
+nasiko-observability.workspace = true
+
+[dev-dependencies]
+# HTTP mocking for provider (generic MCP + Composio) tests.
+mockito = { workspace = true }

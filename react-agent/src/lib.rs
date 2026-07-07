@@ -16,4 +16,4 @@ pub use events::OrchestratorEvent;
 pub use guard::CallGuard;
 pub use react_loop::{Orchestrator, OrchestratorConfig, OrchestrationResult, TurnTrace};
 pub use registry::{AgentInfo, AgentRegistry, AgentSkill, RegistrySource};
-pub use tool::A2aTool;
+pub use tool::{A2aTool, DelegationContext};
