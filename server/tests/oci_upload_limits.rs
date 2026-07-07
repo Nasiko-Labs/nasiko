@@ -108,3 +108,76 @@ async fn chunked_upload_rejects_once_total_size_cap_exceeded() {
 
     server.cleanup().await;
 }
+
+/// `complete_upload`'s final chunk previously bypassed the total-size cap
+/// entirely — a client could PATCH up to just under the limit, then finalize
+/// with one more chunk, pushing the accumulated size past the cap
+/// unchecked. Same seeding trick as the PATCH test above: seed
+/// `offset_bytes` directly (the column `complete_upload` now reads for this
+/// check) rather than actually transferring gigabytes.
+#[tokio::test]
+#[serial_test::serial]
+async fn complete_upload_rejects_final_chunk_that_pushes_past_total_cap() {
+    let server = common::TestServer::start().await;
+    let owner_id = insert_user(&server.db, "oci-complete-owner").await;
+    let agent_name = format!("oci-complete-agent-{}", Uuid::new_v4());
+    insert_agent(&server.db, &agent_name, owner_id).await;
+
+    let init = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/v2/nasiko/{agent_name}/blobs/uploads/"))),
+        &owner_id.to_string(),
+        "oci-complete-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(init.status(), 202);
+    let upload_uuid_str = init
+        .headers()
+        .get("Docker-Upload-UUID")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let upload_uuid: Uuid = upload_uuid_str.parse().unwrap();
+
+    // Seed the session as if PATCH chunks had already accumulated just under
+    // the 5 GiB cap.
+    let just_under_cap: i64 = 5 * 1024 * 1024 * 1024 - 10;
+    sqlx::query("UPDATE oci_uploads SET offset_bytes = $1 WHERE uuid = $2")
+        .bind(just_under_cap)
+        .bind(upload_uuid)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    // Finalize with one more chunk that pushes the total over the cap.
+    let complete = common::as_member(
+        server.client.put(server.url(&format!(
+            "/v2/nasiko/{agent_name}/blobs/uploads/{upload_uuid}"
+        ))),
+        &owner_id.to_string(),
+        "oci-complete-owner",
+    )
+    .body(vec![1u8; 100])
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        complete.status(),
+        400,
+        "a final chunk pushing the session's total past the cap must be rejected, not silently finalized"
+    );
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM oci_uploads WHERE uuid = $1")
+        .bind(upload_uuid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "overflowed upload session must be deleted, not left dangling");
+
+    server.cleanup().await;
+}

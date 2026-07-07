@@ -76,10 +76,21 @@ fn flow_rejection_timeout_display() {
     assert!(s.contains("130"));
 }
 
+#[test]
+fn flow_rejection_guard_unavailable_display() {
+    let r = FlowRejection::GuardUnavailable;
+    let s = r.to_string();
+    assert!(s.contains("unavailable") || s.contains("redis"), "display must explain the guard is unavailable");
+}
+
 // ── FlowGuard without Redis (graceful degradation) ─────────────────────────
 //
-// When Redis is unreachable the guard methods fall back to Ok(()) rather than
-// panicking. These tests use a deliberately bad Redis URL to exercise that path.
+// When Redis is unreachable the enforcement methods (check/record_invocation/
+// record_tokens) fail CLOSED — a Redis outage must not silently disable
+// depth/cycle/fan-out/token limits against unvetted agent code. Bookkeeping-
+// only methods (init_flow/record_return) stay best-effort no-ops, since they
+// don't gate anything themselves. These tests use a deliberately bad Redis
+// URL to exercise that path.
 
 fn unreachable_guard() -> FlowGuard {
     let client = redis::Client::open("redis://127.0.0.1:1/").expect("client creation always succeeds");
@@ -87,31 +98,35 @@ fn unreachable_guard() -> FlowGuard {
 }
 
 #[tokio::test]
-async fn guard_check_without_redis_allows() {
+async fn guard_check_without_redis_fails_closed() {
     let guard = unreachable_guard();
     let ctx = FlowContext::new_root();
     let result = guard.check(&ctx, "agent-x").await;
-    assert!(result.is_ok(), "when Redis is unreachable, check() must allow (fail-open)");
+    assert!(
+        matches!(result, Err(FlowRejection::GuardUnavailable)),
+        "when Redis is unreachable, check() must fail closed, not silently allow"
+    );
 }
 
 #[tokio::test]
-async fn guard_record_invocation_without_redis_allows() {
+async fn guard_record_invocation_without_redis_fails_closed() {
     let guard = unreachable_guard();
     let ctx = FlowContext::new_root();
     let result = guard.record_invocation(&ctx, "agent-x").await;
-    assert!(result.is_ok(), "when Redis is unreachable, record_invocation() must allow");
+    assert!(
+        matches!(result, Err(FlowRejection::GuardUnavailable)),
+        "when Redis is unreachable, record_invocation() must fail closed"
+    );
 }
 
 #[tokio::test]
-async fn guard_record_tokens_without_redis_returns_max() {
+async fn guard_record_tokens_without_redis_fails_closed() {
     let guard = unreachable_guard();
     let ctx = FlowContext::new_root();
     let result = guard.record_tokens(&ctx, 500).await;
-    assert!(result.is_ok());
-    assert_eq!(
-        result.unwrap(),
-        FlowConfig::default().max_flow_tokens,
-        "when Redis unreachable, remaining budget equals max"
+    assert!(
+        matches!(result, Err(FlowRejection::GuardUnavailable)),
+        "when Redis is unreachable, record_tokens() must fail closed, not report a full remaining budget"
     );
 }
 

@@ -249,6 +249,59 @@ async fn get_upload_status_returns_seeded_record() {
     server.cleanup().await;
 }
 
+/// A non-owner must not be able to read another user's upload status by
+/// guessing/knowing the upload_id (IDOR — this handler previously had no
+/// `Claims` param at all, unlike its owner-scoped sibling `list_upload_status`).
+#[tokio::test]
+#[serial]
+async fn get_upload_status_denies_non_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let owner_uid = admin["user_id"].as_str().unwrap();
+    let owner_uuid: Uuid = owner_uid.parse().unwrap();
+
+    let stranger_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (username, email, is_superuser) VALUES ('upload-idor-stranger', 'upload-idor-stranger@test.local', false) RETURNING id",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let upload_id = "test-upload-idor";
+    sqlx::query(
+        "INSERT INTO upload_status (upload_id, agent_name, owner_id, status) \
+         VALUES ($1, 'private-agent', $2, 'completed'::upload_pipeline_status)",
+    )
+    .bind(upload_id)
+    .bind(owner_uuid)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let res = common::as_member(
+        server.client.get(server.url(&format!("/api/agents/uploads/{upload_id}"))),
+        &stranger_id.to_string(),
+        "upload-idor-stranger",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 404, "a non-owner must not see another user's upload status");
+
+    // The owner and a superuser must still be able to read it.
+    let res_owner = common::as_member(
+        server.client.get(server.url(&format!("/api/agents/uploads/{upload_id}"))),
+        owner_uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res_owner.status(), 200, "the owner must still be able to read their own upload status");
+
+    server.cleanup().await;
+}
+
 // ─── GET /api/agents/my-uploads ─────────────────────────────────────────────
 
 #[tokio::test]

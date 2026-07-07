@@ -16,6 +16,16 @@ use crate::guard::CallGuard;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
 use crate::tool::A2aTool;
 
+/// Attribute one completion's total token cost evenly across the tool calls
+/// it produced — the API gives one usage figure per completion, not per tool
+/// call, so this is the best available granularity for `CallGuard::after_call`.
+/// `None` (no usage reported) or zero tool calls both yield 0.
+fn tokens_per_tool_call(completion_tokens: Option<u64>, num_tool_calls: usize) -> u64 {
+    completion_tokens
+        .map(|t| t / num_tool_calls.max(1) as u64)
+        .unwrap_or(0)
+}
+
 /// Configuration for the orchestrator.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -167,6 +177,14 @@ impl Orchestrator {
                 .await
                 .map_err(|e| OrchestratorError::Completion(e.to_string()))?;
 
+            // This completion's total token cost, attributed evenly across
+            // however many tool calls it produced (best available granularity
+            // — the API gives one usage figure per completion, not per tool
+            // call). Without this, `after_call` always received a literal 0
+            // and `FlowGuard::record_tokens`/`TokenBudgetExhausted` could
+            // never fire.
+            let completion_tokens = response.raw_response.usage.as_ref().map(|u| u.total_tokens as u64);
+
             // Partition the response into text and tool calls
             let mut text_parts = Vec::new();
             let mut tool_calls = Vec::new();
@@ -180,6 +198,7 @@ impl Orchestrator {
 
             // If there are tool calls, execute them all
             if !tool_calls.is_empty() {
+                let tokens_per_call = tokens_per_tool_call(completion_tokens, tool_calls.len());
                 let mut trace = TurnTrace {
                     turn: turn_idx + 1,
                     tool_calls: Vec::new(),
@@ -228,7 +247,7 @@ impl Orchestrator {
                     match result {
                         Ok(output) => {
                             if let Some(g) = &self.guard {
-                                g.after_call(&agent_display, 0).await;
+                                g.after_call(&agent_display, tokens_per_call).await;
                             }
                             results_for_context
                                 .push(format!("[{}] Result: {}", name, output));
@@ -239,7 +258,7 @@ impl Orchestrator {
                             // leaks flow-depth and later legitimate calls in the
                             // same flow get falsely rejected with MaxDepthExceeded.
                             if let Some(g) = &self.guard {
-                                g.after_call(&agent_display, 0).await;
+                                g.after_call(&agent_display, tokens_per_call).await;
                             }
                             tracing::warn!(tool = %name, error = %e, "tool failed");
                             results_for_context
@@ -547,10 +566,12 @@ async fn run_stream_inner(
             };
 
             // Extract usage from raw response
+            let mut completion_tokens = None;
             if let Some(ref usage) = response.raw_response.usage {
                 let input = usage.prompt_tokens as u64;
                 let total = usage.total_tokens as u64;
                 let output = total.saturating_sub(input);
+                completion_tokens = Some(total);
                 let _ = tx.send(OrchestratorEvent::Usage {
                     input_tokens: input,
                     output_tokens: output,
@@ -575,6 +596,11 @@ async fn run_stream_inner(
                         content: text_parts.join(""),
                     }).await;
                 }
+
+                // This completion's total token cost, attributed evenly across
+                // however many tool calls it produced — see `run`'s identical
+                // comment for why `after_call` previously always got a literal 0.
+                let tokens_per_call = tokens_per_tool_call(completion_tokens, tool_calls.len());
 
                 let mut results_for_context = Vec::new();
 
@@ -618,7 +644,7 @@ async fn run_stream_inner(
                     match &result {
                         Ok(output) => {
                             if let Some(g) = guard {
-                                g.after_call(&agent_display, 0).await;
+                                g.after_call(&agent_display, tokens_per_call).await;
                             }
                             let _ = tx.send(OrchestratorEvent::ToolResult {
                                 agent: agent_display,
@@ -634,7 +660,7 @@ async fn run_stream_inner(
                             // leaks flow-depth and later legitimate calls in the
                             // same flow get falsely rejected with MaxDepthExceeded.
                             if let Some(g) = guard {
-                                g.after_call(&agent_display, 0).await;
+                                g.after_call(&agent_display, tokens_per_call).await;
                             }
                             let err_str = e.to_string();
                             let _ = tx.send(OrchestratorEvent::ToolResult {
@@ -732,6 +758,12 @@ async fn run_stream_inner(
                     }).await;
                 }
 
+                // Unlike the non-streaming branches, this turn's `stream.next()`
+                // loop above never surfaces a usage/token-count chunk for this
+                // provider stream type, so there's no real figure to attribute
+                // to `after_call` here — it stays 0 for streamed turns only.
+                // Token-budget enforcement is still real for every turn after
+                // the first (turn_idx > 0 always takes the non-streaming path).
                 let mut results_for_context = Vec::new();
 
                 for tc in &tool_calls {
@@ -837,4 +869,29 @@ async fn run_stream_inner(
         message: format!("max turns ({}) exceeded", config.max_turns),
     }).await;
     Err(OrchestratorError::MaxTurnsExceeded(config.max_turns))
+}
+
+#[cfg(test)]
+mod tokens_per_tool_call_tests {
+    use super::tokens_per_tool_call;
+
+    #[test]
+    fn splits_total_evenly_across_tool_calls() {
+        assert_eq!(tokens_per_tool_call(Some(300), 3), 100);
+    }
+
+    #[test]
+    fn no_usage_reported_yields_zero() {
+        assert_eq!(tokens_per_tool_call(None, 3), 0);
+    }
+
+    #[test]
+    fn zero_tool_calls_does_not_divide_by_zero() {
+        assert_eq!(tokens_per_tool_call(Some(300), 0), 300);
+    }
+
+    #[test]
+    fn single_tool_call_gets_the_full_amount() {
+        assert_eq!(tokens_per_tool_call(Some(150), 1), 150);
+    }
 }

@@ -10,18 +10,69 @@ pub async fn blob_exists(state: &OciState, digest: &str) -> bool {
     state.storage.blob_exists(digest).await
 }
 
-pub async fn get_blob_redirect_url(state: &OciState, digest: &str) -> Result<String> {
+/// Was `digest` ever recorded as referenced by `repository` (via a pushed
+/// manifest)? The confidentiality gate for GET/HEAD: repo-level ownership of
+/// `repository` alone must NOT be sufficient to read an arbitrary digest,
+/// since blobs are globally content-addressed and shared across repos.
+pub async fn blob_linked(state: &OciState, repository: &str, digest: &str) -> Result<bool> {
+    let linked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM oci_blob_refs WHERE digest = $1 AND repository = $2)",
+    )
+    .bind(digest)
+    .bind(repository)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(linked)
+}
+
+pub async fn get_blob_redirect_url(state: &OciState, repository: &str, digest: &str) -> Result<String> {
+    if !blob_linked(state, repository, digest).await? {
+        return Err(OciError::NotFound(format!("blob {digest} not found")));
+    }
     if !state.storage.blob_exists(digest).await {
         return Err(OciError::NotFound(format!("blob {digest} not found")));
     }
     state.storage.presigned_get_url(digest, 3600).await
 }
 
-pub async fn delete_blob(state: &OciState, digest: &str) -> Result<()> {
+/// Ref-counted delete: only removes the physical object once no repository
+/// still references the digest. Wrapped in one transaction so the
+/// ref-count check and the physical delete are atomic against a concurrent
+/// manifest push/delete from another repo sharing the same digest.
+pub async fn delete_blob(state: &OciState, repository: &str, digest: &str) -> Result<()> {
     if !state.storage.blob_exists(digest).await {
         return Err(OciError::NotFound(format!("blob {digest} not found")));
     }
-    state.storage.delete_blob(digest).await
+
+    let mut tx = state.pool.begin().await?;
+
+    // This repo must have an actual recorded claim to the digest — fail
+    // closed rather than let a repo affect a digest it never referenced
+    // (including legacy pre-migration blobs with no oci_blob_refs rows yet).
+    let removed = sqlx::query("DELETE FROM oci_blob_refs WHERE digest = $1 AND repository = $2")
+        .bind(digest)
+        .bind(repository)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if removed == 0 {
+        return Err(OciError::NotFound(format!("blob {digest} not found in repository '{repository}'")));
+    }
+
+    let still_referenced: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oci_blob_refs WHERE digest = $1)")
+        .bind(digest)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    if still_referenced {
+        // Another repo still needs it — this repo's link is gone, object stays.
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    let result = state.storage.delete_blob(digest).await;
+    tx.commit().await?;
+    result
 }
 
 pub async fn initiate_upload(state: &OciState, repository: &str) -> Result<Uuid> {
@@ -117,17 +168,33 @@ pub async fn complete_upload(
     final_chunk: Bytes,
     expected_digest: Option<&str>,
 ) -> Result<CompleteResult> {
-    let exists = sqlx::query(
-        "SELECT uuid FROM oci_uploads WHERE uuid = $1 AND repository = $2",
+    let offset_bytes: Option<i64> = sqlx::query_scalar(
+        "SELECT offset_bytes FROM oci_uploads WHERE uuid = $1 AND repository = $2",
     )
     .bind(upload_id)
     .bind(repository)
     .fetch_optional(&state.pool)
-    .await?
-    .is_some();
+    .await?;
 
-    if !exists {
+    let Some(offset_bytes) = offset_bytes else {
         return Err(OciError::NotFound("upload session not found".into()));
+    };
+
+    // append_chunk enforces MAX_UPLOAD_TOTAL_BYTES on every PATCH chunk (via
+    // this same `offset_bytes` column), but the final chunk here was never
+    // checked — a client could PATCH up to just under the cap, then finalize
+    // with one more MAX_CHUNK_BYTES (512 MiB) chunk, pushing the actual
+    // in-memory buffer ~512 MiB past the cap before anything caught it.
+    if offset_bytes + final_chunk.len() as i64 > MAX_UPLOAD_TOTAL_BYTES {
+        state.upload_buffers.remove(&upload_id);
+        let _ = sqlx::query("DELETE FROM oci_uploads WHERE uuid = $1 AND repository = $2")
+            .bind(upload_id)
+            .bind(repository)
+            .execute(&state.pool)
+            .await;
+        return Err(OciError::BadRequest(format!(
+            "upload exceeds maximum total size of {MAX_UPLOAD_TOTAL_BYTES} bytes"
+        )));
     }
 
     let data = if let Some((_, mut buf)) = state.upload_buffers.remove(&upload_id) {

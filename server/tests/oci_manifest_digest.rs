@@ -32,6 +32,63 @@ async fn insert_agent(db: &sqlx::PgPool, name: &str, owner_id: Uuid) {
         .expect("insert test agent");
 }
 
+/// Push-by-digest verification: PUTting a manifest under a digest reference
+/// that doesn't actually match the pushed body's own hash must be rejected
+/// up front (400), not stored and left to 500 on a later pull.
+#[tokio::test]
+#[serial_test::serial]
+async fn put_manifest_by_digest_rejects_mismatched_reference() {
+    let server = common::TestServer::start().await;
+    let owner_id = insert_user(&server.db, "oci-push-digest-owner").await;
+    let agent_name = format!("oci-push-digest-agent-{}", Uuid::new_v4());
+    insert_agent(&server.db, &agent_name, owner_id).await;
+
+    let wrong_digest = format!("sha256:{}", "1".repeat(64));
+    let body = serde_json::json!({"schemaVersion": 2});
+
+    let resp = common::as_member(
+        server.client.put(server.url(&format!("/v2/nasiko/{agent_name}/manifests/{wrong_digest}"))),
+        &owner_id.to_string(), "oci-push-digest-owner",
+    )
+    .header("content-type", "application/vnd.oci.image.manifest.v1+json")
+    .json(&body)
+    .send().await.unwrap();
+
+    assert_eq!(resp.status(), 400, "a digest reference that doesn't match the pushed body must be rejected");
+
+    server.cleanup().await;
+}
+
+/// Sanity: pushing by the CORRECT digest must still succeed (no false
+/// positive), and pushing by a mutable tag is never subject to this check.
+#[tokio::test]
+#[serial_test::serial]
+async fn put_manifest_by_matching_digest_succeeds() {
+    let server = common::TestServer::start().await;
+    let owner_id = insert_user(&server.db, "oci-push-digest-owner-ok").await;
+    let agent_name = format!("oci-push-digest-agent-ok-{}", Uuid::new_v4());
+    insert_agent(&server.db, &agent_name, owner_id).await;
+
+    let body = serde_json::json!({"schemaVersion": 2});
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+    sha2::Digest::update(&mut hasher, &body_bytes);
+    let hex_digest: String = sha2::Digest::finalize(hasher).iter().map(|b| format!("{b:02x}")).collect();
+    let real_digest = format!("sha256:{hex_digest}");
+
+    let resp = common::as_member(
+        server.client.put(server.url(&format!("/v2/nasiko/{agent_name}/manifests/{real_digest}"))),
+        &owner_id.to_string(), "oci-push-digest-owner-ok",
+    )
+    .header("content-type", "application/vnd.oci.image.manifest.v1+json")
+    .body(body_bytes)
+    .send().await.unwrap();
+
+    assert_eq!(resp.status(), 201, "a digest reference matching the pushed body must succeed");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn get_manifest_by_digest_rejects_content_digest_mismatch() {

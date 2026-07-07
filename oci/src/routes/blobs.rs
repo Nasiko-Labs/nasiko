@@ -20,9 +20,13 @@ pub(crate) const MAX_CHUNK_BYTES: usize = 512 * 1024 * 1024;
 pub async fn head_blob(
     State(state): State<OciState>,
     caller: CallerIdentity,
-    Path((_owner, repo, digest)): Path<(String, String, String)>,
+    Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
     check_repo_access(&state, &caller, &repo).await?;
+    let name = format!("{owner}/{repo}");
+    if !ops::blob_linked(&state, &name, &digest).await? {
+        return Err(OciError::NotFound(format!("blob {digest} not found")));
+    }
     let size = state.storage.blob_size(&digest).await?;
     let size_str = size.to_string();
     Ok((
@@ -40,20 +44,22 @@ pub async fn head_blob(
 pub async fn get_blob(
     State(state): State<OciState>,
     caller: CallerIdentity,
-    Path((_owner, repo, digest)): Path<(String, String, String)>,
+    Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
     check_repo_access(&state, &caller, &repo).await?;
-    let url = ops::get_blob_redirect_url(&state, &digest).await?;
+    let name = format!("{owner}/{repo}");
+    let url = ops::get_blob_redirect_url(&state, &name, &digest).await?;
     Ok(Redirect::temporary(&url).into_response())
 }
 
 pub async fn delete_blob(
     State(state): State<OciState>,
     caller: CallerIdentity,
-    Path((_owner, repo, digest)): Path<(String, String, String)>,
+    Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
     check_repo_delete_access(&state, &caller, &repo).await?;
-    ops::delete_blob(&state, &digest).await?;
+    let name = format!("{owner}/{repo}");
+    ops::delete_blob(&state, &name, &digest).await?;
     Ok((StatusCode::ACCEPTED, "").into_response())
 }
 

@@ -197,7 +197,9 @@ pub fn start(infra_only: bool) -> Result<()> {
         .env("S3_ACCESS_KEY", "nasiko")
         .env("S3_SECRET_KEY", "nasiko123")
         .env("S3_REGION", "us-east-1")
-        .env("SECRETS_ENCRYPTION_KEY", "dev-only-change-in-prod-32chars!!")
+        // Valid base64-encoded 32 bytes (32x 'D') — SecretsCrypto::from_key requires
+        // exactly 32 decoded bytes, unlike a raw 32-character string.
+        .env("SECRETS_ENCRYPTION_KEY", "REREREREREREREREREREREREREREREREREREREREREQ=")
         .env("RUST_LOG", "info,nasiko_cp_lib=debug");
 
     // Pass optional env vars from DevEnv

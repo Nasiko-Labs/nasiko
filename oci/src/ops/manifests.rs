@@ -73,6 +73,30 @@ pub struct PutManifestResult {
     pub digest: String,
 }
 
+/// Extract every blob digest an OCI image manifest references (config +
+/// layers). Manifest lists/indexes (`"manifests": [...]`) reference OTHER
+/// manifests, not blobs — out of scope here, explicitly skipped rather than
+/// mis-parsed. Each platform-specific child manifest in a multi-arch push is
+/// PUT separately and DOES have real layers/config, so this isn't a coverage
+/// gap for the standard buildx/multi-arch push flow.
+fn extract_referenced_blob_digests(content: &serde_json::Value) -> Vec<String> {
+    if content.get("manifests").and_then(|v| v.as_array()).is_some() {
+        return Vec::new();
+    }
+    let mut digests = Vec::new();
+    if let Some(d) = content.get("config").and_then(|c| c.get("digest")).and_then(|v| v.as_str()) {
+        digests.push(d.to_string());
+    }
+    if let Some(layers) = content.get("layers").and_then(|v| v.as_array()) {
+        for l in layers {
+            if let Some(d) = l.get("digest").and_then(|v| v.as_str()) {
+                digests.push(d.to_string());
+            }
+        }
+    }
+    digests
+}
+
 pub async fn put_manifest(
     state: &OciState,
     repository: &str,
@@ -86,16 +110,29 @@ pub async fn put_manifest(
     hasher.update(body);
     let digest = format!("sha256:{}", hex::encode(hasher.finalize()));
 
+    // Push-by-digest verification (OCI spec): when the caller addressed this
+    // PUT by a content digest rather than a mutable tag, the pushed body must
+    // actually hash to that digest — otherwise a poisoned reference gets
+    // stored and later 500s on pull (`get_manifest`'s own digest check) rather
+    // than being rejected up front with the 400 the spec requires.
+    if is_digest_reference(reference) && reference != digest {
+        return Err(OciError::BadRequest(format!(
+            "digest mismatch: reference {reference} does not match computed digest {digest}"
+        )));
+    }
+
     let content: serde_json::Value = serde_json::from_slice(body)
         .map_err(|e| OciError::BadRequest(format!("invalid JSON manifest: {e}")))?;
     let raw_body = String::from_utf8(body.to_vec())
         .map_err(|e| OciError::BadRequest(format!("manifest is not valid UTF-8: {e}")))?;
 
+    let mut tx = state.pool.begin().await?;
+
     sqlx::query(
         r#"
         INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
         VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (digest) DO UPDATE SET reference = EXCLUDED.reference
+        ON CONFLICT (repository, digest) DO UPDATE SET reference = EXCLUDED.reference
         "#,
     )
     .bind(&digest)
@@ -104,8 +141,25 @@ pub async fn put_manifest(
     .bind(content_type)
     .bind(&raw_body)
     .bind(size_bytes)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    // Record which blobs THIS repo's manifest references — the linkage
+    // delete_blob/get_blob/head_blob rely on to avoid destroying/exposing a
+    // blob that belongs to a different repo sharing the same digest. Uses a
+    // real `?` (not a swallowed error) — an unrecorded link would silently
+    // reintroduce the cross-repo data-loss bug this table exists to close.
+    for blob_digest in extract_referenced_blob_digests(&content) {
+        sqlx::query(
+            "INSERT INTO oci_blob_refs (digest, repository) VALUES ($1, $2) ON CONFLICT (digest, repository) DO NOTHING",
+        )
+        .bind(&blob_digest)
+        .bind(repository)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
 
     // Referrers API: if manifest has a "subject" field, index it
     if let Some(subject) = content.get("subject")
@@ -176,7 +230,7 @@ pub async fn get_referrers(
         SELECT r.referrer_digest, r.artifact_type, r.annotations, r.size_bytes,
                m.media_type
         FROM oci_referrers r
-        JOIN oci_manifests m ON m.digest = r.referrer_digest
+        JOIN oci_manifests m ON m.digest = r.referrer_digest AND m.repository = r.repository
         WHERE r.repository = $1 AND r.subject_digest = $2
         ORDER BY r.created_at DESC
         "#,

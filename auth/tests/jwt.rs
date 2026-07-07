@@ -10,6 +10,7 @@ fn make_identity(user_id: &str) -> Identity {
         user_id: user_id.to_owned(),
         username: "testuser".to_owned(),
         is_superuser: false,
+        is_agent: false,
     }
 }
 

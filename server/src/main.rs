@@ -22,6 +22,9 @@ async fn main() {
     init_telemetry(&telemetry_config);
 
     let config = nasiko_config::Config::from_env().expect("invalid config");
+    config
+        .validate_secrets_key()
+        .expect("invalid SECRETS_ENCRYPTION_KEY at startup");
     let bind = config.bind.clone();
 
     // Build DB pool early so it can be shared with auth services.

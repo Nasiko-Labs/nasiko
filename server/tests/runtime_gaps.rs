@@ -828,6 +828,74 @@ async fn restart_old_deployment_stopped_after_restart() {
     server.cleanup().await;
 }
 
+/// Regression for the atomic mark-starting fix: a request racing against an
+/// already-in-flight restart (simulated here by pre-seeding status='starting'
+/// directly, the same state a concurrent restart would leave mid-flight) must
+/// be rejected with 409 by the conditional UPDATE, without ever touching the
+/// runtime — previously this was a plain read-then-check, so two concurrent
+/// callers could both read 'stopped' and both proceed to destroy/redeploy.
+#[tokio::test]
+#[serial]
+async fn restart_atomic_guard_rejects_when_already_starting_even_if_initial_read_would_not_have() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let (_, dep_id) =
+        seed_deployment(&server.db, owner_id, "atomic-guard-ng", "starting", None, None, None).await;
+
+    let res = call_restart(&server, uid, dep_id).await;
+    assert_eq!(res.status(), 409, "a deployment already in 'starting' must be rejected by the atomic guard");
+
+    server.cleanup().await;
+}
+
+/// Regression for the transactional bookkeeping fix: after a successful
+/// restart, exactly one live 'running' agent_deployments row must exist for
+/// the agent — proving the old-row-stopped + new-row-inserted writes landed
+/// together, not just the old row alone.
+#[tokio::test]
+#[serial]
+async fn restart_success_leaves_exactly_one_running_deployment_row() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let (agent_id, dep_id) = seed_deployment(
+        &server.db,
+        owner_id,
+        "atomic-bookkeeping-ng",
+        "stopped",
+        Some(vec![8000]),
+        Some("alpine:latest"),
+        None,
+    )
+    .await;
+
+    let res = call_restart(&server, uid, dep_id).await;
+    assert_eq!(res.status(), 200, "restart of a stopped deployment must succeed");
+
+    let running_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_deployments WHERE agent_id = $1 AND status = 'running'",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(running_count, 1, "exactly one running deployment row must exist after a successful restart");
+
+    let old_status: String = sqlx::query_scalar("SELECT status::text FROM agent_deployments WHERE id = $1")
+        .bind(dep_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(old_status, "stopped", "the old deployment row must be stopped, not left at 'starting'");
+
+    server.cleanup().await;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Section 4 — Build worker (integration)
 // ═══════════════════════════════════════════════════════════════════════════════

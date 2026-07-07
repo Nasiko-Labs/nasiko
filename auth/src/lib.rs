@@ -19,6 +19,12 @@ pub struct Identity {
     pub username: String,
     #[serde(default)]
     pub is_superuser: bool,
+    /// True for a token minted by `issue_agent_token` (an agent calling back
+    /// into the platform, e.g. to invoke another agent), false for a real
+    /// user session. `#[serde(default)]` so tokens issued before this field
+    /// existed keep decoding as non-agent rather than failing.
+    #[serde(default)]
+    pub is_agent: bool,
 }
 
 /// Consolidated auth trait — replaces AuthProvider, Authorizer, UserAuthService, TokenService.
@@ -69,6 +75,19 @@ pub trait AuthService: Send + Sync + 'static {
     async fn can_read_org(&self, identity: &Identity) -> bool {
         let _ = identity;
         true
+    }
+
+    /// Scope a directory-style user listing (e.g. search/autocomplete) to what
+    /// `identity` should see. `None` means unrestricted — OSS's single-user
+    /// model always returns `None`; EE returns `None` for admins/superusers
+    /// and `Some(user_ids)` for everyone else, restricted to their own team or
+    /// department. Deliberately returns opaque user-id strings rather than
+    /// taking a query/filter callback, so this shared trait never has to know
+    /// about EE-only org-hierarchy columns (`team_id`/`department_id`) that
+    /// don't exist on an OSS-only schema.
+    async fn org_visible_user_ids(&self, identity: &Identity) -> Option<Vec<String>> {
+        let _ = identity;
+        None
     }
 }
 

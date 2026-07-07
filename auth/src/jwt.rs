@@ -6,14 +6,6 @@ use crate::{AuthError, Identity};
 
 pub const DEFAULT_EXPIRY_SECS: u64 = 12 * 60 * 60; // 12 hours
 
-/// Token type sentinel — distinguishes user sessions from agent service accounts.
-const TOKEN_TYPE_USER: &str = "user";
-const TOKEN_TYPE_AGENT: &str = "agent";
-
-fn default_user_token_type() -> String {
-    TOKEN_TYPE_USER.to_owned()
-}
-
 /// Internal JWT claims — never exposed outside this module.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct JwtClaims {
@@ -24,25 +16,11 @@ pub(crate) struct JwtClaims {
     pub iat: u64,
     pub username: String,
     pub is_superuser: bool,
-    /// "user" | "agent". Defaults to "user" so legacy tokens (pre-AUTH-3)
-    /// decode correctly — they carry no token_type claim.
-    #[serde(default = "default_user_token_type")]
-    pub token_type: String,
+    #[serde(default)]
+    pub is_agent: bool,
 }
 
-/// Encode a user session JWT (token_type = "user").
 pub fn encode_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result<String, AuthError> {
-    encode_jwt_inner(secret, expiry_secs, TOKEN_TYPE_USER, identity)
-}
-
-/// Encode an agent service-account JWT (token_type = "agent").
-/// These tokens are REJECTED by `decode_jwt` / `decode_jwt_with_jti` so they
-/// cannot be used to authenticate as a human user (AUTH-3).
-pub fn encode_agent_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result<String, AuthError> {
-    encode_jwt_inner(secret, expiry_secs, TOKEN_TYPE_AGENT, identity)
-}
-
-fn encode_jwt_inner(secret: &str, expiry_secs: u64, token_type: &str, identity: &Identity) -> Result<String, AuthError> {
     let now = Utc::now().timestamp() as u64;
     let claims = JwtClaims {
         sub: identity.user_id.clone(),
@@ -51,7 +29,7 @@ fn encode_jwt_inner(secret: &str, expiry_secs: u64, token_type: &str, identity: 
         iat: now,
         username: identity.username.clone(),
         is_superuser: identity.is_superuser,
-        token_type: token_type.to_owned(),
+        is_agent: identity.is_agent,
     };
     encode(
         &Header::default(),
@@ -78,16 +56,11 @@ pub fn decode_jwt(secret: &str, token: &str) -> Result<Identity, AuthError> {
     })?;
 
     let c = data.claims;
-    // Agent tokens must not be accepted as human-user credentials (AUTH-3).
-    if c.token_type == TOKEN_TYPE_AGENT {
-        return Err(AuthError::InvalidToken(
-            "agent tokens cannot authenticate as a user".into(),
-        ));
-    }
     Ok(Identity {
         user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
+        is_agent: c.is_agent,
     })
 }
 
@@ -109,17 +82,12 @@ pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, Strin
     })?;
 
     let c = data.claims;
-    // Agent tokens must not be accepted as human-user credentials (AUTH-3).
-    if c.token_type == TOKEN_TYPE_AGENT {
-        return Err(AuthError::InvalidToken(
-            "agent tokens cannot authenticate as a user".into(),
-        ));
-    }
     let jti = c.jti.clone();
     let identity = Identity {
         user_id: c.sub,
         username: c.username,
         is_superuser: c.is_superuser,
+        is_agent: c.is_agent,
     };
 
     Ok((identity, jti))

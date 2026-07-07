@@ -60,7 +60,7 @@ struct LoginResponse {
 
 fn set_token_cookie(token: &str) -> header::HeaderValue {
     header::HeaderValue::from_str(&format!(
-        "access_token={}; HttpOnly; Path=/; SameSite=Strict; Max-Age={}",
+        "access_token={}; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age={}",
         token, COOKIE_MAX_AGE
     ))
     .unwrap()
@@ -68,7 +68,7 @@ fn set_token_cookie(token: &str) -> header::HeaderValue {
 
 fn clear_token_cookie() -> header::HeaderValue {
     header::HeaderValue::from_static(
-        "access_token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0",
+        "access_token=; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=0",
     )
 }
 
@@ -215,6 +215,7 @@ async fn initialize_admin_inner(
         user_id: user_id.to_string(),
         username: username.to_owned(),
         is_superuser: true,
+        is_agent: false,
     };
 
     let token = state.auth.issue_token(&identity).await
@@ -310,24 +311,55 @@ async fn token_validate(
     .into_response()
 }
 
-// Email is intentionally excluded: this is a public mention/autocomplete endpoint
-// accessible to any authenticated principal. Exposing emails would be a
-// cross-user data-leak (AUTH-6).
-async fn users_for_search(State(state): State<AppState>) -> impl IntoResponse {
+/// Directory-style user search (autocomplete for e.g. granting agent access).
+/// Previously reachable by any authenticated principal (member, or an agent
+/// token) with no gate beyond `require_auth`, leaking every user's email —
+/// now requires `can_read_org` (team_lead+ in EE; unrestricted in OSS's
+/// single-user model) and, in EE, is scoped to the caller's own team or
+/// department via `org_visible_user_ids` (never `None` unless admin/superuser
+/// — see that method's doc for why this crate never touches EE-only
+/// team_id/department_id columns directly).
+async fn users_for_search(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_read_org(&identity).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "requires team lead or above"})),
+        )
+            .into_response();
+    }
+
     #[derive(serde::Serialize, sqlx::FromRow)]
     struct SearchUser {
         id: uuid::Uuid,
         username: String,
+        email: Option<String>,
         display_name: Option<String>,
         is_active: bool,
     }
 
-    match sqlx::query_as::<_, SearchUser>(
-        "SELECT id, username, display_name, is_active FROM users WHERE deleted_at IS NULL ORDER BY username",
-    )
-    .fetch_all(&state.db)
-    .await
-    {
+    let visible_ids = state.auth.org_visible_user_ids(&identity).await;
+
+    let result = match &visible_ids {
+        None => {
+            sqlx::query_as::<_, SearchUser>(
+                "SELECT id, username, email, display_name, is_active FROM users WHERE deleted_at IS NULL ORDER BY username",
+            )
+            .fetch_all(&state.db)
+            .await
+        }
+        Some(ids) => {
+            let uuids: Vec<uuid::Uuid> = ids.iter().filter_map(|s| s.parse().ok()).collect();
+            sqlx::query_as::<_, SearchUser>(
+                "SELECT id, username, email, display_name, is_active FROM users WHERE deleted_at IS NULL AND id = ANY($1) ORDER BY username",
+            )
+            .bind(&uuids)
+            .fetch_all(&state.db)
+            .await
+        }
+    };
+
+    match result {
         Ok(users) => {
             let count = users.len();
             Json(serde_json::json!({"count": count, "users": users})).into_response()

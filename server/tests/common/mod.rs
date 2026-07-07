@@ -35,7 +35,14 @@ fn s3_endpoint() -> String {
 /// Tests exercise HTTP routes, ACL, and DB state — not actual container
 /// deployment. Using FakeRuntime eliminates the Docker daemon dependency from
 /// CI and removes ~300ms of Docker ping overhead per test.
-struct FakeRuntime;
+///
+/// Tracks deployed containers in memory (`deploy`/`destroy` update it, `list`
+/// reads it) so tests can exercise `list`'s per-caller filtering without a
+/// real runtime.
+#[derive(Default)]
+struct FakeRuntime {
+    containers: std::sync::Mutex<std::collections::HashMap<ContainerId, DeploymentStatus>>,
+}
 
 fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
     DeploymentStatus {
@@ -51,10 +58,13 @@ fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
     async fn deploy(&self, spec: &DeploymentSpec) -> RuntimeResult<DeploymentStatus> {
-        Ok(fake_status(&spec.container_id))
+        let status = fake_status(&spec.container_id);
+        self.containers.lock().unwrap().insert(spec.container_id.clone(), status.clone());
+        Ok(status)
     }
 
-    async fn destroy(&self, _container_id: &ContainerId) -> RuntimeResult<()> {
+    async fn destroy(&self, container_id: &ContainerId) -> RuntimeResult<()> {
+        self.containers.lock().unwrap().remove(container_id);
         Ok(())
     }
 
@@ -71,7 +81,7 @@ impl ContainerRuntime for FakeRuntime {
     }
 
     async fn list(&self) -> RuntimeResult<Vec<DeploymentStatus>> {
-        Ok(vec![])
+        Ok(self.containers.lock().unwrap().values().cloned().collect())
     }
 
     async fn endpoint(&self, _container_id: &ContainerId) -> RuntimeResult<String> {
@@ -149,7 +159,7 @@ impl TestServer {
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
-        let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime);
+        let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime::default());
 
         let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
@@ -286,6 +296,20 @@ pub fn sign_token(user_id: &str, username: &str, is_superuser: bool, _role: &str
         user_id: user_id.to_owned(),
         username: username.to_owned(),
         is_superuser,
+        is_agent: false,
+    };
+    nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
+        .expect("test JWT signing failed")
+}
+
+/// Sign a short-lived agent-typed JWT (as minted by `issue_agent_token`).
+#[allow(dead_code)]
+pub fn sign_agent_token(agent_id: &str) -> String {
+    let identity = nasiko_auth::Identity {
+        user_id: agent_id.to_owned(),
+        username: format!("agent:{agent_id}"),
+        is_superuser: false,
+        is_agent: true,
     };
     nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
         .expect("test JWT signing failed")

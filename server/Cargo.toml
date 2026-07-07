@@ -67,3 +67,4 @@ reqwest = { workspace = true, features = ["multipart"] }
 uuid = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+jsonwebtoken = { workspace = true }

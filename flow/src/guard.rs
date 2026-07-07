@@ -49,6 +49,11 @@ pub enum FlowRejection {
     MaxFanOutExceeded { invocations: u32, max: u32 },
     TokenBudgetExhausted { used: u64, max: u64 },
     FlowTimeout { elapsed_secs: u64, max: u64 },
+    /// Redis (the sole backing store for depth/cycle/fan-out/token state) was
+    /// unreachable. Fails CLOSED rather than silently disabling every limit —
+    /// the threat model is explicitly unvetted agent/build code, so a Redis
+    /// outage must not become an unbounded-recursion/fan-out DoS window.
+    GuardUnavailable,
 }
 
 impl std::fmt::Display for FlowRejection {
@@ -68,6 +73,9 @@ impl std::fmt::Display for FlowRejection {
             }
             Self::FlowTimeout { elapsed_secs, max } => {
                 write!(f, "flow timeout: {elapsed_secs}s/{max}s")
+            }
+            Self::GuardUnavailable => {
+                write!(f, "flow guard unavailable (redis unreachable) — failing closed")
             }
         }
     }
@@ -127,7 +135,7 @@ impl FlowGuard {
     ) -> Result<(), FlowRejection> {
         let key = ctx.redis_key();
         let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
-            return Ok(());
+            return Err(FlowRejection::GuardUnavailable);
         };
 
         let depth: u32 = conn.hget(&key, "depth").await.unwrap_or(0);
@@ -193,7 +201,7 @@ impl FlowGuard {
     ) -> Result<(), FlowRejection> {
         let key = ctx.redis_key();
         let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
-            return Ok(());
+            return Err(FlowRejection::GuardUnavailable);
         };
 
         let invocations: u32 = redis::cmd("HINCRBY")
@@ -249,7 +257,7 @@ impl FlowGuard {
     ) -> Result<u64, FlowRejection> {
         let key = ctx.redis_key();
         let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
-            return Ok(self.config.max_flow_tokens);
+            return Err(FlowRejection::GuardUnavailable);
         };
 
         let total_used: u64 = redis::cmd("HINCRBY")

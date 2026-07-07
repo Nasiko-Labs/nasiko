@@ -303,6 +303,63 @@ async fn deploy_onto_existing_agent_name_rejects_non_owner() {
     s.server.cleanup().await;
 }
 
+// ─── list: GET /api/containers must be scoped to the caller's own agents ───
+
+#[tokio::test]
+#[serial]
+async fn list_scoped_to_owner_excludes_other_teams_containers() {
+    let (s, agent_id) = Scenario::setup("list-authz-agent").await;
+
+    // Deploy it for real so FakeRuntime actually tracks a container keyed by
+    // the agent's UUID.
+    let deploy_res = s
+        .as_owner(s.server.client.post(s.server.url("/api/containers")))
+        .json(&json!({"image": "nasiko/echo:1.0.0", "name": "list-authz-agent"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deploy_res.status(), 201);
+
+    // The owner sees it.
+    let body: Value = s
+        .as_owner(s.server.client.get(s.server.url("/api/containers")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["container_id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&agent_id.to_string().as_str()), "owner must see their own container: {ids:?}");
+
+    // A non-owner must NOT see it — previously `list` returned every
+    // container in the runtime regardless of caller.
+    let body: Value = s
+        .as_other(s.server.client.get(s.server.url("/api/containers")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["container_id"].as_str().unwrap()).collect();
+    assert!(!ids.contains(&agent_id.to_string().as_str()), "non-owner must not see another team's container: {ids:?}");
+
+    // A superuser bypasses the scoping and sees everything.
+    let body: Value = s
+        .as_super(s.server.client.get(s.server.url("/api/containers")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["container_id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&agent_id.to_string().as_str()), "superuser must see every container: {ids:?}");
+
+    s.server.cleanup().await;
+}
+
 /// A name with no catalog entry has no owner to check — first-deploy-wins.
 #[tokio::test]
 #[serial]

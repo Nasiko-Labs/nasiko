@@ -639,16 +639,34 @@ async fn deploy_status_sse(
 
 async fn get_upload_status(
     State(state): State<AppState>,
+    claims: Claims,
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
-    match sqlx::query_as::<_, UploadStatusRow>(
-        "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-         FROM upload_status WHERE upload_id = $1",
-    )
-    .bind(&upload_id)
-    .fetch_optional(&state.db)
-    .await
-    {
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    let result = if claims.is_superuser {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status WHERE upload_id = $1",
+        )
+        .bind(&upload_id)
+        .fetch_optional(&state.db)
+        .await
+    } else {
+        sqlx::query_as::<_, UploadStatusRow>(
+            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+             FROM upload_status WHERE upload_id = $1 AND owner_id = $2",
+        )
+        .bind(&upload_id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+    };
+
+    match result {
         Ok(Some(row)) => Json(row).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {

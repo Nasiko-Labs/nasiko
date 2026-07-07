@@ -144,14 +144,45 @@ async fn deploy(
     }
 }
 
-async fn list(State(state): State<AppState>) -> impl IntoResponse {
-    match state.runtime.list().await {
-        Ok(containers) => Json(containers).into_response(),
+async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+    let containers = match state.runtime.list().await {
+        Ok(containers) => containers,
         Err(e) => {
             tracing::error!(%e, "list: runtime error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
+    };
+
+    if claims.is_superuser {
+        return Json(containers).into_response();
     }
+
+    let owner_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    let owned_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL")
+        .bind(owner_id)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    // Containers are UUID-keyed post-RUN-2b (see `agents::build_agent_spec`);
+    // scope the list to the caller's own agents, matching the single-resource
+    // ownership check `resolve_authorized_container` already enforces.
+    // Previously this returned every container in the runtime regardless of
+    // caller — a read-side reconnaissance leak across teams.
+    let filtered: Vec<_> = containers
+        .into_iter()
+        .filter(|c| {
+            c.container_id
+                .as_str()
+                .parse::<Uuid>()
+                .is_ok_and(|id| owned_ids.contains(&id))
+        })
+        .collect();
+
+    Json(filtered).into_response()
 }
 
 async fn status(

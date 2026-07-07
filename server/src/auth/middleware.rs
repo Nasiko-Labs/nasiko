@@ -26,27 +26,63 @@ pub async fn require_auth(
         Err(_) => return (StatusCode::UNAUTHORIZED, "invalid token").into_response(),
     };
 
-    // Revocation check — O(1) indexed lookup on token_hash
-    if let Some(jti) = nasiko_auth::jwt::extract_jti(&token) {
-        let hash = nasiko_auth::jwt::hash_jti(&jti);
-        let revoked: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
-                SELECT 1 FROM auth_tokens
-                WHERE token_hash = $1 AND revoked_at IS NOT NULL
-            )",
-        )
-        .bind(&hash)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(false);
+    // Revocation check — O(1) indexed lookup on token_hash.
+    // Fail CLOSED (AUTH-5): if the lookup errors we cannot prove the token is
+    // still valid, so we deny rather than let a possibly-revoked token through.
+    //
+    // A missing/empty `jti` must ALSO fail closed rather than silently skip
+    // the check — every token this codebase issues (`jwt::encode_jwt`) always
+    // sets a real UUID jti, so a signature-valid token with none is either a
+    // legacy/malformed token or one crafted outside the normal issuance path;
+    // either way it must not bypass revocation entirely.
+    let jti = nasiko_auth::jwt::extract_jti(&token).filter(|j| !j.is_empty());
+    let Some(jti) = jti else {
+        return (StatusCode::UNAUTHORIZED, "token missing jti").into_response();
+    };
 
-        if revoked {
-            return (StatusCode::UNAUTHORIZED, "token revoked").into_response();
+    let hash = nasiko_auth::jwt::hash_jti(&jti);
+    let revoked: bool = match sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM auth_tokens
+            WHERE token_hash = $1 AND revoked_at IS NOT NULL
+        )",
+    )
+    .bind(&hash)
+    .fetch_one(&state.db)
+    .await
+    {
+        Ok(revoked) => revoked,
+        Err(e) => {
+            tracing::error!(%e, "revocation lookup failed; failing closed");
+            return (StatusCode::UNAUTHORIZED, "token validation unavailable").into_response();
         }
+    };
+
+    if revoked {
+        return (StatusCode::UNAUTHORIZED, "token revoked").into_response();
+    }
+
+    // An agent token (minted by `issue_agent_token`, e.g. injected into an
+    // agent's container so it can call other agents) must not pass as a user
+    // session on the rest of the API surface — otherwise it's indistinguishable
+    // from a real user token everywhere `require_auth` is layered. Only the
+    // agent-to-agent calling paths (the direct proxy, and A2A dispatch) accept it.
+    if identity.is_agent && !is_agent_reachable_path(req.uri().path()) {
+        return (StatusCode::FORBIDDEN, "agent tokens cannot access this endpoint").into_response();
     }
 
     req.extensions_mut().insert(Claims::from(identity));
     next.run(req).await
+}
+
+/// Paths reachable by an agent-typed token: the direct agent proxy
+/// (`/agents/{id}/...`) and A2A dispatch (`/orchestrator/a2a`, `/orchestrator/
+/// a2a/upload`) — the two routes an agent legitimately uses to call another
+/// agent. `require_auth` runs on the router nested under `/api`, so `path` is
+/// already stripped of that prefix (mirrors `agent_proxy.rs::parse_agent_path`,
+/// which relies on the same stripping).
+fn is_agent_reachable_path(path: &str) -> bool {
+    path.starts_with("/agents/") || path.starts_with("/orchestrator/a2a")
 }
 
 fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {

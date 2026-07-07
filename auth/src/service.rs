@@ -115,6 +115,7 @@ impl AuthService for AuthServiceImpl {
             user_id: row.id.to_string(),
             username: row.username.clone(),
             is_superuser: row.is_superuser,
+            is_agent: false,
         };
 
         // issue_token now records the token itself, so no explicit record here.
@@ -199,11 +200,10 @@ impl AuthService for AuthServiceImpl {
             user_id: agent_id.to_owned(),
             username: format!("agent:{}", agent_id),
             is_superuser: false,
+            is_agent: true,
         };
 
-        // Use encode_agent_jwt so token_type = "agent" — prevents the token from
-        // being accepted by decode_jwt as a human-user credential (AUTH-3).
-        let token = crate::jwt::encode_agent_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, &identity)?;
+        let token = self.issue_token(&identity).await?;
         self.record_agent_token(&token, agent_uuid).await;
         Ok(token)
     }
@@ -260,6 +260,7 @@ impl AuthService for AuthServiceImpl {
             user_id: user_id.to_string(),
             username: username.to_owned(),
             is_superuser: false,
+            is_agent: false,
         };
 
         let token = self.issue_token(&identity).await?;
@@ -301,6 +302,7 @@ impl AuthService for AuthServiceImpl {
             user_id: user_id.to_owned(),
             username: row.username,
             is_superuser: row.is_superuser,
+            is_agent: false,
         })
     }
 

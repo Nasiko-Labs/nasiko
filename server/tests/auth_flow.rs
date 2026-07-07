@@ -196,6 +196,134 @@ async fn test_bearer_jwt_is_accepted() {
     server.cleanup().await;
 }
 
+/// A JWT with a valid signature but no `jti` claim must be rejected outright,
+/// not silently let through with revocation skipped. Every token this
+/// codebase issues (`jwt::encode_jwt`) always sets a real UUID jti — a
+/// signature-valid token missing one can only come from outside the normal
+/// issuance path (legacy/malformed, or hand-crafted with knowledge of the
+/// shared secret), and must not bypass revocation.
+#[tokio::test]
+#[serial]
+async fn test_jwt_without_jti_is_rejected() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let user_id = admin["user_id"].as_str().unwrap();
+
+    #[derive(serde::Serialize)]
+    struct NoJtiClaims {
+        sub: String,
+        exp: u64,
+        iat: u64,
+        username: String,
+        is_superuser: bool,
+    }
+    let now = chrono::Utc::now().timestamp() as u64;
+    let claims = NoJtiClaims {
+        sub: user_id.to_string(),
+        exp: now + 3600,
+        iat: now,
+        username: "admin".to_string(),
+        is_superuser: true,
+    };
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(common::TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+
+    let res = server.client.get(server.url("/api/me")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 401, "a signature-valid token with no jti must be rejected, not silently skip revocation");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_login_sets_secure_cookie() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+
+    let res = server
+        .client
+        .post(server.url("/api/auth/login"))
+        .json(&json!({
+            "username": admin["access_key"].as_str().unwrap(),
+            "password": admin["access_secret"].as_str().unwrap(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    assert!(cookie.contains("Secure"), "session cookie must set Secure: {cookie}");
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Strict"));
+
+    server.cleanup().await;
+}
+
+// ─── agent-typed tokens must not pass as user sessions ─────────────────────
+
+#[tokio::test]
+#[serial]
+async fn test_agent_token_rejected_on_user_endpoint() {
+    let server = common::TestServer::start().await;
+    let _ = init_admin(&server).await;
+    let token = common::sign_agent_token(&uuid::Uuid::new_v4().to_string());
+
+    let res = server.client.get(server.url("/api/me")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 403, "an agent-typed token must not pass as a user session");
+    let body = res.text().await.unwrap();
+    assert!(body.contains("agent"), "rejection reason should mention agent tokens: {body}");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_agent_token_passes_middleware_on_proxy_path() {
+    let server = common::TestServer::start().await;
+    let _ = init_admin(&server).await;
+    let token = common::sign_agent_token(&uuid::Uuid::new_v4().to_string());
+
+    // Some other random agent id — the request reaches agent_proxy's own
+    // authz/resolution logic and 404s there, but must NOT be rejected by the
+    // token-type gate in require_auth (which would also be 403/never reach
+    // agent_proxy at all).
+    let target = uuid::Uuid::new_v4();
+    let res = server
+        .client
+        .get(server.url(&format!("/api/agents/{target}/health")))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(res.status(), 403, "an agent token must be let through require_auth on the proxy path");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_agent_token_passes_middleware_on_a2a_dispatch_path() {
+    let server = common::TestServer::start().await;
+    let _ = init_admin(&server).await;
+    let token = common::sign_agent_token(&uuid::Uuid::new_v4().to_string());
+
+    let res = server
+        .client
+        .post(server.url("/api/orchestrator/a2a"))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(res.status(), 403, "an agent token must be let through require_auth on the A2A dispatch path");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn test_no_auth_returns_401() {

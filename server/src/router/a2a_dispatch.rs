@@ -146,6 +146,7 @@ async fn orchestrator_stream(
             user_id: user_id.to_string(),
             username: String::new(),
             is_superuser: false,
+            is_agent: false,
         };
         let mut accessible = Vec::new();
         for summary in all_agents {

@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 nasiko-utils.workspace = true
 anyhow = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

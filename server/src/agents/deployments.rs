@@ -143,6 +143,21 @@ async fn get_agent_deployment(
     }
 }
 
+/// Best-effort revert of the `starting` mark applied before a runtime restart
+/// attempt, used only when the runtime call itself fails (so the deployment
+/// truly is back at its pre-attempt state, not just claimed to be) — never
+/// call this once a runtime deploy/restart has actually succeeded.
+async fn revert_starting_status(state: &AppState, deployment_id: Uuid, original_status: &str) {
+    if let Err(e) = sqlx::query("UPDATE agent_deployments SET status = $2, updated_at = now() WHERE id = $1")
+        .bind(deployment_id)
+        .bind(original_status)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%e, %deployment_id, original_status, "restart_deployment: failed to revert starting status after runtime failure");
+    }
+}
+
 // ─── POST /deployment/{id}/restart ──────────────────────────────────────────
 
 async fn restart_deployment(
@@ -189,9 +204,29 @@ async fn restart_deployment(
         }
     }
 
-    // 409 if the DB considers the agent live — runtime state can lag (container killed
-    // externally, Docker restart, etc.) so the DB record is the authoritative guard.
-    if matches!(info.status.as_str(), "running" | "starting") {
+    // Atomic mark-starting BEFORE touching the runtime: two concurrent restart
+    // calls for the same deployment could both pass a plain read-then-check
+    // (both see status='stopped' at fetch time) and then both race to
+    // destroy/recreate the same container. This conditional UPDATE is the real
+    // guard — the WHERE clause re-checks live DB state at write time, not the
+    // possibly-stale value from the SELECT above, so only one caller can win
+    // the transition; the other gets 409 immediately, before any runtime call.
+    let original_status = info.status.clone();
+    let transitioned = match sqlx::query(
+        "UPDATE agent_deployments SET status = 'starting', updated_at = now()
+         WHERE id = $1 AND status NOT IN ('running', 'starting')",
+    )
+    .bind(deployment_id)
+    .execute(&state.db)
+    .await
+    {
+        Ok(result) => result.rows_affected() > 0,
+        Err(e) => {
+            tracing::error!(%e, %deployment_id, "restart_deployment: failed to mark deployment starting");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    if !transitioned {
         return (StatusCode::CONFLICT, "agent is already running or starting").into_response();
     }
 
@@ -231,6 +266,7 @@ async fn restart_deployment(
         // back up (RUN-8) — calling scale() directly here bypassed that recovery.
         if let Err(e) = state.runtime.restart(&k8s_id).await {
             tracing::error!(%e, %deployment_id, k8s_name, "restart_deployment: restart failed");
+            revert_starting_status(&state, deployment_id, &original_status).await;
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     } else {
@@ -278,74 +314,80 @@ async fn restart_deployment(
             }
             Err(e) => {
                 tracing::error!(%e, %deployment_id, "restart_deployment: deploy failed");
+                revert_starting_status(&state, deployment_id, &original_status).await;
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         }
     }
 
-    // Mark old deployment stopped, insert new deployment row. The runtime-level
-    // restart/redeploy above already succeeded at this point — these are DB
-    // bookkeeping writes. Log (rather than silently swallow, SRV-5) any failure so
-    // an inconsistent agent_deployments row is visible instead of invisible.
+    // Mark old deployment stopped and insert the new deployment row atomically.
+    // The runtime-level restart/redeploy above already succeeded at this point,
+    // so a failure here must not silently leave the agent running with a stale
+    // 'starting'/old row and no live 'running' row for the guardian to find —
+    // previously these were two independent writes, so the old row could end
+    // up 'stopped' while the new-row insert failed, orphaning the agent
+    // (untracked, but actually running). One transaction: either both land or
+    // neither does, leaving the row at 'starting' (not silently 'stopped')
+    // for the next reconcile to pick up. The new row's crash fields (crash_
+    // reason/crashed_at/last_logs/pod_name = NULL, restart_count = 0) come from
+    // the table's own column defaults — no separate clearing UPDATE needed for
+    // a freshly inserted row.
     let mut warnings: Vec<&'static str> = Vec::new();
+    let new_deploy_id: Option<Uuid> = 'bookkeeping: {
+        let mut tx = match state.db.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::error!(%e, %deployment_id, "restart_deployment: failed to begin bookkeeping tx");
+                warnings.push("failed to record deployment bookkeeping; agent is running but untracked — needs reconciliation");
+                break 'bookkeeping None;
+            }
+        };
 
-    if let Err(e) = sqlx::query(
-        "UPDATE agent_deployments SET status = 'stopped', updated_at = now() WHERE id = $1",
-    )
-    .bind(deployment_id)
-    .execute(&state.db)
-    .await
-    {
-        tracing::error!(%e, %deployment_id, "restart_deployment: failed to mark previous deployment stopped");
-        warnings.push("failed to mark previous deployment stopped");
-    }
-
-    // Carry identity + spec forward so the guardian and a subsequent restart keep
-    // working after this restart (RUN-3): k8s_deployment_name = agent UUID string,
-    // plus the ports/image this deployment actually used.
-    let new_deploy_id: Option<Uuid> = match sqlx::query_scalar(
-        "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_ports, spec_image)
-         VALUES ($1, $2, 'running', $3, $4, $5, $6)
-         RETURNING id",
-    )
-    .bind(info.agent_id)
-    .bind(info.build_id)
-    .bind(info.owner_id)
-    .bind(info.agent_id.to_string())
-    .bind(ports.iter().map(|&p| p as i32).collect::<Vec<i32>>())
-    .bind(&image)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(id) => id,
-        Err(e) => {
-            // Worst of the four: the runtime restart succeeded but no live
-            // agent_deployments row now exists for this agent, so the crash guardian
-            // and a subsequent restart call lose track of it until reconciled.
-            tracing::error!(%e, %deployment_id, agent_id = %info.agent_id, "restart_deployment: failed to record new deployment row — agent is running but untracked, needs reconciliation");
-            warnings.push("failed to record new deployment row; agent is running but untracked — needs reconciliation");
-            None
-        }
-    };
-
-    // Clear crash fields on the new deployment row.
-    if let Some(new_id) = new_deploy_id {
         if let Err(e) = sqlx::query(
-            "UPDATE agent_deployments SET
-               crash_reason = NULL, crashed_at = NULL, last_logs = NULL,
-               restart_count = 0, pod_name = NULL
-             WHERE id = $1",
+            "UPDATE agent_deployments SET status = 'stopped', updated_at = now() WHERE id = $1",
         )
-        .bind(new_id)
-        .execute(&state.db)
+        .bind(deployment_id)
+        .execute(&mut *tx)
         .await
         {
-            tracing::error!(%e, %new_id, "restart_deployment: failed to clear crash fields on new deployment row");
-            warnings.push("failed to clear crash fields on new deployment row");
-        } else {
-            tracing::info!(agent_id = %info.agent_id, "restart: crash fields cleared");
+            tracing::error!(%e, %deployment_id, "restart_deployment: failed to mark previous deployment stopped");
+            warnings.push("failed to record deployment bookkeeping; agent is running but untracked — needs reconciliation");
+            break 'bookkeeping None;
         }
-    }
+
+        // Carry identity + spec forward so the guardian and a subsequent restart
+        // keep working after this restart (RUN-3): k8s_deployment_name = agent
+        // UUID string, plus the ports/image this deployment actually used.
+        let inserted: Option<Uuid> = match sqlx::query_scalar(
+            "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_ports, spec_image)
+             VALUES ($1, $2, 'running', $3, $4, $5, $6)
+             RETURNING id",
+        )
+        .bind(info.agent_id)
+        .bind(info.build_id)
+        .bind(info.owner_id)
+        .bind(info.agent_id.to_string())
+        .bind(ports.iter().map(|&p| p as i32).collect::<Vec<i32>>())
+        .bind(&image)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(%e, %deployment_id, agent_id = %info.agent_id, "restart_deployment: failed to record new deployment row — agent is running but untracked, needs reconciliation");
+                warnings.push("failed to record deployment bookkeeping; agent is running but untracked — needs reconciliation");
+                break 'bookkeeping None;
+            }
+        };
+
+        if let Err(e) = tx.commit().await {
+            tracing::error!(%e, %deployment_id, "restart_deployment: failed to commit bookkeeping tx");
+            warnings.push("failed to record deployment bookkeeping; agent is running but untracked — needs reconciliation");
+            break 'bookkeeping None;
+        }
+
+        inserted
+    };
 
     let mut body = serde_json::json!({});
     if let Some(id) = new_deploy_id {

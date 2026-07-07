@@ -55,6 +55,12 @@ pub struct Config {
     /// Comma-separated.  Empty = reject all registry imports (safest default for
     /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
     pub registry_import_allowed_hosts: Vec<String>,
+    /// Browser origins allowed to make cross-origin requests (comma-separated,
+    /// e.g. "https://app.example.com,http://localhost:5173"). Empty (the
+    /// default) allows none — the UI is served same-origin by this binary's
+    /// own static handler in normal deployments, so cross-origin access is
+    /// opt-in only for split dev servers or external integrations.
+    pub cors_allowed_origins: Vec<String>,
     pub admin_username: String,
     pub admin_password: String,
     /// Docker network to attach agent containers to.
@@ -99,7 +105,7 @@ impl Config {
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://otel-collector:4318",
+                "http://host.containers.internal:4317",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
@@ -140,8 +146,67 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
         })
+    }
+
+    /// Fail fast if `SECRETS_ENCRYPTION_KEY` can't actually be used to construct
+    /// a `SecretsCrypto` (base64-decodes to exactly 32 bytes). Both the OSS
+    /// HKDF-per-scope crypto and EE's `nasiko-secrets::SecretsCrypto::from_key`
+    /// require this shape; previously an invalid key (e.g. 32 raw alphanumeric
+    /// characters, which decode to only 24 bytes) passed config validation
+    /// silently and only surfaced as a panic/error on the first secret
+    /// encrypt/decrypt call, at request time, long after boot.
+    pub fn validate_secrets_key(&self) -> Result<(), String> {
+        validate_secrets_key_format(&self.secrets_encryption_key)
+    }
+}
+
+fn validate_secrets_key_format(key: &str) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(key)
+        .map_err(|e| format!("SECRETS_ENCRYPTION_KEY is not valid base64: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "SECRETS_ENCRYPTION_KEY must decode to exactly 32 bytes, got {} — expected base64(32 random bytes)",
+            bytes.len()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_32_byte_base64_key_passes() {
+        assert!(validate_secrets_key_format("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=").is_ok());
+    }
+
+    #[test]
+    fn raw_32_char_alphanumeric_key_fails() {
+        // The original bug: 32 raw characters decode to only 24 bytes.
+        assert!(validate_secrets_key_format("dev-only-change-in-prod-32chars!!").is_err());
+    }
+
+    #[test]
+    fn wrong_byte_length_after_decode_fails() {
+        use base64::Engine;
+        let sixteen_bytes = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
+        assert!(validate_secrets_key_format(&sixteen_bytes).is_err());
+    }
+
+    #[test]
+    fn invalid_base64_fails() {
+        assert!(validate_secrets_key_format("not base64 at all!!!").is_err());
     }
 }

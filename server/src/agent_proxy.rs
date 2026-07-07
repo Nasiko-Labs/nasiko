@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use axum::{
     body::Body,
-    extract::{Path, Request, State},
+    extract::{Request, State},
     http::StatusCode,
     response::Response,
 };
@@ -17,33 +15,27 @@ use crate::state::AppState;
 /// Runs inside the `require_auth` middleware so Claims is always present.
 /// Forwards the request to the agent container, propagating traceparent and
 /// identity headers so agents know who is calling them.
-///
-/// Handles both `/agents/{id}` and `/agents/{id}/{*rest}` routes.
 pub async fn agent_proxy(
     State(state): State<AppState>,
-    Path(params): Path<HashMap<String, String>>,
     req: Request,
 ) -> Result<Response, StatusCode> {
-    let agent_id: Uuid = params
-        .get("id")
-        .and_then(|s| s.parse().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
     let claims = req
         .extensions()
         .get::<Claims>()
         .cloned()
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Build the forwarded path: everything after /api/agents/{id}
-    let full_path = req.uri().path();
-    let id_str = agent_id.to_string();
-    let forwarded_path = full_path
-        .find(&id_str)
-        .map(|pos| {
-            let after_id = &full_path[pos + id_str.len()..];
-            if after_id.is_empty() { "/".to_string() } else { after_id.to_string() }
-        })
-        .unwrap_or_else(|| "/".to_string());
+    let path = req.uri().path().to_string();
+    let (agent_id, forwarded_path) = parse_agent_path(&path).ok_or(StatusCode::NOT_FOUND)?;
+
+    // Per-agent authorization — mirrors the check `a2a_dispatch.rs` already
+    // enforces before forwarding. Without this, any authenticated user could
+    // invoke any private agent by UUID (IDOR), and combined with the header
+    // leak below, would also hand the agent their platform credentials.
+    // 404 (not 403) to avoid confirming a private agent's existence.
+    if !crate::acl::can_access_agent(&state, &claims, agent_id).await {
+        return Err(StatusCode::NOT_FOUND);
+    }
 
     // Flow guard: prevent infinite A2A cascades
     let traceparent = req
@@ -89,12 +81,20 @@ pub async fn agent_proxy(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
+    // Explicit allowlist, not a denylist: the agent container is unvetted, so
+    // anything not named here is dropped rather than forwarded by default.
+    // In particular this drops `authorization`/`cookie` (the caller's platform
+    // credentials — a hostile agent could otherwise replay them against
+    // `/api/*`) and any inbound `x-user-id`/`x-username`/`x-is-superuser`
+    // (spoofed identity — reqwest's `.header()` below is `HeaderMap::append`,
+    // not replace, so a copied attacker value would sit ahead of the trusted
+    // one most header readers return the first occurrence of).
+    const FORWARDED_HEADERS: &[&str] = &["content-type", "accept", "accept-encoding", "accept-language"];
     let mut forwarded = state.http_client.request(method, &target_url);
     for (name, value) in headers.iter() {
-        if name == "host" || name == "content-length" || name == "traceparent" {
-            continue;
-        }
-        if let Ok(val_str) = value.to_str() {
+        if FORWARDED_HEADERS.contains(&name.as_str())
+            && let Ok(val_str) = value.to_str()
+        {
             forwarded = forwarded.header(name.as_str(), val_str);
         }
     }
@@ -108,12 +108,6 @@ pub async fn agent_proxy(
             "x-is-superuser",
             if claims.is_superuser { "true" } else { "false" },
         );
-    if let Some(ref role) = claims.role
-        && let Ok(v) = serde_json::to_value(role)
-        && let Some(s) = v.as_str()
-    {
-        forwarded = forwarded.header("x-user-role", s);
-    }
 
     if !body_bytes.is_empty() {
         forwarded = forwarded.body(body_bytes);
@@ -153,4 +147,20 @@ async fn to_axum_response(response: reqwest::Response) -> Result<Response, Statu
             .body(Body::from(bytes))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
     }
+}
+
+/// Parse `/agents/{uuid}/{*rest}` from the path seen inside the `/api` nest.
+///
+/// Axum strips the `/api` prefix when dispatching to nested routers, so the
+/// handler sees `/agents/{uuid}/...` not `/api/agents/{uuid}/...`.
+fn parse_agent_path(path: &str) -> Option<(Uuid, String)> {
+    let rest = path.strip_prefix("/agents/")?;
+    let (id_str, remainder) = rest.split_once('/').unwrap_or((rest, ""));
+    let agent_id = Uuid::parse_str(id_str).ok()?;
+    let forwarded = if remainder.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{remainder}")
+    };
+    Some((agent_id, forwarded))
 }
