@@ -76,9 +76,9 @@ impl LlmRouterCtx {
 /// Build the LLM router.
 ///
 /// Mounted at the host's top level (outside user-session auth) — the agent-identity
-/// JWT is verified inside these handlers. The OpenAI-compatible surface lives under
-/// `/v1` (the edge gateway strips a `/llm` prefix, so `…/llm/v1/chat/completions`
-/// arrives here as `/v1/chat/completions`).
+/// JWT is verified inside these handlers. Agents reach these routes directly on the
+/// server: the OpenAI-compatible surface lives under `/v1`, and Gemini under `/v1beta`
+/// (each path mirrors what that provider's stock SDK appends to its base URL).
 pub fn router(ctx: LlmRouterCtx) -> Router {
     Router::new()
         // Liveness probe owned by this router. The host server keeps its own

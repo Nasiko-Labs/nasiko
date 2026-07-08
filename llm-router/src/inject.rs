@@ -13,6 +13,9 @@
 //! P2.0 ships the **OpenAI** mapping only (`OPENAI_BASE_URL` / `OPENAI_API_KEY`).
 //! Per-SDK mappings (Anthropic / Gemini) are added in P2.5 once the inbound parsers
 //! and the agent `inbound_format` attribute exist.
+//!
+//! The base URL points directly at the server (the LLM router mounts on it at `/v1/...`);
+//! there is no edge proxy stripping a `/llm` prefix anymore.
 
 use std::collections::HashMap;
 
@@ -63,23 +66,25 @@ pub fn inject_llm_env(
     )
     .map_err(|e| GatewayError::Internal(format!("failed to mint agent token: {e}")))?;
 
-    // Gateway origin + the Pingora `/llm` strip route. Each SDK appends its own suffix:
-    // the OpenAI SDK adds `/chat/completions` to `…/llm/v1`; the Anthropic SDK adds
-    // `/v1/messages` to `…/llm`. So the injected base differs per SDK.
+    // The router mounts its routes directly on the server (`/v1/...`, `/v1beta/...`) —
+    // there is no longer an edge proxy stripping a `/llm` prefix. Each SDK appends its
+    // own suffix to the base URL, so the injected base differs per SDK:
+    //   OpenAI    — appends `/chat/completions`, expects the version in the base ⇒ `{base}/v1`
+    //   Anthropic — appends `/v1/messages` (version in the suffix)               ⇒ `{base}`
+    //   Gemini    — appends `/v1beta/models/{model}:…` (version in the suffix)   ⇒ `{base}`
     let base = cfg.llm_gateway_base_url.trim_end_matches('/');
 
     match ctx.inbound_format {
         InboundFormat::OpenAi => {
-            env_vars.insert("OPENAI_BASE_URL".into(), format!("{base}/llm/v1"));
+            env_vars.insert("OPENAI_BASE_URL".into(), format!("{base}/v1"));
             env_vars.insert("OPENAI_API_KEY".into(), token);
         }
         InboundFormat::Anthropic => {
-            env_vars.insert("ANTHROPIC_BASE_URL".into(), format!("{base}/llm"));
+            env_vars.insert("ANTHROPIC_BASE_URL".into(), base.to_string());
             env_vars.insert("ANTHROPIC_API_KEY".into(), token);
         }
         InboundFormat::Gemini => {
-            // The Google GenAI SDK appends `/v1beta/models/{model}:…` to its base URL.
-            env_vars.insert("GOOGLE_GEMINI_BASE_URL".into(), format!("{base}/llm"));
+            env_vars.insert("GOOGLE_GEMINI_BASE_URL".into(), base.to_string());
             env_vars.insert("GEMINI_API_KEY".into(), token.clone());
             env_vars.insert("GOOGLE_API_KEY".into(), token);
         }
@@ -114,7 +119,7 @@ mod tests {
         inject_llm_env(&mut env, &ctx(), &cfg()).unwrap();
         assert_eq!(
             env.get("OPENAI_BASE_URL").map(String::as_str),
-            Some("http://gateway:8080/llm/v1")
+            Some("http://gateway:8080/v1")
         );
         assert!(env.contains_key("OPENAI_API_KEY"));
     }
@@ -131,6 +136,41 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_base_is_bare_server_origin() {
+        // The Anthropic SDK appends `/v1/messages` itself, so no `/v1` in the base.
+        let mut env = HashMap::new();
+        let c = cfg();
+        let ctx = LlmInjectCtx {
+            inbound_format: InboundFormat::Anthropic,
+            ..ctx()
+        };
+        inject_llm_env(&mut env, &ctx, &c).unwrap();
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://gateway:8080")
+        );
+        assert!(env.contains_key("ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn gemini_base_is_bare_server_origin() {
+        // The Google GenAI SDK appends `/v1beta/models/{model}:…` itself.
+        let mut env = HashMap::new();
+        let c = cfg();
+        let ctx = LlmInjectCtx {
+            inbound_format: InboundFormat::Gemini,
+            ..ctx()
+        };
+        inject_llm_env(&mut env, &ctx, &c).unwrap();
+        assert_eq!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("http://gateway:8080")
+        );
+        assert!(env.contains_key("GEMINI_API_KEY"));
+        assert!(env.contains_key("GOOGLE_API_KEY"));
+    }
+
+    #[test]
     fn trims_trailing_slash_on_base_url() {
         let mut env = HashMap::new();
         let c = GatewayConfig {
@@ -140,7 +180,7 @@ mod tests {
         inject_llm_env(&mut env, &ctx(), &c).unwrap();
         assert_eq!(
             env.get("OPENAI_BASE_URL").map(String::as_str),
-            Some("http://gateway:8080/llm/v1")
+            Some("http://gateway:8080/v1")
         );
     }
 
