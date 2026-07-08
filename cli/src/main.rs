@@ -47,6 +47,7 @@ const HELP_TEXT: &str = "\
 \x1b[33mOperate:\x1b[0m
   push       Build + push image to cluster registry (no deploy)
   deploy     Build + push + deploy to active cluster
+  upload     Upload source zip/dir and let the server build + deploy
   ps         List running agents
   logs       Stream agent container logs
   stop       Stop agent container
@@ -169,6 +170,28 @@ enum AgentOpsCommands {
         /// Agent name (defaults to image name)
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
+    #[command(after_help = "Reads: AgentCard.json (for name/version defaults)\nSource can be a directory (auto-zipped) or a pre-made .zip file")]
+    Upload {
+        /// Agent directory or .zip file (defaults to current directory)
+        #[arg(default_value = ".")]
+        source: String,
+        /// Agent name (defaults to 'name' in AgentCard.json, then directory name)
+        #[arg(long, short = 'n')]
+        name: Option<String>,
+        /// Version tag (defaults to 'version' in AgentCard.json, then 'latest')
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+        /// Container port
+        #[arg(long, default_value = "5000")]
+        port: u16,
+        /// Path to .env file with KEY=VALUE pairs
+        #[arg(long)]
+        env_file: Option<String>,
+        /// Environment variable override (can be repeated: -e KEY=VALUE)
+        #[arg(short = 'e', long = "env")]
+        env: Vec<String>,
     },
     /// List running agents
     Ps {
@@ -592,6 +615,9 @@ fn main() -> Result<()> {
             }
             AgentOpsCommands::Push { image, name } => {
                 commands::push::push(&image, name.as_deref())
+            }
+            AgentOpsCommands::Upload { source, name, version, port, env_file, env } => {
+                commands::upload::upload(&source, name.as_deref(), version.as_deref(), port, env_file.as_deref(), &env)
             }
             AgentOpsCommands::Ps { json } => commands::agents::ps(json),
             AgentOpsCommands::Logs { agent, tail, follow } => commands::agents::logs(&agent, tail, follow),

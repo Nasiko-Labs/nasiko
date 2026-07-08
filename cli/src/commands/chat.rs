@@ -68,7 +68,7 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Resul
     Ok(())
 }
 
-/// Send an A2A message/stream request and handle the response.
+/// Send an A2A streaming request and handle the response.
 fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()> {
     // Use CP session_id as A2A contextId when available
     let context_id = cp_ctx

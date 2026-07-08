@@ -1,0 +1,27 @@
+[project]
+name = "translator-agent"
+version = "1.0.0"
+description = "Translation agent — text and web content between languages"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[http-server]==1.1.0",
+    "click>=8.0.0",
+    "openai>=1.57.0",
+    "python-dotenv>=1.0.0",
+    "uvicorn>=0.30.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "langdetect>=1.0.9",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+    "opentelemetry-instrumentation-starlette>=0.46b0",
+    "opentelemetry-instrumentation-openai>=0.35.0b0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

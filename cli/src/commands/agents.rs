@@ -254,23 +254,29 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
         bail!("source must be a .zip file or a directory, got: '{}'", source);
     };
 
+    let name = agent_name.unwrap_or_else(|| source_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("agent"));
+
     let client = Client::from_active_cluster()?;
     println!("Uploading '{}'...", zip_path.display());
-    let result = client.upload_zip(&zip_path, agent_name);
+    let result = client.upload_agent(
+        &zip_path,
+        name,
+        "latest",
+        &[5000],
+        &std::collections::HashMap::new(),
+    );
 
     if is_temp {
         let _ = std::fs::remove_file(&zip_path);
     }
 
-    let resp = result?;
-    if resp.success {
-        println!("Agent '{}' deployed successfully.", resp.agent_name.as_deref().unwrap_or("unknown"));
-        if resp.agentcard_generated {
-            println!("AgentCard.json generated automatically.");
-        }
-    } else {
-        bail!("Deploy failed: {}", resp.status.as_deref().unwrap_or("unknown error"));
-    }
+    let queued = result?;
+    println!("Status: {} | build_id: {} | agent_id: {}", queued.status, queued.build_id, queued.agent_id);
+    println!("Waiting for build to complete...");
+    client.poll_build_status(&queued.build_id)?;
+    println!("\nDeployed: {} ({})", queued.name, queued.image_tag);
     Ok(())
 }
 

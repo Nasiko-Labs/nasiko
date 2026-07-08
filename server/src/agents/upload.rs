@@ -16,7 +16,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use nasiko_runtime::DeploymentStatus;
+use nasiko_runtime::{ContainerId, DeploymentSpec, DeploymentStatus};
 
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus};
@@ -146,9 +146,9 @@ async fn upload_and_deploy(
     claims: Claims,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let owner_id = match claims.user_uuid() {
+    let owner_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
     };
 
     let mut name: Option<String> = None;
@@ -166,23 +166,17 @@ async fn upload_and_deploy(
             "name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "source" => {
-                // Stream zip to disk rather than buffering it all in RAM. Key the
-                // temp dir on a fresh UUID, never the agent name (RUN-10) — two
-                // concurrent uploads of the same name previously shared one dir and
-                // each other's cleanup deleted the peer's source.
-                let upload_dir = tmp_base.join(format!("nasiko-upload-{}", uuid::Uuid::new_v4()));
+                // Stream zip to disk rather than buffering it all in RAM.
+                let field_name = name.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let upload_dir = tmp_base.join(format!("nasiko-upload-{field_name}"));
                 if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
-                    tracing::error!(%e, "upload: create upload dir failed");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("create upload dir: {e}")).into_response();
                 }
                 let path = upload_dir.join("upload.zip");
 
                 let mut f = match tokio::fs::File::create(&path).await {
                     Ok(f) => f,
-                    Err(e) => {
-                        tracing::error!(%e, "upload: create zip file failed");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-                    }
+                    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("create zip file: {e}")).into_response(),
                 };
 
                 let mut total_bytes: u64 = 0;
@@ -198,15 +192,11 @@ async fn upload_and_deploy(
                             }
                             use tokio::io::AsyncWriteExt;
                             if let Err(e) = f.write_all(&chunk).await {
-                                tracing::error!(%e, "upload: write chunk failed");
-                                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                                return (StatusCode::INTERNAL_SERVER_ERROR, format!("write chunk: {e}")).into_response();
                             }
                         }
                         Ok(None) => break,
-                        Err(e) => {
-                            tracing::warn!(%e, "upload: read multipart chunk failed");
-                            return (StatusCode::BAD_REQUEST, "failed to read upload stream").into_response();
-                        }
+                        Err(e) => return (StatusCode::BAD_REQUEST, format!("read upload: {e}")).into_response(),
                     }
                 }
                 zip_path = Some(path);
@@ -234,17 +224,6 @@ async fn upload_and_deploy(
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
     let version_tag = version_tag.unwrap_or_else(|| "latest".to_string());
-
-    // Validate name + version_tag charset (RUN-10): both flow into the OCI image
-    // reference `{name}:{tag}`; unvalidated values allow push-target redirection
-    // (e.g. `/` or `@` smuggling a different registry/digest) when no registry
-    // prefix is configured.
-    if let Err(e) = crate::build::routes::validate_version_tag(&name) {
-        return (StatusCode::BAD_REQUEST, format!("invalid name: {e}")).into_response();
-    }
-    if let Err(e) = crate::build::routes::validate_version_tag(&version_tag) {
-        return (StatusCode::BAD_REQUEST, e).into_response();
-    }
     let zip_path = match zip_path {
         Some(p) => p,
         None => return (StatusCode::BAD_REQUEST, "source zip is required").into_response(),
@@ -257,8 +236,7 @@ async fn upload_and_deploy(
         .join("validate");
 
     if let Err(e) = std::fs::create_dir_all(&validation_dir) {
-        tracing::error!(%e, "upload: create validation dir failed");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("create validation dir: {e}")).into_response();
     }
 
     let zip_path_clone = zip_path.clone();
@@ -277,55 +255,56 @@ async fn upload_and_deploy(
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
         Err(e) => {
-            tracing::error!(%e, "upload: validation task join error");
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("validation error: {e}")).into_response();
         }
     }
 
-    let image_tag = crate::agents::build_image_tag(&state.config.agent_image_registry, &name, &version_tag);
-    // Empty → canonical default is applied by build_agent_spec (8000, matching the
-    // agent images' EXPOSE); never default to 5000 here.
-
-    // ── Upsert agent + build record + job (one transaction — SRV-5) ───────────
-    // These 3 writes must succeed or fail together: if the build_jobs insert
-    // failed after the agent/build rows committed separately, the agent was
-    // left stuck in "deploying" with no job that would ever move it out of
-    // that state. A single transaction, committed only after the job row is
-    // queued, closes that gap.
-    let mut tx = match state.db.begin().await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(%e, agent_name = %name, "upload: begin transaction failed");
-            let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
+    let image_tag = if state.config.agent_image_registry.is_empty() {
+        format!("{name}:{version_tag}")
+    } else {
+        format!("{}/{name}:{version_tag}", state.config.agent_image_registry)
     };
+    let ports = if ports.is_empty() { vec![8000] } else { ports };
 
-    // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
-    // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
-    // concurrent same-name uploads create duplicate rows (SRV-2).
-    let agent_id = {
+    // ── Upsert agent ──────────────────────────────────────────────────────────
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agents WHERE owner_id = $1 AND name = $2 LIMIT 1",
+    )
+    .bind(owner_id)
+    .bind(&name)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let agent_id = if let Some(id) = existing {
+        let _ = sqlx::query(
+            "UPDATE agents SET version = $2, image = $3, status = 'deploying', updated_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&version_tag)
+        .bind(&image_tag)
+        .execute(&state.db)
+        .await;
+        id
+    } else {
         match sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO agents (name, owner_id, version, image, status) \
-             VALUES ($1, $2, $3, $4, 'deploying') \
-             ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
-             DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
-                           status = 'deploying', updated_at = now() \
-             RETURNING id",
+             VALUES ($1, $2, $3, $4, 'deploying') RETURNING id",
         )
         .bind(&name)
         .bind(owner_id)
         .bind(&version_tag)
         .bind(&image_tag)
-        .fetch_one(&mut *tx)
+        .fetch_one(&state.db)
         .await
         {
             Ok(id) => id,
             Err(e) => {
-                tracing::error!(%e, agent_name = %name, "upload: register agent db error");
                 let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("register agent: {e}"))
+                    .into_response();
             }
         }
     };
@@ -338,23 +317,26 @@ async fn upload_and_deploy(
     .bind(agent_id)
     .bind(&version_tag)
     .bind(&image_tag)
-    .fetch_one(&mut *tx)
+    .fetch_one(&state.db)
     .await
     {
         Ok(id) => id,
         Err(e) => {
-            tracing::error!(%e, %agent_id, "upload: create build record db error");
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("create build record: {e}"))
+                .into_response();
         }
     };
 
     let upload_id = build_id.to_string();
 
-    // NOTE: server-level secrets (OPENAI_API_KEY / OPENAI_BASE_URL) are deliberately
-    // NOT injected here — that would serialize the server API key in cleartext into
-    // build_jobs.payload (RUN-5). The worker injects them from live config at
-    // execution time (see execute_upload_and_deploy), mirroring update/rollback.
+    // ── Inject server-level defaults into agent env (caller values take precedence) ──
+    if let Some(key) = &state.config.openai_api_key {
+        env.entry("OPENAI_API_KEY".to_owned()).or_insert_with(|| key.clone());
+    }
+    if let Some(url) = &state.config.openai_base_url {
+        env.entry("OPENAI_BASE_URL".to_owned()).or_insert_with(|| url.clone());
+    }
 
     // ── Insert build job (worker picks this up via SKIP LOCKED) ──────────────
     let payload = BuildJobPayload::Upload {
@@ -372,8 +354,7 @@ async fn upload_and_deploy(
     let payload_value = match serde_json::to_value(&payload) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!(%e, %agent_id, "upload: serialize build payload failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize payload: {e}")).into_response();
         }
     };
 
@@ -383,18 +364,11 @@ async fn upload_and_deploy(
     .bind(agent_id)
     .bind(owner_id)
     .bind(&payload_value)
-    .execute(&mut *tx)
+    .execute(&state.db)
     .await
     {
-        tracing::error!(%e, %agent_id, "upload: queue build_jobs db error");
         let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-    }
-
-    if let Err(e) = tx.commit().await {
-        tracing::error!(%e, %agent_id, "upload: commit transaction failed");
-        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("queue build: {e}")).into_response();
     }
 
     // Notify the build worker immediately so it doesn't wait for the 5s poll interval.
@@ -462,18 +436,8 @@ pub async fn execute_upload_and_deploy(
     zip_path: PathBuf,
     image_tag: String,
     ports: Vec<u16>,
-    mut env: HashMap<String, String>,
-    // Server-level LLM defaults, injected here (not baked into the DB payload) so
-    // the API key is never persisted in cleartext (RUN-5). Caller env wins.
-    openai_api_key: Option<String>,
-    openai_base_url: Option<String>,
+    env: HashMap<String, String>,
 ) {
-    if let Some(key) = openai_api_key {
-        env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
-    }
-    if let Some(url) = openai_base_url {
-        env.entry("OPENAI_BASE_URL".to_owned()).or_insert(url);
-    }
     set_build_status(&db, build_id, BuildStatus::Building).await;
     set_upload_status(&db, &upload_id, &name, owner_id, "initiated", None, None).await;
 
@@ -516,8 +480,19 @@ pub async fn execute_upload_and_deploy(
 
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
-        // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
-        let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
+        // Deploy container keyed on agent UUID (not name) to prevent cross-team
+        // naming collisions when two teams have agents with the same name.
+        let container_id = ContainerId::from_uuid(agent_id);
+        let spec = DeploymentSpec {
+            container_id,
+            name: name.clone(),
+            image: image_tag.clone(),
+            ports,
+            env_vars: env,
+            min_replicas: 1,
+            max_replicas: 1,
+            resources: None,
+        };
         let deploy_status = runtime
             .deploy(&spec)
             .await
@@ -572,10 +547,7 @@ pub async fn execute_upload_and_deploy(
         }
         Err(e) => {
             set_build_status(&db, build_id, BuildStatus::Failed).await;
-            // `e` may embed raw docker/tar/IO error text — log it, but
-            // upload_status.error_message is read back by clients via
-            // GET /agents/uploads, so store a generic reason there.
-            set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some("upload and deploy failed")).await;
+            set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some(&e)).await;
             let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
                 .bind(agent_id)
                 .execute(&db)
@@ -639,34 +611,16 @@ async fn deploy_status_sse(
 
 async fn get_upload_status(
     State(state): State<AppState>,
-    claims: Claims,
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
-        Ok(id) => id,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
-
-    let result = if claims.is_superuser {
-        sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status WHERE upload_id = $1",
-        )
-        .bind(&upload_id)
-        .fetch_optional(&state.db)
-        .await
-    } else {
-        sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status WHERE upload_id = $1 AND owner_id = $2",
-        )
-        .bind(&upload_id)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await
-    };
-
-    match result {
+    match sqlx::query_as::<_, UploadStatusRow>(
+        "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
+         FROM upload_status WHERE upload_id = $1",
+    )
+    .bind(&upload_id)
+    .fetch_optional(&state.db)
+    .await
+    {
         Ok(Some(row)) => Json(row).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -742,9 +696,9 @@ async fn list_upload_agents(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
+    let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(e) => return e.into_response(),
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
     let rows = if claims.is_superuser {

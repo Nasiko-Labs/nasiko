@@ -225,7 +225,7 @@ async fn main() {
         default_output_modes: vec!["text/plain".to_string()],
         supported_interfaces: vec![
             AgentInterface::new(
-                &format!("http://0.0.0.0:{port}/jsonrpc"),
+                &format!("http://0.0.0.0:{port}/"),
                 TRANSPORT_PROTOCOL_JSONRPC,
             ),
         ],
@@ -239,7 +239,7 @@ async fn main() {
     let card_producer = Arc::new(StaticAgentCard::new(agent_card));
 
     let app = axum::Router::new()
-        .nest("/jsonrpc", a2a_server::jsonrpc::jsonrpc_router(handler.clone()))
+        .merge(a2a_server::jsonrpc::jsonrpc_router(handler.clone()))
         .merge(a2a_server::agent_card::agent_card_router(card_producer));
 
     tracing::info!("Documentation Assistant listening on 0.0.0.0:{port}");

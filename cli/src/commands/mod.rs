@@ -15,4 +15,5 @@ pub mod secrets;
 pub mod skill;
 pub mod status;
 pub mod tui;
+pub mod upload;
 pub mod validate;

@@ -17,6 +17,7 @@ impl Client {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(None)
+                .http_status_as_error(false)
                 .build(),
         );
         Ok(Self {
@@ -426,27 +427,49 @@ impl RegistryClient {
 }
 
 impl Client {
-    pub fn upload_zip(
+    /// Upload a zip file to `POST /api/agents/upload` and return the queued build info.
+    pub fn upload_agent(
         &self,
-        file_path: &std::path::Path,
-        agent_name: Option<&str>,
-    ) -> anyhow::Result<UploadResponse> {
-        let file_bytes = std::fs::read(file_path)
-            .with_context(|| format!("cannot read {}", file_path.display()))?;
-        let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("agent.zip");
+        zip_path: &std::path::Path,
+        name: &str,
+        version_tag: &str,
+        ports: &[u16],
+        env: &std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<UploadQueued> {
+        let file_bytes = std::fs::read(zip_path)
+            .with_context(|| format!("cannot read {}", zip_path.display()))?;
 
         let boundary = "NasikoCloudBoundary1234567890";
         let mut body: Vec<u8> = Vec::new();
+
+        // name (required)
         body.extend_from_slice(
-            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: application/zip\r\n\r\n").as_bytes(),
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\n{name}\r\n").as_bytes(),
+        );
+        // version_tag
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"version_tag\"\r\n\r\n{version_tag}\r\n").as_bytes(),
+        );
+        // ports (comma-separated)
+        if !ports.is_empty() {
+            let ports_str = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"ports\"\r\n\r\n{ports_str}\r\n").as_bytes(),
+            );
+        }
+        // env (JSON)
+        if !env.is_empty() {
+            let env_json = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"env\"\r\n\r\n{env_json}\r\n").as_bytes(),
+            );
+        }
+        // source (the zip file)
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"upload.zip\"\r\nContent-Type: application/zip\r\n\r\n").as_bytes(),
         );
         body.extend_from_slice(&file_bytes);
         body.extend_from_slice(b"\r\n");
-        if let Some(name) = agent_name {
-            body.extend_from_slice(
-                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"agent_name\"\r\n\r\n{name}\r\n").as_bytes(),
-            );
-        }
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
         let url = self.api_url("/agents/upload");
@@ -461,6 +484,44 @@ impl Client {
             bail!("HTTP {}: {}", resp.status().as_u16(), b);
         }
         Ok(resp.body_mut().read_json()?)
+    }
+
+    /// Poll `GET /api/agents/deploys/{build_id}/stream` (SSE) until the build finishes.
+    /// Prints status transitions as they arrive. Returns Ok(()) on success, Err on failure.
+    pub fn poll_build_status(&self, build_id: &str) -> anyhow::Result<()> {
+        let url = self.api_url(&format!("/agents/deploys/{build_id}/stream"));
+        let mut resp = self.auth_get(&url).call().context("status stream failed")?;
+        if resp.status().as_u16() >= 400 {
+            bail!("status stream: HTTP {}", resp.status().as_u16());
+        }
+
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let mut last_status = String::new();
+        let mut succeeded = false;
+        let mut failed = false;
+
+        for line in body.lines() {
+            let Some(data) = line.strip_prefix("data: ") else { continue };
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(data) else { continue };
+            let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+            if status == last_status { continue; }
+            last_status = status.to_string();
+            match status {
+                "queued"    => println!("  queued"),
+                "building"  => println!("  building image..."),
+                "success"   => { println!("  build succeeded"); succeeded = true; }
+                "failed"    => { println!("  build failed"); failed = true; }
+                other       => println!("  {other}"),
+            }
+        }
+
+        if failed {
+            bail!("build failed");
+        }
+        if !succeeded {
+            bail!("build did not complete successfully");
+        }
+        Ok(())
     }
 }
 
@@ -485,15 +546,12 @@ pub struct AgentRecord {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct UploadResponse {
-    #[serde(default)]
-    pub success: bool,
-    #[serde(default)]
-    pub agent_name: Option<String>,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default)]
-    pub agentcard_generated: bool,
+pub struct UploadQueued {
+    pub build_id: String,
+    pub agent_id: String,
+    pub name: String,
+    pub image_tag: String,
+    pub status: String,
 }
 
 #[derive(Debug, Deserialize)]
