@@ -53,6 +53,7 @@ const HELP_TEXT: &str = "\
   stop       Stop agent container
   start      Start a stopped agent
   restart    Restart agent container
+  scale      Scale agent container to N replicas
   rm         Terminate + deregister agent
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
@@ -214,6 +215,8 @@ enum AgentOpsCommands {
     Start { agent: String },
     /// Restart agent container (picks up new secrets/env)
     Restart { agent: String },
+    /// Scale agent container to N replicas
+    Scale { agent: String, replicas: u32 },
     /// Terminate + deregister agent
     Rm {
         agent: String,
@@ -624,6 +627,7 @@ fn main() -> Result<()> {
             AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
             AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
             AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
+            AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
             AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
             AgentOpsCommands::Chat { url, message, tui, resume, session_id } => {
                 let resolved = match url {

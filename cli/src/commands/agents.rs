@@ -128,6 +128,13 @@ pub fn restart(agent: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn scale(agent: &str, replicas: u32) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    client.post_json_void(&format!("/containers/{agent}/scale"), &serde_json::json!({"replicas": replicas}))?;
+    println!("Scaled {agent} to {replicas} replica(s)");
+    Ok(())
+}
+
 pub fn rm(agent: &str, force: bool) -> Result<()> {
     if !force {
         let confirm = dialoguer::Confirm::new()
