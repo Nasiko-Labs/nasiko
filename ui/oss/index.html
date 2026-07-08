@@ -12,6 +12,16 @@
   </head>
   <body>
     <app-header></app-header>
-    <orchestrator-page></orchestrator-page>
+    <orchestrator-page>
+      <div style="display:flex;flex-direction:column;gap:var(--space-md);padding:var(--space-xl) var(--space-md);max-width:720px;margin:0 auto;">
+        <div class="skel-block" style="height:2rem;width:60%;margin:0 auto;"></div>
+        <div class="skel-block" style="height:56px;width:100%;border-radius:var(--radius-lg);"></div>
+        <div style="display:flex;gap:var(--space-sm);margin-top:var(--space-md);">
+          <div class="skel-agent-pill" style="flex:1;"></div>
+          <div class="skel-agent-pill" style="flex:1;"></div>
+          <div class="skel-agent-pill" style="flex:1;"></div>
+        </div>
+      </div>
+    </orchestrator-page>
   </body>
 </html>

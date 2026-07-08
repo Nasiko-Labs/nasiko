@@ -96,10 +96,191 @@ voice-input:not(:defined) {
   box-shadow: inset 0 0 0 1px var(--color-border), var(--shadow-sm);
 }
 
+/* Page-level elements — reserve layout before JS upgrades them */
+orchestrator-page:not(:defined),
+your-agents-page:not(:defined),
+agents-page:not(:defined),
+sessions-page:not(:defined),
+agent-card-page:not(:defined),
+flow-detail-page:not(:defined),
+session-trace-page:not(:defined),
+builds-page:not(:defined),
+chat-page:not(:defined),
+flows-page:not(:defined),
+secrets-page:not(:defined),
+users-page:not(:defined),
+teams-page:not(:defined),
+departments-page:not(:defined),
+access-control-page:not(:defined) {
+  display: block;
+  padding: var(--space-lg) var(--space-md);
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
   app-stat-card:not(:defined),
   app-skeleton:not(:defined),
   smart-table:not(:defined) {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/*
+  Inline skeleton cards — rendered directly in page HTML so they paint before
+  any JS loads. The custom element's connectedCallback replaces them with real
+  content via this.innerHTML = ...
+*/
+
+/* Shared skeleton primitives */
+.skel-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md);
+  background: var(--color-bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: 180px;
+}
+.skel-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.skel-card__avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-card__badge {
+  width: 60px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-card__line {
+  height: 0.85em;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-card__line--w50 { width: 50%; height: 1em; }
+.skel-card__line--w40 { width: 40%; }
+.skel-card__line--w60 { width: 60%; }
+.skel-card__line--w80 { width: 80%; }
+.skel-card__line--w120 { width: 120px; }
+.skel-card__meta {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+}
+.skel-card__tags {
+  display: flex;
+  gap: var(--space-xs);
+}
+.skel-card__tag {
+  width: 52px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-card__actions {
+  display: flex;
+  gap: var(--space-xs);
+  margin-top: auto;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+}
+.skel-card__btn {
+  width: 70px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-card__btn--sm { width: 50px; margin-left: auto; }
+
+/* Page-level skeleton grids */
+.skel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-md);
+}
+.skel-grid--narrow {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+/* Session list skeletons */
+.skel-session {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+}
+.skel-session__avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+  flex-shrink: 0;
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-session__info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.skel-session__line {
+  height: 0.75em;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-session__line--short { width: 35%; }
+.skel-session__line--long { width: 70%; }
+.skel-session__line--time { width: 60px; flex-shrink: 0; }
+.skel-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* Orchestrator agent card skeletons */
+.skel-agent-pill {
+  height: 56px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+/* Generic block skeleton (replaces app-skeleton for pre-definition) */
+.skel-block {
+  background: var(--color-border);
+  border-radius: var(--radius-md);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel-card__avatar,
+  .skel-card__badge,
+  .skel-card__line,
+  .skel-card__tag,
+  .skel-card__btn,
+  .skel-session__avatar,
+  .skel-session__line,
+  .skel-agent-pill,
+  .skel-block {
     animation: none;
     opacity: 0.6;
   }
