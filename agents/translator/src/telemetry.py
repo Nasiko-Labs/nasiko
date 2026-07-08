@@ -31,7 +31,7 @@ def init_telemetry(service_name: str | None = None) -> None:
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.propagate import set_global_textmap
         from opentelemetry.propagators.composite import CompositePropagator
-        from opentelemetry.trace.propagation import TraceContextTextMapPropagator
+        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
     except ImportError:
         logger.warning("opentelemetry SDK not installed — telemetry disabled")
         return
