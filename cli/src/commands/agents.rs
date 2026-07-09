@@ -17,6 +17,30 @@ struct LogLine {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
+/// Resolve a `nasiko chat` target to a full A2A endpoint URL.
+///
+/// Accepts a full URL as-is. Otherwise treats `target` as an agent UUID or
+/// name, looks it up against the active cluster's agent list (same data
+/// `nasiko ps` prints), and builds the proxy URL from its `id` +
+/// `transport_path` — sparing the caller from having to copy/paste the URL
+/// `nasiko ps` prints.
+pub fn resolve_chat_target(target: &str) -> Result<String> {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        return Ok(target.to_string());
+    }
+
+    let client = Client::from_active_cluster()?;
+    let agents: Vec<AgentRecord> = client.get_json("/agents?limit=100")?;
+    let agent = agents
+        .iter()
+        .find(|a| a.id == target || a.name == target)
+        .ok_or_else(|| anyhow::anyhow!("no agent found with id or name '{target}'"))?;
+
+    let base = client.base_url().trim_end_matches('/');
+    let path = agent.transport_path.as_deref().unwrap_or("/");
+    Ok(format!("{}/api/agents/{}{}", base, agent.id, path))
+}
+
 pub fn ps(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     if json {
@@ -34,7 +58,10 @@ pub fn ps(json: bool) -> Result<()> {
     for a in &agents {
         let status = a.status.as_deref().unwrap_or("unknown");
         let version = a.version.as_deref().unwrap_or("-");
-        let url = format!("{}/api/agents/{}/", base, a.name);
+        // transport_path comes from the agent's own card (persisted at deploy
+        // time); the proxy route requires the agent UUID, not the name.
+        let path = a.transport_path.as_deref().unwrap_or("/");
+        let url = format!("{}/api/agents/{}{}", base, a.id, path);
         println!("{:<28} {:<12} {:<8} {}", a.name, status, version, url);
     }
     Ok(())

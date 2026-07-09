@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{Path, Request, State},
     http::StatusCode,
     response::Response,
 };
@@ -15,18 +17,33 @@ use crate::state::AppState;
 /// Runs inside the `require_auth` middleware so Claims is always present.
 /// Forwards the request to the agent container, propagating traceparent and
 /// identity headers so agents know who is calling them.
+///
+/// Handles both `/agents/{id}` and `/agents/{id}/{*rest}` routes.
 pub async fn agent_proxy(
     State(state): State<AppState>,
+    Path(params): Path<HashMap<String, String>>,
     req: Request,
 ) -> Result<Response, StatusCode> {
+    let agent_id: Uuid = params
+        .get("id")
+        .and_then(|s| s.parse().ok())
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let claims = req
         .extensions()
         .get::<Claims>()
         .cloned()
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    let path = req.uri().path().to_string();
-    let (agent_id, forwarded_path) = parse_agent_path(&path).ok_or(StatusCode::NOT_FOUND)?;
+    // Build the forwarded path: everything after /api/agents/{id}
+    let full_path = req.uri().path();
+    let id_str = agent_id.to_string();
+    let forwarded_path = full_path
+        .find(&id_str)
+        .map(|pos| {
+            let after_id = &full_path[pos + id_str.len()..];
+            if after_id.is_empty() { "/".to_string() } else { after_id.to_string() }
+        })
+        .unwrap_or_else(|| "/".to_string());
 
     // Per-agent authorization — mirrors the check `a2a_dispatch.rs` already
     // enforces before forwarding. Without this, any authenticated user could
@@ -62,8 +79,15 @@ pub async fn agent_proxy(
         return Err(StatusCode::LOOP_DETECTED);
     }
 
-    // Resolve agent container endpoint from DB
-    let endpoint = nasiko_agent_proxy::resolve(&state.db, agent_id)
+    // Resolve agent container endpoint. `nasiko_agent_proxy::resolve` reads the
+    // `agents.url` column, a snapshot taken at the last deploy/restart — stale
+    // the moment the container is recreated outside that flow (Docker/Podman
+    // assign a new random host port on every recreate). Prefer the live
+    // runtime lookup instead (same fix already applied in
+    // `resolve_endpoint` in `router/a2a_dispatch.rs`), falling back to the
+    // stored value only if the runtime can't be reached (e.g. external agents
+    // registered by URL rather than deployed through this platform).
+    let stored = nasiko_agent_proxy::resolve(&state.db, agent_id)
         .await
         .map_err(|e| match e {
             nasiko_agent_proxy::ResolveError::NotFound => StatusCode::NOT_FOUND,
@@ -72,7 +96,20 @@ pub async fn agent_proxy(
             nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    let target_url = format!("http://{}:{}{}", endpoint.host, endpoint.port, forwarded_path);
+    let target_url = match state
+        .runtime
+        .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
+        .await
+    {
+        Ok(live) => format!("{}{}", live.trim_end_matches('/'), forwarded_path),
+        Err(e) => {
+            tracing::warn!(
+                error = %e, %agent_id,
+                "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
+            );
+            format!("http://{}:{}{}", stored.host, stored.port, forwarded_path)
+        }
+    };
 
     // Forward the request
     let method = req.method().clone();
@@ -89,7 +126,7 @@ pub async fn agent_proxy(
     // (spoofed identity — reqwest's `.header()` below is `HeaderMap::append`,
     // not replace, so a copied attacker value would sit ahead of the trusted
     // one most header readers return the first occurrence of).
-    const FORWARDED_HEADERS: &[&str] = &["content-type", "accept", "accept-encoding", "accept-language"];
+    const FORWARDED_HEADERS: &[&str] = &["content-type", "accept", "accept-encoding", "accept-language", "a2a-version"];
     let mut forwarded = state.http_client.request(method, &target_url);
     for (name, value) in headers.iter() {
         if FORWARDED_HEADERS.contains(&name.as_str())
@@ -109,32 +146,21 @@ pub async fn agent_proxy(
             if claims.is_superuser { "true" } else { "false" },
         );
 
-    // Mint a short-lived delegation token so the agent can call back into
-    // `/api/mcp` proving "I am agent_id_str, acting for claims.sub". Minting
-    // is best-effort: if JWT_SECRET is unset, MCP delegation is simply
-    // unavailable to this agent rather than failing the whole proxy call.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-        && let Ok(delegation_token) =
-            nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &claims.sub, &agent_id_str)
-    {
-        forwarded = forwarded.header("x-nasiko-agent-token", delegation_token);
-    }
-
     if !body_bytes.is_empty() {
         forwarded = forwarded.body(body_bytes);
     }
 
-    let response = forwarded
-        .send()
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let response = forwarded.send().await.map_err(|e| {
+        tracing::error!(error = %e, %agent_id, %target_url, "agent proxy: request to agent failed");
+        StatusCode::BAD_GATEWAY
+    })?;
 
     state.flow_guard.record_return(&flow_ctx).await;
 
-    to_axum_response(response).await
+    to_axum_response(response, agent_id).await
 }
 
-async fn to_axum_response(response: reqwest::Response) -> Result<Response, StatusCode> {
+async fn to_axum_response(response: reqwest::Response, agent_id: Uuid) -> Result<Response, StatusCode> {
     let status = response.status();
     let resp_headers = response.headers().clone();
     let is_stream = resp_headers
@@ -151,27 +177,20 @@ async fn to_axum_response(response: reqwest::Response) -> Result<Response, Statu
         let stream = response.bytes_stream();
         builder
             .body(Body::from_stream(stream))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|e| {
+                tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     } else {
-        let bytes = response.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let bytes = response.bytes().await.map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: failed to read agent response body");
+            StatusCode::BAD_GATEWAY
+        })?;
         builder
             .body(Body::from(bytes))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|e| {
+                tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     }
-}
-
-/// Parse `/agents/{uuid}/{*rest}` from the path seen inside the `/api` nest.
-///
-/// Axum strips the `/api` prefix when dispatching to nested routers, so the
-/// handler sees `/agents/{uuid}/...` not `/api/agents/{uuid}/...`.
-fn parse_agent_path(path: &str) -> Option<(Uuid, String)> {
-    let rest = path.strip_prefix("/agents/")?;
-    let (id_str, remainder) = rest.split_once('/').unwrap_or((rest, ""));
-    let agent_id = Uuid::parse_str(id_str).ok()?;
-    let forwarded = if remainder.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{remainder}")
-    };
-    Some((agent_id, forwarded))
 }

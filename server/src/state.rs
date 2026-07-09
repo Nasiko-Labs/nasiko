@@ -207,6 +207,8 @@ impl AppState {
         if let Some(ref url) = self.config.openai_base_url {
             env.entry("OPENAI_BASE_URL".into()).or_insert_with(|| url.clone());
         }
+        env.entry("OPENAI_MODEL".into())
+            .or_insert_with(|| self.config.openai_model.clone());
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
         env
     }

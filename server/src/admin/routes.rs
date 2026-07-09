@@ -70,7 +70,7 @@ async fn deploy(
             Ok(id) => id,
             Err(e) => return e.into_response(),
         };
-        let resolved = resolve_full_env(&state.db, owner_id, agent_id).await;
+        let resolved = resolve_full_env(&state, owner_id, agent_id).await;
         // resolved secrets are base; request env overrides
         for (k, v) in resolved {
             env.entry(k).or_insert(v);
@@ -84,25 +84,16 @@ async fn deploy(
         None => ContainerId::new(&req.name),
     };
 
-    let mut spec = DeploymentSpec {
+    let spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
-        image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
+        image: req.image,
         ports: if req.ports.is_empty() { vec![crate::agents::DEFAULT_AGENT_PORT] } else { req.ports },
         env_vars: env,
         min_replicas: req.replicas.unwrap_or(1),
         max_replicas: req.replicas.unwrap_or(1),
         resources: None,
-        image_pull_secret_name: None,
-        image_pull_credential_seed: None,
     };
-    // Only a name that already maps to a registered catalog agent has an
-    // `agents` row to scope a pull credential to (see pull_credentials'
-    // agent_id FK) — an ad-hoc, never-registered image deploy has nothing to
-    // bind one to.
-    if let Some(agent_id) = resolved_agent_id {
-        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
-    }
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => {
@@ -319,7 +310,7 @@ async fn restart(
     }
 
     // Resolve env: vault (base) + agent secrets (override)
-    let env = resolve_full_env(&state.db, owner_id, agent_id).await;
+    let env = resolve_full_env(&state, owner_id, agent_id).await;
 
     // Destroy the UUID-keyed workload (post-fix); fall back to the name-keyed one
     // for pre-fix containers so we don't leave a stale duplicate running.
@@ -330,8 +321,7 @@ async fn restart(
 
     // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec). Empty
     // ports → build_agent_spec defaults to DEFAULT_AGENT_PORT.
-    let mut spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
-    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+    let spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => Json(status).into_response(),
@@ -428,9 +418,10 @@ async fn resolve_authorized_container(
     Ok(ContainerId::from_uuid(agent_id))
 }
 
-/// Resolve the full env for an agent: vault secrets (base) + agent secrets (override).
+/// Resolve the full env for an agent: platform defaults (base) + vault secrets
+/// (override) + agent secrets (highest precedence).
 async fn resolve_full_env(
-    db: &sqlx::PgPool,
+    state: &AppState,
     owner_id: Uuid,
     agent_id: Uuid,
 ) -> std::collections::HashMap<String, String> {
@@ -444,7 +435,7 @@ async fn resolve_full_env(
         "SELECT name, encrypted_value FROM user_secrets WHERE user_id = $1",
     )
     .bind(owner_id)
-    .fetch_all(db)
+    .fetch_all(&state.db)
     .await
     .unwrap_or_default();
 
@@ -455,10 +446,24 @@ async fn resolve_full_env(
     }
 
     // 2. Agent secrets (higher precedence — overrides vault)
-    let agent_secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
+    let agent_secrets = agent_secrets::resolve_agent_env(&state.db, agent_id).await;
     for (k, v) in agent_secrets {
         env.insert(k, v);
     }
+
+    // 3. Platform-level LLM config — only fills gaps left by vault/agent
+    // secrets. `AppState::agent_env` (used by the deployment-scoped restart
+    // path) already does this; this ad-hoc container path had silently
+    // dropped it, so `nasiko restart` never picked up OPENAI_API_KEY /
+    // OPENAI_BASE_URL changes made to the platform's own .env.
+    if let Some(ref key) = state.config.openai_api_key {
+        env.entry("OPENAI_API_KEY".into()).or_insert_with(|| key.clone());
+    }
+    if let Some(ref url) = state.config.openai_base_url {
+        env.entry("OPENAI_BASE_URL".into()).or_insert_with(|| url.clone());
+    }
+    env.entry("OPENAI_MODEL".into())
+        .or_insert_with(|| state.config.openai_model.clone());
 
     env
 }
