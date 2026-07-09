@@ -4,6 +4,32 @@ use anyhow::{Context, Result, bail};
 
 use crate::commands::tui::session::{self as cp, CpSession};
 use crate::config;
+use crate::status::{self, StatusAnimation};
+
+/// Live status line shown while the CLI waits on the backend. Re-settable:
+/// each `set` clears the previous line first, so event output printed between
+/// states never collides with an animation frame.
+struct Spinner(Option<status::StatusHandle>);
+
+impl Spinner {
+    fn new() -> Self {
+        Spinner(None)
+    }
+
+    /// Replace the status line with a new message (clears the old one first).
+    fn set(&mut self, msg: impl Into<String>) {
+        self.0 = None;
+        self.0 = Some(status::start_status_with_animation(
+            msg,
+            StatusAnimation::Shimmer,
+        ));
+    }
+
+    /// Clear the status line (e.g. while streamed text is being printed).
+    fn pause(&mut self) {
+        self.0 = None;
+    }
+}
 
 /// Resolved CP session info used to persist messages.
 struct CpCtx {
@@ -33,7 +59,10 @@ fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<CpCtx> {
 /// - CP agent proxy:  http://localhost:8080/api/agents/{id}{transport_path}
 ///   (as printed by `nasiko ps` — the path comes from the agent's card)
 /// - Direct agent:    http://localhost:10010/
-pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
+///
+/// `target_label` is what the user typed (agent name/id, or "" for the
+/// orchestrator) — used verbatim in the resume hint so it can be copy-pasted.
+pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>, target_label: &str) -> Result<()> {
     let endpoint = url.trim_end_matches('/').to_string();
     let cp_ctx = resolve_cp_ctx(&endpoint, session_id);
 
@@ -41,17 +70,25 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Resul
         Some(msg) => {
             send_message(&endpoint, msg, cp_ctx.as_ref())?;
             println!();
+            print_resume_hint(cp_ctx.as_ref(), target_label);
         }
         None => {
-            if let Some(ref ctx) = cp_ctx {
-                println!("Chat with {endpoint} (session: {}) (type /quit to exit)\n", &ctx.session_id[..8]);
-            } else {
-                println!("Chat with {endpoint} (type /quit to exit)\n");
-            }
+            let session_note = cp_ctx
+                .as_ref()
+                .map(|ctx| format!(" \x1b[2m· session {}\x1b[0m", &ctx.session_id[..8]))
+                .unwrap_or_default();
+            println!("\x1b[1mnasiko chat\x1b[0m \x1b[2m·\x1b[0m {endpoint}{session_note}");
+            println!("\x1b[2mtype /quit to exit\x1b[0m\n");
             loop {
-                let input: String = dialoguer::Input::new()
-                    .with_prompt("you")
-                    .interact_text()?;
+                let input = match dialoguer::Input::<String>::new()
+                    .with_prompt("\x1b[36myou\x1b[0m")
+                    .allow_empty(true)
+                    .interact_text()
+                {
+                    Ok(i) => i,
+                    // Ctrl-C / Ctrl-D — leave gracefully instead of erroring out.
+                    Err(_) => break,
+                };
                 if input.trim().is_empty() {
                     continue;
                 }
@@ -61,12 +98,24 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Resul
                 println!();
                 match send_message(&endpoint, &input, cp_ctx.as_ref()) {
                     Ok(_) => println!("\n"),
-                    Err(e) => eprintln!("  error: {e}\n"),
+                    Err(e) => eprintln!("  \x1b[31merror:\x1b[0m {e}\n"),
                 }
             }
+            print_resume_hint(cp_ctx.as_ref(), target_label);
         }
     }
     Ok(())
+}
+
+/// Tell the user which session this chat belongs to and how to pick it back
+/// up. Goes to stderr so piped/scripted stdout stays clean.
+fn print_resume_hint(cp_ctx: Option<&CpCtx>, target_label: &str) {
+    let Some(ctx) = cp_ctx else { return };
+    let target = if target_label.is_empty() { String::new() } else { format!("{target_label} ") };
+    eprintln!(
+        "\x1b[2msession: {} — continue with: nasiko chat {}--session-id {}\x1b[0m",
+        ctx.session_id, target, ctx.session_id
+    );
 }
 
 /// Send an A2A streaming request and handle the response.
@@ -124,6 +173,8 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         req = req.header("Authorization", &format!("Bearer {t}"));
     }
 
+    let mut spin = Spinner::new();
+    spin.set("connecting");
     let mut resp = req.send_json(&body).context("failed to reach A2A endpoint")?;
 
     if resp.status().as_u16() >= 400 {
@@ -132,7 +183,8 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
             .ok()
             .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(|s| s.to_string()))
             .unwrap_or(err_body);
-        bail!("HTTP {}: {}", resp.status().as_u16(), msg);
+        let msg = if msg.trim().is_empty() { "(empty response body)".to_string() } else { msg };
+        bail!("HTTP {} from {}: {}", resp.status().as_u16(), endpoint, msg);
     }
 
     let content_type = resp
@@ -143,10 +195,13 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         .to_string();
 
     let agent_text = if content_type.contains("text/event-stream") {
-        handle_sse_stream(resp)?
+        spin.set("thinking");
+        handle_sse_stream(resp, &mut spin)?
     } else {
+        spin.set("thinking");
         let resp_json: serde_json::Value =
             resp.body_mut().read_json().context("invalid JSON response")?;
+        spin.pause();
 
         let result = resp_json.get("result").unwrap_or(&resp_json);
         if let Some(t) = nasiko_types::a2a::extract_text(result) {
@@ -169,7 +224,9 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
 }
 
 /// Parse SSE stream, render events to the terminal, and return the full agent text.
-fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<String> {
+/// The spinner animates whenever the stream is quiet; every print pauses it
+/// first so output never collides with an animation frame.
+fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner) -> Result<String> {
     let (_parts, body) = resp.into_parts();
     let buf = std::io::BufReader::new(body.into_reader());
     let mut collected = String::new();
@@ -200,26 +257,31 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<String> {
             // Otherwise it's the initial task submission — keep reading.
             let state = task.pointer("/status/state").and_then(|s| s.as_str()).unwrap_or("");
             if matches!(state, "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED") {
+                spin.pause();
                 if let Some(t) = handle_task_result(task) {
                     collected.push_str(&t);
                 }
                 is_terminal = true;
             }
         } else if let Some(status_update) = result.get("statusUpdate") {
-            handle_status_update(status_update);
+            handle_status_update(status_update, spin);
             is_terminal = is_terminal_state(status_update);
         } else if let Some(artifact_update) = result.get("artifactUpdate") {
+            // Answer text is flowing — the text itself is the progress indicator.
+            spin.pause();
             if let Some(t) = handle_artifact_update(artifact_update) {
                 collected.push_str(&t);
             }
         } else if let Some(kind) = result.get("kind").and_then(|k| k.as_str()) {
             match kind {
                 "artifact-update" => {
+                    spin.pause();
                     if let Some(t) = handle_artifact_update(result) {
                         collected.push_str(&t);
                     }
                 }
                 "status-update" => {
+                    spin.pause();
                     handle_status_update_jsonrpc(result);
                     is_terminal = is_terminal_state(result);
                 }
@@ -228,10 +290,12 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>) -> Result<String> {
         }
 
         if is_terminal {
+            spin.pause();
             break;
         }
     }
 
+    spin.pause();
     Ok(collected)
 }
 
@@ -242,7 +306,7 @@ fn handle_task_result(task: &serde_json::Value) -> Option<String> {
     Some(text)
 }
 
-fn handle_status_update(event: &serde_json::Value) {
+fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
     let state = event
         .pointer("/status/state")
         .and_then(|s| s.as_str())
@@ -256,14 +320,17 @@ fn handle_status_update(event: &serde_json::Value) {
             {
                 for part in parts {
                     if let Some(data) = part.get("data") {
-                        render_status_data(data);
+                        render_status_data(data, spin);
                     } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                        spin.pause();
                         eprintln!("  \x1b[2m{text}\x1b[0m");
+                        spin.set("working");
                     }
                 }
             }
         }
         "TASK_STATE_FAILED" => {
+            spin.pause();
             if let Some(parts) = event
                 .pointer("/status/message/parts")
                 .and_then(|p| p.as_array())
@@ -279,25 +346,33 @@ fn handle_status_update(event: &serde_json::Value) {
     }
 }
 
-fn render_status_data(data: &serde_json::Value) {
+fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
     let event_type = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match event_type {
         "thinking" => {
             if let Some(content) = data.get("content").and_then(|c| c.as_str()) {
-                eprintln!("  \x1b[2m{content}\x1b[0m");
+                if content.trim().is_empty() {
+                    spin.set("thinking");
+                } else {
+                    spin.pause();
+                    eprintln!("  \x1b[2m{content}\x1b[0m");
+                    spin.set("thinking");
+                }
             }
         }
         "tool_call" => {
             let agent = data.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
             let message = data.get("message").and_then(|m| m.as_str()).unwrap_or("");
-            eprintln!("  \x1b[36m-> {agent}\x1b[0m: {message}");
+            spin.pause();
+            eprintln!("  \x1b[36m→ {agent}\x1b[0m: {message}");
+            spin.set(format!("{agent} working"));
         }
         "tool_result" => {
             let agent = data.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
             let success = data.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
             let result = data.get("result").and_then(|r| r.as_str()).unwrap_or("");
-            let icon = if success { "ok" } else { "err" };
+            let icon = if success { "✓" } else { "✗" };
             let color = if success { "32" } else { "31" };
             let display = if result.len() > 200 {
                 let n = result.floor_char_boundary(200);
@@ -305,7 +380,9 @@ fn render_status_data(data: &serde_json::Value) {
             } else {
                 result.to_string()
             };
-            eprintln!("  \x1b[{color}m[{icon}] {agent}\x1b[0m: {display}");
+            spin.pause();
+            eprintln!("  \x1b[{color}m{icon} {agent}\x1b[0m: {display}");
+            spin.set("thinking");
         }
         _ => {}
     }
@@ -383,11 +460,16 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         if let Some(ref cid) = ctx_id {
             payload["params"]["message"]["contextId"] = serde_json::Value::String(cid.clone());
         }
+        let spin = status::start_status_with_animation(
+            format!("{agent_name} is thinking"),
+            StatusAnimation::Shimmer,
+        );
         let mut resp = ureq::post(&format!("{}/", base))
             .header("Content-Type", "application/json")
             .header("A2A-Version", "1.0")
             .send_json(&payload)
             .map_err(|e| anyhow::anyhow!("failed to reach agent: {}", e))?;
+        drop(spin);
         let raw: serde_json::Value = resp.body_mut().read_json()?;
         let result = raw.get("result").cloned().unwrap_or_default();
         let new_ctx = result.get("contextId").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -411,7 +493,15 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
 
     let mut ctx_id: Option<String> = initial_ctx;
     loop {
-        let input: String = dialoguer::Input::new().with_prompt("You").allow_empty(true).interact_text()?;
+        let input = match dialoguer::Input::<String>::new()
+            .with_prompt("\x1b[36myou\x1b[0m")
+            .allow_empty(true)
+            .interact_text()
+        {
+            Ok(i) => i,
+            // Ctrl-C / Ctrl-D — leave gracefully instead of erroring out.
+            Err(_) => break,
+        };
         let input = input.trim();
         if input.is_empty() { continue; }
         if input == "exit" || input == "quit" { println!("Goodbye."); break; }

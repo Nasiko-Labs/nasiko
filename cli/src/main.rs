@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod oci;
 mod skill;
+mod status;
 mod util;
 
 use anyhow::Result;
@@ -225,7 +226,9 @@ enum AgentOpsCommands {
     },
     /// Send a message via A2A protocol
     Chat {
-        /// A2A endpoint URL, agent UUID, or agent name (uses orchestrator on active cluster if omitted)
+        /// A2A endpoint URL, agent UUID, agent name, or "orchestrator".
+        /// A quoted message here (contains spaces) is sent to the orchestrator.
+        /// Omit entirely for interactive orchestrator chat.
         url: Option<String>,
         /// Message (omit for interactive mode)
         message: Option<String>,
@@ -630,17 +633,27 @@ fn main() -> Result<()> {
             AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
             AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
             AgentOpsCommands::Chat { url, message, tui, resume, session_id } => {
-                let resolved = match url {
-                    Some(u) => commands::agents::resolve_chat_target(&u)?,
-                    None => {
-                        let base = config::active_url()?;
-                        format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))
+                let orchestrator = || -> anyhow::Result<String> {
+                    let base = config::active_url()?;
+                    Ok(format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')))
+                };
+                // Keep the user's own spelling of the target (name/id/url) for
+                // the resume hint printed after the chat. A single argument
+                // containing whitespace can't be an agent name — treat it as a
+                // one-shot message to the orchestrator, so
+                // `nasiko chat "who has access to prod?"` just works.
+                let (resolved, target_label, message) = match (url, message) {
+                    (Some(u), Some(m)) => (commands::agents::resolve_chat_target(&u)?, u, Some(m)),
+                    (Some(u), None) if u.contains(char::is_whitespace) => {
+                        (orchestrator()?, String::new(), Some(u))
                     }
+                    (Some(u), None) => (commands::agents::resolve_chat_target(&u)?, u, None),
+                    (None, m) => (orchestrator()?, String::new(), m),
                 };
                 if tui || resume.is_some() {
                     commands::tui::run_tui(&resolved, resume.as_deref())
                 } else {
-                    commands::chat::chat(&resolved, message.as_deref(), session_id.as_deref())
+                    commands::chat::chat(&resolved, message.as_deref(), session_id.as_deref(), &target_label)
                 }
             }
             AgentOpsCommands::Sessions { endpoint, cursor, limit } => {

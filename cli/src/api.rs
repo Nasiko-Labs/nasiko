@@ -4,6 +4,23 @@ use ureq::Agent;
 
 use crate::config;
 
+/// Bail with a diagnosable message (URL + status + body) on HTTP >= 400.
+/// A bare status code is useless for debugging — always say what was hit
+/// and what came back.
+fn check_status(resp: &mut ureq::http::Response<ureq::Body>, url: &str) -> Result<()> {
+    let status = resp.status().as_u16();
+    if status >= 400 {
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let body = if body.trim().is_empty() {
+            "(empty response body)".to_string()
+        } else {
+            body
+        };
+        bail!("HTTP {status} from {url}: {body}");
+    }
+    Ok(())
+}
+
 /// Client for the control plane API + its OCI registry.
 pub struct Client {
     agent: Agent,
@@ -66,20 +83,18 @@ impl Client {
     // ─── Authenticated CP API calls (/api/*) ────────────────────────────────
 
     pub fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
-        let mut resp = self.auth_get(&self.api_url(path)).call().context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        let _spin = crate::status::start_status(format!("GET {path}"));
+        let url = self.api_url(path);
+        let mut resp = self.auth_get(&url).call().context("request failed")?;
+        check_status(&mut resp, &url)?;
         Ok(resp.body_mut().read_json()?)
     }
 
     pub fn get_text(&self, path: &str) -> Result<String> {
-        let mut resp = self.auth_get(&self.api_url(path)).call().context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        let _spin = crate::status::start_status(format!("GET {path}"));
+        let url = self.api_url(path);
+        let mut resp = self.auth_get(&url).call().context("request failed")?;
+        check_status(&mut resp, &url)?;
         Ok(resp.body_mut().read_to_string()?)
     }
 
@@ -88,14 +103,13 @@ impl Client {
         path: &str,
         body: &B,
     ) -> Result<T> {
+        let _spin = crate::status::start_status(format!("POST {path}"));
+        let url = self.api_url(path);
         let mut resp = self
-            .auth_post(&self.api_url(path))
+            .auth_post(&url)
             .send_json(body)
             .context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        check_status(&mut resp, &url)?;
         Ok(resp.body_mut().read_json()?)
     }
 
@@ -104,64 +118,59 @@ impl Client {
         path: &str,
         body: &B,
     ) -> Result<T> {
+        let _spin = crate::status::start_status(format!("PUT {path}"));
+        let url = self.api_url(path);
         let mut resp = self
-            .auth_put(&self.api_url(path))
+            .auth_put(&url)
             .send_json(body)
             .context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        check_status(&mut resp, &url)?;
         Ok(resp.body_mut().read_json()?)
     }
 
     /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_void(&self, path: &str) -> Result<()> {
+        let _spin = crate::status::start_status(format!("POST {path}"));
+        let url = self.api_url(path);
         let mut resp = self
-            .auth_post(&self.api_url(path))
+            .auth_post(&url)
             .send(&[] as &[u8])
             .context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        check_status(&mut resp, &url)?;
         Ok(())
     }
 
     /// POST a JSON body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_json_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
+        let _spin = crate::status::start_status(format!("POST {path}"));
+        let url = self.api_url(path);
         let mut resp = self
-            .auth_post(&self.api_url(path))
+            .auth_post(&url)
             .send_json(body)
             .context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        check_status(&mut resp, &url)?;
         Ok(())
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
-        let mut req = self.agent.delete(&self.api_url(path));
+        let _spin = crate::status::start_status(format!("DELETE {path}"));
+        let url = self.api_url(path);
+        let mut req = self.agent.delete(&url);
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let mut resp = req.call().context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        check_status(&mut resp, &url)?;
         Ok(())
     }
 
     // ─── Public endpoints (no /api prefix, no auth) ─────────────────────────
 
     pub fn get_public_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
-        let mut resp = self.agent.get(&self.raw_url(path)).call().context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        let _spin = crate::status::start_status(format!("GET {path}"));
+        let url = self.raw_url(path);
+        let mut resp = self.agent.get(&url).call().context("request failed")?;
+        check_status(&mut resp, &url)?;
         Ok(resp.body_mut().read_json()?)
     }
 
@@ -521,7 +530,12 @@ impl Client {
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
+        let _spin = crate::status::start_status(format!(
+            "uploading {name} ({} KB)",
+            body.len() / 1024
+        ));
         let mut resp = req.send(&body).context("upload request failed")?;
+        drop(_spin);
         if resp.status().as_u16() >= 400 {
             let b = resp.body_mut().read_to_string().unwrap_or_default();
             bail!("HTTP {}: {}", resp.status().as_u16(), b);
@@ -530,33 +544,42 @@ impl Client {
     }
 
     /// Poll `GET /api/agents/deploys/{build_id}/stream` (SSE) until the build finishes.
-    /// Prints status transitions as they arrive. Returns Ok(()) on success, Err on failure.
+    /// Streams status transitions as they arrive, with a live spinner in between.
+    /// Returns Ok(()) on success, Err on failure.
     pub fn poll_build_status(&self, build_id: &str) -> anyhow::Result<()> {
+        use std::io::BufRead;
+
         let url = self.api_url(&format!("/agents/deploys/{build_id}/stream"));
-        let mut resp = self.auth_get(&url).call().context("status stream failed")?;
+        let resp = self.auth_get(&url).call().context("status stream failed")?;
         if resp.status().as_u16() >= 400 {
             bail!("status stream: HTTP {}", resp.status().as_u16());
         }
 
-        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let (_parts, body) = resp.into_parts();
+        let reader = std::io::BufReader::new(body.into_reader());
         let mut last_status = String::new();
         let mut succeeded = false;
         let mut failed = false;
+        let mut spin = Some(crate::status::start_status("waiting for build"));
 
-        for line in body.lines() {
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
             let Some(data) = line.strip_prefix("data: ") else { continue };
             let Ok(val) = serde_json::from_str::<serde_json::Value>(data) else { continue };
             let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
             if status == last_status { continue; }
             last_status = status.to_string();
+            // Drop first so the spinner line is cleared before the transition prints.
+            spin = None;
             match status {
-                "queued"    => println!("  queued"),
-                "building"  => println!("  building image..."),
+                "queued"    => spin = Some(crate::status::start_status("queued")),
+                "building"  => spin = Some(crate::status::start_status("building image")),
                 "success"   => { println!("  build succeeded"); succeeded = true; }
                 "failed"    => { println!("  build failed"); failed = true; }
                 other       => println!("  {other}"),
             }
         }
+        drop(spin);
 
         if failed {
             bail!("build failed");

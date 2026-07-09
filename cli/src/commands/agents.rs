@@ -29,12 +29,25 @@ pub fn resolve_chat_target(target: &str) -> Result<String> {
         return Ok(target.to_string());
     }
 
+    // "orchestrator" is not a catalog agent — it's the CP's own routing
+    // endpoint (same one `nasiko chat` with no target uses).
+    if target.eq_ignore_ascii_case("orchestrator") {
+        let base = crate::config::active_url()?;
+        return Ok(format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')));
+    }
+
     let client = Client::from_active_cluster()?;
     let agents: Vec<AgentRecord> = client.get_json("/agents?limit=100")?;
     let agent = agents
         .iter()
         .find(|a| a.id == target || a.name == target)
-        .ok_or_else(|| anyhow::anyhow!("no agent found with id or name '{target}'"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no agent found with id or name '{target}' (see `nasiko ps`; \
+                 to message the orchestrator instead: nasiko chat \"{target}\" — \
+                 any argument with spaces goes to the orchestrator)"
+            )
+        })?;
 
     let base = client.base_url().trim_end_matches('/');
     let path = agent.transport_path.as_deref().unwrap_or("/");
@@ -409,7 +422,7 @@ pub fn cmd_frameworks() -> Result<()> {
 
 pub fn cmd_list_uploaded() -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/user/upload-agents")?;
+    let raw: serde_json::Value = client.get_json("/agents/my-uploads")?;
     let agents: Vec<UploadedAgent> = if let Some(data) = raw.get("data") {
         serde_json::from_value(data.clone())?
     } else if let Some(arr) = raw.as_array() {
