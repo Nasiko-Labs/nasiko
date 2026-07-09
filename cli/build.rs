@@ -1,40 +1,54 @@
-use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::{env, fs};
 
-/// Stage `../agents` into OUT_DIR for `include_dir!`, skipping build artifacts.
-///
-/// The CLI embeds the agents directory as scaffold templates (`nasiko new`)
-/// and skills. Building an agent in-place (`cargo build` inside oss/agents/*)
-/// leaves a multi-GB `target/` dir there; embedding it produces a binary too
-/// large to load (its segments collide with the dyld shared-cache region on
-/// macOS). Copying with `target/` filtered out keeps the embed template-only.
-fn copy_filtered(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == "target" || name == ".git" {
-            continue;
-        }
-        let ty = entry.file_type()?;
-        let to = dst.join(&name);
-        if ty.is_dir() {
-            copy_filtered(&entry.path(), &to)?;
-        } else if ty.is_file() {
-            fs::copy(entry.path(), &to)?;
-        }
-    }
-    Ok(())
-}
+const SKIP_DIRS: &[&str] = &[
+    "target",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+];
 
 fn main() {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let out = std::env::var("OUT_DIR").unwrap();
-    let src = Path::new(&manifest).join("..").join("agents");
-    let dst = Path::new(&out).join("agents");
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let agents_src = PathBuf::from(&manifest_dir).join("../agents");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let dest = out_dir.join("agents");
 
-    println!("cargo:rerun-if-changed={}", src.display());
+    if dest.exists() {
+        fs::remove_dir_all(&dest).unwrap();
+    }
+    fs::create_dir_all(&dest).unwrap();
 
-    let _ = fs::remove_dir_all(&dst);
-    copy_filtered(&src, &dst).expect("failed to stage agent templates for embedding");
+    if agents_src.is_dir() {
+        copy_filtered(&agents_src, &dest);
+    }
+
+    println!("cargo::rerun-if-changed=../agents");
+}
+
+fn copy_filtered(src: &Path, dest: &Path) {
+    let entries = match fs::read_dir(src) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        if path.is_dir() {
+            if SKIP_DIRS.contains(&name_str.as_ref()) {
+                continue;
+            }
+            let child_dest = dest.join(&name);
+            fs::create_dir_all(&child_dest).unwrap();
+            copy_filtered(&path, &child_dest);
+        } else if path.is_file() {
+            fs::copy(&path, dest.join(&name)).unwrap();
+        }
+    }
 }

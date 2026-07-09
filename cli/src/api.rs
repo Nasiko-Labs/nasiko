@@ -27,6 +27,10 @@ impl Client {
         })
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     fn api_url(&self, path: &str) -> String {
         format!("{}/api{}", self.base_url, path)
     }
@@ -95,19 +99,6 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
-    /// Like `post_json`, but for endpoints that reply with an empty body on success.
-    pub fn post_json_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
-        let mut resp = self
-            .auth_post(&self.api_url(path))
-            .send_json(body)
-            .context("request failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("HTTP {}: {}", resp.status().as_u16(), body);
-        }
-        Ok(())
-    }
-
     pub fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         path: &str,
@@ -129,6 +120,19 @@ impl Client {
         let mut resp = self
             .auth_post(&self.api_url(path))
             .send(&[] as &[u8])
+            .context("request failed")?;
+        if resp.status().as_u16() >= 400 {
+            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            bail!("HTTP {}: {}", resp.status().as_u16(), body);
+        }
+        Ok(())
+    }
+
+    /// POST a JSON body and ignore the response body (for endpoints that return 200/204 with no JSON).
+    pub fn post_json_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
+        let mut resp = self
+            .auth_post(&self.api_url(path))
+            .send_json(body)
             .context("request failed")?;
         if resp.status().as_u16() >= 400 {
             let body = resp.body_mut().read_to_string().unwrap_or_default();
@@ -574,6 +578,9 @@ pub struct AgentRecord {
     pub status: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// JSON-RPC path from the agent's card (e.g. "/jsonrpc"), set by the server.
+    #[serde(default)]
+    pub transport_path: Option<String>,
     #[serde(default)]
     pub framework: Option<String>,
     #[serde(default)]

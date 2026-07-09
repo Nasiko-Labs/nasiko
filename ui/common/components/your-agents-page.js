@@ -395,7 +395,7 @@ class YourAgentsPage extends HTMLElement {
       withLoading(deployBtn, "Deploying...", async () => {
         if (selectedSecrets.size > 0 && deployAgentId) {
           await fetch(
-            `/api/catalog/agents/${deployAgentId}/secrets/import`,
+            `/api/agents/${deployAgentId}/secrets/import`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -410,20 +410,19 @@ class YourAgentsPage extends HTMLElement {
           const key = inputs[0].value.trim();
           const val = inputs[1].value;
           if (!key) continue;
-          await fetch(`/api/catalog/agents/${deployAgentId}/secrets`, {
+          await fetch(`/api/agents/${deployAgentId}/secrets`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name: key, value: val }),
           });
         }
 
-        const res = await fetch("/api/containers/pull", {
+        const res = await fetch("/api/containers", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             image: deployImage,
             name: deployAgentName,
-            agent_id: deployAgentId,
           }),
         });
         if (!res.ok) throw new Error(await res.text());
@@ -449,7 +448,7 @@ class YourAgentsPage extends HTMLElement {
 
         try {
           const res = await fetch(
-            `/api/catalog/agents/${deployAgentId}/secrets`,
+            `/api/agents/${deployAgentId}/secrets`,
           );
           if (res.ok) {
             const secrets = await res.json();
@@ -494,7 +493,7 @@ class YourAgentsPage extends HTMLElement {
           return;
         try {
           const res = await fetch(
-            `/api/catalog/agents/${encodeURIComponent(id)}`,
+            `/api/agents/${encodeURIComponent(id)}`,
             { method: "DELETE" },
           );
           if (!res.ok) throw new Error(await res.text());

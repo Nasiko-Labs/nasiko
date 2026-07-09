@@ -230,6 +230,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             execute_upload_and_deploy(
                 state.runtime.clone(),
                 state.db.clone(),
+                state.http_client.clone(),
                 build_id,
                 agent_id,
                 owner_id,

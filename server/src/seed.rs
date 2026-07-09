@@ -134,7 +134,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
 
         // UUID-keyed (see agents::build_agent_spec) so a re-seed re-targets the same
         // workload rather than leaving a name-keyed orphan.
-        let mut spec = crate::agents::build_agent_spec(
+        let spec = crate::agents::build_agent_spec(
             agent.id,
             &agent_name,
             image.to_string(),
@@ -142,7 +142,6 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             env,
             None,
         );
-        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent.id).await;
 
         match state.runtime.deploy(&spec).await {
             Ok(status) => {
@@ -157,12 +156,13 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 .await;
 
                 // Wait for container to become healthy, then fetch agent card
-                for _ in 0..10 {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    if fetch_and_apply_agent_card(state, agent.id, &agent_url).await {
-                        break;
-                    }
-                }
+                crate::agents::utils::fetch_agent_card_with_retry(
+                    state.db.clone(),
+                    state.http_client.clone(),
+                    agent.id,
+                    agent_url.clone(),
+                )
+                .await;
             }
             Err(e) => {
                 warn!(agent = %agent_name, error = %e, "failed to deploy seed agent");
@@ -203,79 +203,4 @@ async fn register_agent(
     .bind(image)
     .fetch_one(db)
     .await
-}
-
-/// After deploy, fetch the agent's card and update the DB with skills/description.
-/// Returns true if the card was fetched successfully.
-async fn fetch_and_apply_agent_card(state: &AppState, agent_id: Uuid, agent_url: &str) -> bool {
-    if agent_url.is_empty() {
-        return false;
-    }
-
-    let base = agent_url.trim_end_matches('/');
-
-    let urls = [
-        format!("{base}/.well-known/agent-card.json"),
-        format!("{base}/.well-known/agent.json"),
-    ];
-
-    let mut card: Option<serde_json::Value> = None;
-    for url in &urls {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            state.http_client.get(url).send(),
-        ).await;
-        if let Ok(Ok(resp)) = result
-            && resp.status().is_success()
-            && let Ok(v) = resp.json::<serde_json::Value>().await {
-                card = Some(v);
-                break;
-            }
-    }
-
-    let card = match card {
-        Some(c) => c,
-        None => return false,
-    };
-
-    let _ = sqlx::query(
-        r#"UPDATE agents SET
-             description = COALESCE($2, description),
-             skills = COALESCE($3, skills),
-             tags = COALESCE($4, tags),
-             capabilities = COALESCE($5, capabilities),
-             updated_at = now()
-           WHERE id = $1"#,
-    )
-    .bind(agent_id)
-    .bind(card.get("description").and_then(|v| v.as_str()))
-    .bind(card.get("skills"))
-    .bind({
-        let mut tags: Vec<String> = card
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default();
-        if let Some(skills) = card.get("skills").and_then(|v| v.as_array()) {
-            for skill in skills {
-                if let Some(skill_tags) = skill.get("tags").and_then(|v| v.as_array()) {
-                    for t in skill_tags.iter().filter_map(|v| v.as_str()) {
-                        if !tags.contains(&t.to_string()) {
-                            tags.push(t.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        if tags.is_empty() { None } else { Some(tags) }
-    })
-    .bind(card.get("capabilities"))
-    .execute(&state.db)
-    .await;
-
-    if let Some(skills_json) = card.get("skills") {
-        crate::catalog::skills::sync_agent_skills_json(&state.db, agent_id, skills_json).await;
-    }
-
-    true
 }

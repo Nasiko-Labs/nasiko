@@ -36,7 +36,7 @@ class AgentDetailPage extends HTMLElement {
   async #load() {
     try {
       // The catalog endpoint accepts UUID or name and returns the full agent row.
-      this.#agent = await fetchApi(`/catalog/agents/${this.#agentId}`);
+      this.#agent = await fetchApi(`/agents/${this.#agentId}`);
     } catch {
       this.#agent = null;
     }

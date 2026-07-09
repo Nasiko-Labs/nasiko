@@ -55,7 +55,6 @@ pub struct SkillRuntime {
 
 use include_dir::{Dir, include_dir};
 
-// Staged by build.rs with build artifacts (target/) filtered out.
 static SKILLS_DIR: Dir = include_dir!("$OUT_DIR/agents/skills");
 
 pub fn resolve_skill(name: &str) -> Result<(SkillManifest, String)> {

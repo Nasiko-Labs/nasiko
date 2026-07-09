@@ -5,7 +5,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::api::{AgentRecord, Client, ContainerStatus, UploadedAgent};
+use crate::api::{AgentRecord, Client, UploadedAgent};
 
 #[derive(Debug, Deserialize)]
 struct LogLine {
@@ -20,19 +20,22 @@ struct LogLine {
 pub fn ps(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     if json {
-        let raw: serde_json::Value = client.get_json("/containers")?;
+        let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
         println!("{}", serde_json::to_string_pretty(&raw)?);
         return Ok(());
     }
-    let containers: Vec<ContainerStatus> = client.get_json("/containers")?;
-    if containers.is_empty() {
-        println!("No agents running.");
+    let agents: Vec<AgentRecord> = client.get_json("/agents?limit=100")?;
+    if agents.is_empty() {
+        println!("No agents registered.");
         return Ok(());
     }
-    println!("{:<28} {:<12} {:<4} ENDPOINT", "NAME", "STATE", "UP");
-    for c in &containers {
-        let ep = c.endpoint.as_deref().unwrap_or("-");
-        println!("{:<28} {:<12} {:<4} {}", c.container_id, c.state, c.replicas_live, ep);
+    let base = client.base_url().trim_end_matches('/');
+    println!("{:<28} {:<12} {:<8} URL", "NAME", "STATUS", "VERSION");
+    for a in &agents {
+        let status = a.status.as_deref().unwrap_or("unknown");
+        let version = a.version.as_deref().unwrap_or("-");
+        let url = format!("{}/api/agents/{}/", base, a.name);
+        println!("{:<28} {:<12} {:<8} {}", a.name, status, version, url);
     }
     Ok(())
 }
@@ -128,6 +131,13 @@ pub fn restart(agent: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn scale(agent: &str, replicas: u32) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    client.post_json_void(&format!("/containers/{agent}/scale"), &serde_json::json!({"replicas": replicas}))?;
+    println!("Scaled {agent} to {replicas} replica(s)");
+    Ok(())
+}
+
 pub fn rm(agent: &str, force: bool) -> Result<()> {
     if !force {
         let confirm = dialoguer::Confirm::new()
@@ -158,34 +168,6 @@ fn unwrap_agents(raw: serde_json::Value) -> Result<Vec<AgentRecord>> {
         Ok(serde_json::from_value(data.clone())?)
     } else {
         Ok(serde_json::from_value(raw)?)
-    }
-}
-
-/// Resolve a name or UUID into a deployed agent's UUID via the CP registry.
-///
-/// Used by `nasiko chat --agent <name>` so callers never have to look up and
-/// paste an agent's proxy URL by hand.
-pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
-    if uuid::Uuid::parse_str(name_or_id).is_ok() {
-        return Ok(name_or_id.to_string());
-    }
-
-    let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
-    let agents = unwrap_agents(raw)?;
-
-    let matches: Vec<&AgentRecord> =
-        agents.iter().filter(|a| a.name.eq_ignore_ascii_case(name_or_id)).collect();
-
-    match matches.as_slice() {
-        [one] => Ok(one.id.clone()),
-        [] => bail!(
-            "no agent named '{name_or_id}' found on the active cluster (run `nasiko agents ls`)"
-        ),
-        many => bail!(
-            "multiple agents named '{name_or_id}': {} — use an ID instead",
-            many.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
-        ),
     }
 }
 

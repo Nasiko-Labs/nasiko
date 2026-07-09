@@ -102,7 +102,7 @@ class OrchestratorPage extends HTMLElement {
           },
         };
 
-        const res = await fetch('/api/a2a', {
+        const res = await fetch('/api/orchestrator/a2a', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -137,24 +137,20 @@ class OrchestratorPage extends HTMLElement {
   async #loadRecentAgents() {
     const grid = this.querySelector('#recent-agents-grid');
     try {
-      const res = await fetch('/api/containers');
+      const res = await fetch('/api/agents?status=running&limit=6');
       if (!res.ok) throw new Error('Failed to fetch');
       const body = await res.json();
-      const containers = Array.isArray(body) ? body : (body.data || []);
-      const recent = containers
-        .filter(c => (c.state || c.status) === 'running')
-        .slice(0, 6);
+      const agents = Array.isArray(body) ? body : (body.data || []);
 
-      if (!recent.length) {
+      if (!agents.length) {
         grid.innerHTML = `<span style="font-size:var(--font-size-sm);color:var(--color-text-muted)">No agents running</span>`;
         return;
       }
 
-      grid.innerHTML = recent.map(agent => {
-        const id = agent.container_id || agent.name || agent.id;
-        const displayName = agent.display_name || this.#formatName(id);
+      grid.innerHTML = agents.map(agent => {
+        const displayName = agent.display_name || agent.name || agent.id;
         return `
-          <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(displayName)}&agent_id=${encodeURIComponent(id)}">
+          <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
             <div class="agent-card-icon">${icons.cube('', 14)}</div>
             <div class="agent-card-info">
               <div class="agent-card-name">${this.#esc(displayName)}</div>

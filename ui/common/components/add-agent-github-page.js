@@ -35,7 +35,7 @@ class AddAgentGithubPage extends HTMLElement {
       const repo = btn.dataset.import;
       btn.setAttribute('loading', '');
       try {
-        const res = await fetch('/api/catalog/import/github', {
+        const res = await fetch('/api/import/github', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ repository: repo }),

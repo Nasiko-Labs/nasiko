@@ -510,6 +510,14 @@ pub async fn execute_agent_update(
             .bind(&agent_url)
             .execute(db)
             .await;
+            // Refresh card-derived fields (skills, description, transport_path)
+            // for the newly deployed version.
+            tokio::spawn(super::utils::fetch_agent_card_with_retry(
+                state.db.clone(),
+                state.http_client.clone(),
+                agent_id,
+                agent_url.clone(),
+            ));
 
             // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
             // so the crash guardian and restart can find/rebuild this workload after an
@@ -787,6 +795,14 @@ pub async fn execute_agent_rollback(
             .bind(&target.image_tag)
             .execute(db)
             .await;
+            // Refresh card-derived fields (skills, description, transport_path)
+            // for the rolled-back version.
+            tokio::spawn(super::utils::fetch_agent_card_with_retry(
+                state.db.clone(),
+                state.http_client.clone(),
+                agent_id,
+                agent_url.clone(),
+            ));
 
             // Persist identity + image + ports for guardian/restart (RUN-3/RUN-3b), as on update.
             let _ = sqlx::query(

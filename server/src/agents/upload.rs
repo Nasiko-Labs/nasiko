@@ -455,6 +455,7 @@ fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Res
 pub async fn execute_upload_and_deploy(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
     db: sqlx::PgPool,
+    http: reqwest::Client,
     build_id: Uuid,
     agent_id: Uuid,
     owner_id: Uuid,
@@ -468,8 +469,6 @@ pub async fn execute_upload_and_deploy(
     // the API key is never persisted in cleartext (RUN-5). Caller env wins.
     openai_api_key: Option<String>,
     openai_base_url: Option<String>,
-    agent_runtime: String,
-    agent_image_registry: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -520,8 +519,7 @@ pub async fn execute_upload_and_deploy(
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
         // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
-        let mut spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
-        crate::agents::attach_pull_credential(&db, &agent_runtime, &agent_image_registry, &mut spec, agent_id).await;
+        let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
         let deploy_status = runtime
             .deploy(&spec)
             .await
@@ -558,6 +556,14 @@ pub async fn execute_upload_and_deploy(
                 .bind(&agent_url)
                 .execute(&db)
                 .await;
+            // Fetch the agent's card in the background to persist skills,
+            // description and the advertised transport_path (chat URL).
+            tokio::spawn(super::utils::fetch_agent_card_with_retry(
+                db.clone(),
+                http,
+                agent_id,
+                agent_url.clone(),
+            ));
             // Record the deployment. k8s_deployment_name stores the ContainerId value
             // (agent UUID string) so that restart and crash guardian can reconstruct
             // the same ContainerId. The runtime derives the actual K8s/Docker name via

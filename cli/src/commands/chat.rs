@@ -14,21 +14,24 @@ struct CpCtx {
 
 /// Resolve (or create) a CP session for the given endpoint.
 /// Returns None when the endpoint does not belong to the active cluster.
-///
-/// A user-supplied `session_id` is created on the CP when it doesn't exist yet,
-/// so `nasiko chat --session-id my-run "..."` always lands in a real session.
 fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<CpCtx> {
     let (base_url, token) = cp::cp_credentials(endpoint)?;
-    let sess: CpSession =
-        cp::create_cp_session_with_id(&base_url, &token, endpoint, "New chat", session_id).ok()?;
-    Some(CpCtx { base_url, token, session_id: sess.session_id })
+    let sid = match session_id {
+        Some(s) => s.to_string(),
+        None => {
+            let sess: CpSession = cp::create_cp_session(&base_url, &token, endpoint, "New chat").ok()?;
+            sess.session_id
+        }
+    };
+    Some(CpCtx { base_url, token, session_id: sid })
 }
 
 /// Chat with an A2A agent (one-shot or interactive).
 ///
 /// The URL is used as-is. The caller is responsible for providing the full endpoint:
 /// - CP orchestrator: http://localhost:8080/api/orchestrator/a2a
-/// - CP agent proxy:  http://localhost:8080/api/agents/{id}  (JSON-RPC is mounted at "/" on the agent)
+/// - CP agent proxy:  http://localhost:8080/api/agents/{id}{transport_path}
+///   (as printed by `nasiko ps` — the path comes from the agent's card)
 /// - Direct agent:    http://localhost:10010/
 pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
     let endpoint = url.trim_end_matches('/').to_string();

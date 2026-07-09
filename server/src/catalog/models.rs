@@ -25,6 +25,10 @@ pub struct Agent {
     pub metadata: sqlx::types::Json<serde_json::Value>,
     pub status: String,
     pub image: Option<String>,
+    /// Path of the agent's advertised JSON-RPC transport (e.g. "/jsonrpc"),
+    /// extracted from its AgentCard `supportedInterfaces` at deploy time.
+    /// Clients chat via `{base}/api/agents/{id}{transport_path}`.
+    pub transport_path: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

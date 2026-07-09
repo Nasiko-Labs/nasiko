@@ -315,7 +315,7 @@ class ChatPage extends HTMLElement {
         },
       };
 
-      const res = await fetch("/api/a2a", {
+      const res = await fetch("/api/orchestrator/a2a", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

@@ -9,7 +9,7 @@ export default {
         { role: "assistant", content: "Yes, mTLS between agents is supported. Here's how:\n\n1. Enable the `mtls` feature on the namespace\n2. The platform auto-provisions certificates via the internal CA\n3. Agents receive certs as mounted secrets\n\nNo code changes needed in your agent -- the sidecar proxy handles TLS termination.\n\n`NASIKO_MTLS=enabled` in the agent's env vars activates it.", trace_id: "xyz789abc012" },
       ],
     }],
-    ["POST /api/a2a", { __stream: [
+    ["POST /api/orchestrator/a2a", { __stream: [
       { text: "data: {\"result\":{\"statusUpdate\":{\"status\":{\"state\":\"TASK_STATE_WORKING\",\"message\":{\"parts\":[{\"data\":{\"type\":\"thinking\",\"content\":\"Analyzing the request...\"}}]}}}}}\n\n", delay: 200 },
       { text: "data: {\"result\":{\"artifactUpdate\":{\"artifact\":{\"parts\":[{\"text\":\"Here is the answer.\"}]},\"append\":false}}}\n\n", delay: 500 },
       { text: "data: {\"result\":{\"statusUpdate\":{\"status\":{\"state\":\"TASK_STATE_COMPLETED\",\"message\":{\"parts\":[{\"text\":\"Here is the answer.\"}]}}}}}\n\n", delay: 100 },

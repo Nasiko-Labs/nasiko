@@ -68,7 +68,7 @@ class AddAgentPage extends HTMLElement {
       const formData = new FormData();
       formData.append('package', file);
       try {
-        const res = await fetch('/api/catalog/import/upload', { method: 'POST', body: formData });
+        const res = await fetch('/api/import/upload', { method: 'POST', body: formData });
         if (!res.ok) throw new Error(await res.text());
         window.location.href = '/your-agents.html';
       } catch (err) {
@@ -81,7 +81,7 @@ class AddAgentPage extends HTMLElement {
       const reference = prompt('Enter artifact reference (e.g. nasiko/my-agent:v1.0):');
       if (!reference) return;
       try {
-        const res = await fetch('/api/catalog/import/registry', {
+        const res = await fetch('/api/import/registry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reference }),

@@ -15,7 +15,7 @@ window.fetchNavigation = async () => [
 
 window.fetchAgents = async (query, page, limit) => {
   const params = new URLSearchParams({ q: query || '', page, limit });
-  const agents = await fetchApi(`/catalog/agents?${params}`);
+  const agents = await fetchApi(`/agents?${params}`);
   return { data: Array.isArray(agents) ? agents : agents.data || [], total: agents.total || agents.length };
 };
 
@@ -27,7 +27,7 @@ window.fetchSessions = async (_query, _page, limit) => {
 window.fetchContainers = async (query, page, limit) => {
   const params = new URLSearchParams({ limit, offset: ((page || 1) - 1) * limit });
   if (query) params.set('q', query);
-  const body = await fetchApi(`/catalog/agents?${params}`);
+  const body = await fetchApi(`/agents?${params}`);
   const data = Array.isArray(body) ? body : (body.data || []);
   return { data, total: body.total || data.length };
 };

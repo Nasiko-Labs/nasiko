@@ -48,7 +48,7 @@ class AgentCardPage extends HTMLElement {
 
   async #load() {
     try {
-      this.#agent = await fetchApi(`/catalog/agents/${this.#agentId}`);
+      this.#agent = await fetchApi(`/agents/${this.#agentId}`);
     } catch {
       this.#agent = null;
     }
@@ -288,7 +288,7 @@ class AgentCardPage extends HTMLElement {
         btn.disabled = true;
         btn.textContent = 'Deleting...';
         try {
-          const res = await fetch(`/api/catalog/agents/${encodeURIComponent(a.id)}`, { method: 'DELETE' });
+          const res = await fetch(`/api/agents/${encodeURIComponent(a.id)}`, { method: 'DELETE' });
           if (!res.ok) throw new Error(await res.text());
           location.href = '/your-agents.html';
         } catch (err) {

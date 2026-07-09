@@ -245,3 +245,83 @@ fn build_request(method: &str, text: &str, context_id: Option<&str>) -> JsonRpcR
         ),
     }
 }
+
+/// Extract the transport path from an AgentCard JSON value.
+///
+/// Prefers the JSONRPC binding in `supportedInterfaces` (A2A ≥1.0), falling
+/// back to the first declared interface, then to a legacy top-level `url`
+/// (A2A 0.2.x cards). The A2A spec fixes no path — it must be read from the
+/// card, never assumed (e.g. Nasiko's Rust agents mount at "/jsonrpc" while
+/// other frameworks commonly serve at "/").
+///
+/// Returns a normalized path with no trailing slash ("/" for root).
+pub fn extract_transport_path(card: &serde_json::Value) -> Option<String> {
+    let iface_url = card
+        .get("supportedInterfaces")
+        .and_then(|v| v.as_array())
+        .and_then(|ifaces| {
+            ifaces
+                .iter()
+                .find(|i| {
+                    i.get("protocolBinding")
+                        .and_then(|p| p.as_str())
+                        .is_some_and(|p| p.eq_ignore_ascii_case("JSONRPC"))
+                })
+                .or_else(|| ifaces.first())
+        })
+        .and_then(|i| i.get("url"))
+        .and_then(|u| u.as_str())
+        .or_else(|| card.get("url").and_then(|u| u.as_str()))?;
+
+    let path = if let Some(rest) = iface_url
+        .strip_prefix("http://")
+        .or_else(|| iface_url.strip_prefix("https://"))
+    {
+        rest.find('/').map(|i| &rest[i..]).unwrap_or("/")
+    } else if iface_url.starts_with('/') {
+        iface_url
+    } else {
+        return None;
+    };
+
+    let trimmed = path.trim_end_matches('/');
+    Some(if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() })
+}
+
+#[cfg(test)]
+mod transport_path_tests {
+    use super::extract_transport_path;
+    use serde_json::json;
+
+    #[test]
+    fn prefers_jsonrpc_interface() {
+        let card = json!({
+            "supportedInterfaces": [
+                { "url": "grpc://host:9000", "protocolBinding": "GRPC" },
+                { "url": "http://0.0.0.0:9100/jsonrpc", "protocolBinding": "JSONRPC" }
+            ]
+        });
+        assert_eq!(extract_transport_path(&card).as_deref(), Some("/jsonrpc"));
+    }
+
+    #[test]
+    fn falls_back_to_first_interface_then_legacy_url() {
+        let card = json!({
+            "supportedInterfaces": [{ "url": "https://a.example/a2a/", "protocolBinding": "HTTP+JSON" }]
+        });
+        assert_eq!(extract_transport_path(&card).as_deref(), Some("/a2a"));
+
+        let legacy = json!({ "url": "http://agent:8000/" });
+        assert_eq!(extract_transport_path(&legacy).as_deref(), Some("/"));
+    }
+
+    #[test]
+    fn handles_bare_paths_and_missing_data() {
+        assert_eq!(
+            extract_transport_path(&json!({ "url": "/jsonrpc" })).as_deref(),
+            Some("/jsonrpc")
+        );
+        assert_eq!(extract_transport_path(&json!({})), None);
+        assert_eq!(extract_transport_path(&json!({ "url": "not-a-url" })), None);
+    }
+}
