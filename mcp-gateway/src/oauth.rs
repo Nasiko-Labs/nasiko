@@ -430,6 +430,161 @@ pub async fn exchange_code(
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Management — per-server authorize / callback / status orchestration behind
+// `/api/mcp/servers/{id}/oauth/*` and the public callback.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Load an `oauth2`-type server and confirm `user_id` may manage it (platform:
+/// any authed user; user-scoped: the owner only).
+pub async fn load_owned_oauth_server(state: &McpState, user_id: Uuid, server_id: Uuid) -> Result<McpServer> {
+    let server = repo::get_mcp_server_by_id(&state.db, server_id)
+        .await?
+        .ok_or_else(|| McpError::NotFound(format!("MCP server '{server_id}' not found")))?;
+    if !server.is_platform && server.user_id != Some(user_id) {
+        return Err(McpError::Forbidden("this server does not belong to you".into()));
+    }
+    if server.auth_type != "oauth2" {
+        return Err(McpError::BadRequest(format!(
+            "OAuth is only for auth_type='oauth2' servers, not '{}'",
+            server.auth_type
+        )));
+    }
+    Ok(server)
+}
+
+/// Shared OAuth-authorize core: discover + register a client if needed, then
+/// build the signed authorization URL. Used by both the authorize endpoint and
+/// the unified connect flow.
+pub async fn begin_authorization(
+    state: &McpState,
+    user_id: Uuid,
+    mut server: McpServer,
+    redirect_url: Option<String>,
+    pre_client_id: Option<String>,
+) -> Result<String> {
+    let redirect_uri = state
+        .config
+        .oauth_redirect_uri()
+        .ok_or_else(|| McpError::NotConfigured("MCP_GATEWAY_PUBLIC_URL is not set".into()))?;
+
+    if !server.oauth_configured() {
+        let discovered =
+            discover_oauth_config(&state.http_client, &server.url, &redirect_uri, pre_client_id.as_deref()).await?;
+        repo::update_mcp_server_oauth_config(
+            &state.db,
+            server.id,
+            &discovered.authorization_endpoint,
+            &discovered.token_endpoint,
+            discovered.client_id.as_deref(),
+            discovered.client_secret.as_deref(),
+        )
+        .await?;
+        server = repo::get_mcp_server_by_id(&state.db, server.id)
+            .await?
+            .ok_or_else(|| McpError::Internal("server vanished after oauth config".into()))?;
+    }
+
+    let (Some(auth_endpoint), Some(client_id)) =
+        (server.oauth_authorization_endpoint.as_ref(), server.oauth_client_id.as_ref())
+    else {
+        return Err(McpError::Oauth("dynamic client registration unavailable — supply a client_id".into()));
+    };
+
+    let (verifier, challenge) = pkce_pair();
+    let oauth_state = OAuthState::new(user_id, server.id, verifier, redirect_url);
+    let signed = sign_state(&oauth_state, &state.config.oauth_state_signing_key);
+    build_authorize_url(auth_endpoint, client_id, &redirect_uri, &signed, &challenge, &server.url)
+}
+
+/// Outcome of the public OAuth callback for the server to render.
+pub enum CallbackOutcome {
+    /// Success — redirect the browser here.
+    Redirect(String),
+    /// Something went wrong — show this message as an HTML error page.
+    Message(String),
+}
+
+/// `GET /api/mcp/oauth/callback` core: verify state, exchange the code for
+/// tokens, persist them (encrypted), invalidate the session cache, and report
+/// where to redirect.
+pub async fn handle_callback(
+    state: &McpState,
+    code: Option<String>,
+    signed_state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+) -> CallbackOutcome {
+    if let Some(err) = error {
+        let desc = error_description.unwrap_or_default();
+        return CallbackOutcome::Message(format!("Authorization failed: {err} {desc}"));
+    }
+    let (Some(code), Some(signed_state)) = (code, signed_state) else {
+        return CallbackOutcome::Message("Missing code or state.".to_string());
+    };
+
+    let Some(oauth_state) = verify_state(&signed_state, &state.config.oauth_state_signing_key) else {
+        return CallbackOutcome::Message("Invalid or expired state — restart the authorization flow.".to_string());
+    };
+
+    let server = match repo::get_mcp_server_by_id(&state.db, oauth_state.server_id).await {
+        Ok(Some(s)) => s,
+        _ => return CallbackOutcome::Message("Server configuration not found.".to_string()),
+    };
+    let Some(token_endpoint) = server.oauth_token_endpoint.as_ref() else {
+        return CallbackOutcome::Message("Server has no token endpoint configured.".to_string());
+    };
+    let redirect_uri = match state.config.oauth_redirect_uri() {
+        Some(u) => u,
+        None => return CallbackOutcome::Message("Gateway public URL not configured.".to_string()),
+    };
+
+    let tokens = match exchange_code(
+        &state.http_client,
+        token_endpoint,
+        server.oauth_client_id.as_deref(),
+        server.oauth_client_secret.as_deref(),
+        &code,
+        &oauth_state.code_verifier,
+        &redirect_uri,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return CallbackOutcome::Message(format!("Token exchange failed: {e}")),
+    };
+
+    // Persist encrypted with the delegated user's key.
+    let crypto = SecretsCrypto::for_user(oauth_state.user_id);
+    let expires_at = tokens.expires_in.map(|secs| Utc::now() + ChronoDuration::seconds(secs));
+    let access_enc = match crypto.encrypt(&tokens.access_token) {
+        Ok(enc) => enc,
+        Err(e) => return CallbackOutcome::Message(format!("Failed to encrypt token: {e}")),
+    };
+    let refresh_enc = match tokens.refresh_token.as_ref().map(|r| crypto.encrypt(r)).transpose() {
+        Ok(enc) => enc,
+        Err(e) => return CallbackOutcome::Message(format!("Failed to encrypt token: {e}")),
+    };
+    if let Err(e) = repo::upsert_mcp_oauth_token(
+        &state.db,
+        server.id,
+        oauth_state.user_id,
+        &access_enc,
+        refresh_enc.as_deref(),
+        expires_at,
+        tokens.scope.as_deref(),
+    )
+    .await
+    {
+        return CallbackOutcome::Message(format!("Failed to store token: {e}"));
+    }
+
+    crate::session::invalidate_session_cache(state, oauth_state.user_id).await;
+    tracing::info!(server = %server.name, user_id = %oauth_state.user_id, "stored mcp oauth token");
+
+    CallbackOutcome::Redirect(oauth_state.redirect_url.unwrap_or_else(|| "/".to_string()))
+}
+
 /// Parse `resource_metadata="<url>"` out of a `WWW-Authenticate` header value.
 fn extract_resource_metadata(www_authenticate: &str) -> Option<String> {
     let marker = "resource_metadata=";

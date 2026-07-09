@@ -15,13 +15,15 @@
 //! manifest cache key, so a permission change forces a fresh, re-filtered tool
 //! list with no other signalling.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::cache;
-use crate::error::Result;
+use crate::error::{McpError, Result};
+use crate::provider::generic::LIST_TIMEOUT;
 use crate::repo;
 use crate::state::McpState;
 use crate::types::Stance;
@@ -208,6 +210,191 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Management — the connector UI backend behind `/api/mcp/agents/{agent_id}/*`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub const STANCES: [&str; 3] = ["allow", "ask", "block"];
+
+/// `GET /api/mcp/agents/{agent_id}/servers` view: all servers visible to the
+/// user with this agent's enabled/connected status.
+pub async fn list_servers_view(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<Value> {
+    let access = repo::get_agent_server_access(&state.db, user_id, agent_id).await?;
+    let access_map: HashMap<String, bool> = access.into_iter().map(|r| (r.server_name, r.enabled)).collect();
+
+    let active_conns = repo::list_connections_by_user(&state.db, user_id, Some("ACTIVE")).await?;
+    let connected_toolkits: HashSet<String> = active_conns.into_iter().map(|c| c.toolkit).collect();
+
+    let creds = repo::get_user_credentials_for_user(&state.db, user_id).await?;
+    let tokens = repo::get_mcp_oauth_tokens_for_user(&state.db, user_id).await?;
+    let cred_ids: HashSet<Uuid> = creds.into_iter().map(|c| c.mcp_server_id).collect();
+    let token_ids: HashSet<Uuid> = tokens.into_iter().map(|t| t.mcp_server_id).collect();
+
+    let mut entries: Vec<Value> = Vec::new();
+
+    for ac in repo::list_platform_auth_configs(&state.db).await? {
+        entries.push(json!({
+            "server_name": ac.toolkit,
+            "server_type": "composio",
+            "enabled": access_map.get(&ac.toolkit).copied().unwrap_or(true),
+            "connected": connected_toolkits.contains(&ac.toolkit),
+            "display_name": ac.display_name.unwrap_or_else(|| crate::catalog::capitalize(&ac.toolkit)),
+            "logo_url": ac.logo_url,
+        }));
+    }
+    for s in repo::list_mcp_servers_for_user(&state.db, user_id).await? {
+        let connected = cred_ids.contains(&s.id) || token_ids.contains(&s.id) || s.auth_type == "none";
+        entries.push(json!({
+            "server_name": s.name,
+            "server_type": "mcp",
+            "enabled": access_map.get(&s.name).copied().unwrap_or(true),
+            "connected": connected,
+            "display_name": s.display_name.unwrap_or_else(|| crate::catalog::capitalize(&s.name)),
+            "logo_url": s.logo_url,
+        }));
+    }
+
+    Ok(json!({ "data": entries }))
+}
+
+/// `PUT /api/mcp/agents/{agent_id}/servers/{server}` view: toggle a server for
+/// the agent.
+pub async fn set_server_access_view(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+    server: &str,
+    enabled: bool,
+) -> Result<Value> {
+    // Determine the server type (and that it exists).
+    let server_type = if repo::get_platform_auth_config_by_toolkit(&state.db, server).await?.is_some() {
+        "composio"
+    } else if repo::get_platform_mcp_server_by_name(&state.db, server).await?.is_some()
+        || repo::get_user_mcp_server_by_name(&state.db, user_id, server).await?.is_some()
+    {
+        "mcp"
+    } else {
+        return Err(McpError::NotFound(format!("server '{server}' not found")));
+    };
+
+    let row = repo::upsert_agent_server_access(&state.db, user_id, agent_id, server, server_type, enabled).await?;
+    invalidate_permission_cache(state, user_id, agent_id).await;
+
+    Ok(json!({ "server_name": row.server_name, "server_type": row.server_type, "enabled": row.enabled }))
+}
+
+/// `GET /api/mcp/agents/{agent_id}/servers/{server}/tools` view: tools for a
+/// server with this agent's current stance per tool.
+pub async fn list_server_tools_view(state: &McpState, user_id: Uuid, agent_id: Uuid, server: &str) -> Result<Value> {
+    let perms = load_permission_context(state, user_id, agent_id).await?;
+
+    // Collect (name, description) pairs from the right source.
+    let tools: Vec<(String, Option<String>)> =
+        if repo::get_platform_auth_config_by_toolkit(&state.db, server).await?.is_some() {
+            match &state.providers.composio {
+                Some(provider) => provider
+                    .list_toolkit_tools(server)
+                    .await?
+                    .into_iter()
+                    .map(|t| (t.name, t.description))
+                    .collect(),
+                None => Vec::new(),
+            }
+        } else {
+            // Generic MCP server: build its config (with the user's creds) and probe it.
+            let built = crate::credentials::build_generic_servers(state, user_id).await?;
+            match built.iter().find(|s| s.name == server) {
+                Some(cfg) => state
+                    .providers
+                    .mcp
+                    .list_tools(cfg, LIST_TIMEOUT, None)
+                    .await?
+                    .into_iter()
+                    .filter_map(|t| {
+                        t.get("name").and_then(|n| n.as_str()).map(|name| {
+                            (name.to_string(), t.get("description").and_then(|d| d.as_str()).map(str::to_string))
+                        })
+                    })
+                    .collect(),
+                None => Vec::new(),
+            }
+        };
+
+    let out: Vec<Value> = tools
+        .into_iter()
+        .map(|(name, description)| {
+            let stance = perms.get_stance(server, &name);
+            json!({ "name": name, "description": description, "stance": stance.as_str() })
+        })
+        .collect();
+
+    Ok(json!({ "data": out }))
+}
+
+/// `GET /api/mcp/agents/{agent_id}/tools` view: the agent's current tool
+/// rules.
+pub async fn list_tool_rules_view(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<Value> {
+    let rows = repo::get_agent_tool_permissions(&state.db, user_id, agent_id).await?;
+    let data: Vec<Value> = rows
+        .into_iter()
+        .map(|r| json!({ "server_name": r.server_name, "tool_pattern": r.tool_pattern, "stance": r.stance }))
+        .collect();
+    Ok(json!({ "data": data }))
+}
+
+/// One rule input for [`bulk_update_tools`].
+pub struct ToolRuleInput {
+    pub server_name: String,
+    pub tool_pattern: String,
+    pub stance: String,
+}
+
+/// `PUT /api/mcp/agents/{agent_id}/tools` view: batch upsert tool permission
+/// rules. Validates every stance before writing any of them.
+pub async fn bulk_update_tools(state: &McpState, user_id: Uuid, agent_id: Uuid, rules: &[ToolRuleInput]) -> Result<Value> {
+    for rule in rules {
+        if !STANCES.contains(&rule.stance.as_str()) {
+            return Err(McpError::BadRequest(format!("stance must be one of {STANCES:?}")));
+        }
+    }
+
+    let mut applied = Vec::with_capacity(rules.len());
+    for rule in rules {
+        let row = repo::upsert_agent_tool_permission(
+            &state.db,
+            user_id,
+            agent_id,
+            &rule.server_name,
+            &rule.tool_pattern,
+            &rule.stance,
+        )
+        .await?;
+        applied
+            .push(json!({ "server_name": row.server_name, "tool_pattern": row.tool_pattern, "stance": row.stance }));
+    }
+    invalidate_permission_cache(state, user_id, agent_id).await;
+
+    Ok(json!({ "data": applied }))
+}
+
+/// `DELETE /api/mcp/agents/{agent_id}/permissions` — reset to all-allowed.
+/// Returns the number of rows deleted.
+pub async fn reset(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<u64> {
+    let deleted = repo::delete_all_agent_permissions(&state.db, user_id, agent_id).await?;
+    invalidate_permission_cache(state, user_id, agent_id).await;
+    Ok(deleted)
+}
+
+#[cfg(test)]
+mod management_tests {
+    use super::STANCES;
+
+    #[test]
+    fn stances_are_exactly_allow_ask_block() {
+        assert_eq!(STANCES, ["allow", "ask", "block"]);
+    }
 }
 
 #[cfg(test)]

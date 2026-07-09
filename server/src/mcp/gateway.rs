@@ -12,6 +12,14 @@
 //! credential an agent ever has for this route. Errors are returned as
 //! JSON-RPC error objects (HTTP 200), since the caller is an MCP client, not a
 //! REST client.
+//!
+//! `mcp_gateway` below is deliberately thin: it only does the things that
+//! genuinely need `AppState`/`Claims` (identity extraction, usage tracking,
+//! flow events). All MCP JSON-RPC protocol logic — notification handling,
+//! `initialize`/`ping`, permission/session-aware `tools/list`+`tools/call`
+//! dispatch — lives in `nasiko_mcp_gateway::protocol::handle_request`, so it's
+//! reusable by any route that can supply a validated `(user_id, agent_id)`,
+//! including a future EE-specific one, without copy-pasting this dispatch.
 
 use axum::{
     Json,
@@ -23,8 +31,8 @@ use axum::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use nasiko_mcp_gateway::protocol;
 use nasiko_mcp_gateway::types::codes;
-use nasiko_mcp_gateway::{permissions, protocol, session};
 
 use crate::auth::Claims;
 use crate::state::AppState;
@@ -73,46 +81,17 @@ pub async fn mcp_gateway(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
-
-    // A request with no `id` is an MCP notification — acknowledge, no body.
-    let Some(req_id) = body.get("id").cloned() else {
-        tracing::debug!(method, "mcp notification");
-        return (StatusCode::ACCEPTED, Json(json!({}))).into_response();
-    };
-
-    // Methods that need no session/permissions.
-    match method {
-        "initialize" => return Json(protocol::handle_initialize(&req_id)).into_response(),
-        "ping" => {
-            return Json(json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })).into_response();
-        }
-        _ => {}
-    }
-
-    // ── Identity ────────────────────────────────────────────────────────────
+    // ── Identity — the one thing this route must resolve itself, since it
+    // needs `Claims`/`headers` (Axum-specific, not available to the crate) ──
     let Ok(user_id) = claims.sub.parse::<Uuid>() else {
-        return rpc_error(&req_id, codes::INTERNAL_ERROR, "invalid user identity");
+        return rpc_error(&body_req_id(&body), codes::INTERNAL_ERROR, "invalid user identity");
     };
-    let agent_id = match acting_agent_id(&headers, &claims.sub) {
-        Some(a) => a,
-        None => {
-            return rpc_error(
-                &req_id,
-                codes::INVALID_PARAMS,
-                "missing or invalid x-nasiko-agent-token — a delegation token is required to call the MCP gateway",
-            );
-        }
-    };
-
-    // ── Load per-agent permissions + resolve the user's backends ────────────
-    let perms = match permissions::load_permission_context(&state.mcp, user_id, agent_id).await {
-        Ok(p) => p,
-        Err(e) => return rpc_error(&req_id, e.json_rpc_code(), e.to_json_rpc().message),
-    };
-    let resolved = match session::resolve_session(&state.mcp, user_id).await {
-        Ok(r) => r,
-        Err(e) => return rpc_error(&req_id, e.json_rpc_code(), e.to_json_rpc().message),
+    let Some(agent_id) = acting_agent_id(&headers, &claims.sub) else {
+        return rpc_error(
+            &body_req_id(&body),
+            codes::INVALID_PARAMS,
+            "missing or invalid x-nasiko-agent-token — a delegation token is required to call the MCP gateway",
+        );
     };
 
     // Propagated to backend MCP servers so a tool call joins the agent's
@@ -120,74 +99,73 @@ pub async fn mcp_gateway(
     let traceparent = headers
         .get(nasiko_flow::TRACEPARENT_HEADER)
         .and_then(|v| v.to_str().ok());
+    let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let tool_name = body
+        .get("params")
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    // ── Dispatch ────────────────────────────────────────────────────────────
-    let result = match method {
-        "tools/list" => {
-            protocol::handle_tools_list(
-                &state.mcp,
-                &req_id,
-                &resolved.servers,
-                &resolved.connected_toolkits,
-                &perms,
-                traceparent,
-            )
-            .await
-        }
-        "tools/call" => {
-            let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
-            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-            let started = std::time::Instant::now();
-            let res = protocol::handle_tools_call(
-                &state.mcp, &req_id, &params, &resolved.servers, &perms, traceparent,
-            )
-            .await;
-            let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
-            let success = res.get("error").is_none();
-
-            record_tool_usage(
-                &state,
-                user_id,
-                agent_id,
-                &tool_name,
-                latency_ms,
-                success,
-                // OSS `Claims` carries no team_id (enterprise-only field) —
-                // usage metadata simply omits it in this edition.
-                None,
-            );
-
-            // Phase-2 human-in-the-loop: when a tool needs approval (ask stance →
-            // -32001), also emit a FlowEvent onto the chat's flow so the UI can
-            // surface an approval prompt. The flow is identified by the inbound
-            // `traceparent` the agent propagates; absent it, we just return -32001.
-            if res.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64())
-                == Some(codes::TOOL_ASK)
-                && let Some(flow_ctx) = headers
-                    .get(nasiko_flow::TRACEPARENT_HEADER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(nasiko_flow::FlowContext::from_traceparent)
-            {
-                let server = tool_name.split_once("__").map(|(s, _)| s).unwrap_or("composio");
-                state
-                    .flow_events
-                    .publish(
-                        &flow_ctx.flow_id,
-                        nasiko_flow::FlowEvent::ToolApprovalRequired {
-                            agent_id: agent_id.to_string(),
-                            server: server.to_string(),
-                            tool: tool_name.clone(),
-                        },
-                    )
-                    .await;
-            }
-            res
-        }
-        other => rpc_error_value(&req_id, codes::METHOD_NOT_FOUND, format!("Method not found: {other}")),
+    // ── All MCP protocol logic lives in the crate ───────────────────────────
+    let started = std::time::Instant::now();
+    let Some(result) = protocol::handle_request(&state.mcp, user_id, agent_id, &body, traceparent).await
+    else {
+        // A request with no `id` is an MCP notification — acknowledge, no body.
+        return (StatusCode::ACCEPTED, Json(json!({}))).into_response();
     };
 
+    // ── Server-only concerns for `tools/call`: usage tracking + human-in-the-
+    // loop flow events. These stay here because `UsageTracker`/`FlowEventBus`
+    // are `AppState` types the crate must never depend on (§20 of the design
+    // doc). Note: unlike before this refactor, the recorded latency now spans
+    // permission/session resolution too (both Redis-cached, so negligible in
+    // practice), since that now happens inside `handle_request`.
+    if method == "tools/call" {
+        let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+        let success = result.get("error").is_none();
+        record_tool_usage(
+            &state,
+            user_id,
+            agent_id,
+            &tool_name,
+            latency_ms,
+            success,
+            // OSS `Claims` carries no team_id (enterprise-only field) —
+            // usage metadata simply omits it in this edition.
+            None,
+        );
+
+        // Phase-2 human-in-the-loop: when a tool needs approval (ask stance →
+        // -32001), also emit a FlowEvent onto the chat's flow so the UI can
+        // surface an approval prompt. The flow is identified by the inbound
+        // `traceparent` the agent propagates; absent it, we just return -32001.
+        if result.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64()) == Some(codes::TOOL_ASK)
+            && let Some(flow_ctx) = traceparent.and_then(nasiko_flow::FlowContext::from_traceparent)
+        {
+            let server = tool_name.split_once("__").map(|(s, _)| s).unwrap_or("composio");
+            state
+                .flow_events
+                .publish(
+                    &flow_ctx.flow_id,
+                    nasiko_flow::FlowEvent::ToolApprovalRequired {
+                        agent_id: agent_id.to_string(),
+                        server: server.to_string(),
+                        tool: tool_name.clone(),
+                    },
+                )
+                .await;
+        }
+    }
+
     Json(result).into_response()
+}
+
+/// A best-effort `id` to attach to an identity-failure error — extracted
+/// before we know whether the request even has one (a malformed/absent `id`
+/// here just means the client sees `null`, which is a normal JSON-RPC id).
+fn body_req_id(body: &Value) -> Value {
+    body.get("id").cloned().unwrap_or(Value::Null)
 }
 
 /// Record a tool call into the platform's observability sinks: OTel GenAI
@@ -240,9 +218,5 @@ fn acting_agent_id(headers: &HeaderMap, user_id: &str) -> Option<Uuid> {
 }
 
 fn rpc_error(id: &Value, code: i64, message: impl Into<String>) -> Response {
-    Json(rpc_error_value(id, code, message)).into_response()
-}
-
-fn rpc_error_value(id: &Value, code: i64, message: impl Into<String>) -> Value {
-    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message.into() } })
+    Json(protocol::rpc_error(id, code, message)).into_response()
 }

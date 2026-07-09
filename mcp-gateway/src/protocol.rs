@@ -11,12 +11,14 @@
 //!     `COMPOSIO_MANAGE_CONNECTIONS` toolkit list is filtered against the agent's
 //!     disabled servers so a disabled toolkit can't be (re)connected.
 
+use uuid::Uuid;
 use serde_json::{Value, json};
 
 use crate::aggregator;
-use crate::permissions::{PermissionContext, toolkit_from_composio_slug};
+use crate::permissions::{self, PermissionContext, toolkit_from_composio_slug};
 use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
+use crate::session;
 use crate::state::McpState;
 use crate::types::{MCPServerConfig, PROTOCOL_VERSION, Stance, codes};
 
@@ -28,6 +30,78 @@ fn ok(req_id: &Value, result: Value) -> Value {
 
 fn err(req_id: &Value, code: i64, message: impl Into<String>) -> Value {
     json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": code, "message": message.into() } })
+}
+
+/// Build a JSON-RPC error object. Exposed so the server route layer can
+/// report identity failures (invalid/missing delegation token) that happen
+/// before it has enough to call [`handle_request`] — everything else that can
+/// go wrong is handled inside this module.
+pub fn rpc_error(req_id: &Value, code: i64, message: impl Into<String>) -> Value {
+    err(req_id, code, message)
+}
+
+// ─── Top-level dispatch ─────────────────────────────────────────────────────
+
+/// Full JSON-RPC dispatch for the agent-facing gateway: notification
+/// short-circuit, `initialize`/`ping`, and permission/session-aware
+/// `tools/list` + `tools/call` routing. This is the single entry point the
+/// server route (`oss/server/src/mcp/gateway.rs`) calls after resolving
+/// identity — everything below here is pure protocol logic with no
+/// dependency on `AppState`, so it's reusable as-is by any route (including a
+/// future EE-specific one) that can supply a validated `(user_id, agent_id)`.
+///
+/// Returns `None` for a notification (a request with no `id`) — the caller
+/// should respond `202 Accepted` with an empty body in that case, per the MCP
+/// JSON-RPC convention.
+pub async fn handle_request(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+    body: &Value,
+    traceparent: Option<&str>,
+) -> Option<Value> {
+    let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+
+    let Some(req_id) = body.get("id").cloned() else {
+        tracing::debug!(method, "mcp notification");
+        return None;
+    };
+
+    // Methods that need no session/permissions.
+    match method {
+        "initialize" => return Some(handle_initialize(&req_id)),
+        "ping" => return Some(json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })),
+        _ => {}
+    }
+
+    let perms = match permissions::load_permission_context(state, user_id, agent_id).await {
+        Ok(p) => p,
+        Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
+    };
+    let resolved = match session::resolve_session(state, user_id).await {
+        Ok(r) => r,
+        Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
+    };
+
+    let result = match method {
+        "tools/list" => {
+            handle_tools_list(
+                state,
+                &req_id,
+                &resolved.servers,
+                &resolved.connected_toolkits,
+                &perms,
+                traceparent,
+            )
+            .await
+        }
+        "tools/call" => {
+            let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
+            handle_tools_call(state, &req_id, &params, &resolved.servers, &perms, traceparent).await
+        }
+        other => err(&req_id, codes::METHOD_NOT_FOUND, format!("Method not found: {other}")),
+    };
+    Some(result)
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────

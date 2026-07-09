@@ -21,7 +21,9 @@
 
 pub mod aggregator;
 pub mod cache;
+pub mod catalog;
 pub mod config;
+pub mod connect;
 pub mod credentials;
 pub mod error;
 pub mod injector;
@@ -32,6 +34,7 @@ pub mod protocol;
 pub mod provider;
 pub mod repo;
 pub mod router;
+pub mod servers;
 pub mod session;
 pub mod state;
 pub mod types;

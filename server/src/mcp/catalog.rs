@@ -7,11 +7,11 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use nasiko_mcp_gateway::{McpError, repo};
+use nasiko_mcp_gateway::catalog::{self, CreateAuthConfigInput};
 
-use super::{ApiError, capitalize, ensure_admin};
+use super::{ApiError, ensure_admin};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -20,37 +20,7 @@ pub async fn get_catalog(
     State(state): State<AppState>,
     _claims: Claims,
 ) -> Result<Json<Value>, ApiError> {
-    let configs = repo::list_platform_auth_configs(&state.mcp.db).await?;
-    let servers = repo::list_platform_mcp_servers(&state.mcp.db).await?;
-
-    let mut services: Vec<Value> = Vec::new();
-    for ac in configs {
-        services.push(json!({
-            "name": ac.toolkit,
-            "type": "composio",
-            "display_name": ac.display_name.unwrap_or_else(|| capitalize(&ac.toolkit)),
-            "description": Value::Null,
-            "logo_url": ac.logo_url,
-            "auth_flow": "oauth",
-        }));
-    }
-    for s in servers {
-        let auth_flow = match s.auth_type.as_str() {
-            "oauth2" => "oauth",
-            "bearer" | "basic" | "url_param" => "api_key",
-            _ => "none",
-        };
-        services.push(json!({
-            "name": s.name,
-            "type": "mcp",
-            "display_name": s.display_name.unwrap_or_else(|| capitalize(&s.name)),
-            "description": s.description,
-            "logo_url": s.logo_url,
-            "auth_flow": auth_flow,
-        }));
-    }
-
-    Ok(Json(json!({ "services": services })))
+    Ok(Json(catalog::get_catalog_view(&state.mcp).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,53 +48,21 @@ pub async fn create_auth_config(
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_admin(&claims)?;
 
-    let toolkit = body.toolkit.to_lowercase();
-    if repo::get_platform_auth_config_by_toolkit(&state.mcp.db, &toolkit).await?.is_some() {
-        return Err(ApiError(McpError::Conflict(format!(
-            "platform auth config for '{toolkit}' already exists"
-        ))));
-    }
-    // Guard against a toolkit name colliding with a platform MCP server name —
-    // per-agent permission rows key on server_name alone, so a collision would
-    // make one toggle control both. (Same guard as the PoC.)
-    if repo::get_platform_mcp_server_by_name(&state.mcp.db, &toolkit).await?.is_some() {
-        return Err(ApiError(McpError::Conflict(format!(
-            "'{toolkit}' is already a platform MCP server — choose a different name"
-        ))));
-    }
-
-    let provider = state.mcp.providers.require_composio()?;
-    let created = provider
-        .create_auth_config(
-            &toolkit,
-            body.use_composio_managed,
-            body.client_id.as_deref(),
-            body.client_secret.as_deref(),
-            body.scopes.as_deref(),
-        )
-        .await?;
-
-    let row = repo::create_auth_config(
-        &state.mcp.db,
-        &created.auth_config_id,
-        None, // platform
-        &toolkit,
-        body.use_composio_managed,
-        true, // is_platform
-        body.display_name.as_deref(),
-        body.logo_url.as_deref(),
+    let view = catalog::create_platform_auth_config(
+        &state.mcp,
+        CreateAuthConfigInput {
+            toolkit: &body.toolkit,
+            use_composio_managed: body.use_composio_managed,
+            client_id: body.client_id.as_deref(),
+            client_secret: body.client_secret.as_deref(),
+            scopes: body.scopes.as_deref(),
+            display_name: body.display_name.as_deref(),
+            logo_url: body.logo_url.as_deref(),
+        },
     )
     .await?;
 
-    tracing::info!(toolkit = %toolkit, auth_config_id = %row.auth_config_id, "registered platform composio toolkit");
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "auth_config_id": row.auth_config_id,
-            "toolkit": row.toolkit,
-            "is_platform": row.is_platform,
-        })),
-    ))
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 /// `GET /api/mcp/auth-configs` — list platform toolkits.
@@ -132,21 +70,7 @@ pub async fn list_auth_configs(
     State(state): State<AppState>,
     _claims: Claims,
 ) -> Result<Json<Value>, ApiError> {
-    let configs = repo::list_platform_auth_configs(&state.mcp.db).await?;
-    let out: Vec<Value> = configs
-        .into_iter()
-        .map(|ac| {
-            json!({
-                "auth_config_id": ac.auth_config_id,
-                "toolkit": ac.toolkit,
-                "is_platform": ac.is_platform,
-                "display_name": ac.display_name,
-                "logo_url": ac.logo_url,
-            })
-        })
-        .collect();
-    let total = out.len();
-    Ok(Json(json!({ "data": out, "total": total })))
+    Ok(Json(catalog::list_auth_configs_view(&state.mcp).await?))
 }
 
 /// `DELETE /api/mcp/auth-configs/{auth_config_id}` — remove a platform toolkit (admin).
@@ -156,10 +80,6 @@ pub async fn delete_auth_config(
     Path(auth_config_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_admin(&claims)?;
-    if !repo::delete_auth_config(&state.mcp.db, &auth_config_id).await? {
-        return Err(ApiError(McpError::NotFound(format!(
-            "auth config '{auth_config_id}' not found"
-        ))));
-    }
+    catalog::delete_auth_config(&state.mcp, &auth_config_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

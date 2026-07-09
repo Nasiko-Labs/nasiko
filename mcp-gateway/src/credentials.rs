@@ -17,6 +17,8 @@
 
 use std::collections::HashMap;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use nasiko_secrets::SecretsCrypto;
 use serde_json::Value;
 use uuid::Uuid;
@@ -161,4 +163,176 @@ fn inject_url_param(raw: &str, param: &str, value: &str) -> Result<String> {
         .map_err(|e| McpError::BadRequest(format!("invalid server url '{raw}': {e}")))?;
     url.query_pairs_mut().append_pair(param, value);
     Ok(url.to_string())
+}
+
+// ─── Management (CRUD) ──────────────────────────────────────────────────────
+//
+// Per-user credential registration/status/deletion behind
+// `/api/mcp/servers/{id}/credential*`. Distinct from `build_generic_servers`
+// above (which reads credentials back out at session-resolution time), but
+// same domain — kept in this module rather than splitting into a second file.
+
+/// Load a server and confirm `user_id` may manage a credential for it
+/// (platform servers: any authed user; user-scoped: the owner only).
+pub async fn authorize_server(state: &McpState, user_id: Uuid, server_id: Uuid) -> Result<McpServer> {
+    let server = repo::get_mcp_server_by_id(&state.db, server_id)
+        .await?
+        .ok_or_else(|| McpError::NotFound(format!("MCP server '{server_id}' not found")))?;
+    if !server.is_platform && server.user_id != Some(user_id) {
+        return Err(McpError::Forbidden("this server does not belong to you".into()));
+    }
+    Ok(server)
+}
+
+/// Apply the PoC's credential normalization: auto-prefix `Bearer `/`Basic ` for
+/// the standard Authorization header, base64-encode basic `user:pass`, and leave
+/// url_param / custom-header raw. Shared with the unified connect flow.
+pub fn normalize_for(server: &McpServer, raw: &str) -> String {
+    let header = server.credential_header_name.as_deref().unwrap_or("Authorization");
+    let lower = raw.to_ascii_lowercase();
+    match server.auth_type.as_str() {
+        "bearer" if header.eq_ignore_ascii_case("Authorization") && !lower.starts_with("bearer ") => {
+            format!("Bearer {raw}")
+        }
+        "basic" if !lower.starts_with("basic ") => {
+            // Accept either a raw "user:pass" or an already-encoded blob.
+            if raw.contains(':') {
+                format!("Basic {}", B64.encode(raw))
+            } else {
+                format!("Basic {raw}")
+            }
+        }
+        // url_param and custom-header credentials are stored raw.
+        _ => raw.to_string(),
+    }
+}
+
+/// Store the caller's credential for `server` (already authorized + confirmed
+/// bearer/basic/url_param by the caller).
+pub async fn register_credential(
+    state: &McpState,
+    user_id: Uuid,
+    server: &McpServer,
+    credential_type: &str,
+    credential_value: &str,
+) -> Result<()> {
+    if !matches!(server.auth_type.as_str(), "bearer" | "basic" | "url_param") {
+        return Err(McpError::BadRequest(format!(
+            "credential registration is only for bearer/basic/url_param servers, not '{}'",
+            server.auth_type
+        )));
+    }
+
+    // Normalize the credential the same way the PoC's connect flow did, so the
+    // session resolver can inject it verbatim.
+    let value = normalize_for(server, credential_value);
+    let encrypted = SecretsCrypto::for_user(user_id)
+        .encrypt(&value)
+        .map_err(|e| McpError::Internal(format!("encrypt credential: {e}")))?;
+    repo::upsert_user_credential(&state.db, server.id, user_id, credential_type, &encrypted).await?;
+    tracing::info!(server = %server.name, %user_id, "registered user credential");
+    Ok(())
+}
+
+/// The caller's credential status for `server` (never the decrypted value).
+pub async fn credential_status(state: &McpState, server_id: Uuid, user_id: Uuid) -> Result<Option<String>> {
+    let cred = repo::get_user_credential(&state.db, server_id, user_id).await?;
+    Ok(cred.map(|c| c.credential_type))
+}
+
+/// Remove the caller's credential for `server_id`. Errors `NotFound` if there
+/// was none. Invalidates the session cache so the removed credential stops
+/// being injected.
+pub async fn delete_credential(state: &McpState, server: &McpServer, user_id: Uuid) -> Result<()> {
+    if !repo::delete_user_credential(&state.db, server.id, user_id).await? {
+        return Err(McpError::NotFound("no credential to delete".into()));
+    }
+    crate::session::invalidate_session_cache(state, user_id).await;
+    tracing::info!(server = %server.name, %user_id, "deleted user credential");
+    Ok(())
+}
+
+#[cfg(test)]
+mod management_tests {
+    use base64::Engine;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::{B64, normalize_for};
+    use crate::repo::McpServer;
+
+    fn server(auth_type: &str, credential_header_name: Option<&str>) -> McpServer {
+        McpServer {
+            id: Uuid::new_v4(),
+            name: "test".into(),
+            url: "https://example.com".into(),
+            transport: "streamable_http".into(),
+            auth_type: auth_type.into(),
+            url_param_name: None,
+            credential_header_name: credential_header_name.map(str::to_string),
+            headers: None,
+            description: None,
+            display_name: None,
+            logo_url: None,
+            is_platform: false,
+            user_id: Some(Uuid::new_v4()),
+            is_active: true,
+            oauth_authorization_endpoint: None,
+            oauth_token_endpoint: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn normalize_bearer_adds_prefix() {
+        let s = server("bearer", None);
+        assert_eq!(normalize_for(&s, "abc123"), "Bearer abc123");
+    }
+
+    #[test]
+    fn normalize_bearer_leaves_existing_prefix() {
+        let s = server("bearer", None);
+        assert_eq!(normalize_for(&s, "Bearer abc123"), "Bearer abc123");
+        assert_eq!(normalize_for(&s, "bearer abc123"), "bearer abc123");
+    }
+
+    #[test]
+    fn normalize_bearer_with_custom_header_is_raw() {
+        let s = server("bearer", Some("X-Api-Key"));
+        assert_eq!(normalize_for(&s, "abc123"), "abc123");
+    }
+
+    #[test]
+    fn normalize_basic_from_userpass() {
+        let s = server("basic", None);
+        assert_eq!(normalize_for(&s, "user:pass"), format!("Basic {}", B64.encode("user:pass")));
+    }
+
+    #[test]
+    fn normalize_basic_already_encoded_no_colon() {
+        let s = server("basic", None);
+        let encoded = B64.encode("user:pass");
+        assert_eq!(normalize_for(&s, &encoded), format!("Basic {encoded}"));
+    }
+
+    #[test]
+    fn normalize_basic_leaves_existing_prefix() {
+        let s = server("basic", None);
+        assert_eq!(normalize_for(&s, "Basic xyz"), "Basic xyz");
+    }
+
+    #[test]
+    fn normalize_url_param_is_raw() {
+        let s = server("url_param", None);
+        assert_eq!(normalize_for(&s, "abc123"), "abc123");
+    }
+
+    #[test]
+    fn normalize_none_auth_type_is_raw() {
+        let s = server("none", None);
+        assert_eq!(normalize_for(&s, "abc123"), "abc123");
+    }
 }
