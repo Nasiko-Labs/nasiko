@@ -393,6 +393,16 @@ mod tls {
     use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
     use std::sync::Arc;
 
+    /// reqwest pulls in rustls with aws-lc-rs while we enable ring, so rustls
+    /// cannot auto-select a process-level CryptoProvider (it panics at
+    /// `ClientConfig::builder()`). Pin ring explicitly, once.
+    fn ensure_crypto_provider() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
     #[derive(Debug)]
     struct AcceptAllVerifier(rustls::crypto::CryptoProvider);
 
@@ -442,6 +452,7 @@ mod tls {
     }
 
     pub async fn fetch_leaf_certificate(domain: &str, port: u16) -> Result<(Vec<u8>, usize), String> {
+        ensure_crypto_provider();
         let provider = rustls::crypto::ring::default_provider();
         let config = rustls::ClientConfig::builder()
             .dangerous()
@@ -475,6 +486,7 @@ mod tls {
     }
 
     pub async fn verify_trusted(domain: &str, port: u16) -> bool {
+        ensure_crypto_provider();
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 

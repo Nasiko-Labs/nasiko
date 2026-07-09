@@ -7,7 +7,9 @@ build:
     #!/usr/bin/env bash
     set -euo pipefail
     cd {{justfile_directory()}}
-    cargo zigbuild --release --target {{target}}
+    # This crate is a root-workspace member (unlike the standalone agents), so
+    # force the build output into a local target/ where the Dockerfile expects it.
+    cargo zigbuild --release --target {{target}} --target-dir target
     {{docker}} build -t {{user}}/coding .
 
 # Push image

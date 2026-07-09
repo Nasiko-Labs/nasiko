@@ -36,12 +36,16 @@ impl CodingAgent {
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
     ) -> Result<serde_json::Value, String> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": messages,
             "tools": tools,
             "temperature": 0.1,
         });
+        // OpenAI-compatible APIs reject an empty tools array.
+        if tools.is_empty() {
+            body.as_object_mut().unwrap().remove("tools");
+        }
 
         let resp = self
             .http
@@ -160,6 +164,21 @@ impl AgentExecutor for CodingAgent {
                 } else {
                     final_text = choice["content"].as_str().unwrap_or("").to_string();
                     break;
+                }
+            }
+
+            // Tool budget exhausted while the model still wanted tools: force a
+            // final answer from the gathered context, else the artifact is empty.
+            if final_text.is_empty() {
+                match agent.chat(&messages, &[]).await {
+                    Ok(resp) => {
+                        final_text = resp["choices"][0]["message"]["content"]
+                            .as_str().unwrap_or("").to_string();
+                    }
+                    Err(e) => {
+                        yield Ok(status_failed(&task_id, &context_id, &e));
+                        return;
+                    }
                 }
             }
 

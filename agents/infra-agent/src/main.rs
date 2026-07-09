@@ -50,12 +50,15 @@ impl InfraAgent {
     ///
     /// Not `#[tracing::instrument]`'d: that macro spans only the synchronous
     /// call that builds this generator, not its later polling, so it would
-    /// close before any HTTP work happens. Usage is logged as a plain event
-    /// instead (see the `gen_ai.usage.*` fields below) once the API reports it.
+    /// close before any HTTP work happens. Instead the generator creates a
+    /// `ChatCompletion` span on first poll (inheriting the a2a.execute trace
+    /// context) and records `gen_ai.usage.*` on it when the API reports usage —
+    /// FinOps/token dashboards aggregate from span attributes, not log events.
     fn chat_stream(
         &self,
         messages: Vec<serde_json::Value>,
         tools: Vec<serde_json::Value>,
+        parent_cx: Option<opentelemetry::Context>,
     ) -> impl futures::Stream<Item = ChatEvent> {
         let model = self.model.clone();
         let api_key = self.api_key.clone();
@@ -63,6 +66,24 @@ impl InfraAgent {
         let http = self.http.clone();
 
         async_stream::stream! {
+            // Closes when the generator finishes → duration covers the full
+            // stream. The remote parent must be set on THIS span explicitly:
+            // relying on contextual inheritance from a2a.execute doesn't work —
+            // tracing-opentelemetry children inherit the parent's originally
+            // sampled (local) trace id, not the one `set_parent` re-homed it to,
+            // which strands ChatCompletion spans in an orphan trace.
+            let chat_span = tracing::info_span!(
+                "ChatCompletion",
+                gen_ai.operation.name = "chat",
+                gen_ai.request.model = %model,
+                gen_ai.usage.input_tokens = tracing::field::Empty,
+                gen_ai.usage.output_tokens = tracing::field::Empty,
+            );
+            if let Some(cx) = parent_cx {
+                use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+                chat_span.set_parent(cx);
+            }
+
             let body = serde_json::json!({
                 "model": model,
                 "messages": messages,
@@ -128,6 +149,8 @@ impl InfraAgent {
                     if let Some(usage) = event.get("usage").filter(|u| !u.is_null()) {
                         let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                         let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        chat_span.record("gen_ai.usage.input_tokens", input);
+                        chat_span.record("gen_ai.usage.output_tokens", output);
                         tracing::info!(
                             gen_ai.operation.name = "chat",
                             gen_ai.request.model = %model,
@@ -173,6 +196,21 @@ impl InfraAgent {
 
 impl AgentExecutor for InfraAgent {
     fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+        // Join the caller's W3C trace (the platform forwards `traceparent`
+        // through the agent proxy/orchestrator). Without adopting it, the OTel
+        // SDK mints a fresh root trace id per request and the control plane's
+        // session-trace view can never find this agent's spans.
+        let remote_cx = ctx
+            .service_params
+            .get("traceparent")
+            .and_then(|v| v.first())
+            .and_then(|tp| telemetry::remote_context_from_traceparent(tp));
+        let span = tracing::info_span!("a2a.execute", otel.kind = "server");
+        if let Some(ref cx) = remote_cx {
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            span.set_parent(cx.clone());
+        }
+
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
 
@@ -229,7 +267,7 @@ Rules:\n\
             'rounds: for _ in 0..6 {
                 let mut round_content = String::new();
                 let mut round_tool_calls: Vec<ToolCallBuilder> = Vec::new();
-                let mut round_stream = std::pin::pin!(agent.chat_stream(messages.clone(), tool_defs.clone()));
+                let mut round_stream = std::pin::pin!(agent.chat_stream(messages.clone(), tool_defs.clone(), remote_cx.clone()));
 
                 while let Some(event) = round_stream.next().await {
                     match event {
@@ -324,7 +362,18 @@ Rules:\n\
             yield Ok(status_completed(&task_id, &context_id));
         };
 
-        Box::pin(stream)
+        // Poll the stream inside `span` so every span created during execution
+        // (ChatCompletion, tool calls) lands under the remote parent — even
+        // though the body streams after the HTTP handler has returned.
+        // (tracing's Instrumented wraps Futures, not Streams, so instrument
+        // each item-poll future rather than the stream itself.)
+        use tracing::Instrument as _;
+        Box::pin(async_stream::stream! {
+            let mut inner = std::pin::pin!(stream);
+            while let Some(item) = inner.next().instrument(span.clone()).await {
+                yield item;
+            }
+        })
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {

@@ -53,3 +53,16 @@ pub fn init() {
             .init();
     }
 }
+
+/// Parse a W3C `traceparent` header (`00-<trace_id>-<span_id>-<flags>`) into a
+/// remote OTel context, so spans created under it join the caller's trace.
+/// Returns None for anything malformed — the caller then starts a local root
+/// trace, which is the correct fallback.
+pub fn remote_context_from_traceparent(tp: &str) -> Option<opentelemetry::Context> {
+    use opentelemetry::propagation::TextMapPropagator;
+    let carrier: std::collections::HashMap<String, String> =
+        [("traceparent".to_string(), tp.to_string())].into();
+    let ctx = opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(&carrier);
+    use opentelemetry::trace::TraceContextExt;
+    ctx.span().span_context().is_valid().then_some(ctx)
+}
