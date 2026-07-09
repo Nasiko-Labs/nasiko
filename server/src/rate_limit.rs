@@ -34,7 +34,7 @@ impl RateLimiter {
 
     /// Records one request for `key`; returns `false` if it exceeds the
     /// limit for the current window.
-    fn allow(&self, key: &str) -> bool {
+    pub(crate) fn allow(&self, key: &str) -> bool {
         let now = Instant::now();
         let mut entry = self.buckets.entry(key.to_owned()).or_insert((now, 0));
         if now.duration_since(entry.0) > self.window {
@@ -49,7 +49,7 @@ impl RateLimiter {
     }
 }
 
-fn too_many_requests() -> Response {
+pub(crate) fn too_many_requests() -> Response {
     (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded, try again shortly").into_response()
 }
 

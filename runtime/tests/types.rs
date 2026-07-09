@@ -209,6 +209,8 @@ fn minimal_spec() -> DeploymentSpec {
         env_vars: HashMap::new(),
         ports: vec![8080],
         resources: None,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     }
 }
 
@@ -243,6 +245,8 @@ fn deployment_spec_with_all_fields() {
             memory: "1Gi".to_owned(),
             cpu_milli: 1000,
         }),
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     };
 
     assert_eq!(spec.min_replicas, 2);

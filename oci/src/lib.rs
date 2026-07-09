@@ -1,6 +1,7 @@
 pub mod authz;
 pub mod error;
 pub mod ops;
+pub mod pull_credentials;
 pub mod routes;
 pub mod storage;
 
@@ -13,7 +14,7 @@ use sqlx::PgPool;
 use storage::S3Storage;
 use uuid::Uuid;
 
-pub use authz::CallerIdentity;
+pub use authz::{Caller, CallerIdentity, PullOnlyIdentity};
 
 /// Shared state for the OCI registry.
 /// Construct this in the host binary. Pass to `axum_routes()` for the default

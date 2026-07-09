@@ -2,13 +2,13 @@ use axum::{
     body::Body,
     extract::{Path, Query, Request, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::OciState;
-use crate::authz::{check_repo_access, check_repo_delete_access, CallerIdentity};
+use crate::authz::{Caller, CallerIdentity, check_pull_access, check_repo_access, check_repo_delete_access};
 use crate::error::{OciError, Result};
 use crate::ops;
 
@@ -19,10 +19,10 @@ pub(crate) const MAX_CHUNK_BYTES: usize = 512 * 1024 * 1024;
 
 pub async fn head_blob(
     State(state): State<OciState>,
-    caller: CallerIdentity,
+    caller: Caller,
     Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_repo_access(&state, &caller, &repo).await?;
+    check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
     if !ops::blob_linked(&state, &name, &digest).await? {
         return Err(OciError::NotFound(format!("blob {digest} not found")));
@@ -43,23 +43,13 @@ pub async fn head_blob(
 
 pub async fn get_blob(
     State(state): State<OciState>,
-    caller: CallerIdentity,
+    caller: Caller,
     Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_repo_access(&state, &caller, &repo).await?;
+    check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
-    let data = ops::get_blob_data(&state, &name, &digest).await?;
-    let len = data.len().to_string();
-    Ok((
-        StatusCode::OK,
-        [
-            ("Content-Length", len.as_str()),
-            ("Docker-Content-Digest", digest.as_str()),
-            ("Content-Type", "application/octet-stream"),
-        ],
-        data,
-    )
-        .into_response())
+    let url = ops::get_blob_redirect_url(&state, &name, &digest).await?;
+    Ok(Redirect::temporary(&url).into_response())
 }
 
 pub async fn delete_blob(

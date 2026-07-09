@@ -240,6 +240,23 @@ pub struct DeploymentSpec {
     pub ports: Vec<u16>,
     /// CPU and memory limits. When `None`, defaults to 0.5 CPU / 512 MiB.
     pub resources: Option<ResourceLimits>,
+    /// Name of a `kubernetes.io/dockerconfigjson` Secret that `imagePullSecrets`
+    /// on the deployed pod spec should reference, so it can authenticate
+    /// pulls from the built-in OCI registry (whose normal bearer-JWT auth
+    /// doesn't fit that Secret shape — see `nasiko-oci`'s `pull_credentials`
+    /// module). `None` when this deploy isn't going through the K8s runtime,
+    /// or the built-in registry's pull-credential mechanism isn't in play.
+    /// Ignored by `DockerRuntime`.
+    pub image_pull_secret_name: Option<String>,
+    /// `(username, plaintext_token, registry_host)` — set ONLY on an agent's
+    /// first-ever deploy, when a pull credential was just minted (see
+    /// `nasiko-oci`'s `pull_credentials::get_or_create`), telling the K8s
+    /// backend to create `image_pull_secret_name`'s Secret with this
+    /// one-time plaintext. `None` on every later deploy of the same agent —
+    /// the Secret from the original mint is still valid, so the backend only
+    /// needs to reference it by name, never recreate it. Ignored by
+    /// `DockerRuntime`.
+    pub image_pull_credential_seed: Option<(String, String, String)>,
 }
 
 impl DeploymentSpec {

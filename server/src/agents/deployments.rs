@@ -293,6 +293,10 @@ async fn restart_deployment(
             // apply the runtime default (0.5 CPU / 512 MiB). No behavioral regression
             // until the API supports caller-specified resource limits.
             resources: None,
+            // Docker-only path (see the `if`/`else` above) — these fields are
+            // meaningless to DockerRuntime.
+            image_pull_secret_name: None,
+            image_pull_credential_seed: None,
         };
 
         match state.runtime.deploy(&spec).await {

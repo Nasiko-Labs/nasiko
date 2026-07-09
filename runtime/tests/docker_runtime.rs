@@ -60,6 +60,8 @@ fn test_spec() -> DeploymentSpec {
             memory: "256Mi".to_owned(),
             cpu_milli: 250,
         }),
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     }
 }
 
@@ -200,6 +202,8 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         },
         ports: vec![9999],
         resources: None,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     };
 
     // Deploy
@@ -256,6 +260,8 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
         ports: vec![9998],
         resources: None,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -302,6 +308,8 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
         ports: vec![9997],
         resources: None,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");

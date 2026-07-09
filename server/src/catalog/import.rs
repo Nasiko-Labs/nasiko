@@ -247,7 +247,7 @@ pub(crate) async fn build_and_deploy(
 
     // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
     // existing workload on re-import and can't collide cross-team on the name.
-    let spec = crate::agents::build_agent_spec(
+    let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &meta.name,
         image_tag,
@@ -255,6 +255,7 @@ pub(crate) async fn build_and_deploy(
         std::collections::HashMap::new(),
         None,
     );
+    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
     let container_name = match state.runtime.deploy(&spec).await {
         Ok(status) => Some(status.container_id.to_string()),
@@ -731,7 +732,7 @@ async fn import_registry(
         };
 
         // Deploy — UUID-keyed (see build_agent_spec).
-        let spec = crate::agents::build_agent_spec(
+        let mut spec = crate::agents::build_agent_spec(
             agent_id,
             &agent_name,
             image_with_tag,
@@ -739,6 +740,7 @@ async fn import_registry(
             std::collections::HashMap::new(),
             None,
         );
+        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
         let container_name = match state.runtime.deploy(&spec).await {
             Ok(status) => Some(status.container_id.to_string()),

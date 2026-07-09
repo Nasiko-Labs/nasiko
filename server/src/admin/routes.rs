@@ -84,16 +84,25 @@ async fn deploy(
         None => ContainerId::new(&req.name),
     };
 
-    let spec = DeploymentSpec {
+    let mut spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
-        image: req.image,
+        image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
         ports: if req.ports.is_empty() { vec![crate::agents::DEFAULT_AGENT_PORT] } else { req.ports },
         env_vars: env,
         min_replicas: req.replicas.unwrap_or(1),
         max_replicas: req.replicas.unwrap_or(1),
         resources: None,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     };
+    // Only a name that already maps to a registered catalog agent has an
+    // `agents` row to scope a pull credential to (see pull_credentials'
+    // agent_id FK) — an ad-hoc, never-registered image deploy has nothing to
+    // bind one to.
+    if let Some(agent_id) = resolved_agent_id {
+        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+    }
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => {
@@ -262,14 +271,13 @@ async fn start(
         Ok(id) => id,
         Err(resp) => return resp,
     };
-
-    if let Err(e) = state.runtime.scale(&id, 1).await {
-        tracing::error!(%e, %name, "start: runtime error");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    match state.runtime.scale(&id, 1).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "start: runtime error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
     }
-
-    refresh_agent_endpoint(&state, &id, &name).await;
-    StatusCode::OK.into_response()
 }
 
 async fn restart(
@@ -298,10 +306,7 @@ async fn restart(
         // stays open to any deployer, same as `deploy`'s ad-hoc-image branch.
         let id = ContainerId::new(&name);
         return match state.runtime.restart(&id).await {
-            Ok(()) => {
-                refresh_agent_endpoint(&state, &id, &name).await;
-                StatusCode::OK.into_response()
-            }
+            Ok(()) => StatusCode::OK.into_response(),
             Err(e) => {
                 tracing::error!(%e, %name, "restart: runtime error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -325,16 +330,14 @@ async fn restart(
 
     // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec). Empty
     // ports → build_agent_spec defaults to DEFAULT_AGENT_PORT.
-    let spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
+    let mut spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
+    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
     match state.runtime.deploy(&spec).await {
-        Ok(status) => {
-            refresh_agent_endpoint(&state, &ContainerId::new(&name), &name).await;
-            Json(status).into_response()
-        }
+        Ok(status) => Json(status).into_response(),
         Err(e) => {
-            tracing::error!(%e, %name, "deploy: runtime error");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            tracing::error!(%e, %name, "restart: redeploy failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
 }
@@ -386,31 +389,6 @@ async fn logs(
             tracing::error!(%e, %name, "logs: runtime error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
-    }
-}
-
-/// Re-resolve a container's live endpoint and write it back to `agents.url`.
-///
-/// Starting or restarting a container can change its reachable address (Docker
-/// reassigns the host-mapped port on recreate; Kubernetes assigns a new pod IP
-/// on every start), and `agent_proxy` trusts this column verbatim — a stale
-/// value there causes silent 502s until someone notices and fixes it by hand.
-async fn refresh_agent_endpoint(state: &AppState, id: &ContainerId, name: &str) {
-    let endpoint = match state.runtime.endpoint(id).await {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!(%name, error = %e, "failed to resolve live endpoint after start/restart");
-            return;
-        }
-    };
-    if let Some(agent_id) = resolve_agent_id_by_name(state, name).await {
-        let _ = sqlx::query(
-            "UPDATE agents SET url = $1, status = 'running', updated_at = now() WHERE id = $2",
-        )
-        .bind(&endpoint)
-        .bind(agent_id)
-        .execute(&state.db)
-        .await;
     }
 }
 

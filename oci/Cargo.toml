@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 tokio.workspace = true
 axum.workspace = true
+nasiko-auth.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

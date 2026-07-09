@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::catalog::models::Agent;
 use crate::state::AppState;
-use nasiko_runtime::{ContainerId, DeploymentSpec, RuntimeState};
+use nasiko_runtime::{ContainerId, RuntimeState};
 
 const AGENT_PORT: u16 = 8000;
 
@@ -68,7 +68,10 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 if image_changed || force_pull {
                     true
                 } else {
-                    let container_id = ContainerId::new(agent_name.clone());
+                    // UUID-keyed (see agents::build_agent_spec / RUN-2c) — the deploy a
+                    // few lines below keys on the same UUID, so the liveness probe must
+                    // too or it always reports "not found" and redeploys every run.
+                    let container_id = ContainerId::from_uuid(agent.id);
                     match state.runtime.status(&container_id).await {
                         Ok(status) => status.state != RuntimeState::Running,
                         Err(_) => true,
@@ -129,16 +132,17 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             .unwrap_or_else(|_| "http://host.docker.internal:8080".into());
         env.insert("A2A_DISCOVERY_URL".into(), discovery_url);
 
-        let spec = DeploymentSpec {
-            container_id: ContainerId::new(agent_name.clone()),
-            name: agent_name.clone(),
-            image: image.to_string(),
-            min_replicas: 1,
-            max_replicas: 1,
-            env_vars: env,
-            ports: vec![AGENT_PORT],
-            resources: None,
-        };
+        // UUID-keyed (see agents::build_agent_spec) so a re-seed re-targets the same
+        // workload rather than leaving a name-keyed orphan.
+        let mut spec = crate::agents::build_agent_spec(
+            agent.id,
+            &agent_name,
+            image.to_string(),
+            vec![AGENT_PORT],
+            env,
+            None,
+        );
+        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent.id).await;
 
         match state.runtime.deploy(&spec).await {
             Ok(status) => {

@@ -53,6 +53,54 @@ pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
     }
 }
 
+/// Mints (or reuses) a per-agent OCI pull credential and attaches it to
+/// `spec` — deterministic secret name always set so `ee/k8s-runtime` can
+/// wire `imagePullSecrets` on every deploy, with the one-time plaintext seed
+/// set only when a NEW credential was just minted (see `nasiko-oci`'s
+/// `pull_credentials::get_or_create`). No-op outside the K8s runtime — these
+/// fields are meaningless to `DockerRuntime`, and minting a DB row + credential
+/// for a deploy that will never reference it is pointless.
+///
+/// Takes primitives rather than `&AppState` so the build-worker deploy path
+/// (`upload::execute_upload_and_deploy`, which runs detached from a request's
+/// `AppState` and already threads individual config values the same way —
+/// see its `openai_api_key`/`openai_base_url` params) can call it too.
+pub(crate) async fn attach_pull_credential(db: &sqlx::PgPool, agent_runtime: &str, agent_image_registry: &str, spec: &mut DeploymentSpec, agent_id: Uuid) {
+    if agent_runtime != "kubernetes" {
+        return;
+    }
+    spec.image_pull_secret_name = Some(format!("pull-{agent_id}"));
+    match nasiko_oci::pull_credentials::get_or_create(db, agent_id).await {
+        Ok(Some(cred)) => {
+            spec.image_pull_credential_seed = Some((cred.username, cred.token, agent_image_registry.to_string()));
+        }
+        Ok(None) => {}
+        Err(e) => tracing::error!(%e, %agent_id, "failed to mint OCI pull credential; image pulls may fail"),
+    }
+}
+
+/// Qualifies an already-composed `name:tag` image reference with
+/// `AGENT_IMAGE_REGISTRY`, for the ad-hoc `POST /containers` deploy path
+/// (`admin::routes::deploy`) — unlike upload/update/rollback/import, that
+/// path receives a pre-built ref string from the caller rather than
+/// composing one from separate name+tag args, so it can't go through
+/// `build_image_tag` directly.
+///
+/// Only qualifies images starting with the literal `"nasiko/"` prefix — the
+/// CLI's own internal convention for images it just pushed via `nasiko
+/// deploy`/`nasiko push` (see `oss/cli/src/commands/deploy.rs`/`push.rs`).
+/// An arbitrary third-party reference the caller deploys directly (e.g.
+/// `nginx:latest`) is left untouched, since there's no way to distinguish
+/// "this needs our private registry" from "this is already resolvable as-is"
+/// beyond that one known convention.
+pub(crate) fn qualify_deploy_image(registry: &str, image: &str) -> String {
+    if registry.is_empty() || !image.starts_with("nasiko/") {
+        image.to_string()
+    } else {
+        format!("{registry}/{image}")
+    }
+}
+
 pub(crate) fn build_agent_spec(
     agent_id: Uuid,
     name: &str,
@@ -70,6 +118,8 @@ pub(crate) fn build_agent_spec(
         min_replicas: 1,
         max_replicas: 1,
         resources,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     }
 }
 
@@ -112,5 +162,23 @@ mod spec_tests {
         let id = Uuid::new_v4();
         let s = build_agent_spec(id, "a", "img:1", vec![9091], HashMap::new(), None);
         assert_eq!(s.ports, vec![9091]);
+    }
+
+    #[test]
+    fn qualify_deploy_image_passthrough_when_registry_empty() {
+        assert_eq!(qualify_deploy_image("", "nasiko/my-agent:1.0.0"), "nasiko/my-agent:1.0.0");
+    }
+
+    #[test]
+    fn qualify_deploy_image_prefixes_nasiko_convention() {
+        assert_eq!(
+            qualify_deploy_image("registry.example.com", "nasiko/my-agent:1.0.0"),
+            "registry.example.com/nasiko/my-agent:1.0.0"
+        );
+    }
+
+    #[test]
+    fn qualify_deploy_image_leaves_third_party_image_untouched() {
+        assert_eq!(qualify_deploy_image("registry.example.com", "nginx:latest"), "nginx:latest");
     }
 }

@@ -17,13 +17,27 @@ pub async fn require_auth(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let Some(token) = extract_token(req.headers()) else {
-        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
+    let claims = match validate_bearer(&state, req.headers()).await {
+        Ok(c) => c,
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    req.extensions_mut().insert(claims);
+    next.run(req).await
+}
+
+/// The bearer-token validation core of [`require_auth`], extracted so other
+/// mount points that need to accept a bearer token as ONE of several auth
+/// methods (e.g. the OCI registry's Basic-auth-or-bearer mount, see
+/// `lib.rs`'s `authenticate_oci_request`) can reuse it without going through
+/// the all-or-nothing `middleware::from_fn` wrapper.
+pub(crate) async fn validate_bearer(state: &AppState, headers: &axum::http::HeaderMap) -> Result<Claims, (StatusCode, &'static str)> {
+    let Some(token) = extract_token(headers) else {
+        return Err((StatusCode::UNAUTHORIZED, "missing or invalid token"));
     };
 
     let identity = match state.auth.validate_token(&token).await {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid token").into_response(),
+        Err(_) => return Err((StatusCode::UNAUTHORIZED, "invalid token")),
     };
 
     // Revocation check — O(1) indexed lookup on token_hash.
@@ -37,7 +51,7 @@ pub async fn require_auth(
     // either way it must not bypass revocation entirely.
     let jti = nasiko_auth::jwt::extract_jti(&token).filter(|j| !j.is_empty());
     let Some(jti) = jti else {
-        return (StatusCode::UNAUTHORIZED, "token missing jti").into_response();
+        return Err((StatusCode::UNAUTHORIZED, "token missing jti"));
     };
 
     let hash = nasiko_auth::jwt::hash_jti(&jti);
@@ -54,35 +68,19 @@ pub async fn require_auth(
         Ok(revoked) => revoked,
         Err(e) => {
             tracing::error!(%e, "revocation lookup failed; failing closed");
-            return (StatusCode::UNAUTHORIZED, "token validation unavailable").into_response();
+            return Err((StatusCode::UNAUTHORIZED, "token validation unavailable"));
         }
     };
 
     if revoked {
-        return (StatusCode::UNAUTHORIZED, "token revoked").into_response();
+        return Err((StatusCode::UNAUTHORIZED, "token revoked"));
     }
 
-    // An agent token (minted by `issue_agent_token`, e.g. injected into an
-    // agent's container so it can call other agents) must not pass as a user
-    // session on the rest of the API surface — otherwise it's indistinguishable
-    // from a real user token everywhere `require_auth` is layered. Only the
-    // agent-to-agent calling paths (the direct proxy, and A2A dispatch) accept it.
-    if identity.is_agent && !is_agent_reachable_path(req.uri().path()) {
-        return (StatusCode::FORBIDDEN, "agent tokens cannot access this endpoint").into_response();
-    }
-
-    req.extensions_mut().insert(Claims::from(identity));
-    next.run(req).await
-}
-
-/// Paths reachable by an agent-typed token: the direct agent proxy
-/// (`/agents/{id}/...`) and A2A dispatch (`/orchestrator/a2a`, `/orchestrator/
-/// a2a/upload`) — the two routes an agent legitimately uses to call another
-/// agent. `require_auth` runs on the router nested under `/api`, so `path` is
-/// already stripped of that prefix (mirrors `agent_proxy.rs::parse_agent_path`,
-/// which relies on the same stripping).
-fn is_agent_reachable_path(path: &str) -> bool {
-    path.starts_with("/agents/") || path.starts_with("/orchestrator/a2a")
+    // Agent-typed tokens (minted by `issue_agent_token`) never reach this
+    // point at all — `state.auth.validate_token` above already rejects them
+    // via `decode_jwt`/`decode_jwt_with_jti`'s `token_type` check (AUTH-3), so
+    // every `identity` here is guaranteed to be a real user session.
+    Ok(Claims::from(identity))
 }
 
 fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {

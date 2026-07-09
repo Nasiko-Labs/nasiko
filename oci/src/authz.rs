@@ -32,6 +32,54 @@ impl<S: Send + Sync> FromRequestParts<S> for CallerIdentity {
     }
 }
 
+/// A pull-scoped identity resolved from HTTP Basic auth against a minted,
+/// per-agent credential (see `pull_credentials`) — distinct from
+/// [`CallerIdentity`] (bearer-JWT, session-based) so it's structurally
+/// impossible for a pull credential to reach a mutating route: every push/
+/// delete handler in `routes::` takes `CallerIdentity` directly, which this
+/// type does not satisfy, and a Basic-auth request never gets a
+/// `CallerIdentity` extension inserted (see the host's OCI auth middleware).
+/// Only the read-only handlers that accept [`Caller`] can ever see one.
+#[derive(Debug, Clone, Copy)]
+pub struct PullOnlyIdentity {
+    pub agent_id: uuid::Uuid,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for PullOnlyIdentity {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<PullOnlyIdentity>()
+            .copied()
+            .ok_or((StatusCode::UNAUTHORIZED, "not authenticated"))
+    }
+}
+
+/// Either a normal session identity or a pull-scoped one — the extractor
+/// used by the handful of read-only routes (manifest/blob/tags GET+HEAD)
+/// that must accept both. See [`check_pull_access`].
+#[derive(Debug, Clone)]
+pub enum Caller {
+    Session(CallerIdentity),
+    PullOnly(PullOnlyIdentity),
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Caller {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+        if let Some(identity) = parts.extensions.get::<CallerIdentity>() {
+            return Ok(Caller::Session(identity.clone()));
+        }
+        if let Some(identity) = parts.extensions.get::<PullOnlyIdentity>() {
+            return Ok(Caller::PullOnly(*identity));
+        }
+        Err((StatusCode::UNAUTHORIZED, "not authenticated"))
+    }
+}
+
 /// `(does the caller own an agent named `repo`, does ANY agent own that name)`.
 ///
 /// Two existence checks rather than fetching a single `owner_id` — agent
@@ -83,6 +131,31 @@ pub async fn check_repo_access(state: &OciState, caller: &CallerIdentity, repo: 
         Ok(())
     } else {
         Err(OciError::Forbidden(format!("not permitted to access repository '{repo}'")))
+    }
+}
+
+/// Enforce that `caller` may read `repo` — the [`Caller`]-accepting
+/// counterpart of [`check_repo_access`], used by the read-only manifest/blob/
+/// tags handlers. A [`Caller::Session`] goes through the exact same policy
+/// as `check_repo_access`; a [`Caller::PullOnly`] is granted access only if
+/// `repo` is literally the current name of the agent its credential is
+/// bound to — no ownership/superuser concept applies, since the credential
+/// is scoped to one agent by construction, not one user.
+pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) -> Result<()> {
+    match caller {
+        Caller::Session(identity) => check_repo_access(state, identity, repo).await,
+        Caller::PullOnly(pull) => {
+            let bound_repo: Option<String> = sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL")
+                .bind(pull.agent_id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(OciError::Database)?;
+            if bound_repo.as_deref() == Some(repo) {
+                Ok(())
+            } else {
+                Err(OciError::Forbidden(format!("not permitted to access repository '{repo}'")))
+            }
+        }
     }
 }
 
