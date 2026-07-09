@@ -278,22 +278,28 @@ class ChatPage extends HTMLElement {
   }
 
   #appendMsg(messagesEl, role, content, traceId) {
+    // Sessions are written by multiple clients: the web UI stores replies as
+    // "assistant" while the CLI/TUI store them as "agent". Anything that is
+    // not the user renders as an agent reply (markdown + assistant styling).
+    const isUser = role === 'user';
+    const roleClass = isUser ? 'is-user' : 'is-assistant';
+
     const row = document.createElement("div");
-    row.className = `msg-row is-${role}`;
+    row.className = `msg-row ${roleClass}`;
 
     const div = document.createElement("div");
-    div.className = `msg is-${role}${role === 'assistant' ? ' md-body' : ''}`;
+    div.className = `msg ${roleClass}${isUser ? '' : ' md-body'}`;
 
-    if (role === 'assistant') {
-      div.innerHTML = renderMarkdown(content);
-    } else {
+    if (isUser) {
       div.textContent = content;
+    } else {
+      div.innerHTML = renderMarkdown(content);
     }
 
     row.appendChild(div);
 
     // Message actions toolbar
-    if (role === 'assistant') {
+    if (!isUser) {
       const actions = document.createElement("div");
       actions.className = "msg-actions";
       actions.innerHTML = `

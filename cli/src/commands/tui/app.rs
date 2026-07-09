@@ -207,7 +207,7 @@ impl App {
     fn persist_agent_message(&self, text: &str, trace_id: Option<&str>) {
         match &self.session.backend {
             SessionBackend::Cp { base_url, token, session_id } => {
-                let _ = session::post_cp_message(base_url, token, session_id, "agent", text, trace_id);
+                let _ = session::post_cp_message(base_url, token, session_id, "assistant", text, trace_id);
             }
             SessionBackend::Local => {
                 if let Ok(mut local) = session::load_local_session(&self.session.id) {

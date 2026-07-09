@@ -217,7 +217,7 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
 
     // Persist agent reply to CP
     if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "agent", &agent_text, Some(&trace_id));
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "assistant", &agent_text, Some(&trace_id));
     }
 
     Ok(())
