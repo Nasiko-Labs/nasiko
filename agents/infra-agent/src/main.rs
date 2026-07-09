@@ -3,6 +3,7 @@ use std::sync::Arc;
 use a2a::*;
 use a2a_server::*;
 use futures::stream::BoxStream;
+use futures::StreamExt;
 mod telemetry;
 mod tools;
 
@@ -11,6 +12,24 @@ struct InfraAgent {
     api_key: String,
     base_url: String,
     http: reqwest::Client,
+}
+
+/// A tool call as it's incrementally assembled from streamed deltas — the API
+/// sends `name` in the first delta for a given `index` and `arguments` in
+/// fragments across subsequent deltas, so callers must accumulate by index.
+#[derive(Default, Clone)]
+struct ToolCallBuilder {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// One event out of a streamed chat completion: incremental text as it's
+/// generated, or the terminal state once the stream ends.
+enum ChatEvent {
+    Content(String),
+    Done { tool_calls: Vec<ToolCallBuilder> },
+    Error(String),
 }
 
 impl InfraAgent {
@@ -24,54 +43,131 @@ impl InfraAgent {
         }
     }
 
-    #[tracing::instrument(name = "ChatCompletion", skip_all, fields(
-        gen_ai.operation.name = "chat",
-        gen_ai.request.model = %self.model,
-        gen_ai.usage.input_tokens = tracing::field::Empty,
-        gen_ai.usage.output_tokens = tracing::field::Empty,
-    ))]
-    async fn chat(
+    /// Stream a chat completion, yielding text as the model generates it
+    /// instead of buffering the whole response — `nasiko chat` renders each
+    /// `ChatEvent::Content` chunk as it arrives rather than dumping the full
+    /// answer at once at the end.
+    ///
+    /// Not `#[tracing::instrument]`'d: that macro spans only the synchronous
+    /// call that builds this generator, not its later polling, so it would
+    /// close before any HTTP work happens. Usage is logged as a plain event
+    /// instead (see the `gen_ai.usage.*` fields below) once the API reports it.
+    fn chat_stream(
         &self,
-        messages: &[serde_json::Value],
-        tools: &[serde_json::Value],
-    ) -> Result<serde_json::Value, String> {
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": messages,
-            "tools": tools,
-            "temperature": 0.2,
-        });
+        messages: Vec<serde_json::Value>,
+        tools: Vec<serde_json::Value>,
+    ) -> impl futures::Stream<Item = ChatEvent> {
+        let model = self.model.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
+        let http = self.http.clone();
 
-        let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+        async_stream::stream! {
+            let body = serde_json::json!({
+                "model": model,
+                "messages": messages,
+                "tools": tools,
+                "temperature": 0.2,
+                "stream": true,
+                "stream_options": {"include_usage": true},
+            });
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("LLM API {status}: {body}"));
-        }
+            let resp = match http
+                .post(format!("{base_url}/chat/completions"))
+                .bearer_auth(&api_key)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    yield ChatEvent::Error(format!("HTTP error: {e}"));
+                    return;
+                }
+            };
 
-        let response = resp.json::<serde_json::Value>()
-            .await
-            .map_err(|e| format!("JSON parse: {e}"))?;
-
-        if let Some(usage) = response.get("usage") {
-            let span = tracing::Span::current();
-            if let Some(v) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                span.record("gen_ai.usage.input_tokens", v);
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                yield ChatEvent::Error(format!("LLM API {status}: {text}"));
+                return;
             }
-            if let Some(v) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
-                span.record("gen_ai.usage.output_tokens", v);
-            }
-        }
 
-        Ok(response)
+            let mut byte_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut tool_calls: Vec<ToolCallBuilder> = Vec::new();
+
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        yield ChatEvent::Error(format!("stream error: {e}"));
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim_end_matches('\r').to_string();
+                    buf.drain(..=pos);
+
+                    let Some(data) = line.strip_prefix("data:") else { continue };
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+
+                    let event: serde_json::Value = match serde_json::from_str(data) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // The final chunk (when `stream_options.include_usage` is set) carries
+                    // top-level `usage` and typically an empty `choices` array — check it
+                    // independently rather than after the `choices`-dependent early return.
+                    if let Some(usage) = event.get("usage").filter(|u| !u.is_null()) {
+                        let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        tracing::info!(
+                            gen_ai.operation.name = "chat",
+                            gen_ai.request.model = %model,
+                            gen_ai.usage.input_tokens = input,
+                            gen_ai.usage.output_tokens = output,
+                            "chat completion usage",
+                        );
+                    }
+
+                    let Some(choice) = event["choices"].get(0) else { continue };
+                    let delta = &choice["delta"];
+
+                    if let Some(content) = delta["content"].as_str()
+                        && !content.is_empty()
+                    {
+                        yield ChatEvent::Content(content.to_string());
+                    }
+
+                    if let Some(calls) = delta["tool_calls"].as_array() {
+                        for call in calls {
+                            let idx = call["index"].as_u64().unwrap_or(0) as usize;
+                            if tool_calls.len() <= idx {
+                                tool_calls.resize(idx + 1, ToolCallBuilder::default());
+                            }
+                            if let Some(id) = call["id"].as_str() {
+                                tool_calls[idx].id = id.to_string();
+                            }
+                            if let Some(name) = call["function"]["name"].as_str() {
+                                tool_calls[idx].name.push_str(name);
+                            }
+                            if let Some(args) = call["function"]["arguments"].as_str() {
+                                tool_calls[idx].arguments.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+
+            yield ChatEvent::Done { tool_calls };
+        }
     }
 }
 
@@ -127,61 +223,103 @@ Rules:\n\
                 serde_json::json!({"role": "user", "content": user_text}),
             ];
 
-            let mut final_text = String::new();
+            let artifact_id = new_artifact_id();
+            let mut streamed_any = false;
 
-            for _ in 0..6 {
-                let resp = match agent.chat(&messages, &tool_defs).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        yield Ok(status_failed(&task_id, &context_id, &e));
-                        return;
+            'rounds: for _ in 0..6 {
+                let mut round_content = String::new();
+                let mut round_tool_calls: Vec<ToolCallBuilder> = Vec::new();
+                let mut round_stream = std::pin::pin!(agent.chat_stream(messages.clone(), tool_defs.clone()));
+
+                while let Some(event) = round_stream.next().await {
+                    match event {
+                        ChatEvent::Content(delta) => {
+                            round_content.push_str(&delta);
+                            yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
+                                task_id: task_id.clone(),
+                                context_id: context_id.clone(),
+                                artifact: Artifact {
+                                    artifact_id: artifact_id.clone(),
+                                    name: None,
+                                    description: None,
+                                    parts: vec![Part::text(&delta)],
+                                    metadata: None,
+                                    extensions: None,
+                                },
+                                append: Some(streamed_any),
+                                last_chunk: Some(false),
+                                metadata: None,
+                            }));
+                            streamed_any = true;
+                        }
+                        ChatEvent::Done { tool_calls } => {
+                            round_tool_calls = tool_calls;
+                        }
+                        ChatEvent::Error(e) => {
+                            yield Ok(status_failed(&task_id, &context_id, &e));
+                            return;
+                        }
                     }
-                };
+                }
 
-                let choice = &resp["choices"][0]["message"];
-                messages.push(choice.clone());
+                let real_calls: Vec<&ToolCallBuilder> =
+                    round_tool_calls.iter().filter(|tc| !tc.name.is_empty()).collect();
 
-                if let Some(calls) = choice["tool_calls"].as_array() {
-                    for tc in calls {
-                        let name = tc["function"]["name"].as_str().unwrap_or("");
-                        let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                        let call_id = tc["id"].as_str().unwrap_or("");
+                if real_calls.is_empty() {
+                    // Final round: plain content, already streamed above.
+                    break 'rounds;
+                }
 
-                        let preview = extract_preview(args);
-                        yield Ok(status_working(
-                            &task_id, &context_id,
-                            Some(&format!("{name}: {preview}")),
-                        ));
+                let tool_calls_json: Vec<serde_json::Value> = real_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tc)| serde_json::json!({
+                        "id": if tc.id.is_empty() { format!("call_{i}") } else { tc.id.clone() },
+                        "type": "function",
+                        "function": {"name": tc.name, "arguments": tc.arguments},
+                    }))
+                    .collect();
 
-                        let result = tools::execute(name, args).await;
+                messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": if round_content.is_empty() { serde_json::Value::Null } else { round_content.clone().into() },
+                    "tool_calls": tool_calls_json,
+                }));
 
-                        messages.push(serde_json::json!({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": result,
-                        }));
-                    }
-                } else {
-                    final_text = choice["content"].as_str().unwrap_or("").to_string();
-                    break;
+                for (tc, tc_json) in real_calls.iter().zip(tool_calls_json.iter()) {
+                    let preview = extract_preview(&tc.arguments);
+                    yield Ok(status_working(
+                        &task_id, &context_id,
+                        Some(&format!("{}: {preview}", tc.name)),
+                    ));
+
+                    let result = tools::execute(&tc.name, &tc.arguments).await;
+
+                    messages.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": tc_json["id"].clone(),
+                        "content": result,
+                    }));
                 }
             }
 
-            yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
-                task_id: task_id.clone(),
-                context_id: context_id.clone(),
-                artifact: Artifact {
-                    artifact_id: new_artifact_id(),
-                    name: None,
-                    description: None,
-                    parts: vec![Part::text(&final_text)],
+            if streamed_any {
+                yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                    artifact: Artifact {
+                        artifact_id: artifact_id.clone(),
+                        name: None,
+                        description: None,
+                        parts: vec![Part::text("")],
+                        metadata: None,
+                        extensions: None,
+                    },
+                    append: Some(true),
+                    last_chunk: Some(true),
                     metadata: None,
-                    extensions: None,
-                },
-                append: Some(false),
-                last_chunk: Some(true),
-                metadata: None,
-            }));
+                }));
+            }
 
             yield Ok(status_completed(&task_id, &context_id));
         };

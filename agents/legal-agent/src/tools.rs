@@ -51,6 +51,23 @@ pub fn definitions() -> Vec<serde_json::Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "sec_company_search",
+                "description": "Look up a public company's SEC CIK number by name or ticker. Use this before sec_company_filings, which requires a CIK rather than a company name.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Company name or ticker symbol to search for (e.g. 'Apple', 'AAPL')"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "federal_register",
                 "description": "Search the U.S. Federal Register for regulations, proposed rules, notices, and presidential documents. The Federal Register is the official daily publication for rules, proposed rules, and notices of federal agencies.",
                 "parameters": {
@@ -98,6 +115,7 @@ pub async fn execute(name: &str, arguments: &str) -> String {
     let result = match name {
         "sec_filing_search" => sec_filing_search(arguments).await,
         "sec_company_filings" => sec_company_filings(arguments).await,
+        "sec_company_search" => sec_company_search(arguments).await,
         "federal_register" => federal_register(arguments).await,
         "case_law_search" => case_law_search(arguments).await,
         _ => Err(format!("Unknown tool: {name}")),
@@ -299,6 +317,59 @@ async fn sec_company_filings(arguments: &str) -> Result<String, String> {
     }
 
     Ok(output)
+}
+
+async fn sec_company_search(arguments: &str) -> Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
+    let name = args["name"].as_str().ok_or("missing 'name'")?;
+    let needle = name.to_lowercase();
+
+    // SEC publishes a single static JSON file mapping every registered ticker
+    // to its CIK — no search API needed, just fetch once and filter locally.
+    let client = build_client()?;
+    let resp = client
+        .get("https://www.sec.gov/files/company_tickers.json")
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("parse failed: {e}"))?;
+
+    let entries = resp
+        .as_object()
+        .ok_or("unexpected response shape")?
+        .values();
+
+    let mut matches: Vec<(String, String, String)> = Vec::new();
+    for entry in entries {
+        let title = entry["title"].as_str().unwrap_or("");
+        let ticker = entry["ticker"].as_str().unwrap_or("");
+        if title.to_lowercase().contains(&needle) || ticker.to_lowercase() == needle {
+            let cik = entry["cik_str"].as_u64().map(|c| format!("{c:010}")).unwrap_or_default();
+            if !cik.is_empty() {
+                matches.push((title.to_string(), ticker.to_string(), cik));
+            }
+        }
+        if matches.len() >= 10 {
+            break;
+        }
+    }
+
+    if matches.is_empty() {
+        return Ok(format!("No SEC-registered company found matching '{name}'."));
+    }
+
+    let results: Vec<String> = matches
+        .iter()
+        .map(|(title, ticker, cik)| format!("**{title}** ({ticker}) — CIK: {cik}"))
+        .collect();
+
+    Ok(format!(
+        "Found {} matching companies:\n\n{}",
+        results.len(),
+        results.join("\n")
+    ))
 }
 
 async fn federal_register(arguments: &str) -> Result<String, String> {

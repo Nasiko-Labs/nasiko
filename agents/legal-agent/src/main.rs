@@ -113,7 +113,8 @@ Tools:\n\
 - sec_filing_search — full-text search across SEC filings (10-K, 10-Q, 8-K, S-1, etc.)\n\
 - sec_company_filings — recent filings for a company by CIK number\n\
 - sec_company_search — find a company's CIK number by name\n\
-- federal_register_search — search proposed/final rules in the Federal Register\n\n\
+- federal_register — search proposed/final rules in the Federal Register\n\
+- case_law_search — search court opinions and case law via CourtListener\n\n\
 Rules:\n\
 - ALWAYS call at least one tool before answering\n\
 - For company research: sec_company_search first to get CIK, then sec_company_filings\n\

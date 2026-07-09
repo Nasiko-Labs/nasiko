@@ -24,3 +24,8 @@ opentelemetry-otlp = { version = "0.28", default-features = false, features = ["
 opentelemetry-semantic-conventions = "0.28"
 tracing-opentelemetry = "0.29"
 tower-http = { version = "0.6", features = ["trace"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pki-types = "1"
+webpki-roots = "1"
+x509-parser = "0.16"

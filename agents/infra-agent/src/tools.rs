@@ -66,6 +66,28 @@ pub fn definitions() -> Vec<serde_json::Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "ssl_check",
+                "description": "Connect to a domain over TLS and inspect its certificate: issuer (CA), subject, validity dates, days until expiry, and whether it's trusted by public root CAs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "domain": {
+                            "type": "string",
+                            "description": "Domain name to check (e.g. 'example.com')"
+                        },
+                        "port": {
+                            "type": "integer",
+                            "description": "TCP port to connect on (default: 443)",
+                            "default": 443
+                        }
+                    },
+                    "required": ["domain"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "ip_info",
                 "description": "Get geolocation and network information for an IP address. Returns country, region, city, timezone, ISP, organization, and AS number.",
                 "parameters": {
@@ -88,6 +110,7 @@ pub async fn execute(name: &str, arguments: &str) -> String {
         "terraform_modules" => terraform_modules(arguments).await,
         "terraform_provider" => terraform_provider(arguments).await,
         "dns_lookup" => dns_lookup(arguments).await,
+        "ssl_check" => ssl_check(arguments).await,
         "ip_info" => ip_info(arguments).await,
         _ => Err(format!("Unknown tool: {name}")),
     };
@@ -309,6 +332,166 @@ async fn ip_info(arguments: &str) -> Result<String, String> {
          Organization: {org}\n\
          AS: {as_number}",
     ))
+}
+
+async fn ssl_check(arguments: &str) -> Result<String, String> {
+    let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
+    let domain = args["domain"].as_str().ok_or("missing 'domain'")?.to_string();
+    let port = args["port"].as_u64().unwrap_or(443) as u16;
+
+    let (leaf_der, chain_len) = tls::fetch_leaf_certificate(&domain, port).await?;
+    let trusted = tls::verify_trusted(&domain, port).await;
+
+    let (_, cert) = x509_parser::parse_x509_certificate(&leaf_der)
+        .map_err(|e| format!("certificate parse failed: {e}"))?;
+
+    let subject = cert.subject().to_string();
+    let issuer = cert.issuer().to_string();
+
+    let validity = cert.validity();
+    let not_before = format_asn1_time(validity.not_before.timestamp());
+    let not_after = format_asn1_time(validity.not_after.timestamp());
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days_left = (validity.not_after.timestamp() - now) / 86_400;
+
+    let expiry_note = if days_left < 0 {
+        format!("**EXPIRED** {} days ago", -days_left)
+    } else if days_left < 14 {
+        format!("expires in {days_left} days — renew soon")
+    } else {
+        format!("expires in {days_left} days")
+    };
+
+    Ok(format!(
+        "**SSL Certificate: {domain}:{port}**\n\
+         Subject: {subject}\n\
+         Issuer (CA): {issuer}\n\
+         Valid from: {not_before}\n\
+         Valid until: {not_after} ({expiry_note})\n\
+         Chain length: {chain_len} certificate(s)\n\
+         Trusted by public root CAs: {}",
+        if trusted { "yes" } else { "no — self-signed, expired, or hostname mismatch" },
+    ))
+}
+
+fn format_asn1_time(unix_secs: i64) -> String {
+    chrono::DateTime::from_timestamp(unix_secs, 0)
+        .map(|dt| dt.to_rfc2822())
+        .unwrap_or_else(|| unix_secs.to_string())
+}
+
+/// TLS connection helpers for `ssl_check`. Deliberately accepts any
+/// certificate chain when just extracting cert fields — mirrors `openssl
+/// s_client -connect` / browser cert inspectors, which show a certificate's
+/// contents independent of whether it's trusted. `verify_trusted` runs a
+/// second, normally-validated connection to answer that question separately.
+mod tls {
+    use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct AcceptAllVerifier(rustls::crypto::CryptoProvider);
+
+    impl rustls::client::danger::ServerCertVerifier for AcceptAllVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls12_signature(
+                message,
+                cert,
+                dss,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            self.0.signature_verification_algorithms.supported_schemes()
+        }
+    }
+
+    pub async fn fetch_leaf_certificate(domain: &str, port: u16) -> Result<(Vec<u8>, usize), String> {
+        let provider = rustls::crypto::ring::default_provider();
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAllVerifier(provider)))
+            .with_no_client_auth();
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let server_name = ServerName::try_from(domain.to_string())
+            .map_err(|_| format!("invalid domain name: {domain}"))?;
+
+        let stream = tokio::net::TcpStream::connect((domain, port))
+            .await
+            .map_err(|e| format!("TCP connect failed: {e}"))?;
+
+        let tls_stream = connector
+            .connect(server_name, stream)
+            .await
+            .map_err(|e| format!("TLS handshake failed: {e}"))?;
+
+        let certs = tls_stream
+            .get_ref()
+            .1
+            .peer_certificates()
+            .ok_or("no peer certificates presented")?;
+
+        if certs.is_empty() {
+            return Err("no peer certificates presented".into());
+        }
+
+        Ok((certs[0].as_ref().to_vec(), certs.len()))
+    }
+
+    pub async fn verify_trusted(domain: &str, port: u16) -> bool {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let Ok(server_name) = ServerName::try_from(domain.to_string()) else {
+            return false;
+        };
+        let Ok(stream) = tokio::net::TcpStream::connect((domain, port)).await else {
+            return false;
+        };
+
+        connector.connect(server_name, stream).await.is_ok()
+    }
 }
 
 // --- Helpers -----------------------------------------------------------------
