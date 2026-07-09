@@ -139,4 +139,37 @@
   .md-code-block code {
     font-family: inherit;
   }
+
+  /* Syntax highlighting (highlight.js) — GitHub light/dark palettes */
+  :is(.hljs-comment, .hljs-quote) {
+    color: light-dark(#6a737d, #8b949e);
+    font-style: italic;
+  }
+  :is(.hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-template-tag) {
+    color: light-dark(#d73a49, #ff7b72);
+  }
+  :is(.hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string) {
+    color: light-dark(#032f62, #a5d6ff);
+  }
+  :is(.hljs-number, .hljs-literal, .hljs-attr, .hljs-selector-attr, .hljs-selector-pseudo) {
+    color: light-dark(#005cc5, #79c0ff);
+  }
+  :is(.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section) {
+    color: light-dark(#6f42c1, #d2a8ff);
+  }
+  :is(.hljs-built_in, .hljs-symbol, .hljs-type, .hljs-selector-class, .hljs-selector-id) {
+    color: light-dark(#e36209, #ffa657);
+  }
+  :is(.hljs-variable, .hljs-template-variable, .hljs-attribute, .hljs-name, .hljs-property) {
+    color: light-dark(#22863a, #7ee787);
+  }
+  :is(.hljs-meta, .hljs-deletion) {
+    color: light-dark(#b31d28, #ffdcd7);
+  }
+  .hljs-emphasis {
+    font-style: italic;
+  }
+  .hljs-strong {
+    font-weight: 600;
+  }
 }
