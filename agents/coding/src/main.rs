@@ -162,7 +162,7 @@ impl AgentExecutor for CodingAgent {
                         }));
                     }
                 } else {
-                    final_text = choice["content"].as_str().unwrap_or("").to_string();
+                    final_text = strip_tool_markup(choice["content"].as_str().unwrap_or(""));
                     break;
                 }
             }
@@ -170,10 +170,14 @@ impl AgentExecutor for CodingAgent {
             // Tool budget exhausted while the model still wanted tools: force a
             // final answer from the gathered context, else the artifact is empty.
             if final_text.is_empty() {
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": "Tool calls are no longer available. Answer the original question now, using only the information already gathered above. Respond with plain text only."
+                }));
                 match agent.chat(&messages, &[]).await {
                     Ok(resp) => {
-                        final_text = resp["choices"][0]["message"]["content"]
-                            .as_str().unwrap_or("").to_string();
+                        final_text = strip_tool_markup(
+                            resp["choices"][0]["message"]["content"].as_str().unwrap_or(""));
                     }
                     Err(e) => {
                         yield Ok(status_failed(&task_id, &context_id, &e));
@@ -378,5 +382,16 @@ fn extract_preview(name: &str, args: &str) -> String {
     match detail {
         Some(d) => format!("{name}: {d}"),
         None => name.to_string(),
+    }
+}
+
+/// DeepSeek sometimes emits its internal tool-call markup (`<｜DSML｜…`) as
+/// plain content instead of structured tool_calls. Anything from the first
+/// marker onward is machinery, not an answer — cut it so an all-markup
+/// response reads as empty and triggers the forced-answer fallback.
+fn strip_tool_markup(content: &str) -> String {
+    match content.find("<｜") {
+        Some(idx) => content[..idx].trim().to_string(),
+        None => content.trim().to_string(),
     }
 }

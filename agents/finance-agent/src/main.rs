@@ -186,7 +186,7 @@ Guidelines:\n\
                         }));
                     }
                 } else {
-                    final_text = choice["content"].as_str().unwrap_or("").to_string();
+                    final_text = strip_tool_markup(choice["content"].as_str().unwrap_or(""));
                     break;
                 }
             }
@@ -194,10 +194,14 @@ Guidelines:\n\
             // Tool budget exhausted while the model still wanted tools: force a
             // final answer from the gathered context, else the artifact is empty.
             if final_text.is_empty() {
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": "Tool calls are no longer available. Answer the original question now, using only the information already gathered above. Respond with plain text only."
+                }));
                 match agent.chat(&messages, &[], remote_cx.as_ref()).await {
                     Ok(resp) => {
-                        final_text = resp["choices"][0]["message"]["content"]
-                            .as_str().unwrap_or("").to_string();
+                        final_text = strip_tool_markup(
+                            resp["choices"][0]["message"]["content"].as_str().unwrap_or(""));
                     }
                     Err(e) => {
                         yield Ok(status_failed(&task_id, &context_id, &e));
@@ -404,4 +408,15 @@ fn status_failed(task_id: &str, context_id: &str, error: &str) -> StreamResponse
         },
         metadata: None,
     })
+}
+
+/// DeepSeek sometimes emits its internal tool-call markup (`<｜DSML｜…`) as
+/// plain content instead of structured tool_calls. Anything from the first
+/// marker onward is machinery, not an answer — cut it so an all-markup
+/// response reads as empty and triggers the forced-answer fallback.
+fn strip_tool_markup(content: &str) -> String {
+    match content.find("<｜") {
+        Some(idx) => content[..idx].trim().to_string(),
+        None => content.trim().to_string(),
+    }
 }
