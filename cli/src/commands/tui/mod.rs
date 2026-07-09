@@ -182,7 +182,9 @@ pub fn list_sessions(endpoint: Option<&str>, cursor: Option<&str>, limit: Option
             println!(
                 "{:<36} {:<20} {:<24} {}",
                 s.session_id,
-                s.agent_name.as_deref().unwrap_or("-"),
+                // A null agent_id means the session was opened against the
+                // orchestrator (no specific agent bound), not a data gap.
+                s.agent_name.as_deref().unwrap_or("orchestrator"),
                 s.updated_at.get(..19).unwrap_or(&s.updated_at),
                 s.title,
             );

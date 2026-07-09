@@ -8,18 +8,33 @@ use crate::status::{self, StatusAnimation};
 
 /// Live status line shown while the CLI waits on the backend. Re-settable:
 /// each `set` clears the previous line first, so event output printed between
-/// states never collides with an animation frame.
-struct Spinner(Option<status::StatusHandle>);
+/// states never collides with an animation frame. Also tracks whether a
+/// sub-agent's inline reply line is open, so it can be closed with a newline
+/// before any other output prints.
+struct Spinner {
+    handle: Option<status::StatusHandle>,
+    sub_open: bool,
+    /// Whether the current agent call already streamed its reply inline —
+    /// the result line then shrinks to a checkmark instead of repeating it.
+    sub_streamed: bool,
+    /// When the current agent call started, for the completion timing.
+    call_started: Option<std::time::Instant>,
+}
 
 impl Spinner {
     fn new() -> Self {
-        Spinner(None)
+        Spinner {
+            handle: None,
+            sub_open: false,
+            sub_streamed: false,
+            call_started: None,
+        }
     }
 
     /// Replace the status line with a new message (clears the old one first).
     fn set(&mut self, msg: impl Into<String>) {
-        self.0 = None;
-        self.0 = Some(status::start_status_with_animation(
+        self.handle = None;
+        self.handle = Some(status::start_status_with_animation(
             msg,
             StatusAnimation::Shimmer,
         ));
@@ -27,7 +42,15 @@ impl Spinner {
 
     /// Clear the status line (e.g. while streamed text is being printed).
     fn pause(&mut self) {
-        self.0 = None;
+        self.handle = None;
+    }
+
+    /// End an in-progress sub-agent reply line, if one is open.
+    fn close_sub(&mut self) {
+        if self.sub_open {
+            eprintln!("\x1b[0m");
+            self.sub_open = false;
+        }
     }
 }
 
@@ -38,18 +61,40 @@ struct CpCtx {
     session_id: String,
 }
 
-/// Resolve (or create) a CP session for the given endpoint.
+/// Resolve (or create) a CP session for the given endpoint. When an existing
+/// `session_id` is passed in (continuing a prior chat), also fetch its prior
+/// turns — otherwise `nasiko chat --session-id <id>` starts blank even though
+/// the session already has history on the server.
 /// Returns None when the endpoint does not belong to the active cluster.
-fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<CpCtx> {
+fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<(CpCtx, Vec<cp::CpMessage>)> {
     let (base_url, token) = cp::cp_credentials(endpoint)?;
-    let sid = match session_id {
-        Some(s) => s.to_string(),
+    let (sid, history) = match session_id {
+        Some(s) => {
+            let history = cp::fetch_cp_messages(&base_url, &token, s).unwrap_or_default();
+            (s.to_string(), history)
+        }
         None => {
             let sess: CpSession = cp::create_cp_session(&base_url, &token, endpoint, "New chat").ok()?;
-            sess.session_id
+            (sess.session_id, Vec::new())
         }
     };
-    Some(CpCtx { base_url, token, session_id: sid })
+    Some((CpCtx { base_url, token, session_id: sid }, history))
+}
+
+/// Print a session's prior turns before resuming it, in the same visual
+/// language as a live turn (`❯ you` / plain agent text), so continuing a
+/// session reads as a pickup rather than starting cold.
+fn print_history(history: &[cp::CpMessage]) {
+    if history.is_empty() {
+        return;
+    }
+    for msg in history {
+        match msg.role.as_str() {
+            "user" => println!("\x1b[1;36m❯ you\x1b[0m {}", msg.content),
+            _ => println!("{}\n", msg.content),
+        }
+    }
+    println!("\x1b[2m· resumed above — continuing below ·\x1b[0m\n");
 }
 
 /// Chat with an A2A agent (one-shot or interactive).
@@ -63,47 +108,61 @@ fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<CpCtx> {
 /// `target_label` is what the user typed (agent name/id, or "" for the
 /// orchestrator) — used verbatim in the resume hint so it can be copy-pasted.
 pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>, target_label: &str) -> Result<()> {
-    let endpoint = url.trim_end_matches('/').to_string();
-    let cp_ctx = resolve_cp_ctx(&endpoint, session_id);
+    use std::io::IsTerminal;
 
-    match message {
-        Some(msg) => {
-            send_message(&endpoint, msg, cp_ctx.as_ref())?;
-            println!();
+    let endpoint = url.trim_end_matches('/').to_string();
+    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id) {
+        Some((ctx, history)) => (Some(ctx), history),
+        None => (None, Vec::new()),
+    };
+
+    // At a terminal, a message argument is just the first turn of a
+    // conversation — answer it and keep the session open. Piped/scripted
+    // invocations (non-TTY) stay strictly one-shot.
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+
+    if let Some(msg) = message {
+        print_history(&history);
+        send_message(&endpoint, msg, cp_ctx.as_ref())?;
+        println!();
+        if !interactive {
             print_resume_hint(cp_ctx.as_ref(), target_label);
+            return Ok(());
         }
-        None => {
-            let session_note = cp_ctx
-                .as_ref()
-                .map(|ctx| format!(" \x1b[2m· session {}\x1b[0m", &ctx.session_id[..8]))
-                .unwrap_or_default();
-            println!("\x1b[1mnasiko chat\x1b[0m \x1b[2m·\x1b[0m {endpoint}{session_note}");
-            println!("\x1b[2mtype /quit to exit\x1b[0m\n");
-            loop {
-                let input = match dialoguer::Input::<String>::new()
-                    .with_prompt("\x1b[36myou\x1b[0m")
-                    .allow_empty(true)
-                    .interact_text()
-                {
-                    Ok(i) => i,
-                    // Ctrl-C / Ctrl-D — leave gracefully instead of erroring out.
-                    Err(_) => break,
-                };
-                if input.trim().is_empty() {
-                    continue;
-                }
-                if input.trim() == "/quit" || input.trim() == "/exit" {
-                    break;
-                }
-                println!();
-                match send_message(&endpoint, &input, cp_ctx.as_ref()) {
-                    Ok(_) => println!("\n"),
-                    Err(e) => eprintln!("  \x1b[31merror:\x1b[0m {e}\n"),
-                }
-            }
-            print_resume_hint(cp_ctx.as_ref(), target_label);
+        println!();
+    } else {
+        let session_note = cp_ctx
+            .as_ref()
+            .map(|ctx| format!(" \x1b[2m· session {}\x1b[0m", &ctx.session_id[..8]))
+            .unwrap_or_default();
+        println!("\x1b[1mnasiko chat\x1b[0m \x1b[2m·\x1b[0m {endpoint}{session_note}");
+        println!("\x1b[2mtype /quit to exit\x1b[0m\n");
+        print_history(&history);
+    }
+
+    loop {
+        let input = match dialoguer::Input::<String>::new()
+            .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+            .allow_empty(true)
+            .interact_text()
+        {
+            Ok(i) => i,
+            // Ctrl-C / Ctrl-D — leave gracefully instead of erroring out.
+            Err(_) => break,
+        };
+        if input.trim().is_empty() {
+            continue;
+        }
+        if input.trim() == "/quit" || input.trim() == "/exit" {
+            break;
+        }
+        println!();
+        match send_message(&endpoint, &input, cp_ctx.as_ref()) {
+            Ok(_) => println!("\n"),
+            Err(e) => eprintln!("  \x1b[31merror:\x1b[0m {e}\n"),
         }
     }
+    print_resume_hint(cp_ctx.as_ref(), target_label);
     Ok(())
 }
 
@@ -125,7 +184,7 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         .map(|c| c.session_id.clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
         "method": "SendStreamingMessage",
@@ -138,6 +197,12 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
             }
         }
     });
+    // Name the session explicitly so the server loads prior turns as
+    // conversation history (it also falls back to contextId, but the
+    // metadata field is the documented contract the web UI uses).
+    if let Some(ctx) = cp_ctx {
+        body["params"]["metadata"] = serde_json::json!({ "session_id": ctx.session_id });
+    }
 
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
@@ -153,6 +218,14 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
             .map(|u| endpoint.starts_with(&u))
             .unwrap_or(false)
     });
+
+    // Catch a locally-detectable expired token before making the request —
+    // the server would only answer with an opaque 401.
+    if let Some(ref t) = token
+        && config::token_expired(t) == Some(true)
+    {
+        bail!("session expired — run: nasiko auth login");
+    }
 
     // Generate W3C traceparent for flow tracking
     let trace_id = uuid::Uuid::new_v4().to_string().replace('-', "");
@@ -184,7 +257,12 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
             .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(|s| s.to_string()))
             .unwrap_or(err_body);
         let msg = if msg.trim().is_empty() { "(empty response body)".to_string() } else { msg };
-        bail!("HTTP {} from {}: {}", resp.status().as_u16(), endpoint, msg);
+        let hint = if resp.status().as_u16() == 401 {
+            "\nhint: your session may have expired — run: nasiko auth login"
+        } else {
+            ""
+        };
+        bail!("HTTP {} from {}: {}{}", resp.status().as_u16(), endpoint, msg, hint);
     }
 
     let content_type = resp
@@ -258,6 +336,7 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
             let state = task.pointer("/status/state").and_then(|s| s.as_str()).unwrap_or("");
             if matches!(state, "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED") {
                 spin.pause();
+                spin.close_sub();
                 if let Some(t) = handle_task_result(task) {
                     collected.push_str(&t);
                 }
@@ -266,9 +345,21 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
         } else if let Some(status_update) = result.get("statusUpdate") {
             handle_status_update(status_update, spin);
             is_terminal = is_terminal_state(status_update);
+        } else if result.get("message").is_some() {
+            // Bare message reply (e.g. a2a-go SDK agents): terminal, the
+            // message text is the full answer.
+            spin.pause();
+            spin.close_sub();
+            if let Some(t) = nasiko_types::a2a::extract_text(result) {
+                print!("{t}");
+                std::io::stdout().flush().ok();
+                collected.push_str(&t);
+            }
+            is_terminal = true;
         } else if let Some(artifact_update) = result.get("artifactUpdate") {
             // Answer text is flowing — the text itself is the progress indicator.
             spin.pause();
+            spin.close_sub();
             if let Some(t) = handle_artifact_update(artifact_update) {
                 collected.push_str(&t);
             }
@@ -276,6 +367,7 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
             match kind {
                 "artifact-update" => {
                     spin.pause();
+                    spin.close_sub();
                     if let Some(t) = handle_artifact_update(result) {
                         collected.push_str(&t);
                     }
@@ -290,12 +382,12 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
         }
 
         if is_terminal {
-            spin.pause();
             break;
         }
     }
 
     spin.pause();
+    spin.close_sub();
     Ok(collected)
 }
 
@@ -323,6 +415,7 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
                         render_status_data(data, spin);
                     } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                         spin.pause();
+                        spin.close_sub();
                         eprintln!("  \x1b[2m{text}\x1b[0m");
                         spin.set("working");
                     }
@@ -331,6 +424,7 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
         }
         "TASK_STATE_FAILED" => {
             spin.pause();
+            spin.close_sub();
             if let Some(parts) = event
                 .pointer("/status/message/parts")
                 .and_then(|p| p.as_array())
@@ -356,7 +450,8 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
                     spin.set("thinking");
                 } else {
                     spin.pause();
-                    eprintln!("  \x1b[2m{content}\x1b[0m");
+                    spin.close_sub();
+                    eprintln!("\x1b[2m{content}\x1b[0m");
                     spin.set("thinking");
                 }
             }
@@ -365,7 +460,12 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             let agent = data.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
             let message = data.get("message").and_then(|m| m.as_str()).unwrap_or("");
             spin.pause();
-            eprintln!("  \x1b[36m→ {agent}\x1b[0m: {message}");
+            spin.close_sub();
+            // The call header is the visual anchor — bold, colored, flush
+            // left. Everything the agent does below it is dim and indented.
+            eprintln!("\x1b[1;36m❯ {agent}\x1b[0m \x1b[2m· {message}\x1b[0m");
+            spin.sub_streamed = false;
+            spin.call_started = Some(std::time::Instant::now());
             spin.set(format!("{agent} working"));
         }
         "tool_result" => {
@@ -374,15 +474,70 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             let result = data.get("result").and_then(|r| r.as_str()).unwrap_or("");
             let icon = if success { "✓" } else { "✗" };
             let color = if success { "32" } else { "31" };
-            let display = if result.len() > 200 {
-                let n = result.floor_char_boundary(200);
-                format!("{}...", &result[..n])
-            } else {
-                result.to_string()
-            };
             spin.pause();
-            eprintln!("  \x1b[{color}m{icon} {agent}\x1b[0m: {display}");
+            spin.close_sub();
+            let elapsed = spin
+                .call_started
+                .take()
+                .map(|t| format!(" \x1b[2m({:.1}s)\x1b[0m", t.elapsed().as_secs_f64()))
+                .unwrap_or_default();
+            if success && spin.sub_streamed {
+                // Reply already streamed above — don't repeat it.
+                eprintln!("\x1b[{color}m{icon} {agent}\x1b[0m{elapsed}");
+            } else {
+                // Results arrive JSON-encoded ("\"…\"" with escaped
+                // quotes/newlines); decode and collapse to one line so the
+                // preview reads as prose.
+                let decoded = serde_json::from_str::<String>(result)
+                    .unwrap_or_else(|_| result.to_string());
+                let one_line = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+                let display = if one_line.len() > 200 {
+                    let n = one_line.floor_char_boundary(200);
+                    format!("{}…", &one_line[..n])
+                } else {
+                    one_line
+                };
+                eprintln!("\x1b[{color}m{icon} {agent}\x1b[0m{elapsed} \x1b[2m{display}\x1b[0m");
+            }
+            spin.sub_streamed = false;
             spin.set("thinking");
+        }
+        "sub_status" => {
+            // A sub-agent's own progress (its internal tool calls), relayed
+            // through the orchestrator's stream. The header above already
+            // names the agent — no need to repeat it per line. Nesting is
+            // shown with a dim "›" marker instead of leading spaces, so the
+            // line stays flush-left and scans easily; the tool name itself
+            // is highlighted (like the agent name on the header line) so
+            // it's the first thing the eye catches.
+            let agent = data.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
+            let message = data.get("message").and_then(|m| m.as_str()).unwrap_or("");
+            spin.pause();
+            spin.close_sub();
+            match message.split_once(": ") {
+                Some((tool, rest)) => {
+                    eprintln!("\x1b[2m›\x1b[0m \x1b[1;36m{tool}\x1b[0m\x1b[2m: {rest}\x1b[0m")
+                }
+                None => eprintln!("\x1b[2m› {message}\x1b[0m"),
+            }
+            spin.set(format!("{agent} working"));
+        }
+        "sub_content" => {
+            // A sub-agent's reply streaming in — shown dim inline while it
+            // generates; the result line closes with just a checkmark.
+            let content = data.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            if content.is_empty() {
+                return;
+            }
+            spin.pause();
+            if !spin.sub_open {
+                eprint!("  \x1b[2m");
+                spin.sub_open = true;
+                spin.sub_streamed = true;
+            }
+            // Keep continuation lines aligned under the same indent.
+            eprint!("\x1b[2m{}\x1b[0m", content.replace('\n', "\n  \x1b[2m"));
+            let _ = std::io::Write::flush(&mut std::io::stderr());
         }
         _ => {}
     }
@@ -494,7 +649,7 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
     let mut ctx_id: Option<String> = initial_ctx;
     loop {
         let input = match dialoguer::Input::<String>::new()
-            .with_prompt("\x1b[36myou\x1b[0m")
+            .with_prompt("\x1b[1;36m❯ you\x1b[0m")
             .allow_empty(true)
             .interact_text()
         {

@@ -87,6 +87,26 @@ pub fn active_token() -> Result<Option<String>> {
     Ok(entry.token)
 }
 
+/// Decode the `exp` claim (unix seconds) from a JWT without verifying its
+/// signature. Returns None for tokens that aren't parseable JWTs — callers
+/// must treat that as "unknown", not "valid".
+pub fn token_expiry(token: &str) -> Option<i64> {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get("exp")?.as_i64()
+}
+
+/// Whether a stored JWT is already expired. None when the token's expiry
+/// can't be determined locally (not a JWT, or no `exp` claim).
+pub fn token_expired(token: &str) -> Option<bool> {
+    let exp = token_expiry(token)?;
+    Some(exp <= chrono::Utc::now().timestamp())
+}
+
 /// Add or update a cluster and set it as active.
 pub fn connect(name: &str, url: &str) -> Result<()> {
     let mut config = load()?;

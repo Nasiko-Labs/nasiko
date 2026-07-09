@@ -45,14 +45,47 @@ pub fn login() -> Result<()> {
 }
 
 /// Show current auth status.
+///
+/// Checks the stored JWT's `exp` claim locally so an expired session is
+/// reported as such instead of a misleading "Authenticated".
 pub fn status() -> Result<()> {
     let (name, entry) = config::active_cluster()?;
-    match (&entry.token, &entry.username) {
-        (Some(_), Some(user)) => println!("Authenticated to {} as {}", name, user),
-        (Some(_), None) => println!("Authenticated to: {}", name),
-        _ => println!("Not authenticated. Run: nasiko auth login"),
+    let Some(token) = &entry.token else {
+        println!("Not authenticated. Run: nasiko auth login");
+        return Ok(());
+    };
+
+    let who = entry
+        .username
+        .as_deref()
+        .map(|u| format!(" as {u}"))
+        .unwrap_or_default();
+
+    match config::token_expired(token) {
+        Some(true) => {
+            println!("Session expired for {}{} — run: nasiko auth login", name, who);
+        }
+        Some(false) => {
+            let remaining = config::token_expiry(token)
+                .map(|exp| exp - chrono::Utc::now().timestamp())
+                .filter(|s| *s > 0)
+                .map(|s| format!(" (expires in {})", format_duration(s)))
+                .unwrap_or_default();
+            println!("Authenticated to {}{}{}", name, who, remaining);
+        }
+        None => println!("Authenticated to {}{}", name, who),
     }
     Ok(())
+}
+
+fn format_duration(secs: i64) -> String {
+    if secs >= 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}s", secs)
+    }
 }
 
 /// Clear stored token.
@@ -69,6 +102,9 @@ pub fn whoami() -> Result<()> {
     let token = entry
         .token
         .ok_or_else(|| anyhow::anyhow!("not logged in — run: nasiko auth login"))?;
+    if config::token_expired(&token) == Some(true) {
+        bail!("session expired — run: nasiko auth login");
+    }
 
     let http = ureq::Agent::new_with_defaults();
     let url = format!("{}/api/users/me", entry.url);

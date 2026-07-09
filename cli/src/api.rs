@@ -16,7 +16,12 @@ fn check_status(resp: &mut ureq::http::Response<ureq::Body>, url: &str) -> Resul
         } else {
             body
         };
-        bail!("HTTP {status} from {url}: {body}");
+        let hint = if status == 401 {
+            "\nhint: your session may have expired — run: nasiko auth login"
+        } else {
+            ""
+        };
+        bail!("HTTP {status} from {url}: {body}{hint}");
     }
     Ok(())
 }
