@@ -1,3 +1,4 @@
+import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
@@ -47,7 +48,7 @@ class SecretsPage extends HTMLElement {
       const key = this.querySelector('#secret-key').value.trim();
       const value = this.querySelector('#secret-value').value;
       if (!key || !value) return;
-      const res = await fetch('/api/secrets', {
+      const res = await apiFetch('/secrets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, value }),
@@ -65,7 +66,7 @@ class SecretsPage extends HTMLElement {
       if (!btn) return;
       if (!confirm(`Delete secret "${btn.dataset.key}"?`)) return;
       try {
-        const res = await fetch(`/api/secrets/${btn.dataset.key}`, { method: 'DELETE' });
+        const res = await apiFetch(`/secrets/${btn.dataset.key}`, { method: 'DELETE' });
         if (!res.ok) throw new Error(res.statusText);
         table.refresh();
       } catch (e) { showToast(`Failed: ${e.message}`); }

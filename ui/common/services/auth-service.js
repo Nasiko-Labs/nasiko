@@ -8,8 +8,11 @@ class AuthService {
     return _cachedUser?.name || null;
   }
 
+  // Truthful only after fetchCurrentUser() has resolved (app-header awaits it
+  // before rendering). The cookie is HttpOnly, so a server round-trip is the
+  // only way to learn auth state — there is nothing local to check.
   isAuthenticated() {
-    return !window.location.pathname.startsWith('/login');
+    return _cachedUser !== null;
   }
 
   getUsers() {

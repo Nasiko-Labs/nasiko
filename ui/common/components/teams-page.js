@@ -1,3 +1,4 @@
+import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-modal.js';
@@ -90,7 +91,7 @@ class TeamsPage extends HTMLElement {
           return;
         }
 
-        const res = await fetch('/api/teams', {
+        const res = await apiFetch('/teams', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, department_id }),

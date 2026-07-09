@@ -1,0 +1,142 @@
+/*
+  Rendered-markdown styles for LLM output (see /common/utils/markdown.js).
+  Apply the `md-body` class to any container filled via renderMarkdown().
+  Imported globally by components.css.
+*/
+.md-body {
+  p {
+    margin: 0 0 var(--space-sm);
+  }
+
+  h1 { font-size: var(--font-size-xl); }
+  h2 { font-size: var(--font-size-lg); }
+  h3 { font-size: var(--font-size-base); }
+  h4, h5, h6 { font-size: var(--font-size-sm); }
+
+  :is(h1, h2, h3, h4, h5, h6) {
+    font-weight: 600;
+    margin: var(--space-md) 0 var(--space-sm);
+  }
+
+  :is(ul, ol) {
+    margin: 0 0 var(--space-sm);
+    padding-left: var(--space-lg);
+  }
+
+  :is(ul, ol) :is(ul, ol) {
+    margin-bottom: 0;
+  }
+
+  li {
+    margin-bottom: var(--space-2xs);
+  }
+
+  a {
+    color: var(--color-primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  blockquote {
+    margin: 0 0 var(--space-sm);
+    padding: var(--space-2xs) var(--space-md);
+    border-left: 3px solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    margin: var(--space-md) 0;
+  }
+
+  table {
+    display: block;
+    overflow-x: auto;
+    border-collapse: collapse;
+    margin: 0 0 var(--space-sm);
+    font-size: var(--font-size-sm);
+  }
+
+  :is(th, td) {
+    border: 1px solid var(--color-border);
+    padding: var(--space-2xs) var(--space-sm);
+    text-align: left;
+  }
+
+  th {
+    font-weight: 600;
+    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+  }
+
+  > :first-child {
+    margin-top: 0;
+  }
+
+  > :last-child {
+    margin-bottom: 0;
+  }
+
+  code.md-inline-code {
+    background: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
+    padding: 1px var(--space-2xs);
+    border-radius: var(--radius-sm);
+    font-size: 0.9em;
+    font-family: monospace;
+  }
+
+  .md-code-block {
+    margin: var(--space-sm) 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .md-code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-2xs) var(--space-sm);
+    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .md-code-lang {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    font-family: monospace;
+  }
+
+  button.md-code-copy {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover {
+      color: var(--color-primary);
+    }
+    &:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--color-primary-ring);
+    }
+  }
+
+  .md-code-block pre {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    overflow-x: auto;
+    font-size: var(--font-size-xs);
+    line-height: 1.6;
+    font-family: monospace;
+  }
+
+  .md-code-block code {
+    font-family: inherit;
+  }
+}

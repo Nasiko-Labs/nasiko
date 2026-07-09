@@ -1,3 +1,4 @@
+import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
@@ -217,7 +218,7 @@ class UsersPage extends HTMLElement {
         if (status) params.set('status', status);
         params.set('limit', limit);
         params.set('offset', (page - 1) * limit);
-        const res = await fetch(`/api/users?${params}`);
+        const res = await apiFetch(`/users?${params}`);
         if (!res.ok) throw new Error(res.statusText);
         return res.json();
       };
@@ -256,7 +257,7 @@ class UsersPage extends HTMLElement {
         if (!username || !email) { showToast('Username and email are required'); return; }
         if (password.length < 8) { showToast('Password must be at least 8 characters'); return; }
 
-        const res = await fetch('/api/users', {
+        const res = await apiFetch('/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, email, password, display_name: display_name || null, role }),
@@ -295,7 +296,7 @@ class UsersPage extends HTMLElement {
         const body = { username, email, display_name: display_name || null };
         if (password) body.password = password;
 
-        const res = await fetch(`/api/users/${editingId}`, {
+        const res = await apiFetch(`/users/${editingId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -327,7 +328,7 @@ class UsersPage extends HTMLElement {
       } else if (action === 'delete') {
         if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
         try {
-          const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+          const res = await apiFetch(`/users/${id}`, { method: 'DELETE' });
           if (!res.ok) throw new Error(res.statusText);
           table.refresh();
           showToast('User deleted');
@@ -335,7 +336,7 @@ class UsersPage extends HTMLElement {
       } else if (action === 'deactivate' || action === 'activate') {
         const is_active = action === 'activate';
         try {
-          const res = await fetch(`/api/users/${id}`, {
+          const res = await apiFetch(`/users/${id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ is_active }),

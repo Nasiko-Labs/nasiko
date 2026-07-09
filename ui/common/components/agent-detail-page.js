@@ -169,7 +169,7 @@ class AgentDetailPage extends HTMLElement {
     viewer.innerHTML = '<span style="color:var(--color-text-muted);">Loading…</span>';
 
     try {
-      const logs = await fetchApi(`/observe/agents/${this.#agentId}/logs?${params}`);
+      const logs = await fetchApi(`/observability/agents/${this.#agentId}/logs?${params}`);
       if (!logs.length) {
         viewer.innerHTML = '<span style="color:var(--color-text-muted);">No logs found.</span>';
         return;
@@ -210,7 +210,7 @@ class AgentDetailPage extends HTMLElement {
     if (!viewer) return;
     viewer.innerHTML = '';
 
-    this.#sseSource = connectSSE(`/observe/agents/${this.#agentId}/logs/stream`, {
+    this.#sseSource = connectSSE(`/observability/agents/${this.#agentId}/logs/stream`, {
       onMessage: (line) => {
         if (!line || typeof line !== 'object') return;
         viewer.insertAdjacentHTML('beforeend', this.#renderLogLine(line) + '\n');
@@ -237,7 +237,7 @@ class AgentDetailPage extends HTMLElement {
     if (!el) return;
 
     try {
-      const s = await fetchApi(`/observe/agents/${this.#agentId}/stats`);
+      const s = await fetchApi(`/observability/agent/${this.#agentId}/stats`);
       const fmt = (n, dec = 0) => (n == null ? '—' : (+n).toFixed(dec));
       el.innerHTML = `
         <div class="stats-grid">

@@ -1,11 +1,13 @@
+import { apiFetch } from '/common/services/api.js';
 import "./voice-input.js";
 import { icons } from '/common/utils/icons.js';
+import { renderMarkdown } from '/common/utils/markdown.js';
 
 if (!window.transcribeAudio) {
   window.transcribeAudio = async (blob) => {
     const form = new FormData();
     form.append('file', blob, 'audio.webm');
-    const res = await fetch('/api/transcribe', { method: 'POST', body: form });
+    const res = await apiFetch('/transcribe', { method: 'POST', body: form });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     return data.text;
@@ -14,104 +16,6 @@ if (!window.transcribeAudio) {
 
 import styles from './chat-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
-
-/**
- * Lightweight markdown renderer for chat messages.
- * Handles: bold, italic, code spans, code blocks, lists, paragraphs, links.
- * XSS-safe: escapes all content first, then applies transforms.
- */
-function renderMarkdown(text) {
-  if (!text) return '';
-
-  // Escape HTML entities first (XSS protection)
-  const esc = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-
-  // Extract code blocks first (protect from other transforms)
-  const codeBlocks = [];
-  let processed = esc.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-    const idx = codeBlocks.length;
-    codeBlocks.push({ lang, code: code.replace(/\n$/, '') });
-    return `\x00CODEBLOCK${idx}\x00`;
-  });
-
-  // Extract inline code (protect from other transforms)
-  const inlineCodes = [];
-  processed = processed.replace(/`([^`\n]+)`/g, (_match, code) => {
-    const idx = inlineCodes.length;
-    inlineCodes.push(code);
-    return `\x00INLINE${idx}\x00`;
-  });
-
-  // Bold
-  processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
-  // Italic (single asterisk, not inside a word boundary)
-  processed = processed.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-  // Links [text](url)
-  processed = processed.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
-  );
-
-  // Split into paragraphs by double newline
-  const blocks = processed.split(/\n\n+/);
-  let html = '';
-
-  for (const block of blocks) {
-    const trimmed = block.trim();
-    if (!trimmed) continue;
-
-    // Check for code block placeholder
-    if (/^\x00CODEBLOCK\d+\x00$/.test(trimmed)) {
-      const idx = Number.parseInt(trimmed.replace(/\x00CODEBLOCK(\d+)\x00/, '$1'), 10);
-      const { lang, code } = codeBlocks[idx];
-      html += `<div class="md-code-block"><div class="md-code-header"><span class="md-code-lang">${lang || 'code'}</span><button type="button" class="md-code-copy" aria-label="Copy code">${icons.copy('', 14)}</button></div><pre><code>${code}</code></pre></div>`;
-      continue;
-    }
-
-    // Check for list (unordered or ordered)
-    const lines = trimmed.split('\n');
-    const isUnorderedList = lines.every(l => /^[-*]\s/.test(l.trim()) || l.trim() === '');
-    const isOrderedList = lines.every(l => /^\d+\.\s/.test(l.trim()) || l.trim() === '');
-
-    if (isUnorderedList && lines.some(l => /^[-*]\s/.test(l.trim()))) {
-      html += '<ul>';
-      for (const line of lines) {
-        const match = line.trim().match(/^[-*]\s+(.*)/);
-        if (match) html += `<li>${match[1]}</li>`;
-      }
-      html += '</ul>';
-    } else if (isOrderedList && lines.some(l => /^\d+\.\s/.test(l.trim()))) {
-      html += '<ol>';
-      for (const line of lines) {
-        const match = line.trim().match(/^\d+\.\s+(.*)/);
-        if (match) html += `<li>${match[1]}</li>`;
-      }
-      html += '</ol>';
-    } else {
-      // Regular paragraph (preserve single newlines as <br>)
-      html += `<p>${trimmed.replace(/\n/g, '<br>')}</p>`;
-    }
-  }
-
-  // Restore inline code
-  html = html.replace(/\x00INLINE(\d+)\x00/g, (_match, idx) => {
-    return `<code class="md-inline-code">${inlineCodes[Number.parseInt(idx, 10)]}</code>`;
-  });
-
-  // Restore any un-rendered code block placeholders (in case they're inside a paragraph)
-  html = html.replace(/\x00CODEBLOCK(\d+)\x00/g, (_match, idx) => {
-    const { lang, code } = codeBlocks[Number.parseInt(idx, 10)];
-    return `<div class="md-code-block"><div class="md-code-header"><span class="md-code-lang">${lang || 'code'}</span><button type="button" class="md-code-copy" aria-label="Copy code">${icons.copy('', 14)}</button></div><pre><code>${code}</code></pre></div>`;
-  });
-
-  return html;
-}
 
 class ChatPage extends HTMLElement {
   #initialized = false;
@@ -265,7 +169,7 @@ class ChatPage extends HTMLElement {
 
     try {
       if (!this.#sessionId) {
-        const res = await fetch("/api/chat/sessions", {
+        const res = await apiFetch("/chat/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ agent_id: this.#agentId }),
@@ -315,7 +219,7 @@ class ChatPage extends HTMLElement {
         },
       };
 
-      const res = await fetch("/api/orchestrator/a2a", {
+      const res = await apiFetch("/orchestrator/a2a", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -355,7 +259,7 @@ class ChatPage extends HTMLElement {
 
   async #loadMessages(messagesEl) {
     try {
-      const res = await fetch(`/api/chat/sessions/${this.#sessionId}/messages`);
+      const res = await apiFetch(`/chat/sessions/${this.#sessionId}/messages`);
       if (!res.ok) {
         messagesEl.innerHTML = '';
         return;
@@ -378,7 +282,7 @@ class ChatPage extends HTMLElement {
     row.className = `msg-row is-${role}`;
 
     const div = document.createElement("div");
-    div.className = `msg is-${role}`;
+    div.className = `msg is-${role}${role === 'assistant' ? ' md-body' : ''}`;
 
     if (role === 'assistant') {
       div.innerHTML = renderMarkdown(content);
@@ -441,7 +345,7 @@ class ChatPage extends HTMLElement {
     statusEl.innerHTML = `<span class="pulse"></span> ...`;
 
     const contentEl = document.createElement("div");
-    contentEl.className = "stream-content";
+    contentEl.className = "stream-content md-body";
 
     streamArea.appendChild(statusEl);
     streamArea.appendChild(contentEl);
@@ -569,7 +473,7 @@ class ChatPage extends HTMLElement {
   #persistMessage(sessionId, role, content, traceId) {
     const payload = { role, content };
     if (traceId) payload.trace_id = traceId;
-    fetch(`/api/chat/sessions/${sessionId}/messages`, {
+    apiFetch(`/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

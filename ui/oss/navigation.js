@@ -42,7 +42,15 @@ window.fetchFlowDetail = async (flowId) => {
 };
 
 window.fetchTraceDetail = async (traceId) => {
-  return fetchApi(`/observe/traces/${traceId}`);
+  // Server route: /api/observability/trace/{id}, response envelope {data:{trace,spans}}.
+  // Normalize to the flat {spans, duration_ms} shape session-trace-page renders.
+  const resp = await fetchApi(`/observability/trace/${traceId}`);
+  const d = resp.data || resp;
+  return {
+    ...d,
+    spans: d.spans || [],
+    duration_ms: d.duration_ms ?? d.trace?.latency_ms ?? 0,
+  };
 };
 
 window.fetchUsageSummary = async () => {
@@ -66,7 +74,7 @@ window.fetchUsageByModel = async (query, page, limit) => {
 window.fetchBuilds = async (query, page, limit) => {
   const params = new URLSearchParams({ limit, offset: ((page || 1) - 1) * limit });
   if (query) params.set('q', query);
-  return fetchApi(`/build/builds?${params}`);
+  return fetchApi(`/builds?${params}`);
 };
 
 window.fetchSettings = async () => {

@@ -1,3 +1,4 @@
+import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-modal.js';
@@ -72,7 +73,7 @@ class DepartmentsPage extends HTMLElement {
         const body = { name };
         if (description) body.description = description;
 
-        const res = await fetch('/api/departments', {
+        const res = await apiFetch('/departments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),

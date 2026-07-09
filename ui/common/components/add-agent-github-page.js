@@ -1,3 +1,4 @@
+import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import styles from './add-agent-github-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -35,7 +36,7 @@ class AddAgentGithubPage extends HTMLElement {
       const repo = btn.dataset.import;
       btn.setAttribute('loading', '');
       try {
-        const res = await fetch('/api/import/github', {
+        const res = await apiFetch('/import/github', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ repository: repo }),
@@ -55,7 +56,7 @@ class AddAgentGithubPage extends HTMLElement {
   async #loadRepos() {
     const repoList = this.querySelector('.repo-list');
     try {
-      const res = await fetch('/api/auth/github/repos');
+      const res = await apiFetch('/auth/github/repos');
       if (res.status === 401 || res.status === 403) {
         this.#showConnectGithub();
         return;

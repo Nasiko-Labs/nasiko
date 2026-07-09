@@ -1,3 +1,4 @@
+import { apiFetch } from "/common/services/api.js";
 import { icons } from "/common/utils/icons.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
@@ -350,7 +351,7 @@ class YourAgentsPage extends HTMLElement {
           return;
         }
         try {
-          const res = await fetch("/api/secrets");
+          const res = await apiFetch("/secrets");
           if (!res.ok) throw new Error();
           userSecrets = await res.json();
         } catch {
@@ -394,8 +395,8 @@ class YourAgentsPage extends HTMLElement {
       "click",
       withLoading(deployBtn, "Deploying...", async () => {
         if (selectedSecrets.size > 0 && deployAgentId) {
-          await fetch(
-            `/api/agents/${deployAgentId}/secrets/import`,
+          await apiFetch(
+            `/agents/${deployAgentId}/secrets/import`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -410,14 +411,14 @@ class YourAgentsPage extends HTMLElement {
           const key = inputs[0].value.trim();
           const val = inputs[1].value;
           if (!key) continue;
-          await fetch(`/api/agents/${deployAgentId}/secrets`, {
+          await apiFetch(`/agents/${deployAgentId}/secrets`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name: key, value: val }),
           });
         }
 
-        const res = await fetch("/api/containers", {
+        const res = await apiFetch("/containers", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -447,8 +448,8 @@ class YourAgentsPage extends HTMLElement {
         secretsSection.style.display = "none";
 
         try {
-          const res = await fetch(
-            `/api/agents/${deployAgentId}/secrets`,
+          const res = await apiFetch(
+            `/agents/${deployAgentId}/secrets`,
           );
           if (res.ok) {
             const secrets = await res.json();
@@ -468,8 +469,8 @@ class YourAgentsPage extends HTMLElement {
         btn.disabled = true;
         btn.textContent = action === "restart" ? "Restarting..." : "Stopping...";
         try {
-          const res = await fetch(
-            `/api/containers/${encodeURIComponent(name)}/${action}`,
+          const res = await apiFetch(
+            `/containers/${encodeURIComponent(name)}/${action}`,
             { method: "POST" },
           );
           if (!res.ok) throw new Error(await res.text());
@@ -492,8 +493,8 @@ class YourAgentsPage extends HTMLElement {
         )
           return;
         try {
-          const res = await fetch(
-            `/api/agents/${encodeURIComponent(id)}`,
+          const res = await apiFetch(
+            `/agents/${encodeURIComponent(id)}`,
             { method: "DELETE" },
           );
           if (!res.ok) throw new Error(await res.text());

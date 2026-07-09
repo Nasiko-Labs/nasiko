@@ -1,10 +1,12 @@
+import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
+import { renderMarkdown } from '/common/utils/markdown.js';
 import '/common/components/voice-input.js';
 
 window.transcribeAudio = async (blob) => {
   const form = new FormData();
   form.append('file', blob, 'audio.webm');
-  const res = await fetch('/api/transcribe', { method: 'POST', body: form });
+  const res = await apiFetch('/transcribe', { method: 'POST', body: form });
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   return data.text;
@@ -40,7 +42,7 @@ class OrchestratorPage extends HTMLElement {
       <div class="response-area" id="response-area">
         <div class="status-history" id="status-history"></div>
         <div class="stream-status" id="stream-status"><span class="pulse"></span> ...</div>
-        <div class="response-content" id="response-content"></div>
+        <div class="response-content md-body" id="response-content"></div>
         <a class="continue-link" id="continue-link" style="display:none;" href="#">Continue in chat</a>
       </div>
     `;
@@ -54,6 +56,18 @@ class OrchestratorPage extends HTMLElement {
     const responseContent = this.querySelector('#response-content');
     const continueLink = this.querySelector('#continue-link');
     continueLink.insertAdjacentHTML('beforeend', ' ' + icons.chevronRight('', 14));
+
+    // Copy code blocks (delegated)
+    responseContent.addEventListener('click', (e) => {
+      const copyBtn = e.target.closest('.md-code-copy');
+      if (!copyBtn) return;
+      const codeEl = copyBtn.closest('.md-code-block')?.querySelector('code');
+      if (codeEl) {
+        navigator.clipboard.writeText(codeEl.textContent).catch(() => {});
+        copyBtn.innerHTML = icons.check('', 14);
+        setTimeout(() => { copyBtn.innerHTML = icons.copy('', 14); }, 1500);
+      }
+    });
 
     voiceInput.addEventListener('voice-input-submit', async (e) => {
       const { value: content, files } = e.detail;
@@ -71,7 +85,7 @@ class OrchestratorPage extends HTMLElement {
 
       try {
         // Create a session so the conversation can be continued
-        const sessionRes = await fetch('/api/chat/sessions', {
+        const sessionRes = await apiFetch('/chat/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title: content.slice(0, 100) }),
@@ -81,7 +95,7 @@ class OrchestratorPage extends HTMLElement {
 
         // Persist user message
         if (sessionId) {
-          fetch(`/api/chat/sessions/${sessionId}/messages`, {
+          apiFetch(`/chat/sessions/${sessionId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ role: 'user', content }),
@@ -102,7 +116,7 @@ class OrchestratorPage extends HTMLElement {
           },
         };
 
-        const res = await fetch('/api/orchestrator/a2a', {
+        const res = await apiFetch('/orchestrator/a2a', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -113,7 +127,7 @@ class OrchestratorPage extends HTMLElement {
 
         // Persist assistant reply
         if (sessionId && reply) {
-          fetch(`/api/chat/sessions/${sessionId}/messages`, {
+          apiFetch(`/chat/sessions/${sessionId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ role: 'assistant', content: reply }),
@@ -137,7 +151,7 @@ class OrchestratorPage extends HTMLElement {
   async #loadRecentAgents() {
     const grid = this.querySelector('#recent-agents-grid');
     try {
-      const res = await fetch('/api/agents?status=running&limit=6');
+      const res = await apiFetch('/agents?status=running&limit=6');
       if (!res.ok) throw new Error('Failed to fetch');
       const body = await res.json();
       const agents = Array.isArray(body) ? body : (body.data || []);
@@ -199,7 +213,7 @@ class OrchestratorPage extends HTMLElement {
                   fullText = text;
                   streamStatus.classList.add('is-done');
                   responseContent.classList.add('is-visible');
-                  responseContent.textContent = fullText;
+                  responseContent.innerHTML = renderMarkdown(fullText);
                 }
               } else if (state === 'TASK_STATE_FAILED') {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
@@ -266,7 +280,7 @@ class OrchestratorPage extends HTMLElement {
               }
               streamStatus.classList.add('is-done');
               responseContent.classList.add('is-visible');
-              responseContent.textContent = fullText;
+              responseContent.innerHTML = renderMarkdown(fullText);
             }
           }
         } catch {}
@@ -278,6 +292,8 @@ class OrchestratorPage extends HTMLElement {
       fullText = 'No response';
       responseContent.classList.add('is-visible');
       responseContent.textContent = fullText;
+    } else {
+      responseContent.innerHTML = renderMarkdown(fullText);
     }
     return fullText;
   }

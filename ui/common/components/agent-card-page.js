@@ -1,5 +1,5 @@
 import { icons } from '/common/utils/icons.js';
-import { fetchApi } from '/common/services/api.js';
+import { fetchApi, apiFetch } from '/common/services/api.js';
 import { showToast } from '/common/utils/toast.js';
 import styles from './agent-card-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -260,7 +260,7 @@ class AgentCardPage extends HTMLElement {
         btn.disabled = true;
         btn.textContent = 'Restarting...';
         try {
-          const res = await fetch(`/api/containers/${encodeURIComponent(a.name)}/restart`, { method: 'POST' });
+          const res = await apiFetch(`/containers/${encodeURIComponent(a.name)}/restart`, { method: 'POST' });
           if (!res.ok) throw new Error(await res.text());
           showToast('Agent restarted');
           location.reload();
@@ -274,7 +274,7 @@ class AgentCardPage extends HTMLElement {
         btn.disabled = true;
         btn.textContent = 'Stopping...';
         try {
-          const res = await fetch(`/api/containers/${encodeURIComponent(a.name)}/stop`, { method: 'POST' });
+          const res = await apiFetch(`/containers/${encodeURIComponent(a.name)}/stop`, { method: 'POST' });
           if (!res.ok) throw new Error(await res.text());
           location.reload();
         } catch (err) {
@@ -288,7 +288,7 @@ class AgentCardPage extends HTMLElement {
         btn.disabled = true;
         btn.textContent = 'Deleting...';
         try {
-          const res = await fetch(`/api/agents/${encodeURIComponent(a.id)}`, { method: 'DELETE' });
+          const res = await apiFetch(`/agents/${encodeURIComponent(a.id)}`, { method: 'DELETE' });
           if (!res.ok) throw new Error(await res.text());
           location.href = '/your-agents.html';
         } catch (err) {
@@ -305,7 +305,7 @@ class AgentCardPage extends HTMLElement {
 
   async #loadStats() {
     try {
-      const s = await fetchApi(`/observe/agents/${this.#agentId}/stats`);
+      const s = await fetchApi(`/observability/agent/${this.#agentId}/stats`);
       const el = this.querySelector('#acp-stats');
       if (!el || !s) return;
 
@@ -460,7 +460,7 @@ class AgentCardPage extends HTMLElement {
     }
 
     try {
-      const logs = await fetchApi(`/observe/agents/${this.#agentId}/logs?tail=${this.#logsTail}`);
+      const logs = await fetchApi(`/observability/agents/${this.#agentId}/logs?tail=${this.#logsTail}`);
       this.#logsLoaded = true;
 
       if (!logs || logs.length === 0) {

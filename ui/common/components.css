@@ -5,5 +5,6 @@
 @import '/common/styles/text.css';
 @import '/common/styles/layout.css';
 @import '/common/styles/prose.css';
+@import '/common/styles/markdown.css';
 @import '/common/styles/btn.css';
 @import '/common/styles/seg-ctrl.css';
