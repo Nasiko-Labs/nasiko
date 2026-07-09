@@ -49,7 +49,7 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
     async fn deploy(&self, spec: &DeploymentSpec) -> Result<DeploymentStatus> {
         let mut patched = spec.clone();
         let ctx = AgentContext {
-            agent_id: spec.container_id.to_string(),
+            agent_id: spec.name.clone(),
             tenant_id: None,
             version: None,
             capture_content: self.capture_content,

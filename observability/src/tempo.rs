@@ -55,7 +55,11 @@ struct OtlpScopeSpans {
 
 #[derive(Debug, Deserialize)]
 struct OtlpStatus {
-    code: Option<u8>,
+    /// OTLP JSON encodes status code as either an integer (0/1/2) or a string
+    /// enum name ("STATUS_CODE_UNSET" / "STATUS_CODE_OK" / "STATUS_CODE_ERROR").
+    /// Store as a generic Value so both formats deserialize without error.
+    #[serde(default)]
+    code: Value,
     message: Option<String>,
 }
 
@@ -237,6 +241,19 @@ fn otlp_attr_to_json(v: &OtlpAttributeValue) -> Value {
     Value::Null
 }
 
+/// OTLP status code: integer (0/1/2) or string enum name.
+fn parse_status_code(v: &Value) -> u8 {
+    match v {
+        Value::Number(n) => n.as_u64().unwrap_or(0) as u8,
+        Value::String(s) => match s.as_str() {
+            "STATUS_CODE_OK" => 1,
+            "STATUS_CODE_ERROR" => 2,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
 fn parse_span_kind(kind: Option<&str>) -> u8 {
     match kind {
         Some("SPAN_KIND_INTERNAL") => 1,
@@ -291,7 +308,7 @@ fn parse_otlp_trace(
                     kind: parse_span_kind(span.kind.as_deref()),
                     status_code: span.status
                         .as_ref()
-                        .and_then(|s| s.code)
+                        .map(|s| parse_status_code(&s.code))
                         .unwrap_or(0),
                     status_message: span.status
                         .as_ref()

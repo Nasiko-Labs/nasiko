@@ -15,7 +15,7 @@ from agent_executor import TranslatorExecutor
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
-init_telemetry("translator")
+init_telemetry(os.environ.get("OTEL_SERVICE_NAME", "translator"))
 
 logger = logging.getLogger(__name__)
 

@@ -89,6 +89,34 @@ fn round6(v: f64) -> f64 {
     (v * 1_000_000.0).round() / 1_000_000.0
 }
 
+/// Convert a flat map of dot-separated keys into a nested JSON object.
+/// e.g. `{"openinference.span.kind": "LLM"}` → `{"openinference": {"span": {"kind": "LLM"}}}`
+fn unflatten_attrs(attrs: &HashMap<String, Value>) -> Value {
+    let mut root: serde_json::Map<String, Value> = serde_json::Map::new();
+    for (key, value) in attrs {
+        let parts: Vec<&str> = key.split('.').collect();
+        insert_nested(&mut root, &parts, value.clone());
+    }
+    Value::Object(root)
+}
+
+fn insert_nested(map: &mut serde_json::Map<String, Value>, parts: &[&str], value: Value) {
+    if parts.is_empty() {
+        return;
+    }
+    if parts.len() == 1 {
+        map.insert(parts[0].to_string(), value);
+        return;
+    }
+    let entry = map
+        .entry(parts[0].to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Value::Object(child) = entry {
+        insert_nested(child, &parts[1..], value);
+    }
+    // If there's a type conflict (e.g. existing value is a scalar), skip.
+}
+
 fn span_kind_str(kind: u8) -> &'static str {
     match kind {
         1 => "INTERNAL",
@@ -129,6 +157,16 @@ fn clamp_tempo_range(start: DateTime<Utc>, end: DateTime<Utc>) -> DateTime<Utc> 
 fn agent_query(agent_id: &str) -> String {
     format!(
         r#"{{span.agent.id="{0}"}} || {{resource.agent.id="{0}"}} || {{resource.service.name="{0}"}}"#,
+        agent_id
+    )
+}
+
+/// Like `agent_query` but restricted to traces that contain at least one span
+/// with `session.id` set — i.e., user-facing request traces only, excluding
+/// infrastructure traces (a2a-sdk remove_sink, dispatch loops, etc.).
+fn agent_session_query(agent_id: &str) -> String {
+    format!(
+        r#"{{span.session.id != "" && resource.service.name="{0}"}}"#,
         agent_id
     )
 }
@@ -596,7 +634,7 @@ pub struct SpanDetail {
     pub cost_summary: SimpleCostSummary,
     pub input: ContentField,
     pub output: ContentField,
-    pub attributes: HashMap<String, Value>,
+    pub attributes: Value,
     pub events: Vec<Value>,
     pub span_annotations: Vec<Value>,
     pub span_annotation_summaries: Vec<Value>,
@@ -736,63 +774,141 @@ impl ObservabilityService {
         self.tempo.search(&agent_query(agent_id), Some(start), Some(end), limit).await
     }
 
+    /// Same as `tempo_search` but filters to user-facing traces only (those with
+    /// `session.id` set on at least one span). Excludes a2a-sdk infrastructure
+    /// traces such as `remove_sink` and dispatch loops.
+    async fn tempo_search_user_traces(
+        &self,
+        agent_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<DateTime<Utc>>, Option<u64>)>, ObservabilityError> {
+        let start = clamp_tempo_range(start, end);
+        self.tempo
+            .search(&agent_session_query(agent_id), Some(start), Some(end), limit)
+            .await
+    }
+
     async fn fetch_sessions_for_agent(
         &self,
         agent_id: &str,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<SessionSummary>, ObservabilityError> {
-        let results = self.tempo_search(agent_id, start, end, 30).await?;
-        let mut sessions = Vec::with_capacity(results.len());
+        let results = self.tempo_search(agent_id, start, end, 100).await?;
+
+        // Group traces by session.id span attribute (= A2A contextId).
+        // Traces that have no session.id each become their own session (fallback: trace_id).
+        struct SessionAccum {
+            trace_ids: Vec<String>,
+            earliest_start: Option<DateTime<Utc>>,
+            latest_end: Option<DateTime<Utc>>,
+            total_input: u64,
+            total_output: u64,
+            model_used: Option<String>,
+            span_durations: Vec<u64>,
+        }
+        let mut by_session: std::collections::HashMap<String, SessionAccum> =
+            std::collections::HashMap::new();
 
         for (trace_id, started_at, duration_ms) in results {
-            let end_time = started_at.zip(duration_ms).map(|(s, d)| {
-                (s + Duration::milliseconds(d as i64)).to_rfc3339()
-            });
-
-            let mut total_input = 0u64;
-            let mut total_output = 0u64;
-            let mut model_used: Option<String> = None;
-            let mut num_chat_spans = 0u32;
-            let mut span_durations: Vec<u64> = Vec::new();
+            let mut session_key: Option<String> = None;
+            let mut trace_input = 0u64;
+            let mut trace_output = 0u64;
+            let mut trace_model: Option<String> = None;
+            let mut trace_span_durations: Vec<u64> = Vec::new();
 
             if let Ok(trace) = self.tempo.get_trace(&trace_id).await {
                 for span in &trace.spans {
+                    // Pick up the session.id tag set by the agent executor
+                    if session_key.is_none() {
+                        session_key = span
+                            .attributes
+                            .get("session.id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                    }
                     let (inp, out, model) = extract_token_attrs(&span.attributes);
                     if inp > 0 || out > 0 {
-                        total_input += inp;
-                        total_output += out;
-                        if model_used.is_none() {
-                            model_used = model;
+                        trace_input += inp;
+                        trace_output += out;
+                        if trace_model.is_none() {
+                            trace_model = model;
                         }
                     }
                     let op = span.attributes.get("gen_ai.operation.name").and_then(|v| v.as_str());
                     if matches!(op, None | Some("chat")) {
-                        num_chat_spans += 1;
                         if let Some(d) = span.duration_ms {
-                            span_durations.push(d);
+                            trace_span_durations.push(d);
                         }
                     }
                 }
             }
 
-            span_durations.sort_unstable();
-            let len = span_durations.len();
-            let p50 = span_durations.get(len / 2).map(|&v| v as f64);
-            let p99 = span_durations
+            // Skip traces without session.id — these are a2a-sdk infrastructure
+            // traces (event queue cleanup, dispatch loops, etc.), not user requests.
+            let Some(key) = session_key else { continue };
+            let end_time = started_at.zip(duration_ms).map(|(s, d)| {
+                s + Duration::milliseconds(d as i64)
+            });
+
+            let entry = by_session.entry(key).or_insert_with(|| SessionAccum {
+                trace_ids: Vec::new(),
+                earliest_start: None,
+                latest_end: None,
+                total_input: 0,
+                total_output: 0,
+                model_used: None,
+                span_durations: Vec::new(),
+            });
+
+            entry.trace_ids.push(trace_id);
+            if let Some(s) = started_at {
+                entry.earliest_start = Some(match entry.earliest_start {
+                    Some(prev) => prev.min(s),
+                    None => s,
+                });
+            }
+            if let Some(e) = end_time {
+                entry.latest_end = Some(match entry.latest_end {
+                    Some(prev) => prev.max(e),
+                    None => e,
+                });
+            }
+            entry.total_input += trace_input;
+            entry.total_output += trace_output;
+            if entry.model_used.is_none() {
+                entry.model_used = trace_model;
+            }
+            entry.span_durations.extend(trace_span_durations);
+        }
+
+        let mut sessions = Vec::with_capacity(by_session.len());
+        for (session_id, mut acc) in by_session {
+            acc.span_durations.sort_unstable();
+            let len = acc.span_durations.len();
+            let p50 = acc.span_durations.get(len / 2).map(|&v| v as f64);
+            let p99 = acc.span_durations
                 .get((len * 99 / 100).saturating_sub(1))
                 .map(|&v| v as f64);
 
-            let total_tokens = total_input + total_output;
-            let (_, _, cost) = compute_cost(total_input, total_output, model_used.as_deref());
+            let total_tokens = acc.total_input + acc.total_output;
+            let (_, _, cost) = compute_cost(acc.total_input, acc.total_output, acc.model_used.as_deref());
+            let num_traces = acc.trace_ids.len() as u32;
+
+            let duration_ms = match (acc.earliest_start, acc.latest_end) {
+                (Some(s), Some(e)) => Some((e - s).num_milliseconds().max(0) as u64),
+                _ => None,
+            };
 
             sessions.push(SessionSummary {
-                id: trace_id.clone(),
-                session_id: trace_id,
+                id: session_id.clone(),
+                session_id,
                 agent_id: agent_id.to_string(),
-                num_traces: Some(num_chat_spans.max(1)),
-                start_time: started_at.map(|t| t.to_rfc3339()),
-                end_time,
+                num_traces: Some(num_traces),
+                start_time: acc.earliest_start.map(|t| t.to_rfc3339()),
+                end_time: acc.latest_end.map(|t| t.to_rfc3339()),
                 duration_ms,
                 first_input: None,
                 last_output: None,
@@ -860,88 +976,106 @@ impl ObservabilityService {
         &self,
         session_id: &str,
     ) -> Result<SessionDetailResponse, ObservabilityError> {
-        let trace = self.tempo.get_trace(session_id).await?;
+        // session_id is the A2A contextId (e.g. "ses_14cda..."), not a Tempo trace ID.
+        // Find all traces that belong to this session via the span attribute set by the agent.
+        let query = format!(r#"{{span.session.id="{session_id}"}}"#);
+        let end = Utc::now();
+        let start = clamp_tempo_range(end - Duration::days(7), end);
+        let trace_results = self.tempo.search(&query, Some(start), Some(end), 100).await?;
 
-        // Service name = first span's service_name
-        let service_name = trace.spans.first().map(|s| s.service_name.clone());
+        if trace_results.is_empty() {
+            return Err(ObservabilityError::NotFound(format!("session '{session_id}'")));
+        }
 
-        // Fetch Loki logs best-effort
-        let logs_by_span = if let Some(ref svc) = service_name {
-            let start = trace.started_at;
-            let end = trace.ended_at;
-            self.loki
-                .get_trace_logs(svc, session_id, start, end)
-                .await
-                .map(parse_loki_logs)
-                .unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-
-        // Pass 1 — aggregate tokens from every span (no op-name filter).
         let mut total_input = 0u64;
         let mut total_output = 0u64;
         let mut model_used: Option<String> = None;
-
-        for span in &trace.spans {
-            let (inp, out, model) = extract_token_attrs(&span.attributes);
-            if inp > 0 || out > 0 {
-                total_input += inp;
-                total_output += out;
-                if model_used.is_none() {
-                    model_used = model;
-                }
-            }
-        }
-
-        // Pass 2 — one TraceEntry per chat span.
         let mut latencies: Vec<f64> = Vec::new();
         let mut trace_entries: Vec<TraceEntry> = Vec::new();
 
-        for (idx, span) in trace.spans.iter().enumerate() {
-            let op_name = span.attributes.get("gen_ai.operation.name").and_then(|v| v.as_str());
-            if matches!(op_name, Some(op) if op != "chat") {
-                continue;
+        for (trace_idx, (trace_id, _, _)) in trace_results.iter().enumerate() {
+            let Ok(trace) = self.tempo.get_trace(trace_id).await else { continue };
+
+            // Identify root span: one whose parent is not present in this trace.
+            let span_ids_set: std::collections::HashSet<&str> =
+                trace.spans.iter().map(|s| s.span_id.as_str()).collect();
+            let root_span = trace.spans.iter().find(|s| {
+                s.parent_span_id
+                    .as_ref()
+                    .map(|p| !span_ids_set.contains(p.as_str()))
+                    .unwrap_or(true)
+            });
+            let Some(root_span) = root_span else { continue };
+
+            // Aggregate tokens across all spans in this trace
+            let mut trace_input = 0u64;
+            let mut trace_output = 0u64;
+            let mut trace_model: Option<String> = None;
+            for span in &trace.spans {
+                let (inp, out, model) = extract_token_attrs(&span.attributes);
+                if inp > 0 || out > 0 {
+                    trace_input += inp;
+                    trace_output += out;
+                    if trace_model.is_none() {
+                        trace_model = model;
+                    }
+                }
+            }
+            total_input += trace_input;
+            total_output += trace_output;
+            if model_used.is_none() {
+                model_used = trace_model.clone();
             }
 
-            let (inp, out, span_model) = extract_token_attrs(&span.attributes);
-            let (_, _, span_cost) = compute_cost(inp, out, span_model.as_deref());
+            let service_name = trace.spans.first().map(|s| s.service_name.clone());
 
-            let duration_ms = span.duration_ms.unwrap_or(0) as f64;
+            // Fetch Loki logs for this trace best-effort
+            let logs_by_span = if let Some(ref svc) = service_name {
+                self.loki
+                    .get_trace_logs(svc, trace_id, trace.started_at, trace.ended_at)
+                    .await
+                    .map(parse_loki_logs)
+                    .unwrap_or_default()
+            } else {
+                HashMap::new()
+            };
+
+            let duration_ms = root_span.duration_ms.unwrap_or(0) as f64;
             if duration_ms > 0.0 {
                 latencies.push(duration_ms);
             }
 
-            let logs = logs_by_span.get(&span.span_id);
-            let flat_attrs: serde_json::Map<String, Value> = span
+            let logs = logs_by_span.get(&root_span.span_id);
+            let flat_attrs: serde_json::Map<String, Value> = root_span
                 .attributes
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            let (_, _, trace_cost) = compute_cost(trace_input, trace_output, trace_model.as_deref());
 
             let cursor = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
-                format!("connection:{idx}"),
+                format!("connection:{trace_idx}"),
             );
             let trace_id_enc = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
-                format!("Trace:{idx}"),
+                format!("Trace:{trace_id}"),
             );
             let span_id_enc = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
-                format!("Span:{}", &span.span_id),
+                format!("Span:{}", &root_span.span_id),
             );
 
             trace_entries.push(TraceEntry {
                 id: trace_id_enc.clone(),
-                trace_id: session_id.to_string(),
+                trace_id: trace_id.clone(),
                 root_span: RootSpanEntry {
                     id: span_id_enc,
-                    span_id: span.span_id.clone(),
+                    span_id: root_span.span_id.clone(),
                     attributes: serde_json::to_string(&flat_attrs).unwrap_or_default(),
-                    cumulative_token_count_total: inp + out,
+                    cumulative_token_count_total: trace_input + trace_output,
                     latency_ms: round6(duration_ms),
-                    start_time: Some(span.started_at.to_rfc3339()),
+                    start_time: Some(root_span.started_at.to_rfc3339()),
                     span_annotations: vec![],
                     span_annotation_summaries: vec![],
                     project: ProjectRef { id: String::new() },
@@ -958,7 +1092,7 @@ impl ObservabilityService {
                     trace: TraceRef {
                         id: trace_id_enc,
                         cost_summary: serde_json::json!({
-                            "total": { "cost": span_cost }
+                            "total": { "cost": trace_cost }
                         }),
                     },
                 },
@@ -980,7 +1114,7 @@ impl ObservabilityService {
                 session: SessionDetail {
                     id: session_id.to_string(),
                     session_id: session_id.to_string(),
-                    num_traces: trace_entries.len(),
+                    num_traces: trace_results.len(),
                     token_usage: TokenUsageSummary { total: Some(total_tokens) },
                     cost_summary: FullCostSummary {
                         total: CostWithTokens { cost: total_cost, tokens: total_tokens },
@@ -1024,6 +1158,17 @@ impl ObservabilityService {
             _ => None,
         };
 
+        // Extract session.id from any span that carries it.
+        let project_session_id = trace
+            .spans
+            .iter()
+            .find_map(|s| {
+                s.attributes
+                    .get("session.id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
+
         let num_spans = trace.spans.len();
         let (root_nodes, span_lookup) = build_span_tree(&trace.spans);
 
@@ -1043,7 +1188,7 @@ impl ObservabilityService {
             data: TraceDetailData {
                 trace: TraceDetail {
                     id: trace_id.to_string(),
-                    project_session_id: None,
+                    project_session_id,
                     num_spans,
                     latency_ms: trace_latency_ms,
                     cost_summary: NestedCostSummary {
@@ -1145,13 +1290,16 @@ impl ObservabilityService {
             .map(String::from)
             .or_else(|| logs.as_ref().and_then(|l| l.input.clone()))
             .unwrap_or_default();
-        let input_mime = span
-            .attributes
-            .get("input.mime_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("text")
-            .to_string();
         let input_parsed: Option<Value> = serde_json::from_str(&input_value).ok();
+        let input_mime = if input_parsed.is_some() {
+            "json".to_string()
+        } else {
+            span.attributes
+                .get("input.mime_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("text")
+                .to_string()
+        };
 
         // Output: prefer span attribute "output.value", fallback to Loki log
         let output_value = span
@@ -1161,13 +1309,16 @@ impl ObservabilityService {
             .map(String::from)
             .or_else(|| logs.as_ref().and_then(|l| l.output.clone()))
             .unwrap_or_default();
-        let output_mime = span
-            .attributes
-            .get("output.mime_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("text")
-            .to_string();
         let output_parsed: Option<Value> = serde_json::from_str(&output_value).ok();
+        let output_mime = if output_parsed.is_some() {
+            "json".to_string()
+        } else {
+            span.attributes
+                .get("output.mime_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("text")
+                .to_string()
+        };
 
         let span_id_enc = encode_span_id(&span.span_id);
         let trace_id_enc = base64::Engine::encode(
@@ -1208,7 +1359,7 @@ impl ObservabilityService {
                         mime_type: output_mime,
                         parsed_value: output_parsed,
                     },
-                    attributes: span.attributes.clone(),
+                    attributes: unflatten_attrs(&span.attributes),
                     events: vec![],
                     span_annotations: vec![],
                     span_annotation_summaries: vec![],
@@ -1233,7 +1384,7 @@ impl ObservabilityService {
         let start = parse_iso_or_default(Some(start_time), 1);
         let end = Utc::now();
 
-        let results = self.tempo_search(agent_id, start, end, 1000).await?;
+        let results = self.tempo_search_user_traces(agent_id, start, end, 1000).await?;
         let trace_count = results.len();
 
         let mut durations: Vec<u64> = results
@@ -1321,11 +1472,11 @@ impl ObservabilityService {
 
         for (agent_id, agent_name) in &agents {
             let traces = self
-                .tempo_search(agent_id, start, now, 1000)
+                .tempo_search_user_traces(agent_id, start, now, 1000)
                 .await
                 .unwrap_or_default();
             let traces_24h = self
-                .tempo_search(agent_id, last_24h, now, 1000)
+                .tempo_search_user_traces(agent_id, last_24h, now, 1000)
                 .await
                 .unwrap_or_default();
 
