@@ -91,11 +91,12 @@ pub async fn a2a_dispatch_handler(
         Err(e) => return Ok(e.into_response()),
     };
 
-    let history = if let Some(ref sid) = session_id {
-        SessionHistory::fetch(sid, &state.db, 20).await
-    } else {
-        SessionHistory::default()
-    };
+    // Prefer the explicit metadata.session_id (web UI), fall back to the
+    // message contextId — the CLI reuses its CP session id as contextId, so
+    // multi-turn chats keep their history either way. An unknown id simply
+    // fetches zero rows.
+    let history_sid = session_id.as_deref().unwrap_or(&context_id);
+    let history = SessionHistory::fetch(history_sid, &state.db, 20).await;
 
     let query = history.with_current_query(&text);
 
@@ -310,6 +311,22 @@ async fn orchestrator_stream(
                                 "result": result,
                                 "success": success,
                                 "turn": turn,
+                            })));
+                            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
+                        }
+                        OrchestratorEvent::SubStatus { agent, message } => {
+                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                                "type": "sub_status",
+                                "agent": agent,
+                                "message": message,
+                            })));
+                            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
+                        }
+                        OrchestratorEvent::SubContent { agent, content } => {
+                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                                "type": "sub_content",
+                                "agent": agent,
+                                "content": content,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }

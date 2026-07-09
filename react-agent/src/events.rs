@@ -22,6 +22,14 @@ pub enum OrchestratorEvent {
         turn: usize,
     },
 
+    /// A sub-agent's own progress update (e.g. its internal tool activity),
+    /// relayed live while it works on a call from the orchestrator.
+    SubStatus { agent: String, message: String },
+
+    /// A chunk of a sub-agent's reply text as it generates, relayed live.
+    /// The full reply still arrives as `ToolResult` when the call finishes.
+    SubContent { agent: String, content: String },
+
     /// A chunk of the final response text.
     Content { content: String },
 

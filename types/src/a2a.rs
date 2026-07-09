@@ -163,49 +163,191 @@ pub fn extract_text(result: &serde_json::Value) -> Option<String> {
     // v1.0 wraps in "task", v0.3 is flat
     let task = result.get("task").unwrap_or(result);
 
+    // Parts within one artifact/message are contiguous chunks (streaming
+    // agents emit one part per token) — concatenate them directly. Only
+    // distinct artifacts get a newline between them.
     if let Some(artifacts) = task.get("artifacts").and_then(|a| a.as_array()) {
-        let mut texts = Vec::new();
+        let mut artifact_texts = Vec::new();
         for artifact in artifacts {
             if let Some(parts) = artifact.get("parts").and_then(|p| p.as_array()) {
-                for part in parts {
-                    if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
-                        texts.push(t);
-                    }
+                let text: String = parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
+                    .collect();
+                if !text.is_empty() {
+                    artifact_texts.push(text);
                 }
             }
         }
-        if !texts.is_empty() {
-            return Some(texts.join("\n"));
+        if !artifact_texts.is_empty() {
+            return Some(artifact_texts.join("\n"));
         }
     }
 
-    if let Some(parts) = task
-        .pointer("/status/message/parts")
-        .and_then(|p| p.as_array())
-    {
-        let texts: Vec<&str> = parts
-            .iter()
-            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-            .collect();
-        if !texts.is_empty() {
-            return Some(texts.join("\n"));
-        }
-    }
-
-    if let Some(parts) = result
-        .pointer("/message/parts")
-        .and_then(|p| p.as_array())
-    {
-        let texts: Vec<&str> = parts
-            .iter()
-            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-            .collect();
-        if !texts.is_empty() {
-            return Some(texts.join("\n"));
+    for parts_path in ["/status/message/parts", "/message/parts"] {
+        let parts = if parts_path == "/status/message/parts" {
+            task.pointer(parts_path)
+        } else {
+            result.pointer(parts_path)
+        };
+        if let Some(parts) = parts.and_then(|p| p.as_array()) {
+            let text: String = parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if !text.is_empty() {
+                return Some(text);
+            }
         }
     }
 
     None
+}
+
+// ─── SSE stream event classification ────────────────────────────────────────
+
+/// One semantic event decoded from an A2A SSE `data:` payload.
+///
+/// A single payload can carry several (e.g. a working-status message with
+/// multiple parts), so [`classify_sse_event`] returns a list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SseEvent {
+    /// A chunk of the agent's reply text (artifact update).
+    ArtifactText(String),
+    /// Working-status text — the agent's own progress narration
+    /// (e.g. `"web_search: <query>"`).
+    StatusText(String),
+    /// Working-status structured data part (orchestrator events like
+    /// `tool_call` / `thinking` are delivered this way).
+    StatusData(serde_json::Value),
+    /// Terminal: the task completed. `snapshot_text` carries the full text
+    /// when the closing event was a task snapshot with artifacts (servers
+    /// that answer a stream request with a single task object).
+    Completed { snapshot_text: Option<String> },
+    /// Terminal: the task failed or was canceled.
+    Failed { reason: String },
+}
+
+/// Classify one A2A SSE `data:` JSON payload into semantic events.
+///
+/// Accepts every wire shape the platform produces: JSONRPC-wrapped
+/// (`{"result": {...}}`) or bare; proto-style (`statusUpdate` /
+/// `artifactUpdate` / `task` keys, `TASK_STATE_*` states) or legacy
+/// kind-tagged (`"kind": "status-update"`, lowercase states).
+pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
+    let result = event.get("result").unwrap_or(event);
+    let mut out = Vec::new();
+
+    if let Some(update) = result.get("artifactUpdate") {
+        collect_artifact_text(update, &mut out);
+        return out;
+    }
+    if let Some(update) = result.get("statusUpdate") {
+        classify_status(update, &mut out);
+        return out;
+    }
+    if result.get("message").is_some() {
+        // Bare message reply — agents without a task lifecycle (e.g. the
+        // official a2a-go SDK) answer a stream request with a single
+        // terminal message event.
+        out.push(SseEvent::Completed { snapshot_text: extract_text(result) });
+        return out;
+    }
+    if let Some(task) = result.get("task") {
+        // Full task snapshot: terminal only when it says so — a bare
+        // submission echo (state=submitted/working) is not an event.
+        match task_state(task) {
+            SseTaskState::Completed => {
+                out.push(SseEvent::Completed { snapshot_text: extract_text(result) });
+            }
+            SseTaskState::Failed => {
+                out.push(SseEvent::Failed { reason: failure_reason(task) });
+            }
+            SseTaskState::Working | SseTaskState::Other => {}
+        }
+        return out;
+    }
+    // Legacy kind-tagged shape.
+    match result.get("kind").and_then(|k| k.as_str()) {
+        Some("artifact-update") => collect_artifact_text(result, &mut out),
+        Some("status-update") => classify_status(result, &mut out),
+        _ => {}
+    }
+    out
+}
+
+fn classify_status(update: &serde_json::Value, out: &mut Vec<SseEvent>) {
+    match task_state(update) {
+        SseTaskState::Failed => {
+            out.push(SseEvent::Failed { reason: failure_reason(update) });
+        }
+        SseTaskState::Completed => {
+            out.push(SseEvent::Completed { snapshot_text: None });
+        }
+        SseTaskState::Working | SseTaskState::Other => {
+            if let Some(parts) = update
+                .pointer("/status/message/parts")
+                .and_then(|p| p.as_array())
+            {
+                for part in parts {
+                    if let Some(data) = part.get("data") {
+                        out.push(SseEvent::StatusData(data.clone()));
+                    } else if let Some(text) = part.get("text").and_then(|t| t.as_str())
+                        && !text.trim().is_empty()
+                    {
+                        out.push(SseEvent::StatusText(text.to_string()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_artifact_text(update: &serde_json::Value, out: &mut Vec<SseEvent>) {
+    // {"artifact": {"parts": [...]}} or {"parts": [...]} directly
+    let parts = update
+        .pointer("/artifact/parts")
+        .or_else(|| update.get("parts"))
+        .and_then(|p| p.as_array());
+    if let Some(parts) = parts {
+        let text: String = parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect();
+        if !text.is_empty() {
+            out.push(SseEvent::ArtifactText(text));
+        }
+    }
+}
+
+/// Task lifecycle state as read off the wire, normalized across the
+/// proto-style (`TASK_STATE_*`) and legacy lowercase spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SseTaskState {
+    Working,
+    Completed,
+    /// Failed or canceled — both end the task without a usable answer.
+    Failed,
+    /// Submitted, unknown, or absent.
+    Other,
+}
+
+fn task_state(v: &serde_json::Value) -> SseTaskState {
+    match v.pointer("/status/state").and_then(|s| s.as_str()).unwrap_or("") {
+        "TASK_STATE_WORKING" | "working" => SseTaskState::Working,
+        "TASK_STATE_COMPLETED" | "completed" => SseTaskState::Completed,
+        "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "failed" | "canceled" => {
+            SseTaskState::Failed
+        }
+        _ => SseTaskState::Other,
+    }
+}
+
+fn failure_reason(v: &serde_json::Value) -> String {
+    v.pointer("/status/message/parts/0/text")
+        .and_then(|t| t.as_str())
+        .unwrap_or("task failed")
+        .to_string()
 }
 
 pub fn extract_text_from_response(response: &JsonRpcResponse) -> Option<String> {
@@ -286,6 +428,108 @@ pub fn extract_transport_path(card: &serde_json::Value) -> Option<String> {
 
     let trimmed = path.trim_end_matches('/');
     Some(if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() })
+}
+
+#[cfg(test)]
+mod sse_event_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn artifact_chunks_concatenate_without_newlines() {
+        let ev = json!({"result": {"artifactUpdate": {"artifact": {
+            "parts": [{"text": "I"}, {"text": "'ll"}, {"text": " start"}]
+        }}}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::ArtifactText("I'll start".into())]
+        );
+    }
+
+    #[test]
+    fn bare_message_reply_is_terminal_with_text() {
+        // a2a-go SDK agents answer a stream request with a single message event.
+        let ev = json!({"jsonrpc": "2.0", "id": "1", "result": {"message": {
+            "messageId": "m1",
+            "role": "ROLE_AGENT",
+            "parts": [{"text": "Weather for Tokyo"}, {"text": ": sunny"}]
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::Completed { snapshot_text: Some("Weather for Tokyo: sunny".into()) }]
+        );
+    }
+
+    #[test]
+    fn working_status_text_and_data_parts_classify_separately() {
+        let ev = json!({"statusUpdate": {"status": {
+            "state": "TASK_STATE_WORKING",
+            "message": {"parts": [
+                {"text": "web_search: nasiko ssl"},
+                {"data": {"type": "tool_call", "agent": "x"}}
+            ]}
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![
+                SseEvent::StatusText("web_search: nasiko ssl".into()),
+                SseEvent::StatusData(json!({"type": "tool_call", "agent": "x"})),
+            ]
+        );
+    }
+
+    #[test]
+    fn blank_status_text_is_dropped() {
+        let ev = json!({"statusUpdate": {"status": {
+            "state": "TASK_STATE_WORKING",
+            "message": {"parts": [{"text": "  "}]}
+        }}});
+        assert_eq!(classify_sse_event(&ev), vec![]);
+    }
+
+    #[test]
+    fn failed_status_carries_reason() {
+        let ev = json!({"result": {"statusUpdate": {"status": {
+            "state": "TASK_STATE_FAILED",
+            "message": {"parts": [{"text": "boom"}]}
+        }}}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::Failed { reason: "boom".into() }]
+        );
+    }
+
+    #[test]
+    fn completed_task_snapshot_yields_text() {
+        let ev = json!({"result": {"task": {
+            "artifacts": [{"parts": [{"text": "Hello."}]}],
+            "status": {"state": "TASK_STATE_COMPLETED"}
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::Completed { snapshot_text: Some("Hello.".into()) }]
+        );
+    }
+
+    #[test]
+    fn non_terminal_task_echo_is_ignored() {
+        let ev = json!({"task": {"status": {"state": "TASK_STATE_SUBMITTED"}}});
+        assert_eq!(classify_sse_event(&ev), vec![]);
+    }
+
+    #[test]
+    fn legacy_kind_tagged_shapes_classify() {
+        let art = json!({"kind": "artifact-update", "parts": [{"text": "hi"}]});
+        assert_eq!(
+            classify_sse_event(&art),
+            vec![SseEvent::ArtifactText("hi".into())]
+        );
+        let done = json!({"kind": "status-update", "status": {"state": "completed"}});
+        assert_eq!(
+            classify_sse_event(&done),
+            vec![SseEvent::Completed { snapshot_text: None }]
+        );
+    }
 }
 
 #[cfg(test)]

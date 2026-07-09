@@ -18,6 +18,9 @@ serde_json = { workspace = true }
 # HTTP client (for A2A calls)
 reqwest = { workspace = true }
 
+# A2A wire-shape helpers (SSE event classification, text extraction)
+nasiko-types = { workspace = true }
+
 # Error handling
 thiserror = { workspace = true }
 
@@ -25,12 +28,10 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
-nasiko-auth = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 tracing-subscriber = { workspace = true }
-mockito = { workspace = true }
 
 [[example]]
 name = "test_tools"

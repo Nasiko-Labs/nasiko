@@ -126,11 +126,12 @@ fn render_frame(
             )
         }
         StatusAnimation::Shimmer => {
-            // overhead: bar(28) + " "(1) + " ("(2) + ")"(1) = 32
+            let width = shimmer_width();
+            // overhead: bar(width) + " "(1) + " ("(2) + ")"(1)
             format!(
                 "{} {} \x1b[2m({elapsed})\x1b[0m",
-                shimmer_bar(frame, use_color),
-                fit_msg(msg, 32 + elapsed.len())
+                shimmer_bar(frame, width, use_color),
+                fit_msg(msg, width + 4 + elapsed.len())
             )
         }
     }
@@ -143,16 +144,21 @@ fn frame_ms(animation: StatusAnimation) -> u64 {
     }
 }
 
+/// Shimmer bar width scaled to the terminal: ~1/8 of the columns, clamped to
+/// 8–16 so it stays compact on wide terminals and usable on narrow ones.
+fn shimmer_width() -> usize {
+    (terminal_cols() / 8).clamp(8, 16)
+}
+
 /// Bright peak with a block-gradient halo sweeping left-to-right, in one cyan hue.
-fn shimmer_bar(frame: usize, use_color: bool) -> String {
-    const WIDTH: usize = 28;
-    let pos = frame % WIDTH;
+fn shimmer_bar(frame: usize, width: usize, use_color: bool) -> String {
+    let pos = frame % width;
     let mut bar = String::new();
-    for idx in 0..WIDTH {
+    for idx in 0..width {
         // wrap-around distance so the peak re-enters smoothly from the left edge
         let dist = {
             let d = (idx as isize - pos as isize).unsigned_abs();
-            d.min(WIDTH - d)
+            d.min(width - d)
         };
         let ch = match dist {
             0 => '█',
