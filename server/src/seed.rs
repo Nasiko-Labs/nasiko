@@ -47,6 +47,9 @@ pub async fn seed_agents_if_configured(state: &AppState) {
 
     let openai_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
     let openai_base = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
+    // Without the model name, agents fall back to their compiled default
+    // (e.g. gpt-4o-mini), which non-OpenAI providers reject with a 400.
+    let openai_model = std::env::var("OPENAI_MODEL").unwrap_or_default();
     let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_default();
 
     for image in images.split_whitespace() {
@@ -124,6 +127,9 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         }
         if !openai_base.is_empty() {
             env.insert("OPENAI_BASE_URL".into(), openai_base.clone());
+        }
+        if !openai_model.is_empty() {
+            env.insert("OPENAI_MODEL".into(), openai_model.clone());
         }
         if !otel_endpoint.is_empty() {
             env.insert("OTEL_EXPORTER_OTLP_ENDPOINT".into(), otel_endpoint.clone());
