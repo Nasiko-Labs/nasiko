@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     extract::{Path, Query, Request, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -48,8 +48,18 @@ pub async fn get_blob(
 ) -> Result<Response> {
     check_repo_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
-    let url = ops::get_blob_redirect_url(&state, &name, &digest).await?;
-    Ok(Redirect::temporary(&url).into_response())
+    let data = ops::get_blob_data(&state, &name, &digest).await?;
+    let len = data.len().to_string();
+    Ok((
+        StatusCode::OK,
+        [
+            ("Content-Length", len.as_str()),
+            ("Docker-Content-Digest", digest.as_str()),
+            ("Content-Type", "application/octet-stream"),
+        ],
+        data,
+    )
+        .into_response())
 }
 
 pub async fn delete_blob(

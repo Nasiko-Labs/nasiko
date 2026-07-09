@@ -25,14 +25,20 @@ pub async fn blob_linked(state: &OciState, repository: &str, digest: &str) -> Re
     Ok(linked)
 }
 
-pub async fn get_blob_redirect_url(state: &OciState, repository: &str, digest: &str) -> Result<String> {
+/// Fetch the blob's bytes so the caller can stream them back directly,
+/// instead of redirecting to a presigned S3 URL. The presigned-URL approach
+/// only works when S3 is reachable at a public, HTTPS-capable address; in
+/// the EE topology S3/MinIO is internal-only and plain HTTP, so a redirect
+/// there is unreachable from remote/k8s clients pulling over HTTPS. Mirrors
+/// `ee/artifact-registry`'s `get_blob`, which has always streamed directly.
+pub async fn get_blob_data(state: &OciState, repository: &str, digest: &str) -> Result<Bytes> {
     if !blob_linked(state, repository, digest).await? {
         return Err(OciError::NotFound(format!("blob {digest} not found")));
     }
     if !state.storage.blob_exists(digest).await {
         return Err(OciError::NotFound(format!("blob {digest} not found")));
     }
-    state.storage.presigned_get_url(digest, 3600).await
+    state.storage.get_blob(digest).await
 }
 
 /// Ref-counted delete: only removes the physical object once no repository
