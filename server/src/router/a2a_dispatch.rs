@@ -740,12 +740,35 @@ fn to_sse(event: StreamResponse) -> Event {
 }
 
 async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
+    // One row gives us everything: the UUID (containers are UUID-keyed — see
+    // `build_agent_spec` — so a name-keyed runtime lookup always misses), the
+    // card-declared transport_path, and the deploy-time URL snapshot fallback.
+    let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, transport_path, url FROM agents WHERE name = $1 AND status = 'running'",
+    )
+    .bind(agent_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| format!("db lookup: {e}"))?;
+
+    let Some((agent_id, transport_path, stored_url)) = row else {
+        return Err(format!("no running agent named '{agent_name}'"));
+    };
+
+    // The A2A spec fixes no path — it must come from the agent's card, never
+    // be assumed. Rows predating transport_path get the legacy Nasiko mount.
+    let path = match transport_path.as_deref() {
+        None => "/jsonrpc",
+        Some("/") | Some("") => "",
+        Some(p) => p,
+    };
+
     // Prefer live runtime endpoint (Docker port mapping can change on restart).
-    let container_id = nasiko_runtime::ContainerId::new(agent_name.to_owned());
+    let container_id = nasiko_runtime::ContainerId::from_uuid(agent_id);
     match state.runtime.endpoint(&container_id).await {
         Ok(endpoint) => {
             let base = endpoint.trim_end_matches('/');
-            return Ok(format!("{base}/jsonrpc"));
+            return Ok(format!("{base}{path}"));
         }
         Err(_) => {
             // Container not reachable via runtime — check if it's actually stopped.
@@ -754,9 +777,9 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
             {
                 // Mark as stopped so future routing skips it.
                 let _ = sqlx::query(
-                    "UPDATE agents SET status = 'stopped' WHERE name = $1 AND status = 'running'",
+                    "UPDATE agents SET status = 'stopped' WHERE id = $1 AND status = 'running'",
                 )
-                .bind(agent_name)
+                .bind(agent_id)
                 .execute(&state.db)
                 .await;
                 return Err(format!("agent '{agent_name}' is not running"));
@@ -765,19 +788,10 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     }
 
     // Fall back to stored URL (e.g. external agents, K8s with stable DNS).
-    let stored_url: Option<String> = sqlx::query_scalar(
-        "SELECT url FROM agents WHERE name = $1 AND status = 'running'",
-    )
-    .bind(agent_name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| format!("db lookup: {e}"))?
-    .flatten();
-
     if let Some(ref url) = stored_url
         && !url.is_empty() {
             let u = url.trim_end_matches('/');
-            return Ok(format!("{u}/jsonrpc"));
+            return Ok(format!("{u}{path}"));
         }
 
     Err(format!("no endpoint found for agent '{agent_name}'"))

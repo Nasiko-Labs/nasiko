@@ -324,7 +324,26 @@ async fn restart(
     let spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
 
     match state.runtime.deploy(&spec).await {
-        Ok(status) => Json(status).into_response(),
+        Ok(status) => {
+            // The container may come back on a different host port, and a
+            // rebuilt image may advertise a different card (transport_path,
+            // skills) — refresh both, same as the update/upload deploy paths.
+            let agent_url = status.endpoint.clone().unwrap_or_default();
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .bind(&agent_url)
+            .execute(&state.db)
+            .await;
+            tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
+                state.db.clone(),
+                state.http_client.clone(),
+                agent_id,
+                agent_url,
+            ));
+            Json(status).into_response()
+        }
         Err(e) => {
             tracing::error!(%e, %name, "restart: redeploy failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()

@@ -750,14 +750,15 @@ impl ObservabilityService {
 
     // ── Accessible agents ────────────────────────────────────────────────────
 
-    /// Returns Vec<(id, name, display_name)> for all agents in the DB. `name`
-    /// doubles as the Tempo `service.name`; `id` is the UUID reported to callers.
+    /// Returns Vec<(tempo_service_name, display_name)> for all agents in the DB.
+    /// The first element is the agent UUID as text — the injector sets
+    /// OTEL_SERVICE_NAME to the agent's UUID, so Tempo's `resource.service.name`
+    /// is the UUID, never the human-readable name. Querying by name silently
+    /// matches zero traces for every agent.
     /// OSS: returns all agents (NoopAuthorizer). EE adds RBAC at a higher layer.
-    async fn get_agent_names(
-        &self,
-    ) -> Result<Vec<(uuid::Uuid, String, String)>, ObservabilityError> {
-        sqlx::query_as::<_, (uuid::Uuid, String, String)>(
-            "SELECT id, name, COALESCE(display_name, name) FROM agents ORDER BY name",
+    async fn get_agent_names(&self) -> Result<Vec<(String, String)>, ObservabilityError> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT id::text, COALESCE(display_name, name) FROM agents ORDER BY name",
         )
         .fetch_all(&self.db)
         .await
@@ -949,14 +950,14 @@ impl ObservabilityService {
         let mut all_sessions: Vec<SessionSummary> = Vec::new();
         let mut successful = 0usize;
 
-        for (_, agent_name, _) in &agents {
-            match self.fetch_sessions_for_agent(agent_name, start, end).await {
+        for (agent_id, _) in &agents {
+            match self.fetch_sessions_for_agent(agent_id, start, end).await {
                 Ok(sessions) => {
                     all_sessions.extend(sessions);
                     successful += 1;
                 }
                 Err(e) => {
-                    tracing::warn!(agent_name, error = %e, "failed to get sessions from Tempo");
+                    tracing::warn!(agent_id, error = %e, "failed to get sessions from Tempo");
                 }
             }
         }
@@ -1382,9 +1383,9 @@ impl ObservabilityService {
     pub async fn get_agent_stats(
         &self,
         agent_id: &str,
-        start_time: &str,
+        start_time: Option<&str>,
     ) -> Result<AgentStatsResponse, ObservabilityError> {
-        let start = parse_iso_or_default(Some(start_time), 1);
+        let start = parse_iso_or_default(start_time, 1);
         let end = Utc::now();
 
         let results = self.tempo_search_user_traces(agent_id, start, end, 1000).await?;
@@ -1473,13 +1474,13 @@ impl ObservabilityService {
         let mut total_ops_24h = 0usize;
         let mut active = 0usize;
 
-        for (agent_uuid, agent_name, display_name) in &agents {
+        for (agent_id, agent_name) in &agents {
             let traces = self
-                .tempo_search_user_traces(agent_name, start, now, 1000)
+                .tempo_search_user_traces(agent_id, start, now, 1000)
                 .await
                 .unwrap_or_default();
             let traces_24h = self
-                .tempo_search_user_traces(agent_name, last_24h, now, 1000)
+                .tempo_search_user_traces(agent_id, last_24h, now, 1000)
                 .await
                 .unwrap_or_default();
 
@@ -1530,8 +1531,8 @@ impl ObservabilityService {
             total_ops_24h += ops_24h;
 
             agent_rows.push(AgentFinopsRow {
-                agent_id: agent_uuid.to_string(),
-                agent_name: display_name.clone(),
+                agent_id: agent_id.clone(),
+                agent_name: agent_name.clone(),
                 total_cost,
                 operations: ops,
                 avg_cost_per_operation: avg_cost,

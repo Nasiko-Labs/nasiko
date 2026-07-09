@@ -256,32 +256,7 @@ async fn create_session(
         }
     };
 
-    let session_id = match body.session_id.as_deref().map(str::trim) {
-        Some(custom) if !custom.is_empty() => {
-            // Client-supplied ID: return the caller's existing session when
-            // present; reject the ID when it belongs to another user.
-            let existing = sqlx::query_as::<_, ChatSession>(
-                "SELECT * FROM chat_sessions WHERE session_id = $1",
-            )
-            .bind(custom)
-            .fetch_optional(&state.db)
-            .await;
-            match existing {
-                Ok(Some(session)) if session.user_id == user_id => {
-                    return (StatusCode::OK, Json(session)).into_response();
-                }
-                Ok(Some(_)) => {
-                    return (StatusCode::CONFLICT, "session_id already in use").into_response();
-                }
-                Ok(None) => custom.to_string(),
-                Err(e) => {
-                    tracing::error!(%e, "create_session: session lookup failed");
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-            }
-        }
-        _ => format!("ses_{}", Uuid::new_v4().simple()),
-    };
+    let session_id = format!("ses_{}", Uuid::new_v4().simple());
     let title = body.title.unwrap_or_else(|| "New chat".into());
 
     let result = sqlx::query_as::<_, ChatSession>(
@@ -300,6 +275,18 @@ async fn create_session(
     match result {
         Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
         Err(e) => {
+            // A dangling user_id FK means the (gateway-verified) JWT references
+            // a user that no longer exists — e.g. the DB was reseeded after the
+            // token was issued. That's a stale credential, not a server fault.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.constraint() == Some("chat_sessions_user_id_fkey")
+            {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    "your user account no longer exists on this control plane — log out and log in again",
+                )
+                    .into_response();
+            }
             tracing::error!(%e, "create_session failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }

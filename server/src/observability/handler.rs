@@ -17,13 +17,19 @@ use super::service::{InsightsRequest, ObservabilityService};
 fn obs_err(e: ObservabilityError) -> Response {
     match e {
         ObservabilityError::NotFound(msg) => {
+            // `msg` here is a hand-authored, safe description (e.g. "span 'x' in
+            // trace 'y'") — not a raw underlying error — so it's fine to return.
             (StatusCode::NOT_FOUND, msg).into_response()
         }
-        ObservabilityError::Deserialization(msg) => {
-            (StatusCode::BAD_GATEWAY, msg).into_response()
+        ObservabilityError::Deserialization(_) => {
+            tracing::error!(error = %e, "observability: failed to deserialize upstream response");
+            (StatusCode::BAD_GATEWAY, "observability backend returned an invalid response").into_response()
         }
         other => {
-            (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()).into_response()
+            // Catches `Internal` and any future variants — these wrap raw
+            // Tempo/Loki client/HTTP errors that must not reach the client.
+            tracing::error!(error = %other, "observability request failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
 }
@@ -43,7 +49,9 @@ pub struct SessionListParams {
 
 #[derive(Debug, Deserialize)]
 pub struct AgentStatsParams {
-    pub start_time: String,
+    /// Optional — the service defaults to the last 24 hours, matching the
+    /// other observe endpoints (the UI calls this with no params at all).
+    pub start_time: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,8 +68,6 @@ pub async fn get_all_sessions(
     Query(params): Query<SessionListParams>,
 ) -> impl IntoResponse {
 
-    let role = claims.role.as_ref().map(|r| format!("{r:?}"));
-
     tracing::info!(
         input_tokens = 120u64,
         output_tokens = 80u64,
@@ -74,7 +80,7 @@ pub async fn get_all_sessions(
     match svc(&state)
         .get_all_sessions(
             &claims.sub,
-            role.as_deref(),
+            None, // role gating handled by the EE observability provider, not the identity
             None,
             None,
             params.start_time.as_deref(),
@@ -139,8 +145,14 @@ pub async fn get_agent_stats(
     Path(agent_id): Path<String>,
     Query(params): Query<AgentStatsParams>,
 ) -> impl IntoResponse {
+    // Tempo's service.name is the agent UUID; accept a name or UUID here
+    // (same contract as the logs endpoints) and query by UUID.
+    let tempo_ref = match super::routes::resolve_agent(&state.db, &agent_id).await {
+        Some((id, _name)) => id.to_string(),
+        None => agent_id.clone(),
+    };
     match svc(&state)
-        .get_agent_stats(&agent_id, &params.start_time)
+        .get_agent_stats(&tempo_ref, params.start_time.as_deref())
         .await
     {
         Ok(resp) => Json(resp).into_response(),
@@ -156,11 +168,10 @@ pub async fn get_finops_dashboard(
     claims: Claims,
     Query(params): Query<FinopsParams>,
 ) -> impl IntoResponse {
-    let role = claims.role.as_ref().map(|r| format!("{r:?}"));
     match svc(&state)
         .get_finops_dashboard(
             &claims.sub,
-            role.as_deref(),
+            None, // role gating handled by the EE observability provider, not the identity
             None,
             None,
             params.start_time.as_deref(),

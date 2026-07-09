@@ -58,22 +58,41 @@ struct LoginResponse {
     expires_in: u64,
 }
 
-fn set_token_cookie(token: &str) -> header::HeaderValue {
+/// Browsers only honor `Secure` cookies over HTTPS (localhost excepted).
+/// This server never terminates TLS itself, so an HTTPS request can only have
+/// arrived through a reverse proxy — which advertises it via
+/// `X-Forwarded-Proto`. Setting `Secure` unconditionally makes browsers
+/// silently drop the cookie on plain-HTTP deployments (e.g. `http://host:8080`):
+/// login appears to succeed but every subsequent request is an
+/// unauthenticated 401.
+pub fn request_is_https(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|p| p.eq_ignore_ascii_case("https"))
+}
+
+fn set_token_cookie(token: &str, secure: bool) -> header::HeaderValue {
+    let secure_attr = if secure { " Secure;" } else { "" };
     header::HeaderValue::from_str(&format!(
-        "access_token={}; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age={}",
-        token, COOKIE_MAX_AGE
+        "access_token={}; HttpOnly;{} Path=/; SameSite=Strict; Max-Age={}",
+        token, secure_attr, COOKIE_MAX_AGE
     ))
     .unwrap()
 }
 
-fn clear_token_cookie() -> header::HeaderValue {
-    header::HeaderValue::from_static(
-        "access_token=; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=0",
-    )
+fn clear_token_cookie(secure: bool) -> header::HeaderValue {
+    let secure_attr = if secure { " Secure;" } else { "" };
+    header::HeaderValue::from_str(&format!(
+        "access_token=; HttpOnly;{} Path=/; SameSite=Strict; Max-Age=0",
+        secure_attr
+    ))
+    .unwrap()
 }
 
 async fn login(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let (key, secret) = match req {
@@ -82,7 +101,7 @@ async fn login(
     };
     match state.auth.authenticate(&key, &secret).await {
         Ok(result) => {
-            let cookie = set_token_cookie(&result.token);
+            let cookie = set_token_cookie(&result.token, request_is_https(&headers));
             (
                 [(header::SET_COOKIE, cookie)],
                 Json(LoginResponse {
@@ -114,11 +133,12 @@ async fn login(
 /// at the gateway, then clear the browser cookie.
 async fn logout(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     claims: Claims,
 ) -> impl IntoResponse {
     // Best-effort revocation — don't fail the logout if the DB write fails
     let _ = state.auth.revoke_tokens_for_user(&claims.sub).await;
-    ([(header::SET_COOKIE, clear_token_cookie())], StatusCode::NO_CONTENT)
+    ([(header::SET_COOKIE, clear_token_cookie(request_is_https(&headers)))], StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -129,10 +149,11 @@ struct InitAdminRequest {
 
 async fn initialize_admin(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<InitAdminRequest>,
 ) -> impl IntoResponse {
     // Creates the admin user + credentials and returns them (with a recorded token).
-    match initialize_admin_inner(&state, &req.username, &req.email).await {
+    match initialize_admin_inner(&state, &req.username, &req.email, request_is_https(&headers)).await {
         Ok(resp) => resp,
         Err(resp) => resp,
     }
@@ -142,6 +163,7 @@ async fn initialize_admin_inner(
     state: &AppState,
     username: &str,
     email: &str,
+    https: bool,
 ) -> Result<axum::response::Response, axum::response::Response> {
     // Check if admin exists
     let admin_count: i64 = sqlx::query_scalar(
@@ -215,7 +237,6 @@ async fn initialize_admin_inner(
         user_id: user_id.to_string(),
         username: username.to_owned(),
         is_superuser: true,
-        is_agent: false,
     };
 
     let token = state.auth.issue_token(&identity).await
@@ -227,7 +248,7 @@ async fn initialize_admin_inner(
     // Belt-and-suspenders record (ON CONFLICT DO NOTHING) so counting/revocation work.
     let _ = state.auth.record_user_token(&token, &user_id.to_string()).await;
 
-    let cookie = set_token_cookie(&token);
+    let cookie = set_token_cookie(&token, https);
     Ok((
         StatusCode::CREATED,
         [(header::SET_COOKIE, cookie)],
@@ -313,12 +334,14 @@ async fn token_validate(
 
 /// Directory-style user search (autocomplete for e.g. granting agent access).
 /// Previously reachable by any authenticated principal (member, or an agent
-/// token) with no gate beyond `require_auth`, leaking every user's email —
-/// now requires `can_read_org` (team_lead+ in EE; unrestricted in OSS's
-/// single-user model) and, in EE, is scoped to the caller's own team or
-/// department via `org_visible_user_ids` (never `None` unless admin/superuser
-/// — see that method's doc for why this crate never touches EE-only
-/// team_id/department_id columns directly).
+/// token) with no gate beyond `require_auth`, leaking every user's email and
+/// the full org roster — now requires `can_read_org` (team_lead+ in EE;
+/// unrestricted in OSS's single-user model), is scoped in EE to the caller's
+/// own team or department via `org_visible_user_ids` (never `None` unless
+/// admin/superuser — see that method's doc for why this crate never touches
+/// EE-only team_id/department_id columns directly), and never returns email
+/// at all — this is a mention/autocomplete endpoint, not a directory lookup,
+/// and email was never needed to disambiguate users by username (AUTH-6).
 async fn users_for_search(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let identity: nasiko_auth::Identity = claims.clone().into();
     if !state.auth.can_read_org(&identity).await {
@@ -333,7 +356,6 @@ async fn users_for_search(State(state): State<AppState>, claims: Claims) -> impl
     struct SearchUser {
         id: uuid::Uuid,
         username: String,
-        email: Option<String>,
         display_name: Option<String>,
         is_active: bool,
     }
@@ -343,7 +365,7 @@ async fn users_for_search(State(state): State<AppState>, claims: Claims) -> impl
     let result = match &visible_ids {
         None => {
             sqlx::query_as::<_, SearchUser>(
-                "SELECT id, username, email, display_name, is_active FROM users WHERE deleted_at IS NULL ORDER BY username",
+                "SELECT id, username, display_name, is_active FROM users WHERE deleted_at IS NULL ORDER BY username",
             )
             .fetch_all(&state.db)
             .await
@@ -351,7 +373,7 @@ async fn users_for_search(State(state): State<AppState>, claims: Claims) -> impl
         Some(ids) => {
             let uuids: Vec<uuid::Uuid> = ids.iter().filter_map(|s| s.parse().ok()).collect();
             sqlx::query_as::<_, SearchUser>(
-                "SELECT id, username, email, display_name, is_active FROM users WHERE deleted_at IS NULL AND id = ANY($1) ORDER BY username",
+                "SELECT id, username, display_name, is_active FROM users WHERE deleted_at IS NULL AND id = ANY($1) ORDER BY username",
             )
             .bind(&uuids)
             .fetch_all(&state.db)

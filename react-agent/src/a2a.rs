@@ -74,19 +74,6 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
     ) -> Result<A2aResponse, A2aClientError> {
-        self.send_message_with_headers(endpoint, message, context_id, &[]).await
-    }
-
-    /// Like [`send_message`], plus per-call headers layered on top of the
-    /// client-wide `extra_headers` (e.g. a delegation token scoped to the one
-    /// specific agent being called, which differs per call unlike `traceparent`).
-    pub async fn send_message_with_headers(
-        &self,
-        endpoint: &str,
-        message: &str,
-        context_id: Option<&str>,
-        per_call_headers: &[(String, String)],
-    ) -> Result<A2aResponse, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -117,7 +104,7 @@ impl A2aClient {
             .json(&body)
             .timeout(self.default_timeout);
 
-        for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
+        for (key, value) in &self.extra_headers {
             req = req.header(key, value);
         }
 
@@ -167,12 +154,12 @@ impl A2aClient {
             .pointer("/status/message/parts")
             .and_then(|p| p.as_array())
         {
-            let text: Vec<&str> = parts
+            let text: String = parts
                 .iter()
                 .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                 .collect();
             if !text.is_empty() {
-                return Some(text.join("\n"));
+                return Some(text);
             }
         }
 
@@ -188,12 +175,12 @@ impl A2aClient {
             .pointer("/status/message/parts")
             .and_then(|p| p.as_array())
         {
-            let text: Vec<&str> = parts
+            let text: String = parts
                 .iter()
                 .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                 .collect();
             if !text.is_empty() {
-                return Some(text.join("\n"));
+                return Some(text);
             }
         }
 
@@ -202,17 +189,85 @@ impl A2aClient {
 }
 
 fn collect_text_parts<'a>(parts_arrays: impl Iterator<Item = &'a serde_json::Value>) -> String {
-    let mut texts = Vec::new();
+    // Parts within one artifact are contiguous chunks — streaming agents emit
+    // one part per token — so they concatenate directly. Only distinct
+    // artifacts get a newline between them.
+    let mut artifact_texts = Vec::new();
     for parts_val in parts_arrays {
         if let Some(parts) = parts_val.as_array() {
-            for part in parts {
-                if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                    texts.push(t);
-                }
+            let text: String = parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if !text.is_empty() {
+                artifact_texts.push(text);
             }
         }
     }
-    texts.join("\n")
+    artifact_texts.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_v1_task_artifact_text() {
+        let result = serde_json::json!({
+            "task": {
+                "artifacts": [{"artifactId": "a1", "parts": [{"text": "Hello."}]}],
+                "status": {"state": "TASK_STATE_COMPLETED"}
+            }
+        });
+        assert_eq!(
+            A2aClient::extract_text_from_value(&result).as_deref(),
+            Some("Hello.")
+        );
+    }
+
+    #[test]
+    fn concatenates_streamed_token_parts_without_newlines() {
+        // Streaming agents emit one part per token chunk; they must
+        // concatenate seamlessly, not be newline-joined.
+        let result = serde_json::json!({
+            "task": {
+                "artifacts": [{
+                    "artifactId": "a1",
+                    "parts": [{"text": "I"}, {"text": "'ll"}, {"text": " start"}]
+                }]
+            }
+        });
+        assert_eq!(
+            A2aClient::extract_text_from_value(&result).as_deref(),
+            Some("I'll start")
+        );
+    }
+
+    #[test]
+    fn empty_text_parts_yield_none() {
+        // An agent that lost its final answer returns {"text": ""} — the
+        // caller must see None, not an empty string masquerading as content.
+        let result = serde_json::json!({
+            "task": {"artifacts": [{"artifactId": "a1", "parts": [{"text": ""}]}]}
+        });
+        assert_eq!(A2aClient::extract_text_from_value(&result), None);
+    }
+
+    #[test]
+    fn distinct_artifacts_are_newline_separated() {
+        let result = serde_json::json!({
+            "task": {
+                "artifacts": [
+                    {"artifactId": "a1", "parts": [{"text": "one"}]},
+                    {"artifactId": "a2", "parts": [{"text": "two"}]}
+                ]
+            }
+        });
+        assert_eq!(
+            A2aClient::extract_text_from_value(&result).as_deref(),
+            Some("one\ntwo")
+        );
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

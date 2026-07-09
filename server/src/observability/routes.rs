@@ -26,7 +26,7 @@ use super::logs::{ LogLine, LogQuery, parse_container_logs, parse_loki_logs, que
 ///
 /// Called at the start of every observe handler so that the CLI can pass either
 /// `nasiko logs my-agent --follow` (name) or `nasiko logs <uuid> --follow` (UUID).
-async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
+pub(super) async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
     if let Ok(id) = agent_ref.parse::<Uuid>() {
         sqlx::query_as::<_, (Uuid, String)>(
             "SELECT id, name FROM agents WHERE id = $1 AND deleted_at IS NULL"
