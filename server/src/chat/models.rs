@@ -56,6 +56,10 @@ pub struct CreateSession {
     // see `create_session`). The canonical URL is always resolved server-side
     // from the `agents` table once `agent_id` is validated.
     pub title: Option<String>,
+    /// Client-chosen session ID (e.g. `nasiko chat --session-id my-run`).
+    /// When omitted the server generates one. If a session with this ID
+    /// already exists and belongs to the caller, it is returned as-is.
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

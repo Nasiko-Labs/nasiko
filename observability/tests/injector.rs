@@ -13,6 +13,7 @@ fn make_ctx(agent_id: &str) -> AgentContext {
         version: None,
         capture_content: false,
         otel_collector_endpoint: TEST_ENDPOINT.to_owned(),
+        otel_protocol: "grpc".to_owned(),
     }
 }
 
@@ -59,9 +60,9 @@ fn inject_sets_correct_otlp_endpoint() {
 }
 
 #[test]
-fn inject_sets_otlp_protocol_to_http_protobuf() {
+fn inject_sets_otlp_protocol_from_context() {
     let env = inject(make_ctx("my-agent"));
-    assert_eq!(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
+    assert_eq!(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc");
 }
 
 #[test]
@@ -124,6 +125,7 @@ fn inject_resource_attrs_with_all_optional_fields() {
         version: Some("v2.1.0".to_owned()),
         capture_content: false,
         otel_collector_endpoint: TEST_ENDPOINT.to_owned(),
+        otel_protocol: "grpc".to_owned(),
     };
     let env = inject(ctx);
     let attrs = &env["OTEL_RESOURCE_ATTRIBUTES"];
@@ -150,6 +152,7 @@ fn inject_resource_attrs_tenant_id_only() {
         version: None,
         capture_content: false,
         otel_collector_endpoint: TEST_ENDPOINT.to_owned(),
+        otel_protocol: "grpc".to_owned(),
     };
     let env = inject(ctx);
     let attrs = &env["OTEL_RESOURCE_ATTRIBUTES"];
@@ -166,6 +169,7 @@ fn inject_resource_attrs_version_only() {
         version: Some("1.0.0".to_owned()),
         capture_content: false,
         otel_collector_endpoint: TEST_ENDPOINT.to_owned(),
+        otel_protocol: "grpc".to_owned(),
     };
     let env = inject(ctx);
     let attrs = &env["OTEL_RESOURCE_ATTRIBUTES"];
@@ -213,6 +217,7 @@ fn inject_uses_custom_otel_collector_endpoint() {
         version: None,
         capture_content: false,
         otel_collector_endpoint: "http://custom-collector:4318".to_owned(),
+        otel_protocol: "grpc".to_owned(),
     };
     let env = inject(ctx);
     assert_eq!(

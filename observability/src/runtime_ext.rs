@@ -15,7 +15,8 @@ use crate::injector::{AgentContext, InstrumentationInjector};
 /// let runtime = InstrumentedRuntime::new(
 ///     DockerRuntime::new(config),
 ///     OtelInjector,
-///     "http://otel-collector.nasiko-infra:4318".into(),
+///     "http://otel-collector.nasiko-infra:4317".into(),
+///     "grpc".into(),
 ///     false,
 /// );
 /// ```
@@ -23,6 +24,7 @@ pub struct InstrumentedRuntime<R, I> {
     inner: R,
     injector: I,
     otel_collector_endpoint: String,
+    otel_protocol: String,
     capture_content: bool,
 }
 
@@ -31,12 +33,14 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> InstrumentedRuntime<R, I> 
         inner: R,
         injector: I,
         otel_collector_endpoint: String,
+        otel_protocol: String,
         capture_content: bool,
     ) -> Self {
         Self {
             inner,
             injector,
             otel_collector_endpoint,
+            otel_protocol,
             capture_content,
         }
     }
@@ -54,6 +58,7 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
             version: None,
             capture_content: self.capture_content,
             otel_collector_endpoint: self.otel_collector_endpoint.clone(),
+            otel_protocol: self.otel_protocol.clone(),
         };
         self.injector.inject(&mut patched.env_vars, &ctx);
         self.inner.deploy(&patched).await
@@ -156,6 +161,7 @@ mod tests {
             RecordingRuntime { refreshed: flag.clone() },
             NoopInjector,
             "http://collector:4318".to_string(),
+            "http/protobuf".to_string(), 
             false,
         );
         rt.refresh_secrets(&ContainerId::new("agent"), HashMap::new())

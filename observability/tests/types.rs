@@ -23,11 +23,12 @@ fn token_usage_construction() {
         input_tokens: 100,
         output_tokens: 50,
         total_tokens: 150,
-        estimated_cost_usd: 0.0,
+        estimated_cost_usd: 0.00,
     };
     assert_eq!(usage.input_tokens, 100);
     assert_eq!(usage.output_tokens, 50);
     assert_eq!(usage.total_tokens, 150);
+    assert_eq!(usage.estimated_cost_usd, 0.00);
 }
 
 #[test]
@@ -36,13 +37,14 @@ fn token_usage_serialization_roundtrip() {
         input_tokens: 1024,
         output_tokens: 512,
         total_tokens: 1536,
-        estimated_cost_usd: 0.0,
+        estimated_cost_usd: 0.00,
     };
     let json = serde_json::to_string(&usage).unwrap();
     let back: TokenUsage = serde_json::from_str(&json).unwrap();
     assert_eq!(back.input_tokens, usage.input_tokens);
     assert_eq!(back.output_tokens, usage.output_tokens);
     assert_eq!(back.total_tokens, usage.total_tokens);
+    assert_eq!(back.estimated_cost_usd, usage.estimated_cost_usd);
 }
 
 // ─── Span ─────────────────────────────────────────────────────────────────────
@@ -298,7 +300,7 @@ fn agent_stats_construction() {
             input_tokens: 5000,
             output_tokens: 2500,
             total_tokens: 7500,
-            estimated_cost_usd: 0.0,
+            estimated_cost_usd: 0.00,
         },
         avg_latency_ms: 350.5,
         error_rate: 0.02,
@@ -334,6 +336,7 @@ fn agent_stats_serialization_roundtrip() {
             input_tokens: 100,
             output_tokens: 50,
             total_tokens: 150,
+            estimated_cost_usd: 0.00,
         },
         avg_latency_ms: 200.0,
         error_rate: 0.0,

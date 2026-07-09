@@ -79,8 +79,11 @@ pub struct AgentContext {
     /// Whether to capture prompt/completion content in logs
     /// (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`).
     pub capture_content: bool,
-    /// OTLP collector endpoint, e.g. `http://otel-collector.nasiko-infra:4318`.
+    /// OTLP collector endpoint, e.g. `http://otel-collector.nasiko-infra:4317`.
     pub otel_collector_endpoint: String,
+    /// OTLP transport protocol (`grpc` or `http/protobuf`). Must match the
+    /// collector port in `otel_collector_endpoint`: 4317 for grpc, 4318 for http.
+    pub otel_protocol: String,
 }
 
 /// Injects OpenTelemetry environment variables into an agent's `env_vars` map
@@ -98,7 +101,7 @@ impl InstrumentationInjector for OtelInjector {
             "OTEL_EXPORTER_OTLP_ENDPOINT".into(),
             ctx.otel_collector_endpoint.clone(),
         );
-        env_vars.insert("OTEL_EXPORTER_OTLP_PROTOCOL".into(), "http/protobuf".into());
+        env_vars.insert("OTEL_EXPORTER_OTLP_PROTOCOL".into(), ctx.otel_protocol.clone());
         env_vars.insert("OTEL_SERVICE_NAME".into(), ctx.agent_id.clone());
 
         let mut resource_attrs = format!("agent.id={}", ctx.agent_id);

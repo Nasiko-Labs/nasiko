@@ -7,7 +7,8 @@ use include_dir::{Dir, include_dir};
 
 use crate::util;
 
-static AGENTS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../agents");
+// Staged by build.rs with build artifacts (target/) filtered out.
+static AGENTS_DIR: Dir = include_dir!("$OUT_DIR/agents");
 
 // ─── Framework definitions ──────────────────────────────────────────────────
 

@@ -55,7 +55,8 @@ pub struct SkillRuntime {
 
 use include_dir::{Dir, include_dir};
 
-static SKILLS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../agents/skills");
+// Staged by build.rs with build artifacts (target/) filtered out.
+static SKILLS_DIR: Dir = include_dir!("$OUT_DIR/agents/skills");
 
 pub fn resolve_skill(name: &str) -> Result<(SkillManifest, String)> {
     // Try registry first (pull OCI blob, extract skill.json + impl)

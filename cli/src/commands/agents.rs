@@ -128,13 +128,6 @@ pub fn restart(agent: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn scale(agent: &str, replicas: u32) -> Result<()> {
-    let client = Client::from_active_cluster()?;
-    client.post_json_void(&format!("/containers/{agent}/scale"), &serde_json::json!({"replicas": replicas}))?;
-    println!("Scaled {agent} to {replicas} replica(s)");
-    Ok(())
-}
-
 pub fn rm(agent: &str, force: bool) -> Result<()> {
     if !force {
         let confirm = dialoguer::Confirm::new()
@@ -165,6 +158,34 @@ fn unwrap_agents(raw: serde_json::Value) -> Result<Vec<AgentRecord>> {
         Ok(serde_json::from_value(data.clone())?)
     } else {
         Ok(serde_json::from_value(raw)?)
+    }
+}
+
+/// Resolve a name or UUID into a deployed agent's UUID via the CP registry.
+///
+/// Used by `nasiko chat --agent <name>` so callers never have to look up and
+/// paste an agent's proxy URL by hand.
+pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
+    if uuid::Uuid::parse_str(name_or_id).is_ok() {
+        return Ok(name_or_id.to_string());
+    }
+
+    let client = Client::from_active_cluster()?;
+    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
+    let agents = unwrap_agents(raw)?;
+
+    let matches: Vec<&AgentRecord> =
+        agents.iter().filter(|a| a.name.eq_ignore_ascii_case(name_or_id)).collect();
+
+    match matches.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => bail!(
+            "no agent named '{name_or_id}' found on the active cluster (run `nasiko agents ls`)"
+        ),
+        many => bail!(
+            "multiple agents named '{name_or_id}': {} — use an ID instead",
+            many.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 

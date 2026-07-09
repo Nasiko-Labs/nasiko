@@ -53,7 +53,6 @@ const HELP_TEXT: &str = "\
   stop       Stop agent container
   start      Start a stopped agent
   restart    Restart agent container
-  scale      Scale agent container to N replicas
   rm         Terminate + deregister agent
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
@@ -215,8 +214,6 @@ enum AgentOpsCommands {
     Start { agent: String },
     /// Restart agent container (picks up new secrets/env)
     Restart { agent: String },
-    /// Scale agent container to N replicas
-    Scale { agent: String, replicas: u32 },
     /// Terminate + deregister agent
     Rm {
         agent: String,
@@ -229,6 +226,9 @@ enum AgentOpsCommands {
         url: Option<String>,
         /// Message (omit for interactive mode)
         message: Option<String>,
+        /// Chat directly with a deployed agent by name or ID (resolved via the CP registry)
+        #[arg(long, short = 'a')]
+        agent: Option<String>,
         /// Launch full-screen TUI (ratatui)
         #[arg(long)]
         tui: bool,
@@ -627,12 +627,24 @@ fn main() -> Result<()> {
             AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
             AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
             AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
-            AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
             AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
-            AgentOpsCommands::Chat { url, message, tui, resume, session_id } => {
-                let resolved = match url {
-                    Some(u) => u,
-                    None => {
+            AgentOpsCommands::Chat { url, message, agent, tui, resume, session_id } => {
+                // `nasiko chat "some message"` — a lone non-URL positional is
+                // the message, not the endpoint (URL falls back to the cluster).
+                let (url, message) = match (url, message) {
+                    (Some(u), None) if !u.starts_with("http://") && !u.starts_with("https://") => {
+                        (None, Some(u))
+                    }
+                    other => other,
+                };
+                let resolved = match (url, agent) {
+                    (Some(u), _) => u,
+                    (None, Some(a)) => {
+                        let base = config::active_url()?;
+                        let id = commands::agents::resolve_agent_id(&a)?;
+                        format!("{}/api/agents/{}", base.trim_end_matches('/'), id)
+                    }
+                    (None, None) => {
                         let base = config::active_url()?;
                         format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))
                     }

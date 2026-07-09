@@ -224,15 +224,6 @@ async fn orchestrator_stream(
     let mut orchestrator = Orchestrator::new(config, RegistrySource::Static(agents))
         .with_a2a_client(a2a_client)
         .with_guard(guard);
-    // Each agent the orchestrator calls gets its own MCP delegation token
-    // minted per-call (see `A2aTool`) — best-effort, omitted if JWT_SECRET
-    // is unset rather than failing the whole chat/orchestration request.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET") {
-        orchestrator = orchestrator.with_delegation(nasiko_react_agent::DelegationContext {
-            user_id: user_id.to_string(),
-            jwt_secret,
-        });
-    }
     orchestrator
         .init()
         .await
@@ -464,24 +455,11 @@ async fn agent_stream(
 
     let req_body = nasiko_types::a2a::build_stream_request(query, Some(context_id));
 
-    let mut req = state
+    let response = state
         .http_client
         .post(&endpoint)
         .header("A2A-Version", "1.0")
-        .header("traceparent", flow_ctx.to_traceparent());
-
-    // Mint a delegation token so this agent can call back into `/api/mcp`
-    // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
-    // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
-    // unavailable to this agent rather than failing the whole chat call.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-        && let Ok(delegation_token) =
-            nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &user_id.to_string(), &agent.id.to_string())
-    {
-        req = req.header("x-nasiko-agent-token", delegation_token);
-    }
-
-    let response = req
+        .header("traceparent", flow_ctx.to_traceparent())
         .json(&req_body)
         .send()
         .await
@@ -753,13 +731,38 @@ fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
+/// Determine the JSONRPC URL for an agent by consulting its agent card.
+///
+/// Agents built on the `a2a-server` crate mount JSONRPC at `/`; older agents
+/// exposed `/jsonrpc`. The card's `supportedInterfaces[0].url` is authoritative —
+/// only its path is used (the host in the card is the agent's bind address).
+/// Falls back to `{base}/jsonrpc` when the card can't be fetched or parsed.
+async fn resolve_rpc_url(state: &AppState, base: &str) -> String {
+    let card_url = format!("{base}/.well-known/agent-card.json");
+    let resp = state
+        .http_client
+        .get(&card_url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await;
+    if let Ok(resp) = resp
+        && let Ok(card) = resp.json::<serde_json::Value>().await
+        && let Some(url) = card["supportedInterfaces"][0]["url"].as_str()
+        && let Ok(parsed) = reqwest::Url::parse(url)
+    {
+        let path = parsed.path().trim_end_matches('/');
+        return format!("{base}{path}");
+    }
+    format!("{base}/jsonrpc")
+}
+
 async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
     // Prefer live runtime endpoint (Docker port mapping can change on restart).
     let container_id = nasiko_runtime::ContainerId::new(agent_name.to_owned());
     match state.runtime.endpoint(&container_id).await {
         Ok(endpoint) => {
             let base = endpoint.trim_end_matches('/');
-            return Ok(format!("{base}/jsonrpc"));
+            return Ok(resolve_rpc_url(state, base).await);
         }
         Err(_) => {
             // Container not reachable via runtime — check if it's actually stopped.
@@ -791,7 +794,7 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     if let Some(ref url) = stored_url
         && !url.is_empty() {
             let u = url.trim_end_matches('/');
-            return Ok(format!("{u}/jsonrpc"));
+            return Ok(resolve_rpc_url(state, u).await);
         }
 
     Err(format!("no endpoint found for agent '{agent_name}'"))

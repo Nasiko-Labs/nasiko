@@ -7,7 +7,7 @@ pub fn set(key: &str, value: &str, agent: Option<&str>) -> Result<()> {
     match agent {
         Some(name) => {
             let agent_id = resolve_agent_id(&client, name)?;
-            let _: serde_json::Value = client.post_json(
+            client.post_json_void(
                 &format!("/agents/{agent_id}/secrets"),
                 &serde_json::json!({"name": key, "value": value}),
             )?;
@@ -92,14 +92,13 @@ pub fn rm(key: &str, agent: Option<&str>) -> Result<()> {
 }
 
 fn resolve_agent_id(client: &Client, name: &str) -> Result<String> {
-    let agents: Vec<serde_json::Value> = client.get_json("/catalog/agents")?;
+    let agents: Vec<serde_json::Value> = client.get_json("/agents")?;
     for a in &agents {
         let agent_name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if agent_name == name {
-            if let Some(id) = a.get("id").and_then(|v| v.as_str()) {
+        if agent_name == name
+            && let Some(id) = a.get("id").and_then(|v| v.as_str()) {
                 return Ok(id.to_string());
             }
-        }
     }
     anyhow::bail!("agent '{name}' not found — is it registered? (check `nasiko ps`)")
 }

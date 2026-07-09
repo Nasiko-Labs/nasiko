@@ -168,14 +168,30 @@ pub fn create_cp_session(
     agent_url: &str,
     title: &str,
 ) -> Result<CpSession> {
+    create_cp_session_with_id(base_url, token, agent_url, title, None)
+}
+
+/// Create a CP session, optionally with a client-chosen `session_id`.
+/// When the ID already belongs to the caller the server returns the existing
+/// session, so this doubles as an ensure-exists call.
+pub fn create_cp_session_with_id(
+    base_url: &str,
+    token: &str,
+    agent_url: &str,
+    title: &str,
+    session_id: Option<&str>,
+) -> Result<CpSession> {
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder().timeout_global(None).build(),
     );
     let url = format!("{base_url}/api/chat/sessions");
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "agent_url": agent_url,
         "title": title,
     });
+    if let Some(sid) = session_id {
+        body["session_id"] = serde_json::Value::String(sid.to_string());
+    }
     let mut resp = http
         .post(&url)
         .header("Authorization", &format!("Bearer {token}"))
