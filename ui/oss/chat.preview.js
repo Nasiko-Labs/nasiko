@@ -9,11 +9,15 @@ export default {
         { role: "assistant", content: "Yes, mTLS between agents is supported. Here's how:\n\n1. Enable the `mtls` feature on the namespace\n2. The platform auto-provisions certificates via the internal CA\n3. Agents receive certs as mounted secrets\n\nNo code changes needed in your agent -- the sidecar proxy handles TLS termination.\n\n`NASIKO_MTLS=enabled` in the agent's env vars activates it.", trace_id: "xyz789abc012" },
       ],
     }],
-    ["POST /api/orchestrator/a2a", { __stream: [
-      { text: "data: {\"result\":{\"statusUpdate\":{\"status\":{\"state\":\"TASK_STATE_WORKING\",\"message\":{\"parts\":[{\"data\":{\"type\":\"thinking\",\"content\":\"Analyzing the request...\"}}]}}}}}\n\n", delay: 200 },
-      { text: "data: {\"result\":{\"artifactUpdate\":{\"artifact\":{\"parts\":[{\"text\":\"Here is the answer.\"}]},\"append\":false}}}\n\n", delay: 500 },
-      { text: "data: {\"result\":{\"statusUpdate\":{\"status\":{\"state\":\"TASK_STATE_COMPLETED\",\"message\":{\"parts\":[{\"text\":\"Here is the answer.\"}]}}}}}\n\n", delay: 100 },
-    ] }],
+    ["POST /api/orchestrator/a2a", (() => {
+      const answer = "## Scaling agents\n\nUse the `scale` command with **replica count**:\n\n```bash\nnasiko scale my-agent --replicas 3\n```\n\n- Replicas share one service endpoint\n- Traffic is round-robin balanced";
+      const evt = (obj) => `data: ${JSON.stringify({ result: obj })}\n\n`;
+      return { __stream: [
+        { text: evt({ statusUpdate: { status: { state: "TASK_STATE_WORKING", message: { parts: [{ data: { type: "thinking", content: "Analyzing the request..." } }] } } } }), delay: 200 },
+        { text: evt({ artifactUpdate: { artifact: { parts: [{ text: answer }] }, append: false } }), delay: 500 },
+        { text: evt({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED", message: { parts: [{ text: answer }] } } } }), delay: 100 },
+      ] };
+    })()],
   ],
   scenarios: {
     "with-messages": async (page) => {
@@ -22,6 +26,13 @@ export default {
       const base = url.split('?')[0];
       await page.goto(`${base}?agent_id=a-001&agent_name=Coding+Agent&session_id=s-001`);
       await page.waitForSelector('.msg-row');
+    },
+    "streamed-response": async (page) => {
+      // Submit a message and let the mocked SSE stream render live
+      await page.fill('#textarea', 'How do I scale an agent?');
+      await page.click('#submitBtn');
+      await page.waitForSelector('.stream-content.is-visible', { timeout: 5000 });
+      await page.waitForTimeout(300);
     },
   },
 };
