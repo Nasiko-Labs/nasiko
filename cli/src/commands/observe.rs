@@ -1,6 +1,5 @@
 use anyhow::Result;
 use serde::Deserialize;
-use std::collections::HashMap;
 
 use crate::api::Client;
 
@@ -112,6 +111,8 @@ struct TraceDetailData {
 #[derive(Deserialize)]
 struct TraceDetail {
     id: String,
+    #[serde(default)]
+    project_session_id: Option<String>,
     num_spans: usize,
     latency_ms: Option<f64>,
     cost_summary: NestedCostSummary,
@@ -175,7 +176,8 @@ struct SpanDetail {
     token_count_total: u64,
     input: ContentField,
     output: ContentField,
-    attributes: HashMap<String, serde_json::Value>,
+    /// Nested JSON object — server unflattenss dot-separated keys into a tree.
+    attributes: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -255,6 +257,33 @@ struct InsightsResponse {
     insights: Vec<String>,
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Flatten a nested JSON object back to dot-separated key/value pairs.
+/// e.g. `{"gen_ai": {"usage": {"input_tokens": 312}}}` → `("gen_ai.usage.input_tokens", "312")`
+fn flatten_json(prefix: &str, val: &serde_json::Value, out: &mut Vec<(String, String)>) {
+    match val {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                let key = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                flatten_json(&key, v, out);
+            }
+        }
+        other => {
+            // Strip surrounding quotes from JSON strings for cleaner output.
+            let display = match other {
+                serde_json::Value::String(s) => s.clone(),
+                v => v.to_string(),
+            };
+            out.push((prefix.to_string(), display));
+        }
+    }
+}
+
 // ─── Commands (protected_router / ObservabilityService) ───────────────────────
 
 /// List sessions across all agents via ObservabilityService.
@@ -282,27 +311,27 @@ pub fn sessions(start_time: Option<&str>) -> Result<()> {
     }
 
     println!(
-        "{:<34} {:<22} {:<20} {:<8} {:<6} {:<10} {:<8} {:<8} COST",
-        "SESSION ID", "AGENT", "STARTED", "DUR(ms)", "SPANS", "TOKENS", "p50(ms)", "p99(ms)"
+        "{:<38} {:<22} {:<20} {:<8} {:<7} {:<10} {:<8} {:<8} COST",
+        "SESSION ID", "AGENT", "STARTED", "DUR(ms)", "TRACES", "TOKENS", "p50(ms)", "p99(ms)"
     );
-    println!("{}", "-".repeat(125));
+    println!("{}", "-".repeat(129));
 
     for s in &data.sessions {
         let started = s.start_time.as_deref().unwrap_or("-");
         let started_short = started.get(..19).unwrap_or(started);
         let dur = s.duration_ms.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
-        let spans = s.num_traces.map(|n| n.to_string()).unwrap_or_else(|| "-".into());
+        let traces = s.num_traces.map(|n| n.to_string()).unwrap_or_else(|| "-".into());
         let tokens = s.token_usage.total.map(|t| t.to_string()).unwrap_or_else(|| "-".into());
         let p50 = s.trace_latency_ms_p50.map(|p| format!("{p:.0}")).unwrap_or_else(|| "-".into());
         let p99 = s.trace_latency_ms_p99.map(|p| format!("{p:.0}")).unwrap_or_else(|| "-".into());
         let cost = s.cost_summary.total.cost.map(|c| format!("${c:.4}")).unwrap_or_else(|| "-".into());
         println!(
-            "{:<34} {:<22} {:<20} {:<8} {:<6} {:<10} {:<8} {:<8} {}",
-            &s.session_id[..s.session_id.len().min(32)],
+            "{:<38} {:<22} {:<20} {:<8} {:<7} {:<10} {:<8} {:<8} {}",
+            s.session_id,
             &s.agent_id[..s.agent_id.len().min(20)],
             started_short,
             dur,
-            spans,
+            traces,
             tokens,
             p50,
             p99,
@@ -371,6 +400,9 @@ pub fn trace_detail(trace_id: &str) -> Result<()> {
     let t = resp.data.trace;
 
     println!("Trace:    {}", t.id);
+    if let Some(ref sid) = t.project_session_id {
+        println!("Session:  {}", sid);
+    }
     println!("Spans:    {}", t.num_spans);
     if let Some(lat) = t.latency_ms {
         println!("Latency:  {:.0} ms", lat);
@@ -463,12 +495,16 @@ pub fn span_detail(trace_id: &str, span_id: &str) -> Result<()> {
         println!();
     }
 
-    let gen_ai_attrs: Vec<_> = s.attributes.iter()
-        .filter(|(k, _)| k.starts_with("gen_ai.") || k.starts_with("llm."))
+    let mut flat_attrs: Vec<(String, String)> = Vec::new();
+    flatten_json("", &s.attributes, &mut flat_attrs);
+    flat_attrs.sort_by(|a, b| a.0.cmp(&b.0));
+    let gen_ai_attrs: Vec<_> = flat_attrs
+        .iter()
+        .filter(|(k, _)| k.starts_with("gen_ai.") || k.starts_with("llm.") || k.starts_with("openinference."))
         .collect();
     if !gen_ai_attrs.is_empty() {
         println!("── Attributes ─────────────────────────────────────");
-        for (k, v) in gen_ai_attrs {
+        for (k, v) in &gen_ai_attrs {
             println!("  {k}: {v}");
         }
     }
