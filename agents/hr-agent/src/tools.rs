@@ -69,7 +69,7 @@ pub fn definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "country_info",
-                "description": "Get country information including capital, region, population, languages, currencies, and timezones. Useful for understanding labor markets and regional context.",
+                "description": "Get country information including capital, region, income level, and latest population (World Bank data). Useful for understanding labor markets and regional context.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -308,79 +308,80 @@ async fn country_info(arguments: &str) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
     let name = args["name"].as_str().ok_or("missing 'name'")?;
 
-    let url = format!(
-        "https://restcountries.com/v3.1/name/{}?fields=name,capital,region,subregion,population,languages,currencies,timezones,flags",
-        urlencode(name),
-    );
-
-    let resp = reqwest::get(&url)
+    // restcountries.com retired its free API (v1–v4 return deprecation
+    // errors) — use the World Bank API instead: country metadata plus the
+    // latest population indicator, no key required.
+    let list = reqwest::get("https://api.worldbank.org/v2/country?format=json&per_page=400")
         .await
         .map_err(|e| format!("request failed: {e}"))?
         .json::<serde_json::Value>()
         .await
         .map_err(|e| format!("parse failed: {e}"))?;
 
-    let countries = resp.as_array().ok_or("country not found")?;
+    let countries = list
+        .get(1)
+        .and_then(|v| v.as_array())
+        .ok_or("unexpected country list response")?;
 
-    if countries.is_empty() {
-        return Ok(format!("No country found matching '{name}'."));
-    }
-
-    let country = &countries[0];
-
-    let official_name = country["name"]["official"].as_str().unwrap_or(name);
-    let common_name = country["name"]["common"].as_str().unwrap_or(name);
-    let region = country["region"].as_str().unwrap_or("unknown");
-    let subregion = country["subregion"].as_str().unwrap_or("unknown");
-    let population = country["population"].as_u64().unwrap_or(0);
-
-    let capitals: Vec<&str> = country["capital"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|c| c.as_str()).collect())
-        .unwrap_or_default();
-
-    let languages: Vec<&str> = country["languages"]
-        .as_object()
-        .map(|obj| obj.values().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
-
-    let currencies: Vec<String> = country["currencies"]
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .map(|(code, info)| {
-                    let cur_name = info["name"].as_str().unwrap_or("");
-                    let symbol = info["symbol"].as_str().unwrap_or("");
-                    format!("{code} - {cur_name} ({symbol})")
-                })
-                .collect()
+    let query = name.trim().to_lowercase();
+    // Real countries only — the list also carries regional aggregates.
+    let real = || {
+        countries.iter().filter(|c| {
+            c["region"]["value"]
+                .as_str()
+                .is_some_and(|r| r.trim() != "Aggregates")
         })
-        .unwrap_or_default();
+    };
+    let country = real()
+        .find(|c| {
+            c["name"].as_str().unwrap_or("").eq_ignore_ascii_case(&query)
+                || c["iso2Code"].as_str().unwrap_or("").eq_ignore_ascii_case(&query)
+                || c["id"].as_str().unwrap_or("").eq_ignore_ascii_case(&query)
+        })
+        .or_else(|| {
+            // Fuzzy pass: "Venezuela" should match "Venezuela, RB".
+            real().find(|c| {
+                let n = c["name"].as_str().unwrap_or("").to_lowercase();
+                n.contains(&query) || query.contains(n.trim_end_matches(", rb"))
+            })
+        });
 
-    let timezones: Vec<&str> = country["timezones"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|t| t.as_str()).collect())
-        .unwrap_or_default();
+    let Some(country) = country else {
+        return Ok(format!("No country found matching '{name}'."));
+    };
 
-    let pop_formatted = format_population(population);
+    let code = country["id"].as_str().unwrap_or("");
+    let official_name = country["name"].as_str().unwrap_or(name);
+    let capital = country["capitalCity"].as_str().filter(|s| !s.is_empty()).unwrap_or("N/A");
+    let region = country["region"]["value"].as_str().unwrap_or("unknown").trim();
+    let income = country["incomeLevel"]["value"].as_str().unwrap_or("unknown");
+
+    // Latest available total population (mrnev=1 = most recent non-empty value).
+    let pop_url = format!(
+        "https://api.worldbank.org/v2/country/{code}/indicator/SP.POP.TOTL?format=json&mrnev=1"
+    );
+    let pop_resp = reqwest::get(&pop_url)
+        .await
+        .map_err(|e| format!("request failed: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("parse failed: {e}"))?;
+
+    let pop_entry = pop_resp.get(1).and_then(|v| v.get(0));
+    let population = pop_entry
+        .and_then(|e| e["value"].as_u64())
+        .map(format_population)
+        .unwrap_or_else(|| "N/A".into());
+    let pop_year = pop_entry
+        .and_then(|e| e["date"].as_str())
+        .unwrap_or("latest");
 
     Ok(format!(
-        "Country: {} ({})\n\n\
-         Capital:    {}\n\
-         Region:     {} / {}\n\
-         Population: {}\n\
-         Languages:  {}\n\
-         Currencies: {}\n\
-         Timezones:  {}",
-        official_name,
-        common_name,
-        if capitals.is_empty() { "N/A".into() } else { capitals.join(", ") },
-        region,
-        subregion,
-        pop_formatted,
-        if languages.is_empty() { "N/A".into() } else { languages.join(", ") },
-        if currencies.is_empty() { "N/A".into() } else { currencies.join("; ") },
-        if timezones.is_empty() { "N/A".into() } else { timezones.join(", ") },
+        "Country: {official_name} ({code})\n\n\
+         Capital:      {capital}\n\
+         Region:       {region}\n\
+         Income level: {income}\n\
+         Population:   {population} ({pop_year}, World Bank)",
     ))
 }
 
