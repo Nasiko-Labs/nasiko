@@ -14,9 +14,12 @@ pub struct SessionHistory {
 
 impl SessionHistory {
     pub async fn fetch(session_id: &str, pool: &PgPool, limit: usize) -> Self {
-        let messages = sqlx::query_as::<_, (String, String)>(
+        // Take the LATEST `limit` messages, then restore chronological order —
+        // `ORDER BY timestamp ASC LIMIT n` would pin the window to the oldest
+        // messages and never advance in long sessions.
+        let mut messages: Vec<ChatMessage> = sqlx::query_as::<_, (String, String)>(
             "SELECT role, content FROM chat_messages \
-             WHERE session_id = $1 ORDER BY timestamp ASC LIMIT $2",
+             WHERE session_id = $1 ORDER BY timestamp DESC LIMIT $2",
         )
         .bind(session_id)
         .bind(limit as i64)
@@ -26,6 +29,7 @@ impl SessionHistory {
         .into_iter()
         .map(|(role, content)| ChatMessage { role, content })
         .collect();
+        messages.reverse();
 
         Self { messages }
     }
