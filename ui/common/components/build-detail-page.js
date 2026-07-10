@@ -1,3 +1,4 @@
+import { ansiToHtml } from '/common/utils/ansi.js';
 import styles from './build-detail-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -42,7 +43,7 @@ class BuildDetailPage extends HTMLElement {
 
     const logsHtml = (build.logs || []).map(l => {
       const cls = l.level === 'error' ? ' is-error' : '';
-      return `<span class="log-line${cls}"><span class="ts">${l.ts || ''}</span>${l.msg}</span>`;
+      return `<span class="log-line${cls}"><span class="ts">${ansiToHtml(l.ts || '')}</span>${ansiToHtml(l.msg || '')}</span>`;
     }).join('\n');
 
     this.innerHTML = `
@@ -81,7 +82,7 @@ class BuildDetailPage extends HTMLElement {
       try {
         const l = JSON.parse(e.data);
         const cls = l.level === 'error' ? ' is-error' : '';
-        viewer.innerHTML += `\n<span class="log-line${cls}"><span class="ts">${l.ts || ''}</span>${l.msg}</span>`;
+        viewer.innerHTML += `\n<span class="log-line${cls}"><span class="ts">${ansiToHtml(l.ts || '')}</span>${ansiToHtml(l.msg || '')}</span>`;
         viewer.scrollTop = viewer.scrollHeight;
       } catch {}
     });

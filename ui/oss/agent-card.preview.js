@@ -1,6 +1,6 @@
 export default {
   fetch: [
-    [{ method: "GET", path: /^\/api\/catalog\/agents/ }, {
+    [{ method: "GET", path: /^\/api\/agents\/[^/]+$/ }, {
       id: "a-001",
       name: "devops-cluster-lifecycle",
       display_name: "Devops cluster lifecycle agent",
@@ -39,7 +39,7 @@ export default {
         },
       ],
     }],
-    [{ method: "GET", path: /^\/api\/observe\/agents\/.*\/stats$/ }, {
+    [{ method: "GET", path: /^\/api\/observability\/agent\/.*\/stats$/ }, {
       total_requests: 0,
       total_cost: 0.0,
       error_rate: 0,
@@ -69,8 +69,10 @@ export default {
         { id: "g-004", agent_id: "a-001", grant_type: "department", grantee_id: "dept-engineering", granted_by: null, created_at: "2026-06-18T10:00:00Z" },
       ],
     }],
-    [{ method: "GET", path: /^\/api\/observe\/agents\/.*\/logs/ }, [
+    [{ method: "GET", path: /^\/api\/observability\/agents\/.*\/logs/ }, [
       { timestamp: "2026-07-03T10:00:01Z", level: "info", message: "Agent container started successfully", source: "container" },
+      { timestamp: "2026-07-03T10:00:01Z", level: "info", message: "\u001b[2m2026-07-03T10:00:01.766680Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mnasiko_devops_agent\u001b[0m\u001b[2m:\u001b[0m DevOps Engineer listening on 0.0.0.0:8000", source: "container" },
+      { timestamp: "2026-07-03T10:00:02Z", level: "warn", message: "\u001b[2m2026-07-03T10:00:02.100121Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mnasiko_devops_agent::llm\u001b[0m\u001b[2m:\u001b[0m \u001b[1mOPENAI_BASE_URL not set\u001b[0m, falling back to default", source: "container" },
       { timestamp: "2026-07-03T10:00:02Z", level: "info", message: "Listening on 0.0.0.0:8080", source: "container" },
       { timestamp: "2026-07-03T10:00:03Z", level: "debug", message: "Loading model weights from /models/nomic-embed-text", source: "container" },
       { timestamp: "2026-07-03T10:00:05Z", level: "info", message: "Model loaded in 2.1s, ready to serve requests", source: "container" },

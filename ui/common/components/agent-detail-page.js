@@ -1,6 +1,7 @@
 import { icons } from '/common/utils/icons.js';
 import { fetchApi } from '/common/services/api.js';
 import { connectSSE } from '/common/services/sse.js';
+import { ansiToHtml } from '/common/utils/ansi.js';
 import styles from './agent-detail-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -185,7 +186,7 @@ class AgentDetailPage extends HTMLElement {
     const ts  = l.timestamp ? new Date(l.timestamp).toISOString().replace('T', ' ').slice(0, 23) : '';
     const lvl = (l.level || 'INFO').toUpperCase();
     const src = l.source ? `[${l.source}]` : '';
-    const msg = (l.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const msg = ansiToHtml(l.message || '');
     return `<div class="log-line">` +
       `<span class="log-ts">${ts}</span>` +
       `<span class="log-level log-level-${lvl}">${lvl.padEnd(5)}</span>` +

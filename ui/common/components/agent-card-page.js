@@ -1,6 +1,7 @@
 import { icons } from '/common/utils/icons.js';
 import { fetchApi, apiFetch } from '/common/services/api.js';
 import { showToast } from '/common/utils/toast.js';
+import { ansiToHtml } from '/common/utils/ansi.js';
 import styles from './agent-card-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -480,7 +481,7 @@ class AgentCardPage extends HTMLElement {
           `<span class="acp-log-num">${i + 1}</span>` +
           `<span class="acp-log-ts">${this.#esc(ts)}</span>` +
           `<app-badge class="acp-log-badge" variant="${this.#levelVariant(line.level)}">${this.#esc(line.level || 'info')}</app-badge>` +
-          `<span class="acp-log-msg">${this.#esc(line.message)}</span>` +
+          `<span class="acp-log-msg">${ansiToHtml(line.message)}</span>` +
           `</div>`;
       }).join('');
 
