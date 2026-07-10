@@ -1,16 +1,11 @@
-//! Tool aggregation — fan out `tools/list` to every backend concurrently,
-//! namespace generic-server tools, filter by the agent's permissions, merge, and
-//! Redis-cache the result.
+//! Tool aggregation — fan out `tools/list` to every backend, namespace generic
+//! tools by connector id, filter by the agent's permissions, merge, Redis-cache.
 //!
-//! Port of the PoC's `tool_aggregator.aggregate_tools`. Composio meta-tools
-//! (`COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_MULTI_EXECUTE_TOOL`, …) keep their names
-//! and are **never** filtered here — they span all toolkits, and per-toolkit
-//! enforcement happens at `tools/call` (see `protocol.rs`). Generic-server tools
-//! are namespaced `{server}__{tool}`; a disabled server is dropped wholesale and
-//! individually-blocked tools are removed.
-//!
-//! A backend that errors or times out is skipped for this cycle (its tools
-//! reappear when it recovers) — one slow server never fails the whole list.
+//! Composio meta-tools (`COMPOSIO_SEARCH_TOOLS`, …) keep their names and are
+//! never filtered here (per-toolkit enforcement happens at `tools/call`).
+//! Generic-server tools are namespaced `{connector_prefix}__{tool}`; a disabled
+//! connector is dropped wholesale and individually-blocked tools are removed. A
+//! backend that errors/times out is skipped for this cycle.
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -20,7 +15,7 @@ use crate::error::Result;
 use crate::permissions::{PermissionContext, sha256_hex16};
 use crate::provider::generic::LIST_TIMEOUT;
 use crate::state::McpState;
-use crate::types::{MCPServerConfig, Stance};
+use crate::types::{MCPServerConfig, ServerType, Stance, connector_prefix};
 
 /// Fan out, namespace, filter, merge, cache. Returns the merged tool list.
 pub async fn aggregate_tools(
@@ -37,7 +32,6 @@ pub async fn aggregate_tools(
         return Ok(cached);
     }
 
-    // Fan out to every live backend concurrently.
     let active: Vec<&MCPServerConfig> = servers.iter().filter(|s| !s.url.is_empty()).collect();
     let provider = &state.providers.mcp;
     let results = futures::future::join_all(
@@ -57,25 +51,26 @@ pub async fn aggregate_tools(
             }
         };
 
-        if server.name == "composio" {
-            // Composio meta-tools pass through unchanged, unfiltered.
+        // Composio meta-tools pass through unchanged, unfiltered.
+        if server.kind == ServerType::Composio {
             merged.extend(tools);
             continue;
         }
 
-        // Generic server: server-level toggle, then per-tool block filter + namespacing.
-        if !perms.is_server_enabled(&server.name) {
+        // Generic server: connector-level toggle, then per-tool block filter + id namespacing.
+        if !perms.is_connector_enabled(server.connector_id) {
             continue;
         }
+        let prefix = connector_prefix(server.connector_id);
         for mut tool in tools {
             let Some(obj) = tool.as_object_mut() else { continue };
             let Some(original) = obj.get("name").and_then(|n| n.as_str()).map(str::to_string) else {
                 continue;
             };
-            if perms.get_stance(&server.name, &original) == Stance::Block {
+            if perms.get_stance(server.connector_id, &original) == Stance::Block {
                 continue;
             }
-            obj.insert("name".to_string(), json!(format!("{}__{}", server.name, original)));
+            obj.insert("name".to_string(), json!(format!("{prefix}__{original}")));
             merged.push(tool);
         }
     }
@@ -85,21 +80,19 @@ pub async fn aggregate_tools(
     Ok(merged)
 }
 
-/// `mcp:manifest:{user}:{servers_fp}:{perms_hash}` where `servers_fp` hashes the
-/// sorted `(name, url)` backends **and** the sorted connected toolkits — the
-/// latter is essential because the Composio backend URL is stable across toolkit
-/// changes, so without it a newly-connected toolkit's tools would be masked by a
-/// stale manifest.
+/// `mcp:manifest:{user}:{backends_fp}:{perms_hash}` where `backends_fp` hashes
+/// the sorted `(connector_id, url)` backends AND the sorted connected toolkits
+/// (the Composio URL is stable across toolkit changes, so the latter is needed).
 fn manifest_key(
     user_id: Uuid,
     servers: &[MCPServerConfig],
     connected_toolkits: &[String],
     perms_hash: &str,
 ) -> String {
-    let mut backends: Vec<(&str, &str)> = servers
+    let mut backends: Vec<(String, &str)> = servers
         .iter()
         .filter(|s| !s.url.is_empty())
-        .map(|s| (s.name.as_str(), s.url.as_str()))
+        .map(|s| (s.connector_id.to_string(), s.url.as_str()))
         .collect();
     backends.sort();
 

@@ -8,10 +8,18 @@ use std::collections::HashMap;
 use nasiko_mcp_gateway::provider::{
     ComposioProvider, ConnectedAccounts, GenericMcpProvider, ToolProvider,
 };
-use nasiko_mcp_gateway::types::MCPServerConfig;
+use nasiko_mcp_gateway::types::{MCPServerConfig, ServerType};
+use uuid::Uuid;
 
 fn cfg(url: String) -> MCPServerConfig {
-    MCPServerConfig { name: "serpapi".into(), url, headers: HashMap::new(), transport: "streamable_http".into() }
+    MCPServerConfig {
+        connector_id: Uuid::new_v4(),
+        kind: ServerType::Mcp,
+        name: "serpapi".into(),
+        url,
+        headers: HashMap::new(),
+        transport: "streamable_http".into(),
+    }
 }
 
 // ─── GenericMcpProvider (streamable-HTTP transport) ─────────────────────────
@@ -87,6 +95,8 @@ async fn generic_injects_auth_headers() {
     let mut headers = HashMap::new();
     headers.insert("Authorization".to_string(), "Bearer sk-xyz".to_string());
     let server = MCPServerConfig {
+        connector_id: Uuid::new_v4(),
+        kind: ServerType::Mcp,
         name: "serpapi".into(),
         url: format!("{}/mcp", srv.url()),
         headers,

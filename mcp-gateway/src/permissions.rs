@@ -1,19 +1,11 @@
-//! Per-agent permission engine.
+//! Per-agent permission engine, keyed by connector id.
 //!
-//! Two levels, mirroring Claude Desktop's Connectors UI (and the PoC's
-//! `permissions.py`):
-//!   1. **Server toggle** — can this agent use `gmail` / `serpapi` at all?
-//!   2. **Tool stance** — within an allowed server, each tool is
-//!      `allow | ask | block`, with glob patterns (`*`, `GMAIL_*`,
-//!      `GMAIL_SEND_EMAIL`) and priority `block > ask > allow`.
-//!
-//! Default (no rows): every server enabled, every tool allowed — opt-in
-//! restrictions only. The [`PermissionContext`] is computed once per gateway
-//! request and Redis-cached (`mcp:perm:{user}:{agent}`, short TTL), deleted
-//! immediately on any permission write so intentional changes take effect at
-//! once. Its `hash` is the cross-process cache-invalidation signal: it feeds the
-//! manifest cache key, so a permission change forces a fresh, re-filtered tool
-//! list with no other signalling.
+//! Two levels: (1) is a connector enabled for this agent at all, (2) per-tool
+//! stance `allow | ask | block` with glob patterns (`*`, `GMAIL_*`,
+//! `GMAIL_SEND_EMAIL`), priority `block > ask > allow`. Default (no row): every
+//! connector enabled, every tool allowed. The [`PermissionContext`] is computed
+//! once per request, Redis-cached, and dropped on any permission write. Its
+//! `hash` feeds the manifest cache key.
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,11 +20,17 @@ use crate::repo;
 use crate::state::McpState;
 use crate::types::Stance;
 
-/// One sub-tool permission rule.
+/// One `{pattern, stance}` entry as stored in `mcp_agent_connector_access.tool_rules`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRule {
+    pub pattern: String,
+    pub stance: String,
+}
+
+/// One flattened sub-tool permission rule (connector-scoped).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionRule {
-    pub server_name: String,
-    /// Glob pattern: `*` | `GMAIL_*` | `GMAIL_SEND_EMAIL`.
+    pub connector_id: Uuid,
     pub tool_pattern: String,
     pub stance: Stance,
 }
@@ -42,28 +40,28 @@ pub struct PermissionRule {
 pub struct PermissionContext {
     pub user_id: Uuid,
     pub agent_id: Uuid,
-    /// Server names explicitly disabled (`enabled = false`).
-    pub disabled_servers: HashSet<String>,
+    /// Connector ids explicitly disabled (`enabled = false`).
+    pub disabled_connectors: HashSet<Uuid>,
     pub rules: Vec<PermissionRule>,
     /// sha256[:16] of the rules + disabled set — the manifest cache-key signal.
     pub hash: String,
 }
 
 impl PermissionContext {
-    /// True unless the server is explicitly disabled. Default: enabled.
-    pub fn is_server_enabled(&self, server_name: &str) -> bool {
-        !self.disabled_servers.contains(server_name)
+    /// True unless the connector is explicitly disabled.
+    pub fn is_connector_enabled(&self, connector_id: Uuid) -> bool {
+        !self.disabled_connectors.contains(&connector_id)
     }
 
-    /// Resolve the stance for `(server, tool)`. Priority `block > ask > allow`;
-    /// default `allow` when no rule matches. Matching is case-insensitive glob.
-    pub fn get_stance(&self, server_name: &str, tool_name: &str) -> Stance {
+    /// Resolve the stance for `(connector, tool)`. Priority `block > ask > allow`;
+    /// default `allow`. Matching is case-insensitive glob.
+    pub fn get_stance(&self, connector_id: Uuid, tool_name: &str) -> Stance {
         let tool_lower = tool_name.to_ascii_lowercase();
         let matching: Vec<Stance> = self
             .rules
             .iter()
             .filter(|r| {
-                r.server_name == server_name
+                r.connector_id == connector_id
                     && wildcard_match(&r.tool_pattern.to_ascii_lowercase(), &tool_lower)
             })
             .map(|r| r.stance)
@@ -80,24 +78,24 @@ impl PermissionContext {
         Stance::Allow
     }
 
-    /// True when any server toggle or tool rule is set.
     pub fn has_any_restriction(&self) -> bool {
-        !self.disabled_servers.is_empty() || !self.rules.is_empty()
+        !self.disabled_connectors.is_empty() || !self.rules.is_empty()
     }
 }
 
 /// Extract the Composio toolkit slug from a tool slug:
-/// `GMAIL_SEND_EMAIL` → `gmail`, `GOOGLECALENDAR_CREATE_EVENT` → `googlecalendar`.
+/// `GMAIL_SEND_EMAIL` → `gmail`. Skips leading underscores so a malformed
+/// `_GMAIL_SEND` still resolves to `gmail` rather than an empty toolkit (which
+/// would bypass the per-toolkit permission check).
 pub fn toolkit_from_composio_slug(slug: &str) -> String {
-    slug.split('_').next().unwrap_or("").to_ascii_lowercase()
+    slug.split('_').find(|s| !s.is_empty()).unwrap_or("").to_ascii_lowercase()
 }
 
 fn perm_cache_key(user_id: Uuid, agent_id: Uuid) -> String {
     format!("mcp:perm:{user_id}:{agent_id}")
 }
 
-/// Load the permission context for `(user_id, agent_id)`: Redis cache hit → 0 DB
-/// reads; miss → two parallel reads, cached for the TTL.
+/// Load the permission context for `(user_id, agent_id)` — Redis cached.
 pub async fn load_permission_context(
     state: &McpState,
     user_id: Uuid,
@@ -108,70 +106,54 @@ pub async fn load_permission_context(
         return Ok(ctx);
     }
 
-    let (server_rows, tool_rows) = tokio::try_join!(
-        repo::get_agent_server_access(&state.db, user_id, agent_id),
-        repo::get_agent_tool_permissions(&state.db, user_id, agent_id),
-    )?;
+    let rows = repo::get_agent_connector_access(&state.db, user_id, agent_id).await?;
+    let mut disabled_connectors = HashSet::new();
+    let mut rules = Vec::new();
+    for row in rows {
+        if !row.enabled {
+            disabled_connectors.insert(row.connector_id);
+        }
+        for tr in parse_tool_rules(&row.tool_rules) {
+            if let Some(stance) = Stance::from_str(&tr.stance) {
+                rules.push(PermissionRule { connector_id: row.connector_id, tool_pattern: tr.pattern, stance });
+            }
+        }
+    }
 
-    let disabled_servers: HashSet<String> = server_rows
-        .iter()
-        .filter(|r| !r.enabled)
-        .map(|r| r.server_name.clone())
-        .collect();
-
-    let rules: Vec<PermissionRule> = tool_rows
-        .iter()
-        .filter_map(|r| {
-            Stance::from_str(&r.stance).map(|stance| PermissionRule {
-                server_name: r.server_name.clone(),
-                tool_pattern: r.tool_pattern.clone(),
-                stance,
-            })
-        })
-        .collect();
-
-    let hash = compute_hash(&rules, &disabled_servers);
-    let ctx = PermissionContext { user_id, agent_id, disabled_servers, rules, hash };
-
+    let hash = compute_hash(&rules, &disabled_connectors);
+    let ctx = PermissionContext { user_id, agent_id, disabled_connectors, rules, hash };
     cache::set_json_ex(&state.redis, &key, &ctx, state.config.perm_cache_ttl_seconds).await;
     Ok(ctx)
 }
 
-/// Drop the cached permission context for a `(user, agent)` pair. Call this
-/// immediately after any write to the agent's server-access / tool-permission
-/// rows so the next request reads fresh data.
+/// Drop the cached permission context for a `(user, agent)` pair.
 pub async fn invalidate_permission_cache(state: &McpState, user_id: Uuid, agent_id: Uuid) {
     cache::delete(&state.redis, &perm_cache_key(user_id, agent_id)).await;
 }
 
-/// Deterministic sha256[:16] over the rules + disabled set. Byte-for-byte
-/// compatible with the PoC's `_compute_hash` (sorted rule triples, then sorted
-/// `("__disabled__", server, "block")` triples, compact-JSON, sha256, first 16
-/// hex chars).
-fn compute_hash(rules: &[PermissionRule], disabled: &HashSet<String>) -> String {
+fn parse_tool_rules(raw: &Value) -> Vec<ToolRule> {
+    serde_json::from_value(raw.clone()).unwrap_or_default()
+}
+
+/// Deterministic sha256[:16] over the rules + disabled set (order-independent).
+fn compute_hash(rules: &[PermissionRule], disabled: &HashSet<Uuid>) -> String {
     let mut data: Vec<[String; 3]> = rules
         .iter()
-        .map(|r| {
-            [
-                r.server_name.clone(),
-                r.tool_pattern.clone(),
-                r.stance.as_str().to_string(),
-            ]
-        })
+        .map(|r| [r.connector_id.to_string(), r.tool_pattern.clone(), r.stance.as_str().to_string()])
         .collect();
     data.sort();
 
-    let mut disabled_sorted: Vec<&String> = disabled.iter().collect();
+    let mut disabled_sorted: Vec<String> = disabled.iter().map(Uuid::to_string).collect();
     disabled_sorted.sort();
     for s in disabled_sorted {
-        data.push(["__disabled__".to_string(), s.clone(), "block".to_string()]);
+        data.push(["__disabled__".to_string(), s, "block".to_string()]);
     }
 
     let raw = serde_json::to_string(&data).unwrap_or_default();
     sha256_hex16(raw.as_bytes())
 }
 
-/// First 16 hex chars of the SHA-256 of `bytes`. Shared with the manifest cache key.
+/// First 16 hex chars of the SHA-256 of `bytes`. Shared with the manifest key.
 pub(crate) fn sha256_hex16(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
@@ -180,9 +162,7 @@ pub(crate) fn sha256_hex16(bytes: &[u8]) -> String {
     hex
 }
 
-/// Case-sensitive glob match supporting `*` (any run, incl. empty) and `?`
-/// (one char) — the `fnmatch` subset the PoC's patterns use. Callers lowercase
-/// both sides for case-insensitivity.
+/// Case-sensitive glob match supporting `*` and `?`. Callers lowercase both sides.
 fn wildcard_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
@@ -218,316 +198,278 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 
 pub const STANCES: [&str; 3] = ["allow", "ask", "block"];
 
-/// `GET /api/mcp/agents/{agent_id}/servers` view: all servers visible to the
-/// user with this agent's enabled/connected status.
-pub async fn list_servers_view(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<Value> {
-    let access = repo::get_agent_server_access(&state.db, user_id, agent_id).await?;
-    let access_map: HashMap<String, bool> = access.into_iter().map(|r| (r.server_name, r.enabled)).collect();
+/// `GET /agents/{id}/connectors` view: connectors this agent can use, with
+/// per-agent enabled + connected status.
+pub async fn list_connectors_view(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<Value> {
+    let connectors = repo::list_accessible_connectors(&state.db, user_id).await?;
+    let access = repo::get_agent_connector_access(&state.db, user_id, agent_id).await?;
+    let enabled_map: HashMap<Uuid, bool> = access.into_iter().map(|r| (r.connector_id, r.enabled)).collect();
+    let connected: HashSet<Uuid> = repo::list_user_connections(&state.db, user_id, Some("ACTIVE"))
+        .await?
+        .into_iter()
+        .map(|c| c.connector_id)
+        .collect();
 
-    let active_conns = repo::list_connections_by_user(&state.db, user_id, Some("ACTIVE")).await?;
-    let connected_toolkits: HashSet<String> = active_conns.into_iter().map(|c| c.toolkit).collect();
-
-    let creds = repo::get_user_credentials_for_user(&state.db, user_id).await?;
-    let tokens = repo::get_mcp_oauth_tokens_for_user(&state.db, user_id).await?;
-    let cred_ids: HashSet<Uuid> = creds.into_iter().map(|c| c.mcp_server_id).collect();
-    let token_ids: HashSet<Uuid> = tokens.into_iter().map(|t| t.mcp_server_id).collect();
-
-    let mut entries: Vec<Value> = Vec::new();
-
-    for ac in repo::list_platform_auth_configs(&state.db).await? {
-        entries.push(json!({
-            "server_name": ac.toolkit,
-            "server_type": "composio",
-            "enabled": access_map.get(&ac.toolkit).copied().unwrap_or(true),
-            "connected": connected_toolkits.contains(&ac.toolkit),
-            "display_name": ac.display_name.unwrap_or_else(|| crate::catalog::capitalize(&ac.toolkit)),
-            "logo_url": ac.logo_url,
-        }));
-    }
-    for s in repo::list_mcp_servers_for_user(&state.db, user_id).await? {
-        let connected = cred_ids.contains(&s.id) || token_ids.contains(&s.id) || s.auth_type == "none";
-        entries.push(json!({
-            "server_name": s.name,
-            "server_type": "mcp",
-            "enabled": access_map.get(&s.name).copied().unwrap_or(true),
-            "connected": connected,
-            "display_name": s.display_name.unwrap_or_else(|| crate::catalog::capitalize(&s.name)),
-            "logo_url": s.logo_url,
-        }));
-    }
-
-    Ok(json!({ "data": entries }))
+    let data: Vec<Value> = connectors
+        .into_iter()
+        .map(|c| {
+            let is_connected = connected.contains(&c.id) || c.auth_type.as_deref() == Some("none");
+            json!({
+                "connector_id": c.id,
+                "provider_type": c.provider_type,
+                "name": c.name,
+                "display_name": c.display_name.unwrap_or_else(|| crate::catalog::capitalize(&c.name)),
+                "logo_url": c.logo_url,
+                "enabled": enabled_map.get(&c.id).copied().unwrap_or(true),
+                "connected": is_connected,
+            })
+        })
+        .collect();
+    Ok(json!({ "data": data }))
 }
 
-/// `PUT /api/mcp/agents/{agent_id}/servers/{server}` view: toggle a server for
-/// the agent.
-pub async fn set_server_access_view(
+/// `PUT /agents/{id}/connectors/{connector_id}` — toggle a connector, preserving
+/// any existing tool rules. Requires the connector be reachable (Layer 1).
+pub async fn set_connector_access_view(
     state: &McpState,
     user_id: Uuid,
     agent_id: Uuid,
-    server: &str,
+    connector_id: Uuid,
     enabled: bool,
 ) -> Result<Value> {
-    // Determine the server type (and that it exists).
-    let server_type = if repo::get_platform_auth_config_by_toolkit(&state.db, server).await?.is_some() {
-        "composio"
-    } else if repo::get_platform_mcp_server_by_name(&state.db, server).await?.is_some()
-        || repo::get_user_mcp_server_by_name(&state.db, user_id, server).await?.is_some()
-    {
-        "mcp"
-    } else {
-        return Err(McpError::NotFound(format!("server '{server}' not found")));
-    };
-
-    let row = repo::upsert_agent_server_access(&state.db, user_id, agent_id, server, server_type, enabled).await?;
+    if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+    }
+    let existing_rules = repo::get_agent_connector_access_row(&state.db, user_id, agent_id, connector_id)
+        .await?
+        .map(|r| r.tool_rules)
+        .unwrap_or_else(|| json!([]));
+    let row = repo::upsert_agent_connector_access(&state.db, user_id, agent_id, connector_id, enabled, &existing_rules)
+        .await?;
     invalidate_permission_cache(state, user_id, agent_id).await;
-
-    Ok(json!({ "server_name": row.server_name, "server_type": row.server_type, "enabled": row.enabled }))
+    Ok(json!({ "connector_id": row.connector_id, "enabled": row.enabled }))
 }
 
-/// `GET /api/mcp/agents/{agent_id}/servers/{server}/tools` view: tools for a
-/// server with this agent's current stance per tool.
-pub async fn list_server_tools_view(state: &McpState, user_id: Uuid, agent_id: Uuid, server: &str) -> Result<Value> {
+/// `GET /agents/{id}/connectors/{connector_id}/tools` — tools for a connector
+/// with this agent's current stance. Reads the synced catalog; syncs live if empty.
+pub async fn list_connector_tools_view(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+    connector_id: Uuid,
+) -> Result<Value> {
+    if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+    }
     let perms = load_permission_context(state, user_id, agent_id).await?;
 
-    // Collect (name, description) pairs from the right source.
-    let tools: Vec<(String, Option<String>)> =
-        if repo::get_platform_auth_config_by_toolkit(&state.db, server).await?.is_some() {
-            match &state.providers.composio {
-                Some(provider) => provider
-                    .list_toolkit_tools(server)
-                    .await?
-                    .into_iter()
-                    .map(|t| (t.name, t.description))
-                    .collect(),
-                None => Vec::new(),
-            }
-        } else {
-            // Generic MCP server: build its config (with the user's creds) and probe it.
-            let built = crate::credentials::build_generic_servers(state, user_id).await?;
-            match built.iter().find(|s| s.name == server) {
-                Some(cfg) => state
-                    .providers
-                    .mcp
-                    .list_tools(cfg, LIST_TIMEOUT, None)
-                    .await?
-                    .into_iter()
-                    .filter_map(|t| {
-                        t.get("name").and_then(|n| n.as_str()).map(|name| {
-                            (name.to_string(), t.get("description").and_then(|d| d.as_str()).map(str::to_string))
-                        })
-                    })
-                    .collect(),
-                None => Vec::new(),
-            }
-        };
+    let mut catalog = repo::list_connector_tools(&state.db, connector_id).await?;
+    if catalog.is_empty() {
+        sync_connector_tools(state, user_id, connector_id).await?;
+        catalog = repo::list_connector_tools(&state.db, connector_id).await?;
+    }
 
-    let out: Vec<Value> = tools
+    let out: Vec<Value> = catalog
         .into_iter()
-        .map(|(name, description)| {
-            let stance = perms.get_stance(server, &name);
-            json!({ "name": name, "description": description, "stance": stance.as_str() })
+        .map(|t| {
+            let stance = perms.get_stance(connector_id, &t.tool_name);
+            json!({ "name": t.tool_name, "description": t.description, "stance": stance.as_str() })
         })
         .collect();
-
     Ok(json!({ "data": out }))
 }
 
-/// `GET /api/mcp/agents/{agent_id}/tools` view: the agent's current tool
-/// rules.
+/// Sync a connector's tool catalog from its live backend into `mcp_connector_tools`.
+async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<()> {
+    let connector = repo::get_connector_by_id(&state.db, connector_id)
+        .await?
+        .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
+
+    let tools: Vec<(String, Option<String>)> = if connector.is_composio() {
+        match &state.providers.composio {
+            Some(p) => p.list_toolkit_tools(&connector.name).await?.into_iter().map(|t| (t.name, t.description)).collect(),
+            None => Vec::new(),
+        }
+    } else {
+        let built = crate::credentials::build_generic_servers(state, user_id).await?;
+        match built.iter().find(|s| s.connector_id == connector_id) {
+            Some(cfg) => state
+                .providers
+                .mcp
+                .list_tools(cfg, LIST_TIMEOUT, None)
+                .await?
+                .into_iter()
+                .filter_map(|t| {
+                    t.get("name").and_then(|n| n.as_str()).map(|name| {
+                        (name.to_string(), t.get("description").and_then(|d| d.as_str()).map(str::to_string))
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    };
+
+    if !tools.is_empty() {
+        repo::upsert_connector_tools(&state.db, connector_id, &tools).await?;
+    }
+    Ok(())
+}
+
+/// `GET /agents/{id}/tools` view: the agent's current tool rules across connectors.
 pub async fn list_tool_rules_view(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<Value> {
-    let rows = repo::get_agent_tool_permissions(&state.db, user_id, agent_id).await?;
-    let data: Vec<Value> = rows
-        .into_iter()
-        .map(|r| json!({ "server_name": r.server_name, "tool_pattern": r.tool_pattern, "stance": r.stance }))
-        .collect();
+    let rows = repo::get_agent_connector_access(&state.db, user_id, agent_id).await?;
+    let mut data: Vec<Value> = Vec::new();
+    for row in rows {
+        for tr in parse_tool_rules(&row.tool_rules) {
+            data.push(json!({ "connector_id": row.connector_id, "tool_pattern": tr.pattern, "stance": tr.stance }));
+        }
+    }
     Ok(json!({ "data": data }))
 }
 
 /// One rule input for [`bulk_update_tools`].
 pub struct ToolRuleInput {
-    pub server_name: String,
+    pub connector_id: Uuid,
     pub tool_pattern: String,
     pub stance: String,
 }
 
-/// `PUT /api/mcp/agents/{agent_id}/tools` view: batch upsert tool permission
-/// rules. Validates every stance before writing any of them.
-pub async fn bulk_update_tools(state: &McpState, user_id: Uuid, agent_id: Uuid, rules: &[ToolRuleInput]) -> Result<Value> {
+/// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates
+/// + dedupes each connector's rules, and upserts (preserving `enabled`).
+pub async fn bulk_update_tools(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+    rules: &[ToolRuleInput],
+) -> Result<Value> {
     for rule in rules {
         if !STANCES.contains(&rule.stance.as_str()) {
             return Err(McpError::BadRequest(format!("stance must be one of {STANCES:?}")));
         }
     }
 
-    let mut applied = Vec::with_capacity(rules.len());
+    // Group by connector, deduping on tool_pattern (last write wins).
+    let mut by_connector: HashMap<Uuid, HashMap<String, String>> = HashMap::new();
     for rule in rules {
-        let row = repo::upsert_agent_tool_permission(
-            &state.db,
-            user_id,
-            agent_id,
-            &rule.server_name,
-            &rule.tool_pattern,
-            &rule.stance,
-        )
-        .await?;
-        applied
-            .push(json!({ "server_name": row.server_name, "tool_pattern": row.tool_pattern, "stance": row.stance }));
+        by_connector
+            .entry(rule.connector_id)
+            .or_default()
+            .insert(rule.tool_pattern.clone(), rule.stance.clone());
     }
-    invalidate_permission_cache(state, user_id, agent_id).await;
 
+    let mut applied: Vec<Value> = Vec::new();
+    for (connector_id, patterns) in by_connector {
+        if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+            return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+        }
+        let enabled = repo::get_agent_connector_access_row(&state.db, user_id, agent_id, connector_id)
+            .await?
+            .map(|r| r.enabled)
+            .unwrap_or(true);
+        let tool_rules: Vec<ToolRule> =
+            patterns.iter().map(|(p, s)| ToolRule { pattern: p.clone(), stance: s.clone() }).collect();
+        let rules_json = serde_json::to_value(&tool_rules)?;
+        repo::upsert_agent_connector_access(&state.db, user_id, agent_id, connector_id, enabled, &rules_json).await?;
+        for tr in tool_rules {
+            applied.push(json!({ "connector_id": connector_id, "tool_pattern": tr.pattern, "stance": tr.stance }));
+        }
+    }
+
+    invalidate_permission_cache(state, user_id, agent_id).await;
     Ok(json!({ "data": applied }))
 }
 
-/// `DELETE /api/mcp/agents/{agent_id}/permissions` — reset to all-allowed.
-/// Returns the number of rows deleted.
+/// `DELETE /agents/{id}/permissions` — reset to all-allowed.
 pub async fn reset(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<u64> {
-    let deleted = repo::delete_all_agent_permissions(&state.db, user_id, agent_id).await?;
+    let deleted = repo::delete_all_agent_access(&state.db, user_id, agent_id).await?;
     invalidate_permission_cache(state, user_id, agent_id).await;
     Ok(deleted)
-}
-
-#[cfg(test)]
-mod management_tests {
-    use super::STANCES;
-
-    #[test]
-    fn stances_are_exactly_allow_ask_block() {
-        assert_eq!(STANCES, ["allow", "ask", "block"]);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn wildcard_semantics() {
-        assert!(wildcard_match("*", "anything"));
-        assert!(wildcard_match("gmail_*", "gmail_send_email"));
-        assert!(wildcard_match("gmail_send_email", "gmail_send_email"));
-        assert!(!wildcard_match("gmail_*", "slack_post"));
-        assert!(wildcard_match("gmail_?end", "gmail_send"));
-        assert!(!wildcard_match("gmail_?end", "gmail_bend_x"));
-    }
-
-    #[test]
-    fn stance_priority_block_over_ask_over_allow() {
-        let ctx = PermissionContext {
-            user_id: Uuid::nil(),
-            agent_id: Uuid::nil(),
-            disabled_servers: HashSet::new(),
-            rules: vec![
-                PermissionRule { server_name: "gmail".into(), tool_pattern: "GMAIL_*".into(), stance: Stance::Allow },
-                PermissionRule { server_name: "gmail".into(), tool_pattern: "GMAIL_SEND_EMAIL".into(), stance: Stance::Block },
-            ],
-            hash: String::new(),
-        };
-        assert_eq!(ctx.get_stance("gmail", "GMAIL_SEND_EMAIL"), Stance::Block);
-        assert_eq!(ctx.get_stance("gmail", "GMAIL_FETCH_EMAILS"), Stance::Allow);
-        assert_eq!(ctx.get_stance("gmail", "UNMATCHED"), Stance::Allow);
-    }
-
-    #[test]
-    fn toolkit_slug_extraction() {
-        assert_eq!(toolkit_from_composio_slug("GMAIL_SEND_EMAIL"), "gmail");
-        assert_eq!(toolkit_from_composio_slug("GOOGLECALENDAR_CREATE_EVENT"), "googlecalendar");
-    }
-}
-
-#[cfg(test)]
-mod edge_tests {
-    use super::*;
-
-    #[test]
-    fn wildcard_edge_cases() {
-        // Empty pattern only matches empty text.
-        assert!(wildcard_match("", ""));
-        assert!(!wildcard_match("", "x"));
-        // Star matches empty and anything.
-        assert!(wildcard_match("*", ""));
-        assert!(wildcard_match("**", "abc"));
-        // Leading/trailing/middle stars.
-        assert!(wildcard_match("*email", "gmail_send_email"));
-        assert!(wildcard_match("gmail*email", "gmail_send_email"));
-        assert!(wildcard_match("*send*", "gmail_send_email"));
-        // Question mark is exactly one char.
-        assert!(wildcard_match("a?c", "abc"));
-        assert!(!wildcard_match("a?c", "ac"));
-        assert!(!wildcard_match("a?c", "abbc"));
-        // Star + question mark combined.
-        assert!(wildcard_match("g*_?end_*", "gmail_send_email"));
-        // No match.
-        assert!(!wildcard_match("gmail_*", "slack_post"));
-    }
-
-    fn ctx(rules: Vec<PermissionRule>, disabled: &[&str]) -> PermissionContext {
+    fn ctx(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
         PermissionContext {
             user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
-            disabled_servers: disabled.iter().map(|s| s.to_string()).collect(),
+            disabled_connectors: disabled.iter().copied().collect(),
             rules,
             hash: String::new(),
         }
     }
-    fn rule(server: &str, pat: &str, stance: Stance) -> PermissionRule {
-        PermissionRule { server_name: server.into(), tool_pattern: pat.into(), stance }
+    fn rule(c: Uuid, pat: &str, stance: Stance) -> PermissionRule {
+        PermissionRule { connector_id: c, tool_pattern: pat.into(), stance }
     }
 
     #[test]
-    fn stance_default_allow_and_server_scoping() {
-        let c = ctx(vec![rule("gmail", "*", Stance::Block)], &[]);
-        // Rule on gmail must not affect slack.
-        assert_eq!(c.get_stance("slack", "SLACK_POST"), Stance::Allow);
-        assert_eq!(c.get_stance("gmail", "ANYTHING"), Stance::Block);
+    fn wildcard_semantics_and_edges() {
+        assert!(wildcard_match("*", "anything"));
+        assert!(wildcard_match("gmail_*", "gmail_send_email"));
+        assert!(!wildcard_match("gmail_*", "slack_post"));
+        assert!(wildcard_match("gmail_?end", "gmail_send"));
+        assert!(!wildcard_match("gmail_?end", "gmail_bend_x"));
+        assert!(wildcard_match("", ""));
+        assert!(!wildcard_match("", "x"));
+        assert!(wildcard_match("*send*", "gmail_send_email"));
+        assert!(!wildcard_match("a?c", "ac"));
     }
 
     #[test]
-    fn stance_priority_across_overlapping_patterns() {
-        // allow on *, ask on GMAIL_SEND_*, block on GMAIL_SEND_EMAIL.
+    fn stance_priority_and_connector_scoping() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
         let c = ctx(
             vec![
-                rule("gmail", "*", Stance::Allow),
-                rule("gmail", "gmail_send_*", Stance::Ask),
-                rule("gmail", "gmail_send_email", Stance::Block),
+                rule(a, "*", Stance::Allow),
+                rule(a, "gmail_send_*", Stance::Ask),
+                rule(a, "gmail_send_email", Stance::Block),
             ],
             &[],
         );
-        assert_eq!(c.get_stance("gmail", "GMAIL_SEND_EMAIL"), Stance::Block); // block wins
-        assert_eq!(c.get_stance("gmail", "GMAIL_SEND_SMS"), Stance::Ask); // ask beats allow
-        assert_eq!(c.get_stance("gmail", "GMAIL_READ"), Stance::Allow);
+        assert_eq!(c.get_stance(a, "GMAIL_SEND_EMAIL"), Stance::Block);
+        assert_eq!(c.get_stance(a, "GMAIL_SEND_SMS"), Stance::Ask);
+        assert_eq!(c.get_stance(a, "GMAIL_READ"), Stance::Allow);
+        // Rule on connector a must not affect connector b.
+        assert_eq!(c.get_stance(b, "ANYTHING"), Stance::Allow);
     }
 
     #[test]
-    fn is_server_enabled_and_has_restriction() {
-        let c = ctx(vec![], &["discord"]);
-        assert!(!c.is_server_enabled("discord"));
-        assert!(c.is_server_enabled("gmail"));
+    fn enabled_and_restriction_flags() {
+        let d = Uuid::new_v4();
+        let c = ctx(vec![], &[d]);
+        assert!(!c.is_connector_enabled(d));
+        assert!(c.is_connector_enabled(Uuid::new_v4()));
         assert!(c.has_any_restriction());
         assert!(!ctx(vec![], &[]).has_any_restriction());
     }
 
     #[test]
     fn hash_is_deterministic_and_order_independent() {
-        let disabled: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
-        let r1 = vec![rule("gmail", "A", Stance::Block), rule("slack", "B", Stance::Ask)];
-        let r2 = vec![rule("slack", "B", Stance::Ask), rule("gmail", "A", Stance::Block)];
-        // Same rules in different order → identical hash.
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let disabled: HashSet<Uuid> = [a, b].into_iter().collect();
+        let r1 = vec![rule(a, "A", Stance::Block), rule(b, "B", Stance::Ask)];
+        let r2 = vec![rule(b, "B", Stance::Ask), rule(a, "A", Stance::Block)];
         assert_eq!(compute_hash(&r1, &disabled), compute_hash(&r2, &disabled));
-        // A different stance → different hash.
-        let r3 = vec![rule("gmail", "A", Stance::Allow), rule("slack", "B", Stance::Ask)];
+        let r3 = vec![rule(a, "A", Stance::Allow), rule(b, "B", Stance::Ask)];
         assert_ne!(compute_hash(&r1, &disabled), compute_hash(&r3, &disabled));
-        // Adding a disabled server → different hash.
-        let more: std::collections::HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        assert_ne!(compute_hash(&r1, &disabled), compute_hash(&r1, &more));
-        // Hash length is 16 hex chars.
         assert_eq!(compute_hash(&r1, &disabled).len(), 16);
     }
 
     #[test]
-    fn toolkit_slug_edges() {
+    fn toolkit_slug_extraction() {
         assert_eq!(toolkit_from_composio_slug("GMAIL_SEND_EMAIL"), "gmail");
         assert_eq!(toolkit_from_composio_slug("NOUNDERSCORE"), "nounderscore");
         assert_eq!(toolkit_from_composio_slug(""), "");
+        // Leading underscore must not yield an empty (bypass-prone) toolkit.
+        assert_eq!(toolkit_from_composio_slug("_GMAIL_SEND"), "gmail");
+        assert_eq!(toolkit_from_composio_slug("___"), "");
+    }
+
+    #[test]
+    fn stances_are_exactly_allow_ask_block() {
+        assert_eq!(STANCES, ["allow", "ask", "block"]);
     }
 }

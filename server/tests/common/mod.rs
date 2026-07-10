@@ -275,6 +275,13 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         cors_allowed_origins: vec![],
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
+        composio_api_key: None,
+        composio_base_url: "https://backend.composio.dev".into(),
+        composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET").ok().filter(|s| !s.is_empty()),
+        mcp_gateway_public_url: None,
+        mcp_session_ttl_seconds: 300,
+        mcp_perm_cache_ttl_seconds: 30,
+        mcp_manifest_ttl_seconds: 300,
     }
 }
 
@@ -334,18 +341,6 @@ pub fn as_member(
     username: &str,
 ) -> reqwest::RequestBuilder {
     rb.bearer_auth(sign_token(user_id, username, false, "member"))
-}
-
-/// Attach HTTP Basic auth — the credential type the OCI registry's pull-only
-/// path (`nasiko_oci::pull_credentials`) accepts, distinct from the bearer-JWT
-/// paths above.
-#[allow(dead_code)]
-pub fn as_pull_credential(
-    rb: reqwest::RequestBuilder,
-    username: &str,
-    password: &str,
-) -> reqwest::RequestBuilder {
-    rb.basic_auth(username, Some(password))
 }
 
 /// Build an in-memory zip archive from `(path, bytes)` pairs.

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use uuid::Uuid;
 
 /// MCP protocol version advertised in the `initialize` handshake. Matches the
 /// version the PoC negotiated and the streamable-HTTP transport expects.
@@ -136,7 +137,7 @@ impl AuthType {
 pub enum ServerType {
     /// The per-user Composio MCP session (meta-tools, keeps original names).
     Composio,
-    /// A generic streamable-HTTP MCP server (tools namespaced `{server}__{tool}`).
+    /// A generic streamable-HTTP MCP server (tools namespaced by connector id).
     Mcp,
 }
 
@@ -149,11 +150,73 @@ impl ServerType {
     }
 }
 
-/// A resolved backend the gateway will fan out to. The Composio session is
-/// always entry `[0]` with `name = "composio"`; generic servers follow with
-/// per-user credentials already injected into `headers` / `url`.
+/// DB discriminator for `mcp_connectors.provider_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProviderType {
+    #[serde(rename = "composio")]
+    Composio,
+    #[serde(rename = "mcp_server")]
+    McpServer,
+}
+
+impl ProviderType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderType::Composio => "composio",
+            ProviderType::McpServer => "mcp_server",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "composio" => Some(ProviderType::Composio),
+            "mcp_server" => Some(ProviderType::McpServer),
+            _ => None,
+        }
+    }
+}
+
+/// Sharing grant type for `mcp_connector_grants.grant_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GrantType {
+    User,
+    Public,
+}
+
+impl GrantType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GrantType::User => "user",
+            GrantType::Public => "public",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "user" => Some(GrantType::User),
+            "public" => Some(GrantType::Public),
+            _ => None,
+        }
+    }
+}
+
+/// Sentinel `grantee_id` for a public ("everyone") grant.
+pub const PUBLIC_GRANTEE: &str = "*";
+
+/// A resolved backend the gateway will fan out to. The Composio session (when
+/// present) is entry `[0]` with `kind = Composio`; generic servers follow with
+/// per-user credentials already injected into `headers` / `url`. `connector_id`
+/// is the routing key: generic tools are namespaced `{connector_prefix}__{tool}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPServerConfig {
+    /// For generic servers, the connector id. For the Composio aggregate this is
+    /// `Uuid::nil()` (its tools resolve to per-toolkit connectors separately).
+    pub connector_id: Uuid,
+    pub kind: ServerType,
+    /// Display/log label only — never the routing key.
     pub name: String,
     pub url: String,
     #[serde(default)]
@@ -164,6 +227,14 @@ pub struct MCPServerConfig {
 
 fn default_transport() -> String {
     "streamable_http".to_string()
+}
+
+/// Tool-routing namespace prefix for a connector — first 8 hex of its id.
+/// Derived from id, never name, so two owners' connectors can't collide (fix #1).
+pub fn connector_prefix(id: Uuid) -> String {
+    let mut s = id.simple().to_string();
+    s.truncate(8);
+    s
 }
 
 // ─── Permissions ────────────────────────────────────────────────────────────
@@ -229,6 +300,29 @@ mod tests {
         }
         assert_eq!(AuthType::from_str("nope"), None);
         assert_eq!(AuthType::from_str(""), None);
+    }
+
+    #[test]
+    fn provider_and_grant_type_round_trip() {
+        assert_eq!(ProviderType::from_str("composio"), Some(ProviderType::Composio));
+        assert_eq!(ProviderType::from_str("mcp_server"), Some(ProviderType::McpServer));
+        assert_eq!(ProviderType::from_str("nope"), None);
+        assert_eq!(serde_json::to_value(ProviderType::McpServer).unwrap(), json!("mcp_server"));
+        assert_eq!(GrantType::from_str("public"), Some(GrantType::Public));
+        assert_eq!(GrantType::from_str(""), None);
+        assert_eq!(serde_json::to_value(GrantType::User).unwrap(), json!("user"));
+    }
+
+    #[test]
+    fn connector_prefix_is_8_hex_and_id_derived() {
+        let a = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        assert_eq!(connector_prefix(a), "11111111");
+        assert_eq!(connector_prefix(a).len(), 8);
+        // Different ids → different prefixes; round-trips through `__` split.
+        let b = Uuid::parse_str("abcdef00-2222-3333-4444-555555555555").unwrap();
+        assert_ne!(connector_prefix(a), connector_prefix(b));
+        let name = format!("{}__{}", connector_prefix(b), "SEND_EMAIL");
+        assert_eq!(name.split_once("__"), Some(("abcdef00", "SEND_EMAIL")));
     }
 
     #[test]

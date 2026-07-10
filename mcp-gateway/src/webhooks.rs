@@ -91,7 +91,7 @@ pub async fn process_event(state: &McpState, payload: &Value) -> Result<WebhookO
     tracing::warn!(
         account_id,
         user_id = %connection.user_id,
-        toolkit = %connection.toolkit,
+        connector_id = %connection.connector_id,
         "composio connection expired — marked EXPIRED and invalidated session cache",
     );
     Ok(WebhookOutcome::Expired)

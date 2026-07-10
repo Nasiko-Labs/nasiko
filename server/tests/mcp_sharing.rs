@@ -1,0 +1,287 @@
+//! Integration tests for v2 connector sharing (`/api/mcp/connectors/{id}/share`)
+//! and the audited invariants: revoke cleans up the grantee's connection (fix #2),
+//! deleting an owner is blocked (fix #5), and Layer-1 gates visibility even with a
+//! stale per-agent access row (audited rule #7).
+//!
+//!   cargo test -p nasiko-server --test mcp_sharing -- --test-threads=1
+
+mod common;
+
+use serde_json::{Value, json};
+use serial_test::serial;
+use uuid::Uuid;
+
+async fn init_admin(server: &common::TestServer) -> String {
+    server
+        .client
+        .post(server.url("/api/auth/initialize-admin"))
+        .json(&json!({"username": "admin", "email": "admin@test.local"}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn create_user(server: &common::TestServer, admin_id: &str, username: &str) -> (String, Uuid) {
+    let v = common::as_superuser(server.client.post(server.url("/api/users")), admin_id, "admin")
+        .json(&json!({"username": username, "email": format!("{username}@test.local")}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let id = v["id"].as_str().unwrap().to_string();
+    let uuid = Uuid::parse_str(&id).unwrap();
+    (id, uuid)
+}
+
+async fn seed_connector(server: &common::TestServer, owner: Uuid, name: &str) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO mcp_connectors (provider_type, owner_id, name, url, auth_type)
+         VALUES ('mcp_server', $1, $2, 'https://example.com', 'none') RETURNING id",
+    )
+    .bind(owner)
+    .bind(name)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+async fn seed_connection(server: &common::TestServer, user: Uuid, connector: Uuid) {
+    sqlx::query(
+        "INSERT INTO mcp_user_connections (user_id, connector_id, status, encrypted_credential)
+         VALUES ($1, $2, 'ACTIVE', 'enc')",
+    )
+    .bind(user)
+    .bind(connector)
+    .execute(&server.db)
+    .await
+    .unwrap();
+}
+
+fn catalog_has(body: &Value, name: &str) -> bool {
+    body["services"].as_array().unwrap().iter().any(|s| s["name"] == name)
+}
+
+#[tokio::test]
+#[serial]
+async fn share_by_username_grants_visibility() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "shr-owner").await;
+    let (grantee_id, _) = create_user(&server, &admin, "shr-grantee").await;
+    let cid = seed_connector(&server, owner_uuid, "shared-tool").await;
+
+    // Grantee cannot see it yet.
+    let before = common::as_member(server.client.get(server.url("/api/mcp/catalog")), &grantee_id, "shr-grantee")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(!catalog_has(&before, "shared-tool"));
+
+    // Owner shares with the grantee.
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "shr-owner")
+        .json(&json!({"username": "shr-grantee"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    // Now visible.
+    let after = common::as_member(server.client.get(server.url("/api/mcp/catalog")), &grantee_id, "shr-grantee")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(catalog_has(&after, "shared-tool"), "grantee must see the shared connector");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn only_owner_can_share() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (_owner_id, owner_uuid) = create_user(&server, &admin, "os-owner").await;
+    let (other_id, _) = create_user(&server, &admin, "os-other").await;
+    let cid = seed_connector(&server, owner_uuid, "owned-tool").await;
+
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &other_id, "os-other")
+        .json(&json!({"username": "os-owner"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "non-owner must not be able to share");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn public_share_visible_to_everyone() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "pub-owner").await;
+    let (other_id, _) = create_user(&server, &admin, "pub-other").await;
+    let cid = seed_connector(&server, owner_uuid, "public-tool").await;
+
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "pub-owner")
+        .json(&json!({"public": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let after = common::as_member(server.client.get(server.url("/api/mcp/catalog")), &other_id, "pub-other")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(catalog_has(&after, "public-tool"), "a public grant must be visible to everyone");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn revoke_deletes_grantee_connection() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "rev-owner").await;
+    let (grantee_id, grantee_uuid) = create_user(&server, &admin, "rev-grantee").await;
+    let cid = seed_connector(&server, owner_uuid, "rev-tool").await;
+
+    // Share, then the grantee connects (seed a connection row).
+    common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "rev-owner")
+        .json(&json!({"username": "rev-grantee"}))
+        .send()
+        .await
+        .unwrap();
+    seed_connection(&server, grantee_uuid, cid).await;
+
+    // Revoke.
+    let res = common::as_member(server.client.delete(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "rev-owner")
+        .json(&json!({"username": "rev-grantee"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+
+    // Fix #2: the grantee's connection row must be gone.
+    let conns: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
+        .bind(grantee_uuid)
+        .bind(cid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(conns, 0, "revoking a grant must delete the grantee's connection");
+
+    // And it is no longer visible.
+    let after = common::as_member(server.client.get(server.url("/api/mcp/catalog")), &grantee_id, "rev-grantee")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(!catalog_has(&after, "rev-tool"));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn revoked_grant_denies_despite_stale_access_row() {
+    // Audited rule #7: Layer 1 gates whether Layer 2 is even consulted. A leftover
+    // enabled per-agent access row must not re-admit a revoked grantee.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "t2-owner").await;
+    let (grantee_id, grantee_uuid) = create_user(&server, &admin, "t2-grantee").await;
+    let cid = seed_connector(&server, owner_uuid, "t2-tool").await;
+
+    // Share, grantee has an agent with an explicit enabled=true access row.
+    common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "t2-owner")
+        .json(&json!({"username": "t2-grantee"}))
+        .send()
+        .await
+        .unwrap();
+    let agent_id = sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO agents (name, owner_id, image, status, is_public) VALUES ('t2-agent', $1, 'x:1', 'stopped', false) RETURNING id",
+    )
+    .bind(grantee_uuid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO mcp_agent_connector_access (user_id, agent_id, connector_id, enabled) VALUES ($1, $2, $3, true)")
+        .bind(grantee_uuid)
+        .bind(agent_id)
+        .bind(cid)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    // Revoke the grant.
+    common::as_member(server.client.delete(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "t2-owner")
+        .json(&json!({"username": "t2-grantee"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Even though the enabled access row still exists, Layer 1 now denies: the
+    // connector must not appear in the grantee's catalog.
+    let stale_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_agent_connector_access WHERE connector_id = $1 AND enabled = true")
+        .bind(cid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(stale_rows, 1, "the stale enabled row is intentionally left in place for this test");
+
+    let after = common::as_member(server.client.get(server.url("/api/mcp/catalog")), &grantee_id, "t2-grantee")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(!catalog_has(&after, "t2-tool"), "revoked grant must deny visibility despite the stale access row");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn deleting_owner_is_restricted_not_cascaded() {
+    // Fix #5: owner_id is ON DELETE RESTRICT — deleting a user who owns a connector
+    // must fail rather than silently destroying the (possibly shared) connector.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (_owner_id, owner_uuid) = create_user(&server, &admin, "rst-owner").await;
+    let cid = seed_connector(&server, owner_uuid, "rst-tool").await;
+
+    let del = sqlx::query("DELETE FROM users WHERE id = $1").bind(owner_uuid).execute(&server.db).await;
+    assert!(del.is_err(), "deleting a connector owner must be blocked by ON DELETE RESTRICT");
+
+    let survived: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_connectors WHERE id = $1")
+        .bind(cid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(survived, 1, "the connector must survive the blocked owner deletion");
+
+    server.cleanup().await;
+}

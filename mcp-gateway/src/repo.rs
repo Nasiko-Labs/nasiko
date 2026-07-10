@@ -1,14 +1,9 @@
-//! Data layer — every `sqlx` query against the `mcp_*` tables.
+//! Data layer — every `sqlx` query against the v2 `mcp_*` tables.
 //!
-//! Thin and side-effect-free beyond the DB: functions take a `&PgPool`, return
-//! typed rows or `Result`, and never encrypt/decrypt, call HTTP, or touch Redis.
-//! Credential/token columns are stored and returned as opaque strings (already
-//! encrypted by the caller) — the row structs deliberately do **not** derive
-//! `Serialize`, so a route can never accidentally serialize a secret; the server
-//! module maps rows to explicit response DTOs.
-//!
-//! `agent_id` is a `Uuid` (FK to `agents.id`), not the PoC's free-form string —
-//! it comes from the delegation token's `act` claim / a management path param.
+//! Functions take a `&PgPool`, return typed rows or `Result`, and never
+//! encrypt/decrypt, call HTTP, or touch Redis. Credential columns are opaque
+//! strings (already encrypted by the caller). Row structs deliberately do NOT
+//! derive `Serialize`, so a route can never accidentally serialize a secret.
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -16,40 +11,32 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::types::PUBLIC_GRANTEE;
 
 // ─── Row types ──────────────────────────────────────────────────────────────
 
+/// One connector — either a Composio toolkit or a custom MCP server.
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct McpAuthConfig {
+pub struct McpConnector {
     pub id: Uuid,
-    pub auth_config_id: String,
-    pub user_id: Option<Uuid>,
-    pub toolkit: String,
-    pub auth_scheme: String,
-    pub use_composio_managed: bool,
-    pub is_platform: bool,
+    pub provider_type: String,
+    pub owner_id: Option<Uuid>,
+    pub name: String,
     pub display_name: Option<String>,
     pub logo_url: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct McpServer {
-    pub id: Uuid,
-    pub name: String,
-    pub url: String,
-    pub transport: String,
-    pub auth_type: String,
+    pub description: Option<String>,
+    // composio-only
+    pub auth_config_id: Option<String>,
+    pub auth_scheme: Option<String>,
+    pub use_composio_managed: Option<bool>,
+    // mcp_server-only
+    pub url: Option<String>,
+    pub transport: Option<String>,
+    pub auth_type: Option<String>,
     pub url_param_name: Option<String>,
     pub credential_header_name: Option<String>,
     pub headers: Option<Value>,
-    pub description: Option<String>,
-    pub display_name: Option<String>,
-    pub logo_url: Option<String>,
-    pub is_platform: bool,
-    pub user_id: Option<Uuid>,
-    pub is_active: bool,
+    pub is_active: Option<bool>,
     pub oauth_authorization_endpoint: Option<String>,
     pub oauth_token_endpoint: Option<String>,
     pub oauth_client_id: Option<String>,
@@ -58,7 +45,17 @@ pub struct McpServer {
     pub updated_at: DateTime<Utc>,
 }
 
-impl McpServer {
+impl McpConnector {
+    pub fn is_composio(&self) -> bool {
+        self.provider_type == "composio"
+    }
+    pub fn is_mcp_server(&self) -> bool {
+        self.provider_type == "mcp_server"
+    }
+    /// NULL is_active (composio rows) is treated as active.
+    pub fn active(&self) -> bool {
+        self.is_active.unwrap_or(true)
+    }
     /// True once OAuth endpoints are discovered and a client is registered.
     pub fn oauth_configured(&self) -> bool {
         self.oauth_authorization_endpoint.is_some()
@@ -67,65 +64,60 @@ impl McpServer {
     }
 }
 
+/// Insert input for [`create_connector`].
+#[derive(Debug, Clone, Default)]
+pub struct NewConnector {
+    pub provider_type: String,
+    pub owner_id: Option<Uuid>,
+    pub name: String,
+    pub display_name: Option<String>,
+    pub logo_url: Option<String>,
+    pub description: Option<String>,
+    pub auth_config_id: Option<String>,
+    pub auth_scheme: Option<String>,
+    pub use_composio_managed: Option<bool>,
+    pub url: Option<String>,
+    pub transport: Option<String>,
+    pub auth_type: Option<String>,
+    pub url_param_name: Option<String>,
+    pub credential_header_name: Option<String>,
+    pub headers: Option<Value>,
+    pub is_active: Option<bool>,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct McpConnection {
+pub struct McpConnectorGrant {
+    pub id: Uuid,
+    pub connector_id: Uuid,
+    pub grant_type: String,
+    pub grantee_id: String,
+    pub granted_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct McpConnectorTool {
+    pub id: Uuid,
+    pub connector_id: Uuid,
+    pub tool_name: String,
+    pub description: Option<String>,
+    pub default_stance: String,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct McpUserConnection {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub auth_config_id: String,
-    pub toolkit: String,
+    pub connector_id: Uuid,
     pub status: String,
     pub connected_account_id: Option<String>,
     pub redirect_url: Option<String>,
     pub oauth_url: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct McpOAuthToken {
-    pub id: Uuid,
-    pub mcp_server_id: Uuid,
-    pub user_id: Uuid,
-    pub access_token: String,
-    pub refresh_token: Option<String>,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub encrypted_credential: Option<String>,
+    pub encrypted_refresh_token: Option<String>,
+    pub token_expires_at: Option<DateTime<Utc>>,
     pub scope: Option<String>,
-    pub token_type: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct McpUserCredential {
-    pub id: Uuid,
-    pub mcp_server_id: Uuid,
-    pub user_id: Uuid,
-    pub credential_type: String,
-    pub credential_value: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct McpAgentServerAccess {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub agent_id: Uuid,
-    pub server_name: String,
-    pub server_type: String,
-    pub enabled: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct McpAgentToolPermission {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub agent_id: Uuid,
-    pub server_name: String,
-    pub tool_pattern: String,
-    pub stance: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -134,187 +126,76 @@ pub struct McpAgentToolPermission {
 pub struct McpComposioSession {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub session_id: String,
-    pub connected_account_ids: Option<Value>,
-    pub connected_toolkits: Option<Value>,
+    pub composio_session_id: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// Input for [`create_mcp_server`] — groups the many server columns so call
-/// sites don't pass a dozen positional args.
-#[derive(Debug, Clone)]
-pub struct NewMcpServer {
-    pub name: String,
-    pub url: String,
-    pub transport: String,
-    pub auth_type: String,
-    pub url_param_name: Option<String>,
-    pub credential_header_name: Option<String>,
-    pub headers: Option<Value>,
-    pub description: Option<String>,
-    pub display_name: Option<String>,
-    pub logo_url: Option<String>,
-    pub is_platform: bool,
-    pub user_id: Option<Uuid>,
-    pub is_active: bool,
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct McpAgentConnectorAccess {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub agent_id: Uuid,
+    pub connector_id: Uuid,
+    pub enabled: bool,
+    pub tool_rules: Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
-// ─── Auth configs ───────────────────────────────────────────────────────────
+/// An active Composio connection joined to its toolkit name (connector name).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ComposioActiveConn {
+    pub connector_id: Uuid,
+    pub toolkit: String,
+    pub connected_account_id: String,
+}
 
-#[allow(clippy::too_many_arguments)]
-pub async fn create_auth_config(
-    db: &PgPool,
-    auth_config_id: &str,
-    user_id: Option<Uuid>,
-    toolkit: &str,
-    use_composio_managed: bool,
-    is_platform: bool,
-    display_name: Option<&str>,
-    logo_url: Option<&str>,
-) -> Result<McpAuthConfig> {
-    let row = sqlx::query_as::<_, McpAuthConfig>(
-        r#"INSERT INTO mcp_auth_configs
-             (auth_config_id, user_id, toolkit, use_composio_managed, is_platform, display_name, logo_url)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+// ─── Connectors ───────────────────────────────────────────────────────────────
+
+pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnector> {
+    let row = sqlx::query_as::<_, McpConnector>(
+        r#"INSERT INTO mcp_connectors
+             (provider_type, owner_id, name, display_name, logo_url, description,
+              auth_config_id, auth_scheme, use_composio_managed,
+              url, transport, auth_type, url_param_name, credential_header_name,
+              headers, is_active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
            RETURNING *"#,
     )
-    .bind(auth_config_id)
-    .bind(user_id)
-    .bind(toolkit)
-    .bind(use_composio_managed)
-    .bind(is_platform)
-    .bind(display_name)
-    .bind(logo_url)
+    .bind(&c.provider_type)
+    .bind(c.owner_id)
+    .bind(&c.name)
+    .bind(&c.display_name)
+    .bind(&c.logo_url)
+    .bind(&c.description)
+    .bind(&c.auth_config_id)
+    .bind(&c.auth_scheme)
+    .bind(c.use_composio_managed)
+    .bind(&c.url)
+    .bind(&c.transport)
+    .bind(&c.auth_type)
+    .bind(&c.url_param_name)
+    .bind(&c.credential_header_name)
+    .bind(&c.headers)
+    .bind(c.is_active)
     .fetch_one(db)
     .await?;
     Ok(row)
 }
 
-pub async fn get_auth_config(db: &PgPool, auth_config_id: &str) -> Result<Option<McpAuthConfig>> {
-    let row = sqlx::query_as::<_, McpAuthConfig>(
-        "SELECT * FROM mcp_auth_configs WHERE auth_config_id = $1",
-    )
-    .bind(auth_config_id)
-    .fetch_optional(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn get_platform_auth_config_by_toolkit(
-    db: &PgPool,
-    toolkit: &str,
-) -> Result<Option<McpAuthConfig>> {
-    let row = sqlx::query_as::<_, McpAuthConfig>(
-        "SELECT * FROM mcp_auth_configs WHERE is_platform = true AND toolkit = $1",
-    )
-    .bind(toolkit)
-    .fetch_optional(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn get_auth_config_by_user_and_toolkit(
-    db: &PgPool,
-    user_id: Uuid,
-    toolkit: &str,
-) -> Result<Option<McpAuthConfig>> {
-    let row = sqlx::query_as::<_, McpAuthConfig>(
-        "SELECT * FROM mcp_auth_configs WHERE user_id = $1 AND toolkit = $2",
-    )
-    .bind(user_id)
-    .bind(toolkit)
-    .fetch_optional(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn list_platform_auth_configs(db: &PgPool) -> Result<Vec<McpAuthConfig>> {
-    let rows = sqlx::query_as::<_, McpAuthConfig>(
-        "SELECT * FROM mcp_auth_configs WHERE is_platform = true ORDER BY toolkit",
-    )
-    .fetch_all(db)
-    .await?;
-    Ok(rows)
-}
-
-pub async fn list_auth_configs_by_user(db: &PgPool, user_id: Uuid) -> Result<Vec<McpAuthConfig>> {
-    let rows = sqlx::query_as::<_, McpAuthConfig>(
-        "SELECT * FROM mcp_auth_configs WHERE user_id = $1 ORDER BY toolkit",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await?;
-    Ok(rows)
-}
-
-pub async fn delete_auth_config(db: &PgPool, auth_config_id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM mcp_auth_configs WHERE auth_config_id = $1")
-        .bind(auth_config_id)
-        .execute(db)
-        .await?;
-    Ok(res.rows_affected() > 0)
-}
-
-pub async fn update_auth_config_catalog(
-    db: &PgPool,
-    auth_config_id: &str,
-    display_name: Option<&str>,
-    logo_url: Option<&str>,
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE mcp_auth_configs SET display_name = $2, logo_url = $3 WHERE auth_config_id = $1",
-    )
-    .bind(auth_config_id)
-    .bind(display_name)
-    .bind(logo_url)
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
-// ─── Servers ────────────────────────────────────────────────────────────────
-
-pub async fn create_mcp_server(db: &PgPool, s: &NewMcpServer) -> Result<McpServer> {
-    let row = sqlx::query_as::<_, McpServer>(
-        r#"INSERT INTO mcp_servers
-             (name, url, transport, auth_type, url_param_name, credential_header_name,
-              headers, description, display_name, logo_url, is_platform, user_id, is_active)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-           RETURNING *"#,
-    )
-    .bind(&s.name)
-    .bind(&s.url)
-    .bind(&s.transport)
-    .bind(&s.auth_type)
-    .bind(&s.url_param_name)
-    .bind(&s.credential_header_name)
-    .bind(&s.headers)
-    .bind(&s.description)
-    .bind(&s.display_name)
-    .bind(&s.logo_url)
-    .bind(s.is_platform)
-    .bind(s.user_id)
-    .bind(s.is_active)
-    .fetch_one(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn get_mcp_server_by_id(db: &PgPool, id: Uuid) -> Result<Option<McpServer>> {
-    let row = sqlx::query_as::<_, McpServer>("SELECT * FROM mcp_servers WHERE id = $1")
+pub async fn get_connector_by_id(db: &PgPool, id: Uuid) -> Result<Option<McpConnector>> {
+    let row = sqlx::query_as::<_, McpConnector>("SELECT * FROM mcp_connectors WHERE id = $1")
         .bind(id)
         .fetch_optional(db)
         .await?;
     Ok(row)
 }
 
-pub async fn get_platform_mcp_server_by_name(
-    db: &PgPool,
-    name: &str,
-) -> Result<Option<McpServer>> {
-    let row = sqlx::query_as::<_, McpServer>(
-        "SELECT * FROM mcp_servers WHERE is_platform = true AND name = $1",
+/// A Composio connector by toolkit slug (its `name`).
+pub async fn get_composio_connector_by_name(db: &PgPool, name: &str) -> Result<Option<McpConnector>> {
+    let row = sqlx::query_as::<_, McpConnector>(
+        "SELECT * FROM mcp_connectors WHERE provider_type = 'composio' AND name = $1",
     )
     .bind(name)
     .fetch_optional(db)
@@ -322,28 +203,44 @@ pub async fn get_platform_mcp_server_by_name(
     Ok(row)
 }
 
-pub async fn get_user_mcp_server_by_name(
-    db: &PgPool,
-    user_id: Uuid,
-    name: &str,
-) -> Result<Option<McpServer>> {
-    let row = sqlx::query_as::<_, McpServer>(
-        "SELECT * FROM mcp_servers WHERE is_platform = false AND user_id = $1 AND name = $2",
+pub async fn list_composio_connectors(db: &PgPool) -> Result<Vec<McpConnector>> {
+    let rows = sqlx::query_as::<_, McpConnector>(
+        "SELECT * FROM mcp_connectors WHERE provider_type = 'composio' ORDER BY name",
     )
-    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// A user-owned connector by name (used for collision checks / auto-register).
+pub async fn get_owned_connector_by_name(
+    db: &PgPool,
+    owner_id: Uuid,
+    name: &str,
+) -> Result<Option<McpConnector>> {
+    let row = sqlx::query_as::<_, McpConnector>(
+        "SELECT * FROM mcp_connectors WHERE owner_id = $1 AND name = $2",
+    )
+    .bind(owner_id)
     .bind(name)
     .fetch_optional(db)
     .await?;
     Ok(row)
 }
 
-/// All active servers visible to a user: platform servers ∪ their own.
-pub async fn list_mcp_servers_for_user(db: &PgPool, user_id: Uuid) -> Result<Vec<McpServer>> {
-    let rows = sqlx::query_as::<_, McpServer>(
-        r#"SELECT * FROM mcp_servers
-           WHERE is_active = true
-             AND (is_platform = true OR (is_platform = false AND user_id = $1))
-           ORDER BY is_platform DESC, name"#,
+/// Every connector the user can reach (Layer 1): composio ∪ owned ∪ granted.
+pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
+    let rows = sqlx::query_as::<_, McpConnector>(
+        r#"SELECT * FROM mcp_connectors c
+           WHERE c.provider_type = 'composio'
+              OR c.owner_id = $1
+              OR EXISTS (
+                   SELECT 1 FROM mcp_connector_grants g
+                   WHERE g.connector_id = c.id
+                     AND ( (g.grant_type = 'user'   AND g.grantee_id = $1::text)
+                        OR (g.grant_type = 'public' AND g.grantee_id = '*') )
+                 )
+           ORDER BY c.provider_type, c.name"#,
     )
     .bind(user_id)
     .fetch_all(db)
@@ -351,18 +248,19 @@ pub async fn list_mcp_servers_for_user(db: &PgPool, user_id: Uuid) -> Result<Vec
     Ok(rows)
 }
 
-pub async fn list_platform_mcp_servers(db: &PgPool) -> Result<Vec<McpServer>> {
-    let rows = sqlx::query_as::<_, McpServer>(
-        "SELECT * FROM mcp_servers WHERE is_platform = true ORDER BY name",
-    )
-    .fetch_all(db)
-    .await?;
-    Ok(rows)
-}
-
-pub async fn list_user_mcp_servers(db: &PgPool, user_id: Uuid) -> Result<Vec<McpServer>> {
-    let rows = sqlx::query_as::<_, McpServer>(
-        "SELECT * FROM mcp_servers WHERE is_platform = false AND user_id = $1 ORDER BY name",
+/// Accessible custom (mcp_server) connectors only — for building generic backends.
+pub async fn list_accessible_mcp_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
+    let rows = sqlx::query_as::<_, McpConnector>(
+        r#"SELECT * FROM mcp_connectors c
+           WHERE c.provider_type = 'mcp_server' AND c.is_active = true
+             AND ( c.owner_id = $1
+                OR EXISTS (
+                     SELECT 1 FROM mcp_connector_grants g
+                     WHERE g.connector_id = c.id
+                       AND ( (g.grant_type = 'user'   AND g.grantee_id = $1::text)
+                          OR (g.grant_type = 'public' AND g.grantee_id = '*') )
+                   ) )
+           ORDER BY c.name"#,
     )
     .bind(user_id)
     .fetch_all(db)
@@ -370,15 +268,93 @@ pub async fn list_user_mcp_servers(db: &PgPool, user_id: Uuid) -> Result<Vec<Mcp
     Ok(rows)
 }
 
-pub async fn delete_mcp_server(db: &PgPool, id: Uuid) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM mcp_servers WHERE id = $1")
-        .bind(id)
-        .execute(db)
-        .await?;
-    Ok(res.rows_affected() > 0)
+/// Connectors owned by the user (custom servers they registered).
+pub async fn list_owned_connectors(db: &PgPool, owner_id: Uuid) -> Result<Vec<McpConnector>> {
+    let rows = sqlx::query_as::<_, McpConnector>(
+        "SELECT * FROM mcp_connectors WHERE owner_id = $1 ORDER BY name",
+    )
+    .bind(owner_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
-pub async fn update_mcp_server_oauth_config(
+/// Layer 1 check for a single connector.
+pub async fn can_access_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
+    let ok = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM mcp_connectors c
+             WHERE c.id = $2 AND (
+                 c.provider_type = 'composio' OR c.owner_id = $1
+                 OR EXISTS (
+                      SELECT 1 FROM mcp_connector_grants g
+                      WHERE g.connector_id = c.id
+                        AND ( (g.grant_type = 'user'   AND g.grantee_id = $1::text)
+                           OR (g.grant_type = 'public' AND g.grantee_id = '*') )
+                    )
+             )
+           )"#,
+    )
+    .bind(user_id)
+    .bind(connector_id)
+    .fetch_one(db)
+    .await?;
+    Ok(ok)
+}
+
+/// Partial-update input for [`update_connector`]. `None` fields are left unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateConnector {
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub transport: Option<String>,
+    pub auth_type: Option<String>,
+    pub url_param_name: Option<String>,
+    pub credential_header_name: Option<String>,
+    pub headers: Option<Value>,
+    pub description: Option<String>,
+    pub display_name: Option<String>,
+    pub logo_url: Option<String>,
+    pub is_active: Option<bool>,
+}
+
+/// Partial-update a connector. Uses COALESCE so omitted (`None`) fields keep
+/// their current value.
+pub async fn update_connector(db: &PgPool, id: Uuid, u: &UpdateConnector) -> Result<McpConnector> {
+    let row = sqlx::query_as::<_, McpConnector>(
+        r#"UPDATE mcp_connectors SET
+             name = COALESCE($2, name),
+             url = COALESCE($3, url),
+             transport = COALESCE($4, transport),
+             auth_type = COALESCE($5, auth_type),
+             url_param_name = COALESCE($6, url_param_name),
+             credential_header_name = COALESCE($7, credential_header_name),
+             headers = COALESCE($8, headers),
+             description = COALESCE($9, description),
+             display_name = COALESCE($10, display_name),
+             logo_url = COALESCE($11, logo_url),
+             is_active = COALESCE($12, is_active)
+           WHERE id = $1
+           RETURNING *"#,
+    )
+    .bind(id)
+    .bind(&u.name)
+    .bind(&u.url)
+    .bind(&u.transport)
+    .bind(&u.auth_type)
+    .bind(&u.url_param_name)
+    .bind(&u.credential_header_name)
+    .bind(&u.headers)
+    .bind(&u.description)
+    .bind(&u.display_name)
+    .bind(&u.logo_url)
+    .bind(u.is_active)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
+pub async fn update_connector_oauth_config(
     db: &PgPool,
     id: Uuid,
     authorization_endpoint: &str,
@@ -387,11 +363,9 @@ pub async fn update_mcp_server_oauth_config(
     client_secret: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
-        r#"UPDATE mcp_servers
-           SET oauth_authorization_endpoint = $2,
-               oauth_token_endpoint = $3,
-               oauth_client_id = $4,
-               oauth_client_secret = $5
+        r#"UPDATE mcp_connectors
+           SET oauth_authorization_endpoint = $2, oauth_token_endpoint = $3,
+               oauth_client_id = $4, oauth_client_secret = $5
            WHERE id = $1"#,
     )
     .bind(id)
@@ -404,194 +378,115 @@ pub async fn update_mcp_server_oauth_config(
     Ok(())
 }
 
-// ─── OAuth tokens ───────────────────────────────────────────────────────────
-
-pub async fn get_mcp_oauth_tokens_for_user(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<McpOAuthToken>> {
-    let rows = sqlx::query_as::<_, McpOAuthToken>(
-        "SELECT * FROM mcp_oauth_tokens WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await?;
-    Ok(rows)
-}
-
-pub async fn get_mcp_oauth_token(
-    db: &PgPool,
-    mcp_server_id: Uuid,
-    user_id: Uuid,
-) -> Result<Option<McpOAuthToken>> {
-    let row = sqlx::query_as::<_, McpOAuthToken>(
-        "SELECT * FROM mcp_oauth_tokens WHERE mcp_server_id = $1 AND user_id = $2",
-    )
-    .bind(mcp_server_id)
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    Ok(row)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn upsert_mcp_oauth_token(
-    db: &PgPool,
-    mcp_server_id: Uuid,
-    user_id: Uuid,
-    access_token: &str,
-    refresh_token: Option<&str>,
-    expires_at: Option<DateTime<Utc>>,
-    scope: Option<&str>,
-) -> Result<McpOAuthToken> {
-    let row = sqlx::query_as::<_, McpOAuthToken>(
-        r#"INSERT INTO mcp_oauth_tokens
-             (mcp_server_id, user_id, access_token, refresh_token, expires_at, scope)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (mcp_server_id, user_id) DO UPDATE SET
-             access_token = EXCLUDED.access_token,
-             refresh_token = EXCLUDED.refresh_token,
-             expires_at = EXCLUDED.expires_at,
-             scope = EXCLUDED.scope
-           RETURNING *"#,
-    )
-    .bind(mcp_server_id)
-    .bind(user_id)
-    .bind(access_token)
-    .bind(refresh_token)
-    .bind(expires_at)
-    .bind(scope)
-    .fetch_one(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn delete_mcp_oauth_token(
-    db: &PgPool,
-    mcp_server_id: Uuid,
-    user_id: Uuid,
-) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM mcp_oauth_tokens WHERE mcp_server_id = $1 AND user_id = $2")
-        .bind(mcp_server_id)
-        .bind(user_id)
+pub async fn delete_connector(db: &PgPool, id: Uuid) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM mcp_connectors WHERE id = $1")
+        .bind(id)
         .execute(db)
         .await?;
     Ok(res.rows_affected() > 0)
 }
 
-// ─── User credentials ───────────────────────────────────────────────────────
+// ─── Grants ─────────────────────────────────────────────────────────────────
 
-pub async fn upsert_user_credential(
+pub async fn create_grant(
     db: &PgPool,
-    mcp_server_id: Uuid,
-    user_id: Uuid,
-    credential_type: &str,
-    credential_value: &str,
-) -> Result<McpUserCredential> {
-    let row = sqlx::query_as::<_, McpUserCredential>(
-        r#"INSERT INTO mcp_user_credentials
-             (mcp_server_id, user_id, credential_type, credential_value)
+    connector_id: Uuid,
+    grant_type: &str,
+    grantee_id: &str,
+    granted_by: Uuid,
+) -> Result<McpConnectorGrant> {
+    let row = sqlx::query_as::<_, McpConnectorGrant>(
+        r#"INSERT INTO mcp_connector_grants (connector_id, grant_type, grantee_id, granted_by)
            VALUES ($1, $2, $3, $4)
-           ON CONFLICT (mcp_server_id, user_id) DO UPDATE SET
-             credential_type = EXCLUDED.credential_type,
-             credential_value = EXCLUDED.credential_value
+           ON CONFLICT (connector_id, grant_type, grantee_id) DO UPDATE SET granted_by = EXCLUDED.granted_by
            RETURNING *"#,
     )
-    .bind(mcp_server_id)
-    .bind(user_id)
-    .bind(credential_type)
-    .bind(credential_value)
+    .bind(connector_id)
+    .bind(grant_type)
+    .bind(grantee_id)
+    .bind(granted_by)
     .fetch_one(db)
     .await?;
     Ok(row)
 }
 
-pub async fn get_user_credential(
-    db: &PgPool,
-    mcp_server_id: Uuid,
-    user_id: Uuid,
-) -> Result<Option<McpUserCredential>> {
-    let row = sqlx::query_as::<_, McpUserCredential>(
-        "SELECT * FROM mcp_user_credentials WHERE mcp_server_id = $1 AND user_id = $2",
+pub async fn list_grants_for_connector(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorGrant>> {
+    let rows = sqlx::query_as::<_, McpConnectorGrant>(
+        "SELECT * FROM mcp_connector_grants WHERE connector_id = $1 ORDER BY created_at",
     )
-    .bind(mcp_server_id)
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn get_user_credentials_for_user(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<McpUserCredential>> {
-    let rows = sqlx::query_as::<_, McpUserCredential>(
-        "SELECT * FROM mcp_user_credentials WHERE user_id = $1",
-    )
-    .bind(user_id)
+    .bind(connector_id)
     .fetch_all(db)
     .await?;
     Ok(rows)
 }
 
-pub async fn delete_user_credential(
+pub async fn resolve_username_to_user_id(db: &PgPool, username: &str) -> Result<Option<Uuid>> {
+    let id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM users WHERE username = $1 AND deleted_at IS NULL",
+    )
+    .bind(username)
+    .fetch_optional(db)
+    .await?;
+    Ok(id)
+}
+
+/// Revoke a grant AND delete the grantee's connection row for the connector, in
+/// one transaction (audited fix #2). Returns true if a grant row was removed.
+pub async fn revoke_grant_and_connection(
     db: &PgPool,
-    mcp_server_id: Uuid,
-    user_id: Uuid,
+    connector_id: Uuid,
+    grant_type: &str,
+    grantee_id: &str,
 ) -> Result<bool> {
-    let res =
-        sqlx::query("DELETE FROM mcp_user_credentials WHERE mcp_server_id = $1 AND user_id = $2")
-            .bind(mcp_server_id)
-            .bind(user_id)
-            .execute(db)
+    let mut tx = db.begin().await?;
+    let res = sqlx::query(
+        "DELETE FROM mcp_connector_grants WHERE connector_id = $1 AND grant_type = $2 AND grantee_id = $3",
+    )
+    .bind(connector_id)
+    .bind(grant_type)
+    .bind(grantee_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Only a specific user's connection is removed; a public revoke leaves other
+    // users' own connections intact.
+    if grant_type == "user" && grantee_id != PUBLIC_GRANTEE
+        && let Ok(uid) = Uuid::parse_str(grantee_id)
+    {
+        sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
+            .bind(uid)
+            .bind(connector_id)
+            .execute(&mut *tx)
             .await?;
+    }
+    tx.commit().await?;
     Ok(res.rows_affected() > 0)
 }
 
-// ─── Connections ────────────────────────────────────────────────────────────
+// ─── User connections ─────────────────────────────────────────────────────────
 
-pub async fn create_connection(
+pub async fn get_user_connection(
     db: &PgPool,
     user_id: Uuid,
-    auth_config_id: &str,
-    toolkit: &str,
-    oauth_url: Option<&str>,
-    redirect_url: Option<&str>,
-    connected_account_id: Option<&str>,
-) -> Result<McpConnection> {
-    let row = sqlx::query_as::<_, McpConnection>(
-        r#"INSERT INTO mcp_connections
-             (user_id, auth_config_id, toolkit, oauth_url, redirect_url, connected_account_id, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'INITIATED')
-           RETURNING *"#,
+    connector_id: Uuid,
+) -> Result<Option<McpUserConnection>> {
+    let row = sqlx::query_as::<_, McpUserConnection>(
+        "SELECT * FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2",
     )
     .bind(user_id)
-    .bind(auth_config_id)
-    .bind(toolkit)
-    .bind(oauth_url)
-    .bind(redirect_url)
-    .bind(connected_account_id)
-    .fetch_one(db)
+    .bind(connector_id)
+    .fetch_optional(db)
     .await?;
     Ok(row)
 }
 
-pub async fn get_connection(db: &PgPool, id: Uuid) -> Result<Option<McpConnection>> {
-    let row = sqlx::query_as::<_, McpConnection>("SELECT * FROM mcp_connections WHERE id = $1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?;
-    Ok(row)
-}
-
-/// List a user's connections, optionally filtered by status.
-pub async fn list_connections_by_user(
+pub async fn list_user_connections(
     db: &PgPool,
     user_id: Uuid,
     status: Option<&str>,
-) -> Result<Vec<McpConnection>> {
-    let rows = sqlx::query_as::<_, McpConnection>(
-        r#"SELECT * FROM mcp_connections
+) -> Result<Vec<McpUserConnection>> {
+    let rows = sqlx::query_as::<_, McpUserConnection>(
+        r#"SELECT * FROM mcp_user_connections
            WHERE user_id = $1 AND ($2::text IS NULL OR status = $2)
            ORDER BY created_at DESC"#,
     )
@@ -602,56 +497,110 @@ pub async fn list_connections_by_user(
     Ok(rows)
 }
 
-pub async fn get_connection_by_user_and_toolkit(
+/// Active Composio connections joined to their toolkit (connector name).
+pub async fn list_active_composio_connections(
     db: &PgPool,
     user_id: Uuid,
-    toolkit: &str,
-    status: Option<&str>,
-) -> Result<Option<McpConnection>> {
-    let row = sqlx::query_as::<_, McpConnection>(
-        r#"SELECT * FROM mcp_connections
-           WHERE user_id = $1 AND toolkit = $2 AND ($3::text IS NULL OR status = $3)
-           ORDER BY created_at DESC
-           LIMIT 1"#,
+) -> Result<Vec<ComposioActiveConn>> {
+    let rows = sqlx::query_as::<_, ComposioActiveConn>(
+        r#"SELECT uc.connector_id, c.name AS toolkit, uc.connected_account_id
+           FROM mcp_user_connections uc
+           JOIN mcp_connectors c ON c.id = uc.connector_id
+           WHERE uc.user_id = $1 AND c.provider_type = 'composio'
+             AND uc.status = 'ACTIVE' AND uc.connected_account_id IS NOT NULL"#,
     )
     .bind(user_id)
-    .bind(toolkit)
-    .bind(status)
-    .fetch_optional(db)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Store a bearer/basic/url_param credential (status → ACTIVE).
+pub async fn upsert_connection_credential(
+    db: &PgPool,
+    user_id: Uuid,
+    connector_id: Uuid,
+    encrypted_credential: &str,
+) -> Result<McpUserConnection> {
+    let row = sqlx::query_as::<_, McpUserConnection>(
+        r#"INSERT INTO mcp_user_connections (user_id, connector_id, status, encrypted_credential)
+           VALUES ($1, $2, 'ACTIVE', $3)
+           ON CONFLICT (user_id, connector_id) DO UPDATE SET
+             status = 'ACTIVE', encrypted_credential = EXCLUDED.encrypted_credential
+           RETURNING *"#,
+    )
+    .bind(user_id)
+    .bind(connector_id)
+    .bind(encrypted_credential)
+    .fetch_one(db)
     .await?;
     Ok(row)
 }
 
-/// The single most-relevant non-EXPIRED connection for (user, toolkit):
-/// ACTIVE first, else the most-recent INITIATED.
-pub async fn get_active_or_pending_connection(
+/// Store an OAuth2 token set (status → ACTIVE).
+pub async fn upsert_connection_oauth_token(
     db: &PgPool,
     user_id: Uuid,
-    toolkit: &str,
-) -> Result<Option<McpConnection>> {
-    let row = sqlx::query_as::<_, McpConnection>(
-        r#"SELECT * FROM mcp_connections
-           WHERE user_id = $1 AND toolkit = $2 AND status <> 'EXPIRED'
-           ORDER BY (status = 'ACTIVE') DESC, created_at DESC
-           LIMIT 1"#,
+    connector_id: Uuid,
+    encrypted_access: &str,
+    encrypted_refresh: Option<&str>,
+    expires_at: Option<DateTime<Utc>>,
+    scope: Option<&str>,
+) -> Result<McpUserConnection> {
+    let row = sqlx::query_as::<_, McpUserConnection>(
+        r#"INSERT INTO mcp_user_connections
+             (user_id, connector_id, status, encrypted_credential, encrypted_refresh_token, token_expires_at, scope)
+           VALUES ($1, $2, 'ACTIVE', $3, $4, $5, $6)
+           ON CONFLICT (user_id, connector_id) DO UPDATE SET
+             status = 'ACTIVE',
+             encrypted_credential = EXCLUDED.encrypted_credential,
+             encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
+             token_expires_at = EXCLUDED.token_expires_at,
+             scope = EXCLUDED.scope
+           RETURNING *"#,
     )
     .bind(user_id)
-    .bind(toolkit)
-    .fetch_optional(db)
+    .bind(connector_id)
+    .bind(encrypted_access)
+    .bind(encrypted_refresh)
+    .bind(expires_at)
+    .bind(scope)
+    .fetch_one(db)
     .await?;
     Ok(row)
 }
 
-/// Look up a connection by its Composio account id (ca_…); newest first.
+/// Create/refresh a Composio connection row (status INITIATED, with oauth url).
+pub async fn upsert_composio_connection(
+    db: &PgPool,
+    user_id: Uuid,
+    connector_id: Uuid,
+    oauth_url: Option<&str>,
+    redirect_url: Option<&str>,
+) -> Result<McpUserConnection> {
+    let row = sqlx::query_as::<_, McpUserConnection>(
+        r#"INSERT INTO mcp_user_connections
+             (user_id, connector_id, status, oauth_url, redirect_url)
+           VALUES ($1, $2, 'INITIATED', $3, $4)
+           ON CONFLICT (user_id, connector_id) DO UPDATE SET
+             status = 'INITIATED', oauth_url = EXCLUDED.oauth_url, redirect_url = EXCLUDED.redirect_url
+           RETURNING *"#,
+    )
+    .bind(user_id)
+    .bind(connector_id)
+    .bind(oauth_url)
+    .bind(redirect_url)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
 pub async fn get_connection_by_account_id(
     db: &PgPool,
     account_id: &str,
-) -> Result<Option<McpConnection>> {
-    let row = sqlx::query_as::<_, McpConnection>(
-        r#"SELECT * FROM mcp_connections
-           WHERE connected_account_id = $1
-           ORDER BY created_at DESC
-           LIMIT 1"#,
+) -> Result<Option<McpUserConnection>> {
+    let row = sqlx::query_as::<_, McpUserConnection>(
+        "SELECT * FROM mcp_user_connections WHERE connected_account_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(account_id)
     .fetch_optional(db)
@@ -663,9 +612,9 @@ pub async fn update_connection_status(
     db: &PgPool,
     id: Uuid,
     status: &str,
-) -> Result<Option<McpConnection>> {
-    let row = sqlx::query_as::<_, McpConnection>(
-        "UPDATE mcp_connections SET status = $2 WHERE id = $1 RETURNING *",
+) -> Result<Option<McpUserConnection>> {
+    let row = sqlx::query_as::<_, McpUserConnection>(
+        "UPDATE mcp_user_connections SET status = $2 WHERE id = $1 RETURNING *",
     )
     .bind(id)
     .bind(status)
@@ -674,12 +623,8 @@ pub async fn update_connection_status(
     Ok(row)
 }
 
-pub async fn update_connection_account_id(
-    db: &PgPool,
-    id: Uuid,
-    account_id: &str,
-) -> Result<()> {
-    sqlx::query("UPDATE mcp_connections SET connected_account_id = $2 WHERE id = $1")
+pub async fn update_connection_account_id(db: &PgPool, id: Uuid, account_id: &str) -> Result<()> {
+    sqlx::query("UPDATE mcp_user_connections SET connected_account_id = $2 WHERE id = $1")
         .bind(id)
         .bind(account_id)
         .execute(db)
@@ -687,275 +632,54 @@ pub async fn update_connection_account_id(
     Ok(())
 }
 
-/// Delete EXPIRED connection rows that never completed OAuth (no account id).
-pub async fn delete_orphan_expired_connections(
-    db: &PgPool,
-    user_id: Uuid,
-    toolkit: &str,
-) -> Result<u64> {
-    let res = sqlx::query(
-        r#"DELETE FROM mcp_connections
-           WHERE user_id = $1 AND toolkit = $2 AND status = 'EXPIRED'
-             AND connected_account_id IS NULL"#,
-    )
-    .bind(user_id)
-    .bind(toolkit)
-    .execute(db)
-    .await?;
-    Ok(res.rows_affected())
-}
-
-// ─── Agent server access ────────────────────────────────────────────────────
-
-pub async fn get_agent_server_access(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-) -> Result<Vec<McpAgentServerAccess>> {
-    let rows = sqlx::query_as::<_, McpAgentServerAccess>(
-        "SELECT * FROM mcp_agent_server_access WHERE user_id = $1 AND agent_id = $2",
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .fetch_all(db)
-    .await?;
-    Ok(rows)
-}
-
-pub async fn get_agent_server_access_row(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-    server_name: &str,
-) -> Result<Option<McpAgentServerAccess>> {
-    let row = sqlx::query_as::<_, McpAgentServerAccess>(
-        "SELECT * FROM mcp_agent_server_access WHERE user_id = $1 AND agent_id = $2 AND server_name = $3",
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .bind(server_name)
-    .fetch_optional(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn upsert_agent_server_access(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-    server_name: &str,
-    server_type: &str,
-    enabled: bool,
-) -> Result<McpAgentServerAccess> {
-    let row = sqlx::query_as::<_, McpAgentServerAccess>(
-        r#"INSERT INTO mcp_agent_server_access
-             (user_id, agent_id, server_name, server_type, enabled)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (user_id, agent_id, server_name) DO UPDATE SET
-             enabled = EXCLUDED.enabled,
-             server_type = EXCLUDED.server_type
-           RETURNING *"#,
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .bind(server_name)
-    .bind(server_type)
-    .bind(enabled)
-    .fetch_one(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn delete_agent_server_access(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-    server_name: &str,
-) -> Result<bool> {
-    let res = sqlx::query(
-        "DELETE FROM mcp_agent_server_access WHERE user_id = $1 AND agent_id = $2 AND server_name = $3",
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .bind(server_name)
-    .execute(db)
-    .await?;
+pub async fn delete_user_connection(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
+        .bind(user_id)
+        .bind(connector_id)
+        .execute(db)
+        .await?;
     Ok(res.rows_affected() > 0)
 }
 
-// ─── Agent tool permissions ─────────────────────────────────────────────────
+// ─── Tool catalog ─────────────────────────────────────────────────────────────
 
-pub async fn get_agent_tool_permissions(
+/// Replace a connector's synced tool catalog with `tools` (name, description).
+pub async fn upsert_connector_tools(
     db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-) -> Result<Vec<McpAgentToolPermission>> {
-    let rows = sqlx::query_as::<_, McpAgentToolPermission>(
-        "SELECT * FROM mcp_agent_tool_permissions WHERE user_id = $1 AND agent_id = $2",
+    connector_id: Uuid,
+    tools: &[(String, Option<String>)],
+) -> Result<()> {
+    let mut tx = db.begin().await?;
+    for (name, desc) in tools {
+        sqlx::query(
+            r#"INSERT INTO mcp_connector_tools (connector_id, tool_name, description, last_synced_at)
+               VALUES ($1, $2, $3, now())
+               ON CONFLICT (connector_id, tool_name) DO UPDATE SET
+                 description = EXCLUDED.description, last_synced_at = now()"#,
+        )
+        .bind(connector_id)
+        .bind(name)
+        .bind(desc)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn list_connector_tools(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorTool>> {
+    let rows = sqlx::query_as::<_, McpConnectorTool>(
+        "SELECT * FROM mcp_connector_tools WHERE connector_id = $1 ORDER BY tool_name",
     )
-    .bind(user_id)
-    .bind(agent_id)
+    .bind(connector_id)
     .fetch_all(db)
     .await?;
     Ok(rows)
-}
-
-pub async fn get_agent_tool_permissions_for_server(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-    server_name: &str,
-) -> Result<Vec<McpAgentToolPermission>> {
-    let rows = sqlx::query_as::<_, McpAgentToolPermission>(
-        r#"SELECT * FROM mcp_agent_tool_permissions
-           WHERE user_id = $1 AND agent_id = $2 AND server_name = $3"#,
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .bind(server_name)
-    .fetch_all(db)
-    .await?;
-    Ok(rows)
-}
-
-pub async fn upsert_agent_tool_permission(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-    server_name: &str,
-    tool_pattern: &str,
-    stance: &str,
-) -> Result<McpAgentToolPermission> {
-    let row = sqlx::query_as::<_, McpAgentToolPermission>(
-        r#"INSERT INTO mcp_agent_tool_permissions
-             (user_id, agent_id, server_name, tool_pattern, stance)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (user_id, agent_id, server_name, tool_pattern) DO UPDATE SET
-             stance = EXCLUDED.stance
-           RETURNING *"#,
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .bind(server_name)
-    .bind(tool_pattern)
-    .bind(stance)
-    .fetch_one(db)
-    .await?;
-    Ok(row)
-}
-
-pub async fn delete_agent_tool_permission(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-    server_name: &str,
-    tool_pattern: &str,
-) -> Result<bool> {
-    let res = sqlx::query(
-        r#"DELETE FROM mcp_agent_tool_permissions
-           WHERE user_id = $1 AND agent_id = $2 AND server_name = $3 AND tool_pattern = $4"#,
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .bind(server_name)
-    .bind(tool_pattern)
-    .execute(db)
-    .await?;
-    Ok(res.rows_affected() > 0)
-}
-
-/// Reset an agent to default (all-allowed) by deleting all its permission rows.
-/// Returns the total number of rows deleted across both tables.
-pub async fn delete_all_agent_permissions(
-    db: &PgPool,
-    user_id: Uuid,
-    agent_id: Uuid,
-) -> Result<u64> {
-    let r1 = sqlx::query(
-        "DELETE FROM mcp_agent_server_access WHERE user_id = $1 AND agent_id = $2",
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .execute(db)
-    .await?;
-    let r2 = sqlx::query(
-        "DELETE FROM mcp_agent_tool_permissions WHERE user_id = $1 AND agent_id = $2",
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .execute(db)
-    .await?;
-    Ok(r1.rows_affected() + r2.rows_affected())
-}
-
-/// Distinct agent ids that have any permission rows for this user.
-pub async fn list_configured_agents(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>> {
-    let ids = sqlx::query_scalar::<_, Uuid>(
-        r#"SELECT agent_id FROM mcp_agent_server_access WHERE user_id = $1
-           UNION
-           SELECT agent_id FROM mcp_agent_tool_permissions WHERE user_id = $1"#,
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await?;
-    Ok(ids)
-}
-
-/// Distinct (user_id, agent_id) pairs referencing a server_name across both
-/// permission tables — used to invalidate the permission cache before deleting
-/// a server's rows. Pass `user_id = None` for a platform server (all users).
-pub async fn get_agent_pairs_for_server(
-    db: &PgPool,
-    server_name: &str,
-    user_id: Option<Uuid>,
-) -> Result<Vec<(Uuid, Uuid)>> {
-    let pairs = sqlx::query_as::<_, (Uuid, Uuid)>(
-        r#"SELECT user_id, agent_id FROM mcp_agent_server_access
-             WHERE server_name = $1 AND ($2::uuid IS NULL OR user_id = $2)
-           UNION
-           SELECT user_id, agent_id FROM mcp_agent_tool_permissions
-             WHERE server_name = $1 AND ($2::uuid IS NULL OR user_id = $2)"#,
-    )
-    .bind(server_name)
-    .bind(user_id)
-    .fetch_all(db)
-    .await?;
-    Ok(pairs)
-}
-
-/// Delete permission rows referencing a server_name across both tables (called
-/// when the underlying server is removed). `user_id = None` → all users
-/// (platform server); `Some` → just that user's rows. Returns rows deleted.
-pub async fn delete_agent_permissions_for_server(
-    db: &PgPool,
-    server_name: &str,
-    user_id: Option<Uuid>,
-) -> Result<u64> {
-    let r1 = sqlx::query(
-        r#"DELETE FROM mcp_agent_server_access
-           WHERE server_name = $1 AND ($2::uuid IS NULL OR user_id = $2)"#,
-    )
-    .bind(server_name)
-    .bind(user_id)
-    .execute(db)
-    .await?;
-    let r2 = sqlx::query(
-        r#"DELETE FROM mcp_agent_tool_permissions
-           WHERE server_name = $1 AND ($2::uuid IS NULL OR user_id = $2)"#,
-    )
-    .bind(server_name)
-    .bind(user_id)
-    .execute(db)
-    .await?;
-    Ok(r1.rows_affected() + r2.rows_affected())
 }
 
 // ─── Composio sessions ──────────────────────────────────────────────────────
 
-pub async fn get_composio_session(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Option<McpComposioSession>> {
+pub async fn get_composio_session(db: &PgPool, user_id: Uuid) -> Result<Option<McpComposioSession>> {
     let row = sqlx::query_as::<_, McpComposioSession>(
         "SELECT * FROM mcp_composio_sessions WHERE user_id = $1",
     )
@@ -969,23 +693,15 @@ pub async fn upsert_composio_session(
     db: &PgPool,
     user_id: Uuid,
     session_id: &str,
-    connected_account_ids: Option<&Value>,
-    connected_toolkits: Option<&Value>,
 ) -> Result<McpComposioSession> {
     let row = sqlx::query_as::<_, McpComposioSession>(
-        r#"INSERT INTO mcp_composio_sessions
-             (user_id, session_id, connected_account_ids, connected_toolkits)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (user_id) DO UPDATE SET
-             session_id = EXCLUDED.session_id,
-             connected_account_ids = EXCLUDED.connected_account_ids,
-             connected_toolkits = EXCLUDED.connected_toolkits
+        r#"INSERT INTO mcp_composio_sessions (user_id, composio_session_id)
+           VALUES ($1, $2)
+           ON CONFLICT (user_id) DO UPDATE SET composio_session_id = EXCLUDED.composio_session_id
            RETURNING *"#,
     )
     .bind(user_id)
     .bind(session_id)
-    .bind(connected_account_ids)
-    .bind(connected_toolkits)
     .fetch_one(db)
     .await?;
     Ok(row)
@@ -997,4 +713,88 @@ pub async fn delete_composio_session(db: &PgPool, user_id: Uuid) -> Result<bool>
         .execute(db)
         .await?;
     Ok(res.rows_affected() > 0)
+}
+
+// ─── Per-agent connector access ─────────────────────────────────────────────
+
+pub async fn get_agent_connector_access(
+    db: &PgPool,
+    user_id: Uuid,
+    agent_id: Uuid,
+) -> Result<Vec<McpAgentConnectorAccess>> {
+    let rows = sqlx::query_as::<_, McpAgentConnectorAccess>(
+        "SELECT * FROM mcp_agent_connector_access WHERE user_id = $1 AND agent_id = $2",
+    )
+    .bind(user_id)
+    .bind(agent_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn get_agent_connector_access_row(
+    db: &PgPool,
+    user_id: Uuid,
+    agent_id: Uuid,
+    connector_id: Uuid,
+) -> Result<Option<McpAgentConnectorAccess>> {
+    let row = sqlx::query_as::<_, McpAgentConnectorAccess>(
+        "SELECT * FROM mcp_agent_connector_access WHERE user_id = $1 AND agent_id = $2 AND connector_id = $3",
+    )
+    .bind(user_id)
+    .bind(agent_id)
+    .bind(connector_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
+pub async fn upsert_agent_connector_access(
+    db: &PgPool,
+    user_id: Uuid,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    enabled: bool,
+    tool_rules: &Value,
+) -> Result<McpAgentConnectorAccess> {
+    let row = sqlx::query_as::<_, McpAgentConnectorAccess>(
+        r#"INSERT INTO mcp_agent_connector_access (user_id, agent_id, connector_id, enabled, tool_rules)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (user_id, agent_id, connector_id) DO UPDATE SET
+             enabled = EXCLUDED.enabled, tool_rules = EXCLUDED.tool_rules
+           RETURNING *"#,
+    )
+    .bind(user_id)
+    .bind(agent_id)
+    .bind(connector_id)
+    .bind(enabled)
+    .bind(tool_rules)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
+/// Reset an agent to default (all-allowed) — delete all its access rows.
+pub async fn delete_all_agent_access(db: &PgPool, user_id: Uuid, agent_id: Uuid) -> Result<u64> {
+    let res = sqlx::query("DELETE FROM mcp_agent_connector_access WHERE user_id = $1 AND agent_id = $2")
+        .bind(user_id)
+        .bind(agent_id)
+        .execute(db)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Distinct (user_id, agent_id) pairs with access rows for a connector — used to
+/// invalidate permission caches before the connector is deleted.
+pub async fn get_agent_pairs_for_connector(
+    db: &PgPool,
+    connector_id: Uuid,
+) -> Result<Vec<(Uuid, Uuid)>> {
+    let pairs = sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT user_id, agent_id FROM mcp_agent_connector_access WHERE connector_id = $1",
+    )
+    .bind(connector_id)
+    .fetch_all(db)
+    .await?;
+    Ok(pairs)
 }

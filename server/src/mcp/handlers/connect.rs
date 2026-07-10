@@ -11,10 +11,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use nasiko_mcp_gateway::connect::{self, ConnectInput, ConnectOutcome};
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::{ApiError, parse_user};
+use super::super::{ApiError, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -25,31 +24,28 @@ pub struct Credentials {
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectRequest {
+    pub connector_id: Option<Uuid>,
     pub service: Option<String>,
     pub toolkit: Option<String>,
-    #[serde(rename = "type")]
-    pub kind: Option<String>,
     pub url: Option<String>,
     pub credentials: Option<Credentials>,
     pub redirect_url: Option<String>,
 }
 
-/// `POST /api/mcp/connect` — connect any service type.
+/// `POST /api/mcp/connect` — connect any connector type.
 pub async fn connect_service(
     State(state): State<AppState>,
     claims: Claims,
     Json(body): Json<ConnectRequest>,
 ) -> Result<Response, ApiError> {
+    use service::connect::{ConnectInput, ConnectOutcome};
     let user_id = parse_user(&claims)?;
-    let service =
-        body.service.clone().or_else(|| body.toolkit.clone()).map(|s| s.to_lowercase()).unwrap_or_default();
-
-    let outcome = connect::connect_service(
-        &state.mcp,
+    let outcome = service::connect::connect(
+        &state,
         user_id,
         ConnectInput {
-            service,
-            kind: body.kind,
+            connector_id: body.connector_id,
+            service: body.service.or(body.toolkit),
             url: body.url,
             credential_value: body.credentials.map(|c| c.value),
             redirect_url: body.redirect_url,
@@ -58,44 +54,43 @@ pub async fn connect_service(
     .await?;
 
     Ok(match outcome {
-        ConnectOutcome::Connected { service } => {
-            (StatusCode::OK, Json(json!({ "status": "connected", "service": service }))).into_response()
-        }
-        ConnectOutcome::Initiated { service, oauth_url } => (
-            StatusCode::CREATED,
-            Json(json!({ "status": "initiated", "service": service, "oauth_url": oauth_url })),
+        ConnectOutcome::Connected { connector_id, name } => (
+            StatusCode::OK,
+            Json(json!({ "status": "connected", "connector_id": connector_id, "name": name })),
         )
             .into_response(),
-        ConnectOutcome::OAuthRequired { service, authorization_url } => Json(json!({
+        ConnectOutcome::Initiated { connector_id, name, oauth_url } => (
+            StatusCode::CREATED,
+            Json(json!({ "status": "initiated", "connector_id": connector_id, "name": name, "oauth_url": oauth_url })),
+        )
+            .into_response(),
+        ConnectOutcome::OAuthRequired { connector_id, name, authorization_url } => Json(json!({
             "status": "oauth_required",
-            "service": service,
+            "connector_id": connector_id,
+            "name": name,
             "authorization_url": authorization_url,
         }))
         .into_response(),
     })
 }
 
-/// `GET /api/mcp/connections` — list the caller's connections, syncing any
-/// pending ones with Composio.
-pub async fn list_connections(
-    State(state): State<AppState>,
-    claims: Claims,
-) -> Result<Json<Value>, ApiError> {
+/// `GET /api/mcp/connections` — the caller's connections.
+pub async fn list_connections(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(connect::list_connections_view(&state.mcp, user_id).await?))
+    Ok(Json(service::connect::list_connections(&state, user_id).await?))
 }
 
-/// `DELETE /api/mcp/connections/{toolkit}` — revoke a Composio connection.
-pub async fn disconnect_toolkit(
+/// `DELETE /api/mcp/connections/{connector_id}` — disconnect the caller's connection.
+pub async fn disconnect(
     State(state): State<AppState>,
     claims: Claims,
-    Path(toolkit): Path<String>,
+    Path(connector_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    let outcome = connect::disconnect_toolkit(&state.mcp, user_id, &toolkit).await?;
+    let outcome = service::connect::disconnect(&state, user_id, connector_id).await?;
     Ok(Json(json!({
         "message": outcome.message,
-        "toolkit": outcome.toolkit,
+        "connector_id": outcome.connector_id,
         "composio_revoked": outcome.composio_revoked,
     })))
 }
@@ -103,15 +98,13 @@ pub async fn disconnect_toolkit(
 #[derive(Debug, Deserialize)]
 pub struct ComposioCallbackQuery {
     pub user_id: Option<Uuid>,
-    pub toolkit: Option<String>,
+    pub connector_id: Option<Uuid>,
     pub success_url: Option<String>,
 }
 
-/// `GET /oauth/callback` — public Composio redirect target. Verifies the
-/// connection became ACTIVE, records the account id, invalidates the session
-/// cache, and redirects.
+/// `GET /oauth/callback` — public Composio redirect target.
 pub async fn oauth_callback(State(state): State<AppState>, Query(q): Query<ComposioCallbackQuery>) -> Response {
-    match connect::handle_composio_callback(&state.mcp, q.user_id, q.toolkit, q.success_url).await {
+    match service::connect::composio_callback(&state, q.user_id, q.connector_id, q.success_url).await {
         CallbackOutcome::Redirect(dest) => Redirect::to(&dest).into_response(),
         CallbackOutcome::Message(msg) => Html(callback_page(&msg)).into_response(),
     }

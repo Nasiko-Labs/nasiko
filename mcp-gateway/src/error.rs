@@ -76,9 +76,9 @@ impl McpError {
     /// The JSON-RPC error code for this error, used on the agent `/api/mcp` path.
     pub fn json_rpc_code(&self) -> i64 {
         match self {
-            McpError::BadRequest(_) => codes::INVALID_PARAMS,
+            McpError::BadRequest(_) | McpError::Conflict(_) => codes::INVALID_PARAMS,
             McpError::NotFound(_) => codes::METHOD_NOT_FOUND,
-            McpError::ToolBlocked(_) => codes::TOOL_BLOCKED,
+            McpError::ToolBlocked(_) | McpError::Forbidden(_) => codes::TOOL_BLOCKED,
             McpError::ToolApprovalRequired(_) => codes::TOOL_ASK,
             _ => codes::INTERNAL_ERROR,
         }
@@ -120,9 +120,24 @@ impl McpError {
                 tracing::error!(error = %e, "mcp serialization error");
                 "internal error".to_string()
             }
+            McpError::Crypto(m) => {
+                tracing::error!(message = %m, "mcp crypto error");
+                "internal error".to_string()
+            }
             McpError::Internal(m) => {
                 tracing::error!(message = %m, "mcp internal error");
                 "internal error".to_string()
+            }
+            // Backend detail may name internal endpoints — keep generic on the
+            // agent-facing JSON-RPC path (detail is preserved for management via
+            // `client_message`).
+            McpError::Backend(m) | McpError::Composio(m) => {
+                tracing::warn!(message = %m, "mcp backend error");
+                "backend request failed".to_string()
+            }
+            McpError::Oauth(m) => {
+                tracing::warn!(message = %m, "mcp oauth error");
+                "authorization error".to_string()
             }
             other => other.to_string(),
         };
@@ -145,10 +160,17 @@ impl McpError {
                 tracing::error!(error = %e, "mcp serialization error");
                 "internal error".to_string()
             }
+            McpError::Crypto(m) => {
+                tracing::error!(message = %m, "mcp crypto error");
+                "internal error".to_string()
+            }
             McpError::Internal(m) => {
                 tracing::error!(message = %m, "mcp internal error");
                 "internal error".to_string()
             }
+            // Backend/Composio/Oauth detail is kept for management responses — the
+            // SSRF guard blocks private URLs at registration, so no internal
+            // address can reach these messages.
             other => other.to_string(),
         }
     }
@@ -178,6 +200,8 @@ mod tests {
         assert_eq!(McpError::NotFound("x".into()).json_rpc_code(), codes::METHOD_NOT_FOUND);
         assert_eq!(McpError::ToolBlocked("x".into()).json_rpc_code(), codes::TOOL_BLOCKED);
         assert_eq!(McpError::ToolApprovalRequired("x".into()).json_rpc_code(), codes::TOOL_ASK);
+        assert_eq!(McpError::Forbidden("x".into()).json_rpc_code(), codes::TOOL_BLOCKED);
+        assert_eq!(McpError::Conflict("x".into()).json_rpc_code(), codes::INVALID_PARAMS);
         assert_eq!(McpError::Internal("x".into()).json_rpc_code(), codes::INTERNAL_ERROR);
     }
 
@@ -188,5 +212,18 @@ mod tests {
         assert_eq!(msg, "internal error");
         // But client-safe errors keep their message.
         assert_eq!(McpError::ToolBlocked("blocked!".into()).to_json_rpc().message, "blocked!");
+    }
+
+    #[test]
+    fn sensitive_variants_are_redacted_on_agent_path() {
+        // Crypto detail must never reach the agent, on either surface.
+        assert_eq!(McpError::Crypto("decrypt failed for key X".into()).to_json_rpc().message, "internal error");
+        assert_eq!(McpError::Crypto("decrypt failed for key X".into()).client_message(), "internal error");
+        // Backend/Composio/Oauth detail is redacted on the agent JSON-RPC path.
+        assert_eq!(McpError::Backend("upstream at 10.0.1.5 refused".into()).to_json_rpc().message, "backend request failed");
+        assert_eq!(McpError::Composio("composio 500".into()).to_json_rpc().message, "backend request failed");
+        assert_eq!(McpError::Oauth("bad token endpoint".into()).to_json_rpc().message, "authorization error");
+        // …but preserved for management responses (safe: SSRF guard blocks private URLs).
+        assert_eq!(McpError::Backend("could not reach MCP server".into()).client_message(), "backend error: could not reach MCP server");
     }
 }

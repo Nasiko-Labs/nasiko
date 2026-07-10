@@ -1,0 +1,74 @@
+//! Owner-controlled connector sharing.
+
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
+use serde::Deserialize;
+use serde_json::Value;
+use uuid::Uuid;
+
+use nasiko_mcp_gateway::McpError;
+
+use super::super::{ApiError, parse_user, service};
+use crate::auth::Claims;
+use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+pub struct ShareRequest {
+    /// Grant to a specific username. Omit + set `public=true` to share with everyone.
+    pub username: Option<String>,
+    #[serde(default)]
+    pub public: bool,
+}
+
+impl ShareRequest {
+    fn into_target(self) -> Result<service::connectors::ShareTarget, ApiError> {
+        use service::connectors::ShareTarget;
+        if self.public {
+            return Ok(ShareTarget::Public);
+        }
+        match self.username {
+            Some(u) if !u.is_empty() => Ok(ShareTarget::User(u)),
+            _ => Err(ApiError(McpError::BadRequest("provide 'username' or set 'public': true".into()))),
+        }
+    }
+}
+
+/// `GET /api/mcp/connectors/{id}/share` — list a connector's grants.
+pub async fn list(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = parse_user(&claims)?;
+    Ok(Json(service::connectors::list_shares(&state, caller, claims.is_superuser, id).await?))
+}
+
+/// `POST /api/mcp/connectors/{id}/share` — share by username or with everyone.
+pub async fn share(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ShareRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    let target = body.into_target()?;
+    let view = service::connectors::share(&state, caller, claims.is_superuser, id, target).await?;
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+/// `DELETE /api/mcp/connectors/{id}/share` — revoke a share.
+pub async fn revoke(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ShareRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    let target = body.into_target()?;
+    service::connectors::revoke(&state, caller, claims.is_superuser, id, target).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

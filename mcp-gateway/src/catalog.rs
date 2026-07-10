@@ -1,14 +1,14 @@
-//! Service catalog + platform Composio auth-config (toolkit) registration —
-//! pure logic behind the server's `/api/mcp/catalog` and `/api/mcp/auth-configs`
-//! routes.
+//! Service catalog + platform Composio connector registration — pure logic
+//! behind `/api/mcp/catalog` and `/api/mcp/auth-configs`.
 
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::error::{McpError, Result};
-use crate::repo;
+use crate::repo::{self, NewConnector};
 use crate::state::McpState;
 
-/// Capitalize the first character (default catalog display names).
+/// Capitalize the first character (default display names).
 pub fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -17,43 +17,39 @@ pub fn capitalize(s: &str) -> String {
     }
 }
 
-/// `GET /api/mcp/catalog` view: connectable services, credential-free.
-pub async fn get_catalog_view(state: &McpState) -> Result<Value> {
-    let configs = repo::list_platform_auth_configs(&state.db).await?;
-    let servers = repo::list_platform_mcp_servers(&state.db).await?;
-
-    let mut services: Vec<Value> = Vec::new();
-    for ac in configs {
-        services.push(json!({
-            "name": ac.toolkit,
-            "type": "composio",
-            "display_name": ac.display_name.unwrap_or_else(|| capitalize(&ac.toolkit)),
-            "description": Value::Null,
-            "logo_url": ac.logo_url,
-            "auth_flow": "oauth",
-        }));
+fn auth_flow_for(connector: &repo::McpConnector) -> &'static str {
+    if connector.is_composio() {
+        return "oauth";
     }
-    for s in servers {
-        let auth_flow = match s.auth_type.as_str() {
-            "oauth2" => "oauth",
-            "bearer" | "basic" | "url_param" => "api_key",
-            _ => "none",
-        };
-        services.push(json!({
-            "name": s.name,
-            "type": "mcp",
-            "display_name": s.display_name.unwrap_or_else(|| capitalize(&s.name)),
-            "description": s.description,
-            "logo_url": s.logo_url,
-            "auth_flow": auth_flow,
-        }));
+    match connector.auth_type.as_deref() {
+        Some("oauth2") => "oauth",
+        Some("bearer") | Some("basic") | Some("url_param") => "api_key",
+        _ => "none",
     }
+}
 
+/// `GET /api/mcp/catalog` — connectable services (composio ∪ accessible custom).
+pub async fn get_catalog_view(state: &McpState, user_id: Uuid) -> Result<Value> {
+    let connectors = repo::list_accessible_connectors(&state.db, user_id).await?;
+    let services: Vec<Value> = connectors
+        .iter()
+        .map(|c| {
+            json!({
+                "connector_id": c.id,
+                "name": c.name,
+                "type": c.provider_type,
+                "display_name": c.display_name.clone().unwrap_or_else(|| capitalize(&c.name)),
+                "description": c.description,
+                "logo_url": c.logo_url,
+                "auth_flow": auth_flow_for(c),
+            })
+        })
+        .collect();
     Ok(json!({ "services": services }))
 }
 
-/// Inputs for registering a new platform Composio toolkit.
-pub struct CreateAuthConfigInput<'a> {
+/// Inputs for registering a platform Composio connector.
+pub struct CreateComposioInput<'a> {
     pub toolkit: &'a str,
     pub use_composio_managed: bool,
     pub client_id: Option<&'a str>,
@@ -63,84 +59,108 @@ pub struct CreateAuthConfigInput<'a> {
     pub logo_url: Option<&'a str>,
 }
 
-/// Register a platform Composio toolkit: duplicate/collision checks, register
-/// the OAuth app with Composio, then record it locally. Returns the created
-/// row's JSON view (`auth_config_id`, `toolkit`, `is_platform`).
-pub async fn create_platform_auth_config(
-    state: &McpState,
-    input: CreateAuthConfigInput<'_>,
-) -> Result<Value> {
+/// Register a platform Composio connector: collision check, register the OAuth
+/// app with Composio, record it as a `provider_type='composio'` connector.
+pub async fn create_composio_connector(state: &McpState, input: CreateComposioInput<'_>) -> Result<Value> {
     let toolkit = input.toolkit.to_lowercase();
-    if repo::get_platform_auth_config_by_toolkit(&state.db, &toolkit).await?.is_some() {
-        return Err(McpError::Conflict(format!(
-            "platform auth config for '{toolkit}' already exists"
-        )));
-    }
-    // Guard against a toolkit name colliding with a platform MCP server name —
-    // per-agent permission rows key on server_name alone, so a collision would
-    // make one toggle control both. (Same guard as the PoC.)
-    if repo::get_platform_mcp_server_by_name(&state.db, &toolkit).await?.is_some() {
-        return Err(McpError::Conflict(format!(
-            "'{toolkit}' is already a platform MCP server — choose a different name"
-        )));
+    if repo::get_composio_connector_by_name(&state.db, &toolkit).await?.is_some() {
+        return Err(McpError::Conflict(format!("composio connector '{toolkit}' already exists")));
     }
 
     let provider = state.providers.require_composio()?;
     let created = provider
-        .create_auth_config(
-            &toolkit,
-            input.use_composio_managed,
-            input.client_id,
-            input.client_secret,
-            input.scopes,
-        )
+        .create_auth_config(&toolkit, input.use_composio_managed, input.client_id, input.client_secret, input.scopes)
         .await?;
 
-    let row = repo::create_auth_config(
+    let connector = repo::create_connector(
         &state.db,
-        &created.auth_config_id,
-        None, // platform
-        &toolkit,
-        input.use_composio_managed,
-        true, // is_platform
-        input.display_name,
-        input.logo_url,
+        &NewConnector {
+            provider_type: "composio".to_string(),
+            owner_id: None,
+            name: toolkit.clone(),
+            display_name: input.display_name.map(str::to_string),
+            logo_url: input.logo_url.map(str::to_string),
+            auth_config_id: Some(created.auth_config_id),
+            auth_scheme: Some("OAUTH2".to_string()),
+            use_composio_managed: Some(input.use_composio_managed),
+            ..Default::default()
+        },
     )
     .await?;
 
-    tracing::info!(toolkit = %toolkit, auth_config_id = %row.auth_config_id, "registered platform composio toolkit");
+    tracing::info!(toolkit = %toolkit, connector_id = %connector.id, "registered platform composio connector");
     Ok(json!({
-        "auth_config_id": row.auth_config_id,
-        "toolkit": row.toolkit,
-        "is_platform": row.is_platform,
+        "connector_id": connector.id,
+        "toolkit": connector.name,
+        "auth_config_id": connector.auth_config_id,
     }))
 }
 
-/// `GET /api/mcp/auth-configs` view: list platform toolkits.
-pub async fn list_auth_configs_view(state: &McpState) -> Result<Value> {
-    let configs = repo::list_platform_auth_configs(&state.db).await?;
-    let out: Vec<Value> = configs
+/// Editable display metadata for a composio connector.
+#[derive(Default)]
+pub struct ComposioMetadata {
+    pub display_name: Option<String>,
+    pub logo_url: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Update a composio connector's catalog metadata (display_name / logo / description).
+/// Does NOT touch the Composio `auth_config_id`, so connected users keep working.
+pub async fn update_composio_metadata(state: &McpState, connector_id: Uuid, meta: ComposioMetadata) -> Result<Value> {
+    let connector = repo::get_connector_by_id(&state.db, connector_id).await?;
+    match connector {
+        Some(c) if c.is_composio() => {
+            let updated = repo::update_connector(
+                &state.db,
+                connector_id,
+                &repo::UpdateConnector {
+                    display_name: meta.display_name,
+                    logo_url: meta.logo_url,
+                    description: meta.description,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Ok(json!({
+                "connector_id": updated.id,
+                "toolkit": updated.name,
+                "display_name": updated.display_name,
+                "logo_url": updated.logo_url,
+            }))
+        }
+        _ => Err(McpError::NotFound(format!("composio connector '{connector_id}' not found"))),
+    }
+}
+
+/// `GET /api/mcp/auth-configs` — list platform Composio connectors.
+pub async fn list_composio_connectors_view(state: &McpState) -> Result<Value> {
+    let connectors = repo::list_composio_connectors(&state.db).await?;
+    let data: Vec<Value> = connectors
         .into_iter()
-        .map(|ac| {
+        .map(|c| {
             json!({
-                "auth_config_id": ac.auth_config_id,
-                "toolkit": ac.toolkit,
-                "is_platform": ac.is_platform,
-                "display_name": ac.display_name,
-                "logo_url": ac.logo_url,
+                "connector_id": c.id,
+                "toolkit": c.name,
+                "auth_config_id": c.auth_config_id,
+                "display_name": c.display_name,
+                "logo_url": c.logo_url,
             })
         })
         .collect();
-    let total = out.len();
-    Ok(json!({ "data": out, "total": total }))
+    let total = data.len();
+    Ok(json!({ "data": data, "total": total }))
 }
 
-/// Delete a platform auth config. Errors `NotFound` if it doesn't exist.
-pub async fn delete_auth_config(state: &McpState, auth_config_id: &str) -> Result<()> {
-    if !repo::delete_auth_config(&state.db, auth_config_id).await? {
-        return Err(McpError::NotFound(format!("auth config '{auth_config_id}' not found")));
+/// Delete a platform Composio connector by id.
+pub async fn delete_composio_connector(state: &McpState, connector_id: Uuid) -> Result<()> {
+    let connector = repo::get_connector_by_id(&state.db, connector_id).await?;
+    match connector {
+        Some(c) if c.is_composio() => {
+            repo::delete_connector(&state.db, connector_id).await?;
+            Ok(())
+        }
+        _ => Err(McpError::NotFound(format!("composio connector '{connector_id}' not found"))),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -148,38 +168,13 @@ mod tests {
     use super::capitalize;
 
     #[test]
-    fn capitalize_lowercase_ascii() {
+    fn capitalize_cases() {
         assert_eq!(capitalize("gmail"), "Gmail");
-    }
-
-    #[test]
-    fn capitalize_already_uppercase_is_unchanged() {
         assert_eq!(capitalize("Slack"), "Slack");
-    }
-
-    #[test]
-    fn capitalize_empty_string_returns_empty() {
         assert_eq!(capitalize(""), "");
-    }
-
-    #[test]
-    fn capitalize_single_char() {
         assert_eq!(capitalize("x"), "X");
-    }
-
-    #[test]
-    fn capitalize_only_uppercases_first_char() {
         assert_eq!(capitalize("gitHub"), "GitHub");
-    }
-
-    #[test]
-    fn capitalize_multibyte_first_char() {
-        // 'é' uppercases to 'É' — exercises the char (not byte) boundary.
         assert_eq!(capitalize("émoji"), "Émoji");
-    }
-
-    #[test]
-    fn capitalize_numeric_first_char_is_unchanged() {
         assert_eq!(capitalize("123abc"), "123abc");
     }
 }

@@ -1,5 +1,4 @@
-//! Per-agent permission management — the Claude-Desktop-style connector UI
-//! backend. All routes are gated by `ensure_can_manage_agent`.
+//! Per-agent connector access + tool rules. Gated by `ensure_can_manage_agent`.
 
 use axum::{
     Json,
@@ -11,53 +10,47 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use nasiko_mcp_gateway::permissions::{self as perm_engine, ToolRuleInput};
-
-use super::{ApiError, ensure_can_manage_agent, parse_user};
+use super::super::{ApiError, ensure_can_manage_agent, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-/// `GET /api/mcp/agents/{agent_id}/servers` — all servers visible to the user
-/// with this agent's enabled/connected status.
-pub async fn list_servers(
+/// `GET /api/mcp/agents/{agent_id}/connectors` — connectors + per-agent status.
+pub async fn list_connectors(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(perm_engine::list_servers_view(&state.mcp, user_id, agent_id).await?))
+    Ok(Json(service::permissions::list_connectors(&state, user_id, agent_id).await?))
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SetServerAccess {
+pub struct SetConnectorAccess {
     pub enabled: bool,
 }
 
-/// `PUT /api/mcp/agents/{agent_id}/servers/{server}` — toggle a server for the agent.
-pub async fn set_server_access(
+/// `PUT /api/mcp/agents/{agent_id}/connectors/{connector_id}` — toggle a connector.
+pub async fn set_connector_access(
     State(state): State<AppState>,
     claims: Claims,
-    Path((agent_id, server)): Path<(Uuid, String)>,
-    Json(body): Json<SetServerAccess>,
+    Path((agent_id, connector_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SetConnectorAccess>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(
-        perm_engine::set_server_access_view(&state.mcp, user_id, agent_id, &server, body.enabled).await?,
-    ))
+    Ok(Json(service::permissions::set_connector_access(&state, user_id, agent_id, connector_id, body.enabled).await?))
 }
 
-/// `GET /api/mcp/agents/{agent_id}/servers/{server}/tools` — tools for a server
-/// with this agent's current stance per tool.
-pub async fn list_server_tools(
+/// `GET /api/mcp/agents/{agent_id}/connectors/{connector_id}/tools` — tools + stances.
+pub async fn list_connector_tools(
     State(state): State<AppState>,
     claims: Claims,
-    Path((agent_id, server)): Path<(Uuid, String)>,
+    Path((agent_id, connector_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(perm_engine::list_server_tools_view(&state.mcp, user_id, agent_id, &server).await?))
+    Ok(Json(service::permissions::list_connector_tools(&state, user_id, agent_id, connector_id).await?))
 }
 
 /// `GET /api/mcp/agents/{agent_id}/tools` — the agent's current tool rules.
@@ -68,12 +61,12 @@ pub async fn list_tool_rules(
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(perm_engine::list_tool_rules_view(&state.mcp, user_id, agent_id).await?))
+    Ok(Json(service::permissions::list_tool_rules(&state, user_id, agent_id).await?))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ToolRule {
-    pub server_name: String,
+    pub connector_id: Uuid,
     pub tool_pattern: String,
     pub stance: String,
 }
@@ -83,7 +76,7 @@ pub struct BulkToolUpdate {
     pub rules: Vec<ToolRule>,
 }
 
-/// `PUT /api/mcp/agents/{agent_id}/tools` — batch upsert tool permission rules.
+/// `PUT /api/mcp/agents/{agent_id}/tools` — batch upsert tool rules.
 pub async fn bulk_update_tools(
     State(state): State<AppState>,
     claims: Claims,
@@ -92,14 +85,16 @@ pub async fn bulk_update_tools(
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-
-    let rules: Vec<ToolRuleInput> = body
+    let rules: Vec<service::permissions::ToolRuleInput> = body
         .rules
         .into_iter()
-        .map(|r| ToolRuleInput { server_name: r.server_name, tool_pattern: r.tool_pattern, stance: r.stance })
+        .map(|r| service::permissions::ToolRuleInput {
+            connector_id: r.connector_id,
+            tool_pattern: r.tool_pattern,
+            stance: r.stance,
+        })
         .collect();
-
-    Ok(Json(perm_engine::bulk_update_tools(&state.mcp, user_id, agent_id, &rules).await?))
+    Ok(Json(service::permissions::bulk_update_tools(&state, user_id, agent_id, &rules).await?))
 }
 
 /// `DELETE /api/mcp/agents/{agent_id}/permissions` — reset to all-allowed.
@@ -110,6 +105,6 @@ pub async fn reset(
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    let deleted = perm_engine::reset(&state.mcp, user_id, agent_id).await?;
+    let deleted = service::permissions::reset(&state, user_id, agent_id).await?;
     Ok((StatusCode::OK, Json(json!({ "rows_deleted": deleted }))))
 }

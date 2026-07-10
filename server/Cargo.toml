@@ -70,3 +70,6 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }

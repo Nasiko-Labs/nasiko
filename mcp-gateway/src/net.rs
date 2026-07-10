@@ -7,10 +7,10 @@
 //! platform fetch it on their behalf — a classic SSRF. This rejects any URL that
 //! resolves to a loopback / private / link-local / unspecified address.
 //!
-//! Enforced at **registration** and **probe** time (not the hot path). Note: this
-//! does not defend against DNS-rebinding between validation and the later
-//! connection — pinning the resolved IP at connect time is a deeper hardening
-//! tracked separately.
+//! Enforced at **registration** and **probe** time (not the hot path). The
+//! DNS-rebinding gap between validation and the later connection is closed by
+//! [`GuardedResolver`], installed on the generic-backend client so reqwest
+//! connects only to addresses that pass the same check at resolution time.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
