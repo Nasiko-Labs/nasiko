@@ -4,6 +4,8 @@ use std::process::Command;
 
 use anyhow::{Result, bail};
 
+use crate::util::container_bin;
+
 pub fn build(directory: &str, tag: Option<&str>, platform: Option<&str>) -> Result<()> {
     let root = Path::new(directory).canonicalize().unwrap_or_else(|_| Path::new(directory).to_path_buf());
 
@@ -18,7 +20,8 @@ pub fn build(directory: &str, tag: Option<&str>, platform: Option<&str>) -> Resu
 
     println!("Building {resolved_tag}");
 
-    let mut cmd = Command::new("docker");
+    let bin = container_bin();
+    let mut cmd = Command::new(&bin);
     cmd.args(["build", "-t", &resolved_tag]);
 
     if let Some(p) = platform {
@@ -27,7 +30,7 @@ pub fn build(directory: &str, tag: Option<&str>, platform: Option<&str>) -> Resu
 
     cmd.arg(root.to_str().unwrap_or("."));
 
-    let cmd_str = format!("docker build -t {resolved_tag}{} {}",
+    let cmd_str = format!("{bin} build -t {resolved_tag}{} {}",
         platform.map(|p| format!(" --platform {p}")).unwrap_or_default(),
         root.display(),
     );

@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 
 use crate::config;
+use crate::util::container_bin;
 
 const COMPOSE_YAML: &str = include_str!("../../../docker-compose.infra.yml");
 const CP_IMAGE_DEFAULT: &str = "nasiko/cp:latest";
@@ -163,11 +164,11 @@ pub fn start(infra_only: bool) -> Result<()> {
     std::fs::write(&compose_path, COMPOSE_YAML)?;
 
     println!("Starting infrastructure...");
-    let status = Command::new("docker")
+    let status = Command::new(container_bin())
         .args(["compose", "-f", &compose_path.to_string_lossy(), "up", "-d"])
         .status()?;
     if !status.success() {
-        bail!("docker compose up failed");
+        bail!("container compose up failed");
     }
 
     println!("  Postgres  localhost:5432");
@@ -284,11 +285,11 @@ pub fn stop() -> Result<()> {
     }
 
     println!("Stopping infrastructure...");
-    let status = Command::new("docker")
+    let status = Command::new(container_bin())
         .args(["compose", "-f", &compose_path.to_string_lossy(), "down"])
         .status()?;
     if !status.success() {
-        bail!("docker compose down failed");
+        bail!("container compose down failed");
     }
     println!("Done.");
     Ok(())
@@ -306,21 +307,23 @@ pub fn run(path: &str, port: u16) -> Result<()> {
         bail!("no Dockerfile found in {}", agent_dir.display());
     }
 
+    let bin = container_bin();
+
     println!("Building {image}...");
-    let build = Command::new("docker")
+    let build = Command::new(&bin)
         .args(["build", "-t", &image, &agent_dir.to_string_lossy()])
         .status()?;
     if !build.success() {
-        bail!("docker build failed");
+        bail!("{bin} build failed");
     }
 
-    let _ = Command::new("docker").args(["rm", "-f", name]).output();
+    let _ = Command::new(&bin).args(["rm", "-f", name]).output();
     println!("Running {name} on port {port}...");
-    let run = Command::new("docker")
+    let run = Command::new(&bin)
         .args(["run", "-d", "--name", name, "-p", &format!("{port}:{port}"), &image])
         .status()?;
     if !run.success() {
-        bail!("docker run failed");
+        bail!("{bin} run failed");
     }
 
     println!("{name} → http://localhost:{port}");
@@ -341,8 +344,10 @@ fn ensure_cp_binary(env: &DevEnv) -> Result<std::path::PathBuf> {
         .map(|user| format!("{user}/cp:latest"))
         .unwrap_or_else(|| CP_IMAGE_DEFAULT.to_string());
 
+    let bin = container_bin();
+
     println!("  Pulling CP image ({image})...");
-    let status = Command::new("docker")
+    let status = Command::new(&bin)
         .args(["pull", &image])
         .status()?;
     if !status.success() {
@@ -350,19 +355,19 @@ fn ensure_cp_binary(env: &DevEnv) -> Result<std::path::PathBuf> {
     }
 
     println!("  Extracting CP binary...");
-    let output = Command::new("docker")
+    let output = Command::new(&bin)
         .args(["create", &image])
         .output()?;
     if !output.status.success() {
-        bail!("docker create failed");
+        bail!("{bin} create failed");
     }
     let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    let cp_status = Command::new("docker")
+    let cp_status = Command::new(&bin)
         .args(["cp", &format!("{container_id}:{CP_BINARY_PATH_IN_IMAGE}"), &bin_path.to_string_lossy()])
         .status()?;
 
-    let _ = Command::new("docker").args(["rm", &container_id]).output();
+    let _ = Command::new(&bin).args(["rm", &container_id]).output();
 
     if !cp_status.success() {
         bail!("failed to extract CP binary from image");

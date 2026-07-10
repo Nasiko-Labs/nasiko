@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 use crate::api::OciClient;
+use crate::util::container_bin;
 
 /// Push a local Docker image to the CP's OCI registry.
 /// Returns the repo and tag used (e.g., "nasiko/my-agent", "v1").
@@ -88,14 +89,15 @@ struct DockerTarEntries {
 }
 
 fn docker_save(image: &str) -> Result<Vec<u8>> {
-    let output = Command::new("docker")
+    let bin = container_bin();
+    let output = Command::new(&bin)
         .args(["save", image])
         .output()
-        .context("failed to run `docker save` — is Docker running?")?;
+        .with_context(|| format!("failed to run `{bin} save` — is the container runtime running?"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("docker save failed: {stderr}");
+        bail!("{bin} save failed: {stderr}");
     }
     Ok(output.stdout)
 }

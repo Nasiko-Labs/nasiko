@@ -5,6 +5,26 @@ use std::path::Path;
 use anyhow::Result;
 use include_dir::Dir;
 
+/// Resolves the container CLI binary to shell out to. Honors `NASIKO_CONTAINER_CLI`
+/// if set, otherwise prefers `docker` and falls back to `podman` when `docker` isn't
+/// on PATH (e.g. podman-only dev setups without the podman-docker compat shim).
+pub fn container_bin() -> String {
+    if let Ok(bin) = std::env::var("NASIKO_CONTAINER_CLI") {
+        return bin;
+    }
+    if on_path("docker") {
+        "docker".to_string()
+    } else {
+        "podman".to_string()
+    }
+}
+
+fn on_path(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
+        .unwrap_or(false)
+}
+
 pub fn extract_tar_gz(data: &[u8], dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)?;
     let cursor = Cursor::new(data);
