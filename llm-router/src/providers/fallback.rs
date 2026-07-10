@@ -135,6 +135,9 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             fallback_models: Vec::new(),
             temperature: primary.temperature,
             max_tokens: primary.max_tokens,
+            has_llm_config: primary.has_llm_config,
+            // Fallback attempts are never pinned — pinning disables fallbacks upstream.
+            pinned_model: None,
         });
     }
     attempts
@@ -169,6 +172,8 @@ mod tests {
             fallback_models: fallbacks.into_iter().map(String::from).collect(),
             temperature: Some(0.3),
             max_tokens: Some(100),
+            has_llm_config: false,
+            pinned_model: None,
         }
     }
 
@@ -239,6 +244,8 @@ mod tests {
             fallback_models: vec!["openai/gpt-4o-mini".into()],
             temperature: None,
             max_tokens: None,
+            has_llm_config: false,
+            pinned_model: None,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -284,6 +291,8 @@ mod tests {
             fallback_models: vec!["openai/text-embedding-3-small".into()],
             temperature: None,
             max_tokens: None,
+            has_llm_config: false,
+            pinned_model: None,
         };
         let req: EmbeddingsRequest =
             serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
@@ -319,6 +328,8 @@ mod tests {
             fallback_models: vec!["openai/gpt-4o-mini".into()],
             temperature: None,
             max_tokens: None,
+            has_llm_config: false,
+            pinned_model: None,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))

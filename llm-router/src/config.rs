@@ -26,6 +26,15 @@ pub struct GatewayConfig {
     /// TTL (seconds) for the in-process per-agent `llm_config` cache. Default 30.
     pub llm_config_cache_ttl_secs: u64,
 
+    /// Redis URL for the model-routing decision cache (S3). Empty ⇒ the router uses a
+    /// no-op cache (every request re-derives its model). The cache is a latency
+    /// optimisation only — an unset/unreachable Redis never breaks routing.
+    pub redis_url: String,
+    /// TTL (seconds) for a cached `(conv_id, agent_id)` routing decision — the stickiness
+    /// window for a conversation. Default 3600 (1h). On expiry, a continuation turn falls
+    /// through to the configured model (Level 4), same as a cache miss.
+    pub router_decision_ttl_secs: u64,
+
     /// Provider base URLs (overridable for tests / self-hosted gateways).
     pub openai_api_base: String,
     pub anthropic_api_base: String,
@@ -48,6 +57,8 @@ impl Default for GatewayConfig {
             default_model: "gpt-4o-mini".into(),
             platform_openai_api_key: String::new(),
             llm_config_cache_ttl_secs: 30,
+            redis_url: String::new(),
+            router_decision_ttl_secs: 3600,
             openai_api_base: "https://api.openai.com/v1".into(),
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
@@ -71,6 +82,11 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.llm_config_cache_ttl_secs),
+            redis_url: env_or("REDIS_URL", &d.redis_url),
+            router_decision_ttl_secs: std::env::var("ROUTER_DECISION_TTL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.router_decision_ttl_secs),
             openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),

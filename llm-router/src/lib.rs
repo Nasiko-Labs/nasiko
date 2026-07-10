@@ -33,6 +33,7 @@ pub mod inject;
 pub mod ir;
 pub mod providers;
 pub mod resolver;
+pub mod routing;
 pub mod usage;
 
 pub use config::GatewayConfig;
@@ -40,6 +41,9 @@ pub use error::GatewayError;
 pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
+pub use routing::{
+    DecisionCache, NoopCache, PgTierRegistry, RedisCache, StaticTierRegistry, TierRegistry,
+};
 
 /// Shared context for the LLM router.
 ///
@@ -56,6 +60,12 @@ pub struct LlmRouterCtx {
     pub cfg: Arc<GatewayConfig>,
     /// Process-wide TTL cache for per-agent `llm_config` lookups.
     pub cache: Arc<ConfigCache>,
+    /// Model-routing decision cache, keyed on `(conv_id, agent_id)`. [`NoopCache`] by
+    /// default (every read misses); S3 swaps in a Redis-backed impl when configured.
+    pub router_cache: Arc<dyn DecisionCache>,
+    /// Tier→model registry for classified routing. [`PgTierRegistry`] (DB-backed, static
+    /// seed fallback) in production; tests use [`StaticTierRegistry`].
+    pub tier_registry: Arc<dyn TierRegistry>,
 }
 
 impl LlmRouterCtx {
@@ -64,11 +74,31 @@ impl LlmRouterCtx {
     pub fn from_shared(db: PgPool, http: reqwest::Client) -> Self {
         let cfg = GatewayConfig::from_env();
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(cfg.llm_config_cache_ttl_secs)));
+        let tier_registry = Arc::new(PgTierRegistry::new(db.clone()));
+        let router_cache = build_router_cache(&cfg);
         Self {
             db,
             http,
             cfg: Arc::new(cfg),
             cache,
+            router_cache,
+            tier_registry,
+        }
+    }
+}
+
+/// Choose the model-routing decision cache from config: a [`RedisCache`] when `REDIS_URL`
+/// is set (and opens), otherwise the fail-open [`NoopCache`]. A bad URL logs a warning and
+/// degrades to `NoopCache` rather than failing startup — the cache is never load-bearing.
+fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
+    if cfg.redis_url.is_empty() {
+        return Arc::new(NoopCache);
+    }
+    match redis::Client::open(cfg.redis_url.as_str()) {
+        Ok(client) => Arc::new(RedisCache::new(client, cfg.router_decision_ttl_secs)),
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid REDIS_URL; router decision cache disabled");
+            Arc::new(NoopCache)
         }
     }
 }

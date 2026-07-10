@@ -172,6 +172,8 @@ mod tests {
             fallback_models: vec![],
             temperature,
             max_tokens: None,
+            has_llm_config: false,
+            pinned_model: None,
         }
     }
 

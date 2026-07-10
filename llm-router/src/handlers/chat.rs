@@ -27,6 +27,8 @@ use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
 use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, resolve};
+use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
+use crate::routing::{self, BoundarySignals, Mode, RouteInputs};
 use crate::usage::{self, UsageRecord};
 
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
@@ -88,7 +90,43 @@ async fn chat_core(
     if let Some(stream) = force_stream {
         req.stream = Some(stream);
     }
-    let resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id).await?;
+    let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id).await?;
+
+    // Model routing: the resolver fixed the provider/key/params; the router may override
+    // the *model* at a conversation boundary (else it stays the resolved model). Signals are
+    // derived at the gateway from the agent-forwarded traceparent; no trace context ⇒ inert,
+    // so the resolved model is used (behaviour identical to before this layer).
+    let signals = derive_boundary_signals(headers, &ctx.db).await;
+    let query = routing::latest_user_query(&req.messages);
+    let decision = routing::route_model(
+        ctx.router_cache.as_ref(),
+        ctx.tier_registry.as_ref(),
+        &RouteInputs {
+            agent_id: &agent_id,
+            provider: &resolved.provider,
+            fallback_model: &resolved.model,
+            has_llm_config: resolved.has_llm_config,
+            pinned_model: resolved.pinned_model.as_deref(),
+            signals: &signals,
+            query: query.as_deref(),
+        },
+    )
+    .await;
+    tracing::debug!(
+        source = ?decision.source, tier = ?decision.tier,
+        provider = %resolved.provider, model = %decision.model,
+        "model routing decision"
+    );
+    if decision.model != resolved.model {
+        resolved.litellm_model = format!("{}/{}", resolved.provider, decision.model);
+        resolved.model = decision.model;
+    }
+    if resolved.pinned_model.is_some() {
+        // Compliance lock (Level 1): a pinned agent never re-routes. Disable fallbacks so an
+        // unavailable pinned model surfaces its error instead of silently switching models.
+        resolved.fallback_models.clear();
+    }
+
     let started = Instant::now();
 
     if req.is_streaming() {
@@ -119,6 +157,42 @@ async fn chat_core(
     );
 
     Ok(Json(inbound.render_chat_response(resp)).into_response())
+}
+
+/// Derive the model-routing [`BoundarySignals`] for this request (S5).
+///
+/// The opaque agent sets nothing: the gateway reads the `traceparent` the agent forwards,
+/// maps its trace id to a `flows` row (the conversation), and builds the signals from that
+/// trusted state. The flow lookup does double duty — it both confirms this is a genuine
+/// platform conversation (not an arbitrary trace) and reads the conversation `mode`.
+///
+/// Any of: no `traceparent`, an unparseable one, an unknown flow, or a DB error ⇒
+/// [`BoundarySignals::inert`] — the router doesn't fire and the resolved model is used.
+async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> BoundarySignals {
+    let Some(flow_id) = headers
+        .get(TRACEPARENT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_flow_id)
+    else {
+        return BoundarySignals::inert();
+    };
+
+    let row: Result<Option<(Option<String>,)>, sqlx::Error> =
+        sqlx::query_as("SELECT metadata->>'mode' FROM flows WHERE flow_id = $1")
+            .bind(&flow_id)
+            .fetch_optional(db)
+            .await;
+    match row {
+        Ok(Some((mode,))) => {
+            let mode = mode.as_deref().map(Mode::from_label).unwrap_or(Mode::FreeFlowing);
+            BoundarySignals::in_flow(flow_id, mode)
+        }
+        Ok(None) => BoundarySignals::inert(), // trace id isn't a known flow → don't fire
+        Err(e) => {
+            tracing::warn!(error = %e, %flow_id, "flow lookup failed; router inert for request");
+            BoundarySignals::inert()
+        }
+    }
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -277,6 +351,8 @@ mod tests {
             http: reqwest::Client::new(),
             cfg: Arc::new(cfg),
             cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
+            router_cache: Arc::new(crate::routing::NoopCache),
+            tier_registry: Arc::new(crate::routing::StaticTierRegistry),
         }
     }
 
@@ -453,6 +529,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn derive_signals_inert_without_traceparent() {
+        // No traceparent ⇒ inert, returned before any DB access.
+        let ctx = ctx_with("http://unused".into());
+        let signals = derive_boundary_signals(&HeaderMap::new(), &ctx.db).await;
+        assert!(signals.conv_id.is_none());
+        assert!(!signals.is_fireable_boundary());
+    }
+
+    #[tokio::test]
     async fn unsupported_provider_is_internal_error() {
         let ctx = ctx_with("http://unused".into());
         let store = Store {
@@ -463,6 +548,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 api_key_secret_name: None,
+                pinned: false,
+                pinned_model: None,
             }),
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });

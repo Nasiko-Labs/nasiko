@@ -33,6 +33,15 @@ pub struct LLMConfig {
     pub max_tokens: Option<i64>,
     #[serde(default)]
     pub api_key_secret_name: Option<String>,
+    /// Compliance lock (Level 1): when `true`, the model router never re-selects — the
+    /// pinned model is used and fallbacks are disabled. Lives inside the `llm_config`
+    /// JSONB, so no schema migration is needed (see migration 016 for the blob shape).
+    #[serde(default)]
+    pub pinned: bool,
+    /// The model to pin to when `pinned`. `None` ⇒ pin to `model` (the configured model),
+    /// i.e. "lock whatever is configured; don't let the router change it".
+    #[serde(default)]
+    pub pinned_model: Option<String>,
 }
 
 /// The resolved call configuration handed to the provider client.
@@ -47,6 +56,12 @@ pub struct ResolvedConfig {
     pub fallback_models: Vec<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<i64>,
+    /// Whether `model`/`provider` came from an explicit `llm_config` row (vs. the platform
+    /// defaults). Used by the model router only to tag Level 4 (config) vs Level 5 (default).
+    pub has_llm_config: bool,
+    /// The compliance-locked model (Level 1), or `None` when the agent isn't pinned. When
+    /// `Some`, the router returns it directly and the chat handler disables fallbacks.
+    pub pinned_model: Option<String>,
 }
 
 /// Storage seam for the resolver — mockable in tests.
@@ -120,6 +135,7 @@ pub async fn resolve(
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
 
     let llm_config = load_llm_config(store, cache, agent_uuid, agent_id).await?;
+    let has_llm_config = llm_config.is_some();
     let plan = plan_config(llm_config, cfg);
     let api_key = resolve_api_key(store, cfg, owner_id, plan.api_key_secret_name.as_deref()).await?;
 
@@ -131,6 +147,8 @@ pub async fn resolve(
         fallback_models: plan.fallback_models,
         temperature: plan.temperature,
         max_tokens: plan.max_tokens,
+        has_llm_config,
+        pinned_model: plan.pinned_model,
     })
 }
 
@@ -166,18 +184,26 @@ struct ConfigPlan {
     temperature: Option<f64>,
     max_tokens: Option<i64>,
     api_key_secret_name: Option<String>,
+    pinned_model: Option<String>,
 }
 
 fn plan_config(llm_config: Option<LLMConfig>, cfg: &GatewayConfig) -> ConfigPlan {
     match llm_config {
-        Some(c) => ConfigPlan {
-            provider: c.provider,
-            model: c.model,
-            fallback_models: c.fallback_models,
-            temperature: c.temperature,
-            max_tokens: c.max_tokens,
-            api_key_secret_name: c.api_key_secret_name,
-        },
+        Some(c) => {
+            // Pinned ⇒ lock to `pinned_model`, or the configured `model` if unspecified.
+            let pinned_model = c
+                .pinned
+                .then(|| c.pinned_model.clone().unwrap_or_else(|| c.model.clone()));
+            ConfigPlan {
+                provider: c.provider,
+                model: c.model,
+                fallback_models: c.fallback_models,
+                temperature: c.temperature,
+                max_tokens: c.max_tokens,
+                api_key_secret_name: c.api_key_secret_name,
+                pinned_model,
+            }
+        }
         None => ConfigPlan {
             provider: cfg.default_provider.clone(),
             model: cfg.default_model.clone(),
@@ -185,6 +211,7 @@ fn plan_config(llm_config: Option<LLMConfig>, cfg: &GatewayConfig) -> ConfigPlan
             temperature: None,
             max_tokens: None,
             api_key_secret_name: None,
+            pinned_model: None,
         },
     }
 }
@@ -273,6 +300,8 @@ mod tests {
             temperature: Some(0.5),
             max_tokens: Some(1024),
             api_key_secret_name: secret_name.map(str::to_string),
+            pinned: false,
+            pinned_model: None,
         }
     }
 
@@ -366,6 +395,44 @@ mod tests {
             .unwrap();
         assert_eq!(r.api_key, "sk-real-anthropic-key");
         assert_eq!(r.provider, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn pinned_with_explicit_model_exposes_that_model() {
+        let mut c = llm_config("anthropic", "claude-x", None);
+        c.pinned = true;
+        c.pinned_model = Some("claude-locked".into());
+        let store = MockRegistry { config: Some(Some(c)), secret: None };
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+            .await
+            .unwrap();
+        // The pin surfaces on ResolvedConfig; the router (Level 1) applies it. The
+        // configured model is untouched here.
+        assert_eq!(r.pinned_model.as_deref(), Some("claude-locked"));
+        assert_eq!(r.model, "claude-x");
+    }
+
+    #[tokio::test]
+    async fn pinned_without_model_pins_to_configured_model() {
+        let mut c = llm_config("anthropic", "claude-x", None);
+        c.pinned = true; // no explicit pinned_model
+        let store = MockRegistry { config: Some(Some(c)), secret: None };
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+            .await
+            .unwrap();
+        assert_eq!(r.pinned_model.as_deref(), Some("claude-x"));
+    }
+
+    #[tokio::test]
+    async fn not_pinned_has_no_pinned_model() {
+        let store = MockRegistry {
+            config: Some(Some(llm_config("anthropic", "claude-x", None))),
+            secret: None,
+        };
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+            .await
+            .unwrap();
+        assert!(r.pinned_model.is_none());
     }
 
     #[tokio::test]

@@ -297,6 +297,8 @@ async fn translated_call(
         fallback_models: Vec::new(),
         temperature: Some(TEMPERATURE),
         max_tokens: Some(MAX_TOKENS),
+        has_llm_config: false,
+        pinned_model: None,
     };
 
     let provider = provider_for(backend.label(), http, cfg)
