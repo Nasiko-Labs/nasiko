@@ -3,10 +3,6 @@ name = "nasiko"
 edition.workspace = true
 version.workspace = true
 
-[lib]
-name = "nasiko"
-path = "src/lib.rs"
-
 [[bin]]
 name = "nasiko"
 path = "src/main.rs"
@@ -24,10 +20,12 @@ sha2.workspace = true
 hex.workspace = true
 tar.workspace = true
 flate2.workspace = true
+which.workspace = true
 include_dir.workspace = true
 base64.workspace = true
 uuid.workspace = true
 nasiko-types.workspace = true
+nasiko-utils.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 chrono.workspace = true

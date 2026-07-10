@@ -139,10 +139,9 @@ async fn agent_logs(
         all_logs.extend(parse_container_logs(raw));
     }
 
-    // ── Source 3: Loki (optional) ────────────────────────────────────────────
-    if
-        let Some(ref obs) = state.observability &&
-        let Ok(entries) = obs.query_logs(&agent_name, q.since, q.until, q.limit).await
+    // ── Source 3: Loki (optional — fails soft when the stack is absent) ─────
+    if let Ok(entries) = state.observability
+        .query_logs(&agent_name, q.since, q.until, q.limit).await
     {
         all_logs.extend(parse_loki_logs(entries));
     }

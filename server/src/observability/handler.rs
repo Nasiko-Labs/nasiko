@@ -67,16 +67,6 @@ pub async fn get_all_sessions(
     claims: Claims,
     Query(params): Query<SessionListParams>,
 ) -> impl IntoResponse {
-
-    tracing::info!(
-        input_tokens = 120u64,
-        output_tokens = 80u64,
-        model = "gpt-4o",
-        agent_id = "demo-agent",
-        session_id = "demo-session",
-        "simulated ai request"
-    );
-
     match svc(&state)
         .get_all_sessions(
             &claims.sub,

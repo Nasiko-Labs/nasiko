@@ -27,9 +27,10 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
-    /// Optional Tempo+Loki provider — present when TEMPO_URL + LOKI_URL are configured.
-    /// Falls back to DB-only queries when None.
-    pub observability: Option<Arc<dyn ObservabilityProvider>>,
+    /// Tempo+Loki observability provider with DB-backed model pricing.
+    /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
+    /// addresses; queries fail soft when the stack is absent.
+    pub observability: Arc<dyn ObservabilityProvider>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
     /// Wakes the build worker immediately when a new job is enqueued.
@@ -91,28 +92,20 @@ impl AppState {
         let flow_events = FlowEventBus::new();
         let genai_metrics = GenAiMetrics::new();
 
-        // Optional Tempo+Loki observability backend.
-        // Both TEMPO_URL and LOKI_URL must be set together — a partial config
-        // is logged as a warning so operators can spot misconfiguration early.
-        let observability: Option<Arc<dyn ObservabilityProvider>> = {
-            let tempo_url = std::env::var("TEMPO_URL").ok();
-            let loki_url  = std::env::var("LOKI_URL").ok();
-            match (tempo_url, loki_url) {
-                (Some(t), Some(l)) => {
-                    use nasiko_observability::TempoLokiProvider;
-                    tracing::info!(tempo_url = %t, loki_url = %l, "observability backend enabled");
-                    Some(Arc::new(TempoLokiProvider::new(t, l)))
-                }
-                (Some(_), None) => {
-                    tracing::warn!("TEMPO_URL is set but LOKI_URL is missing — observability backend disabled. Set both to enable.");
-                    None
-                }
-                (None, Some(_)) => {
-                    tracing::warn!("LOKI_URL is set but TEMPO_URL is missing — observability backend disabled. Set both to enable.");
-                    None
-                }
-                (None, None) => None,
-            }
+        // Tempo+Loki observability backend. Model pricing resolves through
+        // the model_pricing DB table with the static table as fallback.
+        let observability: Arc<dyn ObservabilityProvider> = {
+            use nasiko_observability::{DbPricing, TempoLokiProvider};
+            tracing::info!(
+                tempo_url = %config.tempo_url,
+                loki_url = %config.loki_url,
+                "observability backend configured"
+            );
+            Arc::new(TempoLokiProvider::new(
+                config.tempo_url.clone(),
+                config.loki_url.clone(),
+                Arc::new(DbPricing::new(db.clone())),
+            ))
         };
 
         let github_svc = config.github_client_id.as_ref()
