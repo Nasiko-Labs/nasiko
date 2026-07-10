@@ -1,8 +1,8 @@
 your-agents-page:not(:defined) {
   display: block;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: var(--space-lg) var(--space-md);
+  padding: var(--space-xl) var(--space-md);
   min-height: 400px;
 }
 
@@ -17,9 +17,9 @@ your-agents-page:not(:defined) {
 @scope (your-agents-page) {
   :scope {
     display: block;
-    max-width: 1100px;
+    max-width: 1200px;
     margin: 0 auto;
-    padding: var(--space-lg) var(--space-md);
+    padding: var(--space-xl) var(--space-md);
   }
 
   /* ── Header ──────────────────────────────────────────────────────────────── */
@@ -97,8 +97,8 @@ your-agents-page:not(:defined) {
   .search-wrap {
     position: relative;
     flex: 1;
-    min-width: 180px;
-    max-width: 360px;
+    min-width: 200px;
+    max-width: 480px;
   }
   .search-icon {
     position: absolute;
@@ -164,8 +164,8 @@ your-agents-page:not(:defined) {
   /* ── Grid ────────────────────────────────────────────────────────────────── */
   .agents-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: var(--space-md);
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--space-lg);
   }
   .empty-wrap {
     grid-column: 1 / -1;

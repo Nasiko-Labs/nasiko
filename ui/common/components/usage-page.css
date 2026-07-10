@@ -1,6 +1,6 @@
 usage-page:not(:defined) {
   display: block;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: var(--space-lg) var(--space-md);
   min-height: 400px;
@@ -17,7 +17,7 @@ usage-page:not(:defined) {
 @scope (usage-page) {
   :scope {
     display: block;
-    max-width: 1100px;
+    max-width: 1200px;
     margin: 0 auto;
     padding: var(--space-lg) var(--space-md);
   }
