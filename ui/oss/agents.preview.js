@@ -1,7 +1,7 @@
 // Agents catalog page fixtures and scenarios
 export default {
   fetch: [
-    [{ method: "GET", path: /^\/api\/catalog\/agents/ }, {
+    [{ method: "GET", path: /^\/api\/agents/ }, {
       data: [
         { id: "a-001", name: "coding-agent", display_name: "Coding Agent", image: "nasiko/coding:latest", status: "running", replicas: 1, description: "General-purpose coding assistant for any language. Supports code generation, review, debugging, and refactoring.", tags: ["devops", "code", "debugging"] },
         { id: "a-002", name: "research-agent", display_name: "Research Agent", image: "nasiko/research:latest", status: "running", replicas: 2, description: "Research and summarization across documents and the web", tags: ["hr", "research", "analysis"] },

@@ -136,7 +136,7 @@ export const icons = {
     `<rect x="1" y="1" width="14" height="14" rx="2"/></svg>`,
 
   // ── Dev ──────────────────────────────────────────────────────────────────
-  trace: s(`<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>`),
+  trace: s(`<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>`),
   code: s(`<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>`),
   terminal: s(`<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>`),
 

@@ -1,6 +1,7 @@
 export default {
   fetch: [
     ["POST /api/chat/sessions", { session_id: "s-preview-001", id: "s-preview-001" }],
+    [{ method: "POST", path: /^\/api\/chat\/sessions\/.*\/messages$/ }, { ok: true }],
     [{ method: "GET", path: /^\/api\/chat\/sessions\/.*\/messages$/ }, {
       data: [
         { role: "user", content: "How do I configure container networking for multi-agent communication?", trace_id: null },
@@ -9,14 +10,21 @@ export default {
         // CLI-written sessions store replies as "agent" (not "assistant") —
         // the UI must render both as markdown agent replies.
         { role: "agent", content: "Yes, mTLS between agents is supported. Here's how:\n\n1. Enable the `mtls` feature on the namespace\n2. The platform auto-provisions certificates via the internal CA\n3. Agents receive certs as mounted secrets\n\nNo code changes needed in your agent -- the sidecar proxy handles TLS termination.\n\n`NASIKO_MTLS=enabled` in the agent's env vars activates it.", trace_id: "xyz789abc012" },
+        { role: "user", content: "Compare the network policy modes in a table", trace_id: null },
+        { role: "assistant", content: "Here's a comparison of the available network policy modes:\n\n| Mode | Default peers | Use case | Overhead |\n| --- | --- | --- | --- |\n| `open` | All agents in namespace | Development, trusted teams | None |\n| `restricted` | Only `allowed_peers` | Production multi-tenant | Low |\n| `isolated` | None | Sensitive workloads, compliance | Low |\n| `mtls` | `allowed_peers` + mutual TLS | Zero-trust environments | Medium |\n\nFor most production deployments, `restricted` is the sweet spot between security and operability.", trace_id: "tbl456trace789" },
       ],
     }],
     ["POST /api/orchestrator/a2a", (() => {
       const answer = "## Scaling agents\n\nUse the `scale` command with **replica count**:\n\n```bash\nnasiko scale my-agent --replicas 3\n```\n\n- Replicas share one service endpoint\n- Traffic is round-robin balanced";
       const evt = (obj) => `data: ${JSON.stringify({ result: obj })}\n\n`;
+      const dataMsg = (data) => ({ status: { state: "TASK_STATE_WORKING", message: { parts: [{ data }] } } });
       return { __stream: [
-        { text: evt({ statusUpdate: { status: { state: "TASK_STATE_WORKING", message: { parts: [{ data: { type: "thinking", content: "Analyzing the request..." } }] } } } }), delay: 200 },
-        { text: evt({ artifactUpdate: { artifact: { parts: [{ text: answer }] }, append: false } }), delay: 500 },
+        { text: evt({ statusUpdate: dataMsg({ type: "trace_meta", trace_id: "trace-preview-chat" }) }), delay: 50 },
+        { text: evt({ statusUpdate: dataMsg({ type: "thinking", content: "Analyzing the request..." }) }), delay: 150 },
+        { text: evt({ statusUpdate: dataMsg({ type: "tool_call", agent: "devops-agent", message: "How do I scale an agent deployment?", turn: 1 }) }), delay: 150 },
+        { text: evt({ statusUpdate: dataMsg({ type: "sub_status", agent: "devops-agent", message: "Consulting deployment runbook..." }) }), delay: 200 },
+        { text: evt({ statusUpdate: dataMsg({ type: "tool_result", agent: "devops-agent", result: "Use `nasiko scale` with --replicas; traffic is balanced round-robin.", success: true, turn: 1 }) }), delay: 250 },
+        { text: evt({ artifactUpdate: { artifact: { parts: [{ text: answer }] }, append: false } }), delay: 300 },
         { text: evt({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED", message: { parts: [{ text: answer }] } } } }), delay: 100 },
       ] };
     })()],
@@ -29,12 +37,36 @@ export default {
       await page.goto(`${base}?agent_id=a-001&agent_name=Coding+Agent&session_id=s-001`);
       await page.waitForSelector('.msg-row');
     },
+    "hover-actions": async (page) => {
+      // Hover an assistant reply to reveal the copy + trace actions toolbar
+      const url = page.url();
+      const base = url.split('?')[0];
+      await page.goto(`${base}?agent_id=a-001&agent_name=Coding+Agent&session_id=s-001`);
+      await page.waitForSelector('.msg-row.is-assistant');
+      await page.hover('.msg-row.is-assistant:last-of-type .msg');
+      await page.waitForTimeout(200);
+    },
     "streamed-response": async (page) => {
       // Submit a message and let the mocked SSE stream render live
       await page.fill('#textarea', 'How do I scale an agent?');
       await page.click('#submitBtn');
-      await page.waitForSelector('.stream-content.is-visible', { timeout: 5000 });
+      await page.waitForSelector('.stream-content.is-visible', { timeout: 8000 });
       await page.waitForTimeout(300);
+    },
+    // Mid-stream: tool-call step visible and running.
+    "streaming-steps": async (page) => {
+      await page.fill('#textarea', 'How do I scale an agent?');
+      await page.click('#submitBtn');
+      await page.waitForSelector('agent-steps .step', { timeout: 5000 });
+      await page.waitForTimeout(250);
+    },
+    // Completed reply with the steps summary re-expanded.
+    "steps-expanded": async (page) => {
+      await page.fill('#textarea', 'How do I scale an agent?');
+      await page.click('#submitBtn');
+      await page.waitForSelector('.stream-content.is-visible', { timeout: 8000 });
+      await page.click('agent-steps .steps-header');
+      await page.waitForTimeout(200);
     },
   },
 };

@@ -2,6 +2,7 @@ import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import '/common/components/voice-input.js';
+import '/common/components/agent-steps.js';
 
 window.transcribeAudio = async (blob) => {
   const form = new FormData();
@@ -40,9 +41,14 @@ class OrchestratorPage extends HTMLElement {
         </div>
       </div>
       <div class="response-area" id="response-area">
-        <div class="status-history" id="status-history"></div>
-        <div class="stream-status" id="stream-status"><span class="pulse"></span> ...</div>
-        <div class="response-content md-body" id="response-content"></div>
+        <div class="steps-slot" id="steps-slot"></div>
+        <div class="response-wrap">
+          <div class="response-content md-body" id="response-content"></div>
+          <div class="msg-actions" id="response-actions" style="display:none;">
+            <button type="button" class="msg-action-copy" aria-label="Copy response" title="Copy">${icons.copy('', 14)}</button>
+            <a class="msg-action-trace" id="response-trace" style="display:none;" href="#" aria-label="View trace" title="View trace">${icons.trace('', 14)}</a>
+          </div>
+        </div>
         <a class="continue-link" id="continue-link" style="display:none;" href="#">Continue in chat</a>
       </div>
     `;
@@ -51,11 +57,20 @@ class OrchestratorPage extends HTMLElement {
 
     const voiceInput = this.querySelector('#voice-input');
     const responseArea = this.querySelector('#response-area');
-    const statusHistory = this.querySelector('#status-history');
-    const streamStatus = this.querySelector('#stream-status');
+    const stepsSlot = this.querySelector('#steps-slot');
     const responseContent = this.querySelector('#response-content');
+    const responseActions = this.querySelector('#response-actions');
+    const responseTrace = this.querySelector('#response-trace');
     const continueLink = this.querySelector('#continue-link');
     continueLink.insertAdjacentHTML('beforeend', ' ' + icons.chevronRight('', 14));
+
+    // Copy full response
+    responseActions.querySelector('.msg-action-copy').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      navigator.clipboard.writeText(responseContent.textContent).catch(() => {});
+      btn.innerHTML = icons.check('', 14);
+      setTimeout(() => { btn.innerHTML = icons.copy('', 14); }, 1500);
+    });
 
     // Copy code blocks (delegated)
     responseContent.addEventListener('click', (e) => {
@@ -76,11 +91,13 @@ class OrchestratorPage extends HTMLElement {
       voiceInput.setLoading(true);
       this.classList.add('has-response');
       responseArea.classList.add('is-visible');
-      statusHistory.innerHTML = '';
-      streamStatus.innerHTML = '<span class="pulse"></span> ...';
-      streamStatus.classList.remove('is-done');
+      stepsSlot.innerHTML = '';
+      const stepsEl = document.createElement('agent-steps');
+      stepsSlot.appendChild(stepsEl);
       responseContent.textContent = '';
       responseContent.classList.remove('is-visible');
+      responseActions.style.display = 'none';
+      responseTrace.style.display = 'none';
       continueLink.style.display = 'none';
 
       try {
@@ -123,14 +140,20 @@ class OrchestratorPage extends HTMLElement {
         });
         if (!res.ok) throw new Error(await res.text());
 
-        const reply = await this.#readStream(res, streamStatus, statusHistory, responseContent);
+        const { text: reply, traceId } = await this.#readStream(res, stepsEl, responseContent);
+
+        responseActions.style.display = '';
+        if (traceId) {
+          responseTrace.href = `/session-trace.html?trace_id=${encodeURIComponent(traceId)}`;
+          responseTrace.style.display = '';
+        }
 
         // Persist assistant reply
         if (sessionId && reply) {
           apiFetch(`/chat/sessions/${sessionId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ role: 'assistant', content: reply }),
+            body: JSON.stringify({ role: 'assistant', content: reply, ...(traceId && { trace_id: traceId }) }),
           }).catch(() => {});
         }
 
@@ -139,7 +162,7 @@ class OrchestratorPage extends HTMLElement {
           continueLink.style.display = '';
         }
       } catch (err) {
-        streamStatus.classList.add('is-done');
+        stepsEl.finish();
         responseContent.classList.add('is-visible');
         responseContent.innerHTML = `<span style="color:var(--color-error)">Error: ${this.#esc(err.message)}</span>`;
       } finally {
@@ -178,13 +201,12 @@ class OrchestratorPage extends HTMLElement {
     }
   }
 
-  async #readStream(res, streamStatus, statusHistory, responseContent) {
+  async #readStream(res, stepsEl, responseContent) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let fullText = '';
-    let lastStatus = '';
-    let lastDotClass = '';
+    let traceId = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -211,57 +233,25 @@ class OrchestratorPage extends HTMLElement {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
                 if (text && !fullText) {
                   fullText = text;
-                  streamStatus.classList.add('is-done');
+                  stepsEl.finish();
                   responseContent.classList.add('is-visible');
                   responseContent.innerHTML = renderMarkdown(fullText);
                 }
               } else if (state === 'TASK_STATE_FAILED') {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
                 if (text) {
-                  streamStatus.classList.add('is-done');
+                  stepsEl.finish();
                   responseContent.classList.add('is-visible');
                   responseContent.innerHTML = `<span style="color:var(--color-error)">${this.#esc(text)}</span>`;
                 }
               }
               for (const part of msg.parts) {
                 if (!part.data) continue;
-                const d = part.data;
-                let text = '';
-                let dotClass = 'dot-thinking';
-                if (d.type === 'thinking') {
-                  text = d.content || 'Thinking...';
-                  dotClass = 'dot-thinking';
-                } else if (d.type === 'tool_call') {
-                  text = `Calling <strong>${this.#esc(d.agent)}</strong>`;
-                  dotClass = 'dot-call';
-                } else if (d.type === 'tool_result') {
-                  text = `<strong>${this.#esc(d.agent)}</strong> responded`;
-                  dotClass = 'dot-result';
-                } else if (d.type === 'agent_invoke') {
-                  text = `<strong>${this.#esc(d.caller_agent)}</strong> calling <strong>${this.#esc(d.target_agent)}</strong>`;
-                  dotClass = 'dot-call';
-                } else if (d.type === 'agent_result') {
-                  text = `<strong>${this.#esc(d.target_agent)}</strong> responded`;
-                  dotClass = 'dot-result';
-                } else if (d.type === 'policy_rejected') {
-                  text = `<strong>${this.#esc(d.agent)}</strong> blocked: ${this.#esc(d.reason)}`;
-                  dotClass = 'dot-rejected';
+                if (part.data.type === 'trace_meta' && part.data.trace_id) {
+                  traceId = part.data.trace_id;
+                  continue;
                 }
-
-                if (text && text !== lastStatus) {
-                  if (lastStatus && lastDotClass) {
-                    const histLine = document.createElement('div');
-                    histLine.className = 'status-history-line';
-                    histLine.innerHTML = `<span class="dot ${lastDotClass}"></span> ${lastStatus}`;
-                    statusHistory.appendChild(histLine);
-                    while (statusHistory.children.length > 3) {
-                      statusHistory.removeChild(statusHistory.firstChild);
-                    }
-                  }
-                  lastStatus = text;
-                  lastDotClass = dotClass;
-                  streamStatus.innerHTML = `<span class="pulse"></span> ${text}`;
-                }
+                stepsEl.onEvent(part.data);
               }
             }
           }
@@ -278,7 +268,7 @@ class OrchestratorPage extends HTMLElement {
               } else {
                 fullText = text;
               }
-              streamStatus.classList.add('is-done');
+              stepsEl.finish();
               responseContent.classList.add('is-visible');
               responseContent.innerHTML = renderMarkdown(fullText);
             }
@@ -287,7 +277,7 @@ class OrchestratorPage extends HTMLElement {
       }
     }
 
-    streamStatus.classList.add('is-done');
+    stepsEl.finish();
     if (!fullText) {
       fullText = 'No response';
       responseContent.classList.add('is-visible');
@@ -295,7 +285,7 @@ class OrchestratorPage extends HTMLElement {
     } else {
       responseContent.innerHTML = renderMarkdown(fullText);
     }
-    return fullText;
+    return { text: fullText, traceId };
   }
 
   #formatName(id) {

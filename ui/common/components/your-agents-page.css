@@ -45,40 +45,52 @@ your-agents-page:not(:defined) {
   /* ── Stats bar ───────────────────────────────────────────────────────────── */
   .stats-bar {
     display: flex;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
     flex-wrap: wrap;
     align-items: center;
   }
   .stat-chip {
-    background: none;
-    border: 2px solid transparent;
-    border-radius: var(--radius-md);
-    padding: var(--space-2xs) var(--space-xs);
-    cursor: pointer;
     display: inline-flex;
     align-items: center;
+    gap: var(--space-2xs);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font-size: var(--font-size-xs);
+    font-family: inherit;
+    color: var(--color-text-muted);
   }
   .stat-chip:hover {
     border-color: var(--color-border);
-    background: color-mix(in srgb, var(--color-border) 20%, transparent);
+    color: var(--color-text-main);
   }
   .stat-chip--active {
     border-color: var(--color-primary);
-    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-    box-shadow: 0 0 0 1px var(--color-primary-ring);
+    background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+    color: var(--color-text-main);
   }
+  .chip-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-neutral);
+  }
+  .chip-dot.is-running { background: var(--color-success); }
+  .chip-dot.is-stopped { background: var(--color-neutral); }
+  .chip-dot.is-error { background: var(--color-error); }
   .stat-total {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    font-weight: 600;
-    margin-left: var(--space-sm);
+    margin-left: var(--space-xs);
   }
 
   /* ── Toolbar ─────────────────────────────────────────────────────────────── */
   .toolbar {
     display: flex;
-    gap: var(--space-md);
-    align-items: flex-end;
+    gap: var(--space-sm);
+    align-items: center;
     flex-wrap: wrap;
     margin-bottom: var(--space-lg);
   }
@@ -130,17 +142,9 @@ your-agents-page:not(:defined) {
   }
   .search-clear:hover { color: var(--color-text-main); }
 
-  .sort-wrap {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-  .sort-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    font-weight: 500;
-  }
   .sort-select {
+    width: auto;
+    flex-shrink: 0;
     padding: var(--space-sm) var(--space-md);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
@@ -205,31 +209,41 @@ your-agents-page:not(:defined) {
   }
   .agent-card--error {
     border-color: var(--color-error-border);
-    background: color-mix(in srgb, var(--color-error-bg) 20%, var(--color-bg-surface));
   }
-  .agent-card-header {
+  .agent-card-top {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     justify-content: space-between;
-  }
-  .agent-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    flex-shrink: 0;
+    gap: var(--space-sm);
   }
   .agent-card-name {
     font-size: var(--font-size-base);
     font-weight: 600;
     color: var(--color-text-main);
     text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .agent-card-name:hover { color: var(--color-primary); }
+  .card-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    text-transform: capitalize;
+  }
+  .card-status .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-neutral);
+  }
+  .card-status.is-running .status-dot { background: var(--color-success); }
+  .card-status.is-error .status-dot { background: var(--color-error); }
+  .card-status.is-pending .status-dot { background: var(--color-info); }
   .agent-card-meta {
     display: flex;
     align-items: center;
@@ -238,11 +252,8 @@ your-agents-page:not(:defined) {
   }
   .agent-card-image {
     font-size: var(--font-size-xs);
-    background: var(--color-bg-base);
-    padding: 2px 8px;
-    border-radius: var(--radius-sm);
+    font-family: monospace;
     color: var(--color-text-muted);
-    border: 1px solid var(--color-border);
   }
   .agent-card-error {
     font-size: var(--font-size-xs);
@@ -262,56 +273,48 @@ your-agents-page:not(:defined) {
     align-items: center;
     gap: var(--space-xs);
     margin-top: auto;
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--color-border);
   }
 
   /* ── Card action buttons ─────────────────────────────────────────────────── */
   .card-action-btn {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    background: var(--color-bg-surface);
-    color: var(--color-text-main);
-    font-size: var(--font-size-xs);
+    gap: 5px;
+    padding: var(--space-2xs) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    font-family: inherit;
     cursor: pointer;
     white-space: nowrap;
   }
-  .card-action-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
-  .card-action-btn--primary {
-    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-    border-color: var(--color-primary);
+  .card-action-btn:hover {
     color: var(--color-text-main);
-    font-weight: 500;
+    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
   }
-  .card-action-btn--primary:hover { background: color-mix(in srgb, var(--color-primary) 20%, transparent); }
+  .card-action-btn--primary {
+    color: var(--color-primary);
+  }
+  .card-action-btn--primary:hover {
+    color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  }
   .card-action-btn--danger {
     margin-left: auto;
-    color: var(--color-text-muted);
-    border-color: transparent;
-    background: none;
   }
   .card-action-btn--danger:hover {
     color: var(--color-error);
-    border-color: var(--color-error-border);
     background: color-mix(in srgb, var(--color-error) 8%, transparent);
   }
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */
-  .skeleton-card { min-height: 180px; }
-  .skel-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    background: var(--color-border);
-    animation: skel-pulse 1.5s ease-in-out infinite;
-  }
-  .skel-badge {
-    width: 60px;
-    height: 20px;
+  .skeleton-card { min-height: 120px; }
+  .skel-dot {
+    width: 48px;
+    height: 14px;
     border-radius: 999px;
     background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
@@ -323,28 +326,19 @@ your-agents-page:not(:defined) {
     animation: skel-pulse 1.5s ease-in-out infinite;
   }
   .skel-line--name { width: 50%; height: 1em; }
-  .skel-line--image { width: 120px; }
-  .skel-line--version { width: 40px; }
-  .skel-meta {
-    display: flex;
-    gap: var(--space-sm);
-    align-items: center;
-  }
+  .skel-line--image { width: 140px; }
   .skel-actions {
     display: flex;
     gap: var(--space-xs);
     margin-top: auto;
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--color-border);
   }
   .skel-btn {
     width: 70px;
-    height: 26px;
-    border-radius: var(--radius-sm);
+    height: 24px;
+    border-radius: var(--radius-md);
     background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
   }
-  .skel-btn--sm { width: 50px; margin-left: auto; }
 
   /* ── Modal styles ────────────────────────────────────────────────────────── */
   .env-row {

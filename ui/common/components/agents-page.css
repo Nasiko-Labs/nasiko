@@ -41,10 +41,10 @@ agents-page:not(:defined) {
   /* ── Controls (search + filter) ──────────────────────────────────────────── */
   .controls {
     display: flex;
-    gap: var(--space-md);
-    align-items: flex-end;
+    gap: var(--space-sm);
+    align-items: center;
     flex-wrap: wrap;
-    margin-bottom: var(--space-xl);
+    margin-bottom: var(--space-lg);
   }
   .search-wrap {
     position: relative;
@@ -95,17 +95,9 @@ agents-page:not(:defined) {
   }
   .search-clear:hover { color: var(--color-text-main); }
 
-  .filter-wrap {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-  .filter-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    font-weight: 500;
-  }
   .filter-select {
+    width: auto;
+    flex-shrink: 0;
     padding: var(--space-sm) var(--space-md);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
@@ -141,37 +133,44 @@ agents-page:not(:defined) {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .card:hover {
-    border-color: color-mix(in srgb, var(--color-primary) 50%, var(--color-border));
+    border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
     box-shadow: var(--shadow-sm);
   }
-  .card-header {
+  .card-top {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     justify-content: space-between;
-  }
-  .avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    flex-shrink: 0;
+    gap: var(--space-sm);
   }
   .card-name {
-    font-size: var(--font-size-lg);
+    font-size: var(--font-size-base);
     font-weight: 600;
     color: var(--color-text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .card-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-xs);
+  .card-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    text-transform: capitalize;
   }
+  .card-status .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-neutral);
+  }
+  .card-status.is-running .status-dot { background: var(--color-success); }
+  .card-status.is-error .status-dot { background: var(--color-error); }
+  .card-status.is-pending .status-dot { background: var(--color-info); }
   .card-desc {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
@@ -181,66 +180,67 @@ agents-page:not(:defined) {
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+    min-height: calc(2 * 1.5em);
+    max-height: calc(2 * 1.5em);
+  }
+  .card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-top: var(--space-2xs);
+  }
+  .card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    overflow: hidden;
+    max-height: 1.8em;
+  }
+  .tag {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+    padding: 1px var(--space-xs);
+    border-radius: 999px;
+    white-space: nowrap;
   }
   .card-actions {
     display: flex;
-    gap: var(--space-sm);
-    margin-top: var(--space-xs);
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--color-border);
-  }
-  .btn-chat {
-    display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    text-decoration: none;
-    cursor: pointer;
-    border: none;
+    flex-shrink: 0;
   }
-  .btn-chat:hover { background: var(--color-primary-hover); }
-  .btn-view {
+  .card-link {
     display: inline-flex;
     align-items: center;
-    padding: var(--space-xs) var(--space-md);
+    gap: var(--space-2xs);
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
-    color: var(--color-text-main);
+    color: var(--color-text-muted);
     font-size: var(--font-size-sm);
     font-weight: 500;
     text-decoration: none;
-    cursor: pointer;
   }
-  .btn-view:hover {
-    border-color: var(--color-primary);
+  .card-link:hover {
+    color: var(--color-text-main);
+    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+  }
+  .card-link--primary {
     color: var(--color-primary);
+  }
+  .card-link--primary:hover {
+    color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
   }
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */
   .skeleton-card {
-    min-height: 200px;
+    min-height: 130px;
   }
-  .skeleton-card .card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .skel-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    background: var(--color-border);
-    animation: skel-pulse 1.5s ease-in-out infinite;
-  }
-  .skel-badge {
-    width: 60px;
-    height: 20px;
+  .skel-dot {
+    width: 48px;
+    height: 14px;
     border-radius: 999px;
     background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
@@ -251,31 +251,18 @@ agents-page:not(:defined) {
     background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
   }
-  .skel-line--name { width: 55%; height: 1.1em; }
+  .skel-line--name { width: 45%; height: 1.05em; }
   .skel-line--desc1 { width: 90%; }
   .skel-line--desc2 { width: 65%; }
   .skel-tags {
     display: flex;
     gap: var(--space-xs);
+    margin-top: auto;
   }
   .skel-tag {
     width: 52px;
-    height: 20px;
+    height: 18px;
     border-radius: 999px;
-    background: var(--color-border);
-    animation: skel-pulse 1.5s ease-in-out infinite;
-  }
-  .skel-actions {
-    display: flex;
-    gap: var(--space-sm);
-    margin-top: auto;
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--color-border);
-  }
-  .skel-btn {
-    width: 80px;
-    height: 30px;
-    border-radius: var(--radius-md);
     background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
   }

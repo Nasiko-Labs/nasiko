@@ -3,45 +3,17 @@ import { icons } from "/common/utils/icons.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
 import "/common/components/app-modal.js";
-import "/common/components/app-badge.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 
 import styles from "./your-agents-page.css" with { type: "css" };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-const AVATAR_COLORS = [
-  "var(--color-primary)",
-  "var(--color-success)",
-  "var(--color-warning)",
-  "var(--color-error)",
-  "var(--color-info)",
-  "var(--color-neutral)",
-];
-
-function hashStr(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
-
-function avatarColor(name) {
-  return AVATAR_COLORS[hashStr(name) % AVATAR_COLORS.length];
-}
-
-function avatarLetter(agent) {
-  const name = agent.display_name || agent.name || "?";
-  return name.charAt(0).toUpperCase();
-}
-
-function statusVariant(status) {
-  if (status === "running") return "success";
-  if (status === "stopped") return "warning";
-  if (status === "error" || status === "failed") return "error";
-  if (status === "deploying" || status === "starting") return "info";
-  return "neutral";
+function statusClass(status) {
+  if (status === "running") return "is-running";
+  if (status === "error" || status === "failed") return "is-error";
+  if (status === "deploying" || status === "starting") return "is-pending";
+  return "is-stopped";
 }
 
 function parseImageTag(image) {
@@ -77,11 +49,10 @@ class YourAgentsPage extends HTMLElement {
           <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
         </div>
         <div class="sort-wrap">
-          <label class="sort-label" for="sort-select">Sort by</label>
-          <select id="sort-select" class="sort-select">
-            <option value="name">Name</option>
-            <option value="status">Status</option>
-            <option value="version">Version</option>
+          <select id="sort-select" class="sort-select" aria-label="Sort agents">
+            <option value="name">Sort: Name</option>
+            <option value="status">Sort: Status</option>
+            <option value="version">Sort: Version</option>
           </select>
         </div>
       </div>
@@ -159,15 +130,15 @@ class YourAgentsPage extends HTMLElement {
       (a) => a.status === "error" || a.status === "failed",
     ).length;
 
-    const chip = (filter, variant, count, label) => {
+    const chip = (filter, cls, count, label) => {
       const active = this.#statusFilter === filter ? " stat-chip--active" : "";
-      return `<button class="stat-chip${active}" data-filter="${filter}"><app-badge variant="${variant}" dot>${count} ${label}</app-badge></button>`;
+      return `<button class="stat-chip${active}" data-filter="${filter}"><span class="chip-dot ${cls}"></span>${count} ${label}</button>`;
     };
 
     this.querySelector("#stats-bar").innerHTML = `
-      ${chip("running", "success", running, "running")}
-      ${chip("stopped", "warning", stopped, "stopped")}
-      ${errored ? chip("error", "error", errored, "error") : ""}
+      ${chip("running", "is-running", running, "running")}
+      ${chip("stopped", "is-stopped", stopped, "stopped")}
+      ${errored ? chip("error", "is-error", errored, "error") : ""}
       <span class="stat-total">${this.#agents.length} total</span>
     `;
   }
@@ -183,19 +154,14 @@ class YourAgentsPage extends HTMLElement {
       { length: 4 },
       () => `
       <div class="agent-card skeleton-card">
-        <div class="agent-card-header">
-          <div class="skel-avatar"></div>
-          <div class="skel-badge"></div>
+        <div class="agent-card-top">
+          <div class="skel-line skel-line--name"></div>
+          <div class="skel-dot"></div>
         </div>
-        <div class="skel-line skel-line--name"></div>
-        <div class="skel-meta">
-          <div class="skel-line skel-line--image"></div>
-          <div class="skel-line skel-line--version"></div>
-        </div>
+        <div class="skel-line skel-line--image"></div>
         <div class="skel-actions">
           <div class="skel-btn"></div>
           <div class="skel-btn"></div>
-          <div class="skel-btn skel-btn--sm"></div>
         </div>
       </div>
     `,
@@ -256,40 +222,33 @@ class YourAgentsPage extends HTMLElement {
     grid.innerHTML = filtered
       .map((a) => {
         const name = a.display_name || a.name;
-        const letter = avatarLetter(a);
-        const color = avatarColor(name);
         const isRunning = a.status === "running";
         const isError = a.status === "error" || a.status === "failed";
-        const variant = statusVariant(a.status);
         const { name: imgName, version } = parseImageTag(a.image);
 
         return `
         <div class="agent-card${isError ? " agent-card--error" : ""}">
-          <div class="agent-card-header">
-            <div class="agent-avatar" style="background:color-mix(in srgb, ${color} 15%, transparent);color:${color}">
-              ${letter}
-            </div>
-            <app-badge variant="${variant}" dot>${a.status}</app-badge>
+          <div class="agent-card-top">
+            <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
+            <span class="card-status ${statusClass(a.status)}"><span class="status-dot"></span>${this.#esc(a.status)}</span>
           </div>
-          <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
           <div class="agent-card-meta">
-            <code class="agent-card-image">${this.#esc(imgName)}</code>
-            ${version ? `<app-badge variant="neutral">${this.#esc(version)}</app-badge>` : ""}
+            <code class="agent-card-image">${this.#esc(imgName)}${version ? `:${this.#esc(version)}` : ""}</code>
           </div>
           ${isError ? `<div class="agent-card-error">Container exited with an error. <a href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>` : ""}
           <div class="agent-card-actions">
             ${
               isRunning
                 ? `
-              <button class="card-action-btn" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}">${icons.refresh("", 14)} Restart</button>
-              <button class="card-action-btn" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}">${icons.square("", 12)} Stop</button>
+              <button class="card-action-btn" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}">${icons.refresh("", 13)} Restart</button>
+              <button class="card-action-btn" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}">${icons.square("", 11)} Stop</button>
             `
                 : `
-              <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">Deploy</button>
+              <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>
             `
             }
             <button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}">
-              ${icons.trash("", 14)} Delete
+              ${icons.trash("", 13)} Delete
             </button>
           </div>
         </div>

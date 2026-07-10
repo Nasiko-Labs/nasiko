@@ -212,8 +212,15 @@ chat-page:not(:defined) {
   .msg-row:focus-within .msg-actions {
     opacity: 1;
   }
+  /* Streamed replies show <agent-steps> at the top-left; keep the toolbar
+     on the right so it never covers the steps toggle. */
+  .msg-row.is-assistant .assistant-stream .msg-actions {
+    left: auto;
+    right: 0;
+  }
   button.msg-action-copy,
-  button.msg-action-retry {
+  button.msg-action-retry,
+  a.msg-action-trace {
     display: grid;
     place-items: center;
     width: 28px;
@@ -239,29 +246,6 @@ chat-page:not(:defined) {
     max-width: 85%;
     position: relative;
   }
-  .stream-status {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    padding: var(--space-sm) var(--space-md);
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    min-height: 28px;
-  }
-  .stream-status .pulse {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--color-primary);
-    animation: chat-pulse 1.5s ease-in-out infinite;
-  }
-  .stream-status.is-done {
-    opacity: 0;
-    height: 0;
-    min-height: 0;
-    padding: 0;
-    overflow: hidden;
-  }
   .stream-content {
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
@@ -277,23 +261,7 @@ chat-page:not(:defined) {
     display: block;
   }
 
-  /* ── Trace button ────────────────────────────────────────────────────── */
-  .msg-trace-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-sm);
-    color: var(--color-text-muted);
-    align-self: flex-end;
-    flex-shrink: 0;
-
-    &:hover {
-      color: var(--color-primary);
-      background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-    }
-  }
+  /* ── Trace link lives in .msg-actions (a.msg-action-trace) ───────────── */
 
   /* ── Input area ──────────────────────────────────────────────────────── */
   .input-area {
@@ -321,21 +289,12 @@ chat-page:not(:defined) {
   /* Markdown rendering: shared styles in /common/styles/markdown.css (.md-body) */
 }
 
-@keyframes chat-pulse {
-  0%, 100% { opacity: 0.4; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1.2); }
-}
-
 @keyframes chat-skel-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  @keyframes chat-pulse {
-    0%, 100% { opacity: 0.6; }
-    50% { opacity: 1; }
-  }
   @keyframes chat-skel-pulse {
     0%, 100% { opacity: 0.8; }
     50% { opacity: 0.5; }

@@ -86,5 +86,10 @@ export function renderMarkdown(text) {
     // Never let a parser edge case blank out a chat message.
     html = `<p>${escapeHtml(text)}</p>`;
   }
+  // Tables need a scroll container to avoid blowing out the chat bubble on
+  // narrow screens. Markdown can't nest tables, so plain wrapping is safe.
+  html = html
+    .replace(/<table>/g, '<div class="md-table-wrap"><table>')
+    .replace(/<\/table>/g, '</table></div>');
   return DOMPurify.sanitize(html);
 }

@@ -1,7 +1,7 @@
 // Your Agents page fixtures and scenarios
 export default {
   fetch: [
-    [{ method: "GET", path: /^\/api\/catalog\/agents/ }, {
+    [{ method: "GET", path: /^\/api\/agents/ }, {
       data: [
         { id: "a-001", name: "coding-agent", display_name: "Coding Agent", image: "nasiko/coding:latest", status: "running", version: "1.2.0" },
         { id: "a-002", name: "research-agent", display_name: "Research Agent", image: "nasiko/research:0.4.0", status: "running", version: "0.4.0" },

@@ -1,5 +1,6 @@
 import { apiFetch } from '/common/services/api.js';
 import "./voice-input.js";
+import "./agent-steps.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 
@@ -237,17 +238,6 @@ class ChatPage extends HTMLElement {
 
       const { text: reply, traceId } = await this.#readA2aStream(res, messagesEl);
       this.#persistMessage(this.#sessionId, "assistant", reply, traceId);
-      if (traceId) {
-        const lastRow = messagesEl.querySelector(".msg-row.is-assistant:last-child .assistant-stream");
-        if (lastRow) {
-          const traceBtn = document.createElement("a");
-          traceBtn.className = "msg-trace-btn";
-          traceBtn.href = `/session-trace.html?trace_id=${traceId}`;
-          traceBtn.title = "View trace";
-          traceBtn.innerHTML = icons.trace('', 14);
-          lastRow.appendChild(traceBtn);
-        }
-      }
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
       this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
@@ -304,17 +294,9 @@ class ChatPage extends HTMLElement {
       actions.className = "msg-actions";
       actions.innerHTML = `
         <button type="button" class="msg-action-copy" aria-label="Copy message" title="Copy">${icons.copy('', 14)}</button>
+        ${this.#traceLinkHtml(traceId)}
       `;
       row.appendChild(actions);
-    }
-
-    if (traceId) {
-      const traceBtn = document.createElement("a");
-      traceBtn.className = "msg-trace-btn";
-      traceBtn.href = `/session-trace.html?trace_id=${traceId}`;
-      traceBtn.title = "View trace";
-      traceBtn.innerHTML = icons.trace('', 14);
-      row.appendChild(traceBtn);
     }
 
     messagesEl.appendChild(row);
@@ -346,14 +328,12 @@ class ChatPage extends HTMLElement {
     const streamArea = document.createElement("div");
     streamArea.className = "assistant-stream";
 
-    const statusEl = document.createElement("div");
-    statusEl.className = "stream-status";
-    statusEl.innerHTML = `<span class="pulse"></span> ...`;
+    const stepsEl = document.createElement("agent-steps");
 
     const contentEl = document.createElement("div");
     contentEl.className = "stream-content md-body";
 
-    streamArea.appendChild(statusEl);
+    streamArea.appendChild(stepsEl);
     streamArea.appendChild(contentEl);
     streamRow.appendChild(streamArea);
     messagesEl.appendChild(streamRow);
@@ -391,7 +371,7 @@ class ChatPage extends HTMLElement {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
                 if (text && !fullText) {
                   fullText = text;
-                  statusEl.classList.add("is-done");
+                  stepsEl.finish();
                   contentEl.classList.add("is-visible");
                   contentEl.innerHTML = renderMarkdown(fullText);
                   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -399,7 +379,7 @@ class ChatPage extends HTMLElement {
               } else if (state === "TASK_STATE_FAILED") {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
                 if (text) {
-                  statusEl.classList.add("is-done");
+                  stepsEl.finish();
                   contentEl.classList.add("is-visible");
                   contentEl.innerHTML = `<span style="color:var(--color-error)">${this.#esc(text)}</span>`;
                   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -412,24 +392,8 @@ class ChatPage extends HTMLElement {
                     traceId = d.trace_id;
                     continue;
                   }
-                  let text = "";
-                  if (d.type === "thinking") {
-                    text = d.content || "Thinking...";
-                  } else if (d.type === "tool_call") {
-                    text = `Calling ${d.agent}...`;
-                  } else if (d.type === "tool_result") {
-                    text = `${d.agent} responded`;
-                  } else if (d.type === "agent_invoke") {
-                    text = `${d.caller_agent} calling ${d.target_agent}...`;
-                  } else if (d.type === "agent_result") {
-                    text = `${d.target_agent} responded`;
-                  } else if (d.type === "policy_rejected") {
-                    text = `${d.agent} blocked: ${d.reason}`;
-                  }
-                  if (text) {
-                    statusEl.innerHTML = `<span class="pulse"></span> ${this.#esc(text)}`;
-                    messagesEl.scrollTop = messagesEl.scrollHeight;
-                  }
+                  stepsEl.onEvent(d);
+                  messagesEl.scrollTop = messagesEl.scrollHeight;
                 }
               }
             }
@@ -447,7 +411,7 @@ class ChatPage extends HTMLElement {
               } else {
                 fullText = text;
               }
-              statusEl.classList.add("is-done");
+              stepsEl.finish();
               contentEl.classList.add("is-visible");
               contentEl.innerHTML = renderMarkdown(fullText);
               messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -458,7 +422,7 @@ class ChatPage extends HTMLElement {
     }
 
     // Finalize
-    statusEl.classList.add("is-done");
+    stepsEl.finish();
     if (!fullText) {
       contentEl.classList.add("is-visible");
       contentEl.innerHTML = renderMarkdown("No response");
@@ -470,10 +434,17 @@ class ChatPage extends HTMLElement {
     actions.className = "msg-actions";
     actions.innerHTML = `
       <button type="button" class="msg-action-copy" aria-label="Copy message" title="Copy">${icons.copy('', 14)}</button>
+      ${this.#traceLinkHtml(traceId)}
     `;
     streamArea.appendChild(actions);
 
     return { text: fullText, traceId };
+  }
+
+  #traceLinkHtml(traceId) {
+    if (!traceId) return '';
+    return `<a class="msg-action-trace" href="/session-trace.html?trace_id=${encodeURIComponent(traceId)}"
+      aria-label="View trace" title="View trace">${icons.trace('', 14)}</a>`;
   }
 
   #persistMessage(sessionId, role, content, traceId) {
