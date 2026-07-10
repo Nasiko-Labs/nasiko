@@ -1,4 +1,6 @@
-//! Live one-line terminal status animations.
+//! Live one-line terminal status animation, plus one-shot success/warning lines.
+//! Shared by `nasiko` (oss/cli) and `nasiko-ee` (ee/cli) so both CLIs get the
+//! same look and feel.
 //!
 //! ```ignore
 //! let _handle = status::start_status("working");
@@ -6,8 +8,8 @@
 //! // handle is dropped here → line is cleared
 //! ```
 //!
-//! All output goes to stderr so piped/scripted stdout stays clean. When
-//! stderr is not a TTY nothing animates (a single static line is printed).
+//! Animations go to stderr so piped/scripted stdout stays clean. When stderr
+//! is not a TTY nothing animates (a single static line is printed).
 
 use std::io::Write;
 use std::sync::Arc;
@@ -28,8 +30,9 @@ pub fn clear_status() {
     let _ = std::io::stderr().flush();
 }
 
-/// RAII guard returned by the `start_status*` functions.
-/// The status line is cleared automatically when this is dropped.
+/// RAII guard returned by [`start_status`]. The status line is cleared
+/// automatically when this is dropped, so a following `print_success`/
+/// `print_warning` line lands cleanly.
 pub struct StatusHandle {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -47,25 +50,31 @@ impl Drop for StatusHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum StatusAnimation {
-    /// Unicode braille spinner: `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`
-    Braille,
-    /// Bright peak with a block-gradient halo sweeping left-to-right.
-    Shimmer,
+fn use_color() -> bool {
+    std::env::var_os("NO_COLOR").is_none()
 }
 
-/// Shows a live one-line status with a braille spinner and elapsed time.
+/// Prints a green `✓ msg` line to stdout.
+pub fn print_success(msg: &str) {
+    if use_color() {
+        println!("\x1b[32m✓\x1b[0m {msg}");
+    } else {
+        println!("✓ {msg}");
+    }
+}
+
+/// Prints a yellow `! msg` warning line to stderr.
+pub fn print_warning(msg: &str) {
+    if use_color() {
+        eprintln!("\x1b[33m!\x1b[0m {msg}");
+    } else {
+        eprintln!("! {msg}");
+    }
+}
+
+/// Shows a live one-line status with a colored shimmer bar and elapsed time.
 /// The line is cleared automatically when the returned handle is dropped.
 pub fn start_status(msg: impl Into<String>) -> StatusHandle {
-    start_status_with_animation(msg, StatusAnimation::Braille)
-}
-
-/// Shows a live one-line status using the selected animation style.
-pub fn start_status_with_animation(
-    msg: impl Into<String>,
-    animation: StatusAnimation,
-) -> StatusHandle {
     use std::io::IsTerminal;
 
     let msg = msg.into();
@@ -79,18 +88,12 @@ pub fn start_status_with_animation(
     let thread = std::thread::spawn(move || {
         let started = Instant::now();
         let mut frame = 0usize;
-        let use_color = std::env::var_os("NO_COLOR").is_none();
+        let use_color = use_color();
 
         while !thread_stop.load(Ordering::Relaxed) {
-            print_status(&render_frame(
-                animation,
-                frame,
-                &msg,
-                started.elapsed(),
-                use_color,
-            ));
+            print_status(&render_frame(frame, &msg, started.elapsed(), use_color));
             frame += 1;
-            std::thread::sleep(Duration::from_millis(frame_ms(animation)));
+            std::thread::sleep(Duration::from_millis(70));
         }
     });
 
@@ -100,48 +103,15 @@ pub fn start_status_with_animation(
     }
 }
 
-fn render_frame(
-    animation: StatusAnimation,
-    frame: usize,
-    msg: &str,
-    elapsed: Duration,
-    use_color: bool,
-) -> String {
+fn render_frame(frame: usize, msg: &str, elapsed: Duration, use_color: bool) -> String {
     let elapsed = format_elapsed(elapsed);
-    // Each arm pre-computes the visual overhead of its fixed decoration and
-    // clamps the message so the total never wraps past the terminal width.
-    match animation {
-        StatusAnimation::Braille => {
-            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            let pfx = frames[frame % frames.len()];
-            let pfx = if use_color {
-                format!("\x1b[36m{pfx}\x1b[0m")
-            } else {
-                pfx.to_string()
-            };
-            // overhead: spinner(1) + " "(1) + " ("(2) + ")"(1) = 5
-            format!(
-                "{pfx} {} \x1b[2m({elapsed})\x1b[0m",
-                fit_msg(msg, 5 + elapsed.len())
-            )
-        }
-        StatusAnimation::Shimmer => {
-            let width = shimmer_width();
-            // overhead: bar(width) + " "(1) + " ("(2) + ")"(1)
-            format!(
-                "{} {} \x1b[2m({elapsed})\x1b[0m",
-                shimmer_bar(frame, width, use_color),
-                fit_msg(msg, width + 4 + elapsed.len())
-            )
-        }
-    }
-}
-
-fn frame_ms(animation: StatusAnimation) -> u64 {
-    match animation {
-        StatusAnimation::Shimmer => 70,
-        StatusAnimation::Braille => 90,
-    }
+    let width = shimmer_width();
+    // overhead: bar(width) + " "(1) + " ("(2) + ")"(1)
+    format!(
+        "{} {} \x1b[2m({elapsed})\x1b[0m",
+        shimmer_bar(frame, width, use_color),
+        fit_msg(msg, width + 4 + elapsed.len())
+    )
 }
 
 /// Shimmer bar width scaled to the terminal: ~1/8 of the columns, clamped to
@@ -150,7 +120,10 @@ fn shimmer_width() -> usize {
     (terminal_cols() / 8).clamp(8, 16)
 }
 
-/// Bright peak with a block-gradient halo sweeping left-to-right, in one cyan hue.
+/// Bright peak with a block-gradient halo sweeping left-to-right, in one cyan
+/// hue. Block-drawing glyphs (unlike braille dot-patterns) fill the full cell
+/// height uniformly, so the bar sits cleanly on the text baseline in every
+/// terminal font.
 fn shimmer_bar(frame: usize, width: usize, use_color: bool) -> String {
     let pos = frame % width;
     let mut bar = String::new();

@@ -88,7 +88,7 @@ impl Client {
     // ─── Authenticated CP API calls (/api/*) ────────────────────────────────
 
     pub fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
-        let _spin = crate::status::start_status(format!("GET {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
         let url = self.api_url(path);
         let mut resp = self.auth_get(&url).call().context("request failed")?;
         check_status(&mut resp, &url)?;
@@ -96,7 +96,7 @@ impl Client {
     }
 
     pub fn get_text(&self, path: &str) -> Result<String> {
-        let _spin = crate::status::start_status(format!("GET {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
         let url = self.api_url(path);
         let mut resp = self.auth_get(&url).call().context("request failed")?;
         check_status(&mut resp, &url)?;
@@ -108,7 +108,7 @@ impl Client {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        let _spin = crate::status::start_status(format!("POST {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
@@ -123,7 +123,7 @@ impl Client {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        let _spin = crate::status::start_status(format!("PUT {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("PUT {path}"));
         let url = self.api_url(path);
         let mut resp = self
             .auth_put(&url)
@@ -135,7 +135,7 @@ impl Client {
 
     /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_void(&self, path: &str) -> Result<()> {
-        let _spin = crate::status::start_status(format!("POST {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
@@ -147,7 +147,7 @@ impl Client {
 
     /// POST a JSON body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_json_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
-        let _spin = crate::status::start_status(format!("POST {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
@@ -158,7 +158,7 @@ impl Client {
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
-        let _spin = crate::status::start_status(format!("DELETE {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
         let url = self.api_url(path);
         let mut req = self.agent.delete(&url);
         if let Some(ref t) = self.token {
@@ -172,7 +172,7 @@ impl Client {
     // ─── Public endpoints (no /api prefix, no auth) ─────────────────────────
 
     pub fn get_public_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
-        let _spin = crate::status::start_status(format!("GET {path}"));
+        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
         let url = self.raw_url(path);
         let mut resp = self.agent.get(&url).call().context("request failed")?;
         check_status(&mut resp, &url)?;
@@ -535,7 +535,7 @@ impl Client {
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let _spin = crate::status::start_status(format!(
+        let _spin = nasiko_utils::term::start_status(format!(
             "uploading {name} ({} KB)",
             body.len() / 1024
         ));
@@ -565,7 +565,7 @@ impl Client {
         let mut last_status = String::new();
         let mut succeeded = false;
         let mut failed = false;
-        let mut spin = Some(crate::status::start_status("waiting for build"));
+        let mut spin = Some(nasiko_utils::term::start_status("waiting for build"));
 
         for line in reader.lines() {
             let Ok(line) = line else { break };
@@ -577,8 +577,8 @@ impl Client {
             // Drop first so the spinner line is cleared before the transition prints.
             spin = None;
             match status {
-                "queued"    => spin = Some(crate::status::start_status("queued")),
-                "building"  => spin = Some(crate::status::start_status("building image")),
+                "queued"    => spin = Some(nasiko_utils::term::start_status("queued")),
+                "building"  => spin = Some(nasiko_utils::term::start_status("building image")),
                 "success"   => { println!("  build succeeded"); succeeded = true; }
                 "failed"    => { println!("  build failed"); failed = true; }
                 other       => println!("  {other}"),

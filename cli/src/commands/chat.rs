@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::commands::tui::session::{self as cp, CpSession};
 use crate::config;
-use crate::status::{self, StatusAnimation};
+use nasiko_utils::term as status;
 
 /// Live status line shown while the CLI waits on the backend. Re-settable:
 /// each `set` clears the previous line first, so event output printed between
@@ -34,10 +34,7 @@ impl Spinner {
     /// Replace the status line with a new message (clears the old one first).
     fn set(&mut self, msg: impl Into<String>) {
         self.handle = None;
-        self.handle = Some(status::start_status_with_animation(
-            msg,
-            StatusAnimation::Shimmer,
-        ));
+        self.handle = Some(status::start_status(msg));
     }
 
     /// Clear the status line (e.g. while streamed text is being printed).
@@ -615,10 +612,7 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         if let Some(ref cid) = ctx_id {
             payload["params"]["message"]["contextId"] = serde_json::Value::String(cid.clone());
         }
-        let spin = status::start_status_with_animation(
-            format!("{agent_name} is thinking"),
-            StatusAnimation::Shimmer,
-        );
+        let spin = status::start_status(format!("{agent_name} is thinking"));
         let mut resp = ureq::post(&format!("{}/", base))
             .header("Content-Type", "application/json")
             .header("A2A-Version", "1.0")

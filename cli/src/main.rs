@@ -3,7 +3,6 @@ mod commands;
 mod config;
 mod oci;
 mod skill;
-mod status;
 mod util;
 
 use anyhow::Result;

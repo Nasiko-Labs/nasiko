@@ -1,3 +1,5 @@
+pub mod term;
+
 /// Helper for required env vars — returns clear error message.
 pub fn required_env(key: &str) -> anyhow::Result<String> {
     std::env::var(key).map_err(|_| anyhow::anyhow!("missing required env var: {}", key))
