@@ -1,0 +1,78 @@
+{
+  "protocolVersion": "1.0",
+  "name": "hackernews",
+  "description": "Browse and search Hacker News. Get top stories, search by topic, find trending tech discussions.",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "url": "http://localhost:8000/a2a",
+  "agentFramework": "a2a-go",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "top_stories",
+      "name": "Top Stories",
+      "description": "Get the current top stories from Hacker News front page",
+      "tags": [
+        "hackernews",
+        "tech",
+        "trending",
+        "news"
+      ],
+      "examples": [
+        "Show top HN stories",
+        "What's trending on Hacker News?",
+        "Front page stories"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "search_stories",
+      "name": "Search Stories",
+      "description": "Search Hacker News for stories about a specific topic",
+      "tags": [
+        "hackernews",
+        "search",
+        "tech"
+      ],
+      "examples": [
+        "Search HN for Rust programming",
+        "Find stories about AI agents",
+        "Hacker News posts about Go"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

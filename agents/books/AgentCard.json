@@ -1,0 +1,57 @@
+{
+  "protocolVersion": "1.0",
+  "name": "books",
+  "description": "Search and discover books using the Open Library API. Find details like authors, publish dates, ratings, and subjects.",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "url": "http://localhost:8000/a2a",
+  "agentFramework": "a2a-go",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "search_books",
+      "name": "Search Books",
+      "description": "Search for books by title, author, or topic",
+      "tags": [
+        "books",
+        "search",
+        "library",
+        "reading"
+      ],
+      "examples": [
+        "Search for books about machine learning",
+        "Find books by Isaac Asimov",
+        "Books about the history of Rome"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

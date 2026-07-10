@@ -1,0 +1,13 @@
+user := env("DOCKERHUB_USER", "akhilfolium")
+docker := env("DOCKER", if path_exists("/usr/bin/podman") == "true" { "podman" } else { "docker" })
+
+# Build image
+build:
+    {{docker}} build -t {{user}}/github .
+
+# Push image
+push:
+    {{docker}} push {{user}}/github
+
+# Build + push
+release: build push

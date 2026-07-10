@@ -1,0 +1,96 @@
+{
+  "protocolVersion": "1.0",
+  "name": "github",
+  "description": "Search GitHub repositories and navigate their contents using GitHub's public API (no API key required, rate-limited to 60 req/hour)",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "url": "http://localhost:8000/a2a",
+  "agentFramework": "a2a-go",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "search_repos",
+      "name": "Search Repositories",
+      "description": "Search GitHub repositories by keyword, sorted by stars",
+      "tags": [
+        "github",
+        "search",
+        "repositories"
+      ],
+      "examples": [
+        "search rust async runtime",
+        "find repos for a2a protocol"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "repo_info",
+      "name": "Repository Overview",
+      "description": "Get stars, forks, language, license, and topics for a repository",
+      "tags": [
+        "github",
+        "repository",
+        "stats"
+      ],
+      "examples": [
+        "tokio-rs/tokio",
+        "tell me about golang/go"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "browse",
+      "name": "Browse Contents",
+      "description": "List files in a repository directory, read a file, or fetch the README",
+      "tags": [
+        "github",
+        "files",
+        "readme",
+        "navigate"
+      ],
+      "examples": [
+        "list files in golang/go/src/net",
+        "readme of a2aproject/a2a-go"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}
