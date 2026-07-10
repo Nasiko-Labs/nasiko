@@ -1,3 +1,4 @@
+pub mod db_pricing;
 pub mod error;
 pub mod injector;
 pub mod loki;
@@ -7,18 +8,17 @@ pub mod runtime_ext;
 pub mod tempo;
 pub mod types;
 
+pub use db_pricing::DbPricing;
 pub use error::ObservabilityError;
-pub use injector::{
-    AgentContext, InstrumentationInjector, OtelInjector, patch_dockerfile_for_otel,
-    write_otel_patch_file,
-};
-pub use loki::LokiClient;
-pub use provider::{ObservabilityProvider, TempoLokiProvider};
+pub use injector::{AgentContext, InstrumentationInjector, OtelInjector, patch_dockerfile_for_otel};
+pub use loki::{LokiClient, SpanContent, parse_trace_logs};
+pub use pricing::{CostBreakdown, PricingSource, StaticPricing, compute_cost};
+pub use provider::{ObservabilityProvider, TempoLokiProvider, clamp_tempo_range, find_root_span};
 pub use runtime_ext::InstrumentedRuntime;
 pub use tempo::TempoClient;
 pub use types::{
-    AgentFinOps, AgentStats, FinOpsDashboard, Session, Span, SpanDetails, TokenUsage,
-    TraceDetails,
+    AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage,
+    TraceDetails, TraceSummary, extract_token_attrs, latency_percentiles,
 };
 
 pub struct TelemetryConfig {

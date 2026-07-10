@@ -152,6 +152,77 @@ impl LokiClient {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Prompt/completion content captured for one span.
+#[derive(Debug, Clone, Default)]
+pub struct SpanContent {
+    pub input: Option<String>,
+    pub output: Option<String>,
+}
+
+/// Parse raw Loki log lines (OTel log-record JSON) into a map of
+/// span_id → prompt/completion content.
+pub fn parse_trace_logs(lines: Vec<String>) -> std::collections::HashMap<String, SpanContent> {
+    use serde_json::Value;
+    let mut by_span: std::collections::HashMap<String, SpanContent> =
+        std::collections::HashMap::new();
+
+    for line in lines {
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+
+        let span_id = entry["spanId"]
+            .as_str()
+            .or_else(|| entry["span_id"].as_str())
+            .unwrap_or("")
+            .to_string();
+        if span_id.is_empty() {
+            continue;
+        }
+
+        let slot = by_span.entry(span_id).or_default();
+
+        let Some(attrs) = entry["attributes"].as_array() else {
+            continue;
+        };
+
+        let mut event_name: Option<&str> = None;
+        let mut prompt_content: Option<String> = None;
+        let mut completion_content: Option<String> = None;
+
+        for attr in attrs {
+            let key = attr["key"].as_str().unwrap_or("");
+            let val = attr["value"]["stringValue"].as_str().unwrap_or("");
+            match key {
+                "event.name" => event_name = attr["value"]["stringValue"].as_str(),
+                "gen_ai.content.prompt" | "gen_ai.prompt" => {
+                    prompt_content = Some(val.to_string());
+                }
+                "gen_ai.content.completion" | "gen_ai.completion" => {
+                    completion_content = Some(val.to_string());
+                }
+                _ => {}
+            }
+        }
+
+        match event_name {
+            Some("gen_ai.content.prompt") => {
+                if let Some(c) = prompt_content {
+                    slot.input = Some(c);
+                }
+            }
+            Some("gen_ai.content.completion") => {
+                if let Some(c) = completion_content {
+                    slot.output = Some(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    by_span
+}
+
 fn parse_loki_timestamp(ts_str: &str) -> DateTime<Utc> {
     let nanos: i64 = ts_str.parse().unwrap_or(0);
     let secs = nanos / 1_000_000_000;
