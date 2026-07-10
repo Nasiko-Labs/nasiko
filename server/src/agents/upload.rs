@@ -455,7 +455,6 @@ fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Res
 pub async fn execute_upload_and_deploy(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
     db: sqlx::PgPool,
-    http: reqwest::Client,
     build_id: Uuid,
     agent_id: Uuid,
     owner_id: Uuid,
@@ -506,6 +505,12 @@ pub async fn execute_upload_and_deploy(
                 .await
                 .map_err(|e| format!("write Dockerfile: {e}"))?;
             tracing::info!(build_id = %build_id, "patched Dockerfile with OTel instrumentation");
+
+            // Write the Python sitecustomize file into the build context so the
+            // Dockerfile COPY step can include it in the agent image.
+            nasiko_observability::write_otel_patch_file(&tmp_dir)
+                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
+            tracing::info!(build_id = %build_id, "wrote .nasiko_otel_patch.py to build context");
         }
 
         // Build Docker image.
@@ -556,14 +561,6 @@ pub async fn execute_upload_and_deploy(
                 .bind(&agent_url)
                 .execute(&db)
                 .await;
-            // Fetch the agent's card in the background to persist skills,
-            // description and the advertised transport_path (chat URL).
-            tokio::spawn(super::utils::fetch_agent_card_with_retry(
-                db.clone(),
-                http,
-                agent_id,
-                agent_url.clone(),
-            ));
             // Record the deployment. k8s_deployment_name stores the ContainerId value
             // (agent UUID string) so that restart and crash guardian can reconstruct
             // the same ContainerId. The runtime derives the actual K8s/Docker name via

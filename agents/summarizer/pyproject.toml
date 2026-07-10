@@ -1,0 +1,16 @@
+[project]
+name = "summarizer-agent"
+version = "1.0.0"
+description = "Text summarizer agent — zero OTel code (instrumented by Nasiko at build time)"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[http-server]==1.1.0",
+    "click>=8.0.0",
+    "openai>=1.57.0",
+    "python-dotenv>=1.0.0",
+    "uvicorn>=0.30.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

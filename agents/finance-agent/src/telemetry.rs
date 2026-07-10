@@ -1,4 +1,5 @@
 use opentelemetry::KeyValue;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
@@ -15,6 +16,11 @@ pub fn init() {
 
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info".parse().unwrap());
+
+    // W3C TraceContext propagator: enables traceparent/tracestate header
+    // propagation so spans from this agent are correctly parented under
+    // the Nasiko gateway's trace context when forwarded via the agent proxy.
+    opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
     if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
         let resource = Resource::builder_empty()
@@ -52,17 +58,4 @@ pub fn init() {
             .with(tracing_subscriber::fmt::layer())
             .init();
     }
-}
-
-/// Parse a W3C `traceparent` header (`00-<trace_id>-<span_id>-<flags>`) into a
-/// remote OTel context, so spans created under it join the caller's trace.
-/// Returns None for anything malformed — the caller then starts a local root
-/// trace, which is the correct fallback.
-pub fn remote_context_from_traceparent(tp: &str) -> Option<opentelemetry::Context> {
-    use opentelemetry::propagation::TextMapPropagator;
-    let carrier: std::collections::HashMap<String, String> =
-        [("traceparent".to_string(), tp.to_string())].into();
-    let ctx = opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(&carrier);
-    use opentelemetry::trace::TraceContextExt;
-    ctx.span().span_context().is_valid().then_some(ctx)
 }

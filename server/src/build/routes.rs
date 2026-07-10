@@ -294,6 +294,14 @@ pub async fn execute_build(
             tokio::fs::write(&dockerfile_path, &patched).await
                 .map_err(|e| format!("write patched Dockerfile: {e}"))?;
             tracing::info!(build_id = %build_id, "patched Dockerfile with OTel instrumentation");
+
+            // Write the Python sitecustomize file into the build context so the
+            // COPY instruction in the patched Dockerfile can include it in the image.
+            // This file wraps AgentExecutor.execute() to set session.id on every
+            // request span — the key attribute for session grouping in the dashboard.
+            nasiko_observability::write_otel_patch_file(&tmp_dir)
+                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
+            tracing::info!(build_id = %build_id, "wrote .nasiko_otel_patch.py to build context");
         }
 
         // Build image

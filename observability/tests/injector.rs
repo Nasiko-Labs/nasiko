@@ -233,10 +233,11 @@ mod dockerfile_patch {
 
     #[test]
     fn idempotent_if_already_patched() {
-        let dockerfile = "FROM python:3.11\nRUN pip install opentelemetry-instrument myapp\nCMD python main.py";
+        let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
         let patched = patch_dockerfile_for_otel(dockerfile);
+        assert!(patched.contains(".nasiko_otel_patch.py"), "first pass should inject patch");
         let double_patched = patch_dockerfile_for_otel(&patched);
-        assert_eq!(patched, double_patched);
+        assert_eq!(patched, double_patched, "second pass should be a no-op");
     }
 
     #[test]
@@ -258,22 +259,40 @@ mod dockerfile_patch {
     }
 
     #[test]
-    fn python_dockerfile_cmd_wrapped_with_instrument() {
+    fn python_dockerfile_installs_sitecustomize() {
         let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
         let result = patch_dockerfile_for_otel(dockerfile);
         assert!(
-            result.contains("opentelemetry-instrument"),
-            "CMD should be wrapped with opentelemetry-instrument"
+            result.contains(".nasiko_otel_patch.py"),
+            "patched Dockerfile should copy .nasiko_otel_patch.py"
+        );
+        assert!(
+            result.contains("sitecustomize.py"),
+            "patched Dockerfile should install sitecustomize.py"
         );
     }
 
     #[test]
-    fn python_dockerfile_exec_form_cmd_rewritten() {
+    fn python_dockerfile_cmd_not_wrapped_with_instrument() {
+        // We intentionally do NOT wrap CMD with opentelemetry-instrument because
+        // it prepends its own sitecustomize.py to PYTHONPATH, which would shadow
+        // ours and prevent the AgentExecutor session.id patch from running.
+        // Our sitecustomize.py calls initialize() directly instead.
+        let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
+        let result = patch_dockerfile_for_otel(dockerfile);
+        assert!(
+            result.contains("CMD python main.py"),
+            "CMD should be left unchanged (no opentelemetry-instrument wrapper)"
+        );
+    }
+
+    #[test]
+    fn python_dockerfile_exec_form_cmd_unchanged() {
         let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD [\"python\", \"main.py\"]";
         let result = patch_dockerfile_for_otel(dockerfile);
         assert!(
-            result.contains("\"opentelemetry-instrument\""),
-            "exec-form CMD should include opentelemetry-instrument as first element"
+            result.contains("CMD [\"python\", \"main.py\"]"),
+            "exec-form CMD should be left unchanged"
         );
     }
 }

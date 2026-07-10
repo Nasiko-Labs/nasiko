@@ -8,7 +8,10 @@ pub mod tempo;
 pub mod types;
 
 pub use error::ObservabilityError;
-pub use injector::{AgentContext, InstrumentationInjector, OtelInjector, patch_dockerfile_for_otel};
+pub use injector::{
+    AgentContext, InstrumentationInjector, OtelInjector, patch_dockerfile_for_otel,
+    write_otel_patch_file,
+};
 pub use loki::LokiClient;
 pub use provider::{ObservabilityProvider, TempoLokiProvider};
 pub use runtime_ext::InstrumentedRuntime;

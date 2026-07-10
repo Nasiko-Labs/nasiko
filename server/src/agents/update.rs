@@ -13,11 +13,11 @@ use nasiko_runtime::DeploymentStatus;
 use crate::agents::upload::BuildJobPayload;
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus, download_repo_tarball, routes::extract_zip_to_dir};
+use crate::catalog::agent_secrets;
 use crate::github::load_github_token;
 use crate::state::AppState;
 
 use super::utils::{set_build_status, set_upload_status};
-use crate::catalog::agent_secrets;
 
 /// Max multipart body for an agent update (mirrors the upload router). Without
 /// this the update route inherited axum's 2 MiB default, and `field.bytes()`
@@ -438,6 +438,8 @@ pub async fn execute_agent_update(
             tokio::fs::write(&dockerfile_path, &patched)
                 .await
                 .map_err(|e| format!("write Dockerfile: {e}"))?;
+            nasiko_observability::write_otel_patch_file(&agent_source_dir)
+                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
         }
 
         let src = agent_source_dir.clone();
@@ -510,14 +512,6 @@ pub async fn execute_agent_update(
             .bind(&agent_url)
             .execute(db)
             .await;
-            // Refresh card-derived fields (skills, description, transport_path)
-            // for the newly deployed version.
-            tokio::spawn(super::utils::fetch_agent_card_with_retry(
-                state.db.clone(),
-                state.http_client.clone(),
-                agent_id,
-                agent_url.clone(),
-            ));
 
             // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
             // so the crash guardian and restart can find/rebuild this workload after an
@@ -795,14 +789,6 @@ pub async fn execute_agent_rollback(
             .bind(&target.image_tag)
             .execute(db)
             .await;
-            // Refresh card-derived fields (skills, description, transport_path)
-            // for the rolled-back version.
-            tokio::spawn(super::utils::fetch_agent_card_with_retry(
-                state.db.clone(),
-                state.http_client.clone(),
-                agent_id,
-                agent_url.clone(),
-            ));
 
             // Persist identity + image + ports for guardian/restart (RUN-3/RUN-3b), as on update.
             let _ = sqlx::query(

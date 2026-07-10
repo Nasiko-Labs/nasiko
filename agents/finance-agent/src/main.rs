@@ -34,26 +34,21 @@ impl FinanceAgent {
         &self,
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
-        parent_cx: Option<&opentelemetry::Context>,
+        session_id: &str,
     ) -> Result<serde_json::Value, String> {
-        // The remote parent must be set on THIS span explicitly: contextual
-        // inheritance from a2a.execute strands the span in an orphan trace —
-        // tracing-opentelemetry children inherit the parent's originally
-        // sampled (local) trace id, not the one `set_parent` re-homed it to.
-        if let Some(cx) = parent_cx {
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            tracing::Span::current().set_parent(cx.clone());
-        }
-        let mut body = serde_json::json!({
+        // session.id can't be declared in #[instrument] (dotted name isn't a valid
+        // Rust ident), so set it directly on the underlying OTel span.
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        tracing::Span::current().set_attribute(
+            opentelemetry::Key::new("session.id"),
+            opentelemetry::Value::String(session_id.to_string().into()),
+        );
+        let body = serde_json::json!({
             "model": self.model,
             "messages": messages,
             "tools": tools,
             "temperature": 0.1,
         });
-        // OpenAI-compatible APIs reject an empty tools array.
-        if tools.is_empty() {
-            body.as_object_mut().unwrap().remove("tools");
-        }
 
         let resp = self
             .http
@@ -90,21 +85,6 @@ impl FinanceAgent {
 
 impl AgentExecutor for FinanceAgent {
     fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
-        // Join the caller's W3C trace (the platform forwards `traceparent`
-        // through the agent proxy/orchestrator). Without adopting it, the OTel
-        // SDK mints a fresh root trace id per request and the control plane's
-        // session-trace view can never find this agent's spans.
-        let remote_cx = ctx
-            .service_params
-            .get("traceparent")
-            .and_then(|v| v.first())
-            .and_then(|tp| telemetry::remote_context_from_traceparent(tp));
-        let span = tracing::info_span!("a2a.execute", otel.kind = "server");
-        if let Some(ref cx) = remote_cx {
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            span.set_parent(cx.clone());
-        }
-
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
 
@@ -154,7 +134,7 @@ Guidelines:\n\
             let mut final_text = String::new();
 
             for _ in 0..4 {
-                let resp = match agent.chat(&messages, &tool_defs, remote_cx.as_ref()).await {
+                let resp = match agent.chat(&messages, &tool_defs, &context_id).await {
                     Ok(r) => r,
                     Err(e) => {
                         yield Ok(status_failed(&task_id, &context_id, &e));
@@ -186,27 +166,8 @@ Guidelines:\n\
                         }));
                     }
                 } else {
-                    final_text = strip_tool_markup(choice["content"].as_str().unwrap_or(""));
+                    final_text = choice["content"].as_str().unwrap_or("").to_string();
                     break;
-                }
-            }
-
-            // Tool budget exhausted while the model still wanted tools: force a
-            // final answer from the gathered context, else the artifact is empty.
-            if final_text.is_empty() {
-                messages.push(serde_json::json!({
-                    "role": "user",
-                    "content": "Tool calls are no longer available. Answer the original question now, using only the information already gathered above. Respond with plain text only."
-                }));
-                match agent.chat(&messages, &[], remote_cx.as_ref()).await {
-                    Ok(resp) => {
-                        final_text = strip_tool_markup(
-                            resp["choices"][0]["message"]["content"].as_str().unwrap_or(""));
-                    }
-                    Err(e) => {
-                        yield Ok(status_failed(&task_id, &context_id, &e));
-                        return;
-                    }
                 }
             }
 
@@ -229,19 +190,7 @@ Guidelines:\n\
             yield Ok(status_completed(&task_id, &context_id));
         };
 
-        // Poll the stream inside `span` so every span created during execution
-        // (ChatCompletion, tool calls) lands under the remote parent — even
-        // though the body streams after the HTTP handler has returned.
-        // (tracing's Instrumented wraps Futures, not Streams, so instrument
-        // each item-poll future rather than the stream itself.)
-        use futures::StreamExt as _;
-        use tracing::Instrument as _;
-        Box::pin(async_stream::stream! {
-            let mut inner = std::pin::pin!(stream);
-            while let Some(item) = inner.next().instrument(span.clone()).await {
-                yield item;
-            }
-        })
+        Box::pin(stream)
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
@@ -408,15 +357,4 @@ fn status_failed(task_id: &str, context_id: &str, error: &str) -> StreamResponse
         },
         metadata: None,
     })
-}
-
-/// DeepSeek sometimes emits its internal tool-call markup (`<｜DSML｜…`) as
-/// plain content instead of structured tool_calls. Anything from the first
-/// marker onward is machinery, not an answer — cut it so an all-markup
-/// response reads as empty and triggers the forced-answer fallback.
-fn strip_tool_markup(content: &str) -> String {
-    match content.find("<｜") {
-        Some(idx) => content[..idx].trim().to_string(),
-        None => content.trim().to_string(),
-    }
 }
