@@ -67,16 +67,6 @@ pub async fn get_all_sessions(
     claims: Claims,
     Query(params): Query<SessionListParams>,
 ) -> impl IntoResponse {
-
-    tracing::info!(
-        input_tokens = 120u64,
-        output_tokens = 80u64,
-        model = "gpt-4o",
-        agent_id = "demo-agent",
-        session_id = "demo-session",
-        "simulated ai request"
-    );
-
     match svc(&state)
         .get_all_sessions(
             &claims.sub,
@@ -145,15 +135,15 @@ pub async fn get_agent_stats(
     Path(agent_id): Path<String>,
     Query(params): Query<AgentStatsParams>,
 ) -> impl IntoResponse {
-    // OTEL_SERVICE_NAME is set to the agent name (not UUID), so Tempo indexes
-    // traces under the agent name. Resolve by name or UUID but always pass
-    // the name to the Tempo query.
+    // Tempo's service.name is the agent name (the injector sets
+    // OTEL_SERVICE_NAME to the container/agent name); accept a name or UUID
+    // here (same contract as the logs endpoints) and query by name.
     let tempo_ref = match super::routes::resolve_agent(&state.db, &agent_id).await {
         Some((_id, name)) => name,
         None => agent_id.clone(),
     };
     match svc(&state)
-        .get_agent_stats(&tempo_ref, params.start_time.as_deref().unwrap_or_default())
+        .get_agent_stats(&tempo_ref, params.start_time.as_deref())
         .await
     {
         Ok(resp) => Json(resp).into_response(),

@@ -161,6 +161,13 @@ pub struct SpanContent {
 
 /// Parse raw Loki log lines (OTel log-record JSON) into a map of
 /// span_id → prompt/completion content.
+///
+/// Handles two formats:
+/// - v1 (OTLP protobuf JSON): `spanId`/`span_id`, `attributes` as array of
+///   `{key, value: {stringValue}}` objects, discriminated by `event.name`.
+/// - v2 (`opentelemetry-instrumentation-openai-v2` EventLogger): `spanid`
+///   (lowercase), `attributes` as flat JSON object, content in
+///   `gen_ai.input.messages` / `gen_ai.output.messages`.
 pub fn parse_trace_logs(lines: Vec<String>) -> std::collections::HashMap<String, SpanContent> {
     use serde_json::Value;
     let mut by_span: std::collections::HashMap<String, SpanContent> =
@@ -171,8 +178,10 @@ pub fn parse_trace_logs(lines: Vec<String>) -> std::collections::HashMap<String,
             continue;
         };
 
-        let span_id = entry["spanId"]
+        // v2 uses lowercase "spanid"; v1 uses "spanId" or "span_id"
+        let span_id = entry["spanid"]
             .as_str()
+            .or_else(|| entry["spanId"].as_str())
             .or_else(|| entry["span_id"].as_str())
             .unwrap_or("")
             .to_string();
@@ -182,38 +191,61 @@ pub fn parse_trace_logs(lines: Vec<String>) -> std::collections::HashMap<String,
 
         let slot = by_span.entry(span_id).or_default();
 
-        let Some(attrs) = entry["attributes"].as_array() else {
-            continue;
-        };
-
-        let mut event_name: Option<&str> = None;
-        let mut prompt_content: Option<String> = None;
-        let mut completion_content: Option<String> = None;
-
-        for attr in attrs {
-            let key = attr["key"].as_str().unwrap_or("");
-            let val = attr["value"]["stringValue"].as_str().unwrap_or("");
-            match key {
-                "event.name" => event_name = attr["value"]["stringValue"].as_str(),
-                "gen_ai.content.prompt" | "gen_ai.prompt" => {
-                    prompt_content = Some(val.to_string());
+        match &entry["attributes"] {
+            // v2: flat object — gen_ai.input.messages / gen_ai.output.messages
+            Value::Object(attrs) => {
+                if let Some(v) = attrs.get("gen_ai.input.messages") {
+                    let s = match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    if !s.is_empty() {
+                        slot.input = Some(s);
+                    }
                 }
-                "gen_ai.content.completion" | "gen_ai.completion" => {
-                    completion_content = Some(val.to_string());
-                }
-                _ => {}
-            }
-        }
-
-        match event_name {
-            Some("gen_ai.content.prompt") => {
-                if let Some(c) = prompt_content {
-                    slot.input = Some(c);
+                if let Some(v) = attrs.get("gen_ai.output.messages") {
+                    let s = match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    if !s.is_empty() {
+                        slot.output = Some(s);
+                    }
                 }
             }
-            Some("gen_ai.content.completion") => {
-                if let Some(c) = completion_content {
-                    slot.output = Some(c);
+            // v1: OTLP array — discriminated by event.name
+            Value::Array(attrs) => {
+                let mut event_name: Option<&str> = None;
+                let mut prompt_content: Option<String> = None;
+                let mut completion_content: Option<String> = None;
+
+                for attr in attrs {
+                    let key = attr["key"].as_str().unwrap_or("");
+                    let val = attr["value"]["stringValue"].as_str().unwrap_or("");
+                    match key {
+                        "event.name" => event_name = attr["value"]["stringValue"].as_str(),
+                        "gen_ai.content.prompt" | "gen_ai.prompt" => {
+                            prompt_content = Some(val.to_string());
+                        }
+                        "gen_ai.content.completion" | "gen_ai.completion" => {
+                            completion_content = Some(val.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+
+                match event_name {
+                    Some("gen_ai.content.prompt") => {
+                        if let Some(c) = prompt_content {
+                            slot.input = Some(c);
+                        }
+                    }
+                    Some("gen_ai.content.completion") => {
+                        if let Some(c) = completion_content {
+                            slot.output = Some(c);
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
