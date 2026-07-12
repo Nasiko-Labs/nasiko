@@ -10,10 +10,18 @@ pub const OTEL_PATCH_PY: &str = r#"# Injected by Nasiko as sitecustomize.py — 
 # What this does:
 #   1. Initialises the OpenTelemetry SDK (same effect as `opentelemetry-instrument`
 #      wrapper, but done here so we control the load order).
-#   2. Hooks into AgentExecutor.__init_subclass__ so that every class which inherits
-#      from AgentExecutor (i.e. every A2A agent) gets its execute() method wrapped
-#      with an OTel span that sets session.id = A2A contextId.  This is the single
-#      attribute the Nasiko dashboard uses to group traces into sessions.
+#   2. Patches uvicorn.run to wrap the ASGI app with a lightweight middleware that
+#      extracts the W3C traceparent header from each request and stores the resulting
+#      OTel context in a ContextVar.  This gives every asyncio Task spawned from the
+#      request handler (including the a2a-sdk background task for execute()) access
+#      to the per-request trace context without any agent code changes.
+#   3. Hooks into AgentExecutor.__init_subclass__ so that every class which inherits
+#      from AgentExecutor gets its execute() method wrapped with an OTel span that:
+#        - reads the per-request context from the ContextVar (step 2) to ensure each
+#          incoming message creates a NEW trace in Tempo, not a continuation of an
+#          old one (fixes OTel context leakage in async ASGI apps)
+#        - sets session.id = A2A contextId so the Nasiko dashboard can group all
+#          messages in a conversation into a single session
 #
 #   opentelemetry-instrumentation-openai (loaded by initialize()) then
 #   auto-instruments OpenAI SDK calls and creates child spans under this root span,
@@ -24,10 +32,56 @@ pub const OTEL_PATCH_PY: &str = r#"# Injected by Nasiko as sitecustomize.py — 
 # because that prepends its own sitecustomize.py to PYTHONPATH, which would
 # shadow this file and prevent the AgentExecutor patch from running.
 
+import contextvars
 import functools
 import logging
 
 _log = logging.getLogger("nasiko.otel_patch")
+
+# ContextVar populated by _TraceparentMiddleware for each incoming HTTP request.
+# asyncio copies ContextVars into child Tasks at creation time, so execute()
+# (which runs in a background Task spawned from the request handler) always
+# sees the context that was active when its Task was created.
+_request_otel_ctx: contextvars.ContextVar = contextvars.ContextVar(
+    "_nasiko_request_otel_ctx",
+    default=None,
+)
+
+
+class _TraceparentMiddleware:
+    """Raw ASGI middleware — no response buffering, safe for SSE streaming."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Decode headers from bytes; ASGI spec guarantees latin-1.
+        headers: dict = {}
+        for name_b, value_b in scope.get("headers", []):
+            try:
+                headers[name_b.decode("latin-1").lower()] = value_b.decode("latin-1")
+            except Exception:
+                pass
+
+        try:
+            from opentelemetry.propagate import extract as _extract
+            ctx = _extract(headers)
+        except Exception:
+            try:
+                from opentelemetry import context as _otel_ctx
+                ctx = _otel_ctx.Context()
+            except Exception:
+                ctx = None
+
+        token = _request_otel_ctx.set(ctx)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _request_otel_ctx.reset(token)
 
 
 def _install():
@@ -41,7 +95,22 @@ def _install():
     except Exception as exc:
         _log.debug("nasiko: OTel init skipped: %s", exc)
 
-    # ── Step 2: Patch AgentExecutor to set session.id on every execute() ─────
+    # ── Step 2: Patch uvicorn.run to inject TraceparentMiddleware ─────────────
+    # This must happen before the agent imports uvicorn, but sitecustomize.py
+    # runs before any user imports so the timing is guaranteed.
+    try:
+        import uvicorn as _uvicorn
+        _orig_run = _uvicorn.run
+
+        def _patched_run(app, **kwargs):
+            return _orig_run(_TraceparentMiddleware(app), **kwargs)
+
+        _uvicorn.run = _patched_run
+        _log.debug("nasiko: uvicorn.run patched with TraceparentMiddleware")
+    except Exception as exc:
+        _log.debug("nasiko: uvicorn patch skipped: %s", exc)
+
+    # ── Step 3: Patch AgentExecutor to set session.id on every execute() ─────
     try:
         from a2a.server.agent_execution import AgentExecutor
         from opentelemetry import context as otel_context
@@ -59,7 +128,7 @@ def _install():
 
         _original = cls.__dict__["execute"]
 
-        # Guard against double-wrapping (e.g. agent already has OTel code).
+        # Guard against double-wrapping (e.g. agent already has its own OTel code).
         if getattr(_original, "_nasiko_instrumented", False):
             return
 
@@ -79,21 +148,23 @@ def _install():
 
             tracer = trace.get_tracer("nasiko.agent")
 
-            # This span is created inside the a2a-sdk background asyncio task,
-            # making it the true root.  Setting session.id here lets Nasiko
-            # group all messages in a conversation into a single session.
-            with tracer.start_as_current_span("agent.request") as span:
-                span.set_attribute("session.id", session_id)
+            # Use the W3C context extracted from the HTTP request by
+            # _TraceparentMiddleware (step 2).  asyncio copies ContextVars into
+            # child Tasks, so this value is the one from the specific request that
+            # spawned this execute() Task — not leaked from a previous request.
+            # Falling back to an empty Context() ensures a fresh root span when
+            # no traceparent header was present (e.g. direct agent card fetches).
+            parent_ctx = _request_otel_ctx.get()
+            if parent_ctx is None:
+                parent_ctx = otel_context.Context()
 
-                # Capture context AFTER setting session.id so that child spans
-                # created by opentelemetry-instrumentation-openai (which run
-                # in nested async calls) are parented under this span.
-                captured_ctx = otel_context.get_current()
-                token = otel_context.attach(captured_ctx)
-                try:
-                    return await _original(self, context, event_queue)
-                finally:
-                    otel_context.detach(token)
+            # start_as_current_span with an explicit context= means the span is
+            # parented under the incoming request's trace rather than whatever
+            # context happens to be active in the asyncio event loop.  This is
+            # what prevents all requests from landing in the same Tempo trace.
+            with tracer.start_as_current_span("agent.request", context=parent_ctx) as span:
+                span.set_attribute("session.id", session_id)
+                return await _original(self, context, event_queue)
 
         _instrumented._nasiko_instrumented = True
         cls.execute = _instrumented
@@ -241,9 +312,16 @@ impl InstrumentationInjector for OtelInjector {
 
         env_vars.insert("OTEL_TRACES_EXPORTER".into(), "otlp".into());
         env_vars.insert("OTEL_LOGS_EXPORTER".into(), "otlp".into());
+        // opentelemetry-instrumentation-openai-v2 uses an enum instead of a boolean:
+        //   NO_CONTENT  — no prompt/completion captured (opt-out for compliance)
+        //   EVENT_ONLY  — content emitted as OTel log events → Loki
+        //   SPAN_ONLY   — content added as span attributes → Tempo
+        //   SPAN_AND_EVENT — both
+        // Older instrumentation packages accept "true"/"false"; we use the enum
+        // value so both old and new packages produce a useful result.
         env_vars.insert(
             "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT".into(),
-            if ctx.capture_content { "true" } else { "false" }.into(),
+            if ctx.capture_content { "EVENT_ONLY" } else { "NO_CONTENT" }.into(),
         );
     }
 }

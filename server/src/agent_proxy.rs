@@ -79,8 +79,15 @@ pub async fn agent_proxy(
         return Err(StatusCode::LOOP_DETECTED);
     }
 
-    // Resolve agent container endpoint from DB
-    let endpoint = nasiko_agent_proxy::resolve(&state.db, agent_id)
+    // Resolve agent container endpoint. `nasiko_agent_proxy::resolve` reads the
+    // `agents.url` column, a snapshot taken at the last deploy/restart — stale
+    // the moment the container is recreated outside that flow (Docker/Podman
+    // assign a new random host port on every recreate). Prefer the live
+    // runtime lookup instead (same fix already applied in
+    // `resolve_endpoint` in `router/a2a_dispatch.rs`), falling back to the
+    // stored value only if the runtime can't be reached (e.g. external agents
+    // registered by URL rather than deployed through this platform).
+    let stored = nasiko_agent_proxy::resolve(&state.db, agent_id)
         .await
         .map_err(|e| match e {
             nasiko_agent_proxy::ResolveError::NotFound => StatusCode::NOT_FOUND,
@@ -89,7 +96,21 @@ pub async fn agent_proxy(
             nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    let target_url = format!("http://{}:{}{}", endpoint.host, endpoint.port, forwarded_path);
+    let agent_base = match state
+        .runtime
+        .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
+        .await
+    {
+        Ok(live) => live.trim_end_matches('/').to_string(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e, %agent_id,
+                "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
+            );
+            format!("http://{}:{}", stored.host, stored.port)
+        }
+    };
+    let target_url = format!("{agent_base}{forwarded_path}");
 
     // Forward the request
     let method = req.method().clone();
@@ -97,6 +118,10 @@ pub async fn agent_proxy(
     let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    // Every message send must belong to a persisted session (may inject a
+    // generated contextId into the body — see `ensure_chat_session`).
+    let body_bytes = ensure_chat_session(&state, &claims, agent_id, &agent_base, body_bytes).await?;
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
     // anything not named here is dropped rather than forwarded by default.
@@ -140,7 +165,7 @@ pub async fn agent_proxy(
 
             if let Some(ctx_id) = context_id {
                 let trace_id = flow_ctx.flow_id.clone();
-                let agent_name = endpoint.name.clone();
+                let agent_name = stored.name.clone();
                 let redis = state.redis.clone();
                 tokio::spawn(async move {
                     if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
@@ -158,6 +183,19 @@ pub async fn agent_proxy(
                             .arg(&agent_name)
                             .query_async(&mut conn)
                             .await;
+                        // Reverse index: session → set of trace_ids, so get_session_details
+                        // can enumerate all traces even for pre-built agents without sitecustomize.py.
+                        let traces_key = format!("nasiko:session:{ctx_id}:traces");
+                        let _: Result<(), _> = redis::cmd("SADD")
+                            .arg(&traces_key)
+                            .arg(&trace_id)
+                            .query_async(&mut conn)
+                            .await;
+                        let _: Result<(), _> = redis::cmd("EXPIRE")
+                            .arg(&traces_key)
+                            .arg(604800u64)
+                            .query_async(&mut conn)
+                            .await;
                     }
                 });
             }
@@ -168,17 +206,150 @@ pub async fn agent_proxy(
         forwarded = forwarded.body(body_bytes);
     }
 
-    let response = forwarded
-        .send()
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let response = forwarded.send().await.map_err(|e| {
+        tracing::error!(error = %e, %agent_id, %target_url, "agent proxy: request to agent failed");
+        StatusCode::BAD_GATEWAY
+    })?;
 
     state.flow_guard.record_return(&flow_ctx).await;
 
-    to_axum_response(response).await
+    to_axum_response(response, agent_id).await
 }
 
-async fn to_axum_response(response: reqwest::Response) -> Result<Response, StatusCode> {
+/// A2A JSON-RPC methods that carry a user message and therefore must be bound
+/// to a chat session — both the v1 names and the pre-1.0 ones still spoken by
+/// older agent images.
+const MESSAGE_SEND_METHODS: &[&str] = &[
+    "SendMessage",
+    "SendStreamingMessage",
+    "message/send",
+    "message/stream",
+];
+
+/// Guarantee every agent chat happens inside a persisted `chat_sessions` row.
+///
+/// A message that arrives with a `contextId` gets that id upserted as a
+/// session (clients that pre-create via `POST /api/chat/sessions` — the CLI
+/// and web UI — hit the ON CONFLICT no-op). A message without one gets a
+/// generated `ses_*` id injected into the forwarded body, so the agent's task
+/// — and every response event it emits — echoes the session id back to the
+/// client, which can then resume with it.
+///
+/// Non-message traffic (GetTask, card fetches, …) passes through untouched.
+async fn ensure_chat_session(
+    state: &AppState,
+    claims: &Claims,
+    agent_id: Uuid,
+    agent_base_url: &str,
+    body_bytes: axum::body::Bytes,
+) -> Result<axum::body::Bytes, StatusCode> {
+    // Not JSON, or not a message send → pass through; the agent is the
+    // authority on whether the payload is valid A2A.
+    let Ok(mut rpc) = serde_json::from_slice::<serde_json::Value>(&body_bytes) else {
+        return Ok(body_bytes);
+    };
+    let is_send = rpc
+        .get("method")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| MESSAGE_SEND_METHODS.contains(&m));
+    if !is_send {
+        return Ok(body_bytes);
+    }
+    let Some(message) = rpc.pointer_mut("/params/message") else {
+        return Ok(body_bytes);
+    };
+
+    let user_id: Uuid = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    let existing_ctx = message
+        .get("contextId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let (session_id, injected) = match existing_ctx {
+        Some(id) => (id, false),
+        None => (format!("ses_{}", Uuid::new_v4().simple()), true),
+    };
+
+    // First user message doubles as the session title (same convention the
+    // web UI uses when it titles a fresh session).
+    let title = message
+        .get("parts")
+        .and_then(|p| p.as_array())
+        .and_then(|parts| {
+            parts
+                .iter()
+                .find_map(|p| p.get("text").and_then(|t| t.as_str()))
+        })
+        .map(|t| {
+            let t = t.trim();
+            if t.len() > 60 {
+                let mut n = 60;
+                while !t.is_char_boundary(n) {
+                    n -= 1;
+                }
+                format!("{}…", &t[..n])
+            } else {
+                t.to_string()
+            }
+        })
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "New chat".into());
+
+    let inserted = sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (session_id) DO NOTHING",
+    )
+    .bind(&session_id)
+    .bind(user_id)
+    .bind(agent_id)
+    .bind(agent_base_url)
+    .bind(&title)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        // A dangling user_id FK means the (gateway-verified) JWT references a
+        // user that no longer exists — stale credential, not a server fault.
+        if let sqlx::Error::Database(ref db_err) = e
+            && db_err.constraint() == Some("chat_sessions_user_id_fkey")
+        {
+            return StatusCode::UNAUTHORIZED;
+        }
+        tracing::error!(error = %e, %agent_id, %session_id, "agent proxy: session upsert failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Session already existed — it must belong to the caller, otherwise any
+    // authenticated user could graft messages onto someone else's session by
+    // guessing/replaying its contextId.
+    if inserted.rows_affected() == 0 && !claims.is_superuser {
+        let owner: Option<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM chat_sessions WHERE session_id = $1")
+                .bind(&session_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, %session_id, "agent proxy: session owner lookup failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        if owner != Some(user_id) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    if injected {
+        message["contextId"] = serde_json::Value::String(session_id);
+        let rewritten = serde_json::to_vec(&rpc).map_err(|e| {
+            tracing::error!(error = %e, "agent proxy: failed to re-serialize body after contextId injection");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        return Ok(rewritten.into());
+    }
+    Ok(body_bytes)
+}
+
+async fn to_axum_response(response: reqwest::Response, agent_id: Uuid) -> Result<Response, StatusCode> {
     let status = response.status();
     let resp_headers = response.headers().clone();
     let is_stream = resp_headers
@@ -195,11 +366,20 @@ async fn to_axum_response(response: reqwest::Response) -> Result<Response, Statu
         let stream = response.bytes_stream();
         builder
             .body(Body::from_stream(stream))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|e| {
+                tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     } else {
-        let bytes = response.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let bytes = response.bytes().await.map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: failed to read agent response body");
+            StatusCode::BAD_GATEWAY
+        })?;
         builder
             .body(Body::from(bytes))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|e| {
+                tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     }
 }

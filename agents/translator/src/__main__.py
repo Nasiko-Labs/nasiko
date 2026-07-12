@@ -9,7 +9,7 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 from dotenv import load_dotenv
 from starlette.applications import Starlette
-from telemetry import init_telemetry
+from telemetry import TraceparentMiddleware, init_telemetry
 
 from agent_executor import TranslatorExecutor
 
@@ -66,6 +66,9 @@ def main(host: str, port: int):
 
     routes = create_agent_card_routes(agent_card) + create_jsonrpc_routes(handler, rpc_url="/")
     app = Starlette(routes=routes)
+    # Wrap with our ASGI middleware AFTER creating the Starlette app so it runs
+    # first and populates request_otel_context for each incoming HTTP request.
+    app = TraceparentMiddleware(app)
 
     logger.info("Translator Agent listening on %s:%s", host, port)
     uvicorn.run(app, host=host, port=port)

@@ -71,25 +71,6 @@ pub struct Config {
     /// When set, the Docker runtime pulls images from this registry before creating containers.
     /// Maps to env var `OCI_REGISTRY_HOST`.
     pub oci_registry_host: Option<String>,
-
-    // ─── MCP Gateway ────────────────────────────────────────────────────────
-    /// Composio platform API key. When unset, Composio integration is disabled
-    /// (generic MCP servers still work).
-    pub composio_api_key: Option<String>,
-    /// Composio v3 HTTP API base URL.
-    pub composio_base_url: String,
-    /// HMAC secret used to verify inbound Composio webhooks. When unset,
-    /// signature verification is skipped (dev only).
-    pub composio_webhook_secret: Option<String>,
-    /// Public URL of the MCP gateway, injected into every deployed agent as
-    /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
-    pub mcp_gateway_public_url: Option<String>,
-    /// TTL (seconds) for the Redis-cached resolved backend/session list.
-    pub mcp_session_ttl_seconds: u64,
-    /// TTL (seconds) for the Redis-cached per-agent permission context.
-    pub mcp_perm_cache_ttl_seconds: u64,
-    /// TTL (seconds) for the Redis-cached aggregated tool manifest.
-    pub mcp_manifest_ttl_seconds: u64,
 }
 
 impl Config {
@@ -124,13 +105,13 @@ impl Config {
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://host.containers.internal:4317",
+                "http://otel-collector:4318",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
             )
             .map(|v| v == "true")
-            .unwrap_or(false),
+            .unwrap_or(true),
             tempo_url: env_or(
                 "TEMPO_URL",
                 "http://tempo.nasiko-infra.svc.cluster.local:3200",
@@ -173,18 +154,6 @@ impl Config {
                 .collect(),
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
-
-            composio_api_key: std::env::var("COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
-            composio_base_url: env_or("COMPOSIO_BASE_URL", "https://backend.composio.dev"),
-            composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
-            mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
-            mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
         })
     }
 

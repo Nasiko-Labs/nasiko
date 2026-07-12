@@ -88,7 +88,7 @@ fn inject_sets_capture_content_false_by_default() {
     let env = inject(make_ctx("my-agent"));
     assert_eq!(
         env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"],
-        "false"
+        "NO_CONTENT"
     );
 }
 
@@ -101,7 +101,7 @@ fn inject_sets_capture_content_true_when_requested() {
     let env = inject(ctx);
     assert_eq!(
         env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"],
-        "true"
+        "EVENT_ONLY"
     );
 }
 

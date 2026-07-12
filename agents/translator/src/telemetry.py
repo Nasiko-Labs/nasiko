@@ -9,12 +9,25 @@ Propagation (traceparent header) is ALWAYS enabled — required for CP flow trac
 Export to a collector is optional (OTEL_EXPORTER_OTLP_ENDPOINT).
 """
 
+import contextvars
 import os
 import logging
 
 logger = logging.getLogger(__name__)
 
 _initialized = False
+
+# ContextVar populated by TraceparentMiddleware for each incoming HTTP request.
+# The extracted OTel context (derived from the W3C traceparent header) is stored
+# here so that execute(), which runs in a background asyncio Task, can use it
+# as the parent when creating the translator.request span.
+#
+# Using a ContextVar ensures the value is scoped to the asyncio Task that
+# handles each request (and any tasks it spawns via asyncio.create_task).
+request_otel_context: contextvars.ContextVar = contextvars.ContextVar(
+    "nasiko_request_otel_context",
+    default=None,
+)
 
 
 def init_telemetry(service_name: str | None = None) -> None:
@@ -65,7 +78,10 @@ def init_telemetry(service_name: str | None = None) -> None:
 
     trace.set_tracer_provider(tracer_provider)
 
-    # Auto-instrument HTTP clients (propagates traceparent on all outbound calls)
+    # Auto-instrument HTTP and LLM clients (propagates traceparent on all outbound calls).
+    # NOTE: StarletteInstrumentor is intentionally excluded here — it requires an explicit
+    # app instance via instrument_app(app) and does not work reliably via global patching.
+    # Context propagation for incoming requests is handled by TraceparentMiddleware instead.
     _auto_instrument()
 
     logger.info(f"OTel telemetry initialized (export={'enabled → ' + endpoint if endpoint else 'disabled'})")
@@ -76,7 +92,6 @@ def _auto_instrument():
     _try_instrument("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor")
     _try_instrument("opentelemetry.instrumentation.requests", "RequestsInstrumentor")
     _try_instrument("opentelemetry.instrumentation.logging", "LoggingInstrumentor")
-    _try_instrument("opentelemetry.instrumentation.starlette", "StarletteInstrumentor")
     # LLM clients — emit gen_ai.usage.input_tokens / output_tokens / request.model
     _try_instrument("opentelemetry.instrumentation.openai", "OpenAIInstrumentor")
     _try_instrument("opentelemetry.instrumentation.anthropic", "AnthropicInstrumentor")
@@ -92,3 +107,48 @@ def _try_instrument(module_path: str, class_name: str):
             instrumentor.instrument()
     except (ImportError, Exception):
         pass
+
+
+class TraceparentMiddleware:
+    """Raw ASGI middleware that extracts the W3C traceparent header from each incoming
+    HTTP request and stores the resulting OTel context in `request_otel_context`.
+
+    This lets execute() — which runs in a background asyncio Task that does not
+    have the Starlette request span active — reliably inherit the correct trace
+    context for each request, preventing OTel context leakage where all requests
+    share the same Tempo trace.
+
+    Using a raw ASGI middleware (rather than BaseHTTPMiddleware) avoids response
+    buffering, which matters for the SSE streaming responses used by A2A.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Extract traceparent from ASGI scope headers (bytes).
+        headers: dict[str, str] = {}
+        for name_b, value_b in scope.get("headers", []):
+            try:
+                name = name_b.decode("latin-1")
+                value = value_b.decode("latin-1")
+                headers[name.lower()] = value
+            except Exception:
+                pass
+
+        try:
+            from opentelemetry.propagate import extract as otel_extract
+            ctx = otel_extract(headers)
+        except Exception:
+            from opentelemetry import context as otel_context
+            ctx = otel_context.Context()
+
+        token = request_otel_context.set(ctx)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            request_otel_context.reset(token)

@@ -206,8 +206,8 @@ fn optional_fields_use_defaults_when_not_set() {
     assert_eq!(cfg.otel_headers, None);
     assert_eq!(cfg.otel_service_name, "nasiko-cp");
     assert_eq!(cfg.otel_sample_ratio, "1.0");
-    assert_eq!(cfg.otel_collector_endpoint, "http://host.containers.internal:4317");
-    assert!(!cfg.otel_capture_content);
+    assert_eq!(cfg.otel_collector_endpoint, "http://otel-collector:4318");
+    assert!(cfg.otel_capture_content);
     assert_eq!(cfg.tempo_url, "http://tempo.nasiko-infra.svc.cluster.local:3200");
     assert_eq!(cfg.loki_url, "http://loki.nasiko-infra.svc.cluster.local:3100");
     assert_eq!(cfg.flow_max_depth, 5);

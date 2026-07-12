@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::ObservabilityError;
-use crate::types::{ Span, TraceDetails };
+use crate::types::{ Span, SpanEvent, TraceDetails };
 
 // ---------------------------------------------------------------------------
 // Tempo search API response types
@@ -65,6 +65,14 @@ struct OtlpStatus {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct OtlpEvent {
+    name: String,
+    time_unix_nano: Option<String>,
+    attributes: Option<Vec<OtlpAttribute>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OtlpSpan {
     span_id: String,
     parent_span_id: Option<String>,
@@ -74,6 +82,7 @@ struct OtlpSpan {
     start_time_unix_nano: String,
     end_time_unix_nano: Option<String>,
     attributes: Option<Vec<OtlpAttribute>>,
+    events: Option<Vec<OtlpEvent>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,6 +310,22 @@ fn parse_otlp_trace(
                     .map(|a| (a.key.clone(), otlp_attr_to_json(&a.value)))
                     .collect();
 
+                let events: Vec<SpanEvent> = span.events
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|e| SpanEvent {
+                        name: e.name.clone(),
+                        timestamp: e.time_unix_nano.as_deref().and_then(parse_nanos_str),
+                        attributes: e.attributes
+                            .as_deref()
+                            .unwrap_or(&[])
+                            .iter()
+                            .map(|a| (a.key.clone(), otlp_attr_to_json(&a.value)))
+                            .collect(),
+                    })
+                    .collect();
+
                 spans.push(Span {
                     span_id: otlp_id_to_hex(&span.span_id),
                     parent_span_id: span.parent_span_id.as_deref().map(otlp_id_to_hex),
@@ -319,6 +344,7 @@ fn parse_otlp_trace(
                     duration_ms,
                     service_name: service_name.clone(),
                     attributes,
+                    events,
                 });
             }
         }

@@ -16,6 +16,7 @@ from a2a.types import TaskState
 from openai import AsyncOpenAI
 from opentelemetry import context as otel_context, trace
 
+from telemetry import request_otel_context
 from toolset import TranslatorToolset
 
 logger = logging.getLogger(__name__)
@@ -100,17 +101,17 @@ class TranslatorExecutor(AgentExecutor):
         task = context.current_task or new_task_from_user_message(context.message)
         await event_queue.enqueue_event(task)
 
-        # a2a-sdk runs execute() in a background asyncio task, so the Starlette
-        # request span is not active here. Create our own root span that:
-        #   1. Sets session.id so Tempo groups all messages in a session together.
-        #   2. Becomes the parent of all OpenAI child spans via captured_ctx below.
+        # a2a-sdk runs execute() in a background asyncio task. The incoming
+        # W3C traceparent is extracted by TraceparentMiddleware (in telemetry.py)
+        # and stored in request_otel_context, which asyncio copies into this task
+        # at creation time. Using it as the explicit parent ensures each incoming
+        # A2A request creates a span under its own trace_id in Tempo — preventing
+        # OTel context leakage where all requests would otherwise share one trace.
+        # Falls back to an empty context (new root span) when no traceparent is present.
         tracer = trace.get_tracer("translator")
-        with tracer.start_as_current_span("translator.request") as span:
+        parent_ctx = request_otel_context.get() or otel_context.Context()
+        with tracer.start_as_current_span("translator.request", context=parent_ctx) as span:
             span.set_attribute("session.id", task.context_id)
-
-            # Capture OTel context AFTER setting session.id so OpenAI spans
-            # (which run in a nested async call) are parented under this span.
-            captured_ctx = otel_context.get_current()
 
             await event_queue.enqueue_event(
                 new_text_status_update_event(
@@ -121,7 +122,7 @@ class TranslatorExecutor(AgentExecutor):
                 )
             )
 
-            result = await self._run(query, task.id, task.context_id, event_queue, captured_ctx)
+            result = await self._run(query, task.id, task.context_id, event_queue)
 
             await event_queue.enqueue_event(
                 new_text_artifact_update_event(
@@ -146,16 +147,8 @@ class TranslatorExecutor(AgentExecutor):
         task_id: str,
         context_id: str,
         event_queue: EventQueue,
-        otel_ctx: object = None,
     ) -> str:
-        # Re-attach the captured context so the OpenAI instrumentation creates
-        # child spans under the incoming request span, not new root spans.
-        token = otel_context.attach(otel_ctx) if otel_ctx is not None else None
-        try:
-            return await self._run_inner(query, task_id, context_id, event_queue)
-        finally:
-            if token is not None:
-                otel_context.detach(token)
+        return await self._run_inner(query, task_id, context_id, event_queue)
 
     async def _run_inner(
         self,
