@@ -133,8 +133,13 @@ Guidelines:\n\
 
             let mut final_text = String::new();
 
-            for _ in 0..4 {
-                let resp = match agent.chat(&messages, &tool_defs, &context_id).await {
+            for round in 0..4 {
+                // Force the last allowed round to be tool-less so the model must
+                // produce a plain-text answer instead of the loop exhausting with
+                // final_text still empty (silently returning no answer at all).
+                let tools_for_call: &[serde_json::Value] =
+                    if round == 3 { &[] } else { &tool_defs };
+                let resp = match agent.chat(&messages, tools_for_call, &context_id).await {
                     Ok(r) => r,
                     Err(e) => {
                         yield Ok(status_failed(&task_id, &context_id, &e));

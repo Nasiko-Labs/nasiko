@@ -1,5 +1,18 @@
 use serde_json::json;
 
+/// `reqwest::get()` sends no `User-Agent` header — CoinGecko's public API
+/// rejects such requests with a 403 whose body doesn't match the expected
+/// shape (no "coins"/array key), which then surfaced as a misleading "no
+/// results"/"unexpected response format" error instead of the real cause.
+async fn http_get(url: &str) -> Result<reqwest::Response, String> {
+    reqwest::Client::new()
+        .get(url)
+        .header("User-Agent", "nasiko-finance-agent/1.0")
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))
+}
+
 pub fn definitions() -> Vec<serde_json::Value> {
     vec![
         json!({
@@ -111,9 +124,8 @@ async fn exchange_rates(arguments: &str) -> Result<String, String> {
         urlencode(&base),
     );
 
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?
+    let resp = http_get(&url)
+        .await?
         .json::<serde_json::Value>()
         .await
         .map_err(|e| format!("parse failed: {e}"))?;
@@ -173,9 +185,8 @@ async fn crypto_price(arguments: &str) -> Result<String, String> {
         urlencode(&coin_id),
     );
 
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?
+    let resp = http_get(&url)
+        .await?
         .json::<serde_json::Value>()
         .await
         .map_err(|e| format!("parse failed: {e}"))?;
@@ -256,9 +267,8 @@ async fn crypto_search(arguments: &str) -> Result<String, String> {
         urlencode(query),
     );
 
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?
+    let resp = http_get(&url)
+        .await?
         .json::<serde_json::Value>()
         .await
         .map_err(|e| format!("parse failed: {e}"))?;
@@ -301,9 +311,8 @@ async fn crypto_market(arguments: &str) -> Result<String, String> {
         limit,
     );
 
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?
+    let resp = http_get(&url)
+        .await?
         .json::<serde_json::Value>()
         .await
         .map_err(|e| format!("parse failed: {e}"))?;
