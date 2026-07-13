@@ -1,4 +1,5 @@
 target/
+.otel-build/
 *.pyc
 __pycache__/
 .env
@@ -22,9 +23,3 @@ omp.cache
 *.swp
 *.swo
 .envrc
-
-# Local design docs / mockups (root-only — not for the repo)
-/MCP_GATEWAY_TECHNICAL_DESIGN.md
-/NASIKO_OSS_EXPLAINED.html
-/mcp-gateway-schema-proposal.html
-/mcp-gateway.html
