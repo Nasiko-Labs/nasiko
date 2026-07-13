@@ -11,6 +11,7 @@ base64.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 dashmap.workspace = true
 futures.workspace = true
+redis = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
