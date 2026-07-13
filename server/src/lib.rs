@@ -148,7 +148,14 @@ where
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     let oci_pull_limiter = RateLimiter::new(300, Duration::from_secs(60));
-    let oci_auth_state = OciAuthState { app: state.clone(), bearer_limiter: oci_limiter, pull_limiter: oci_pull_limiter };
+    let build_push_token_hash = (!state.config.build_push_token.is_empty())
+        .then(|| nasiko_oci::pull_credentials::hash_token(&state.config.build_push_token));
+    let oci_auth_state = OciAuthState {
+        app: state.clone(),
+        bearer_limiter: oci_limiter,
+        agent_credential_limiter: oci_pull_limiter,
+        build_push_token_hash,
+    };
     let oci_routes = nasiko_oci::axum_routes(oci_state)
         .layer(middleware::from_fn_with_state(oci_auth_state, authenticate_oci_request));
 
@@ -181,55 +188,112 @@ where
 
 /// State for [`authenticate_oci_request`] — bundles the two things it needs
 /// beyond `AppState` (the normal bearer-JWT rate limiter, reused as-is, and a
-/// second limiter for the pull-credential path, keyed by agent rather than
-/// user).
+/// second limiter for both agent-scoped Basic-auth paths below, keyed by
+/// agent-or-service identity rather than user).
 #[derive(Clone)]
 struct OciAuthState {
     app: AppState,
     bearer_limiter: RateLimiter,
-    pull_limiter: RateLimiter,
+    agent_credential_limiter: RateLimiter,
+    /// SHA-256 hex of `state.config.build_push_token`, precomputed once at
+    /// router-build time (not per-request) — `None` when unconfigured
+    /// (`AGENT_RUNTIME=local`, where no in-cluster build path exists), so the
+    /// build-service check below is a guaranteed no-match rather than an
+    /// accidental "empty string matches empty string" bypass.
+    build_push_token_hash: Option<String>,
 }
 
-/// Auth middleware for the `/v2/*` OCI registry mount. Accepts either of two
-/// credential types, since kubelet/containerd's `imagePullSecrets` mechanism
-/// can't carry a bearer JWT the way this app's normal session auth does:
+/// Auth middleware for the `/v2/*` OCI registry mount. Accepts any of three
+/// credential types, since kubelet/containerd's `imagePullSecrets` and
+/// BuildKit's `config.json` mechanisms can't carry a bearer JWT the way this
+/// app's normal session auth does:
 ///
+/// - `Authorization: Basic build-service:<token>` — the shared, cluster-wide
+///   build-push credential (`GeneratedSecrets::build_push_token`), checked
+///   first since it's a cheap in-memory hash comparison, no DB round trip.
+///   On success, inserts a `BuildServiceIdentity` extension.
 /// - `Authorization: Basic <user:pass>` — a per-agent pull credential minted
 ///   by `nasiko_oci::pull_credentials` (see its module doc). On success,
-///   inserts a `PullOnlyIdentity` extension; no `Claims`/`CallerIdentity` is
-///   ever inserted for this path, so it's structurally impossible for a pull
-///   credential to reach a push/delete handler (those extract `CallerIdentity`
-///   directly, which is simply absent from the request).
+///   inserts a `PullOnlyIdentity` extension.
 /// - `Authorization: Bearer <jwt>` (or the `access_token` cookie) — the
 ///   normal session token, validated identically to `auth::require_auth`
 ///   (this replaces that middleware + the old `populate_oci_caller_identity`
 ///   adapter for this one mount, since `require_auth` alone can't fall
 ///   through to try Basic auth on failure).
+///
+/// A request carrying `Authorization: Basic` never falls through to bearer-
+/// JWT validation, regardless of which (if either) of the two Basic checks
+/// matches — no `Claims`/`CallerIdentity` extension is ever inserted for
+/// that path, so it's structurally impossible for either Basic-auth
+/// identity to reach a route that requires a real session (see `Writer`'s
+/// doc for how this is enforced for pull credentials specifically at the
+/// write routes).
+/// `WWW-Authenticate` realm advertised on every 401 this middleware returns.
+///
+/// Per the Docker Registry/OCI Distribution auth flow, a Basic-auth-capable
+/// client (BuildKit, `docker push`, containerd's resolver) sends an
+/// unauthenticated request first and only attaches `Authorization: Basic`
+/// on a *retry*, triggered by seeing this header on the 401 — it does not
+/// eagerly send stored credentials the way `curl -u` does. Omitting this
+/// header (as this middleware did before) means such a client never learns
+/// it should retry with credentials at all: it just reports the bare 401
+/// and gives up. Found live — BuildKit's push failed with a plain "401
+/// Unauthorized" on every attempt despite correct, matching credentials
+/// being mounted, while `curl -u` (which sends Basic auth preemptively)
+/// against the identical URL succeeded.
+const OCI_AUTH_REALM: &str = "Basic realm=\"nasiko-registry\"";
+
+fn unauthorized_with_challenge(message: &'static str) -> axum::response::Response {
+    (
+        axum::http::StatusCode::UNAUTHORIZED,
+        [(axum::http::header::WWW_AUTHENTICATE, OCI_AUTH_REALM)],
+        message,
+    )
+        .into_response()
+}
+
 async fn authenticate_oci_request(
     axum::extract::State(auth_state): axum::extract::State<OciAuthState>,
     mut req: axum::extract::Request,
     next: middleware::Next,
 ) -> axum::response::Response {
     if let Some((username, password)) = extract_basic_auth(req.headers()) {
+        if let Some(expected_hash) = &auth_state.build_push_token_hash
+            && username == nasiko_oci::BUILD_SERVICE_USERNAME
+            && nasiko_oci::pull_credentials::hash_token(&password) == *expected_hash
+        {
+            if !auth_state.agent_credential_limiter.allow(nasiko_oci::BUILD_SERVICE_USERNAME) {
+                return rate_limit::too_many_requests();
+            }
+            req.extensions_mut().insert(nasiko_oci::BuildServiceIdentity);
+            return next.run(req).await;
+        }
+
         return match nasiko_oci::pull_credentials::verify(&auth_state.app.db, &username, &password).await {
             Ok(Some(agent_id)) => {
-                if !auth_state.pull_limiter.allow(&agent_id.to_string()) {
+                if !auth_state.agent_credential_limiter.allow(&agent_id.to_string()) {
                     return rate_limit::too_many_requests();
                 }
                 req.extensions_mut().insert(nasiko_oci::PullOnlyIdentity { agent_id });
                 next.run(req).await
             }
-            Ok(None) => (axum::http::StatusCode::UNAUTHORIZED, "invalid pull credential").into_response(),
+            Ok(None) => unauthorized_with_challenge("invalid credential"),
             Err(e) => {
                 tracing::error!(%e, "oci pull credential verification failed");
-                (axum::http::StatusCode::UNAUTHORIZED, "invalid pull credential").into_response()
+                unauthorized_with_challenge("invalid credential")
             }
         };
     }
 
     let claims = match auth::middleware::validate_bearer(&auth_state.app, req.headers()).await {
         Ok(c) => c,
-        Err((status, message)) => return (status, message).into_response(),
+        Err((status, message)) => {
+            return if status == axum::http::StatusCode::UNAUTHORIZED {
+                unauthorized_with_challenge(message)
+            } else {
+                (status, message).into_response()
+            };
+        }
     };
     if !auth_state.bearer_limiter.allow(&claims.sub) {
         return rate_limit::too_many_requests();

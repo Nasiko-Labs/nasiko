@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use storage::S3Storage;
 use uuid::Uuid;
 
-pub use authz::{Caller, CallerIdentity, PullOnlyIdentity};
+pub use authz::{BUILD_SERVICE_USERNAME, BuildServiceIdentity, Caller, CallerIdentity, PullOnlyIdentity, Writer};
 
 /// Shared state for the OCI registry.
 /// Construct this in the host binary. Pass to `axum_routes()` for the default

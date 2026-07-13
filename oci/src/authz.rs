@@ -35,11 +35,11 @@ impl<S: Send + Sync> FromRequestParts<S> for CallerIdentity {
 /// A pull-scoped identity resolved from HTTP Basic auth against a minted,
 /// per-agent credential (see `pull_credentials`) — distinct from
 /// [`CallerIdentity`] (bearer-JWT, session-based) so it's structurally
-/// impossible for a pull credential to reach a mutating route: every push/
-/// delete handler in `routes::` takes `CallerIdentity` directly, which this
-/// type does not satisfy, and a Basic-auth request never gets a
-/// `CallerIdentity` extension inserted (see the host's OCI auth middleware).
-/// Only the read-only handlers that accept [`Caller`] can ever see one.
+/// impossible for a pull credential to reach a mutating route: every write
+/// handler in `routes::` takes [`Writer`] (which has no `PullOnly` variant
+/// at all — see its doc), not [`Caller`], and delete handlers take
+/// `CallerIdentity` directly. Only the read-only handlers that accept
+/// [`Caller`] can ever see one.
 #[derive(Debug, Clone, Copy)]
 pub struct PullOnlyIdentity {
     pub agent_id: uuid::Uuid,
@@ -57,13 +57,54 @@ impl<S: Send + Sync> FromRequestParts<S> for PullOnlyIdentity {
     }
 }
 
-/// Either a normal session identity or a pull-scoped one — the extractor
-/// used by the handful of read-only routes (manifest/blob/tags GET+HEAD)
-/// that must accept both. See [`check_pull_access`].
+/// Fixed username the shared build-push credential logs in as (HTTP Basic
+/// auth). Must match `ee/cli/src/cluster/render.rs`'s `BUILD_PUSH_USERNAME`
+/// literal — that's where the matching `.dockerconfigjson` Secret is
+/// rendered; the two aren't code-linked (`ee/cli` doesn't depend on this
+/// crate) so they're kept in sync by convention, documented on both sides.
+pub const BUILD_SERVICE_USERNAME: &str = "build-service";
+
+/// Marker extension inserted by the host's OCI auth middleware when a
+/// request's `Authorization: Basic` credential matches the shared,
+/// cluster-wide build-push token (see `oss/server/src/lib.rs`'s
+/// `authenticate_oci_request` and `GeneratedSecrets::build_push_token`).
+/// Not per-agent, unlike [`PullOnlyIdentity`] — the in-cluster BuildKit
+/// build Job is server-orchestrated, network-isolated infrastructure, not a
+/// per-tenant boundary, so one shared credential (same trust tier as
+/// `JWT_SECRET`/Postgres/MinIO creds) is adequate. A compromised `buildkitd`
+/// could overwrite any agent's image under this credential, not just the
+/// one it's building — an accepted risk given a `buildkitd` compromise
+/// already implies the ability to poison whatever it's actively building.
+/// If a third registry-consuming context ever needs its own scoped
+/// credential (a CI system, an external `docker login` user), that's the
+/// point to build the real OCI Distribution token-auth flow instead of a
+/// fourth bespoke credential type.
+#[derive(Debug, Clone, Copy)]
+pub struct BuildServiceIdentity;
+
+impl<S: Send + Sync> FromRequestParts<S> for BuildServiceIdentity {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<BuildServiceIdentity>()
+            .copied()
+            .ok_or((StatusCode::UNAUTHORIZED, "not authenticated"))
+    }
+}
+
+/// A normal session identity, a pull-scoped one, or the build-push service
+/// identity — the extractor used by read-only routes (manifest/blob/tags
+/// GET+HEAD) that must accept all three (BuildKit HEAD-checks blobs before
+/// pushing, so the build-push identity needs read access too). See
+/// [`check_pull_access`]. Write routes use the separate [`Writer`] enum,
+/// which has no `PullOnly` variant.
 #[derive(Debug, Clone)]
 pub enum Caller {
     Session(CallerIdentity),
     PullOnly(PullOnlyIdentity),
+    BuildService,
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for Caller {
@@ -75,6 +116,39 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
         }
         if let Some(identity) = parts.extensions.get::<PullOnlyIdentity>() {
             return Ok(Caller::PullOnly(*identity));
+        }
+        if parts.extensions.get::<BuildServiceIdentity>().is_some() {
+            return Ok(Caller::BuildService);
+        }
+        Err((StatusCode::UNAUTHORIZED, "not authenticated"))
+    }
+}
+
+/// A normal session identity or the build-push service identity — the
+/// extractor used by write routes (blob upload init/patch/complete,
+/// manifest put). Deliberately **no `PullOnly` variant**: a request carrying
+/// only a [`PullOnlyIdentity`] extension cannot satisfy this extractor at
+/// all, so it's structurally impossible (not just correctly-implemented-
+/// today) for a pull credential to reach a write — mirrors why
+/// [`PullOnlyIdentity`]'s own doc says the same about the routes that take
+/// `CallerIdentity`/`Writer` instead of `Caller`. Delete routes are stricter
+/// still and take `CallerIdentity` directly, so `BuildService` can never
+/// delete either.
+#[derive(Debug, Clone)]
+pub enum Writer {
+    Session(CallerIdentity),
+    BuildService,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Writer {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+        if let Some(identity) = parts.extensions.get::<CallerIdentity>() {
+            return Ok(Writer::Session(identity.clone()));
+        }
+        if parts.extensions.get::<BuildServiceIdentity>().is_some() {
+            return Ok(Writer::BuildService);
         }
         Err((StatusCode::UNAUTHORIZED, "not authenticated"))
     }
@@ -156,6 +230,21 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
                 Err(OciError::Forbidden(format!("not permitted to access repository '{repo}'")))
             }
         }
+        // Trusted, server-orchestrated infrastructure — no per-repo restriction.
+        Caller::BuildService => Ok(()),
+    }
+}
+
+/// Enforce that `writer` may push to `repo` — the [`Writer`]-accepting
+/// counterpart of [`check_repo_access`], used by the blob-upload and
+/// manifest-put handlers. A [`Writer::Session`] goes through the exact same
+/// policy as `check_repo_access` (zero change to the existing JWT-based
+/// interactive/CLI push path); `Writer::BuildService` is unrestricted, same
+/// reasoning as [`Caller::BuildService`] above.
+pub async fn check_write_access(state: &OciState, writer: &Writer, repo: &str) -> Result<()> {
+    match writer {
+        Writer::Session(identity) => check_repo_access(state, identity, repo).await,
+        Writer::BuildService => Ok(()),
     }
 }
 

@@ -128,6 +128,15 @@ fn minimal_pool_opts() -> PgPoolOptions {
 
 impl TestServer {
     pub async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    /// Same as [`start`](Self::start), but lets the caller override fields on
+    /// the generated `Config` before the server boots — e.g. setting
+    /// `build_push_token` for tests exercising the build-service OCI auth
+    /// path, which `test_config()` otherwise always leaves empty.
+    #[allow(dead_code)]
+    pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
@@ -153,7 +162,8 @@ impl TestServer {
             .expect("connect to test db");
 
         let s3_ep = s3_endpoint();
-        let config = test_config(db_url, redis_url(), s3_ep.clone());
+        let mut config = test_config(db_url, redis_url(), s3_ep.clone());
+        configure(&mut config);
 
         let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
         let auth: Arc<dyn nasiko_auth::AuthService> =
@@ -236,6 +246,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
+        build_push_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,
@@ -275,23 +286,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         cors_allowed_origins: vec![],
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
-        // Overridable so tests can point the Composio ToolProvider at a mockito
-        // stub (there is no other seam to inject a fake provider — McpState builds
-        // it straight from these two Config fields). Unset in the vast majority of
-        // tests, which must keep seeing "Composio not configured" (COMPOSIO_API_KEY
-        // unset in production === `composio_api_key: None`).
-        composio_api_key: std::env::var("TEST_COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
-        composio_base_url: std::env::var("TEST_COMPOSIO_BASE_URL")
-            .unwrap_or_else(|_| "https://backend.composio.dev".into()),
-        composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET").ok().filter(|s| !s.is_empty()),
-        // Overridable so the MCP OAuth callback round-trip test can exercise the
-        // full `exchange_code` path (which needs `oauth_redirect_uri()` to be
-        // `Some`). `None` by default, matching every other test's assumption
-        // that the gateway's public URL is unconfigured.
-        mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL").ok().filter(|s| !s.is_empty()),
-        mcp_session_ttl_seconds: 300,
-        mcp_perm_cache_ttl_seconds: 30,
-        mcp_manifest_ttl_seconds: 300,
     }
 }
 
@@ -351,6 +345,18 @@ pub fn as_member(
     username: &str,
 ) -> reqwest::RequestBuilder {
     rb.bearer_auth(sign_token(user_id, username, false, "member"))
+}
+
+/// Attach HTTP Basic auth — the credential type the OCI registry's pull-only
+/// path (`nasiko_oci::pull_credentials`) accepts, distinct from the bearer-JWT
+/// paths above.
+#[allow(dead_code)]
+pub fn as_pull_credential(
+    rb: reqwest::RequestBuilder,
+    username: &str,
+    password: &str,
+) -> reqwest::RequestBuilder {
+    rb.basic_auth(username, Some(password))
 }
 
 /// Build an in-memory zip archive from `(path, bytes)` pairs.

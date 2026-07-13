@@ -25,3 +25,5 @@ aws-config.workspace = true
 dashmap.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
+nasiko-runtime.workspace = true

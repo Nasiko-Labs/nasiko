@@ -167,3 +167,13 @@ impl S3Storage {
         Ok(())
     }
 }
+
+/// The default, cloud-agnostic [`BucketProvisioner`](nasiko_runtime::BucketProvisioner) -
+/// speaks the S3 protocol against whatever `S3_ENDPOINT` points to (RustFS in
+/// every real Nasiko deployment today, but any S3-compatible store works).
+#[async_trait::async_trait]
+impl nasiko_runtime::BucketProvisioner for S3Storage {
+    async fn ensure_bucket(&self) -> std::result::Result<(), anyhow::Error> {
+        self.ensure_bucket(false).await
+    }
+}

@@ -25,13 +25,24 @@ pub async fn blob_linked(state: &OciState, repository: &str, digest: &str) -> Re
     Ok(linked)
 }
 
-/// Fetch the blob's bytes so the caller can stream them back directly,
-/// instead of redirecting to a presigned S3 URL. The presigned-URL approach
-/// only works when S3 is reachable at a public, HTTPS-capable address; in
-/// the EE topology S3/MinIO is internal-only and plain HTTP, so a redirect
-/// there is unreachable from remote/k8s clients pulling over HTTPS. Mirrors
-/// `ee/artifact-registry`'s `get_blob`, which has always streamed directly.
-pub async fn get_blob_data(state: &OciState, repository: &str, digest: &str) -> Result<Bytes> {
+/// Fetches the full blob body from storage for the caller to receive directly
+/// from `nasiko-server`, rather than a presigned redirect straight to the
+/// storage backend.
+///
+/// A redirect to the storage backend's own endpoint only works when that
+/// endpoint is reachable from wherever the puller runs. For the default
+/// self-hosted backend (RustFS behind a K8s ClusterIP) that's only true from
+/// inside the cluster's pod network — but image pulls happen via
+/// kubelet/containerd running in the **node's** network namespace, which
+/// can't resolve any in-cluster service name (bare or FQDN) at all, since
+/// CoreDNS is only wired into pods' `/etc/resolv.conf`, not the node's own
+/// resolver. Found live: every real K8s node's image pull 404'd on the
+/// presigned RustFS URL with a DNS lookup failure. Streaming through
+/// `nasiko-server` instead reuses the exact path (ingress + TLS) that
+/// manifest pulls already prove reachable from real nodes, and keeps every
+/// byte behind this app's own auth check instead of a bearer-token URL that's
+/// valid for anyone who has it until it expires.
+pub async fn get_blob_bytes(state: &OciState, repository: &str, digest: &str) -> Result<Bytes> {
     if !blob_linked(state, repository, digest).await? {
         return Err(OciError::NotFound(format!("blob {digest} not found")));
     }

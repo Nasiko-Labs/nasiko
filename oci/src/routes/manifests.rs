@@ -6,7 +6,7 @@ use axum::{
 };
 
 use crate::OciState;
-use crate::authz::{Caller, CallerIdentity, check_pull_access, check_repo_access, check_repo_delete_access};
+use crate::authz::{Caller, CallerIdentity, Writer, check_pull_access, check_repo_delete_access, check_write_access};
 use crate::error::Result;
 use crate::ops;
 
@@ -32,11 +32,11 @@ pub async fn get_manifest(
 
 pub async fn put_manifest(
     State(state): State<OciState>,
-    caller: CallerIdentity,
+    writer: Writer,
     Path((owner, repo, reference)): Path<(String, String, String)>,
     request: Request<Body>,
 ) -> Result<Response> {
-    check_repo_access(&state, &caller, &repo).await?;
+    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
     let content_type = request
         .headers()

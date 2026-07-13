@@ -24,7 +24,11 @@ pub struct PlaintextCredential {
     pub token: String,
 }
 
-fn hash_token(token: &str) -> String {
+/// Pure SHA-256 hex digest — also reused outside this module (e.g. by the
+/// host application's build-push-token comparison) since it carries no
+/// pull-credential-specific logic, just the hashing convention every
+/// Basic-auth credential in this registry compares against.
+pub fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())

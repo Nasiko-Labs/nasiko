@@ -192,3 +192,17 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(())
     }
 }
+
+/// Ensures an object-storage bucket exists before first use, abstracting over
+/// which concrete backend provisions it.
+///
+/// The self-hosted, S3-protocol-compatible default (RustFS) is deployment-agnostic
+/// and works unmodified on any cloud or on-prem. A genuinely cloud-native
+/// implementation (real AWS S3 via IAM, Azure Blob Storage, GCS) can implement
+/// this same interface later - mirroring the [`ContainerRuntime`] OSS/EE split -
+/// without any call site needing to change.
+#[async_trait]
+pub trait BucketProvisioner: Send + Sync {
+    /// Idempotent: creates the bucket if it doesn't already exist, otherwise a no-op.
+    async fn ensure_bucket(&self) -> anyhow::Result<()>;
+}

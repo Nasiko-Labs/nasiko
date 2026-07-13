@@ -438,8 +438,6 @@ pub async fn execute_agent_update(
             tokio::fs::write(&dockerfile_path, &patched)
                 .await
                 .map_err(|e| format!("write Dockerfile: {e}"))?;
-            nasiko_observability::write_otel_patch_file(&agent_source_dir)
-                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
         }
 
         let src = agent_source_dir.clone();
@@ -453,7 +451,8 @@ pub async fn execute_agent_update(
         let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
         // Key on the agent UUID (not name) so the update re-targets the existing
         // workload instead of spawning an orphaned name-keyed duplicate (RUN-2/7).
-        let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), vec![], secrets, None);
+        let mut spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), vec![], secrets, None);
+        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
         // Capture the ports build_agent_spec actually resolved (defaults empty -> 8000)
         // so they can be persisted below (RUN-3b) — restart reads this back.
         let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
@@ -504,7 +503,12 @@ pub async fn execute_agent_update(
             .execute(db)
             .await;
 
-            let agent_url = deploy_status.endpoint.unwrap_or_default();
+            let agent_url = crate::agents::resolve_agent_url(
+                &state.runtime,
+                &deploy_status,
+                &nasiko_runtime::ContainerId::from_uuid(agent_id),
+            )
+            .await;
             let _ = sqlx::query(
                 "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
             )
@@ -754,7 +758,8 @@ pub async fn execute_agent_rollback(
 
     let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
     // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
-    let spec = crate::agents::build_agent_spec(agent_id, &agent_name, target.image_tag.clone(), vec![], secrets, None);
+    let mut spec = crate::agents::build_agent_spec(agent_id, &agent_name, target.image_tag.clone(), vec![], secrets, None);
+    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
     // Capture the resolved ports so they can be persisted below (RUN-3b).
     let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
 
@@ -778,7 +783,12 @@ pub async fn execute_agent_rollback(
             .execute(db)
             .await;
 
-            let agent_url = deploy_status.endpoint.unwrap_or_default();
+            let agent_url = crate::agents::resolve_agent_url(
+                &state.runtime,
+                &deploy_status,
+                &nasiko_runtime::ContainerId::from_uuid(agent_id),
+            )
+            .await;
             let _ = sqlx::query(
                 "UPDATE agents SET status = 'running', url = $2, version = $3, image = $4, updated_at = now() \
                  WHERE id = $1",

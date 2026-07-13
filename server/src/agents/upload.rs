@@ -468,6 +468,8 @@ pub async fn execute_upload_and_deploy(
     // the API key is never persisted in cleartext (RUN-5). Caller env wins.
     openai_api_key: Option<String>,
     openai_base_url: Option<String>,
+    agent_runtime: String,
+    agent_image_registry: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -505,12 +507,6 @@ pub async fn execute_upload_and_deploy(
                 .await
                 .map_err(|e| format!("write Dockerfile: {e}"))?;
             tracing::info!(build_id = %build_id, "patched Dockerfile with OTel instrumentation");
-
-            // Write the Python sitecustomize file into the build context so the
-            // Dockerfile COPY step can include it in the agent image.
-            nasiko_observability::write_otel_patch_file(&tmp_dir)
-                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
-            tracing::info!(build_id = %build_id, "wrote .nasiko_otel_patch.py to build context");
         }
 
         // Build Docker image.
@@ -524,7 +520,8 @@ pub async fn execute_upload_and_deploy(
         set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
 
         // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
-        let spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
+        let mut spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
+        crate::agents::attach_pull_credential(&db, &agent_runtime, &agent_image_registry, &mut spec, agent_id).await;
         let deploy_status = runtime
             .deploy(&spec)
             .await
@@ -555,7 +552,12 @@ pub async fn execute_upload_and_deploy(
             .bind(build_id)
             .execute(&db)
             .await;
-            let agent_url = deploy_status.endpoint.unwrap_or_default();
+            let agent_url = crate::agents::resolve_agent_url(
+                &runtime,
+                &deploy_status,
+                &nasiko_runtime::ContainerId::from_uuid(agent_id),
+            )
+            .await;
             let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
                 .bind(agent_id)
                 .bind(&agent_url)

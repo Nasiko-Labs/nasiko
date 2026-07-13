@@ -2,13 +2,13 @@ use axum::{
     body::Body,
     extract::{Path, Query, Request, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::OciState;
-use crate::authz::{Caller, CallerIdentity, check_pull_access, check_repo_access, check_repo_delete_access};
+use crate::authz::{Caller, CallerIdentity, Writer, check_pull_access, check_repo_delete_access, check_write_access};
 use crate::error::{OciError, Result};
 use crate::ops;
 
@@ -48,8 +48,18 @@ pub async fn get_blob(
 ) -> Result<Response> {
     check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
-    let url = ops::get_blob_redirect_url(&state, &name, &digest).await?;
-    Ok(Redirect::temporary(&url).into_response())
+    let data = ops::get_blob_bytes(&state, &name, &digest).await?;
+    let size_str = data.len().to_string();
+    Ok((
+        StatusCode::OK,
+        [
+            ("Content-Length", size_str.as_str()),
+            ("Docker-Content-Digest", digest.as_str()),
+            ("Content-Type", "application/octet-stream"),
+        ],
+        data,
+    )
+        .into_response())
 }
 
 pub async fn delete_blob(
@@ -65,10 +75,10 @@ pub async fn delete_blob(
 
 pub async fn initiate_upload(
     State(state): State<OciState>,
-    caller: CallerIdentity,
+    writer: Writer,
     Path((owner, repo)): Path<(String, String)>,
 ) -> Result<Response> {
-    check_repo_access(&state, &caller, &repo).await?;
+    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
     let upload_id = ops::initiate_upload(&state, &name).await?;
 
@@ -89,11 +99,11 @@ pub async fn initiate_upload(
 
 pub async fn patch_upload(
     State(state): State<OciState>,
-    caller: CallerIdentity,
+    writer: Writer,
     Path((owner, repo, upload_uuid)): Path<(String, String, String)>,
     request: Request<Body>,
 ) -> Result<Response> {
-    check_repo_access(&state, &caller, &repo).await?;
+    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
     let upload_id: Uuid = upload_uuid
         .parse()
@@ -128,12 +138,12 @@ pub struct CompleteUploadParams {
 
 pub async fn complete_upload(
     State(state): State<OciState>,
-    caller: CallerIdentity,
+    writer: Writer,
     Path((owner, repo, upload_uuid)): Path<(String, String, String)>,
     Query(params): Query<CompleteUploadParams>,
     request: Request<Body>,
 ) -> Result<Response> {
-    check_repo_access(&state, &caller, &repo).await?;
+    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
     let upload_id: Uuid = upload_uuid
         .parse()

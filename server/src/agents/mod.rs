@@ -7,9 +7,10 @@ pub mod update;
 pub mod upload;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::Router;
-use nasiko_runtime::{ContainerId, DeploymentSpec, ResourceLimits};
+use nasiko_runtime::{ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, ResourceLimits};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -45,11 +46,20 @@ pub(crate) const DEFAULT_AGENT_PORT: u16 = 8000;
 /// set, an update/rollback push or deploy referenced an unqualified tag — wrong
 /// push target, or an ImagePullBackOff since the cluster has no reason to resolve
 /// a bare tag against the configured private registry.
+///
+/// Always includes the `nasiko/` owner segment — matching the same convention
+/// `oss/cli`'s own push/deploy paths already use (`push.rs`/`deploy.rs`'s
+/// `format!("nasiko/{agent_name}")`, `qualify_deploy_image`'s doc comment) —
+/// because `oss/oci`'s registry routes are shaped `/v2/{owner}/{repo}/...`
+/// (two path segments). A bare `{name}:{tag}` push target has only one segment
+/// after the host and 404s at the Axum router level before any auth/handler
+/// logic runs (found live: BuildKit push to `.../v2/translator/blobs/uploads/`
+/// failed with a plain 404, not a 401/403).
 pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
     if registry.is_empty() {
-        format!("{name}:{tag}")
+        format!("nasiko/{name}:{tag}")
     } else {
-        format!("{registry}/{name}:{tag}")
+        format!("{registry}/nasiko/{name}:{tag}")
     }
 }
 
@@ -77,6 +87,34 @@ pub(crate) async fn attach_pull_credential(db: &sqlx::PgPool, agent_runtime: &st
         Ok(None) => {}
         Err(e) => tracing::error!(%e, %agent_id, "failed to mint OCI pull credential; image pulls may fail"),
     }
+}
+
+/// Resolves the URL to persist as `agents.url` right after a `deploy()` call.
+///
+/// `DeploymentStatus::endpoint` (as returned by both `deploy()` and `status()`)
+/// is only populated once the workload is observed actually `Running` at that
+/// exact instant — see `ee/k8s-runtime`'s `status()`. For Kubernetes, a fresh
+/// Deployment/Service apply is essentially never Ready yet by the time
+/// `deploy()` returns (scheduling, image pull, and readiness probes all take
+/// real time), so every caller that persisted `deploy_status.endpoint`
+/// directly was writing an empty `agents.url` on every single deploy, and
+/// nothing ever went back to fill it in once the pod *did* become ready —
+/// found live: `agent_proxy` 502'd with `NoEndpoint` on an agent that had
+/// been happily `Running` for many minutes.
+///
+/// The Service address itself is deterministic and exists the moment the
+/// Service object is created, independent of pod readiness, so fall back to
+/// the readiness-independent `endpoint()` call instead of defaulting to an
+/// empty string.
+pub(crate) async fn resolve_agent_url(
+    runtime: &Arc<dyn ContainerRuntime>,
+    deploy_status: &DeploymentStatus,
+    container_id: &ContainerId,
+) -> String {
+    if let Some(ep) = &deploy_status.endpoint {
+        return ep.clone();
+    }
+    runtime.endpoint(container_id).await.unwrap_or_default()
 }
 
 /// Qualifies an already-composed `name:tag` image reference with
@@ -180,5 +218,20 @@ mod spec_tests {
     #[test]
     fn qualify_deploy_image_leaves_third_party_image_untouched() {
         assert_eq!(qualify_deploy_image("registry.example.com", "nginx:latest"), "nginx:latest");
+    }
+
+    #[test]
+    fn build_image_tag_includes_nasiko_owner_segment_with_registry() {
+        // oss/oci's registry routes are shaped /v2/{owner}/{repo}/... (two
+        // path segments) — a single-segment repo 404s at the router level.
+        assert_eq!(
+            build_image_tag("registry.example.com", "my-agent", "1.0.0"),
+            "registry.example.com/nasiko/my-agent:1.0.0"
+        );
+    }
+
+    #[test]
+    fn build_image_tag_includes_nasiko_owner_segment_without_registry() {
+        assert_eq!(build_image_tag("", "my-agent", "1.0.0"), "nasiko/my-agent:1.0.0");
     }
 }
