@@ -229,9 +229,12 @@ fn default_transport() -> String {
     "streamable_http".to_string()
 }
 
-/// Tool-routing namespace prefix for a connector — first 16 hex of its id (64
-/// bits; collision probability is negligible even platform-wide). Derived from
-/// id, never name, so two owners' connectors can't collide (fix #1).
+/// Tool-routing namespace prefix for a connector — first 16 hex of its id.
+/// Derived from `id`, never `name`, so two owners sharing a display name don't
+/// collide (fix #1). The 16-hex (64-bit) width makes an *id*-prefix collision
+/// negligible platform-wide (fix #5) — negligible, not impossible: there is no
+/// DB uniqueness constraint on the prefix, so this is a probabilistic bound, not
+/// a hard guarantee. Widen further or add a uniqueness index if that ever matters.
 pub fn connector_prefix(id: Uuid) -> String {
     let mut s = id.simple().to_string();
     s.truncate(16);

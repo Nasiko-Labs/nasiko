@@ -349,19 +349,23 @@ impl ToolProvider for ComposioProvider {
 
     async fn list_toolkit_tools(&self, toolkit: &str) -> Result<Vec<ToolDescriptor>> {
         // GET /api/v3/tools?toolkit_slugs=<toolkit> → { items: [ { slug, description } ] }.
-        // VERIFY-LIVE: confirm the tool name field is `slug` (fallback `name`).
         let resp = self
             .get_json_opt("/api/v3/tools", &[("toolkit_slugs", &toolkit.to_uppercase())], DEFAULT_TIMEOUT)
             .await?;
         let Some(resp) = resp else { return Ok(Vec::new()) };
         let items = resp.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
+        // The v3 `toolkit_slugs` filter has been observed live to be ignored
+        // server-side (returning tools from unrelated toolkits), which would
+        // pollute a connector's permission UI with other toolkits' tools. Scope
+        // client-side too: a Composio tool slug is `TOOLKIT_ACTION`, and items may
+        // also carry an explicit `toolkit` field — keep only matches for `toolkit`.
+        let want = toolkit.to_ascii_lowercase();
         Ok(items
             .iter()
             .filter_map(|it| {
-                first_str(it, &["slug", "name"]).map(|name| ToolDescriptor {
-                    name,
-                    description: first_str(it, &["description"]),
-                })
+                let name = first_str(it, &["slug", "name"])?;
+                let item_toolkit = item_toolkit_slug(it).unwrap_or_else(|| slug_toolkit(&name));
+                (item_toolkit == want).then(|| ToolDescriptor { name, description: first_str(it, &["description"]) })
             })
             .collect())
     }
@@ -370,4 +374,19 @@ impl ToolProvider for ComposioProvider {
 /// Truncate on a char boundary for safe error/log messages.
 fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
+}
+
+/// Toolkit slug embedded in a Composio tool slug: `GITHUB_CREATE_ISSUE` → `github`.
+/// Skips leading underscores so `_1PASSWORD_...` → `1password`, not empty.
+fn slug_toolkit(slug: &str) -> String {
+    slug.split('_').find(|s| !s.is_empty()).unwrap_or("").to_ascii_lowercase()
+}
+
+/// Explicit toolkit slug on a tool item, if present (`toolkit.slug`/`.name` or a
+/// flat `toolkit_slug`/`toolkit`). `None` → caller derives it from the tool slug.
+fn item_toolkit_slug(item: &Value) -> Option<String> {
+    item.get("toolkit")
+        .and_then(|t| first_str(t, &["slug", "name"]))
+        .or_else(|| first_str(item, &["toolkit_slug", "toolkit"]))
+        .map(|s| s.to_ascii_lowercase())
 }

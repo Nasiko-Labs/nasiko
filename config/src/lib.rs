@@ -20,12 +20,6 @@ pub struct Config {
     /// e.g. `"host.docker.internal:5001"` for local K8s dev.
     /// Empty string → no prefix (Docker local mode).
     pub agent_image_registry: String,
-    /// Shared credential the in-cluster BuildKit build Job presents (HTTP
-    /// Basic auth, username `"build-service"`) to push freshly-built agent
-    /// images into the built-in OCI registry — see
-    /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
-    /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
-    pub build_push_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -42,6 +36,13 @@ pub struct Config {
     pub otel_capture_content: bool,
     pub tempo_url: String,
     pub loki_url: String,
+    /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
+    /// source of truth for "is observability configured". True iff both
+    /// `TEMPO_URL` and `LOKI_URL` were explicitly set in the environment
+    /// (the URLs above always carry a default, so their presence alone can't
+    /// answer this). Everything that gates on observability reads this flag
+    /// rather than re-inspecting env, so no two code paths can disagree.
+    pub observability_enabled: bool,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -77,6 +78,25 @@ pub struct Config {
     /// When set, the Docker runtime pulls images from this registry before creating containers.
     /// Maps to env var `OCI_REGISTRY_HOST`.
     pub oci_registry_host: Option<String>,
+
+    // ─── MCP Gateway ────────────────────────────────────────────────────────
+    /// Composio platform API key. When unset, Composio integration is disabled
+    /// (generic MCP servers still work).
+    pub composio_api_key: Option<String>,
+    /// Composio v3 HTTP API base URL.
+    pub composio_base_url: String,
+    /// HMAC secret used to verify inbound Composio webhooks. When unset,
+    /// signature verification is skipped (dev only).
+    pub composio_webhook_secret: Option<String>,
+    /// Public URL of the MCP gateway, injected into every deployed agent as
+    /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
+    pub mcp_gateway_public_url: Option<String>,
+    /// TTL (seconds) for the Redis-cached resolved backend/session list.
+    pub mcp_session_ttl_seconds: u64,
+    /// TTL (seconds) for the Redis-cached per-agent permission context.
+    pub mcp_perm_cache_ttl_seconds: u64,
+    /// TTL (seconds) for the Redis-cached aggregated tool manifest.
+    pub mcp_manifest_ttl_seconds: u64,
 }
 
 impl Config {
@@ -97,7 +117,6 @@ impl Config {
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
-            build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -112,7 +131,7 @@ impl Config {
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://otel-collector:4318",
+                "http://host.containers.internal:4317",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
@@ -127,6 +146,11 @@ impl Config {
                 "LOKI_URL",
                 "http://loki.nasiko-infra.svc.cluster.local:3100",
             ),
+            // Enabled only when BOTH backends are explicitly configured; a
+            // partial config is treated as disabled. Computed here, the one place
+            // env is read, so every consumer agrees on whether it's enabled.
+            observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
+                && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
@@ -161,6 +185,18 @@ impl Config {
                 .collect(),
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
+
+            composio_api_key: std::env::var("COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
+            composio_base_url: env_or("COMPOSIO_BASE_URL", "https://backend.composio.dev"),
+            composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
+            mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
+            mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
         })
     }
 

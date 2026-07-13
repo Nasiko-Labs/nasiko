@@ -106,7 +106,10 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
     let url = url.trim_end_matches('/').to_string();
     crate::net::validate_public_url(&url).await?;
 
-    let (detected, status) = probe_initialize(&state.http_client, &url)
+    // Guarded client: `validate_public_url` is a one-shot pre-check; the probe
+    // itself must go through the SSRF/DNS-rebinding-guarded client so a rebinding
+    // DNS can't point it at an internal address between the two resolutions.
+    let (detected, status) = probe_initialize(&state.guarded_http_client, &url)
         .await
         .map_err(|e| McpError::Backend(format!("could not reach MCP server: {e}")))?;
 
@@ -390,6 +393,20 @@ pub async fn revoke_share(
     if let Some(uid) = grantee_user {
         crate::session::invalidate_session_cache(state, uid).await;
     }
+
+    // Defense in depth: drop the affected grantee's cached permission contexts
+    // for any agent that referenced this connector (mirrors delete_connector).
+    // Access itself is a live DB read (`can_access_connector`) and the manifest
+    // key self-invalidates when the connector drops out of the grantee's
+    // accessible set, so this isn't required for correctness today — it keeps
+    // revocation immediate even if either of those is ever changed to cache.
+    // A public revoke (`grantee_user == None`) affects every pair.
+    for (uid, aid) in repo::get_agent_pairs_for_connector(&state.db, connector.id).await? {
+        if grantee_user.is_none_or(|g| g == uid) {
+            permissions::invalidate_permission_cache(state, uid, aid).await;
+        }
+    }
+
     tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "revoked share");
     Ok(())
 }

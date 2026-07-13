@@ -234,6 +234,29 @@ async fn composio_check_status_not_found() {
 }
 
 #[tokio::test]
+async fn composio_list_toolkit_tools_scopes_to_requested_toolkit() {
+    // Reproduces the live finding: the server ignores `toolkit_slugs` and returns
+    // tools from unrelated toolkits (github request → 1password/21risk tools).
+    // The client must scope the result to the requested toolkit regardless.
+    let mut srv = mockito::Server::new_async().await;
+    srv.mock("GET", mockito::Matcher::Regex("/api/v3/tools.*".into()))
+        .with_status(200)
+        .with_body(
+            r#"{"items":[
+                {"slug":"GITHUB_CREATE_AN_ISSUE","description":"create issue"},
+                {"slug":"GITHUB_LIST_REPOS","description":"list repos","toolkit":{"slug":"github"}},
+                {"slug":"_1PASSWORD_COUNT_COMPANIES","description":"unrelated"},
+                {"slug":"_21RISK_GET_COMPLIANCE","description":"unrelated","toolkit":{"slug":"21risk"}}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+    let tools = composio(srv.url()).list_toolkit_tools("github").await.unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, vec!["GITHUB_CREATE_AN_ISSUE", "GITHUB_LIST_REPOS"], "only github tools may be returned");
+}
+
+#[tokio::test]
 async fn composio_create_session_nested_and_flat() {
     // Nested `mcp` envelope.
     let mut srv = mockito::Server::new_async().await;

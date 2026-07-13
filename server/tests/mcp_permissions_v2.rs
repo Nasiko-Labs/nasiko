@@ -643,24 +643,16 @@ async fn matrix_explicit_enabled_true_row_behaves_like_absent() {
     server.cleanup().await;
 }
 
-/// NEW BUG (beyond the three already known): disabling a connector for an agent
-/// (`enabled=false`) is enforced at `tools/list` (`aggregator.rs`'s
-/// `!perms.is_connector_enabled(..) => continue`) but NOT at `tools/call`
-/// (`protocol.rs::handle_tools_call`'s `ServerType::Mcp` branch only checks
-/// `can_access_connector` (ownership) + `get_stance` (tool-level); it never
-/// calls `perms.is_connector_enabled`). `session::resolve_session` also builds
-/// its backend list per-user, not per-agent, so a disabled connector's backend
-/// is still present in `resolved.servers` and `route_tool` resolves it fine.
-/// Net effect: an agent that already knows (or can derive — the namespace
-/// prefix is just the first 16 hex chars of the connector's UUID) a disabled
-/// connector's namespaced tool name can still call it and reach the real
-/// backend, even though the operator disabled that connector for this agent.
-/// Left UN-IGNORED: it characterizes current (buggy) behavior, not a desired
-/// one — flip this test's expectation once `handle_tools_call` gains an
-/// `is_connector_enabled` check.
+/// Regression guard for finding #10 (authorization bypass): disabling a
+/// connector for an agent (`enabled=false`) must be enforced at BOTH surfaces.
+/// `tools/list` hid it before; `tools/call` did not (its `ServerType::Mcp` branch
+/// only checked `can_access_connector` + tool stance, never the enable flag), so
+/// a caller who derived the namespaced tool name could still reach the backend.
+/// Both surfaces now go through `PermissionContext::decide`, so a disabled
+/// connector is denied at call time and the backend is never invoked.
 #[tokio::test]
 #[serial]
-async fn matrix_disabled_connector_hidden_from_list_but_tools_call_still_reaches_backend_bug() {
+async fn matrix_disabled_connector_is_denied_at_both_list_and_call() {
     let server = common::TestServer::start().await;
     let fx = setup_fixture(&server).await;
     fx.set_connector_enabled(&server, false).await;
@@ -669,15 +661,14 @@ async fn matrix_disabled_connector_hidden_from_list_but_tools_call_still_reaches
     assert!(names.is_empty(), "a disabled connector's tools must be hidden entirely from tools/list: {names:?}");
 
     let res = fx.call(&server, TOOL_OTHER).await;
-    assert!(
-        res.get("error").is_none(),
-        "BUG: tools/call for a disabled connector currently still succeeds — is_connector_enabled is never \
-         checked in protocol.rs::handle_tools_call's ServerType::Mcp branch: {res:?}"
-    );
     assert_eq!(
-        fx.calls.lock().unwrap().as_slice(),
-        &[TOOL_OTHER.to_string()],
-        "BUG: the real backend was actually invoked despite the connector being disabled for this agent"
+        res["error"]["code"],
+        json!(codes::TOOL_BLOCKED),
+        "tools/call on a disabled connector must be denied, not executed: {res:?}"
+    );
+    assert!(
+        fx.calls.lock().unwrap().is_empty(),
+        "the real backend must NEVER be invoked for a connector disabled for this agent"
     );
 
     server.cleanup().await;

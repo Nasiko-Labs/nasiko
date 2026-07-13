@@ -12,10 +12,10 @@ use uuid::Uuid;
 
 use crate::cache;
 use crate::error::Result;
-use crate::permissions::{PermissionContext, sha256_hex16};
+use crate::permissions::{PermissionContext, ToolAccess, sha256_hex16};
 use crate::provider::generic::LIST_TIMEOUT;
 use crate::state::McpState;
-use crate::types::{MCPServerConfig, ServerType, Stance, connector_prefix};
+use crate::types::{MCPServerConfig, ServerType, connector_prefix};
 
 /// Fan out, namespace, filter, merge, cache. Returns the merged tool list.
 pub async fn aggregate_tools(
@@ -57,7 +57,10 @@ pub async fn aggregate_tools(
             continue;
         }
 
-        // Generic server: connector-level toggle, then per-tool block filter + id namespacing.
+        // Generic server: connector-level toggle (fast skip of the whole backend),
+        // then the SAME per-tool decision `tools/call` enforces — Denied tools are
+        // dropped, Ask/Allowed stay listed. Going through `decide` keeps list and
+        // call in lockstep.
         if !perms.is_connector_enabled(server.connector_id) {
             continue;
         }
@@ -67,7 +70,7 @@ pub async fn aggregate_tools(
             let Some(original) = obj.get("name").and_then(|n| n.as_str()).map(str::to_string) else {
                 continue;
             };
-            if perms.get_stance(server.connector_id, &original) == Stance::Block {
+            if perms.decide(server.connector_id, &original) == ToolAccess::Denied {
                 continue;
             }
             obj.insert("name".to_string(), json!(format!("{prefix}__{original}")));
@@ -80,19 +83,26 @@ pub async fn aggregate_tools(
     Ok(merged)
 }
 
-/// `mcp:manifest:{user}:{backends_fp}:{perms_hash}` where `backends_fp` hashes
-/// the sorted `(connector_id, url)` backends AND the sorted connected toolkits
-/// (the Composio URL is stable across toolkit changes, so the latter is needed).
+/// `mcp:manifest:{user}:{backends_fp}:{perms_hash}` where `backends_fp` hashes,
+/// per backend, `(connector_id, url, injected-headers fingerprint)` plus the
+/// sorted connected toolkits (the Composio URL is stable across toolkit changes,
+/// so the latter is needed).
+///
+/// The per-backend **headers fingerprint** is what closes finding #8: the
+/// injected credential lives in `headers` (bearer/basic/oauth token) or in `url`
+/// (url_param), so a credential/scope rotation that changes which tools a backend
+/// exposes now changes the key and invalidates the stale manifest. The headers
+/// are hashed (never placed in the key), so no secret is written to Redis.
 fn manifest_key(
     user_id: Uuid,
     servers: &[MCPServerConfig],
     connected_toolkits: &[String],
     perms_hash: &str,
 ) -> String {
-    let mut backends: Vec<(String, &str)> = servers
+    let mut backends: Vec<(String, &str, String)> = servers
         .iter()
         .filter(|s| !s.url.is_empty())
-        .map(|s| (s.connector_id.to_string(), s.url.as_str()))
+        .map(|s| (s.connector_id.to_string(), s.url.as_str(), headers_fingerprint(&s.headers)))
         .collect();
     backends.sort();
 
@@ -104,6 +114,18 @@ fn manifest_key(
     format!("mcp:manifest:{user_id}:{fp}:{perms_hash}")
 }
 
+/// Stable hash of a backend's injected headers (the credential lives here). Keys
+/// sorted for determinism; the result is a hash, so the raw secret never appears
+/// in the cache key. Empty headers → empty string (no fingerprint contribution).
+fn headers_fingerprint(headers: &std::collections::HashMap<String, String>) -> String {
+    if headers.is_empty() {
+        return String::new();
+    }
+    let mut pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    pairs.sort();
+    sha256_hex16(serde_json::to_string(&pairs).unwrap_or_default().as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -112,6 +134,7 @@ mod tests {
     use crate::config::McpConfig;
     use crate::permissions::PermissionRule;
     use crate::provider::{GenericMcpProvider, Providers};
+    use crate::types::Stance;
 
     fn srv(kind: ServerType, id: Uuid, url: &str) -> MCPServerConfig {
         MCPServerConfig {
@@ -166,10 +189,10 @@ mod tests {
         }
     }
 
-    // ─── manifest_key() — the cache-key gap (review finding #8) ───────────
+    // ─── manifest_key() — credential-aware cache key (review finding #8) ───
 
     #[test]
-    fn manifest_key_ignores_injected_credential_headers_known_gap() {
+    fn manifest_key_changes_when_injected_credential_rotates() {
         let user = Uuid::new_v4();
         let id = Uuid::new_v4();
         let mut old = srv(ServerType::Mcp, id, "https://backend.example/mcp");
@@ -181,15 +204,20 @@ mod tests {
         let k_old = manifest_key(user, &[old], &toolkits, "permshash1");
         let k_rotated = manifest_key(user, &[rotated], &toolkits, "permshash1");
 
-        // KNOWN GAP (review finding #8): the manifest cache key is derived
-        // only from (connector_id, url) pairs + connected_toolkits +
-        // perms_hash — per-backend `headers` (where the injected
-        // credential/token lives) never enter the key. A credential rotation
-        // that changes which tools are exposed (e.g. a narrower OAuth scope)
-        // is therefore invisible to the cache, and a stale manifest can be
-        // served for up to `manifest_ttl_seconds`. Asserting CURRENT (buggy)
-        // behavior — intentionally not #[ignore]d, it documents reality.
-        assert_eq!(k_old, k_rotated);
+        // Fix #8: the injected credential (here the bearer token in `headers`)
+        // is folded into the key via a hash, so a rotation that could change
+        // which tools the backend exposes invalidates the stale manifest instead
+        // of serving it for up to `manifest_ttl_seconds`.
+        assert_ne!(k_old, k_rotated, "a rotated credential must produce a different manifest cache key");
+    }
+
+    #[test]
+    fn manifest_key_does_not_leak_the_raw_credential() {
+        let user = Uuid::new_v4();
+        let mut s = srv(ServerType::Mcp, Uuid::new_v4(), "https://backend.example/mcp");
+        s.headers.insert("authorization".into(), "Bearer SUPER_SECRET_TOKEN".into());
+        let key = manifest_key(user, &[s], &[], "permshash1");
+        assert!(!key.contains("SUPER_SECRET_TOKEN"), "the raw credential must never appear in the cache key: {key}");
     }
 
     #[test]

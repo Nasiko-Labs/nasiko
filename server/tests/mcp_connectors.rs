@@ -244,8 +244,15 @@ async fn list_and_delete_auth_configs() {
     let member_id = member["id"].as_str().unwrap();
     let id = seed_composio_connector(&server, "notion", Some("Notion")).await;
 
-    // List is open to any authed user.
+    // List is admin-only (finding #9): a non-admin member is forbidden.
     let res = common::as_member(server.client.get(server.url("/api/mcp/auth-configs")), member_id, "acfg-lister")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "listing auth-configs must require admin");
+
+    // Admin can list.
+    let res = common::as_superuser(server.client.get(server.url("/api/mcp/auth-configs")), uid, "admin")
         .send()
         .await
         .unwrap();

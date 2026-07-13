@@ -9,13 +9,13 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::aggregator;
-use crate::permissions::{self, PermissionContext, toolkit_from_composio_slug};
+use crate::permissions::{self, PermissionContext, ToolAccess, toolkit_from_composio_slug};
 use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::repo;
 use crate::router;
 use crate::session::{self, ResolvedSession};
 use crate::state::McpState;
-use crate::types::{MCPServerConfig, PROTOCOL_VERSION, ServerType, Stance, codes};
+use crate::types::{MCPServerConfig, PROTOCOL_VERSION, ServerType, codes};
 
 fn ok(req_id: &Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": req_id, "result": result })
@@ -125,7 +125,7 @@ pub async fn handle_tools_call(
         Err(e) => return err(req_id, codes::INVALID_PARAMS, e.to_string()),
     };
 
-    // ── Generic MCP tool: Layer 1 then Layer 2 ─────────────────────────────
+    // ── Generic MCP tool: Layer 1 (reachability) then Layer 2 (decide) ─────
     if server.kind == ServerType::Mcp {
         match repo::can_access_connector(&state.db, perms.user_id, server.connector_id).await {
             Ok(true) => {}
@@ -134,11 +134,13 @@ pub async fn handle_tools_call(
             }
             Err(e) => return err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
         }
-        match perms.get_stance(server.connector_id, &original) {
-            Stance::Block => {
-                return err(req_id, codes::TOOL_BLOCKED, format!("Tool '{tool_name}' is blocked for this agent."));
+        // Same decision `tools/list` filters on — a connector disabled for this
+        // agent denies the call even though Layer 1 (owner/grant) still passes.
+        match perms.decide(server.connector_id, &original) {
+            ToolAccess::Denied => {
+                return err(req_id, codes::TOOL_BLOCKED, format!("Tool '{tool_name}' is blocked or disabled for this agent."));
             }
-            Stance::Ask => {
+            ToolAccess::Ask => {
                 return err_data(
                     req_id,
                     codes::TOOL_ASK,
@@ -146,7 +148,34 @@ pub async fn handle_tools_call(
                     json!({ "server": server.name }),
                 );
             }
-            Stance::Allow => {}
+            ToolAccess::Allowed => {}
+        }
+    }
+
+    // ── Composio DIRECT tool call: enforce per-toolkit permission ───────────
+    // A direct toolkit tool (e.g. GMAIL_SEND_EMAIL) resolves to its connector and
+    // is subject to the same decide() as any other tool. Previously only the two
+    // batch meta-tools below were checked, so a direct call bypassed enforcement
+    // entirely (Round 3). Cross-toolkit meta-tools (COMPOSIO_SEARCH_TOOLS,
+    // MANAGE_CONNECTIONS, MULTI_EXECUTE_TOOL) resolve to toolkit "composio", which
+    // maps to no connector — they skip this block and are handled below / passed
+    // through, exactly as before.
+    if server.kind == ServerType::Composio
+        && let Some(&cid) = resolved.toolkit_to_connector.get(&toolkit_from_composio_slug(tool_name))
+    {
+        match perms.decide(cid, tool_name) {
+            ToolAccess::Denied => {
+                return err(req_id, codes::TOOL_BLOCKED, format!("Tool '{tool_name}' is blocked or disabled for this agent."));
+            }
+            ToolAccess::Ask => {
+                return err_data(
+                    req_id,
+                    codes::TOOL_ASK,
+                    format!("Tool '{tool_name}' requires user approval. Grant access in the agent settings."),
+                    json!({ "server": "composio" }),
+                );
+            }
+            ToolAccess::Allowed => {}
         }
     }
 
@@ -190,11 +219,10 @@ pub async fn handle_tools_call(
             }
             let toolkit = toolkit_from_composio_slug(slug);
             match resolved.toolkit_to_connector.get(&toolkit) {
-                Some(&cid) if !perms.is_connector_enabled(cid) => blocked_slugs.push(slug.to_string()),
-                Some(&cid) => match perms.get_stance(cid, slug) {
-                    Stance::Block => blocked_slugs.push(slug.to_string()),
-                    Stance::Ask => ask_slugs.push(slug.to_string()),
-                    Stance::Allow => allowed.push(t.clone()),
+                Some(&cid) => match perms.decide(cid, slug) {
+                    ToolAccess::Denied => blocked_slugs.push(slug.to_string()),
+                    ToolAccess::Ask => ask_slugs.push(slug.to_string()),
+                    ToolAccess::Allowed => allowed.push(t.clone()),
                 },
                 None => allowed.push(t.clone()),
             }
@@ -244,4 +272,184 @@ fn connector_disabled(resolved: &ResolvedSession, perms: &PermissionContext, too
         .get(&toolkit.to_ascii_lowercase())
         .map(|cid| !perms.is_connector_enabled(*cid))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::config::McpConfig;
+    use crate::permissions::PermissionRule;
+    use crate::provider::{GenericMcpProvider, Providers};
+    use crate::types::Stance;
+
+    fn test_state() -> McpState {
+        let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
+            .expect("lazy pool construction must not touch the network");
+        let redis = redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client");
+        McpState {
+            db,
+            redis,
+            http_client: reqwest::Client::new(),
+            guarded_http_client: reqwest::Client::new(),
+            config: McpConfig {
+                composio_api_key: None,
+                composio_base_url: "http://localhost".to_string(),
+                composio_webhook_secret: None,
+                gateway_public_url: None,
+                session_ttl_seconds: 60,
+                perm_cache_ttl_seconds: 60,
+                manifest_ttl_seconds: 60,
+                oauth_state_signing_key: "test".to_string(),
+            },
+            providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
+        }
+    }
+
+    /// A resolved session with one Composio backend at `url` and a single
+    /// connected `gmail` toolkit mapped to `cid`.
+    fn gmail_session(url: &str, cid: Uuid) -> ResolvedSession {
+        ResolvedSession {
+            servers: vec![MCPServerConfig {
+                connector_id: Uuid::nil(),
+                kind: ServerType::Composio,
+                name: "composio".into(),
+                url: url.into(),
+                headers: HashMap::new(),
+                transport: "streamable_http".into(),
+            }],
+            connected_toolkits: vec!["gmail".into()],
+            toolkit_to_connector: HashMap::from([("gmail".to_string(), cid)]),
+        }
+    }
+
+    fn perms(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
+        PermissionContext {
+            user_id: Uuid::nil(),
+            agent_id: Uuid::nil(),
+            disabled_connectors: disabled.iter().copied().collect(),
+            rules,
+            hash: "h".into(),
+        }
+    }
+
+    fn rule(cid: Uuid, pat: &str, stance: Stance) -> PermissionRule {
+        PermissionRule { connector_id: cid, tool_pattern: pat.into(), stance }
+    }
+
+    // ── Round 3: direct Composio tool calls must be permission-enforced ──────
+
+    #[tokio::test]
+    async fn composio_direct_tool_with_block_rule_is_denied_before_backend() {
+        // url points nowhere reachable — a Denied decision must return before any
+        // backend call, so this must not hang or error on the network.
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(vec![rule(cid, "GMAIL_SEND_*", Stance::Block)], &[]);
+        let res = handle_tools_call(
+            &test_state(),
+            &json!(1),
+            &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
+    }
+
+    #[tokio::test]
+    async fn composio_direct_tool_on_disabled_connector_is_denied() {
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(vec![], &[cid]); // whole connector disabled for the agent
+        let res = handle_tools_call(
+            &test_state(),
+            &json!(1),
+            &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
+    }
+
+    #[tokio::test]
+    async fn composio_direct_tool_with_ask_rule_returns_tool_ask() {
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(vec![rule(cid, "*", Stance::Ask)], &[]);
+        let res = handle_tools_call(
+            &test_state(),
+            &json!(1),
+            &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res}");
+    }
+
+    #[tokio::test]
+    async fn composio_allowed_direct_tool_reaches_backend() {
+        let mut backend = mockito::Server::new_async().await;
+        let hit = backend
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session(&format!("{}/mcp", backend.url()), cid);
+        let p = perms(vec![], &[]); // default allow
+        let res = handle_tools_call(
+            &test_state(),
+            &json!(1),
+            &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+        assert_eq!(res["result"]["ok"], json!(true), "{res}");
+        hit.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn composio_cross_toolkit_metatool_is_not_caught_by_per_toolkit_check() {
+        // COMPOSIO_SEARCH_TOOLS resolves to toolkit "composio" (no connector), so
+        // even with the gmail connector disabled it must NOT be denied by the
+        // per-toolkit check — it proceeds to the backend (meta-tools are not
+        // connector-scoped; MANAGE_CONNECTIONS/MULTI_EXECUTE do their own filtering).
+        let mut backend = mockito::Server::new_async().await;
+        let hit = backend
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session(&format!("{}/mcp", backend.url()), cid);
+        let p = perms(vec![], &[cid]); // gmail disabled — irrelevant to a meta-tool
+        let res = handle_tools_call(
+            &test_state(),
+            &json!(1),
+            &json!({ "name": "COMPOSIO_SEARCH_TOOLS", "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+        assert!(res.get("error").is_none(), "a cross-toolkit meta-tool must not be blocked by the per-toolkit check: {res}");
+        hit.assert_async().await;
+    }
 }

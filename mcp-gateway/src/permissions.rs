@@ -47,10 +47,46 @@ pub struct PermissionContext {
     pub hash: String,
 }
 
+/// The per-agent Layer-2 decision for one `(connector, tool)`. This is the
+/// SINGLE source of truth shared by `tools/list` filtering (aggregator) and
+/// `tools/call` enforcement (protocol): both call [`PermissionContext::decide`],
+/// so the two surfaces can never drift apart (the drift that let a disabled
+/// connector's tools stay callable — see the `decide` doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolAccess {
+    /// Callable, no prompt.
+    Allowed,
+    /// Requires explicit user approval (surfaced, never auto-approved).
+    Ask,
+    /// Must not run — connector disabled for the agent, or tool stance `block`.
+    Denied,
+}
+
 impl PermissionContext {
     /// True unless the connector is explicitly disabled.
     pub fn is_connector_enabled(&self, connector_id: Uuid) -> bool {
         !self.disabled_connectors.contains(&connector_id)
+    }
+
+    /// The full Layer-2 access decision for `(connector, tool)`: connector-enable
+    /// toggle FIRST (a disabled connector denies every tool, regardless of any
+    /// stale allow rule), then the per-tool stance. Layer-1 reachability
+    /// (owner/grant) is a separate DB check the caller must already have passed.
+    ///
+    /// Every place that gates a tool — list filtering and call enforcement —
+    /// MUST go through this one method. Do not re-derive the decision from
+    /// `is_connector_enabled` + `get_stance` at a call site; that is exactly how
+    /// the two paths drifted before (list hid a disabled connector while call
+    /// still executed it).
+    pub fn decide(&self, connector_id: Uuid, tool_name: &str) -> ToolAccess {
+        if !self.is_connector_enabled(connector_id) {
+            return ToolAccess::Denied;
+        }
+        match self.get_stance(connector_id, tool_name) {
+            Stance::Block => ToolAccess::Denied,
+            Stance::Ask => ToolAccess::Ask,
+            Stance::Allow => ToolAccess::Allowed,
+        }
     }
 
     /// Resolve the stance for `(connector, tool)`. Priority `block > ask > allow`;
@@ -443,6 +479,25 @@ mod tests {
         assert!(c.is_connector_enabled(Uuid::new_v4()));
         assert!(c.has_any_restriction());
         assert!(!ctx(vec![], &[]).has_any_restriction());
+    }
+
+    #[test]
+    fn decide_disable_beats_any_stance_and_maps_stances() {
+        let a = Uuid::new_v4();
+        // A disabled connector denies every tool, even one with an explicit Allow
+        // rule — the exact bypass finding #10 was about.
+        let disabled = ctx(vec![rule(a, "*", Stance::Allow)], &[a]);
+        assert_eq!(disabled.decide(a, "anything"), ToolAccess::Denied);
+
+        // Enabled connector: stance maps 1:1 to the access decision.
+        let b = Uuid::new_v4();
+        let enabled = ctx(
+            vec![rule(b, "blocked_*", Stance::Block), rule(b, "ask_*", Stance::Ask)],
+            &[],
+        );
+        assert_eq!(enabled.decide(b, "blocked_tool"), ToolAccess::Denied);
+        assert_eq!(enabled.decide(b, "ask_tool"), ToolAccess::Ask);
+        assert_eq!(enabled.decide(b, "free_tool"), ToolAccess::Allowed); // default allow
     }
 
     #[test]

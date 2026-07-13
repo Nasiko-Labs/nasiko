@@ -59,8 +59,10 @@ pub async fn create_auth_config(
     Ok((StatusCode::CREATED, Json(view)))
 }
 
-/// `GET /api/mcp/auth-configs` — list platform Composio connectors.
-pub async fn list_auth_configs(State(state): State<AppState>, _claims: Claims) -> Result<Json<Value>, ApiError> {
+/// `GET /api/mcp/auth-configs` — list platform Composio connectors (admin).
+/// Gated like its create/update/delete siblings on the same resource.
+pub async fn list_auth_configs(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+    ensure_admin(&claims)?;
     Ok(Json(service::catalog::list_composio(&state).await?))
 }
 

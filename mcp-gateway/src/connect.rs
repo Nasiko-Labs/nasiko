@@ -88,7 +88,8 @@ async fn resolve_target(state: &McpState, user_id: Uuid, input: &ConnectInput) -
 
     if let Some(url) = input.url.as_deref() {
         crate::net::validate_public_url(url).await?;
-        let detected = match connectors::probe_initialize(&state.http_client, url).await {
+        // Guarded client (SSRF/DNS-rebinding): same reasoning as the /probe route.
+        let detected = match connectors::probe_initialize(&state.guarded_http_client, url).await {
             Ok((d, _)) => d.as_str().to_string(),
             Err(_) => "none".to_string(),
         };

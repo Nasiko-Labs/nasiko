@@ -139,7 +139,18 @@ impl McpError {
                 tracing::warn!(message = %m, "mcp oauth error");
                 "authorization error".to_string()
             }
-            other => other.to_string(),
+            // Client-safe variants pass their Display through. Listed explicitly
+            // (no `_` wildcard) on purpose: a newly-added McpError variant will
+            // fail to compile here until someone deliberately chooses whether it
+            // leaks or redacts — that is how `Http` slipped through before.
+            McpError::NotFound(_)
+            | McpError::BadRequest(_)
+            | McpError::Unauthorized(_)
+            | McpError::Forbidden(_)
+            | McpError::Conflict(_)
+            | McpError::ToolBlocked(_)
+            | McpError::ToolApprovalRequired(_)
+            | McpError::NotConfigured(_) => self.to_string(),
         };
         JsonRpcError::new(code, message)
     }
@@ -174,9 +185,26 @@ impl McpError {
                 tracing::error!(message = %m, "mcp internal error");
                 "internal error".to_string()
             }
+            // A raw reqwest::Error's Display can carry the target URL/host — redact
+            // it here too, matching the JSON-RPC surface (fix for finding #11).
+            McpError::Http(e) => {
+                tracing::error!(error = %e, "mcp http error");
+                "backend request failed".to_string()
+            }
             // Backend/Composio detail is kept for management responses (e.g.
             // "could not reach MCP server") — safe, user-facing diagnostics.
-            other => other.to_string(),
+            // Explicit list, no `_` wildcard: a new variant must pick a redaction
+            // policy at compile time instead of leaking by default.
+            McpError::NotFound(_)
+            | McpError::BadRequest(_)
+            | McpError::Unauthorized(_)
+            | McpError::Forbidden(_)
+            | McpError::Conflict(_)
+            | McpError::ToolBlocked(_)
+            | McpError::ToolApprovalRequired(_)
+            | McpError::NotConfigured(_)
+            | McpError::Backend(_)
+            | McpError::Composio(_) => self.to_string(),
         }
     }
 }
@@ -272,20 +300,17 @@ mod tests {
         assert_eq!(McpError::Internal("secret db dsn".into()).client_message(), "internal error");
     }
 
-    /// `client_message()` has no arm for `McpError::Http` — it falls into the
-    /// generic `other => other.to_string()` branch, so a raw `reqwest::Error`
-    /// reaches management callers verbatim, unlike `to_json_rpc()` which redacts
-    /// it. Characterizes current behavior (candidate follow-up hardening).
+    /// Regression guard for finding #11: `McpError::Http` wraps a raw
+    /// `reqwest::Error` whose Display can carry the target URL/host. It must be
+    /// redacted on BOTH surfaces — the agent JSON-RPC path and the management
+    /// HTTP path — never passed through. (It previously leaked via the
+    /// `client_message()` `_` wildcard; that wildcard is now gone.)
     #[tokio::test]
-    async fn http_variant_is_not_redacted_by_client_message_unlike_json_rpc() {
+    async fn http_variant_is_redacted_on_both_surfaces() {
         let err1 = reqwest::Client::new().get("http://127.0.0.1:1/").send().await.unwrap_err();
-        let json_rpc_message = McpError::Http(err1).to_json_rpc().message;
+        assert_eq!(McpError::Http(err1).to_json_rpc().message, "backend request failed");
         // reqwest::Error isn't Clone — fetch a fresh error for the second check.
         let err2 = reqwest::Client::new().get("http://127.0.0.1:1/").send().await.unwrap_err();
-        let client_message = McpError::Http(err2).client_message();
-
-        assert_eq!(json_rpc_message, "backend request failed");
-        assert_ne!(client_message, "backend request failed");
-        assert_ne!(client_message, "internal error");
+        assert_eq!(McpError::Http(err2).client_message(), "backend request failed");
     }
 }
