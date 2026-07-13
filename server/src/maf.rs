@@ -30,25 +30,57 @@ pub fn router() -> Router<AppState> {
 }
 
 // ─── Shared helpers ────────────────────────────────────────────────────────
+//
+// Every MAF response — success or error — is wrapped in the same envelope:
+// {"data": <payload or null>, "status_code": <mirrors the real HTTP status>, "message": <human-readable>}
+// so frontend code can parse one shape regardless of outcome.
 
 fn parse_user_id(claims: &Claims) -> Option<Uuid> {
     claims.sub.parse().ok()
 }
 
-fn internal_err(e: impl std::fmt::Display) -> axum::response::Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+fn ok_json<T: Serialize>(status: StatusCode, data: T, message: &str) -> axum::response::Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "data": data,
+            "status_code": status.as_u16(),
+            "message": message
+        })),
+    )
+        .into_response()
 }
 
-fn not_found() -> axum::response::Response {
-    StatusCode::NOT_FOUND.into_response()
+fn err_json(status: StatusCode, message: &str) -> axum::response::Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "data": serde_json::Value::Null,
+            "status_code": status.as_u16(),
+            "message": message
+        })),
+    )
+        .into_response()
+}
+
+fn unauthorized() -> axum::response::Response {
+    err_json(StatusCode::UNAUTHORIZED, "invalid or missing user identity")
+}
+
+fn internal_err(e: impl std::fmt::Display) -> axum::response::Response {
+    err_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+}
+
+fn not_found(resource: &str) -> axum::response::Response {
+    err_json(StatusCode::NOT_FOUND, &format!("{resource} not found"))
 }
 
 fn forbidden(msg: &str) -> axum::response::Response {
-    (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": msg}))).into_response()
+    err_json(StatusCode::FORBIDDEN, msg)
 }
 
 fn bad_request(msg: &str) -> axum::response::Response {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
+    err_json(StatusCode::BAD_REQUEST, msg)
 }
 
 // ─── DB row types (JSONB cast to text in SQL) ──────────────────────────────
@@ -222,7 +254,7 @@ async fn list_mafs(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(id) => id,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     let rows = sqlx::query_as::<_, MafRow>(
@@ -242,7 +274,7 @@ async fn list_mafs(
     match rows {
         Ok(data) => {
             let items: Vec<MafResponse> = data.into_iter().map(maf_row_to_response).collect();
-            Json(crate::Paginated::new(items)).into_response()
+            ok_json(StatusCode::OK, crate::Paginated::new(items), "Workflows retrieved successfully")
         }
         Err(e) => internal_err(e),
     }
@@ -257,7 +289,7 @@ async fn create_maf(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(id) => id,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     if req.steps.is_empty() {
@@ -275,13 +307,7 @@ async fn create_maf(
             // Caller provided an agent — look up name and endpoint
             match fetch_agent_info(&state.db, aid).await {
                 Ok(Some((name, url))) => (aid, name, url),
-                Ok(None) => {
-                    return (
-                        StatusCode::FORBIDDEN,
-                        Json(serde_json::json!({"error": format!("agent {aid} not found")})),
-                    )
-                        .into_response();
-                }
+                Ok(None) => return forbidden(&format!("agent {aid} not found")),
                 Err(e) => return internal_err(e),
             }
         } else {
@@ -377,7 +403,7 @@ async fn create_maf(
     .await;
 
     match row {
-        Ok(r) => (StatusCode::CREATED, Json(maf_row_to_response(r))).into_response(),
+        Ok(r) => ok_json(StatusCode::CREATED, maf_row_to_response(r), "Workflow created successfully"),
         Err(e) => internal_err(e),
     }
 }
@@ -391,13 +417,15 @@ async fn get_maf(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     match fetch_maf(&state.db, id).await {
-        Ok(Some(row)) if row.user_id == user_id => Json(maf_row_to_response(row)).into_response(),
+        Ok(Some(row)) if row.user_id == user_id => {
+            ok_json(StatusCode::OK, maf_row_to_response(row), "Workflow retrieved successfully")
+        }
         Ok(Some(_)) => forbidden("not owned by caller"),
-        Ok(None) => not_found(),
+        Ok(None) => not_found("workflow"),
         Err(e) => internal_err(e),
     }
 }
@@ -412,13 +440,13 @@ async fn update_maf(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     let existing = match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
-        Ok(None) => return not_found(),
+        Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
     };
 
@@ -437,10 +465,7 @@ async fn update_maf(
             let (agent_id, name, endpoint) = if let Some(aid) = step.agent_id {
                 match fetch_agent_info(&state.db, aid).await {
                     Ok(Some((n, u))) => (aid, n, u),
-                    Ok(None) => return (
-                        StatusCode::FORBIDDEN,
-                        Json(serde_json::json!({"error": format!("agent {aid} not found")})),
-                    ).into_response(),
+                    Ok(None) => return forbidden(&format!("agent {aid} not found")),
                     Err(e) => return internal_err(e),
                 }
             } else {
@@ -530,8 +555,8 @@ async fn update_maf(
     .await;
 
     match row {
-        Ok(Some(r)) => Json(maf_row_to_response(r)).into_response(),
-        Ok(None) => not_found(),
+        Ok(Some(r)) => ok_json(StatusCode::OK, maf_row_to_response(r), "Workflow updated successfully"),
+        Ok(None) => not_found("workflow"),
         Err(e) => internal_err(e),
     }
 }
@@ -545,13 +570,13 @@ async fn delete_maf(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     // Ownership check before soft-delete
     match fetch_maf(&state.db, id).await {
         Ok(Some(row)) if row.user_id != user_id => return forbidden("not owned by caller"),
-        Ok(None) => return not_found(),
+        Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
         Ok(Some(_)) => {}
     }
@@ -563,8 +588,12 @@ async fn delete_maf(
     .execute(&state.db)
     .await
     {
-        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
-        Ok(_) => not_found(),
+        // 204 No Content can't legally carry a body, so a successful delete
+        // now returns 200 with the same envelope as every other response.
+        Ok(r) if r.rows_affected() > 0 => {
+            ok_json(StatusCode::OK, serde_json::Value::Null, "Workflow deleted successfully")
+        }
+        Ok(_) => not_found("workflow"),
         Err(e) => internal_err(e),
     }
 }
@@ -578,13 +607,13 @@ async fn run_workflow(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     let maf = match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
-        Ok(None) => return not_found(),
+        Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
     };
 
@@ -636,11 +665,11 @@ async fn run_workflow(
         return internal_err(format!("failed to enqueue job: {e}"));
     }
 
-    (
+    ok_json(
         StatusCode::ACCEPTED,
-        Json(serde_json::json!({"execution_id": exec_id, "execution_number": exec_number})),
+        serde_json::json!({"execution_id": exec_id, "execution_number": exec_number}),
+        "Execution started successfully",
     )
-        .into_response()
 }
 
 // ─── 7. GET /maf/workflow/result/{exec_id} ────────────────────────────────
@@ -652,13 +681,15 @@ async fn get_result(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     match fetch_exec(&state.db, exec_id).await {
-        Ok(Some(row)) if row.user_id == user_id => Json(exec_row_to_response(row)).into_response(),
+        Ok(Some(row)) if row.user_id == user_id => {
+            ok_json(StatusCode::OK, exec_row_to_response(row), "Execution result retrieved successfully")
+        }
         Ok(Some(_)) => forbidden("not owned by caller"),
-        Ok(None) => not_found(),
+        Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
     }
 }
@@ -673,13 +704,13 @@ async fn list_executions(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     // Verify ownership of the MAF first
     match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id != user_id => return forbidden("not owned by caller"),
-        Ok(None) => return not_found(),
+        Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
         Ok(Some(_)) => {}
     }
@@ -703,7 +734,7 @@ async fn list_executions(
     match rows {
         Ok(data) => {
             let items: Vec<ExecResponse> = data.into_iter().map(exec_row_to_response).collect();
-            Json(crate::Paginated::new(items)).into_response()
+            ok_json(StatusCode::OK, crate::Paginated::new(items), "Executions retrieved successfully")
         }
         Err(e) => internal_err(e),
     }
@@ -718,13 +749,15 @@ async fn get_execution(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     match fetch_exec(&state.db, id).await {
-        Ok(Some(row)) if row.user_id == user_id => Json(exec_row_to_response(row)).into_response(),
+        Ok(Some(row)) if row.user_id == user_id => {
+            ok_json(StatusCode::OK, exec_row_to_response(row), "Execution retrieved successfully")
+        }
         Ok(Some(_)) => forbidden("not owned by caller"),
-        Ok(None) => not_found(),
+        Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
     }
 }
@@ -761,7 +794,7 @@ async fn generate_maf(
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        None => return unauthorized(),
     };
 
     if req.description.trim().is_empty() {
@@ -771,10 +804,10 @@ async fn generate_maf(
     // Build LLM client from config — require an API key
     let api_key = match &state.config.openai_api_key {
         Some(k) => k.clone(),
-        None => return (
+        None => return err_json(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "OPENAI_API_KEY is not configured on this server"})),
-        ).into_response(),
+            "OPENAI_API_KEY is not configured on this server",
+        ),
     };
     let llm = LlmClient::new(
         state.http_client.clone(),
@@ -822,19 +855,18 @@ async fn generate_maf(
                 })
                 .collect();
 
-            Json(GenerateMafResponse {
-                name: plan.name,
-                description: plan.description,
-                output_generation: plan.output_generation,
-                steps,
-            })
-            .into_response()
+            ok_json(
+                StatusCode::OK,
+                GenerateMafResponse {
+                    name: plan.name,
+                    description: plan.description,
+                    output_generation: plan.output_generation,
+                    steps,
+                },
+                "Workflow plan generated successfully",
+            )
         }
-        Err(e) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": format!("planning failed: {e}")})),
-        )
-            .into_response(),
+        Err(e) => err_json(StatusCode::UNPROCESSABLE_ENTITY, &format!("planning failed: {e}")),
     }
 }
 

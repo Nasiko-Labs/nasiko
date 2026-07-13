@@ -81,11 +81,12 @@ async fn test_create_and_get_maf() {
     assert_eq!(res.status(), 201, "expected 201 Created");
 
     let body: Value = res.json().await.unwrap();
-    let maf_id = body["id"].as_str().expect("id in response");
-    assert_eq!(body["name"], "My MAF");
-    assert_eq!(body["status"], "active");
-    assert!(body["maf_json"]["steps"].is_array());
-    assert_eq!(body["maf_json"]["steps"][0]["agent_id"], agent_id.to_string());
+    let data = &body["data"];
+    let maf_id = data["id"].as_str().expect("id in response").to_string();
+    assert_eq!(data["name"], "My MAF");
+    assert_eq!(data["status"], "active");
+    assert!(data["maf_json"]["steps"].is_array());
+    assert_eq!(data["maf_json"]["steps"][0]["agent_id"], agent_id.to_string());
 
     // GET by id
     let res = auth(
@@ -97,8 +98,8 @@ async fn test_create_and_get_maf() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body2: Value = res.json().await.unwrap();
-    assert_eq!(body2["id"], maf_id);
-    assert_eq!(body2["name"], "My MAF");
+    assert_eq!(body2["data"]["id"], maf_id);
+    assert_eq!(body2["data"]["name"], "My MAF");
 
     server.cleanup().await;
 }
@@ -127,8 +128,8 @@ async fn test_list_mafs() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    let data = body["data"].as_array().unwrap();
-    assert_eq!(data.len(), 2, "expected 2 MAFs in list");
+    let items = body["data"]["data"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "expected 2 MAFs in list");
 
     server.cleanup().await;
 }
@@ -151,7 +152,7 @@ async fn test_update_maf_name() {
     .json()
     .await
     .unwrap();
-    let maf_id = res["id"].as_str().unwrap();
+    let maf_id = res["data"]["id"].as_str().unwrap();
 
     let update_res = auth(
         server.client.put(server.url(&format!("/api/maf/workflow/{maf_id}"))).json(&json!({
@@ -164,9 +165,9 @@ async fn test_update_maf_name() {
     .unwrap();
     assert_eq!(update_res.status(), 200);
     let updated: Value = update_res.json().await.unwrap();
-    assert_eq!(updated["name"], "New Name");
+    assert_eq!(updated["data"]["name"], "New Name");
     // Steps unchanged
-    assert!(updated["maf_json"]["steps"].is_array());
+    assert!(updated["data"]["maf_json"]["steps"].is_array());
 
     server.cleanup().await;
 }
@@ -192,8 +193,8 @@ async fn test_update_maf_name_via_put() {
     .json()
     .await
     .unwrap();
-    let maf_id = res["id"].as_str().unwrap();
-    assert_eq!(res["name"], "Original Name");
+    let maf_id = res["data"]["id"].as_str().unwrap();
+    assert_eq!(res["data"]["name"], "Original Name");
 
     let updated: Value = auth(
         server.client.put(server.url(&format!("/api/maf/workflow/{maf_id}"))).json(&json!({
@@ -207,7 +208,7 @@ async fn test_update_maf_name_via_put() {
     .json()
     .await
     .unwrap();
-    assert_eq!(updated["name"], "Updated Name");
+    assert_eq!(updated["data"]["name"], "Updated Name");
 
     server.cleanup().await;
 }
@@ -230,9 +231,9 @@ async fn test_delete_maf_soft_delete() {
     .json()
     .await
     .unwrap();
-    let maf_id = res["id"].as_str().unwrap();
+    let maf_id = res["data"]["id"].as_str().unwrap();
 
-    // DELETE → 204
+    // DELETE → 200 (204 can't carry the response envelope body)
     let del = auth(
         server.client.delete(server.url(&format!("/api/maf/workflow/{maf_id}"))),
         user_id,
@@ -240,7 +241,7 @@ async fn test_delete_maf_soft_delete() {
     .send()
     .await
     .unwrap();
-    assert_eq!(del.status(), 204);
+    assert_eq!(del.status(), 200);
 
     // GET after delete → 404 (soft-deleted, not in WHERE status='active')
     let get_after = auth(
@@ -281,7 +282,7 @@ async fn test_run_workflow_creates_execution() {
     .json()
     .await
     .unwrap();
-    let maf_id = maf["id"].as_str().unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
 
     // POST /run → 202 with execution_id
     let run_res = auth(
@@ -293,7 +294,7 @@ async fn test_run_workflow_creates_execution() {
     .unwrap();
     assert_eq!(run_res.status(), 202, "expected 202 Accepted");
     let run_body: Value = run_res.json().await.unwrap();
-    let exec_id = run_body["execution_id"].as_str().expect("execution_id in response");
+    let exec_id = run_body["data"]["execution_id"].as_str().expect("execution_id in response");
 
     // GET result/{exec_id} → execution record exists (status may be pending/running/failed since
     // the worker is live but the agent URL is unreachable)
@@ -306,8 +307,8 @@ async fn test_run_workflow_creates_execution() {
     .unwrap();
     assert_eq!(result_res.status(), 200);
     let result: Value = result_res.json().await.unwrap();
-    assert_eq!(result["id"], exec_id);
-    assert!(["pending", "running", "failed"].contains(&result["status"].as_str().unwrap()));
+    assert_eq!(result["data"]["id"], exec_id);
+    assert!(["pending", "running", "failed"].contains(&result["data"]["status"].as_str().unwrap()));
 
     server.cleanup().await;
 }
@@ -330,7 +331,7 @@ async fn test_list_executions() {
     .json()
     .await
     .unwrap();
-    let maf_id = maf["id"].as_str().unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
 
     // Trigger two runs
     for _ in 0..2 {
@@ -352,7 +353,7 @@ async fn test_list_executions() {
     .unwrap();
     assert_eq!(list_res.status(), 200);
     let list_body: Value = list_res.json().await.unwrap();
-    let items = list_body["data"].as_array().unwrap();
+    let items = list_body["data"]["data"].as_array().unwrap();
     assert_eq!(items.len(), 2, "expected 2 executions");
     // All belong to this MAF
     for item in items {
@@ -381,7 +382,7 @@ async fn test_get_execution_by_id() {
     .json()
     .await
     .unwrap();
-    let maf_id = maf["id"].as_str().unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
 
     let run: Value = auth(
         server.client.post(server.url(&format!("/api/maf/workflow/{maf_id}/run"))),
@@ -393,7 +394,7 @@ async fn test_get_execution_by_id() {
     .json()
     .await
     .unwrap();
-    let exec_id = run["execution_id"].as_str().unwrap();
+    let exec_id = run["data"]["execution_id"].as_str().unwrap();
 
     // GET /maf/execution/{id}
     let get_res = auth(
@@ -405,10 +406,10 @@ async fn test_get_execution_by_id() {
     .unwrap();
     assert_eq!(get_res.status(), 200);
     let body: Value = get_res.json().await.unwrap();
-    assert_eq!(body["id"], exec_id);
-    assert_eq!(body["maf_id"], maf_id);
-    assert_eq!(body["user_id"], user_id.to_string());
-    assert_eq!(body["max_attempts"], 3); // default
+    assert_eq!(body["data"]["id"], exec_id);
+    assert_eq!(body["data"]["maf_id"], maf_id);
+    assert_eq!(body["data"]["user_id"], user_id.to_string());
+    assert_eq!(body["data"]["max_attempts"], 3); // default
 
     server.cleanup().await;
 }
@@ -435,7 +436,7 @@ async fn test_ownership_enforced_on_all_endpoints() {
     .json()
     .await
     .unwrap();
-    let maf_id = maf["id"].as_str().unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
 
     // GET by other user → 403
     let status = auth(
@@ -611,7 +612,7 @@ async fn test_result_isolation_between_users() {
     .json()
     .await
     .unwrap();
-    let maf_id = maf["id"].as_str().unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
 
     let run: Value = auth(
         server.client.post(server.url(&format!("/api/maf/workflow/{maf_id}/run"))),
@@ -623,7 +624,7 @@ async fn test_result_isolation_between_users() {
     .json()
     .await
     .unwrap();
-    let exec_id = run["execution_id"].as_str().unwrap();
+    let exec_id = run["data"]["execution_id"].as_str().unwrap();
 
     // Other user tries to GET result/{exec_id} → 403
     let res = auth(
@@ -666,7 +667,7 @@ async fn test_deleted_maf_cannot_be_run() {
     .json()
     .await
     .unwrap();
-    let maf_id = maf["id"].as_str().unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
 
     // Soft-delete
     auth(
@@ -718,8 +719,8 @@ async fn test_maf_not_visible_to_other_user_in_list() {
         .json()
         .await
         .unwrap();
-    let data = res["data"].as_array().unwrap();
-    assert_eq!(data.len(), 0, "user B should not see user A's MAFs");
+    let items = res["data"]["data"].as_array().unwrap();
+    assert_eq!(items.len(), 0, "user B should not see user A's MAFs");
 
     server.cleanup().await;
 }
