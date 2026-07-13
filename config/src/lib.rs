@@ -36,19 +36,25 @@ pub struct Config {
     pub otel_capture_content: bool,
     pub tempo_url: String,
     pub loki_url: String,
-    /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
-    /// source of truth for "is observability configured". True iff both
-    /// `TEMPO_URL` and `LOKI_URL` were explicitly set in the environment
-    /// (the URLs above always carry a default, so their presence alone can't
-    /// answer this). Everything that gates on observability reads this flag
-    /// rather than re-inspecting env, so no two code paths can disagree.
-    pub observability_enabled: bool,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    /// OIDC issuer authority, e.g. `https://login.microsoftonline.com/<tenant-id>/v2.0`
+    /// for Microsoft Entra ID — or any other OIDC-compliant provider. `None`
+    /// disables OIDC login entirely (see `docs/OIDC_SSO_SETUP.md`).
+    pub oidc_issuer_url: Option<String>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_client_secret: Option<String>,
+    /// Must exactly match the redirect URI registered with the IdP, e.g.
+    /// `https://<host>/api/auth/oidc/callback`.
+    pub oidc_redirect_uri: Option<String>,
+    pub oidc_scopes: String,
+    /// Stored as `user_identities.provider` for OIDC-authenticated users.
+    /// Override if fronting a non-Entra OIDC provider.
+    pub oidc_provider_label: String,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
     pub max_router_history_messages: usize,
@@ -78,25 +84,6 @@ pub struct Config {
     /// When set, the Docker runtime pulls images from this registry before creating containers.
     /// Maps to env var `OCI_REGISTRY_HOST`.
     pub oci_registry_host: Option<String>,
-
-    // ─── MCP Gateway ────────────────────────────────────────────────────────
-    /// Composio platform API key. When unset, Composio integration is disabled
-    /// (generic MCP servers still work).
-    pub composio_api_key: Option<String>,
-    /// Composio v3 HTTP API base URL.
-    pub composio_base_url: String,
-    /// HMAC secret used to verify inbound Composio webhooks. When unset,
-    /// signature verification is skipped (dev only).
-    pub composio_webhook_secret: Option<String>,
-    /// Public URL of the MCP gateway, injected into every deployed agent as
-    /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
-    pub mcp_gateway_public_url: Option<String>,
-    /// TTL (seconds) for the Redis-cached resolved backend/session list.
-    pub mcp_session_ttl_seconds: u64,
-    /// TTL (seconds) for the Redis-cached per-agent permission context.
-    pub mcp_perm_cache_ttl_seconds: u64,
-    /// TTL (seconds) for the Redis-cached aggregated tool manifest.
-    pub mcp_manifest_ttl_seconds: u64,
 }
 
 impl Config {
@@ -131,13 +118,13 @@ impl Config {
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://host.containers.internal:4317",
+                "http://otel-collector:4318",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
             )
             .map(|v| v == "true")
-            .unwrap_or(false),
+            .unwrap_or(true),
             tempo_url: env_or(
                 "TEMPO_URL",
                 "http://tempo.nasiko-infra.svc.cluster.local:3200",
@@ -146,17 +133,18 @@ impl Config {
                 "LOKI_URL",
                 "http://loki.nasiko-infra.svc.cluster.local:3100",
             ),
-            // Enabled only when BOTH backends are explicitly configured; a
-            // partial config is treated as disabled. Computed here, the one place
-            // env is read, so every consumer agrees on whether it's enabled.
-            observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
-                && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL").ok().filter(|s| !s.is_empty()),
+            oidc_client_id: std::env::var("OIDC_CLIENT_ID").ok().filter(|s| !s.is_empty()),
+            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
+            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI").ok().filter(|s| !s.is_empty()),
+            oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
+            oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
@@ -185,18 +173,6 @@ impl Config {
                 .collect(),
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
-
-            composio_api_key: std::env::var("COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
-            composio_base_url: env_or("COMPOSIO_BASE_URL", "https://backend.composio.dev"),
-            composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
-            mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
-            mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
         })
     }
 

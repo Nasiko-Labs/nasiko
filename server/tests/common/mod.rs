@@ -252,13 +252,18 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         otel_capture_content: false,
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
-        observability_enabled: false,
         flow_max_depth: 5,
         flow_max_fan_out: 20,
         flow_max_tokens: 100_000,
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        oidc_issuer_url: None,
+        oidc_client_id: None,
+        oidc_client_secret: None,
+        oidc_redirect_uri: None,
+        oidc_scopes: "openid profile email".into(),
+        oidc_provider_label: "microsoft_entra".into(),
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
         max_router_history_messages: 20,
@@ -276,23 +281,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         cors_allowed_origins: vec![],
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
-        // Overridable so tests can point the Composio ToolProvider at a mockito
-        // stub (there is no other seam to inject a fake provider — McpState builds
-        // it straight from these two Config fields). Unset in the vast majority of
-        // tests, which must keep seeing "Composio not configured" (COMPOSIO_API_KEY
-        // unset in production === `composio_api_key: None`).
-        composio_api_key: std::env::var("TEST_COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
-        composio_base_url: std::env::var("TEST_COMPOSIO_BASE_URL")
-            .unwrap_or_else(|_| "https://backend.composio.dev".into()),
-        composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET").ok().filter(|s| !s.is_empty()),
-        // Overridable so the MCP OAuth callback round-trip test can exercise the
-        // full `exchange_code` path (which needs `oauth_redirect_uri()` to be
-        // `Some`). `None` by default, matching every other test's assumption
-        // that the gateway's public URL is unconfigured.
-        mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL").ok().filter(|s| !s.is_empty()),
-        mcp_session_ttl_seconds: 300,
-        mcp_perm_cache_ttl_seconds: 30,
-        mcp_manifest_ttl_seconds: 300,
     }
 }
 
@@ -352,6 +340,18 @@ pub fn as_member(
     username: &str,
 ) -> reqwest::RequestBuilder {
     rb.bearer_auth(sign_token(user_id, username, false, "member"))
+}
+
+/// Attach HTTP Basic auth — the credential type the OCI registry's pull-only
+/// path (`nasiko_oci::pull_credentials`) accepts, distinct from the bearer-JWT
+/// paths above.
+#[allow(dead_code)]
+pub fn as_pull_credential(
+    rb: reqwest::RequestBuilder,
+    username: &str,
+    password: &str,
+) -> reqwest::RequestBuilder {
+    rb.basic_auth(username, Some(password))
 }
 
 /// Build an in-memory zip archive from `(path, bytes)` pairs.
