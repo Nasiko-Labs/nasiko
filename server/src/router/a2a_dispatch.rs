@@ -159,7 +159,7 @@ async fn orchestrator_stream(
 
     let mut agents: Vec<AgentInfo> = Vec::new();
     for summary in &agent_summaries {
-        let endpoint = match resolve_endpoint(state, &summary.name).await {
+        let endpoint = match resolve_endpoint(state, &summary.id.to_string(), &summary.name).await {
             Ok(url) => url,
             Err(_) => continue,
         };
@@ -450,7 +450,7 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
 ) -> Result<Response, A2aDispatchError> {
-    let endpoint = resolve_endpoint(state, &agent.name)
+    let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
         .map_err(A2aDispatchError::Internal)?;
 
@@ -756,19 +756,21 @@ fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
-async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
-    // One row gives us everything: the UUID (containers are UUID-keyed — see
-    // `build_agent_spec` — so a name-keyed runtime lookup always misses), the
-    // card-declared transport_path, and the deploy-time URL snapshot fallback.
-    let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, transport_path, url FROM agents WHERE name = $1 AND status = 'running'",
+async fn resolve_endpoint(state: &AppState, agent_id: &str, agent_name: &str) -> Result<String, String> {
+    // Containers are UUID-keyed (see `build_agent_spec`), so the runtime lookup
+    // below needs `agent_id`, not `agent_name` — a name-keyed lookup always
+    // misses. `agent_name` is kept only for the DB fallback query and error
+    // messages, which are keyed by name for readability.
+    let agent_id: Uuid = agent_id.parse().map_err(|e| format!("invalid agent id: {e}"))?;
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT transport_path, url FROM agents WHERE id = $1 AND status = 'running'",
     )
-    .bind(agent_name)
+    .bind(agent_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| format!("db lookup: {e}"))?;
 
-    let Some((agent_id, transport_path, stored_url)) = row else {
+    let Some((transport_path, stored_url)) = row else {
         return Err(format!("no running agent named '{agent_name}'"));
     };
 
