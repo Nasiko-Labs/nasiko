@@ -63,6 +63,9 @@ pub fn router() -> Router<AppState> {
         .merge(management_router())
         // Role change must come before /{id} to avoid being swallowed as an id segment.
         .route("/users/{id}/role", put(change_role))
+        // Update is registered separately (see management_router()'s doc comment) so
+        // EE can override it to layer department_id/team_id assignment on top.
+        .route("/users/{id}", put(update_user))
         // Static sub-paths MUST come before /{id} to avoid being captured as IDs.
         .route("/users/me", get(get_me))
         .route("/users", get(list_users))
@@ -71,14 +74,16 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
-/// Management-only orchestrator — create/update/delete users and related operations.
-/// The role-change endpoint is registered separately so it can be overridden
-/// without causing a duplicate-route panic.
+/// Management-only orchestrator — create/delete users and related operations.
+/// The role-change and update endpoints are registered separately (in `router()`)
+/// so each can be overridden without causing a duplicate-route panic: EE wraps
+/// `change_role` with its leadership cascade, and wraps `update_user` to also
+/// accept `department_id`/`team_id` (EE-only columns `oss/server`'s `users`
+/// table doesn't have — see `ee/server/src/users.rs::ee_update_user`).
 pub fn management_router() -> Router<AppState> {
     Router::new()
         .route("/users/admins", get(list_admins))
         .route("/users", post(create_user))
-        .route("/users/{id}", put(update_user))
         .route("/users/{id}", delete(delete_user))
         .route("/users/{id}/deactivate", post(deactivate))
         .route("/users/{id}/reinstate", post(reinstate))
@@ -279,13 +284,17 @@ async fn create_user(
     }
 }
 
+/// `pub` (fields included) so EE's `ee_update_user` can construct one directly
+/// and delegate to `update_user` for the fields both editions share, then layer
+/// its own `department_id`/`team_id` handling on top — see
+/// `ee/server/src/users.rs::ee_update_user`.
 #[derive(Deserialize)]
-struct UpdateUser {
-    username: Option<String>,
-    email: Option<String>,
-    display_name: Option<String>,
-    password: Option<String>,
-    is_active: Option<bool>,
+pub struct UpdateUser {
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub password: Option<String>,
+    pub is_active: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -293,7 +302,7 @@ pub struct ChangeRoleRequest {
     pub role: String,
 }
 
-async fn update_user(
+pub async fn update_user(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
