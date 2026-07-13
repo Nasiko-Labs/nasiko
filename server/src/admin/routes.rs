@@ -84,16 +84,25 @@ async fn deploy(
         None => ContainerId::new(&req.name),
     };
 
-    let spec = DeploymentSpec {
+    let mut spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
-        image: req.image,
+        image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
         ports: if req.ports.is_empty() { vec![crate::agents::DEFAULT_AGENT_PORT] } else { req.ports },
         env_vars: env,
         min_replicas: req.replicas.unwrap_or(1),
         max_replicas: req.replicas.unwrap_or(1),
         resources: None,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
     };
+    // Only a name that already maps to a registered catalog agent has an
+    // `agents` row to scope a pull credential to (see pull_credentials'
+    // agent_id FK) — an ad-hoc, never-registered image deploy has nothing to
+    // bind one to.
+    if let Some(agent_id) = resolved_agent_id {
+        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+    }
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => {
@@ -281,6 +290,15 @@ async fn restart(
     // `deployments::restart_deployment`) — this ad-hoc router has no deployment
     // row to read from, so it falls back to the canonical default port, same as
     // `build_agent_spec` does for any other caller that omits ports.
+    //
+    // Unlike `deploy`'s ad-hoc-image branch, there is no "unclaimed, first-owner-
+    // wins" case here — restart only ever acts on an *existing* container, and
+    // every sibling op (stop/start/scale/logs, via `resolve_authorized_container`)
+    // already 404s when `name` has no catalog row instead of falling back to a
+    // raw, unchecked container ID. This used to fall back too, letting any
+    // deployer restart any container on the host that merely wasn't tracked in
+    // `agents` — with no owner to check an ACL against. Match the siblings: no
+    // catalog row, no restart.
     let agent: Option<(Uuid, Uuid, String)> = sqlx::query_as(
         "SELECT id, owner_id, image FROM agents WHERE name = $1",
     )
@@ -291,18 +309,7 @@ async fn restart(
     .flatten();
 
     let Some((agent_id, owner_id, image)) = agent else {
-        // No agent record — fall back to simple container restart. No catalog
-        // entity means no owner to check against (same "unclaimed" reasoning
-        // as the OCI registry's own no-existing-row policy); this ad-hoc path
-        // stays open to any deployer, same as `deploy`'s ad-hoc-image branch.
-        let id = ContainerId::new(&name);
-        return match state.runtime.restart(&id).await {
-            Ok(()) => StatusCode::OK.into_response(),
-            Err(e) => {
-                tracing::error!(%e, %name, "restart: runtime error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-            }
-        };
+        return (StatusCode::NOT_FOUND, "agent not found").into_response();
     };
 
     if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
@@ -321,7 +328,8 @@ async fn restart(
 
     // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec). Empty
     // ports → build_agent_spec defaults to DEFAULT_AGENT_PORT.
-    let spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
+    let mut spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
+    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => {
