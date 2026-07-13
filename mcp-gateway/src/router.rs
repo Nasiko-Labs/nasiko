@@ -109,4 +109,44 @@ mod tests {
         let servers = vec![srv(ServerType::Composio, Uuid::nil(), "")];
         assert!(route_tool("x", &servers).is_err());
     }
+
+    #[test]
+    fn bare_name_never_falls_back_to_a_generic_backend_regardless_of_order() {
+        // Regression guard for fix #7: with no Composio backend, a bare (un-
+        // prefixed) name must error and NEVER be silently routed to whichever
+        // generic server happens to be first. Both input orders must error —
+        // there is no order-dependent first-live guess anymore.
+        let s_hi = srv(ServerType::Mcp, Uuid::from_u128(2), "http://a");
+        let s_lo = srv(ServerType::Mcp, Uuid::from_u128(1), "http://b");
+        assert!(route_tool("bare_tool", &[s_hi.clone(), s_lo.clone()]).is_err());
+        assert!(route_tool("bare_tool", &[s_lo, s_hi]).is_err());
+    }
+
+    #[test]
+    fn unmatched_prefix_errors_even_with_live_generic_servers_present() {
+        // A prefix matching no known connector must be rejected outright — never
+        // fall through to another live generic backend (that would misroute).
+        let id = Uuid::new_v4();
+        let servers = vec![srv(ServerType::Mcp, id, "http://s")];
+        assert!(route_tool("deadbeef__search", &servers).is_err());
+    }
+
+    #[test]
+    fn empty_prefix_string_is_rejected_not_treated_as_bare_name() {
+        // `"__tool".split_once("__")` yields `("", "tool")` — an empty prefix
+        // matches no real connector prefix, so it must error.
+        let servers = vec![srv(ServerType::Composio, Uuid::nil(), "http://c")];
+        assert!(route_tool("__tool", &servers).is_err());
+        assert!(route_tool("__", &servers).is_err());
+    }
+
+    #[test]
+    fn prefix_matches_connector_but_url_is_empty_is_treated_as_unavailable() {
+        // A generic server whose prefix matches but whose `url` is empty
+        // (disabled/unresolvable) must not be selected.
+        let id = Uuid::new_v4();
+        let servers = vec![srv(ServerType::Mcp, id, "")];
+        let name = format!("{}__search", connector_prefix(id));
+        assert!(route_tool(&name, &servers).is_err());
+    }
 }

@@ -587,4 +587,57 @@ mod tests {
         let h = r#"Bearer resource_metadata="https://as.example.com/.well-known/x", error="x""#;
         assert_eq!(extract_resource_metadata(h).as_deref(), Some("https://as.example.com/.well-known/x"));
     }
+
+    #[test]
+    fn state_rejects_single_byte_payload_tamper() {
+        // Flip one byte inside the signed JSON body (`b`) post-signature,
+        // leaving the signature (`s`) untouched — the HMAC must catch this.
+        let key = "test-signing-key";
+        let state = OAuthState::new(Uuid::new_v4(), Uuid::new_v4(), "verifier123".into(), None);
+        let signed = sign_state(&state, key);
+
+        let decoded = B64URL.decode(&signed).unwrap();
+        let mut wrapped: Value = serde_json::from_slice(&decoded).unwrap();
+        let body = wrapped.get("b").unwrap().as_str().unwrap().to_string();
+        let mut bytes = body.into_bytes();
+        let idx = bytes.len() / 2;
+        bytes[idx] ^= 0x01;
+        wrapped["b"] = json!(String::from_utf8_lossy(&bytes).into_owned());
+        let tampered = B64URL.encode(serde_json::to_string(&wrapped).unwrap());
+
+        assert!(verify_state(&tampered, key).is_none());
+    }
+
+    #[test]
+    fn expired_state_is_rejected_even_with_correct_key_and_signature() {
+        let key = "test-signing-key";
+        let mut state = OAuthState::new(Uuid::nil(), Uuid::nil(), "v".into(), None);
+        state.exp = (Utc::now() - ChronoDuration::minutes(1)).timestamp();
+        let signed = sign_state(&state, key);
+        assert!(verify_state(&signed, key).is_none());
+    }
+
+    #[test]
+    fn state_body_missing_required_fields_fails_deserialization() {
+        // A well-signed body that doesn't deserialize into `OAuthState` (missing
+        // `code_verifier` / `exp`) must be rejected, not panic or partially-populate.
+        let key = "test-signing-key";
+        let body = json!({ "user_id": Uuid::nil(), "connector_id": Uuid::nil() }).to_string();
+        let mut mac = HmacSha256::new_from_slice(key.as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        let sig = hex::encode(mac.finalize().into_bytes());
+        let wrapped = json!({ "b": body, "s": sig });
+        let token = B64URL.encode(serde_json::to_string(&wrapped).unwrap());
+        assert!(verify_state(&token, key).is_none());
+    }
+
+    #[test]
+    fn state_wrapper_missing_b_or_s_field_fails_gracefully() {
+        let token_missing_sig = B64URL.encode(json!({ "b": "{}" }).to_string());
+        assert!(verify_state(&token_missing_sig, "any-key").is_none());
+        let token_missing_body = B64URL.encode(json!({ "s": "deadbeef" }).to_string());
+        assert!(verify_state(&token_missing_body, "any-key").is_none());
+        // Not even valid base64.
+        assert!(verify_state("not-valid-base64!!", "any-key").is_none());
+    }
 }

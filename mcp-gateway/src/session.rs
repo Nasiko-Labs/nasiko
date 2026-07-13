@@ -221,4 +221,72 @@ mod tests {
         assert_eq!(cfg.kind, ServerType::Composio);
         assert_eq!(cfg.connector_id, Uuid::nil());
     }
+
+    #[test]
+    fn session_cache_key_is_unique_per_user_no_cross_user_collision() {
+        // Cross-user leakage of a cached (stripped) session can only happen if
+        // two users' cache keys collide. They're namespaced by user_id, so
+        // distinct users always get distinct keys — this is the actual
+        // mechanism that prevents user A's cached session from ever being
+        // returned on a `get_json` lookup keyed by user B's id.
+        let u1 = Uuid::new_v4();
+        let u2 = Uuid::new_v4();
+        assert_ne!(session_cache_key(u1), session_cache_key(u2));
+    }
+
+    #[test]
+    fn session_cache_key_is_deterministic_for_the_same_user() {
+        let u = Uuid::new_v4();
+        assert_eq!(session_cache_key(u), session_cache_key(u));
+    }
+
+    #[test]
+    fn composio_config_overwrites_any_stale_cached_header_with_fresh_config_key() {
+        // Even if `headers` (as read back from a stale/prior cache entry)
+        // already carries an old `x-api-key` value, `composio_config` always
+        // overwrites it with the current config key — stale credential data
+        // from a previous state can never leak through into the live config.
+        let mut stale_headers = HashMap::new();
+        stale_headers.insert("x-api-key".to_string(), "ak_STALE_from_before_rotation".to_string());
+        stale_headers.insert("x-other".to_string(), "unrelated".to_string());
+
+        let cfg = composio_config("https://mcp/x".into(), stale_headers, &Some("ak_FRESH_current".to_string()));
+        assert_eq!(cfg.headers.get("x-api-key").map(String::as_str), Some("ak_FRESH_current"));
+        assert_eq!(cfg.headers.get("x-other").map(String::as_str), Some("unrelated"));
+    }
+
+    #[test]
+    fn composio_config_with_no_configured_key_leaves_headers_untouched() {
+        let mut headers = HashMap::new();
+        headers.insert("x-other".to_string(), "keep".to_string());
+        let cfg = composio_config("https://mcp/x".into(), headers, &None);
+        assert!(!cfg.headers.contains_key("x-api-key"));
+        assert_eq!(cfg.headers.get("x-other").map(String::as_str), Some("keep"));
+    }
+
+    #[test]
+    fn cached_composio_session_round_trip_never_reintroduces_the_secret() {
+        // Simulates exactly what `cache::set_json_ex` / `get_json` do (JSON
+        // serialize, store, deserialize) for the struct that's actually
+        // written to Redis — proving the stripped state survives a full
+        // round-trip without the secret reappearing, regardless of which
+        // user's key it's read back under.
+        let mut headers = HashMap::new();
+        headers.insert("x-api-key".to_string(), "ak_master_secret".to_string());
+        headers.insert("mcp-session-id".to_string(), "sess-abc".to_string());
+        let stripped = strip_cached_secret(&headers);
+
+        let cached = CachedComposioSession {
+            session_id: "s1".to_string(),
+            mcp_url: "https://mcp.composio/x".to_string(),
+            mcp_headers: stripped,
+            toolkits: vec!["gmail".to_string()],
+        };
+        let json = serde_json::to_string(&cached).unwrap();
+        assert!(!json.contains("ak_master_secret"), "serialized cache payload must never contain the secret");
+
+        let round_tripped: CachedComposioSession = serde_json::from_str(&json).unwrap();
+        assert!(!round_tripped.mcp_headers.contains_key("x-api-key"));
+        assert_eq!(round_tripped.mcp_headers.get("mcp-session-id").map(String::as_str), Some("sess-abc"));
+    }
 }

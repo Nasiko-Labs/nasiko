@@ -119,3 +119,76 @@ async fn agent_typed_service_account_jwt_does_not_satisfy_delegation_auth() {
 
     server.cleanup().await;
 }
+
+// ─── gaps: JWT-validation branches not hit by the tests above ──────────────
+//
+// The tests above cover "wrong secret" (signature-mismatch) and "garbage"
+// (parse-failure) rejections. `validate_delegation_token`
+// (`oss/auth/src/jwt.rs:190`) has two more branches worth locking in
+// independently: an expired-but-otherwise-well-formed token, and one signed
+// with the right secret but the wrong `aud`. `DelegationClaims`/
+// `DELEGATION_EXPIRY_SECS` are private to `nasiko-auth`, so these are built
+// directly with `jsonwebtoken` (already a dev-dependency) using the same
+// wire shape (`sub`/`act`/`aud`/`exp`/`iat`) `mint_delegation_token` produces.
+
+#[derive(serde::Serialize)]
+struct RawDelegationClaims {
+    sub: String,
+    act: String,
+    aud: String,
+    exp: u64,
+    iat: u64,
+}
+
+fn encode_raw_delegation(claims: &RawDelegationClaims, secret: &str) -> String {
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .expect("encode raw delegation token")
+}
+
+#[tokio::test]
+#[serial]
+async fn expired_delegation_token_is_rejected() {
+    let server = TestServer::start().await;
+    let now = chrono::Utc::now().timestamp() as u64;
+    let expired = encode_raw_delegation(
+        &RawDelegationClaims {
+            sub: Uuid::new_v4().to_string(),
+            act: Uuid::new_v4().to_string(),
+            aud: "mcp".to_string(),
+            exp: now.saturating_sub(60), // expired one minute ago
+            iat: now.saturating_sub(360),
+        },
+        common::TEST_JWT_SECRET,
+    );
+
+    let res = mcp_initialize(&server, Some(&expired)).await;
+    assert_eq!(res.status(), 401, "an expired-but-correctly-signed delegation token must be rejected");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn wrong_audience_delegation_token_is_rejected() {
+    let server = TestServer::start().await;
+    let now = chrono::Utc::now().timestamp() as u64;
+    let wrong_aud = encode_raw_delegation(
+        &RawDelegationClaims {
+            sub: Uuid::new_v4().to_string(),
+            act: Uuid::new_v4().to_string(),
+            aud: "not-mcp".to_string(), // correct secret, correct shape, wrong audience
+            exp: now + 300,
+            iat: now,
+        },
+        common::TEST_JWT_SECRET,
+    );
+
+    let res = mcp_initialize(&server, Some(&wrong_aud)).await;
+    assert_eq!(res.status(), 401, "a token with the wrong audience must be rejected even with the right secret");
+
+    server.cleanup().await;
+}

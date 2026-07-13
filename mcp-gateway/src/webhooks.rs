@@ -115,4 +115,60 @@ mod tests {
         assert!(!verify_signature(id, ts, body, &sig, "wrong-secret"));
         assert!(!verify_signature(id, ts, "tampered", &sig, secret));
     }
+
+    fn sign(id: &str, ts: &str, body: &str, secret: &str) -> String {
+        let signing = format!("{id}.{ts}.{body}");
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(signing.as_bytes());
+        B64.encode(mac.finalize().into_bytes())
+    }
+
+    #[test]
+    fn semantically_equivalent_but_differently_serialized_body_fails() {
+        // Proves this verifies the RAW body bytes, not a re-parsed/normalized
+        // JSON value — two JSON documents that are semantically identical but
+        // differ in key order/whitespace must NOT be interchangeable.
+        let secret = "whsec_test";
+        let (id, ts) = ("wh_1", "1700000000");
+        let body_a = r#"{"type":"x","data":{"id":"1"}}"#;
+        let body_b = r#"{"data": {"id": "1"}, "type": "x"}"#; // same meaning, different bytes
+        let sig_over_a = sign(id, ts, body_a, secret);
+
+        assert!(verify_signature(id, ts, body_a, &sig_over_a, secret));
+        assert!(!verify_signature(id, ts, body_b, &sig_over_a, secret));
+    }
+
+    #[test]
+    fn truncated_and_extended_signature_are_rejected() {
+        let secret = "whsec_test";
+        let (id, ts, body) = ("wh_1", "1700000000", r#"{"type":"x"}"#);
+        let sig = sign(id, ts, body, secret);
+
+        let truncated = &sig[..sig.len() - 4];
+        assert!(!verify_signature(id, ts, body, truncated, secret));
+
+        let extended = format!("{sig}AAAA");
+        assert!(!verify_signature(id, ts, body, &extended, secret));
+    }
+
+    #[test]
+    fn empty_body_with_correct_signature_passes_wrong_signature_fails() {
+        let secret = "whsec_test";
+        let (id, ts, body) = ("wh_1", "1700000000", "");
+        let sig_over_empty = sign(id, ts, body, secret);
+        assert!(verify_signature(id, ts, body, &sig_over_empty, secret));
+
+        // A signature computed over a non-empty body must not validate an
+        // empty body.
+        let sig_over_nonempty = sign(id, ts, "not empty", secret);
+        assert!(!verify_signature(id, ts, body, &sig_over_nonempty, secret));
+    }
+
+    #[test]
+    fn empty_signature_string_is_rejected_without_panicking() {
+        let secret = "whsec_test";
+        assert!(!verify_signature("wh_1", "1700000000", "{}", "", secret));
+        // Malformed non-base64 signature must also fail cleanly, not panic.
+        assert!(!verify_signature("wh_1", "1700000000", "{}", "not-base64!!", secret));
+    }
 }

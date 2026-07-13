@@ -1,5 +1,10 @@
 //! HTTP-level tests for the unified connect / disconnect flow (custom connectors;
-//! Composio paths need a live provider and are covered by crate mockito tests).
+//! most Composio paths need a live provider and are covered by crate mockito
+//! tests) — plus the public `GET /oauth/callback` Composio browser redirect
+//! target (`oss/server/src/mcp/handlers/connect.rs:106`,
+//! `nasiko_mcp_gateway::connect::handle_composio_callback`), for which this file
+//! now stands up a mockito stub so the ACTIVE-status branch (and the redirect it
+//! triggers) is reachable end-to-end.
 //!
 //!   cargo test -p nasiko-server --test mcp_connect -- --test-threads=1
 
@@ -8,6 +13,49 @@ mod common;
 use serde_json::{Value, json};
 use serial_test::serial;
 use uuid::Uuid;
+
+/// Point the McpState's Composio provider at a mockito stub — the only seam:
+/// `Providers::new` builds `ComposioProvider` straight from these two `Config`
+/// fields (see `oss/server/tests/common/mod.rs`'s `test_config`).
+fn set_composio_provider(base_url: &str) {
+    // SAFETY: serialized by #[serial] within this test binary.
+    unsafe {
+        std::env::set_var("TEST_COMPOSIO_API_KEY", "test-composio-key");
+        std::env::set_var("TEST_COMPOSIO_BASE_URL", base_url);
+    }
+}
+fn clear_composio_provider() {
+    // SAFETY: serialized by #[serial] within this test binary.
+    unsafe {
+        std::env::remove_var("TEST_COMPOSIO_API_KEY");
+        std::env::remove_var("TEST_COMPOSIO_BASE_URL");
+    }
+}
+
+fn no_redirect_client() -> reqwest::Client {
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
+}
+
+async fn seed_composio_connector(server: &common::TestServer, name: &str, auth_config_id: &str) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO mcp_connectors (provider_type, name, auth_config_id) VALUES ('composio', $1, $2) RETURNING id",
+    )
+    .bind(name)
+    .bind(auth_config_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+async fn seed_pending_connection(server: &common::TestServer, user: Uuid, connector: Uuid, status: &str) {
+    sqlx::query("INSERT INTO mcp_user_connections (user_id, connector_id, status) VALUES ($1, $2, $3)")
+        .bind(user)
+        .bind(connector)
+        .bind(status)
+        .execute(&server.db)
+        .await
+        .unwrap();
+}
 
 async fn init_admin(server: &common::TestServer) -> (String, Uuid) {
     let v = server
@@ -162,5 +210,141 @@ async fn connect_to_unreachable_connector_id_is_not_found() {
         .unwrap();
     assert_eq!(res.status(), 404);
 
+    server.cleanup().await;
+}
+
+// ─── GET /oauth/callback (Composio) ─────────────────────────────────────────
+
+/// ── Vuln 3 (Medium) regression guard — FIXED in `handle_composio_callback` ──
+///
+/// `GET /oauth/callback` used to be a self-service open redirect: it took an
+/// unauthenticated `success_url` query param and, once Composio reported the
+/// caller's OWN connection ACTIVE, did `Redirect::to(success_url)` verbatim.
+/// Fix #3 routes it through `net::safe_redirect`, so an off-origin target is
+/// neutralized to `/`. This drives the old exploit path and confirms the
+/// off-origin `success_url` no longer leaks the browser off-site.
+#[tokio::test]
+#[serial]
+async fn composio_callback_off_origin_success_url_is_neutralized_vuln3() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _m = mock_server
+        .mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
+        .with_status(200)
+        .with_body(r#"{"items":[{"id":"ca_attacker","status":"ACTIVE","auth_config":{"id":"ac_evil"}}]}"#)
+        .create_async()
+        .await;
+    set_composio_provider(&mock_server.url());
+
+    let server = common::TestServer::start().await;
+    let (attacker_id, attacker_uuid) = init_admin(&server).await;
+    let cid = seed_composio_connector(&server, "evil-toolkit", "ac_evil").await;
+    seed_pending_connection(&server, attacker_uuid, cid, "INITIATED").await;
+
+    let res = no_redirect_client()
+        .get(server.url("/oauth/callback"))
+        .query(&[
+            ("user_id", attacker_id.as_str()),
+            ("connector_id", &cid.to_string()),
+            ("success_url", "https://evil.example.com"),
+        ])
+        .send()
+        .await
+        .unwrap();
+
+    // The ACTIVE branch still completes with a 303, but safe_redirect rewrites
+    // the off-origin target to "/" — never the attacker's domain.
+    assert_eq!(res.status(), 303);
+    let location = res.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/"), "off-origin success_url must be neutralized to '/', not honored");
+    assert_ne!(location, Some("https://evil.example.com"));
+
+    clear_composio_provider();
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn composio_callback_missing_params_is_message_not_redirect() {
+    let server = common::TestServer::start().await;
+
+    // No user_id/connector_id at all.
+    let res = no_redirect_client().get(server.url("/oauth/callback")).send().await.unwrap();
+    assert_eq!(res.status(), 200, "missing params must render the message page, not redirect");
+    let body = res.text().await.unwrap();
+    assert!(body.contains("Missing user_id or connector_id"), "{body}");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn composio_callback_no_pending_connection_is_message() {
+    let server = common::TestServer::start().await;
+    let (_uid, uuid) = init_admin(&server).await;
+    let cid = seed_composio_connector(&server, "no-pending-toolkit", "ac_no_pending").await;
+    // Deliberately no mcp_user_connections row for (uuid, cid) at all.
+
+    let res = no_redirect_client()
+        .get(server.url("/oauth/callback"))
+        .query(&[("user_id", uuid.to_string().as_str()), ("connector_id", &cid.to_string()), ("success_url", "https://evil.example.com")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "no pending connection must render the message page, not redirect");
+    let body = res.text().await.unwrap();
+    assert!(body.contains("No pending connection"), "{body}");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn composio_callback_expired_connection_is_message() {
+    let server = common::TestServer::start().await;
+    let (_uid, uuid) = init_admin(&server).await;
+    let cid = seed_composio_connector(&server, "expired-toolkit", "ac_expired").await;
+    seed_pending_connection(&server, uuid, cid, "EXPIRED").await;
+
+    let res = no_redirect_client()
+        .get(server.url("/oauth/callback"))
+        .query(&[("user_id", uuid.to_string().as_str()), ("connector_id", &cid.to_string()), ("success_url", "https://evil.example.com")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "an EXPIRED connection must render the message page, not redirect");
+    let body = res.text().await.unwrap();
+    assert!(body.contains("No pending connection"), "{body}");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn composio_callback_non_active_status_is_finalizing_message_not_redirect() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _m = mock_server
+        .mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
+        .with_status(200)
+        .with_body(r#"{"items":[]}"#) // no matching item -> ConnectionStatus::NOT_FOUND
+        .create_async()
+        .await;
+    set_composio_provider(&mock_server.url());
+
+    let server = common::TestServer::start().await;
+    let (_uid, uuid) = init_admin(&server).await;
+    let cid = seed_composio_connector(&server, "still-pending-toolkit", "ac_pending").await;
+    seed_pending_connection(&server, uuid, cid, "INITIATED").await;
+
+    let res = no_redirect_client()
+        .get(server.url("/oauth/callback"))
+        .query(&[("user_id", uuid.to_string().as_str()), ("connector_id", &cid.to_string()), ("success_url", "https://evil.example.com")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "a non-ACTIVE Composio status must not redirect");
+    let body = res.text().await.unwrap();
+    assert!(body.contains("still finalizing"), "{body}");
+
+    clear_composio_provider();
     server.cleanup().await;
 }

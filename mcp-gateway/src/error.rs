@@ -233,4 +233,59 @@ mod tests {
         // …but Backend detail is preserved for management responses (safe diagnostics).
         assert_eq!(McpError::Backend("could not reach MCP server".into()).client_message(), "backend error: could not reach MCP server");
     }
+
+    /// Table-driven sweep of `client_message()` across every `McpError` variant:
+    /// which ones redact server-side detail vs which pass their message through.
+    #[test]
+    fn client_message_redaction_table_for_every_variant() {
+        // Pass-through variants (Display detail is safe for the management surface).
+        assert_eq!(McpError::NotFound("conn x".into()).client_message(), "not found: conn x");
+        assert_eq!(McpError::BadRequest("bad url".into()).client_message(), "bad request: bad url");
+        assert_eq!(McpError::Unauthorized("no token".into()).client_message(), "unauthorized: no token");
+        assert_eq!(McpError::Forbidden("no access".into()).client_message(), "forbidden: no access");
+        assert_eq!(McpError::Conflict("dup".into()).client_message(), "conflict: dup");
+        assert_eq!(McpError::ToolBlocked("blocked!".into()).client_message(), "blocked!");
+        assert_eq!(McpError::ToolApprovalRequired("ask!".into()).client_message(), "ask!");
+        assert_eq!(McpError::NotConfigured("no key".into()).client_message(), "not configured: no key");
+        assert_eq!(
+            McpError::Backend("upstream at 10.0.1.5 refused".into()).client_message(),
+            "backend error: upstream at 10.0.1.5 refused"
+        );
+        assert_eq!(McpError::Composio("composio 500".into()).client_message(), "composio error: composio 500");
+
+        // Fix #7: `McpError::Oauth` is now redacted on the management surface too —
+        // its message is built from attacker-influenced discovered URLs / token-
+        // endpoint response bodies, so it must not pass through.
+        assert_eq!(
+            McpError::Oauth("token exchange failed (HTTP 502): <internal-host-detail>".into()).client_message(),
+            "authorization error"
+        );
+
+        // Redacted variants — server-side cause logged, client gets a generic message.
+        assert_eq!(McpError::Database(sqlx::Error::RowNotFound).client_message(), "internal error");
+        let io_err = std::io::Error::other("boom");
+        let redis_err: redis::RedisError = io_err.into();
+        assert_eq!(McpError::Redis(redis_err).client_message(), "internal error");
+        let serde_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        assert_eq!(McpError::Serde(serde_err).client_message(), "internal error");
+        assert_eq!(McpError::Crypto("decrypt failed for key X".into()).client_message(), "internal error");
+        assert_eq!(McpError::Internal("secret db dsn".into()).client_message(), "internal error");
+    }
+
+    /// `client_message()` has no arm for `McpError::Http` — it falls into the
+    /// generic `other => other.to_string()` branch, so a raw `reqwest::Error`
+    /// reaches management callers verbatim, unlike `to_json_rpc()` which redacts
+    /// it. Characterizes current behavior (candidate follow-up hardening).
+    #[tokio::test]
+    async fn http_variant_is_not_redacted_by_client_message_unlike_json_rpc() {
+        let err1 = reqwest::Client::new().get("http://127.0.0.1:1/").send().await.unwrap_err();
+        let json_rpc_message = McpError::Http(err1).to_json_rpc().message;
+        // reqwest::Error isn't Clone — fetch a fresh error for the second check.
+        let err2 = reqwest::Client::new().get("http://127.0.0.1:1/").send().await.unwrap_err();
+        let client_message = McpError::Http(err2).client_message();
+
+        assert_eq!(json_rpc_message, "backend request failed");
+        assert_ne!(client_message, "backend request failed");
+        assert_ne!(client_message, "internal error");
+    }
 }

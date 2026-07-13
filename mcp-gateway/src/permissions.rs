@@ -472,4 +472,163 @@ mod tests {
     fn stances_are_exactly_allow_ask_block() {
         assert_eq!(STANCES, ["allow", "ask", "block"]);
     }
+
+    // ─── Exhaustive wildcard_match matrix ──────────────────────────────────
+
+    #[test]
+    fn wildcard_all_star_matches_everything_including_empty_and_long() {
+        assert!(wildcard_match("*", ""));
+        assert!(wildcard_match("*", "x"));
+        let long_text = "a".repeat(5000);
+        assert!(wildcard_match("*", &long_text));
+    }
+
+    #[test]
+    fn wildcard_single_char_edge_cases() {
+        // `?` requires exactly one char — empty text never matches a bare `?`.
+        assert!(!wildcard_match("?", ""));
+        assert!(wildcard_match("?", "x"));
+        assert!(!wildcard_match("?", "xy"));
+        // `??` matches exactly two chars, no more, no fewer.
+        assert!(wildcard_match("??", "xy"));
+        assert!(!wildcard_match("??", "x"));
+        assert!(!wildcard_match("??", "xyz"));
+    }
+
+    #[test]
+    fn wildcard_placement_start_middle_end() {
+        // Wildcard only at the end.
+        assert!(wildcard_match("gmail_*", "gmail_send"));
+        assert!(!wildcard_match("gmail_*", "xgmail_send"));
+        // Wildcard only at the start.
+        assert!(wildcard_match("*_send", "gmail_send"));
+        assert!(!wildcard_match("*_send", "gmail_sendx"));
+        // Wildcard in the middle only.
+        assert!(wildcard_match("a*z", "az"));
+        assert!(wildcard_match("a*z", "axyz"));
+        assert!(!wildcard_match("a*z", "ax"));
+        assert!(!wildcard_match("a*z", "za"));
+    }
+
+    #[test]
+    fn wildcard_match_itself_is_case_sensitive_callers_must_lowercase() {
+        // `wildcard_match` documents that it is case-sensitive and relies on
+        // callers (`get_stance`) to lowercase both sides first — verify that
+        // contract holds at this layer.
+        assert!(!wildcard_match("ABC", "abc"));
+        assert!(wildcard_match("ABC", "ABC"));
+    }
+
+    #[test]
+    fn wildcard_unicode_tool_names_match_by_char_not_byte() {
+        // Multi-byte chars must be matched as whole `char`s (the impl collects
+        // into `Vec<char>`), not sliced mid-codepoint — would panic/misbehave
+        // if it indexed into the raw UTF-8 bytes instead.
+        assert!(wildcard_match("日本*", "日本語_ツール"));
+        assert!(wildcard_match("*ツール", "日本語_ツール"));
+        assert!(wildcard_match("日本?", "日本語"));
+        assert!(!wildcard_match("日本?", "日本語語"));
+    }
+
+    #[test]
+    fn wildcard_extremely_long_strings_do_not_panic() {
+        let pattern = format!("{}*", "a".repeat(4000));
+        let text = format!("{}{}", "a".repeat(4000), "b".repeat(4000));
+        assert!(wildcard_match(&pattern, &text));
+
+        // All-`?` pattern must match only the exact same length.
+        let q_pattern = "?".repeat(3000);
+        assert!(wildcard_match(&q_pattern, &"x".repeat(3000)));
+        assert!(!wildcard_match(&q_pattern, &"x".repeat(2999)));
+        assert!(!wildcard_match(&q_pattern, &"x".repeat(3001)));
+    }
+
+    #[test]
+    fn wildcard_empty_pattern_vs_empty_and_nonempty_text() {
+        assert!(wildcard_match("", ""));
+        assert!(!wildcard_match("", "x"));
+        // Non-empty pattern (no wildcard) vs empty text never matches.
+        assert!(!wildcard_match("x", ""));
+    }
+
+    // ─── get_stance combinatorics ──────────────────────────────────────────
+
+    #[test]
+    fn get_stance_all_three_stances_on_identical_pattern_block_wins_either_order() {
+        let a = Uuid::new_v4();
+        // Same exact pattern (`*`), three different stances registered for it —
+        // block must win regardless of the order the rules were inserted in.
+        let order1 = ctx(vec![rule(a, "*", Stance::Allow), rule(a, "*", Stance::Ask), rule(a, "*", Stance::Block)], &[]);
+        let order2 = ctx(vec![rule(a, "*", Stance::Block), rule(a, "*", Stance::Ask), rule(a, "*", Stance::Allow)], &[]);
+        assert_eq!(order1.get_stance(a, "anything"), Stance::Block);
+        assert_eq!(order2.get_stance(a, "anything"), Stance::Block);
+    }
+
+    #[test]
+    fn get_stance_duplicate_exact_pattern_different_stances_is_priority_not_last_write() {
+        // Two rules for the *exact same* pattern+connector but different
+        // stances (e.g. from an inconsistent bulk-update). The engine does not
+        // dedupe by pattern — it collects every matching stance and picks by
+        // block > ask > allow priority, NOT by insertion/"last write" order.
+        let a = Uuid::new_v4();
+        let allow_first = ctx(vec![rule(a, "gmail_send", Stance::Allow), rule(a, "gmail_send", Stance::Block)], &[]);
+        let block_first = ctx(vec![rule(a, "gmail_send", Stance::Block), rule(a, "gmail_send", Stance::Allow)], &[]);
+        assert_eq!(allow_first.get_stance(a, "gmail_send"), Stance::Block);
+        assert_eq!(block_first.get_stance(a, "gmail_send"), Stance::Block);
+
+        // Ask vs allow duplicate — ask (higher priority) wins in both orders.
+        let ask_allow = ctx(vec![rule(a, "x", Stance::Ask), rule(a, "x", Stance::Allow)], &[]);
+        let allow_ask = ctx(vec![rule(a, "x", Stance::Allow), rule(a, "x", Stance::Ask)], &[]);
+        assert_eq!(ask_allow.get_stance(a, "x"), Stance::Ask);
+        assert_eq!(allow_ask.get_stance(a, "x"), Stance::Ask);
+    }
+
+    #[test]
+    fn get_stance_ignores_disabled_connectors_short_circuit_lives_in_caller() {
+        // `get_stance` does NOT consult `disabled_connectors` at all — the
+        // enabled/disabled short-circuit is applied by callers (e.g.
+        // aggregator.rs checks `is_connector_enabled` BEFORE ever calling
+        // `get_stance`). So a disabled connector's tool_rules are still fully
+        // evaluated here if you call get_stance directly; disabling does not
+        // implicitly force Block. This documents where the short-circuit
+        // actually lives.
+        let a = Uuid::new_v4();
+        let disabled_but_explicit_allow = ctx(vec![rule(a, "gmail_send", Stance::Allow)], &[a]);
+        assert!(!disabled_but_explicit_allow.is_connector_enabled(a));
+        assert_eq!(disabled_but_explicit_allow.get_stance(a, "gmail_send"), Stance::Allow);
+
+        // Even with a disabled connector and zero rules, get_stance defaults
+        // to Allow — disabling alone is invisible to get_stance.
+        let disabled_no_rules = ctx(vec![], &[a]);
+        assert_eq!(disabled_no_rules.get_stance(a, "anything"), Stance::Allow);
+    }
+
+    #[test]
+    fn get_stance_empty_tool_name_and_pattern_longer_than_tool() {
+        let a = Uuid::new_v4();
+        // `*` matches an empty tool name too.
+        let block_all = ctx(vec![rule(a, "*", Stance::Block)], &[]);
+        assert_eq!(block_all.get_stance(a, ""), Stance::Block);
+
+        // A literal (non-wildcard) pattern longer than the tool name can never
+        // match — falls through to the default Allow.
+        let c = ctx(vec![rule(a, "gmail_send_email_extra_suffix", Stance::Block)], &[]);
+        assert_eq!(c.get_stance(a, "gmail_send"), Stance::Allow);
+    }
+
+    #[test]
+    fn get_stance_case_insensitive_on_both_pattern_and_tool_name() {
+        let a = Uuid::new_v4();
+        let c = ctx(vec![rule(a, "GmAiL_SeNd_*", Stance::Block)], &[]);
+        assert_eq!(c.get_stance(a, "gmail_send_email"), Stance::Block);
+        assert_eq!(c.get_stance(a, "GMAIL_SEND_EMAIL"), Stance::Block);
+    }
+
+    #[test]
+    fn get_stance_unicode_tool_name() {
+        let a = Uuid::new_v4();
+        let c = ctx(vec![rule(a, "日本_*", Stance::Ask)], &[]);
+        assert_eq!(c.get_stance(a, "日本_ツール"), Stance::Ask);
+        assert_eq!(c.get_stance(a, "other_tool"), Stance::Allow);
+    }
 }

@@ -275,10 +275,20 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         cors_allowed_origins: vec![],
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
-        composio_api_key: None,
-        composio_base_url: "https://backend.composio.dev".into(),
+        // Overridable so tests can point the Composio ToolProvider at a mockito
+        // stub (there is no other seam to inject a fake provider — McpState builds
+        // it straight from these two Config fields). Unset in the vast majority of
+        // tests, which must keep seeing "Composio not configured" (COMPOSIO_API_KEY
+        // unset in production === `composio_api_key: None`).
+        composio_api_key: std::env::var("TEST_COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
+        composio_base_url: std::env::var("TEST_COMPOSIO_BASE_URL")
+            .unwrap_or_else(|_| "https://backend.composio.dev".into()),
         composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET").ok().filter(|s| !s.is_empty()),
-        mcp_gateway_public_url: None,
+        // Overridable so the MCP OAuth callback round-trip test can exercise the
+        // full `exchange_code` path (which needs `oauth_redirect_uri()` to be
+        // `Some`). `None` by default, matching every other test's assumption
+        // that the gateway's public URL is unconfigured.
+        mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL").ok().filter(|s| !s.is_empty()),
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,

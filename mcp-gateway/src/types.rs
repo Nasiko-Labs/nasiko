@@ -367,4 +367,56 @@ mod tests {
         assert!(e.get("error").is_some() && e.get("result").is_none());
         assert_eq!(e["error"]["code"], json!(codes::TOOL_BLOCKED));
     }
+
+    #[test]
+    fn connector_prefix_is_always_16_lowercase_hex_chars() {
+        let is_lower_hex_16 = |s: &str| s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+        for id in [
+            Uuid::nil(),
+            Uuid::max(),
+            Uuid::parse_str("ABCDEF12-2222-3333-4444-555555555555").unwrap(), // uppercase input UUID
+            Uuid::new_v4(),
+        ] {
+            let p = connector_prefix(id);
+            assert!(is_lower_hex_16(&p), "prefix '{p}' for {id} is not 16 lowercase hex chars");
+        }
+        // Uppercase-hex UUID input still lowercases in the prefix.
+        assert_eq!(connector_prefix(Uuid::parse_str("ABCDEF12-2222-3333-4444-555555555555").unwrap()), "abcdef1222223333");
+    }
+
+    #[test]
+    fn connector_prefix_depends_only_on_id_field_not_name_or_owner() {
+        // `connector_prefix` takes only a `Uuid` — it cannot see name/owner. Two
+        // "connectors" sharing an id but differing elsewhere yield the same prefix.
+        struct Connector {
+            id: Uuid,
+            name: &'static str,
+            owner: &'static str,
+        }
+        let shared_id = Uuid::new_v4();
+        let mut c1 = Connector { id: shared_id, name: "gmail-prod", owner: "alice" };
+        let c2 = Connector { id: shared_id, name: "totally-different-name", owner: "bob" };
+        assert_eq!(connector_prefix(c1.id), connector_prefix(c2.id));
+
+        let before = connector_prefix(c1.id);
+        c1.name = "renamed-again";
+        c1.owner = "carol";
+        assert_eq!(connector_prefix(c1.id), before);
+    }
+
+    #[test]
+    fn connector_prefix_collision_needs_a_full_8_byte_match_after_fix5() {
+        // Fix #5 widened the prefix to the first 16 hex chars (8 bytes / 64 bits),
+        // so a collision now requires two distinct ids to match on all 8 leading
+        // bytes — far narrower than the old 4-byte (32-bit) surface. Constructed
+        // deterministically to prove the prefix is exactly those 8 bytes.
+        let a = Uuid::from_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0x01]);
+        let b = Uuid::from_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0x02]);
+        assert_ne!(a, b, "the two ids must be genuinely distinct connectors");
+        assert_eq!(connector_prefix(a), connector_prefix(b));
+        assert_eq!(connector_prefix(a), "1122334455667788");
+        // Differing within the first 8 bytes must NOT collide.
+        let c = Uuid::from_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x89, 0, 0, 0, 0, 0, 0, 0, 0x01]);
+        assert_ne!(connector_prefix(a), connector_prefix(c));
+    }
 }

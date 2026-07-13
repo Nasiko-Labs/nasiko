@@ -204,4 +204,49 @@ mod tests {
         assert_eq!(safe_redirect("https://app.nasiko.com/x", None), "/");
         assert_eq!(safe_redirect("/x", None), "/x");
     }
+
+    #[test]
+    fn rfc1918_172_range_boundaries_are_exact() {
+        // 172.16.0.0/12 — just outside on both sides allowed, just inside blocked.
+        assert!(!is_blocked_ip("172.15.255.255".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(is_blocked_ip("172.16.0.0".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(is_blocked_ip("172.31.255.255".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(!is_blocked_ip("172.32.0.0".parse::<Ipv4Addr>().unwrap().into()));
+    }
+
+    #[test]
+    fn link_local_v4_metadata_range_boundaries() {
+        // 169.254.0.0/16 — the whole range (incl. cloud metadata IP) blocked end to end.
+        assert!(is_blocked_ip("169.254.0.0".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(is_blocked_ip("169.254.169.254".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(is_blocked_ip("169.254.255.255".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(!is_blocked_ip("169.253.255.255".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(!is_blocked_ip("169.255.0.0".parse::<Ipv4Addr>().unwrap().into()));
+    }
+
+    #[test]
+    fn unique_local_v6_range_boundaries() {
+        // fc00::/7 spans fc00:: through fdff:...; both ends blocked, fe00:: allowed.
+        assert!(is_blocked_ip("fc00::".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(is_blocked_ip("fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(!is_blocked_ip("fe00::1".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(is_blocked_ip("fe80::1".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(!is_blocked_ip("fec0::1".parse::<Ipv6Addr>().unwrap().into())); // fe80::/10 ends before fec0::
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_cannot_bypass_the_guard() {
+        // Classic SSRF bypass: private v4 encoded as `::ffff:a.b.c.d`. The guard
+        // unwraps `to_ipv4_mapped()` and re-checks, so every private class is caught.
+        for ip in ["::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1", "::ffff:172.16.0.1", "::ffff:169.254.169.254"] {
+            assert!(is_blocked_ip(ip.parse::<Ipv6Addr>().unwrap().into()), "{ip} (v4-mapped) should be blocked");
+        }
+        // A v4-mapped *public* address must still be allowed.
+        assert!(!is_blocked_ip("::ffff:8.8.8.8".parse::<Ipv6Addr>().unwrap().into()));
+    }
+
+    #[test]
+    fn multicast_v6_is_blocked() {
+        assert!(is_blocked_ip("ff02::1".parse::<Ipv6Addr>().unwrap().into()));
+    }
 }

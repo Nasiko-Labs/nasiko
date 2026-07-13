@@ -1,10 +1,20 @@
 //! Integration tests for v2 per-agent connector permissions
 //! (`/api/mcp/agents/{agent_id}/connectors` + `/tools`), keyed by connector id.
 //!
+//! Also covers `GET .../connectors/{id}/tools` (per-connector tool listing with
+//! stance) and the full permission-permutation matrix for `tools/list` /
+//! `tools/call` through the real HTTP + DB + protocol stack (see the
+//! `─ matrix ─` section below for the enforcement contract this determined).
+//!
 //!   cargo test -p nasiko-server --test mcp_permissions_v2 -- --test-threads=1
 
 mod common;
 
+use std::sync::{Arc, Mutex};
+
+use axum::{Json, Router, extract::State, routing::post};
+use nasiko_auth::jwt::mint_delegation_token;
+use nasiko_mcp_gateway::types::{codes, connector_prefix};
 use serde_json::{Value, json};
 use serial_test::serial;
 use uuid::Uuid;
@@ -46,6 +56,180 @@ async fn seed_agent(server: &common::TestServer, owner: Uuid, name: &str) -> Uui
     .fetch_one(&server.db)
     .await
     .unwrap()
+}
+
+fn allow_private_urls() {
+    // SAFETY: serialized by `#[serial]` — same convention as mcp_connectors.rs.
+    unsafe { std::env::set_var("MCP_ALLOW_PRIVATE_URLS", "true") };
+}
+fn disallow_private_urls() {
+    // SAFETY: serialized by `#[serial]`.
+    unsafe { std::env::remove_var("MCP_ALLOW_PRIVATE_URLS") };
+}
+
+// ─── stub MCP backend ────────────────────────────────────────────────────────
+//
+// Mirrors `mcp_e2e_agent_flow.rs`'s `start_stub_mcp_backend` pattern (a real
+// JSON-RPC `tools/list`/`tools/call` responder), parameterized here with three
+// named tools so the permission matrix below has enough distinct tool names to
+// combine with per-tool rules while leaving one name ("OTHER_TOOL") permanently
+// rule-free to exercise the "matches nothing" default.
+
+const TOOL_SEND: &str = "SEND_EMAIL";
+const TOOL_READ: &str = "READ_EMAIL";
+const TOOL_OTHER: &str = "OTHER_TOOL";
+
+type CallLog = Arc<Mutex<Vec<String>>>;
+
+async fn start_stub_backend() -> (String, CallLog) {
+    let calls: CallLog = Arc::new(Mutex::new(Vec::new()));
+
+    async fn handle(State(calls): State<CallLog>, Json(body): Json<Value>) -> Json<Value> {
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        match method {
+            "tools/list" => Json(json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": {"tools": [
+                    {"name": TOOL_SEND, "description": "send"},
+                    {"name": TOOL_READ, "description": "read"},
+                    {"name": TOOL_OTHER, "description": "other"},
+                ]},
+            })),
+            "tools/call" => {
+                let name = body["params"]["name"].as_str().unwrap_or("").to_string();
+                calls.lock().unwrap().push(name.clone());
+                Json(json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {"content": [{"type": "text", "text": format!("executed {name}")}]},
+                }))
+            }
+            other => Json(json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": {"code": -32601, "message": format!("stub: method not found: {other}")},
+            })),
+        }
+    }
+
+    let app = Router::new().route("/", post(handle)).with_state(calls.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://127.0.0.1:{port}/"), calls)
+}
+
+/// Fixture shared by every matrix test: one owner, one agent, one connector
+/// (backed by a live stub) registered through the real HTTP routes exactly the
+/// way an operator would, plus the delegation token an agent container would
+/// hold for `(owner, agent)`.
+struct Fixture {
+    owner_id: String,
+    connector_id: Uuid,
+    prefix: String,
+    token: String,
+    calls: CallLog,
+}
+
+async fn setup_fixture(server: &common::TestServer) -> Fixture {
+    let (owner_id, owner_uuid) = init_admin(server).await;
+    let agent_id = seed_agent(server, owner_uuid, "matrix-agent").await;
+
+    allow_private_urls();
+    let (backend_url, calls) = start_stub_backend().await;
+    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), &owner_id, "admin")
+        .json(&json!({"name": "matrix-stub", "url": backend_url}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let connector_id =
+        Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    disallow_private_urls();
+
+    let token = mint_delegation_token(common::TEST_JWT_SECRET, &owner_id, &agent_id.to_string()).unwrap();
+    let prefix = connector_prefix(connector_id);
+    Fixture { owner_id, connector_id, prefix, token, calls }
+}
+
+impl Fixture {
+    fn namespaced(&self, tool: &str) -> String {
+        format!("{}__{}", self.prefix, tool)
+    }
+
+    async fn mcp(&self, server: &common::TestServer, method: &str, params: Option<Value>) -> Value {
+        let mut body = json!({"jsonrpc": "2.0", "id": 1, "method": method});
+        if let Some(p) = params {
+            body["params"] = p;
+        }
+        server
+            .client
+            .post(server.url("/api/mcp"))
+            .header("x-nasiko-agent-token", &self.token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+
+    async fn tools_list_names(&self, server: &common::TestServer) -> Vec<String> {
+        let body = self.mcp(server, "tools/list", None).await;
+        body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    async fn call(&self, server: &common::TestServer, tool: &str) -> Value {
+        self.mcp(server, "tools/call", Some(json!({"name": self.namespaced(tool), "arguments": {}}))).await
+    }
+
+    async fn set_connector_enabled(&self, server: &common::TestServer, enabled: bool) {
+        let res = common::as_superuser(
+            server.client.put(server.url(&format!(
+                "/api/mcp/agents/{}/connectors/{}",
+                self.agent_id_from_token(),
+                self.connector_id
+            ))),
+            &self.owner_id,
+            "admin",
+        )
+        .json(&json!({"enabled": enabled}))
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    async fn set_tool_rules(&self, server: &common::TestServer, rules: Vec<(Uuid, &str, &str)>) {
+        let rules: Vec<Value> = rules
+            .into_iter()
+            .map(|(cid, pattern, stance)| json!({"connector_id": cid, "tool_pattern": pattern, "stance": stance}))
+            .collect();
+        let res = common::as_superuser(
+            server.client.put(server.url(&format!("/api/mcp/agents/{}/tools", self.agent_id_from_token()))),
+            &self.owner_id,
+            "admin",
+        )
+        .json(&json!({"rules": rules}))
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(res.status(), 200, "setting tool rules must succeed");
+    }
+
+    /// The delegation token's `act` claim, decoded back out — avoids threading
+    /// `agent_id` through every helper call site separately.
+    fn agent_id_from_token(&self) -> String {
+        let (_user, agent) = nasiko_auth::jwt::validate_delegation_token(common::TEST_JWT_SECRET, &self.token).unwrap();
+        agent
+    }
 }
 
 #[tokio::test]
@@ -245,6 +429,396 @@ async fn permissions_require_manage_agent() {
     .await
     .unwrap();
     assert_eq!(res.status(), 403);
+
+    server.cleanup().await;
+}
+
+// ─── GET /api/mcp/agents/{agent_id}/connectors/{connector_id}/tools ─────────
+
+#[tokio::test]
+#[serial]
+async fn list_connector_tools_syncs_and_shows_default_allow_stance() {
+    let server = common::TestServer::start().await;
+    let (admin_id, admin_uuid) = init_admin(&server).await;
+    let agent_id = seed_agent(&server, admin_uuid, "lct-agent").await;
+
+    allow_private_urls();
+    let (backend_url, _calls) = start_stub_backend().await;
+    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), &admin_id, "admin")
+        .json(&json!({"name": "lct-stub", "url": backend_url}))
+        .send()
+        .await
+        .unwrap();
+    let cid = Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    disallow_private_urls();
+
+    // No catalog rows yet — the endpoint must sync live from the backend.
+    let empty: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_connector_tools WHERE connector_id = $1")
+        .bind(cid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(empty, 0, "catalog must start empty (nothing synced yet)");
+
+    let body: Value = common::as_superuser(
+        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        &admin_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 3, "must have synced live and returned all 3 stub tools: {data:?}");
+    assert!(
+        data.iter().all(|t| t["stance"] == "allow"),
+        "with no access row and no tool_rules, every tool must default to 'allow': {data:?}"
+    );
+    assert!(data.iter().any(|t| t["name"] == TOOL_SEND));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn list_connector_tools_empty_catalog_when_backend_has_no_tools() {
+    let server = common::TestServer::start().await;
+    let (admin_id, admin_uuid) = init_admin(&server).await;
+    let agent_id = seed_agent(&server, admin_uuid, "lct-empty-agent").await;
+
+    async fn handle_empty(Json(body): Json<Value>) -> Json<Value> {
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        Json(json!({"jsonrpc": "2.0", "id": id, "result": {"tools": []}}))
+    }
+    allow_private_urls();
+    let app = Router::new().route("/", post(handle_empty));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let backend_url = format!("http://127.0.0.1:{port}/");
+
+    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), &admin_id, "admin")
+        .json(&json!({"name": "lct-empty-stub", "url": backend_url}))
+        .send()
+        .await
+        .unwrap();
+    let cid = Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    disallow_private_urls();
+
+    let body: Value = common::as_superuser(
+        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        &admin_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 0, "an empty backend catalog must list as empty, not error");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn list_connector_tools_requires_manage_agent() {
+    let server = common::TestServer::start().await;
+    let (admin_id, admin_uuid) = init_admin(&server).await;
+    let cid = seed_connector(&server, admin_uuid, "lct-forbidden-tool").await;
+    let agent_id = seed_agent(&server, admin_uuid, "lct-forbidden-agent").await;
+    let member = common::as_superuser(server.client.post(server.url("/api/users")), &admin_id, "admin")
+        .json(&json!({"username": "lct-member", "email": "lct-member@test.local"}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let member_id = member["id"].as_str().unwrap();
+
+    let res = common::as_member(
+        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        member_id,
+        "lct-member",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 403, "a caller who cannot manage the agent must be forbidden");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn list_connector_tools_default_allow_with_no_access_row_at_all() {
+    // A connector the agent has NEVER had any mcp_agent_connector_access row
+    // for (no enable/disable toggle, no tool_rules ever written) — default-allow
+    // semantics must apply cleanly, not error.
+    let server = common::TestServer::start().await;
+    let (admin_id, admin_uuid) = init_admin(&server).await;
+    let cid = seed_connector(&server, admin_uuid, "lct-no-row-tool").await;
+    let agent_id = seed_agent(&server, admin_uuid, "lct-no-row-agent").await;
+    // Seed a synced catalog row directly (skip the live sync round-trip; this
+    // test is about the access-row-absent path, not the sync path).
+    sqlx::query("INSERT INTO mcp_connector_tools (connector_id, tool_name) VALUES ($1, 'PING')")
+        .bind(cid)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_agent_connector_access WHERE agent_id = $1")
+        .bind(agent_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "precondition: no access row exists for this agent at all");
+
+    let body: Value = common::as_superuser(
+        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        &admin_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0]["name"], "PING");
+    assert_eq!(data[0]["stance"], "allow", "no access row at all → default-allow, reflected correctly");
+
+    server.cleanup().await;
+}
+
+// ─── tools/list & tools/call permission matrix (Part B) ─────────────────────
+//
+// Enforcement contract determined by reading `permissions.rs::get_stance` +
+// `protocol.rs::handle_tools_call`/`handle_tools_list` end-to-end (see the final
+// report for the full writeup); summarized per test below. Every test in this
+// section drives the real HTTP routes: `PUT .../connectors/{id}` and
+// `PUT .../tools` to set state, `POST /api/mcp` with a real delegation token to
+// read `tools/list` / exercise `tools/call`, and a live stub MCP backend so a
+// "call actually reached the backend" claim is provable via `Fixture.calls`.
+
+#[tokio::test]
+#[serial]
+async fn matrix_absent_access_row_is_default_allow() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(names.contains(&fx.namespaced(TOOL_OTHER)), "{names:?}");
+    assert!(names.contains(&fx.namespaced(TOOL_SEND)), "{names:?}");
+
+    let res = fx.call(&server, TOOL_OTHER).await;
+    assert!(res.get("error").is_none(), "{res:?}");
+    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_OTHER.to_string()]);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn matrix_explicit_enabled_true_row_behaves_like_absent() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_connector_enabled(&server, true).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(names.contains(&fx.namespaced(TOOL_OTHER)), "{names:?}");
+
+    let res = fx.call(&server, TOOL_OTHER).await;
+    assert!(res.get("error").is_none(), "{res:?}");
+
+    server.cleanup().await;
+}
+
+/// NEW BUG (beyond the three already known): disabling a connector for an agent
+/// (`enabled=false`) is enforced at `tools/list` (`aggregator.rs`'s
+/// `!perms.is_connector_enabled(..) => continue`) but NOT at `tools/call`
+/// (`protocol.rs::handle_tools_call`'s `ServerType::Mcp` branch only checks
+/// `can_access_connector` (ownership) + `get_stance` (tool-level); it never
+/// calls `perms.is_connector_enabled`). `session::resolve_session` also builds
+/// its backend list per-user, not per-agent, so a disabled connector's backend
+/// is still present in `resolved.servers` and `route_tool` resolves it fine.
+/// Net effect: an agent that already knows (or can derive — the namespace
+/// prefix is just the first 16 hex chars of the connector's UUID) a disabled
+/// connector's namespaced tool name can still call it and reach the real
+/// backend, even though the operator disabled that connector for this agent.
+/// Left UN-IGNORED: it characterizes current (buggy) behavior, not a desired
+/// one — flip this test's expectation once `handle_tools_call` gains an
+/// `is_connector_enabled` check.
+#[tokio::test]
+#[serial]
+async fn matrix_disabled_connector_hidden_from_list_but_tools_call_still_reaches_backend_bug() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_connector_enabled(&server, false).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(names.is_empty(), "a disabled connector's tools must be hidden entirely from tools/list: {names:?}");
+
+    let res = fx.call(&server, TOOL_OTHER).await;
+    assert!(
+        res.get("error").is_none(),
+        "BUG: tools/call for a disabled connector currently still succeeds — is_connector_enabled is never \
+         checked in protocol.rs::handle_tools_call's ServerType::Mcp branch: {res:?}"
+    );
+    assert_eq!(
+        fx.calls.lock().unwrap().as_slice(),
+        &[TOOL_OTHER.to_string()],
+        "BUG: the real backend was actually invoked despite the connector being disabled for this agent"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn matrix_exact_allow_rule() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "allow")]).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(names.contains(&fx.namespaced(TOOL_SEND)), "{names:?}");
+
+    let res = fx.call(&server, TOOL_SEND).await;
+    assert!(res.get("error").is_none(), "{res:?}");
+    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_SEND.to_string()]);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn matrix_exact_block_rule() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "block")]).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(!names.contains(&fx.namespaced(TOOL_SEND)), "a blocked tool must be OMITTED from tools/list: {names:?}");
+    assert!(names.contains(&fx.namespaced(TOOL_READ)), "an unrelated tool must remain listed: {names:?}");
+
+    let res = fx.call(&server, TOOL_SEND).await;
+    assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res:?}");
+    assert!(fx.calls.lock().unwrap().is_empty(), "the backend must never see a blocked call");
+
+    server.cleanup().await;
+}
+
+/// Determines the actual `Ask` contract: unlike `Block`, `aggregator.rs` does
+/// NOT filter `Ask` out of `tools/list` (it only special-cases
+/// `Stance::Block`) — an "ask" tool is listed exactly like an allowed one, with
+/// no visible marker distinguishing it. `tools/call`, however, rejects it with
+/// a distinct JSON-RPC error code (`TOOL_ASK`, carrying `data.server` for the
+/// caller's approval-flow UI) — it is never silently allowed through, and there
+/// is no "auto-approve"/partial-execute path for a bare `tools/call` on an
+/// `Ask`-stance tool (the flow event goes out via the server's route layer,
+/// `oss/server/src/mcp/handlers/gateway.rs`, not this crate).
+#[tokio::test]
+#[serial]
+async fn matrix_exact_ask_rule() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "ask")]).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(
+        names.contains(&fx.namespaced(TOOL_SEND)),
+        "an 'ask' tool IS still listed by tools/list (only Block is filtered at list time): {names:?}"
+    );
+
+    let res = fx.call(&server, TOOL_SEND).await;
+    assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res:?}");
+    assert!(res["error"]["data"]["server"].is_string(), "{res:?}");
+    assert!(fx.calls.lock().unwrap().is_empty(), "an ask-stance tool must never reach the backend via a bare call");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn matrix_wildcard_allow_rule() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, "SEND_*", "allow")]).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(names.contains(&fx.namespaced(TOOL_SEND)), "{names:?}");
+
+    let res = fx.call(&server, TOOL_SEND).await;
+    assert!(res.get("error").is_none(), "{res:?}");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn matrix_wildcard_block_rule() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, "SEND_*", "block")]).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(!names.contains(&fx.namespaced(TOOL_SEND)), "{names:?}");
+
+    let res = fx.call(&server, TOOL_SEND).await;
+    assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res:?}");
+    assert!(fx.calls.lock().unwrap().is_empty());
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn matrix_overlapping_allow_and_block_block_wins() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, "*", "allow"), (fx.connector_id, TOOL_SEND, "block")]).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(!names.contains(&fx.namespaced(TOOL_SEND)), "block must win over the wildcard allow: {names:?}");
+    assert!(names.contains(&fx.namespaced(TOOL_READ)), "READ_EMAIL only matches the wildcard allow: {names:?}");
+
+    let blocked = fx.call(&server, TOOL_SEND).await;
+    assert_eq!(blocked["error"]["code"], json!(codes::TOOL_BLOCKED), "{blocked:?}");
+
+    let allowed = fx.call(&server, TOOL_READ).await;
+    assert!(allowed.get("error").is_none(), "{allowed:?}");
+    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_READ.to_string()]);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn matrix_rule_scoped_to_different_connector_does_not_leak() {
+    let server = common::TestServer::start().await;
+    let fx = setup_fixture(&server).await;
+
+    // A second, unrelated connector owned by the same user, with a blanket
+    // block rule — must have zero effect on `fx.connector_id`'s resolution.
+    let other_cid = seed_connector(&server, Uuid::parse_str(&fx.owner_id).unwrap(), "matrix-other-connector").await;
+    fx.set_tool_rules(&server, vec![(other_cid, "*", "block")]).await;
+
+    let names = fx.tools_list_names(&server).await;
+    assert!(names.contains(&fx.namespaced(TOOL_SEND)), "a rule on a different connector must not leak: {names:?}");
+
+    let res = fx.call(&server, TOOL_SEND).await;
+    assert!(res.get("error").is_none(), "{res:?}");
+    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_SEND.to_string()]);
 
     server.cleanup().await;
 }
