@@ -773,10 +773,12 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
     };
 
     // The A2A spec fixes no path — it must come from the agent's card, never
-    // be assumed. Rows predating transport_path get the legacy Nasiko mount.
+    // be assumed. The a2a-server-lf crate (used by the example agents) mounts
+    // its JSON-RPC handler at the container root, not `/jsonrpc` — a row with
+    // no captured transport_path must default to root, not guess a path the
+    // agent doesn't actually serve.
     let path = match transport_path.as_deref() {
-        None => "/jsonrpc",
-        Some("/") | Some("") => "",
+        None | Some("/") | Some("") => "",
         Some(p) => p,
     };
 
