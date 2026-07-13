@@ -71,6 +71,23 @@ pub fn guarded_http_client() -> reqwest::Client {
         .expect("failed to build SSRF-guarded reqwest client")
 }
 
+/// Restrict an OAuth post-completion redirect to a relative path or a same-origin
+/// absolute URL; anything else (other origins, protocol-relative `//host`) falls
+/// back to `/`. Prevents the callbacks becoming an open-redirect phishing gadget.
+pub fn safe_redirect(dest: &str, gateway_public_url: Option<&str>) -> String {
+    if dest.starts_with('/') && !dest.starts_with("//") {
+        return dest.to_string();
+    }
+    if let Ok(target) = reqwest::Url::parse(dest)
+        && let Some(base) = gateway_public_url
+        && let Ok(base) = reqwest::Url::parse(base)
+        && target.origin() == base.origin()
+    {
+        return dest.to_string();
+    }
+    "/".to_string()
+}
+
 /// Validate that `raw` is an `http(s)` URL whose host does not resolve to a
 /// private/internal address. Returns `BadRequest` otherwise.
 pub async fn validate_public_url(raw: &str) -> Result<()> {
@@ -168,5 +185,23 @@ mod tests {
             assert!(!is_blocked_ip(ip.parse::<Ipv4Addr>().unwrap().into()), "{ip} should be allowed");
         }
         assert!(!is_blocked_ip("2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap().into()));
+    }
+
+    #[test]
+    fn safe_redirect_allows_relative_and_same_origin_only() {
+        let base = Some("https://app.nasiko.com");
+        // Relative paths are always allowed.
+        assert_eq!(safe_redirect("/chat", base), "/chat");
+        assert_eq!(safe_redirect("/", base), "/");
+        // Same-origin absolute is allowed.
+        assert_eq!(safe_redirect("https://app.nasiko.com/done", base), "https://app.nasiko.com/done");
+        // Off-origin, protocol-relative, and scheme tricks fall back to "/".
+        assert_eq!(safe_redirect("https://evil.example.com", base), "/");
+        assert_eq!(safe_redirect("//evil.example.com", base), "/");
+        assert_eq!(safe_redirect("http://app.nasiko.com/done", base), "/", "scheme mismatch is off-origin");
+        assert_eq!(safe_redirect("javascript:alert(1)", base), "/");
+        // With no configured base, only relative paths are allowed.
+        assert_eq!(safe_redirect("https://app.nasiko.com/x", None), "/");
+        assert_eq!(safe_redirect("/x", None), "/x");
     }
 }

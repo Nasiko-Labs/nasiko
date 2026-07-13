@@ -30,13 +30,13 @@ pub fn route_tool<'a>(
             });
     }
 
+    // A bare (un-prefixed) name is only valid as a Composio meta-tool. Never
+    // guess a generic backend — the aggregator always namespaces generic tools,
+    // so an un-prefixed name that isn't Composio is malformed/hallucinated.
     if let Some(composio) = servers.iter().find(|s| s.kind == ServerType::Composio && !s.url.is_empty()) {
         return Ok((composio, tool_name.to_string()));
     }
-    if let Some(fallback) = servers.iter().find(|s| !s.url.is_empty()) {
-        return Ok((fallback, tool_name.to_string()));
-    }
-    Err(McpError::BadRequest(format!("No backend server found for tool '{tool_name}'")))
+    Err(McpError::BadRequest(format!("Unknown tool '{tool_name}' — no matching connector.")))
 }
 
 #[cfg(test)]
@@ -96,11 +96,11 @@ mod tests {
     }
 
     #[test]
-    fn bare_name_falls_back_to_first_live_when_no_composio() {
+    fn bare_name_without_composio_is_error_not_first_live_guess() {
         let id = Uuid::new_v4();
         let servers = vec![srv(ServerType::Mcp, id, "http://s")];
-        let (s, _) = route_tool("something", &servers).unwrap();
-        assert_eq!(s.connector_id, id);
+        // No composio backend + un-prefixed name → error, never a silent guess.
+        assert!(route_tool("something", &servers).is_err());
     }
 
     #[test]

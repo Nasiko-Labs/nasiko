@@ -296,7 +296,9 @@ pub async fn handle_composio_callback(
                 let _ = repo::update_connection_account_id(&state.db, connection.id, account_id).await;
             }
             session::invalidate_session_cache(state, user_id).await;
-            CallbackOutcome::Redirect(success_url.unwrap_or_else(|| "/".to_string()))
+            // success_url is an unauthenticated query param — never redirect off-origin.
+            let dest = success_url.unwrap_or_else(|| "/".to_string());
+            CallbackOutcome::Redirect(crate::net::safe_redirect(&dest, state.config.gateway_public_url.as_deref()))
         }
         _ => CallbackOutcome::Message("Authorization is still finalizing — refresh in a moment.".to_string()),
     }

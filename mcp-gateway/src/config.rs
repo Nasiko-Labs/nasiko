@@ -43,10 +43,17 @@ impl McpConfig {
             session_ttl_seconds: config.mcp_session_ttl_seconds,
             perm_cache_ttl_seconds: config.mcp_perm_cache_ttl_seconds,
             manifest_ttl_seconds: config.mcp_manifest_ttl_seconds,
+            // Never fall back to a shipped constant (this file syncs to the public
+            // repo). Use the dedicated key if set, else derive from the already-
+            // required JWT_SECRET with domain separation. Panics only if BOTH are
+            // unset — impossible in a valid deployment (JWT_SECRET is required).
             oauth_state_signing_key: std::env::var("OAUTH_STATE_SIGNING_KEY")
                 .ok()
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "mcp-gateway-state".to_string()),
+                .or_else(|| {
+                    std::env::var("JWT_SECRET").ok().filter(|s| !s.is_empty()).map(|j| format!("mcp-oauth-state::{j}"))
+                })
+                .expect("OAUTH_STATE_SIGNING_KEY or JWT_SECRET must be set for MCP OAuth state signing"),
         }
     }
 

@@ -87,11 +87,13 @@ async fn refresh(
     if let Some(cid) = &connector.oauth_client_id {
         form.push(("client_id", cid.clone()));
     }
-    if let Some(secret) = &connector.oauth_client_secret {
-        form.push(("client_secret", secret.clone()));
+    if let Some(secret) = client_secret_plain(connector) {
+        form.push(("client_secret", secret));
     }
 
-    let resp = state.http_client.post(token_endpoint).timeout(REFRESH_TIMEOUT).form(&form).send().await;
+    // Guarded client: the token endpoint was discovered from the target server's
+    // response, so it must be SSRF-checked, not fetched with the internal client.
+    let resp = state.guarded_http_client.post(token_endpoint).timeout(REFRESH_TIMEOUT).form(&form).send().await;
     let body: Value = match resp {
         Ok(r) if r.status().is_success() => match r.json().await {
             Ok(v) => v,
@@ -370,6 +372,21 @@ pub async fn exchange_code(
 // Management — authorize / callback orchestration behind the connector routes.
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Decrypt a connector's stored OAuth client secret (encrypted at rest with the
+/// owner's key, mirroring the other credential columns). `None` if absent or on
+/// decrypt failure.
+fn client_secret_plain(connector: &McpConnector) -> Option<String> {
+    let enc = connector.oauth_client_secret.as_deref()?;
+    let owner = connector.owner_id?;
+    match SecretsCrypto::for_user(owner).decrypt(enc) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(connector = %connector.name, error = %e, "failed to decrypt oauth client secret");
+            None
+        }
+    }
+}
+
 /// Load an `oauth2` connector and confirm `user_id` may reach it (owner/grant).
 pub async fn load_accessible_oauth_connector(
     state: &McpState,
@@ -406,15 +423,27 @@ pub async fn begin_authorization(
         .ok_or_else(|| McpError::BadRequest("connector has no url".into()))?;
 
     if !connector.oauth_configured() {
+        // Guarded client: discovery follows URLs from the target server's own
+        // response (resource_metadata, authorization_servers, endpoints), which
+        // are attacker-influenced and must be SSRF-checked.
         let discovered =
-            discover_oauth_config(&state.http_client, &server_url, &redirect_uri, pre_client_id.as_deref()).await?;
+            discover_oauth_config(&state.guarded_http_client, &server_url, &redirect_uri, pre_client_id.as_deref()).await?;
+        // Encrypt the DCR client secret at rest with the owner's key.
+        let client_secret_enc = match (discovered.client_secret.as_deref(), connector.owner_id) {
+            (Some(sec), Some(owner)) => Some(
+                SecretsCrypto::for_user(owner)
+                    .encrypt(sec)
+                    .map_err(|e| McpError::Internal(format!("encrypt client secret: {e}")))?,
+            ),
+            _ => None,
+        };
         repo::update_connector_oauth_config(
             &state.db,
             connector.id,
             &discovered.authorization_endpoint,
             &discovered.token_endpoint,
             discovered.client_id.as_deref(),
-            discovered.client_secret.as_deref(),
+            client_secret_enc.as_deref(),
         )
         .await?;
         connector = repo::get_connector_by_id(&state.db, connector.id)
@@ -472,11 +501,12 @@ pub async fn handle_callback(
         None => return CallbackOutcome::Message("Gateway public URL not configured.".to_string()),
     };
 
+    let client_secret = client_secret_plain(&connector);
     let tokens = match exchange_code(
-        &state.http_client,
+        &state.guarded_http_client,
         token_endpoint,
         connector.oauth_client_id.as_deref(),
-        connector.oauth_client_secret.as_deref(),
+        client_secret.as_deref(),
         &code,
         &oauth_state.code_verifier,
         &redirect_uri,
@@ -484,7 +514,11 @@ pub async fn handle_callback(
     .await
     {
         Ok(t) => t,
-        Err(e) => return CallbackOutcome::Message(format!("Token exchange failed: {e}")),
+        // Do not echo the token-endpoint response body back to the browser.
+        Err(e) => {
+            tracing::warn!(error = %e, "oauth token exchange failed");
+            return CallbackOutcome::Message("Token exchange failed — please restart the authorization flow.".to_string());
+        }
     };
 
     let crypto = SecretsCrypto::for_user(oauth_state.user_id);
@@ -513,7 +547,8 @@ pub async fn handle_callback(
 
     crate::session::invalidate_session_cache(state, oauth_state.user_id).await;
     tracing::info!(connector = %connector.name, user_id = %oauth_state.user_id, "stored mcp oauth token");
-    CallbackOutcome::Redirect(oauth_state.redirect_url.unwrap_or_else(|| "/".to_string()))
+    let dest = oauth_state.redirect_url.unwrap_or_else(|| "/".to_string());
+    CallbackOutcome::Redirect(crate::net::safe_redirect(&dest, state.config.gateway_public_url.as_deref()))
 }
 
 /// Parse `resource_metadata="<url>"` out of a `WWW-Authenticate` header value.

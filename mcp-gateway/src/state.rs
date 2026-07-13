@@ -17,6 +17,10 @@ pub struct McpState {
     pub db: PgPool,
     pub redis: redis::Client,
     pub http_client: reqwest::Client,
+    /// SSRF/DNS-rebinding-guarded client for outbound calls to user-controlled
+    /// URLs (OAuth discovery/exchange/refresh against dynamically-discovered
+    /// endpoints). Distinct from `http_client`, which may reach internal hosts.
+    pub guarded_http_client: reqwest::Client,
     pub config: McpConfig,
     /// Tool backends: the Composio Tool Router client (when configured) + the
     /// shared generic MCP transport.
@@ -37,6 +41,7 @@ impl McpState {
             db,
             redis,
             http_client,
+            guarded_http_client: crate::net::guarded_http_client(),
             config: mcp_config,
             providers,
         }

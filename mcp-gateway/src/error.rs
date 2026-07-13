@@ -164,13 +164,18 @@ impl McpError {
                 tracing::error!(message = %m, "mcp crypto error");
                 "internal error".to_string()
             }
+            // OAuth discovery/exchange can reflect attacker-influenced endpoint
+            // URLs or token-endpoint response bodies — redact on every surface.
+            McpError::Oauth(m) => {
+                tracing::warn!(message = %m, "mcp oauth error");
+                "authorization error".to_string()
+            }
             McpError::Internal(m) => {
                 tracing::error!(message = %m, "mcp internal error");
                 "internal error".to_string()
             }
-            // Backend/Composio/Oauth detail is kept for management responses — the
-            // SSRF guard blocks private URLs at registration, so no internal
-            // address can reach these messages.
+            // Backend/Composio detail is kept for management responses (e.g.
+            // "could not reach MCP server") — safe, user-facing diagnostics.
             other => other.to_string(),
         }
     }
@@ -223,7 +228,9 @@ mod tests {
         assert_eq!(McpError::Backend("upstream at 10.0.1.5 refused".into()).to_json_rpc().message, "backend request failed");
         assert_eq!(McpError::Composio("composio 500".into()).to_json_rpc().message, "backend request failed");
         assert_eq!(McpError::Oauth("bad token endpoint".into()).to_json_rpc().message, "authorization error");
-        // …but preserved for management responses (safe: SSRF guard blocks private URLs).
+        // Oauth is redacted on the management surface too (can reflect discovered URLs / bodies).
+        assert_eq!(McpError::Oauth("token exchange failed (HTTP 500): <body>".into()).client_message(), "authorization error");
+        // …but Backend detail is preserved for management responses (safe diagnostics).
         assert_eq!(McpError::Backend("could not reach MCP server".into()).client_message(), "backend error: could not reach MCP server");
     }
 }

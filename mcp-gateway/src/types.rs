@@ -229,11 +229,12 @@ fn default_transport() -> String {
     "streamable_http".to_string()
 }
 
-/// Tool-routing namespace prefix for a connector — first 8 hex of its id.
-/// Derived from id, never name, so two owners' connectors can't collide (fix #1).
+/// Tool-routing namespace prefix for a connector — first 16 hex of its id (64
+/// bits; collision probability is negligible even platform-wide). Derived from
+/// id, never name, so two owners' connectors can't collide (fix #1).
 pub fn connector_prefix(id: Uuid) -> String {
     let mut s = id.simple().to_string();
-    s.truncate(8);
+    s.truncate(16);
     s
 }
 
@@ -314,15 +315,15 @@ mod tests {
     }
 
     #[test]
-    fn connector_prefix_is_8_hex_and_id_derived() {
+    fn connector_prefix_is_16_hex_and_id_derived() {
         let a = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
-        assert_eq!(connector_prefix(a), "11111111");
-        assert_eq!(connector_prefix(a).len(), 8);
+        assert_eq!(connector_prefix(a), "1111111122223333");
+        assert_eq!(connector_prefix(a).len(), 16);
         // Different ids → different prefixes; round-trips through `__` split.
         let b = Uuid::parse_str("abcdef00-2222-3333-4444-555555555555").unwrap();
         assert_ne!(connector_prefix(a), connector_prefix(b));
         let name = format!("{}__{}", connector_prefix(b), "SEND_EMAIL");
-        assert_eq!(name.split_once("__"), Some(("abcdef00", "SEND_EMAIL")));
+        assert_eq!(name.split_once("__"), Some(("abcdef0022223333", "SEND_EMAIL")));
     }
 
     #[test]

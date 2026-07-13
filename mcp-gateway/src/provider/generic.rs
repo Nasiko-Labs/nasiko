@@ -23,6 +23,30 @@ pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// Shorter timeout for `tools/list` fan-out so one slow backend can't stall the
 /// whole aggregation.
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Cap on a backend response body — a misbehaving/malicious backend must not be
+/// able to force the gateway to buffer an unbounded body into memory.
+const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Read a response body into a string, rejecting anything over [`MAX_RESPONSE_BYTES`]
+/// (checks the advertised length first, then enforces while streaming since
+/// Content-Length may be absent or dishonest).
+async fn read_capped(mut resp: reqwest::Response, server_name: &str) -> Result<String> {
+    if let Some(len) = resp.content_length()
+        && len as usize > MAX_RESPONSE_BYTES
+    {
+        return Err(McpError::Backend(format!("backend '{server_name}' response too large ({len} bytes)")));
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(McpError::Backend(format!(
+                "backend '{server_name}' response exceeded {MAX_RESPONSE_BYTES} bytes"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|_| McpError::Backend(format!("backend '{server_name}' returned invalid UTF-8")))
+}
 
 #[derive(Clone)]
 pub struct GenericMcpProvider {
@@ -71,7 +95,7 @@ impl GenericMcpProvider {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let text = resp.text().await?;
+        let text = read_capped(resp, &server.name).await?;
 
         if !status.is_success() {
             return Err(McpError::Backend(format!(
