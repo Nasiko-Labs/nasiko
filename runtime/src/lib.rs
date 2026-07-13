@@ -4,6 +4,8 @@ mod types;
 #[cfg(feature = "docker")]
 mod docker;
 
+#[cfg(feature = "simulated")]
+mod simulated;
 
 pub use error::{Result, RuntimeError};
 pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState};
@@ -38,6 +40,9 @@ pub struct NodeInfo {
 
 #[cfg(feature = "docker")]
 pub use docker::{DockerRuntime, DockerRuntimeConfig};
+
+#[cfg(feature = "simulated")]
+pub use simulated::SimulatedRuntime;
 
 
 use async_trait::async_trait;
