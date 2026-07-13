@@ -55,6 +55,8 @@ rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }
+clap = { workspace = true }
+rand = { workspace = true }
 
 # OpenTelemetry
 opentelemetry = { version = "0.28", features = ["metrics"] }
