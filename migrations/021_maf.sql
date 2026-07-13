@@ -1,6 +1,6 @@
 -- =============================================================================
--- EE Migration 015: Multi-Agent Flow (MAF) tables
--- Depends on: OSS migrations (users table) + EE 002_org_hierarchy.sql
+-- Migration 021: Multi-Agent Flow (MAF) tables
+-- Depends on: users table (001_schema.sql)
 --
 -- What this migration adds
 -- ────────────────────────

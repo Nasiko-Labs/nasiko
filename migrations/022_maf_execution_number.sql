@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 019: user-facing incremental execution number
+-- Migration 022: user-facing incremental execution number
 --
 -- maf_executions.id (UUID) stays the internal identifier — it's the A2A
 -- contextId threading all agent calls in a run, and the Redis job/retry key.
