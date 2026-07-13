@@ -22,9 +22,37 @@
 --   #5 owner_id is ON DELETE RESTRICT — deleting a user can't destroy a shared
 --      connector out from under everyone it was shared with.
 
+-- ── Safety guard: refuse to run destructively against POPULATED v1 tables ─────
+-- v2 has no automated v1→v2 data migration. Dropping v1 tables that still hold
+-- rows would silently destroy live connections/credentials. So fail loudly if
+-- any v1 table has data — an operator must consciously back up / migrate / clear
+-- v1 MCP data first. A fresh DB (v1 tables absent) or a clean pre-GA DB (v1
+-- tables present but empty, e.g. the test harness right after 018) passes.
+DO $$
+DECLARE
+    v1_table TEXT;
+    row_count BIGINT;
+BEGIN
+    FOREACH v1_table IN ARRAY ARRAY[
+        'mcp_agent_tool_permissions', 'mcp_agent_server_access', 'mcp_user_credentials',
+        'mcp_oauth_tokens', 'mcp_connections', 'mcp_composio_sessions', 'mcp_servers', 'mcp_auth_configs'
+    ]
+    LOOP
+        IF to_regclass(format('%I', v1_table)) IS NOT NULL THEN
+            EXECUTE format('SELECT count(*) FROM %I', v1_table) INTO row_count;
+            IF row_count > 0 THEN
+                RAISE EXCEPTION
+                    'MCP v1 table "%" still has % row(s). Migration 019 is destructive and has no v1->v2 data migration. Back up and clear live v1 MCP data before applying.',
+                    v1_table, row_count;
+            END IF;
+        END IF;
+    END LOOP;
+END $$;
+
 -- ── Drop v1 ──────────────────────────────────────────────────────────────────
 -- CASCADE removes the v1 tables' own indexes and triggers with them. Nothing
--- created after 018 depends on these tables.
+-- created after 018 depends on these tables. The guard above has confirmed none
+-- of them hold data.
 DROP TABLE IF EXISTS
     mcp_agent_tool_permissions,
     mcp_agent_server_access,
