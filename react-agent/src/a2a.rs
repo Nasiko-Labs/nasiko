@@ -84,6 +84,19 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
     ) -> Result<A2aResponse, A2aClientError> {
+        self.send_message_with_headers(endpoint, message, context_id, &[]).await
+    }
+
+    /// Like [`send_message`], plus per-call headers layered on top of the
+    /// client-wide `extra_headers` (e.g. a delegation token scoped to the one
+    /// specific agent being called, which differs per call unlike `traceparent`).
+    pub async fn send_message_with_headers(
+        &self,
+        endpoint: &str,
+        message: &str,
+        context_id: Option<&str>,
+        per_call_headers: &[(String, String)],
+    ) -> Result<A2aResponse, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -91,11 +104,14 @@ impl A2aClient {
         let mut body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": Uuid::new_v4().to_string(),
-            "method": "SendMessage",
+            // Current A2A JSON-RPC spec naming — matches what `a2a-sdk` (Python,
+            // pinned by every example agent) actually accepts, not the gRPC-style
+            // `SendMessage`/`ROLE_USER` names an earlier version of this client used.
+            "method": "message/send",
             "params": {
                 "message": {
                     "messageId": Uuid::new_v4().to_string(),
-                    "role": "ROLE_USER",
+                    "role": "user",
                     "parts": [{"text": message}],
                     "contextId": ctx
                 }
@@ -114,7 +130,7 @@ impl A2aClient {
             .json(&body)
             .timeout(self.default_timeout);
 
-        for (key, value) in &self.extra_headers {
+        for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
             req = req.header(key, value);
         }
 
@@ -158,6 +174,7 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
         progress: Option<tokio::sync::mpsc::Sender<AgentStreamEvent>>,
+        per_call_headers: &[(String, String)],
     ) -> Result<String, A2aClientError> {
         use futures::StreamExt as _;
 
@@ -168,11 +185,12 @@ impl A2aClient {
         let mut body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": Uuid::new_v4().to_string(),
-            "method": "SendStreamingMessage",
+            // See the naming note in `send_message_with_headers` above.
+            "method": "message/stream",
             "params": {
                 "message": {
                     "messageId": Uuid::new_v4().to_string(),
-                    "role": "ROLE_USER",
+                    "role": "user",
                     "parts": [{"text": message}],
                     "contextId": ctx
                 }
@@ -194,7 +212,7 @@ impl A2aClient {
             // the caller informed, so allow long-running agent work.
             .timeout(std::time::Duration::from_secs(600));
 
-        for (key, value) in &self.extra_headers {
+        for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
             req = req.header(key, value);
         }
 

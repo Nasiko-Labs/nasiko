@@ -635,28 +635,29 @@ fn jsonrpc_error_none_data_omitted() {
 fn build_send_request_has_correct_method_and_version() {
     let req = build_send_request("hello", Some("ctx-1"));
     assert_eq!(req.jsonrpc, "2.0");
-    assert_eq!(req.method, "SendMessage");
+    // Current A2A JSON-RPC spec naming (matches what every example agent's
+    // `a2a-sdk` pin actually accepts), not the gRPC-style `SendMessage`.
+    assert_eq!(req.method, "message/send");
     assert!(req.params.is_some());
 }
 
 #[test]
 fn build_stream_request_has_correct_method() {
     let req = build_stream_request("hello", None);
-    assert_eq!(req.method, "SendStreamingMessage");
+    assert_eq!(req.method, "message/stream");
 }
 
 #[test]
-fn build_send_request_params_deserialize_as_send_message_request() {
+fn build_send_request_params_have_lowercase_role_and_correct_text() {
+    // Deliberately asserted against the raw `Value`, not deserialized back into
+    // `SendMessageRequest`/`Role` — those (from the external `a2a-lf` crate) only
+    // accept the gRPC-style `"ROLE_USER"`, but this request is sent outbound to
+    // agent containers whose `a2a-sdk` (Python) only accepts current-spec
+    // lowercase `"user"`, which is what `build_request` deliberately patches in.
     let req = build_send_request("test text", Some("ctx-abc"));
     let params = req.params.unwrap();
-    let smr: SendMessageRequest = serde_json::from_value(params).unwrap();
-    assert_eq!(smr.message.role, Role::User);
-    // the message should contain our text
-    assert!(!smr.message.parts.is_empty());
-    match &smr.message.parts[0].content {
-        PartContent::Text(t) => assert_eq!(t, "test text"),
-        other => panic!("Expected Text part, got {other:?}"),
-    }
+    assert_eq!(params["message"]["role"], json!("user"));
+    assert_eq!(params["message"]["parts"][0]["text"], json!("test text"));
 }
 
 #[test]

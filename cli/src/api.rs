@@ -85,6 +85,14 @@ impl Client {
         r
     }
 
+    fn auth_patch(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+        let mut r = self.agent.patch(url);
+        if let Some(ref t) = self.token {
+            r = r.header("Authorization", &format!("Bearer {t}"));
+        }
+        r
+    }
+
     // ─── Authenticated CP API calls (/api/*) ────────────────────────────────
 
     pub fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
@@ -133,6 +141,21 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
+    pub fn patch_json<T: for<'de> Deserialize<'de>, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let _spin = nasiko_utils::term::start_status(format!("PATCH {path}"));
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_patch(&url)
+            .send_json(body)
+            .context("request failed")?;
+        check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
     /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_void(&self, path: &str) -> Result<()> {
         let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
@@ -165,6 +188,37 @@ impl Client {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let mut resp = req.call().context("request failed")?;
+        check_status(&mut resp, &url)?;
+        Ok(())
+    }
+
+    /// DELETE and parse a JSON response body (for routes that return a
+    /// descriptive body — e.g. a disconnect confirmation message — instead
+    /// of a bare 204).
+    pub fn delete_and_read<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
+        let url = self.api_url(path);
+        let mut req = self.agent.delete(&url);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let mut resp = req.call().context("request failed")?;
+        check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
+    /// DELETE with a JSON body, ignoring the response body. Off-spec (DELETE
+    /// shouldn't carry a body) but some routes need it to name a target
+    /// (e.g. revoking a specific share grant) — `force_send_body()` is ureq's
+    /// documented escape hatch for exactly this.
+    pub fn delete_json_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
+        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
+        let url = self.api_url(path);
+        let mut req = self.agent.delete(&url).force_send_body();
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let mut resp = req.send_json(body).context("request failed")?;
         check_status(&mut resp, &url)?;
         Ok(())
     }
