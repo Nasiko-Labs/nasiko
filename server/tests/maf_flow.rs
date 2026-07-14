@@ -693,6 +693,81 @@ async fn test_deleted_maf_cannot_be_run() {
 
 #[tokio::test]
 #[serial]
+async fn test_execution_endpoints_404_after_workflow_deleted() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+
+    let maf: Value = auth(
+        server.client.post(server.url("/api/maf/workflows")).json(&create_maf_body("Delete Then Poll", agent_id)),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
+
+    // Run it while the workflow still exists — execution history should
+    // survive the soft-delete below (maf_executions.maf_id is ON DELETE SET NULL,
+    // and the workflow row itself is never hard-deleted).
+    let run_body: Value = auth(
+        server.client.post(server.url(&format!("/api/maf/workflow/{maf_id}/run"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let exec_id = run_body["data"]["execution_id"].as_str().unwrap();
+
+    // Soft-delete the parent workflow.
+    auth(
+        server.client.delete(server.url(&format!("/api/maf/workflow/{maf_id}"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+
+    let expected_message = "execution not found either workflow is deleted or not found";
+
+    // GET /maf/workflow/result/{exec_id} → 404, workflow is gone
+    let result_res = auth(
+        server.client.get(server.url(&format!("/api/maf/workflow/result/{exec_id}"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(result_res.status(), 404);
+    let result_body: Value = result_res.json().await.unwrap();
+    assert_eq!(result_body["message"], expected_message);
+    assert!(result_body["data"].is_null());
+
+    // GET /maf/execution/{id} → same 404
+    let exec_res = auth(
+        server.client.get(server.url(&format!("/api/maf/execution/{exec_id}"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(exec_res.status(), 404);
+    let exec_body: Value = exec_res.json().await.unwrap();
+    assert_eq!(exec_body["message"], expected_message);
+    assert!(exec_body["data"].is_null());
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn test_maf_not_visible_to_other_user_in_list() {
     let server = common::TestServer::start().await;
 
