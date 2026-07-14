@@ -1,83 +1,33 @@
 //! GitHub API tools for the repo-watch agent.
 //!
+//! Each tool is a plain async function annotated with `#[rig_tool]` — rig generates the
+//! `Tool` impl, the JSON Schema (via `schemars`, derived from the function's own parameter
+//! types), and the argument struct automatically from the function signature and its doc
+//! comments. There is no hand-written schema and no manual `serde_json::from_str` parsing.
+//!
 //! READ-ONLY BY DESIGN: every tool here issues HTTP GET requests only (list commits,
 //! compare diffs, search PRs). There is deliberately no tool that creates, edits, or
 //! deletes anything, so the agent cannot modify a repository even when its GITHUB_TOKEN
 //! carries write permissions. Do not add write operations here — this agent's contract is
 //! observation only.
 
-use serde_json::json;
+use rig::tool_macro as rig_tool;
 
 const GITHUB_API: &str = "https://api.github.com";
 /// Cap on total diff-patch bytes fed back to the model per `compare_diff` call, so a huge
 /// window can't blow the LLM's context. Full file stats are always included regardless.
 const PATCH_BUDGET: usize = 12_000;
 
-pub fn definitions() -> Vec<serde_json::Value> {
-    vec![
-        json!({
-            "type": "function",
-            "function": {
-                "name": "list_commits",
-                "description": "List commits to the repo's default branch since a given time. Returns sha, message, author, date, and url for each commit, newest first.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "owner": {"type": "string", "description": "Repo owner/org, e.g. 'Nasiko-Labs'"},
-                        "repo": {"type": "string", "description": "Repo name, e.g. 'nasiko-cloud-rs'"},
-                        "since": {"type": "string", "description": "ISO-8601 timestamp; only commits after this time are returned"}
-                    },
-                    "required": ["owner", "repo", "since"]
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "compare_diff",
-                "description": "Get the aggregated file-level diff (files changed, added/removed lines, and patches) covering every commit since a given time. Call this after list_commits, and only when there is at least one commit in the window.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "owner": {"type": "string"},
-                        "repo": {"type": "string"},
-                        "since": {"type": "string", "description": "Same ISO-8601 timestamp passed to list_commits"}
-                    },
-                    "required": ["owner", "repo", "since"]
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "search_prs",
-                "description": "Search for pull requests with activity (opened, merged, or closed) since a given time. Returns number, title, state, and the created/merged/closed timestamps for each, so you can classify them yourself relative to the window.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "owner": {"type": "string"},
-                        "repo": {"type": "string"},
-                        "since": {"type": "string", "description": "ISO-8601 timestamp"}
-                    },
-                    "required": ["owner", "repo", "since"]
-                }
-            }
-        }),
-    ]
-}
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct GitHubToolError(String);
 
-pub async fn execute(name: &str, arguments: &str) -> String {
-    let result = match name {
-        "list_commits" => list_commits(arguments).await,
-        "compare_diff" => compare_diff(arguments).await,
-        "search_prs" => search_prs(arguments).await,
-        _ => Err(format!("Unknown tool: {name}")),
-    };
-
-    match result {
-        Ok(s) => s,
-        Err(e) => format!("Error: {e}"),
-    }
+/// Splits an "owner/name" repo reference into its two halves.
+fn split_repo(repo_ref: &str) -> Result<(&str, &str), String> {
+    repo_ref
+        .split_once('/')
+        .filter(|(owner, name)| !owner.is_empty() && !name.is_empty())
+        .ok_or_else(|| format!("'{repo_ref}' is not a valid \"owner/name\" repo reference"))
 }
 
 fn client() -> reqwest::Client {
@@ -161,12 +111,7 @@ async fn fetch_parent_sha(owner: &str, repo: &str, sha: &str) -> Result<Option<S
     Ok(body["parents"][0]["sha"].as_str().map(|s| s.to_string()))
 }
 
-async fn list_commits(arguments: &str) -> Result<String, String> {
-    let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
-    let owner = args["owner"].as_str().ok_or("missing 'owner'")?;
-    let repo = args["repo"].as_str().ok_or("missing 'repo'")?;
-    let since = args["since"].as_str().ok_or("missing 'since'")?;
-
+async fn list_commits_body(owner: &str, repo: &str, since: &str) -> Result<String, String> {
     let commits = fetch_commits(owner, repo, since).await?;
     if commits.is_empty() {
         return Ok(format!("No commits to {owner}/{repo} since {since}."));
@@ -197,12 +142,7 @@ async fn list_commits(arguments: &str) -> Result<String, String> {
     ))
 }
 
-async fn compare_diff(arguments: &str) -> Result<String, String> {
-    let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
-    let owner = args["owner"].as_str().ok_or("missing 'owner'")?;
-    let repo = args["repo"].as_str().ok_or("missing 'repo'")?;
-    let since = args["since"].as_str().ok_or("missing 'since'")?;
-
+async fn compare_diff_body(owner: &str, repo: &str, since: &str) -> Result<String, String> {
     let commits = fetch_commits(owner, repo, since).await?;
     if commits.is_empty() {
         return Ok(format!("No commits since {since}, nothing to diff."));
@@ -306,12 +246,7 @@ async fn compare_diff(arguments: &str) -> Result<String, String> {
     Ok(out)
 }
 
-async fn search_prs(arguments: &str) -> Result<String, String> {
-    let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
-    let owner = args["owner"].as_str().ok_or("missing 'owner'")?;
-    let repo = args["repo"].as_str().ok_or("missing 'repo'")?;
-    let since = args["since"].as_str().ok_or("missing 'since'")?;
-
+async fn search_prs_body(owner: &str, repo: &str, since: &str) -> Result<String, String> {
     let query = format!("repo:{owner}/{repo} is:pr updated:>={since}");
     let resp = auth(client().get(format!("{GITHUB_API}/search/issues")))
         .query(&[
@@ -380,4 +315,258 @@ fn safe_truncate(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Runs `body` against every requested repo and stitches the per-repo results (or, for a
+/// bad reference or a failed call, an inline error) into one combined report — a repo-level
+/// failure never aborts the others.
+async fn per_repo<'a, F, Fut>(repos: &'a [String], body: F) -> String
+where
+    F: Fn(&'a str, &'a str) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut sections = Vec::with_capacity(repos.len());
+    for repo_ref in repos {
+        let section = match split_repo(repo_ref) {
+            Ok((owner, name)) => body(owner, name).await.unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => format!("Error: {e}"),
+        };
+        sections.push(format!("### {repo_ref}\n{section}"));
+    }
+    sections.join("\n\n")
+}
+
+/// Cap on a single file's content returned by `read_file`, so one huge file can't blow the
+/// model's context. Truncated content is flagged in the returned text.
+const FILE_READ_BUDGET: usize = 60_000;
+
+async fn get_commit_body(owner: &str, repo: &str, sha: Option<&str>) -> Result<String, String> {
+    // Resolve the target sha: an explicit one, else the newest commit on the default branch.
+    let sha = match sha {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => {
+            let commits = auth(client().get(format!("{GITHUB_API}/repos/{owner}/{repo}/commits")))
+                .query(&[("per_page", "1")])
+                .send()
+                .await
+                .map_err(|e| format!("request failed: {e}"))?;
+            if !commits.status().is_success() {
+                let status = commits.status();
+                let body = commits.text().await.unwrap_or_default();
+                return Err(format!("GitHub commits API {status}: {body}"));
+            }
+            let arr: Vec<serde_json::Value> =
+                commits.json().await.map_err(|e| format!("parse failed: {e}"))?;
+            arr.first()
+                .and_then(|c| c["sha"].as_str())
+                .ok_or("repo has no commits")?
+                .to_string()
+        }
+    };
+
+    let resp = auth(client().get(format!("{GITHUB_API}/repos/{owner}/{repo}/commits/{sha}")))
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("GitHub commit API {status}: {body}"));
+    }
+
+    let commit: serde_json::Value = resp.json().await.map_err(|e| format!("parse failed: {e}"))?;
+    let full_sha = commit["sha"].as_str().unwrap_or(&sha);
+    let parent_sha = commit["parents"][0]["sha"].as_str().unwrap_or("");
+    let message = commit["commit"]["message"].as_str().unwrap_or("").lines().next().unwrap_or("");
+    let author = commit["commit"]["author"]["name"].as_str().unwrap_or("unknown");
+    let date = commit["commit"]["author"]["date"].as_str().unwrap_or("");
+
+    let mut files = commit["files"].as_array().cloned().unwrap_or_default();
+    files.sort_by_key(|f| {
+        let a = f["additions"].as_u64().unwrap_or(0);
+        let d = f["deletions"].as_u64().unwrap_or(0);
+        std::cmp::Reverse(a + d)
+    });
+
+    let file_lines: Vec<String> = files
+        .iter()
+        .map(|f| {
+            let name = f["filename"].as_str().unwrap_or("");
+            let status = f["status"].as_str().unwrap_or("");
+            let a = f["additions"].as_u64().unwrap_or(0);
+            let d = f["deletions"].as_u64().unwrap_or(0);
+            format!("- {name} ({status}, +{a}/-{d})")
+        })
+        .collect();
+
+    let parent_line = if parent_sha.is_empty() {
+        "parent_sha: (none — this is the repo's first commit)".to_string()
+    } else {
+        format!("parent_sha: {parent_sha}  (use as `git_ref` in read_file for the BEFORE version)")
+    };
+
+    Ok(format!(
+        "Commit {full_sha}\nmessage: {message}\nauthor: {author}\ndate: {date}\n{parent_line}\n\n\
+         {} file(s) changed (most-changed first):\n{}\n\n\
+         To read a file's exact before/after, call read_file with git_ref={full_sha} (after) and \
+         git_ref={parent_sha} (before).",
+        files.len(),
+        file_lines.join("\n"),
+    ))
+}
+
+async fn read_file_body(owner: &str, repo: &str, path: &str, git_ref: &str) -> Result<String, String> {
+    let resp = auth(client().get(format!("{GITHUB_API}/repos/{owner}/{repo}/contents/{path}")))
+        // Raw media type returns the file bytes directly (no base64 envelope).
+        .header("Accept", "application/vnd.github.raw")
+        .query(&[("ref", git_ref)])
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        // Normal for an added file at its parent ref, or a deleted file at the commit ref.
+        return Ok(format!(
+            "'{path}' does not exist at {git_ref} (added or deleted at this ref — no content)."
+        ));
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("GitHub contents API {status}: {body}"));
+    }
+
+    let bytes = resp.bytes().await.map_err(|e| format!("read failed: {e}"))?;
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(t) => t,
+        Err(_) => return Ok(format!("'{path}' at {git_ref} is binary/non-UTF-8 ({} bytes) — not shown.", bytes.len())),
+    };
+
+    let (shown, note) = if text.len() > FILE_READ_BUDGET {
+        (safe_truncate(text, FILE_READ_BUDGET), format!("\n\n(truncated — file is {} bytes)", text.len()))
+    } else {
+        (text, String::new())
+    };
+
+    Ok(format!("{path} @ {git_ref}:\n```\n{shown}\n```{note}"))
+}
+
+async fn find_references_body(owner: &str, repo: &str, symbol: &str) -> Result<String, String> {
+    let query = format!("{symbol} repo:{owner}/{repo}");
+    let resp = auth(client().get(format!("{GITHUB_API}/search/code")))
+        .query(&[("q", query.as_str()), ("per_page", "30")])
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::FORBIDDEN {
+        // Code search has a stricter (~30/min) secondary rate limit and needs auth.
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("GitHub code search {status} (rate limit or auth): {body}"));
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("GitHub code search API {status}: {body}"));
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| format!("parse failed: {e}"))?;
+    let items = body["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return Ok(format!("No files in {owner}/{repo} reference `{symbol}` (per code search)."));
+    }
+
+    let files: Vec<String> = items
+        .iter()
+        .filter_map(|it| it["path"].as_str().map(|p| format!("- {p}")))
+        .collect();
+
+    Ok(format!(
+        "{} file(s) reference `{symbol}` in {owner}/{repo} (textual match on the default branch — \
+         verify each is a real dependency, not a name collision):\n{}",
+        files.len(),
+        files.join("\n"),
+    ))
+}
+
+#[rig_tool(description = "Read one specific commit in a GitHub repo: its message, author, date, \
+    parent_sha, and the list of changed files (status + line counts + per-file patch), \
+    most-changed first. Omit `sha` to get the latest commit on the default branch. Use the \
+    returned parent_sha with read_file to fetch the BEFORE version of a changed file.")]
+pub async fn get_commit(
+    /// A single repo in "owner/name" format, e.g. "Nasiko-Labs/nasiko-cloud-rs".
+    repo: String,
+    /// Commit SHA to inspect. Omit or leave empty for the latest commit on the default branch.
+    sha: Option<String>,
+) -> Result<String, GitHubToolError> {
+    let (owner, name) = split_repo(&repo).map_err(GitHubToolError)?;
+    get_commit_body(owner, name, sha.as_deref()).await.map_err(GitHubToolError)
+}
+
+#[rig_tool(description = "Read the FULL contents of one file in a GitHub repo at a specific git \
+    ref (commit SHA, branch, or tag). Use this to read a changed file's exact before/after: pass \
+    the commit SHA for the new version and the commit's parent_sha for the old version. Prefer \
+    this over the truncated patch when you need real line-by-line context.")]
+pub async fn read_file(
+    /// A single repo in "owner/name" format.
+    repo: String,
+    /// File path within the repo, e.g. "oss/auth/src/lib.rs".
+    path: String,
+    /// Git ref to read at: a commit SHA (use parent_sha for the BEFORE version), branch, or tag.
+    git_ref: String,
+) -> Result<String, GitHubToolError> {
+    let (owner, name) = split_repo(&repo).map_err(GitHubToolError)?;
+    read_file_body(owner, name, &path, &git_ref).await.map_err(GitHubToolError)
+}
+
+#[rig_tool(description = "Find files in a GitHub repo that reference a symbol (function, type, \
+    constant name). Use this to ground an impacted-files list: for a changed symbol, this returns \
+    the files that mention it. Matches are TEXTUAL (default branch only) so verify each is a real \
+    dependency rather than a name collision.")]
+pub async fn find_references(
+    /// A single repo in "owner/name" format.
+    repo: String,
+    /// The symbol to search for (e.g. a function or type name).
+    symbol: String,
+) -> Result<String, GitHubToolError> {
+    let (owner, name) = split_repo(&repo).map_err(GitHubToolError)?;
+    find_references_body(owner, name, &symbol).await.map_err(GitHubToolError)
+}
+
+#[rig_tool(description = "List commits since a given time to the default branch of one or \
+    more GitHub repos. Returns sha, message, author, date, and url for each commit, newest \
+    first, in one section per repo.")]
+pub async fn list_commits(
+    /// One or more repos in "owner/name" format, e.g. ["Nasiko-Labs/nasiko-cloud-rs"]. Pass
+    /// several entries to cover multiple repos in a single call.
+    repos: Vec<String>,
+    /// ISO-8601 timestamp; only commits after this time are returned
+    since: String,
+) -> Result<String, GitHubToolError> {
+    Ok(per_repo(&repos, |owner, repo| list_commits_body(owner, repo, &since)).await)
+}
+
+#[rig_tool(description = "Get the aggregated file-level diff (files changed, added/removed \
+    lines, and patches) covering every commit since a given time, for one or more repos. Call \
+    this after list_commits, and only for repos where it found at least one commit.")]
+pub async fn compare_diff(
+    /// One or more repos in "owner/name" format, matching what was passed to list_commits.
+    repos: Vec<String>,
+    /// Same ISO-8601 timestamp passed to list_commits
+    since: String,
+) -> Result<String, GitHubToolError> {
+    Ok(per_repo(&repos, |owner, repo| compare_diff_body(owner, repo, &since)).await)
+}
+
+#[rig_tool(description = "Search for pull requests with activity (opened, merged, or closed) \
+    since a given time, across one or more repos. Returns number, title, state, and the \
+    created/merged/closed timestamps for each, so you can classify them yourself relative to \
+    the window.")]
+pub async fn search_prs(
+    /// One or more repos in "owner/name" format.
+    repos: Vec<String>,
+    /// ISO-8601 timestamp
+    since: String,
+) -> Result<String, GitHubToolError> {
+    Ok(per_repo(&repos, |owner, repo| search_prs_body(owner, repo, &since)).await)
 }

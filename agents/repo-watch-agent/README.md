@@ -1,19 +1,29 @@
 # Repo Watch Agent
 
-An A2A agent that reports on GitHub repo activity — new commits, file-level diffs, and PR
-activity — since a given point in time, with an LLM-generated summary and risk flags for
-security/config-sensitive changes.
+An A2A agent that reports on GitHub repo activity over a time window (default: last 12 hours),
+across one or more repos, and **automatically deep-dives the risky commits**.
 
-Ask it things like:
+For every window it: lists commits, diffs, and PR activity; identifies which commits touch
+risky areas (auth, secrets, `*.sql` migrations, dependency manifests, Dockerfiles, CI
+workflows); and for *those* commits only, reads the changed files' full before/after
+(line-by-line, not just diff hunks) to report exactly what changed and lists other files
+likely impacted — each backed by evidence (a code-search reference to a changed symbol, or a
+structural rule of the repo). Non-risky commits get the lighter window summary.
 
-> What changed in the repo since 2026-07-13T10:00:00Z?
+> What changed in the last 12 hours?
+> What changed in Nasiko-Labs/nasiko-cloud-rs and Nasiko-Labs/nasiko-rs since 2026-07-13T10:00:00Z?
+> Analyze the latest commit in Nasiko-Labs/nasiko-cloud-rs, file by file, and what it impacts.
 
-It defaults to `GITHUB_REPO` when no repo is named in the query.
+When no repo is named, it falls back to the space-separated watch list in `GITHUB_REPO`.
+
+All operations are **read-only** (HTTP GET) — the agent cannot modify a repo even if its token
+could.
 
 ## Config
 
-See `.env.example`. `GITHUB_TOKEN` needs read access to the target repo (a fine-grained PAT with
-`Contents: read` and `Pull requests: read` is enough).
+See `.env.example`. `GITHUB_REPO` is a **space-separated** watch list used when a query names no
+repo. `GITHUB_TOKEN` needs read access to the target repos (a classic PAT with the `repo` scope,
+or a fine-grained PAT with `Contents: read` + `Pull requests: read`).
 
 ## Build & run
 
