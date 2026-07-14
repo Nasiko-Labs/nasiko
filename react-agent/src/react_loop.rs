@@ -447,11 +447,14 @@ async fn run_stream_inner(
         return Err(OrchestratorError::NoAgents);
     }
 
-    let api_key = config
-        .api_key
-        .clone()
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .ok_or_else(|| OrchestratorError::LlmConfig("OPENAI_API_KEY not set".into()))?;
+    let api_key = match config.api_key.clone().or_else(|| std::env::var("OPENAI_API_KEY").ok()) {
+        Some(k) => k,
+        None => {
+            let message = "OPENAI_API_KEY not set".to_string();
+            let _ = tx.send(OrchestratorEvent::Error { message: message.clone() }).await;
+            return Err(OrchestratorError::LlmConfig(message));
+        }
+    };
 
     let base_url = config
         .base_url

@@ -4,9 +4,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::{
-    error::{Result, RuntimeError},
-    types::{validate_build_inputs, ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState},
     ContainerRuntime,
+    error::{Result, RuntimeError},
+    types::{ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState, validate_build_inputs},
 };
 
 /// `ContainerRuntime` backend for benchmarking control-plane throughput without
@@ -28,17 +28,24 @@ impl SimulatedRuntime {
     /// `sim_agent_endpoint` is the address of the shared `simulated-agent`
     /// process, e.g. `"http://127.0.0.1:9999"`.
     pub fn new(sim_agent_endpoint: impl Into<String>) -> Self {
-        Self {
-            sim_agent_endpoint: sim_agent_endpoint.into(),
-            containers: Mutex::new(HashMap::new()),
-        }
+        let sim_agent_endpoint = sim_agent_endpoint.into();
+        tracing::warn!(
+            %sim_agent_endpoint,
+            "AGENT_RUNTIME=simulated — no real containers will be deployed; \
+             agent endpoints resolve to this address. For benchmarking/load-testing only."
+        );
+        Self { sim_agent_endpoint, containers: Mutex::new(HashMap::new()) }
     }
 }
 
 fn running_status(container_id: &ContainerId, endpoint: &str, replicas: u32) -> DeploymentStatus {
     DeploymentStatus {
         container_id: container_id.clone(),
-        state: if replicas == 0 { RuntimeState::Stopped } else { RuntimeState::Running },
+        state: if replicas == 0 {
+            RuntimeState::Stopped
+        } else {
+            RuntimeState::Running
+        },
         replicas_live: replicas,
         endpoint: Some(endpoint.to_owned()),
         message: None,
@@ -50,8 +57,15 @@ fn running_status(container_id: &ContainerId, endpoint: &str, replicas: u32) -> 
 impl ContainerRuntime for SimulatedRuntime {
     async fn deploy(&self, spec: &DeploymentSpec) -> Result<DeploymentStatus> {
         spec.validate()?;
-        let status = running_status(&spec.container_id, &self.sim_agent_endpoint, spec.min_replicas);
-        self.containers.lock().unwrap().insert(spec.container_id.clone(), status.clone());
+        let status = running_status(
+            &spec.container_id,
+            &self.sim_agent_endpoint,
+            spec.min_replicas,
+        );
+        self.containers
+            .lock()
+            .unwrap()
+            .insert(spec.container_id.clone(), status.clone());
         Ok(status)
     }
 
@@ -66,7 +80,11 @@ impl ContainerRuntime for SimulatedRuntime {
             .get_mut(container_id)
             .ok_or_else(|| RuntimeError::ContainerNotFound(container_id.clone()))?;
         status.replicas_live = replicas;
-        status.state = if replicas == 0 { RuntimeState::Stopped } else { RuntimeState::Running };
+        status.state = if replicas == 0 {
+            RuntimeState::Stopped
+        } else {
+            RuntimeState::Running
+        };
         Ok(())
     }
 
@@ -81,14 +99,17 @@ impl ContainerRuntime for SimulatedRuntime {
 
     async fn status(&self, container_id: &ContainerId) -> Result<DeploymentStatus> {
         let containers = self.containers.lock().unwrap();
-        Ok(containers.get(container_id).cloned().unwrap_or_else(|| DeploymentStatus {
-            container_id: container_id.clone(),
-            state: RuntimeState::Unknown,
-            replicas_live: 0,
-            endpoint: None,
-            message: None,
-            restart_count: 0,
-        }))
+        Ok(containers
+            .get(container_id)
+            .cloned()
+            .unwrap_or_else(|| DeploymentStatus {
+                container_id: container_id.clone(),
+                state: RuntimeState::Unknown,
+                replicas_live: 0,
+                endpoint: None,
+                message: None,
+                restart_count: 0,
+            }))
     }
 
     async fn list(&self) -> Result<Vec<DeploymentStatus>> {
@@ -104,7 +125,10 @@ impl ContainerRuntime for SimulatedRuntime {
     }
 
     async fn logs(&self, _container_id: &ContainerId, _tail: u32) -> Result<Vec<String>> {
-        Ok(vec!["[simulated] SimulatedRuntime runs no real process — see simulated-agent logs instead".to_owned()])
+        Ok(vec![
+            "[simulated] SimulatedRuntime runs no real process — see simulated-agent logs instead"
+                .to_owned(),
+        ])
     }
 
     async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String> {
@@ -138,18 +162,27 @@ mod tests {
         let runtime = SimulatedRuntime::new("http://127.0.0.1:9999");
         let s = spec("agent-a");
         runtime.deploy(&s).await.unwrap();
-        assert_eq!(runtime.endpoint(&s.container_id).await.unwrap(), "http://127.0.0.1:9999");
+        assert_eq!(
+            runtime.endpoint(&s.container_id).await.unwrap(),
+            "http://127.0.0.1:9999"
+        );
 
         let s2 = spec("agent-b");
         runtime.deploy(&s2).await.unwrap();
-        assert_eq!(runtime.endpoint(&s2.container_id).await.unwrap(), "http://127.0.0.1:9999");
+        assert_eq!(
+            runtime.endpoint(&s2.container_id).await.unwrap(),
+            "http://127.0.0.1:9999"
+        );
     }
 
     #[tokio::test]
     async fn endpoint_before_deploy_is_container_not_found() {
         let runtime = SimulatedRuntime::new("http://127.0.0.1:9999");
         let id = ContainerId::new("missing");
-        assert!(matches!(runtime.endpoint(&id).await, Err(RuntimeError::ContainerNotFound(_))));
+        assert!(matches!(
+            runtime.endpoint(&id).await,
+            Err(RuntimeError::ContainerNotFound(_))
+        ));
     }
 
     #[tokio::test]

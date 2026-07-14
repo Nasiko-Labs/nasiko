@@ -18,7 +18,7 @@ nasiko-flow.workspace = true
 nasiko-github = { workspace = true }
 nasiko-oidc = { workspace = true }
 nasiko-oci.workspace = true
-nasiko-runtime = { workspace = true, features = ["docker"] }
+nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true
 nasiko-orchestrator.workspace = true
 nasiko-types.workspace = true
@@ -73,3 +73,9 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
+criterion = { workspace = true }
+nasiko-bench-support = { workspace = true }
+
+[[bench]]
+name = "control_plane"
+harness = false

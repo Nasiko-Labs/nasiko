@@ -36,11 +36,18 @@ async fn main() {
     let auth: Arc<dyn nasiko_auth::AuthService> =
         Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
-    let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = Arc::new(
-        nasiko_server::runtime::build_docker_runtime(&config)
-            .await
-            .expect("failed to create Docker runtime"),
-    );
+    let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = match config.agent_runtime.as_str() {
+        "simulated" => {
+            let sim_agent_url =
+                std::env::var("SIM_AGENT_URL").unwrap_or_else(|_| "http://localhost:8000".into());
+            Arc::new(nasiko_runtime::SimulatedRuntime::new(sim_agent_url))
+        }
+        _ => Arc::new(
+            nasiko_server::runtime::build_docker_runtime(&config)
+                .await
+                .expect("failed to create Docker runtime"),
+        ),
+    };
 
     nasiko_server::state::AppState::run_migrations(&db).await;
     let state =
