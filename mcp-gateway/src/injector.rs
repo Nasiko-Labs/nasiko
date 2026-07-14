@@ -1,7 +1,8 @@
 //! Deploy-time env injection: gives every agent container `MCP_GATEWAY_URL` so
-//! it knows where to forward tool calls (see `oss/agents/common/mcp_gateway.py`
-//! for the agent-side contract). Composes alongside `OtelInjector` — nest a
-//! second `InstrumentedRuntime` around it in `oss/server/src/runtime.rs`.
+//! it knows where to forward tool calls. The agent-side contract: read the
+//! inbound `X-Nasiko-Agent-Token` header and forward it to that URL on every
+//! MCP call. Composes alongside `OtelInjector` — nest a second
+//! `InstrumentedRuntime` around it in `oss/server/src/runtime.rs`.
 
 use std::collections::HashMap;
 
@@ -49,6 +50,7 @@ mod tests {
             version: None,
             capture_content: false,
             otel_collector_endpoint: "http://collector:4318".into(),
+            otel_protocol: "grpc".into(),
         }
     }
 }

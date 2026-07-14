@@ -24,9 +24,8 @@
 //!      orchestrator's ReAct loop calls another AGENT over A2A.
 //!
 //! In BOTH cases the token lands on an agent container, which is expected to
-//! itself act as an MCP client and call `POST /api/mcp` directly (see
-//! `oss/agents/common/mcp_gateway.py`'s `MCPGatewayClient`, which reads the
-//! *inbound* `X-Nasiko-Agent-Token` header and forwards it here).
+//! itself act as an MCP client and call `POST /api/mcp` directly: the agent
+//! reads the *inbound* `X-Nasiko-Agent-Token` header and forwards it here.
 //!
 //! `oss/react-agent/src/react_loop.rs` builds its tool set exclusively from
 //! `A2aTool` (`Orchestrator::build_tools` / `run_stream_inner`, both call
