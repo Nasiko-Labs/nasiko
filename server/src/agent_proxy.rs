@@ -155,50 +155,50 @@ pub async fn agent_proxy(
     // observability service can correlate sessions for pre-built agents that
     // don't set session.id themselves via our sitecustomize.py patch.
     // This runs in a fire-and-forget spawn so it never delays the proxy.
-    if !body_bytes.is_empty() {
-        if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-            let context_id = body_json
-                .pointer("/params/message/contextId")
-                .or_else(|| body_json.pointer("/params/contextId"))
-                .and_then(|v| v.as_str())
-                .map(String::from);
+    if !body_bytes.is_empty()
+        && let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
+    {
+        let context_id = body_json
+            .pointer("/params/message/contextId")
+            .or_else(|| body_json.pointer("/params/contextId"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
-            if let Some(ctx_id) = context_id {
-                let trace_id = flow_ctx.flow_id.clone();
-                let agent_name = stored.name.clone();
-                let redis = state.redis.clone();
-                tokio::spawn(async move {
-                    if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
-                        let key = format!("nasiko:trace:{trace_id}:session");
-                        let _: Result<(), _> = redis::cmd("SETEX")
-                            .arg(&key)
-                            .arg(604800u64) // 7-day TTL
-                            .arg(&ctx_id)
-                            .query_async(&mut conn)
-                            .await;
-                        let agent_key = format!("nasiko:session:{ctx_id}:agent");
-                        let _: Result<(), _> = redis::cmd("SETEX")
-                            .arg(&agent_key)
-                            .arg(604800u64)
-                            .arg(&agent_name)
-                            .query_async(&mut conn)
-                            .await;
-                        // Reverse index: session → set of trace_ids, so get_session_details
-                        // can enumerate all traces even for pre-built agents without sitecustomize.py.
-                        let traces_key = format!("nasiko:session:{ctx_id}:traces");
-                        let _: Result<(), _> = redis::cmd("SADD")
-                            .arg(&traces_key)
-                            .arg(&trace_id)
-                            .query_async(&mut conn)
-                            .await;
-                        let _: Result<(), _> = redis::cmd("EXPIRE")
-                            .arg(&traces_key)
-                            .arg(604800u64)
-                            .query_async(&mut conn)
-                            .await;
-                    }
-                });
-            }
+        if let Some(ctx_id) = context_id {
+            let trace_id = flow_ctx.flow_id.clone();
+            let agent_name = stored.name.clone();
+            let redis = state.redis.clone();
+            tokio::spawn(async move {
+                if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+                    let key = format!("nasiko:trace:{trace_id}:session");
+                    let _: Result<(), _> = redis::cmd("SETEX")
+                        .arg(&key)
+                        .arg(604800u64) // 7-day TTL
+                        .arg(&ctx_id)
+                        .query_async(&mut conn)
+                        .await;
+                    let agent_key = format!("nasiko:session:{ctx_id}:agent");
+                    let _: Result<(), _> = redis::cmd("SETEX")
+                        .arg(&agent_key)
+                        .arg(604800u64)
+                        .arg(&agent_name)
+                        .query_async(&mut conn)
+                        .await;
+                    // Reverse index: session → set of trace_ids, so get_session_details
+                    // can enumerate all traces even for pre-built agents without sitecustomize.py.
+                    let traces_key = format!("nasiko:session:{ctx_id}:traces");
+                    let _: Result<(), _> = redis::cmd("SADD")
+                        .arg(&traces_key)
+                        .arg(&trace_id)
+                        .query_async(&mut conn)
+                        .await;
+                    let _: Result<(), _> = redis::cmd("EXPIRE")
+                        .arg(&traces_key)
+                        .arg(604800u64)
+                        .query_async(&mut conn)
+                        .await;
+                }
+            });
         }
     }
 
