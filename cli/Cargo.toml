@@ -3,6 +3,10 @@ name = "nasiko"
 edition.workspace = true
 version.workspace = true
 
+[lib]
+name = "nasiko"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nasiko"
 path = "src/main.rs"
@@ -29,3 +33,6 @@ nasiko-utils.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+mockito.workspace = true

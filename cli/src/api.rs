@@ -49,6 +49,21 @@ impl Client {
         })
     }
 
+    /// Build a client against an arbitrary base URL (mock server in tests),
+    /// bypassing `~/.nasiko/config.json`.
+    #[cfg(test)]
+    pub(crate) fn for_test(base_url: &str, token: Option<&str>) -> Self {
+        Self {
+            agent: Agent::new_with_config(
+                ureq::config::Config::builder()
+                    .http_status_as_error(false)
+                    .build(),
+            ),
+            base_url: base_url.to_string(),
+            token: token.map(str::to_string),
+        }
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
