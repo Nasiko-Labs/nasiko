@@ -668,3 +668,56 @@ pub fn agent_tools_reset(agent: &str, yes: bool) -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_headers_splits_on_first_colon_and_trims() {
+        let h = parse_headers(&["X-Api-Key: abc123".into()]).unwrap();
+        assert_eq!(h.get("X-Api-Key").map(String::as_str), Some("abc123"));
+    }
+
+    #[test]
+    fn parse_headers_keeps_colons_in_value() {
+        // A value that itself contains a colon (URL, "Bearer a:b") must survive —
+        // only the FIRST colon separates key from value.
+        let h = parse_headers(&["Authorization: Bearer a:b:c".into()]).unwrap();
+        assert_eq!(h.get("Authorization").map(String::as_str), Some("Bearer a:b:c"));
+    }
+
+    #[test]
+    fn parse_headers_multiple_and_empty() {
+        let h = parse_headers(&["A: 1".into(), "B: 2".into()]).unwrap();
+        assert_eq!(h.len(), 2);
+        assert!(parse_headers(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_headers_rejects_missing_colon() {
+        assert!(parse_headers(&["not-a-header".into()]).is_err());
+    }
+
+    #[test]
+    fn share_target_body_public() {
+        assert_eq!(share_target_body(None, true).unwrap(), serde_json::json!({ "public": true }));
+    }
+
+    #[test]
+    fn share_target_body_user() {
+        assert_eq!(share_target_body(Some("bob"), false).unwrap(), serde_json::json!({ "username": "bob" }));
+    }
+
+    #[test]
+    fn share_target_body_rejects_both_and_neither() {
+        assert!(share_target_body(Some("bob"), true).is_err());
+        assert!(share_target_body(None, false).is_err());
+    }
+
+    #[test]
+    fn share_target_label_matches_body_intent() {
+        assert_eq!(share_target_label(None, true), "everyone");
+        assert_eq!(share_target_label(Some("bob"), false), "bob");
+    }
+}
