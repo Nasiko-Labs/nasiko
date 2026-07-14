@@ -137,16 +137,12 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>, target_l
         print_history(&history);
     }
 
-    loop {
-        let input = match dialoguer::Input::<String>::new()
-            .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-            .allow_empty(true)
-            .interact_text()
-        {
-            Ok(i) => i,
-            // Ctrl-C / Ctrl-D — leave gracefully instead of erroring out.
-            Err(_) => break,
-        };
+    // Ctrl-C / Ctrl-D breaks the loop and leaves gracefully instead of erroring out.
+    while let Ok(input) = dialoguer::Input::<String>::new()
+        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+        .allow_empty(true)
+        .interact_text()
+    {
         if input.trim().is_empty() {
             continue;
         }
@@ -184,11 +180,13 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
     let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
-        "method": "SendStreamingMessage",
+        // A2A JSON-RPC spec names (accepted by both the CP dispatch and a
+        // direct `a2a-sdk` agent), not gRPC-style `SendStreamingMessage`/`ROLE_USER`.
+        "method": "message/stream",
         "params": {
             "message": {
                 "messageId": uuid::Uuid::new_v4().to_string(),
-                "role": "ROLE_USER",
+                "role": "user",
                 "parts": [{"text": text}],
                 "contextId": context_id
             }
@@ -603,9 +601,9 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         let msg_id = format!("{:x}", std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
         let mut payload = serde_json::json!({
-            "jsonrpc": "2.0", "method": "SendMessage", "id": &msg_id,
+            "jsonrpc": "2.0", "method": "message/send", "id": &msg_id,
             "params": { "message": {
-                "role": "ROLE_USER", "parts": [{ "text": msg }],
+                "role": "user", "parts": [{ "text": msg }],
                 "messageId": &msg_id,
             }}
         });
@@ -641,16 +639,12 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
     }
 
     let mut ctx_id: Option<String> = initial_ctx;
-    loop {
-        let input = match dialoguer::Input::<String>::new()
-            .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-            .allow_empty(true)
-            .interact_text()
-        {
-            Ok(i) => i,
-            // Ctrl-C / Ctrl-D — leave gracefully instead of erroring out.
-            Err(_) => break,
-        };
+    // Ctrl-C / Ctrl-D breaks the loop and leaves gracefully instead of erroring out.
+    while let Ok(input) = dialoguer::Input::<String>::new()
+        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+        .allow_empty(true)
+        .interact_text()
+    {
         let input = input.trim();
         if input.is_empty() { continue; }
         if input == "exit" || input == "quit" { println!("Goodbye."); break; }

@@ -158,7 +158,7 @@ impl A2aClient {
         Ok(a2a_resp)
     }
 
-    /// Send a message via `SendStreamingMessage` and consume the SSE stream.
+    /// Send a message via `message/stream` and consume the SSE stream.
     ///
     /// Live events are relayed through `progress` (if provided): the agent's
     /// working-status updates (its internal tool activity) and its reply text

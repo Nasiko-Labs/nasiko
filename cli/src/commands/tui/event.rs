@@ -99,11 +99,12 @@ fn do_stream_request(
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
-        "method": "SendStreamingMessage",
+        // A2A JSON-RPC spec names, not gRPC-style `SendStreamingMessage`/`ROLE_USER`.
+        "method": "message/stream",
         "params": {
             "message": {
                 "messageId": uuid::Uuid::new_v4().to_string(),
-                "role": "ROLE_USER",
+                "role": "user",
                 "parts": [{"text": text}],
                 "contextId": context_id
             }
