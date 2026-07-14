@@ -180,13 +180,11 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
     let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
-        // A2A JSON-RPC spec names (accepted by both the CP dispatch and a
-        // direct `a2a-sdk` agent), not gRPC-style `SendStreamingMessage`/`ROLE_USER`.
-        "method": "message/stream",
+        "method": "SendStreamingMessage",
         "params": {
             "message": {
                 "messageId": uuid::Uuid::new_v4().to_string(),
-                "role": "user",
+                "role": "ROLE_USER",
                 "parts": [{"text": text}],
                 "contextId": context_id
             }
@@ -229,7 +227,7 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
 
     // Persist user message to CP before sending
     if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text, Some(&trace_id));
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text);
     }
 
     let mut req = http
@@ -290,7 +288,7 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
 
     // Persist agent reply to CP
     if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "assistant", &agent_text, Some(&trace_id));
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "assistant", &agent_text);
     }
 
     Ok(())
@@ -601,9 +599,9 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         let msg_id = format!("{:x}", std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
         let mut payload = serde_json::json!({
-            "jsonrpc": "2.0", "method": "message/send", "id": &msg_id,
+            "jsonrpc": "2.0", "method": "SendMessage", "id": &msg_id,
             "params": { "message": {
-                "role": "user", "parts": [{ "text": msg }],
+                "role": "ROLE_USER", "parts": [{ "text": msg }],
                 "messageId": &msg_id,
             }}
         });

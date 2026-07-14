@@ -151,20 +151,11 @@ pub async fn agent_proxy(
             if claims.is_superuser { "true" } else { "false" },
         );
 
-    // Mint a short-lived MCP delegation token so the agent can call back into
-    // /api/mcp on this user's behalf (the agent forwards this inbound header to
-    // MCP_GATEWAY_URL). Mirrors the orchestrator path (a2a_dispatch → A2aTool);
-    // best-effort — skipped if JWT_SECRET is unset rather than failing the proxy.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-        && let Ok(token) = nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &claims.sub, &agent_id_str)
-    {
-        forwarded = forwarded.header("x-nasiko-agent-token", token);
-    }
-
-    // Best-effort: record the trace_id → session_id mapping in Redis so the
-    // observability service can correlate sessions for pre-built agents that
-    // don't set session.id themselves via our sitecustomize.py patch.
-    // This runs in a fire-and-forget spawn so it never delays the proxy.
+    // Best-effort: record the session ↔ trace correlation so observability
+    // can map Tempo traces back to chat sessions for agents that don't set
+    // session.id on their spans (anything not running the Python patch).
+    // Fire-and-forget so it never delays the proxy; ensure_chat_session above
+    // already guaranteed the chat_sessions row, so the FK holds.
     if !body_bytes.is_empty()
         && let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
     {
@@ -177,36 +168,21 @@ pub async fn agent_proxy(
         if let Some(ctx_id) = context_id {
             let trace_id = flow_ctx.flow_id.clone();
             let agent_name = stored.name.clone();
-            let redis = state.redis.clone();
+            let db = state.db.clone();
             tokio::spawn(async move {
-                if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
-                    let key = format!("nasiko:trace:{trace_id}:session");
-                    let _: Result<(), _> = redis::cmd("SETEX")
-                        .arg(&key)
-                        .arg(604800u64) // 7-day TTL
-                        .arg(&ctx_id)
-                        .query_async(&mut conn)
-                        .await;
-                    let agent_key = format!("nasiko:session:{ctx_id}:agent");
-                    let _: Result<(), _> = redis::cmd("SETEX")
-                        .arg(&agent_key)
-                        .arg(604800u64)
-                        .arg(&agent_name)
-                        .query_async(&mut conn)
-                        .await;
-                    // Reverse index: session → set of trace_ids, so get_session_details
-                    // can enumerate all traces even for pre-built agents without sitecustomize.py.
-                    let traces_key = format!("nasiko:session:{ctx_id}:traces");
-                    let _: Result<(), _> = redis::cmd("SADD")
-                        .arg(&traces_key)
-                        .arg(&trace_id)
-                        .query_async(&mut conn)
-                        .await;
-                    let _: Result<(), _> = redis::cmd("EXPIRE")
-                        .arg(&traces_key)
-                        .arg(604800u64)
-                        .query_async(&mut conn)
-                        .await;
+                if let Err(e) = sqlx::query(
+                    "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (session_id, trace_id) DO NOTHING",
+                )
+                .bind(&ctx_id)
+                .bind(&trace_id)
+                .bind(agent_id)
+                .bind(&agent_name)
+                .execute(&db)
+                .await
+                {
+                    tracing::warn!(error = %e, session_id = %ctx_id, %trace_id, "agent proxy: session trace record failed");
                 }
             });
         }

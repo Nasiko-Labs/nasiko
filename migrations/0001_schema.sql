@@ -23,7 +23,6 @@ CREATE TYPE artifact_status AS ENUM ('preview', 'active', 'yanked');
 CREATE TYPE build_status AS ENUM ('queued', 'building', 'success', 'failed');
 CREATE TYPE deployment_status AS ENUM ('starting', 'running', 'stopped', 'failed', 'crashed');
 CREATE TYPE upload_pipeline_status AS ENUM ('initiated', 'processing', 'capabilities_generated', 'orchestration_triggered', 'orchestration_processing', 'completed', 'failed');
-CREATE TYPE chat_role AS ENUM ('user', 'assistant');
 
 -- =============================================================================
 -- Users
@@ -48,6 +47,11 @@ CREATE TABLE users (
 
 CREATE INDEX idx_users_role ON users(role);
 CREATE INDEX idx_users_active ON users(is_active) WHERE deleted_at IS NULL;
+-- Trigram indexes: search endpoints use `col ILIKE $1` — pg_trgm GIN indexes
+-- only activate when the indexed expression matches the query exactly.
+CREATE INDEX idx_users_username_trgm ON users USING gin(username gin_trgm_ops);
+CREATE INDEX idx_users_display_name_trgm ON users USING gin(display_name gin_trgm_ops);
+CREATE INDEX idx_users_email_trgm ON users USING gin(email gin_trgm_ops);
 CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- User identities (OAuth/SSO providers)
@@ -73,17 +77,6 @@ CREATE TABLE user_credentials (
 );
 CREATE TRIGGER trg_user_credentials_updated_at BEFORE UPDATE ON user_credentials FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- Auth tokens (JWT session tracking)
-CREATE TABLE auth_tokens (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash VARCHAR(64) NOT NULL UNIQUE,
-    expires_at TIMESTAMPTZ NOT NULL,
-    revoked_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_auth_tokens_user_active ON auth_tokens(user_id, expires_at) WHERE revoked_at IS NULL;
-
 -- User secrets (encrypted env vars)
 CREATE TABLE user_secrets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -107,7 +100,14 @@ CREATE TABLE agents (
     display_name TEXT,
     description TEXT,
     owner_id UUID NOT NULL REFERENCES users(id),
+    -- Runtime-internal endpoint (container IP / service DNS) the gateway
+    -- proxies TO; agent_proxy parses host:port and ignores any path.
     url TEXT,
+    -- Path the agent advertises for its JSON-RPC transport in its own
+    -- AgentCard (supportedInterfaces[].url, e.g. "/jsonrpc"). The A2A spec
+    -- fixes no path, so it is discovered from the card and persisted at
+    -- deploy time; clients build {base}/api/agents/{id}{transport_path}.
+    transport_path TEXT,
     icon_url TEXT,
     version TEXT NOT NULL DEFAULT '1.0.0',
     protocol_version TEXT NOT NULL DEFAULT '0.2.9',
@@ -140,12 +140,43 @@ CREATE TABLE agents (
 
 CREATE INDEX idx_agents_owner ON agents(owner_id);
 CREATE INDEX idx_agents_status ON agents(status);
-CREATE INDEX idx_agents_name_trgm ON agents USING gin(name gin_trgm_ops);
 CREATE INDEX idx_agents_tags ON agents USING gin(tags);
 CREATE INDEX idx_agents_is_public ON agents(is_public) WHERE is_public = true;
 CREATE INDEX idx_agents_owner_public ON agents(owner_id, is_public);
 CREATE INDEX idx_agents_fts ON agents USING gin(search_vector);
+-- Trigram indexes for ILIKE search (see users note above).
+CREATE INDEX idx_agents_name_trgm ON agents USING gin(name gin_trgm_ops);
+CREATE INDEX idx_agents_display_name_trgm ON agents USING gin(display_name gin_trgm_ops);
+CREATE INDEX idx_agents_description_trgm ON agents USING gin(description gin_trgm_ops);
+-- One active agent name per owner: closes the TOCTOU race in the upload
+-- path's SELECT-then-INSERT upsert. Partial (active rows only) so a
+-- soft-deleted agent's name can be reused.
+CREATE UNIQUE INDEX agents_owner_name_active_uniq ON agents (owner_id, name) WHERE deleted_at IS NULL;
+-- Name-only equality lookups: the OCI registry's repo path carries no owner,
+-- so check_repo_access resolves agents by name alone. The (owner_id, name)
+-- unique index can't serve that (wrong leftmost column) and the trigram index
+-- is for ILIKE, not plain equality.
+CREATE INDEX idx_agents_name_active ON agents (name) WHERE deleted_at IS NULL;
 CREATE TRIGGER trg_agents_updated_at BEFORE UPDATE ON agents FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Auth tokens (JWT session tracking).
+-- Exactly one subject per token: a user OR an agent (agent tokens carry an
+-- agent UUID that is not in the users table, so user_id must be nullable for
+-- them to be recordable — and therefore revocable).
+CREATE TABLE auth_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT auth_tokens_one_subject CHECK (
+        (user_id IS NOT NULL)::int + (agent_id IS NOT NULL)::int = 1
+    )
+);
+CREATE INDEX idx_auth_tokens_user_active ON auth_tokens(user_id, expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX idx_auth_tokens_agent_active ON auth_tokens(agent_id, expires_at) WHERE revoked_at IS NULL AND agent_id IS NOT NULL;
 
 -- Agent-to-agent ACL (allowlist: no rows = unrestricted)
 CREATE TABLE agent_acl (
@@ -241,7 +272,7 @@ CREATE TABLE agent_versions (
 CREATE INDEX idx_versions_active ON agent_versions(agent_id) WHERE is_active = true;
 CREATE INDEX idx_agent_versions_status ON agent_versions(agent_id, status);
 
--- version_id FK added after agent_versions exists
+-- version_id FK added after agent_versions exists (circular reference)
 ALTER TABLE agent_builds ADD COLUMN version_id UUID REFERENCES agent_versions(id) ON DELETE SET NULL;
 
 CREATE TABLE agent_deployments (
@@ -309,9 +340,12 @@ CREATE TRIGGER trg_upload_status_updated_at BEFORE UPDATE ON upload_status FOR E
 -- =============================================================================
 
 CREATE TABLE chat_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    --- todo: is this needed? we already have the auto id 
-    session_id TEXT NOT NULL UNIQUE,
+    -- session_id is the A2A contextId: the platform-wide session key shared by
+    -- chat history, agent tasks, and observability. TEXT because it travels on
+    -- the A2A wire format and may be minted client-side. agent_proxy upserts a
+    -- row here (generating "ses_*" when the message carries no contextId)
+    -- before forwarding any message send.
+    session_id TEXT PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
     agent_url TEXT,
@@ -320,21 +354,19 @@ CREATE TABLE chat_sessions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_sessions_user ON chat_sessions(user_id);
 CREATE INDEX idx_sessions_created ON chat_sessions(created_at DESC);
 CREATE INDEX idx_chat_sessions_recent ON chat_sessions(user_id, created_at DESC);
 CREATE TRIGGER trg_chat_sessions_updated_at BEFORE UPDATE ON chat_sessions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- role is TEXT, not an enum: sessions are written by multiple clients that
+-- disagree on the assistant role name (web UI stores "assistant", CLI/TUI
+-- store "agent") and renderers treat anything non-"user" as an agent reply.
 CREATE TABLE chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     file_parts JSONB,
-    message_id VARCHAR(255),
-    context_id VARCHAR(255),
-    task_id VARCHAR(255),
-    metadata JSONB NOT NULL DEFAULT '{}',
     has_file_parts BOOLEAN NOT NULL DEFAULT false,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -353,21 +385,55 @@ CREATE TABLE chat_message_files (
 CREATE INDEX idx_chat_message_files_msg ON chat_message_files(message_id);
 CREATE INDEX idx_chat_message_files_session ON chat_message_files(session_id);
 
+-- Session ↔ distributed-trace correlation, written by agent_proxy at forward
+-- time (one row per user query). This is the durable source of truth linking
+-- a session to its traces in Tempo: agents themselves cannot provide it —
+-- only the proxy sees both the A2A contextId and the trace_id it mints for
+-- the traceparent header — and span attributes (session.id) only exist for
+-- agents running the Python auto-instrumentation patch.
+CREATE TABLE session_traces (
+    session_id TEXT NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+    trace_id TEXT NOT NULL,
+    agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
+    -- Denormalised so observability listings survive agent deletion.
+    agent_name TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, trace_id)
+);
+CREATE INDEX idx_session_traces_trace ON session_traces(trace_id);
+
 -- =============================================================================
 -- OCI Registry
 -- =============================================================================
 
+-- Manifests are scoped per repository: the same digest may be pushed by many
+-- repos (content-addressed dedup happens one layer down, at blob storage), and
+-- a global digest PK would let one repo's push hijack another's tag pointer.
 CREATE TABLE oci_manifests (
-    digest TEXT PRIMARY KEY,
+    digest TEXT NOT NULL,
     repository TEXT NOT NULL,
     reference TEXT,
     media_type TEXT NOT NULL,
     content TEXT NOT NULL,
     size_bytes BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (repository, digest)
 );
-CREATE INDEX idx_manifests_repo ON oci_manifests(repository);
 CREATE INDEX idx_manifests_repo_ref ON oci_manifests(repository, reference);
+
+-- Blob reference counting: blobs live at a flat, globally content-addressed
+-- key with no linkage to the repositories that reference them. This table
+-- provides that linkage so (a) deleting a blob from one repo cannot destroy a
+-- layer another repo still needs, and (b) a repo owner can only GET/HEAD
+-- blobs their repo actually references.
+CREATE TABLE oci_blob_refs (
+    digest TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (digest, repository)
+);
+-- Fan-out check on delete: "does any OTHER repo still reference this digest".
+CREATE INDEX idx_blob_refs_digest ON oci_blob_refs(digest);
 
 CREATE TABLE oci_uploads (
     uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -388,6 +454,23 @@ CREATE TABLE oci_referrers (
     UNIQUE(subject_digest, referrer_digest)
 );
 CREATE INDEX idx_referrers_subject ON oci_referrers(repository, subject_digest);
+
+-- Per-agent credentials for pulling that agent's image from the built-in OCI
+-- registry out of a real Kubernetes cluster: kubelet/containerd need the
+-- `kubernetes.io/dockerconfigjson` (HTTP Basic) shape, which the registry's
+-- normal bearer-JWT auth doesn't fit. One row per agent — minted on first
+-- deploy, reused across update/rollback/restart, revoked on destroy. Scoped
+-- per-agent so a leaked credential only exposes one agent's image.
+CREATE TABLE oci_pull_credentials (
+    agent_id UUID PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    username TEXT NOT NULL,
+    token_hash VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_oci_pull_credentials_token_hash_active
+    ON oci_pull_credentials(token_hash)
+    WHERE revoked_at IS NULL;
 
 -- =============================================================================
 -- Artifacts (OCI catalog with vector search)
@@ -485,7 +568,7 @@ CREATE INDEX idx_token_usage_request ON token_usage(request_id) WHERE request_id
 CREATE INDEX idx_token_usage_cost ON token_usage(created_at DESC, cost_usd) WHERE cost_usd IS NOT NULL;
 CREATE INDEX idx_token_usage_metadata ON token_usage USING gin(metadata);
 
--- Model pricing (for cost calculation)
+-- Model pricing (for cost calculation). Seeded by 0002_seed_model_pricing.sql.
 CREATE TABLE model_pricing (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider TEXT NOT NULL,
@@ -561,7 +644,7 @@ GROUP BY user_id, agent_id, operation_type, provider, model, DATE(created_at);
 CREATE UNIQUE INDEX idx_token_usage_daily_unique
     ON token_usage_daily(user_id, COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'::uuid), operation_type, provider, model, date);
 
--- Router request logs
+-- Router request logs (3-stage routing pipeline)
 CREATE TABLE router_request_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     request_id TEXT NOT NULL UNIQUE,
@@ -569,6 +652,9 @@ CREATE TABLE router_request_log (
     session_id TEXT NOT NULL,
     query TEXT NOT NULL,
     agents_considered INTEGER NOT NULL DEFAULT 0,
+    stage1_candidates INT,
+    stage2_candidates INT,
+    embedding_model TEXT,
     selected_agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
     selected_agent_name TEXT,
     selection_reasoning TEXT,
@@ -594,16 +680,30 @@ CREATE INDEX idx_router_log_success ON router_request_log(success, created_at DE
 
 -- Agent selection analytics (materialized view)
 CREATE MATERIALIZED VIEW agent_selection_stats AS
-SELECT selected_agent_id, selected_agent_name, COUNT(*) as selection_count,
-    COUNT(*) FILTER (WHERE success = true) as successful_calls,
-    COUNT(*) FILTER (WHERE success = false) as failed_calls,
-    AVG(agent_call_ms) FILTER (WHERE agent_call_ms IS NOT NULL) as avg_agent_latency_ms,
-    AVG(selection_llm_ms) FILTER (WHERE selection_llm_ms IS NOT NULL) as avg_selection_latency_ms,
-    DATE(created_at) as date
-FROM router_request_log WHERE selected_agent_id IS NOT NULL
+SELECT
+    selected_agent_id,
+    selected_agent_name,
+    COUNT(*)                                                          AS selection_count,
+    COUNT(*) FILTER (WHERE success = true)                            AS successful_calls,
+    COUNT(*) FILTER (WHERE success = false)                           AS failed_calls,
+    AVG(agent_call_ms)       FILTER (WHERE agent_call_ms IS NOT NULL) AS avg_agent_latency_ms,
+    AVG(selection_llm_ms)    FILTER (WHERE selection_llm_ms IS NOT NULL) AS avg_selection_latency_ms,
+    AVG(stage1_candidates)   FILTER (WHERE stage1_candidates IS NOT NULL) AS avg_stage1_candidates,
+    AVG(stage2_candidates)   FILTER (WHERE stage2_candidates IS NOT NULL) AS avg_stage2_candidates,
+    DATE(created_at)                                                  AS date
+FROM router_request_log
+WHERE selected_agent_id IS NOT NULL
 GROUP BY selected_agent_id, selected_agent_name, DATE(created_at);
 
-CREATE UNIQUE INDEX idx_agent_selection_stats_unique ON agent_selection_stats(selected_agent_id, date);
+CREATE UNIQUE INDEX idx_agent_selection_stats_unique
+    ON agent_selection_stats(selected_agent_id, date);
+
+CREATE OR REPLACE FUNCTION refresh_agent_selection_stats()
+RETURNS void AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY agent_selection_stats;
+END;
+$$ LANGUAGE plpgsql;
 
 -- =============================================================================
 -- Multi-Agent Flows
@@ -650,20 +750,3 @@ CREATE TABLE flow_steps (
 );
 CREATE INDEX idx_flow_steps_flow ON flow_steps(flow_id, step_order);
 CREATE INDEX idx_flow_steps_agent ON flow_steps(agent_id) WHERE agent_id IS NOT NULL;
-
--- =============================================================================
--- Seed: model pricing
--- =============================================================================
-
-INSERT INTO model_pricing (provider, model, input_price_per_1m, output_price_per_1m, cache_creation_price_per_1m, cache_read_price_per_1m, notes) VALUES
-('openai', 'gpt-4o', 2.50, 10.00, NULL, NULL, 'GPT-4o standard'),
-('openai', 'gpt-4o-mini', 0.15, 0.60, NULL, NULL, 'GPT-4o mini'),
-('openai', 'o1-preview', 15.00, 60.00, NULL, NULL, 'o1 preview'),
-('openai', 'o1-mini', 3.00, 12.00, NULL, NULL, 'o1 mini'),
-('anthropic', 'claude-opus-4', 15.00, 75.00, 18.75, 1.50, 'Claude Opus 4'),
-('anthropic', 'claude-sonnet-4', 3.00, 15.00, 3.75, 0.30, 'Claude Sonnet 4'),
-('anthropic', 'claude-haiku-4', 0.80, 4.00, 1.00, 0.08, 'Claude Haiku 4'),
-('groq', 'llama-3.3-70b-versatile', 0.59, 0.79, NULL, NULL, 'Llama 3.3 70B on Groq'),
-('groq', 'llama-3.1-8b-instant', 0.05, 0.08, NULL, NULL, 'Llama 3.1 8B on Groq'),
-('deepseek', 'deepseek-chat', 0.14, 0.28, 0.014, 0.014, 'DeepSeek Chat'),
-('deepseek', 'deepseek-reasoner', 0.55, 2.19, NULL, NULL, 'DeepSeek R1');

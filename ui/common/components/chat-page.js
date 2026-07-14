@@ -177,7 +177,7 @@ class ChatPage extends HTMLElement {
         });
         if (!res.ok) throw new Error("Failed to create session");
         const session = await res.json();
-        this.#sessionId = session.session_id || session.id;
+        this.#sessionId = session.session_id;
         const params = new URLSearchParams(location.search);
         const nameParam = params.get("agent_name")
           ? `&agent_name=${encodeURIComponent(params.get("agent_name"))}`
@@ -236,8 +236,8 @@ class ChatPage extends HTMLElement {
         }
       }
 
-      const { text: reply, traceId } = await this.#readA2aStream(res, messagesEl);
-      this.#persistMessage(this.#sessionId, "assistant", reply, traceId);
+      const { text: reply } = await this.#readA2aStream(res, messagesEl);
+      this.#persistMessage(this.#sessionId, "assistant", reply);
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
       this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
@@ -259,7 +259,7 @@ class ChatPage extends HTMLElement {
       messagesEl.innerHTML = '';
       if (Array.isArray(msgs) && msgs.length) {
         for (const m of msgs) {
-          this.#appendMsg(messagesEl, m.role, m.content, m.trace_id);
+          this.#appendMsg(messagesEl, m.role, m.content);
           if (m.role === 'user') this.#lastUserContent = m.content;
         }
         this.#updateRetryButtons(messagesEl);
@@ -267,7 +267,7 @@ class ChatPage extends HTMLElement {
     } catch { messagesEl.innerHTML = ''; }
   }
 
-  #appendMsg(messagesEl, role, content, traceId) {
+  #appendMsg(messagesEl, role, content) {
     // Sessions are written by multiple clients: the web UI stores replies as
     // "assistant" while the CLI/TUI store them as "agent". Anything that is
     // not the user renders as an agent reply (markdown + assistant styling).
@@ -294,7 +294,6 @@ class ChatPage extends HTMLElement {
       actions.className = "msg-actions";
       actions.innerHTML = `
         <button type="button" class="msg-action-copy" aria-label="Copy message" title="Copy">${icons.copy('', 14)}</button>
-        ${this.#traceLinkHtml(traceId)}
       `;
       row.appendChild(actions);
     }
@@ -447,13 +446,14 @@ class ChatPage extends HTMLElement {
       aria-label="View trace" title="View trace">${icons.trace('', 14)}</a>`;
   }
 
-  #persistMessage(sessionId, role, content, traceId) {
-    const payload = { role, content };
-    if (traceId) payload.trace_id = traceId;
+  // The live "view trace" link on a streamed reply comes from the trace_meta
+  // SSE event; the durable message ↔ trace association lives server-side in
+  // the session_traces table, not on the message row.
+  #persistMessage(sessionId, role, content) {
     apiFetch(`/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ role, content }),
     }).catch(() => {});
   }
 

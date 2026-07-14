@@ -256,7 +256,32 @@ async fn create_session(
         }
     };
 
-    let session_id = format!("ses_{}", Uuid::new_v4().simple());
+    let session_id = match body.session_id.as_deref().map(str::trim) {
+        Some(custom) if !custom.is_empty() => {
+            // Client-supplied ID: return the caller's existing session when
+            // present; reject the ID when it belongs to another user.
+            let existing = sqlx::query_as::<_, ChatSession>(
+                "SELECT * FROM chat_sessions WHERE session_id = $1",
+            )
+            .bind(custom)
+            .fetch_optional(&state.db)
+            .await;
+            match existing {
+                Ok(Some(session)) if session.user_id == user_id => {
+                    return (StatusCode::OK, Json(session)).into_response();
+                }
+                Ok(Some(_)) => {
+                    return (StatusCode::CONFLICT, "session_id already in use").into_response();
+                }
+                Ok(None) => custom.to_string(),
+                Err(e) => {
+                    tracing::error!(%e, "create_session: session lookup failed");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+        }
+        _ => format!("ses_{}", Uuid::new_v4().simple()),
+    };
     let title = body.title.unwrap_or_else(|| "New chat".into());
 
     let result = sqlx::query_as::<_, ChatSession>(
@@ -615,8 +640,8 @@ async fn send_message(
     };
 
     let msg = match sqlx::query_as::<_, ChatMessage>(
-        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts, trace_id)
-           VALUES ($1, $2, $3, $4, $5, $6)
+        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts)
+           VALUES ($1, $2, $3, $4, $5)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -624,7 +649,6 @@ async fn send_message(
     .bind(&body.content)
     .bind(&file_parts_json)
     .bind(has_file_parts)
-    .bind(&body.trace_id)
     .fetch_one(&mut *tx)
     .await
     {

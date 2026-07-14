@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use crate::error::ObservabilityError;
 use crate::loki::{LokiClient, parse_trace_logs};
 use crate::pricing::{CostBreakdown, PricingSource, compute_cost};
-use crate::tempo::TempoClient;
+use crate::tempo::{TempoClient, TraceSearchResult};
 use crate::types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TraceDetails,
     TraceSummary, extract_token_attrs, latency_percentiles,
@@ -131,10 +131,38 @@ fn agent_session_query(agent_id: &str) -> String {
 // TempoLokiProvider — OSS implementation
 // ---------------------------------------------------------------------------
 
+/// Resolves the session ↔ trace correlation from an external mapping.
+///
+/// Pre-built agents (deployed via `nasiko deploy`) don't carry the
+/// sitecustomize.py patch and never set `session.id` on their spans; the
+/// agent_proxy records the session_id ↔ trace_id pair when it forwards A2A
+/// requests. The server injects a Postgres-backed implementation.
+#[async_trait]
+pub trait SessionIdResolver: Send + Sync {
+    async fn session_for_trace(&self, trace_id: &str) -> Option<String>;
+
+    /// Reverse lookup: all trace_ids recorded for a session, oldest first.
+    /// Default: none — only resolvers backed by a real index override this.
+    async fn traces_for_session(&self, _session_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// Default resolver: no external mapping.
+pub struct NoSessionIdResolver;
+
+#[async_trait]
+impl SessionIdResolver for NoSessionIdResolver {
+    async fn session_for_trace(&self, _trace_id: &str) -> Option<String> {
+        None
+    }
+}
+
 pub struct TempoLokiProvider {
     tempo: TempoClient,
     loki: LokiClient,
     pricing: Arc<dyn PricingSource>,
+    session_resolver: Arc<dyn SessionIdResolver>,
 }
 
 /// How many traces to fully fetch when aggregating tokens for stats/finops.
@@ -146,7 +174,14 @@ impl TempoLokiProvider {
             tempo: TempoClient::new(tempo_url),
             loki: LokiClient::new(loki_url),
             pricing,
+            session_resolver: Arc::new(NoSessionIdResolver),
         }
+    }
+
+    /// Attach a fallback trace_id → session_id resolver (e.g. Redis-backed).
+    pub fn with_session_resolver(mut self, resolver: Arc<dyn SessionIdResolver>) -> Self {
+        self.session_resolver = resolver;
+        self
     }
 
     async fn search_traces(
@@ -155,7 +190,7 @@ impl TempoLokiProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         limit: usize,
-    ) -> Result<Vec<(String, Option<DateTime<Utc>>, Option<u64>)>, ObservabilityError> {
+    ) -> Result<Vec<TraceSearchResult>, ObservabilityError> {
         let start = clamp_tempo_range(start, end);
         self.tempo.search(query, Some(start), Some(end), limit).await
     }
@@ -164,7 +199,7 @@ impl TempoLokiProvider {
     /// [`TOKEN_AGGREGATION_TRACE_CAP`] traces.
     async fn aggregate_traces(
         &self,
-        results: &[(String, Option<DateTime<Utc>>, Option<u64>)],
+        results: &[TraceSearchResult],
     ) -> (u64, u64, Option<String>) {
         let mut input = 0u64;
         let mut output = 0u64;
@@ -251,8 +286,15 @@ impl ObservabilityProvider for TempoLokiProvider {
                 }
             }
 
-            // Skip traces without session.id — a2a-sdk infrastructure traces
-            // (event queue cleanup, dispatch loops, etc.), not user queries.
+            // Fallback: for pre-built agents that never set session.id on
+            // spans, resolve trace_id → session_id via the injected resolver
+            // (agent_proxy records the mapping when forwarding A2A requests).
+            if session_key.is_none() {
+                session_key = self.session_resolver.session_for_trace(&trace_id).await;
+            }
+
+            // Skip traces with no session association — a2a-sdk infrastructure
+            // traces (event queue cleanup, dispatch loops, etc.), not user queries.
             let Some(key) = session_key else { continue };
 
             let end_time = started_at
@@ -313,7 +355,20 @@ impl ObservabilityProvider for TempoLokiProvider {
         end: DateTime<Utc>,
     ) -> Result<SessionDetails, ObservabilityError> {
         let query = format!(r#"{{span.session.id="{session_id}"}}"#);
-        let trace_results = self.search_traces(&query, start, end, 100).await?;
+        let mut trace_results = self.search_traces(&query, start, end, 100).await?;
+
+        // Agents that never set session.id on spans (anything not running the
+        // Python auto-instrumentation patch): fall back to the proxy-recorded
+        // session ↔ trace index.
+        if trace_results.is_empty() {
+            trace_results = self
+                .session_resolver
+                .traces_for_session(session_id)
+                .await
+                .into_iter()
+                .map(|id| (id, None, None))
+                .collect();
+        }
 
         if trace_results.is_empty() {
             return Err(ObservabilityError::NotFound(format!(
@@ -331,6 +386,11 @@ impl ObservabilityProvider for TempoLokiProvider {
             let Ok(trace) = self.tempo.get_trace(trace_id).await else {
                 continue;
             };
+            // Resolver-sourced trace ids aren't bounded by the caller's time
+            // window (the index has no TTL), so enforce it here.
+            if trace.started_at.is_some_and(|s| s < start || s > end) {
+                continue;
+            }
             let Some(root_span) = find_root_span(&trace.spans) else {
                 continue;
             };

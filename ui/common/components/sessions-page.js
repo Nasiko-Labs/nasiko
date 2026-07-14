@@ -127,7 +127,7 @@ class SessionsPage extends HTMLElement {
     const preview = s.last_message || '';
     const time = s.updated_at || s.created_at;
     const timeStr = time ? this.#relativeTime(new Date(time)) : '';
-    const sessionId = s.session_id || s.id;
+    const sessionId = s.session_id;
     const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
     const avatarColor = this.#avatarColor(agentName);
     const initial = agentName.charAt(0).toUpperCase();
@@ -187,7 +187,7 @@ class SessionsPage extends HTMLElement {
       if (window.deleteSession) {
         await window.deleteSession(sessionId);
       }
-      this.#sessions = this.#sessions.filter(s => (s.session_id || s.id) !== sessionId);
+      this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
       const query = this.querySelector('.sessions-search')?.value || '';
       this.#filterSessions(query);
     } catch {

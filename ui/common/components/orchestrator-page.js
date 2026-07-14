@@ -108,7 +108,7 @@ class OrchestratorPage extends HTMLElement {
           body: JSON.stringify({ title: content.slice(0, 100) }),
         });
         const session = sessionRes.ok ? await sessionRes.json() : null;
-        const sessionId = session?.session_id || session?.id;
+        const sessionId = session?.session_id;
 
         // Persist user message
         if (sessionId) {
@@ -153,7 +153,7 @@ class OrchestratorPage extends HTMLElement {
           apiFetch(`/chat/sessions/${sessionId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ role: 'assistant', content: reply, ...(traceId && { trace_id: traceId }) }),
+            body: JSON.stringify({ role: 'assistant', content: reply }),
           }).catch(() => {});
         }
 

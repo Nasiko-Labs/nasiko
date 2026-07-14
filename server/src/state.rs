@@ -106,10 +106,11 @@ impl AppState {
 
         // Tempo+Loki observability backend. Model pricing resolves through
         // the model_pricing DB table with the static table as fallback; the
-        // Redis resolver maps trace_id → session_id for pre-built agents.
+        // session_traces resolver maps session ↔ trace both ways for agents
+        // that never set session.id on their spans.
         let observability: Arc<dyn ObservabilityProvider> = {
             use nasiko_observability::{DbPricing, TempoLokiProvider};
-            use crate::observability::session_resolver::RedisSessionIdResolver;
+            use crate::observability::session_resolver::PgSessionIdResolver;
             tracing::info!(
                 tempo_url = %config.tempo_url,
                 loki_url = %config.loki_url,
@@ -121,7 +122,7 @@ impl AppState {
                     config.loki_url.clone(),
                     Arc::new(DbPricing::new(db.clone())),
                 )
-                .with_session_resolver(Arc::new(RedisSessionIdResolver::new(redis.clone()))),
+                .with_session_resolver(Arc::new(PgSessionIdResolver::new(db.clone()))),
             )
         };
 

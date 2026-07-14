@@ -33,9 +33,6 @@ pub struct App {
     pub current_agent_text: String,
     pub status_line: Option<StatusEvent>,
     pub should_quit: bool,
-    /// W3C trace_id for the in-flight exchange (hex, 32 chars). Stored so the
-    /// agent reply can be persisted with the same trace_id as the user message.
-    current_trace_id: Option<String>,
     event_tx: mpsc::Sender<AppEvent>,
 }
 
@@ -52,7 +49,6 @@ impl App {
             current_agent_text: String::new(),
             status_line: None,
             should_quit: false,
-            current_trace_id: None,
             event_tx,
         }
     }
@@ -89,10 +85,11 @@ impl App {
         self.status_line = None;
         self.scroll_offset = 0;
 
-        let trace_id = uuid::Uuid::new_v4().to_string().replace('-', "");
-        self.current_trace_id = Some(trace_id.clone());
-        self.persist_user_message(&text, Some(&trace_id));
+        self.persist_user_message(&text);
 
+        // W3C trace_id for the exchange (hex, 32 chars) — becomes the
+        // traceparent header so the whole exchange lands in one Tempo trace.
+        let trace_id = uuid::Uuid::new_v4().to_string().replace('-', "");
         event::send_message_streaming(&self.session, &text, trace_id, self.event_tx.clone());
     }
 
@@ -108,14 +105,11 @@ impl App {
         self.streaming = false;
         if !self.current_agent_text.is_empty() {
             let text = std::mem::take(&mut self.current_agent_text);
-            let trace_id = self.current_trace_id.take();
-            self.persist_agent_message(&text, trace_id.as_deref());
+            self.persist_agent_message(&text);
             self.messages.push(ChatMessage {
                 role: Role::Agent,
                 text,
             });
-        } else {
-            self.current_trace_id = None;
         }
         self.status_line = None;
     }
@@ -186,10 +180,10 @@ impl App {
         self.scroll_offset = self.scroll_offset.saturating_sub(3);
     }
 
-    fn persist_user_message(&self, text: &str, trace_id: Option<&str>) {
+    fn persist_user_message(&self, text: &str) {
         match &self.session.backend {
             SessionBackend::Cp { base_url, token, session_id } => {
-                let _ = session::post_cp_message(base_url, token, session_id, "user", text, trace_id);
+                let _ = session::post_cp_message(base_url, token, session_id, "user", text);
             }
             SessionBackend::Local => {
                 if let Ok(mut local) = session::load_local_session(&self.session.id) {
@@ -204,10 +198,10 @@ impl App {
         }
     }
 
-    fn persist_agent_message(&self, text: &str, trace_id: Option<&str>) {
+    fn persist_agent_message(&self, text: &str) {
         match &self.session.backend {
             SessionBackend::Cp { base_url, token, session_id } => {
-                let _ = session::post_cp_message(base_url, token, session_id, "assistant", text, trace_id);
+                let _ = session::post_cp_message(base_url, token, session_id, "assistant", text);
             }
             SessionBackend::Local => {
                 if let Ok(mut local) = session::load_local_session(&self.session.id) {
