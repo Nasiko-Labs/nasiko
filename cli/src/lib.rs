@@ -137,39 +137,6 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
-    /// Update agent to a new version (rebuild from new source, or bump version/redeploy from GitHub)
-    #[command(after_help = "Reads: <source> if given (directory or .zip)\nSource can be a directory (auto-zipped), a .zip file, or omitted to re-deploy from the agent's recorded GitHub source")]
-    Update {
-        /// Agent name or ID
-        agent: String,
-        /// New source: directory or .zip file (omit to re-deploy from the agent's recorded GitHub source)
-        source: Option<String>,
-        /// New version: semver (e.g. 1.2.3) or a strategy keyword (auto, patch, minor, major)
-        #[arg(long)]
-        version: Option<String>,
-        /// Changelog message for this version
-        #[arg(long)]
-        changelog: Option<String>,
-    },
-    /// Roll back agent to a previous version
-    Rollback {
-        /// Agent name or ID
-        agent: String,
-        /// Target version (defaults to the most recent rollback-eligible version)
-        #[arg(long)]
-        version: Option<String>,
-        /// Reason for the rollback (recorded in logs)
-        #[arg(long)]
-        reason: Option<String>,
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
-    /// Deployment-level ops (list/inspect/restart) — distinct from the container-level ps/restart above
-    Deployments {
-        #[command(subcommand)]
-        command: DeploymentsCommands,
-    },
     /// Terminate + deregister agent
     Rm {
         agent: String,
@@ -310,22 +277,6 @@ pub enum AgentsCommands {
 }
 
 #[derive(Subcommand)]
-pub enum DeploymentsCommands {
-    /// List all deployments (crash reason, restart count, etc.)
-    #[command(alias = "list")]
-    Ls,
-    /// Show the current deployment for an agent
-    Get {
-        /// Agent name or ID
-        agent: String,
-    },
-    /// Restart a specific deployment by its deployment ID (see `deployments ls`)
-    Restart {
-        deployment_id: String,
-    },
-}
-
-#[derive(Subcommand)]
 pub enum GithubCommands {
     /// Show GitHub connection status
     Status,
@@ -352,17 +303,26 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the reporting window (default: 7 days ago)
         #[arg(long)]
         start_time: Option<String>,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show full detail for a session (traces, tokens, cost)
     Session {
         /// Session ID (trace ID)
         session_id: String,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show span tree and costs for a trace (ObservabilityService)
     #[command(name = "trace-detail")]
     TraceDetail {
         /// Trace ID
         trace_id: String,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show detail for a single span including prompt/completion content
     Span {
@@ -370,6 +330,9 @@ pub enum ObserveCommands {
         trace_id: String,
         /// Span ID
         span_id: String,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show project-level stats for an agent (ObservabilityService)
     #[command(name = "project-stats")]
@@ -379,6 +342,9 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the reporting window (default: 24 h ago)
         #[arg(long)]
         start_time: Option<String>,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show FinOps cost dashboard (ObservabilityService)
     #[command(name = "finops-dashboard")]
@@ -386,6 +352,9 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the cost window (default: 24 h ago)
         #[arg(long)]
         start_time: Option<String>,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Fetch AI-powered cost insights (calls finops-dashboard then LLM)
     Insights {
@@ -548,17 +517,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
         AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
-        AgentOpsCommands::Update { agent, source, version, changelog } => {
-            commands::update::update(&agent, source.as_deref(), version.as_deref(), changelog.as_deref())
-        }
-        AgentOpsCommands::Rollback { agent, version, reason, yes } => {
-            commands::update::rollback(&agent, version.as_deref(), reason.as_deref(), yes)
-        }
-        AgentOpsCommands::Deployments { command } => match command {
-            DeploymentsCommands::Ls => commands::deployments::ls(),
-            DeploymentsCommands::Get { agent } => commands::deployments::get(&agent),
-            DeploymentsCommands::Restart { deployment_id } => commands::deployments::restart(&deployment_id),
-        },
         AgentOpsCommands::Chat { url, message, agent, tui, resume, session_id } => {
             // `nasiko chat "some message"` — a lone positional *containing
             // a space* is a natural-language message for the orchestrator,
@@ -642,23 +600,23 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             }
         },
         AgentOpsCommands::Observe { command } => match command {
-            ObserveCommands::Sessions { start_time } => {
-                commands::observe::sessions(start_time.as_deref())
+            ObserveCommands::Sessions { start_time, json } => {
+                commands::observe::sessions(start_time.as_deref(), json)
             }
-            ObserveCommands::Session { session_id } => {
-                commands::observe::session_detail(&session_id)
+            ObserveCommands::Session { session_id, json } => {
+                commands::observe::session_detail(&session_id, json)
             }
-            ObserveCommands::TraceDetail { trace_id } => {
-                commands::observe::trace_detail(&trace_id)
+            ObserveCommands::TraceDetail { trace_id, json } => {
+                commands::observe::trace_detail(&trace_id, json)
             }
-            ObserveCommands::Span { trace_id, span_id } => {
-                commands::observe::span_detail(&trace_id, &span_id)
+            ObserveCommands::Span { trace_id, span_id, json } => {
+                commands::observe::span_detail(&trace_id, &span_id, json)
             }
-            ObserveCommands::ProjectStats { agent_id, start_time } => {
-                commands::observe::project_stats(&agent_id, start_time.as_deref())
+            ObserveCommands::ProjectStats { agent_id, start_time, json } => {
+                commands::observe::project_stats(&agent_id, start_time.as_deref(), json)
             }
-            ObserveCommands::FinopsDashboard { start_time } => {
-                commands::observe::finops_dashboard(start_time.as_deref())
+            ObserveCommands::FinopsDashboard { start_time, json } => {
+                commands::observe::finops_dashboard(start_time.as_deref(), json)
             }
             ObserveCommands::Insights { start_time } => {
                 commands::observe::insights(start_time.as_deref())

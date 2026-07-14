@@ -96,7 +96,7 @@ fn build_span_tree(
     spans: &[nasiko_observability::Span],
 ) -> (Vec<SpanNode>, HashMap<String, SpanNode>) {
     let make_node = |s: &nasiko_observability::Span| {
-        let (input, output, _) = extract_token_attrs(&s.attributes);
+        let (input, output, model) = extract_token_attrs(&s.attributes);
         SpanNode {
             id: encode_span_id(&s.span_id),
             span_id: s.span_id.clone(),
@@ -108,6 +108,9 @@ fn build_span_tree(
             parent_id: s.parent_span_id.as_deref().map(encode_span_id),
             latency_ms: s.duration_ms.map(|d| d as f64),
             token_count_total: input + output,
+            input_tokens: input,
+            output_tokens: output,
+            model,
             span_annotation_summaries: vec![],
             children: vec![],
         }
@@ -380,6 +383,9 @@ pub struct SpanNode {
     pub parent_id: Option<String>,
     pub latency_ms: Option<f64>,
     pub token_count_total: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model: Option<String>,
     pub span_annotation_summaries: Vec<Value>,
     pub children: Vec<SpanNode>,
 }
@@ -725,7 +731,7 @@ impl ObservabilityService {
                 span: RootSpanRef {
                     id: s.id.clone(),
                     span_id: s.span_id.clone(),
-                    parent_id: None,
+                    parent_id: s.parent_id.clone(),
                     status_code: s.status_code.clone(),
                 },
             })

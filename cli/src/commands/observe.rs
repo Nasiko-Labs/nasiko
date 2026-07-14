@@ -159,23 +159,45 @@ struct CostOnly {
 
 #[derive(Deserialize, Tabled)]
 struct SpanNode {
-    #[tabled(rename = "CODE", display("trunc", 4))]
-    status_code: String,
     #[tabled(rename = "SPAN ID", display("trunc", 16))]
     span_id: String,
     #[tabled(rename = "KIND", display("trunc", 8))]
     span_kind: String,
+    #[tabled(rename = "MODEL", display("model_or_dash", 20))]
+    #[serde(default)]
+    model: Option<String>,
     #[tabled(rename = "LAT(ms)", display = "opt_round")]
     latency_ms: Option<f64>,
-    #[tabled(rename = "TOKENS")]
-    token_count_total: u64,
+    #[tabled(rename = "TOK IN")]
+    #[serde(default)]
+    input_tokens: u64,
+    #[tabled(rename = "TOK OUT")]
+    #[serde(default)]
+    output_tokens: u64,
     #[tabled(rename = "STARTED", display = "opt_started")]
     start_time: Option<String>,
+    // Blank for the overwhelmingly common UNSET/OK — only errors deserve ink.
+    #[tabled(rename = "STATUS", display = "status_if_notable")]
+    status_code: String,
     #[tabled(rename = "NAME")]
     name: String,
     #[tabled(skip)]
     #[serde(default)]
     children: Vec<SpanNode>,
+}
+
+fn model_or_dash(m: &Option<String>, max: usize) -> String {
+    match m {
+        Some(s) => trunc(s, max),
+        None => "-".to_owned(),
+    }
+}
+
+fn status_if_notable(code: &str) -> String {
+    match code {
+        "UNSET" | "OK" => String::new(),
+        other => other.to_owned(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -341,12 +363,22 @@ fn flatten_json(prefix: &str, val: &serde_json::Value, out: &mut Vec<(String, St
 /// List sessions across all agents via ObservabilityService.
 ///
 /// Hits: GET /api/observability/session/list
-pub fn sessions(start_time: Option<&str>) -> Result<()> {
+/// Fetch `path` and pretty-print the raw API response (for `--json`).
+fn print_raw_json(client: &Client, path: &str) -> Result<()> {
+    let raw: serde_json::Value = client.get_json(path)?;
+    println!("{}", serde_json::to_string_pretty(&raw)?);
+    Ok(())
+}
+
+pub fn sessions(start_time: Option<&str>, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let path = match start_time {
         Some(t) => format!("/observability/session/list?start_time={}", crate::api::urlencode(t)),
         None => "/observability/session/list".to_string(),
     };
+    if json {
+        return print_raw_json(&client, &path);
+    }
 
     let resp: SessionListResponse = client.get_json(&path)?;
     let data = resp.data;
@@ -370,10 +402,13 @@ pub fn sessions(start_time: Option<&str>) -> Result<()> {
 /// Show full detail for a session including all traces.
 ///
 /// Hits: GET /api/observability/session/{session_id}
-pub fn session_detail(session_id: &str) -> Result<()> {
+pub fn session_detail(session_id: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let resp: SessionDetailResponse =
-        client.get_json(&format!("/observability/session/{session_id}"))?;
+    let path = format!("/observability/session/{session_id}");
+    if json {
+        return print_raw_json(&client, &path);
+    }
+    let resp: SessionDetailResponse = client.get_json(&path)?;
     let s = resp.data.session;
 
     println!("Session:    {}", s.session_id);
@@ -405,10 +440,13 @@ pub fn session_detail(session_id: &str) -> Result<()> {
 /// Show full trace detail (span tree + costs) via ObservabilityService.
 ///
 /// Hits: GET /api/observability/trace/{trace_id}
-pub fn trace_detail(trace_id: &str) -> Result<()> {
+pub fn trace_detail(trace_id: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let resp: TraceDetailResponse =
-        client.get_json(&format!("/observability/trace/{trace_id}"))?;
+    let path = format!("/observability/trace/{trace_id}");
+    if json {
+        return print_raw_json(&client, &path);
+    }
+    let resp: TraceDetailResponse = client.get_json(&path)?;
     let t = resp.data.trace;
 
     println!("Trace:    {}", t.id);
@@ -439,8 +477,10 @@ pub fn trace_detail(trace_id: &str) -> Result<()> {
             status_code: span.status_code.clone(),
             span_id: span.span_id.clone(),
             span_kind: span.span_kind.clone(),
+            model: span.model.clone(),
             latency_ms: span.latency_ms,
-            token_count_total: span.token_count_total,
+            input_tokens: span.input_tokens,
+            output_tokens: span.output_tokens,
             start_time: span.start_time.clone(),
             name: format!("{}{}", "  ".repeat(depth), span.name),
             children: Vec::new(),
@@ -461,10 +501,13 @@ pub fn trace_detail(trace_id: &str) -> Result<()> {
 /// Show detail for a single span including prompt/completion content.
 ///
 /// Hits: GET /api/observability/span/{trace_id}/{span_id}
-pub fn span_detail(trace_id: &str, span_id: &str) -> Result<()> {
+pub fn span_detail(trace_id: &str, span_id: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let resp: SpanDetailResponse =
-        client.get_json(&format!("/observability/span/{trace_id}/{span_id}"))?;
+    let path = format!("/observability/span/{trace_id}/{span_id}");
+    if json {
+        return print_raw_json(&client, &path);
+    }
+    let resp: SpanDetailResponse = client.get_json(&path)?;
     let s = resp.data.span;
 
     println!("Span:       {}", s.span_id);
@@ -520,7 +563,7 @@ pub fn span_detail(trace_id: &str, span_id: &str) -> Result<()> {
 /// Show project-level stats for an agent via ObservabilityService.
 ///
 /// Hits: GET /api/observability/agent/{agent_id}/stats?start_time=...
-pub fn project_stats(agent_id: &str, start_time: Option<&str>) -> Result<()> {
+pub fn project_stats(agent_id: &str, start_time: Option<&str>, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let t = start_time.unwrap_or("");
     let path = if t.is_empty() {
@@ -532,6 +575,9 @@ pub fn project_stats(agent_id: &str, start_time: Option<&str>) -> Result<()> {
     } else {
         format!("/observability/agent/{agent_id}/stats?start_time={}", crate::api::urlencode(t))
     };
+    if json {
+        return print_raw_json(&client, &path);
+    }
 
     let resp: ProjectStatsResponse = client.get_json(&path)?;
     let p = resp.data.project;
@@ -555,12 +601,15 @@ pub fn project_stats(agent_id: &str, start_time: Option<&str>) -> Result<()> {
 /// Show the FinOps cost dashboard via ObservabilityService.
 ///
 /// Hits: GET /api/observability/finops/dashboard
-pub fn finops_dashboard(start_time: Option<&str>) -> Result<()> {
+pub fn finops_dashboard(start_time: Option<&str>, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let path = match start_time {
         Some(t) => format!("/observability/finops/dashboard?start_time={}", crate::api::urlencode(t)),
         None => "/observability/finops/dashboard".to_string(),
     };
+    if json {
+        return print_raw_json(&client, &path);
+    }
 
     let resp: FinopsDashboardResponse = client.get_json(&path)?;
     let data = resp.data;
