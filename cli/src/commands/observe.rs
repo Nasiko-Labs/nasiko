@@ -1,26 +1,46 @@
 use anyhow::Result;
+use nasiko_utils::display::{opt_cost, opt_dash, opt_lat_ms, opt_round, opt_started, trunc};
 use serde::Deserialize;
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use crate::api::Client;
 
 // ─── Response types (ObservabilityService) ───────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Tabled)]
 struct SessionSummary {
+    #[tabled(rename = "SESSION ID")]
     session_id: String,
+    #[tabled(rename = "AGENT", display("trunc", 20))]
     agent_id: String,
+    #[tabled(rename = "STARTED", display = "opt_started")]
+    start_time: Option<String>,
+    #[tabled(rename = "DUR(ms)", display = "opt_dash")]
+    duration_ms: Option<u64>,
+    #[tabled(rename = "TRACES", display = "opt_dash")]
     #[serde(default)]
     num_traces: Option<u32>,
-    start_time: Option<String>,
-    duration_ms: Option<u64>,
-    #[serde(default)]
-    trace_latency_ms_p50: Option<f64>,
-    #[serde(default)]
-    trace_latency_ms_p99: Option<f64>,
+    #[tabled(rename = "TOKENS", display = "token_total")]
     #[serde(default)]
     token_usage: TokenUsageSummary,
+    #[tabled(rename = "p50(ms)", display = "opt_round")]
+    #[serde(default)]
+    trace_latency_ms_p50: Option<f64>,
+    #[tabled(rename = "p99(ms)", display = "opt_round")]
+    #[serde(default)]
+    trace_latency_ms_p99: Option<f64>,
+    #[tabled(rename = "COST", display = "session_cost")]
     #[serde(default)]
     cost_summary: SimpleCostSummary,
+}
+
+fn token_total(t: &TokenUsageSummary) -> String {
+    opt_dash(&t.total)
+}
+
+fn session_cost(c: &SimpleCostSummary) -> String {
+    opt_cost(&c.total.cost)
 }
 
 #[derive(Deserialize, Default)]
@@ -84,17 +104,23 @@ struct CostWithTokens {
     tokens: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Tabled)]
 struct TraceEntry {
+    #[tabled(rename = "TRACE ID", display("trunc", 32))]
     trace_id: String,
+    #[tabled(inline)]
     root_span: RootSpanEntry,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Tabled)]
 struct RootSpanEntry {
+    #[tabled(rename = "ROOT SPAN", display("trunc", 16))]
     span_id: String,
-    latency_ms: f64,
+    #[tabled(rename = "STARTED", display = "opt_started")]
     start_time: Option<String>,
+    #[tabled(rename = "LAT(ms)", format = "{:.0}")]
+    latency_ms: f64,
+    #[tabled(rename = "TOKENS")]
     cumulative_token_count_total: u64,
 }
 
@@ -131,15 +157,23 @@ struct CostOnly {
     cost: f64,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Tabled)]
 struct SpanNode {
-    span_id: String,
-    name: String,
-    span_kind: String,
+    #[tabled(rename = "CODE", display("trunc", 4))]
     status_code: String,
-    start_time: Option<String>,
+    #[tabled(rename = "SPAN ID", display("trunc", 16))]
+    span_id: String,
+    #[tabled(rename = "KIND", display("trunc", 8))]
+    span_kind: String,
+    #[tabled(rename = "LAT(ms)", display = "opt_round")]
     latency_ms: Option<f64>,
+    #[tabled(rename = "TOKENS")]
     token_count_total: u64,
+    #[tabled(rename = "STARTED", display = "opt_started")]
+    start_time: Option<String>,
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(skip)]
     #[serde(default)]
     children: Vec<SpanNode>,
 }
@@ -227,20 +261,38 @@ struct FinopsSummary {
     total_agents: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Tabled)]
 struct AgentFinopsRow {
+    #[tabled(rename = "AGENT ID", display("trunc", 24))]
     agent_id: String,
+    #[tabled(rename = "NAME", display("name_ver", &self.version))]
     agent_name: String,
-    total_cost: f64,
+    #[tabled(rename = "OPS")]
     operations: usize,
+    #[tabled(rename = "PROMPT TOK")]
+    prompt_tokens: u64,
+    #[tabled(rename = "COMPL TOK")]
+    completion_tokens: u64,
+    #[tabled(rename = "TOTAL TOK")]
+    total_tokens: u64,
+    #[tabled(rename = "AVG LAT", display = "opt_lat_ms")]
+    avg_latency_ms: Option<f64>,
+    #[tabled(rename = "TOTAL $", format = "${:.4}")]
+    total_cost: f64,
+    #[tabled(rename = "COST/OP", format = "${:.4}")]
     #[serde(default)]
     avg_cost_per_operation: f64,
-    prompt_tokens: u64,
-    completion_tokens: u64,
-    total_tokens: u64,
-    avg_latency_ms: Option<f64>,
+    #[tabled(skip)]
     #[serde(default)]
     version: Option<String>,
+}
+
+fn name_ver(name: &String, version: &Option<String>) -> String {
+    let full = match version.as_deref() {
+        Some(v) if !v.is_empty() => format!("{name} ({v})"),
+        _ => name.clone(),
+    };
+    trunc(&full, 20)
 }
 
 #[derive(Deserialize)]
@@ -310,34 +362,7 @@ pub fn sessions(start_time: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<38} {:<22} {:<20} {:<8} {:<7} {:<10} {:<8} {:<8} COST",
-        "SESSION ID", "AGENT", "STARTED", "DUR(ms)", "TRACES", "TOKENS", "p50(ms)", "p99(ms)"
-    );
-    println!("{}", "-".repeat(129));
-
-    for s in &data.sessions {
-        let started = s.start_time.as_deref().unwrap_or("-");
-        let started_short = started.get(..19).unwrap_or(started);
-        let dur = s.duration_ms.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
-        let traces = s.num_traces.map(|n| n.to_string()).unwrap_or_else(|| "-".into());
-        let tokens = s.token_usage.total.map(|t| t.to_string()).unwrap_or_else(|| "-".into());
-        let p50 = s.trace_latency_ms_p50.map(|p| format!("{p:.0}")).unwrap_or_else(|| "-".into());
-        let p99 = s.trace_latency_ms_p99.map(|p| format!("{p:.0}")).unwrap_or_else(|| "-".into());
-        let cost = s.cost_summary.total.cost.map(|c| format!("${c:.4}")).unwrap_or_else(|| "-".into());
-        println!(
-            "{:<38} {:<22} {:<20} {:<8} {:<7} {:<10} {:<8} {:<8} {}",
-            s.session_id,
-            &s.agent_id[..s.agent_id.len().min(20)],
-            started_short,
-            dur,
-            traces,
-            tokens,
-            p50,
-            p99,
-            cost,
-        );
-    }
+    println!("{}", Table::new(&data.sessions).with(Style::blank()).with(Alignment::left()));
     println!("\n{} session(s).", data.sessions.len());
     Ok(())
 }
@@ -373,20 +398,7 @@ pub fn session_detail(session_id: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<34} {:<18} {:<22} {:<10} TOKENS", "TRACE ID", "ROOT SPAN", "STARTED", "LAT(ms)");
-    println!("{}", "-".repeat(95));
-    for t in &s.traces {
-        let rs = &t.root_span;
-        let started = rs.start_time.as_deref().unwrap_or("-");
-        println!(
-            "{:<34} {:<18} {:<22} {:<10} {}",
-            &t.trace_id[..t.trace_id.len().min(32)],
-            &rs.span_id[..rs.span_id.len().min(16)],
-            started.get(..19).unwrap_or(started),
-            format!("{:.0}", rs.latency_ms),
-            rs.cumulative_token_count_total,
-        );
-    }
+    println!("{}", Table::new(&s.traces).with(Style::blank()).with(Alignment::left()));
     Ok(())
 }
 
@@ -419,35 +431,29 @@ pub fn trace_detail(trace_id: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<5} {:<18} {:<10} {:<12} {:<10} {:<20} NAME", "CODE", "SPAN ID", "KIND", "LAT(ms)", "TOKENS", "STARTED");
-    println!("{}", "-".repeat(100));
-
     // The server returns a nested tree: t.spans contains only root nodes,
     // children are embedded in SpanNode.children (not repeated in the top-level slice).
-    fn print_span_node(span: &SpanNode, depth: usize) {
-        let indent = "  ".repeat(depth);
-        let lat = span.latency_ms.map(|l| format!("{l:.0}")).unwrap_or_else(|| "-".into());
-        let started = span.start_time.as_deref()
-            .and_then(|t| t.get(..19))
-            .unwrap_or("-");
-        println!(
-            "{:<5} {:<18} {:<10} {:<12} {:<10} {:<20} {}{}",
-            &span.status_code[..span.status_code.len().min(4)],
-            &span.span_id[..span.span_id.len().min(16)],
-            &span.span_kind[..span.span_kind.len().min(8)],
-            lat,
-            span.token_count_total,
-            started,
-            indent,
-            span.name,
-        );
+    // Flatten it, baking the tree depth into the NAME column as indentation.
+    fn flatten_span_node(span: &SpanNode, depth: usize, out: &mut Vec<SpanNode>) {
+        out.push(SpanNode {
+            status_code: span.status_code.clone(),
+            span_id: span.span_id.clone(),
+            span_kind: span.span_kind.clone(),
+            latency_ms: span.latency_ms,
+            token_count_total: span.token_count_total,
+            start_time: span.start_time.clone(),
+            name: format!("{}{}", "  ".repeat(depth), span.name),
+            children: Vec::new(),
+        });
         for child in &span.children {
-            print_span_node(child, depth + 1);
+            flatten_span_node(child, depth + 1, out);
         }
     }
+    let mut rows = Vec::new();
     for root in &t.spans {
-        print_span_node(root, 0);
+        flatten_span_node(root, 0, &mut rows);
     }
+    println!("{}", Table::new(&rows).with(Style::blank()).with(Alignment::left()));
 
     Ok(())
 }
@@ -576,33 +582,7 @@ pub fn finops_dashboard(start_time: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<26} {:<22} {:<6} {:<12} {:<12} {:<12} {:<10} {:<10} COST/OP",
-        "AGENT ID", "NAME", "OPS", "PROMPT TOK", "COMPL TOK", "TOTAL TOK", "AVG LAT", "TOTAL $"
-    );
-    println!("{}", "-".repeat(128));
-
-    for a in &data.agents {
-        let lat = a.avg_latency_ms.map(|l| format!("{l:.0}ms")).unwrap_or_else(|| "-".into());
-        let ver = a.version.as_deref().unwrap_or("");
-        let name_ver = if ver.is_empty() {
-            a.agent_name.clone()
-        } else {
-            format!("{} ({})", a.agent_name, ver)
-        };
-        println!(
-            "{:<26} {:<22} {:<6} {:<12} {:<12} {:<12} {:<10} {:<10} ${:.4}",
-            &a.agent_id[..a.agent_id.len().min(24)],
-            &name_ver[..name_ver.len().min(20)],
-            a.operations,
-            a.prompt_tokens,
-            a.completion_tokens,
-            a.total_tokens,
-            lat,
-            format!("${:.4}", a.total_cost),
-            a.avg_cost_per_operation,
-        );
-    }
+    println!("{}", Table::new(&data.agents).with(Style::blank()).with(Alignment::left()));
     Ok(())
 }
 

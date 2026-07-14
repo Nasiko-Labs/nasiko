@@ -1,6 +1,9 @@
 use anyhow::Result;
 use dialoguer::{Select, theme::ColorfulTheme};
+use nasiko_utils::display::{opt_dash, yes_no};
 use serde::Deserialize;
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use crate::api::Client;
 
@@ -12,15 +15,23 @@ struct GithubStatus {
     username: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Tabled)]
 struct GithubRepo {
+    #[tabled(rename = "REPOSITORY", display("repo_name", &self.full_name))]
     name: String,
+    #[tabled(skip)]
     #[serde(default)]
     full_name: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
+    #[tabled(rename = "PRIVATE", display = "yes_no")]
     #[serde(default)]
     private: bool,
+    #[tabled(rename = "DESCRIPTION", display = "opt_dash")]
+    #[serde(default)]
+    description: Option<String>,
+}
+
+fn repo_name(name: &String, full_name: &Option<String>) -> String {
+    full_name.as_deref().unwrap_or(name).to_string()
 }
 
 pub fn status() -> Result<()> {
@@ -51,16 +62,7 @@ pub fn repos() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<40} {:<8} DESCRIPTION", "REPOSITORY", "PRIVATE");
-    println!("{}", "-".repeat(90));
-    for r in &repos {
-        println!(
-            "{:<40} {:<8} {}",
-            r.full_name.as_deref().unwrap_or(&r.name),
-            if r.private { "yes" } else { "no" },
-            r.description.as_deref().unwrap_or("-"),
-        );
-    }
+    println!("{}", Table::new(&repos).with(Style::blank()).with(Alignment::left()));
     println!("\n{} repo(s).", repos.len());
     Ok(())
 }

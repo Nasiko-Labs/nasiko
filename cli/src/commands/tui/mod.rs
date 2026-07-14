@@ -11,9 +11,21 @@ use crossterm::{
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::prelude::CrosstermBackend;
+use tabled::settings::{Alignment, Style};
+use tabled::Table;
 
 use app::{App, AppMode};
 use event::{AppEvent, EventLoop};
+
+/// Tabled display helper for `LocalSession::endpoint` (session.rs).
+pub(crate) fn opt_endpoint(endpoint: &String) -> String {
+    if endpoint.len() > 38 {
+        let n = endpoint.floor_char_boundary(35);
+        format!("{}...", &endpoint[..n])
+    } else {
+        endpoint.clone()
+    }
+}
 
 pub fn run_tui(endpoint: &str, resume_id: Option<&str>) -> Result<()> {
     let (session, history) = if let Some(id) = resume_id {
@@ -177,18 +189,7 @@ pub fn list_sessions(endpoint: Option<&str>, cursor: Option<&str>, limit: Option
             println!("No sessions found.");
             return Ok(());
         }
-        println!("{:<36} {:<20} {:<24} TITLE", "ID", "AGENT", "UPDATED");
-        for s in &page.data {
-            println!(
-                "{:<36} {:<20} {:<24} {}",
-                s.session_id,
-                // A null agent_id means the session was opened against the
-                // orchestrator (no specific agent bound), not a data gap.
-                s.agent_name.as_deref().unwrap_or("orchestrator"),
-                s.updated_at.get(..19).unwrap_or(&s.updated_at),
-                s.title,
-            );
-        }
+        println!("{}", Table::new(&page.data).with(Style::blank()).with(Alignment::left()));
         if let Some(cursor) = page.next_cursor {
             println!("\n(more results — use --cursor {cursor} to continue)");
         }
@@ -200,20 +201,6 @@ pub fn list_sessions(endpoint: Option<&str>, cursor: Option<&str>, limit: Option
         println!("No local sessions found.");
         return Ok(());
     }
-    println!("{:<36} {:<40} {:<24} TITLE", "ID", "ENDPOINT", "CREATED");
-    for s in sessions {
-        println!(
-            "{:<36} {:<40} {:<24} {}",
-            s.id,
-            if s.endpoint.len() > 38 {
-                let n = s.endpoint.floor_char_boundary(35);
-                format!("{}...", &s.endpoint[..n])
-            } else {
-                s.endpoint.clone()
-            },
-            s.created_at.get(..19).unwrap_or(&s.created_at),
-            s.title,
-        );
-    }
+    println!("{}", Table::new(&sessions).with(Style::blank()).with(Alignment::left()));
     Ok(())
 }

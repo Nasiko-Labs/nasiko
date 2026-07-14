@@ -1,4 +1,6 @@
 use anyhow::{Result, bail};
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use crate::api::RegistryClient;
 use crate::config;
@@ -70,33 +72,65 @@ pub fn search(
             );
         }
 
-    let name_width = results.iter()
-        .map(|a| format!("{}/{}:{}", a.owner, a.name, a.version).len())
-        .max()
-        .unwrap_or(30)
-        .max(10);
-
     if scored {
-        println!("{:>5}  {:<width$} {:<50} TAGS", "SCORE", "ARTIFACT", "DESCRIPTION", width = name_width);
+        let rows: Vec<ScoredArtifactRow> = results.iter().map(ScoredArtifactRow::from).collect();
+        println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
     } else {
-        println!("{:<width$} {:<60} TAGS", "ARTIFACT", "DESCRIPTION", width = name_width);
-    }
-
-    for artifact in &results {
-        let ref_str = format!("{}/{}:{}", artifact.owner, artifact.name, artifact.version);
-        let desc = artifact.description.as_deref().unwrap_or("—");
-        let tags = if artifact.tags.is_empty() { "—".to_string() } else { artifact.tags.join(", ") };
-        if scored {
-            let score = artifact.score.map(|s| format!("{:.0}%", s * 100.0)).unwrap_or_else(|| "—".to_string());
-            let desc_truncated = if desc.len() > 47 { format!("{}...", &desc[..desc.floor_char_boundary(47)]) } else { desc.to_string() };
-            println!("{score:>5}  {ref_str:<name_width$} {desc_truncated:<50} {tags}");
-        } else {
-            let desc_truncated = if desc.len() > 57 { format!("{}...", &desc[..desc.floor_char_boundary(57)]) } else { desc.to_string() };
-            println!("{ref_str:<name_width$} {desc_truncated:<60} {tags}");
-        }
+        let rows: Vec<ArtifactRow> = results.iter().map(ArtifactRow::from).collect();
+        println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
     }
     println!("\n{} result(s)", results.len());
     Ok(())
+}
+
+#[derive(Tabled)]
+struct ScoredArtifactRow {
+    #[tabled(rename = "SCORE")]
+    score: String,
+    #[tabled(rename = "ARTIFACT")]
+    artifact: String,
+    #[tabled(rename = "DESCRIPTION")]
+    description: String,
+    #[tabled(rename = "TAGS")]
+    tags: String,
+}
+
+impl From<&crate::api::Artifact> for ScoredArtifactRow {
+    fn from(artifact: &crate::api::Artifact) -> Self {
+        let desc = artifact.description.as_deref().unwrap_or("—");
+        let tags = if artifact.tags.is_empty() { "—".to_string() } else { artifact.tags.join(", ") };
+        let score = artifact.score.map(|s| format!("{:.0}%", s * 100.0)).unwrap_or_else(|| "—".to_string());
+        let description = if desc.len() > 47 { format!("{}...", &desc[..desc.floor_char_boundary(47)]) } else { desc.to_string() };
+        ScoredArtifactRow {
+            score,
+            artifact: format!("{}/{}:{}", artifact.owner, artifact.name, artifact.version),
+            description,
+            tags,
+        }
+    }
+}
+
+#[derive(Tabled)]
+struct ArtifactRow {
+    #[tabled(rename = "ARTIFACT")]
+    artifact: String,
+    #[tabled(rename = "DESCRIPTION")]
+    description: String,
+    #[tabled(rename = "TAGS")]
+    tags: String,
+}
+
+impl From<&crate::api::Artifact> for ArtifactRow {
+    fn from(artifact: &crate::api::Artifact) -> Self {
+        let desc = artifact.description.as_deref().unwrap_or("—");
+        let tags = if artifact.tags.is_empty() { "—".to_string() } else { artifact.tags.join(", ") };
+        let description = if desc.len() > 57 { format!("{}...", &desc[..desc.floor_char_boundary(57)]) } else { desc.to_string() };
+        ArtifactRow {
+            artifact: format!("{}/{}:{}", artifact.owner, artifact.name, artifact.version),
+            description,
+            tags,
+        }
+    }
 }
 
 pub fn list(artifact_type: Option<&str>, json: bool) -> Result<()> {

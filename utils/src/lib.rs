@@ -1,3 +1,4 @@
+pub mod display;
 pub mod term;
 
 /// Helper for required env vars — returns clear error message.

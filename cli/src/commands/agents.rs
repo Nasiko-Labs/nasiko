@@ -4,6 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 use serde::Deserialize;
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use crate::api::{AgentRecord, Client, UploadedAgent};
 
@@ -16,43 +18,6 @@ struct LogLine {
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
-
-/// Resolve a `nasiko chat` target to a full A2A endpoint URL.
-///
-/// Accepts a full URL as-is. Otherwise treats `target` as an agent UUID or
-/// name, looks it up against the active cluster's agent list (same data
-/// `nasiko ps` prints), and builds the proxy URL from its `id` +
-/// `transport_path` — sparing the caller from having to copy/paste the URL
-/// `nasiko ps` prints.
-pub fn resolve_chat_target(target: &str) -> Result<String> {
-    if target.starts_with("http://") || target.starts_with("https://") {
-        return Ok(target.to_string());
-    }
-
-    // "orchestrator" is not a catalog agent — it's the CP's own routing
-    // endpoint (same one `nasiko chat` with no target uses).
-    if target.eq_ignore_ascii_case("orchestrator") {
-        let base = crate::config::active_url()?;
-        return Ok(format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')));
-    }
-
-    let client = Client::from_active_cluster()?;
-    let agents: Vec<AgentRecord> = client.get_json("/agents?limit=100")?;
-    let agent = agents
-        .iter()
-        .find(|a| a.id == target || a.name == target)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no agent found with id or name '{target}' (see `nasiko ps`; \
-                 to message the orchestrator instead: nasiko chat \"{target}\" — \
-                 any argument with spaces goes to the orchestrator)"
-            )
-        })?;
-
-    let base = client.base_url().trim_end_matches('/');
-    let path = agent.transport_path.as_deref().unwrap_or("/");
-    Ok(format!("{}/api/agents/{}{}", base, agent.id, path))
-}
 
 pub fn ps(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
@@ -67,17 +32,33 @@ pub fn ps(json: bool) -> Result<()> {
         return Ok(());
     }
     let base = client.base_url().trim_end_matches('/');
-    println!("{:<28} {:<12} {:<8} URL", "NAME", "STATUS", "VERSION");
-    for a in &agents {
+    let rows: Vec<PsTableRow> = agents.iter().map(|a| {
         let status = a.status.as_deref().unwrap_or("unknown");
-        let version = a.version.as_deref().unwrap_or("-");
         // transport_path comes from the agent's own card (persisted at deploy
         // time); the proxy route requires the agent UUID, not the name.
         let path = a.transport_path.as_deref().unwrap_or("/");
         let url = format!("{}/api/agents/{}{}", base, a.id, path);
-        println!("{:<28} {:<12} {:<8} {}", a.name, status, version, url);
-    }
+        PsTableRow {
+            name: a.name.clone(),
+            status: status.to_string(),
+            version: a.version.as_deref().unwrap_or("-").to_string(),
+            url,
+        }
+    }).collect();
+    println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
     Ok(())
+}
+
+#[derive(Tabled)]
+struct PsTableRow {
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "STATUS")]
+    status: String,
+    #[tabled(rename = "VERSION")]
+    version: String,
+    #[tabled(rename = "URL")]
+    url: String,
 }
 
 /// Fetch or stream agent logs.
@@ -211,6 +192,34 @@ fn unwrap_agents(raw: serde_json::Value) -> Result<Vec<AgentRecord>> {
     }
 }
 
+/// Resolve a name or UUID into a deployed agent's UUID via the CP registry.
+///
+/// Used by `nasiko chat --agent <name>` so callers never have to look up and
+/// paste an agent's proxy URL by hand.
+pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
+    if uuid::Uuid::parse_str(name_or_id).is_ok() {
+        return Ok(name_or_id.to_string());
+    }
+
+    let client = Client::from_active_cluster()?;
+    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
+    let agents = unwrap_agents(raw)?;
+
+    let matches: Vec<&AgentRecord> =
+        agents.iter().filter(|a| a.name.eq_ignore_ascii_case(name_or_id)).collect();
+
+    match matches.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => bail!(
+            "no agent named '{name_or_id}' found on the active cluster (run `nasiko agents ls`)"
+        ),
+        many => bail!(
+            "multiple agents named '{name_or_id}': {} — use an ID instead",
+            many.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
 pub fn cmd_ls() -> Result<()> {
     let client = Client::from_active_cluster()?;
     let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
@@ -221,18 +230,7 @@ pub fn cmd_ls() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<24} {:<10} {:<10} URL", "ID", "NAME", "STATUS", "VERSION");
-    println!("{}", "-".repeat(100));
-    for a in &agents {
-        println!(
-            "{:<36} {:<24} {:<10} {:<10} {}",
-            a.id,
-            a.name,
-            a.status.as_deref().unwrap_or("-"),
-            a.version.as_deref().unwrap_or("-"),
-            a.url.as_deref().unwrap_or("-"),
-        );
-    }
+    println!("{}", Table::new(&agents).with(Style::blank()).with(Alignment::left()));
     println!("\n{} agent(s) total.", agents.len());
     Ok(())
 }
@@ -356,25 +354,39 @@ pub fn cmd_search(
         return Ok(());
     }
 
-    println!("{:<28} {:<12} {:<10} {:<16} {:<10} TAGS", "NAME", "OWNER", "TYPE", "FRAMEWORK", "VERSION");
-    println!("{}", "-".repeat(100));
-    for item in &items {
+    let rows: Vec<SearchTableRow> = items.iter().map(|item| {
         let tags_str = item.get("tags")
             .and_then(|t| t.as_array())
             .map(|t| t.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
             .unwrap_or_default();
-        println!(
-            "{:<28} {:<12} {:<10} {:<16} {:<10} {}",
-            item.get("name").and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("owner").and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("artifact_type").or_else(|| item.get("type")).and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("framework").and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("version").and_then(|v| v.as_str()).unwrap_or("-"),
-            tags_str,
-        );
-    }
+        SearchTableRow {
+            name: item.get("name").and_then(|v| v.as_str()).unwrap_or("-").to_string(),
+            owner: item.get("owner").and_then(|v| v.as_str()).unwrap_or("-").to_string(),
+            artifact_type: item.get("artifact_type").or_else(|| item.get("type")).and_then(|v| v.as_str()).unwrap_or("-").to_string(),
+            framework: item.get("framework").and_then(|v| v.as_str()).unwrap_or("-").to_string(),
+            version: item.get("version").and_then(|v| v.as_str()).unwrap_or("-").to_string(),
+            tags: tags_str,
+        }
+    }).collect();
+    println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
     println!("\n{} artifact(s) found.", items.len());
     Ok(())
+}
+
+#[derive(Tabled)]
+struct SearchTableRow {
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "OWNER")]
+    owner: String,
+    #[tabled(rename = "TYPE")]
+    artifact_type: String,
+    #[tabled(rename = "FRAMEWORK")]
+    framework: String,
+    #[tabled(rename = "VERSION")]
+    version: String,
+    #[tabled(rename = "TAGS")]
+    tags: String,
 }
 
 pub fn cmd_info(name: &str, owner: &str, version: Option<&str>) -> Result<()> {
@@ -436,20 +448,7 @@ pub fn cmd_list_uploaded() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<24} {:<10} {:<10} URL", "AGENT ID", "NAME", "STATUS", "TYPE");
-    println!("{}", "-".repeat(100));
-    for a in &agents {
-        let (status, utype) = a.upload_info.as_ref()
-            .map(|ui| (ui.upload_status.as_deref().unwrap_or("-"), ui.upload_type.as_deref().unwrap_or("-")))
-            .unwrap_or(("-", "-"));
-        println!(
-            "{:<36} {:<24} {:<10} {:<10} {}",
-            a.agent_id.as_deref().unwrap_or("-"),
-            a.agent_name.as_deref().unwrap_or("-"),
-            status, utype,
-            a.url.as_deref().unwrap_or("-"),
-        );
-    }
+    println!("{}", Table::new(&agents).with(Style::blank()).with(Alignment::left()));
     println!("\n{} agent(s).", agents.len());
     Ok(())
 }

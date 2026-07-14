@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
+use nasiko_utils::display::opt_dash;
 use serde::{Deserialize, Serialize};
+use tabled::Tabled;
 use ureq::Agent;
 
 use crate::config;
@@ -49,21 +51,6 @@ impl Client {
         })
     }
 
-    /// Build a client against an arbitrary base URL (mock server in tests),
-    /// bypassing `~/.nasiko/config.json`.
-    #[cfg(test)]
-    pub(crate) fn for_test(base_url: &str, token: Option<&str>) -> Self {
-        Self {
-            agent: Agent::new_with_config(
-                ureq::config::Config::builder()
-                    .http_status_as_error(false)
-                    .build(),
-            ),
-            base_url: base_url.to_string(),
-            token: token.map(str::to_string),
-        }
-    }
-
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -100,14 +87,6 @@ impl Client {
         r
     }
 
-    fn auth_patch(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
-        let mut r = self.agent.patch(url);
-        if let Some(ref t) = self.token {
-            r = r.header("Authorization", &format!("Bearer {t}"));
-        }
-        r
-    }
-
     // ─── Authenticated CP API calls (/api/*) ────────────────────────────────
 
     pub fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
@@ -116,21 +95,6 @@ impl Client {
         let mut resp = self.auth_get(&url).call().context("request failed")?;
         check_status(&mut resp, &url)?;
         Ok(resp.body_mut().read_json()?)
-    }
-
-    /// GET returning `Ok(None)` on 404 instead of erroring, while still bailing
-    /// on other failures. Lets callers tell "resource is gone" (e.g. a stale
-    /// local agent binding after a server-side delete / DB reset) apart from a
-    /// real error, so they can recover rather than fail.
-    pub fn get_json_optional<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<Option<T>> {
-        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
-        let url = self.api_url(path);
-        let mut resp = self.auth_get(&url).call().context("request failed")?;
-        if resp.status().as_u16() == 404 {
-            return Ok(None);
-        }
-        check_status(&mut resp, &url)?;
-        Ok(Some(resp.body_mut().read_json()?))
     }
 
     pub fn get_text(&self, path: &str) -> Result<String> {
@@ -171,21 +135,6 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
-    pub fn patch_json<T: for<'de> Deserialize<'de>, B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T> {
-        let _spin = nasiko_utils::term::start_status(format!("PATCH {path}"));
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_patch(&url)
-            .send_json(body)
-            .context("request failed")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
-    }
-
     /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_void(&self, path: &str) -> Result<()> {
         let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
@@ -218,37 +167,6 @@ impl Client {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let mut resp = req.call().context("request failed")?;
-        check_status(&mut resp, &url)?;
-        Ok(())
-    }
-
-    /// DELETE and parse a JSON response body (for routes that return a
-    /// descriptive body — e.g. a disconnect confirmation message — instead
-    /// of a bare 204).
-    pub fn delete_and_read<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
-        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
-        let url = self.api_url(path);
-        let mut req = self.agent.delete(&url);
-        if let Some(ref t) = self.token {
-            req = req.header("Authorization", &format!("Bearer {t}"));
-        }
-        let mut resp = req.call().context("request failed")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
-    }
-
-    /// DELETE with a JSON body, ignoring the response body. Off-spec (DELETE
-    /// shouldn't carry a body) but some routes need it to name a target
-    /// (e.g. revoking a specific share grant) — `force_send_body()` is ureq's
-    /// documented escape hatch for exactly this.
-    pub fn delete_json_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
-        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
-        let url = self.api_url(path);
-        let mut req = self.agent.delete(&url).force_send_body();
-        if let Some(ref t) = self.token {
-            req = req.header("Authorization", &format!("Bearer {t}"));
-        }
-        let mut resp = req.send_json(body).context("request failed")?;
         check_status(&mut resp, &url)?;
         Ok(())
     }
@@ -682,23 +600,32 @@ impl Client {
 
 // ─── API types ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Tabled)]
 pub struct AgentRecord {
+    #[tabled(rename = "ID")]
     pub id: String,
+    #[tabled(rename = "NAME")]
     pub name: String,
+    #[tabled(rename = "STATUS", display = "opt_dash")]
     #[serde(default)]
     pub status: Option<String>,
+    #[tabled(rename = "VERSION", display = "opt_dash")]
+    #[serde(default)]
+    pub version: Option<String>,
+    #[tabled(rename = "URL", display = "opt_dash")]
     #[serde(default)]
     pub url: Option<String>,
     /// JSON-RPC path from the agent's card (e.g. "/jsonrpc"), set by the server.
+    #[tabled(skip)]
     #[serde(default)]
     pub transport_path: Option<String>,
+    #[tabled(skip)]
     #[serde(default)]
     pub framework: Option<String>,
-    #[serde(default)]
-    pub version: Option<String>,
+    #[tabled(skip)]
     #[serde(default)]
     pub created_at: Option<String>,
+    #[tabled(skip)]
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -712,24 +639,30 @@ pub struct UploadQueued {
     pub status: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Tabled, Default)]
 pub struct UploadInfo {
-    #[serde(default)]
-    pub upload_type: Option<String>,
+    #[tabled(rename = "STATUS", display = "opt_dash")]
     #[serde(default)]
     pub upload_status: Option<String>,
+    #[tabled(rename = "TYPE", display = "opt_dash")]
+    #[serde(default)]
+    pub upload_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Tabled)]
 pub struct UploadedAgent {
+    #[tabled(rename = "AGENT ID", display = "opt_dash")]
     #[serde(default)]
     pub agent_id: Option<String>,
+    #[tabled(rename = "NAME", display = "opt_dash")]
     #[serde(default)]
     pub agent_name: Option<String>,
-    #[serde(default)]
-    pub url: Option<String>,
+    #[tabled(inline)]
     #[serde(default)]
     pub upload_info: Option<UploadInfo>,
+    #[tabled(rename = "URL", display = "opt_dash")]
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -764,43 +697,6 @@ mod tests {
         assert_eq!(urlencode("nutrition planning"), "nutrition%20planning");
         assert_eq!(urlencode("a&b=c"), "a%26b%3Dc");
         assert_eq!(urlencode("safe-_.~"), "safe-_.~");
-    }
-
-    // ─── get_json_optional: 404 → None (stale-binding recovery), else normal ────
-
-    #[test]
-    fn get_json_optional_none_on_404() {
-        // A deleted/never-existed resource (e.g. a stale local agent binding after
-        // a DB reset) must come back as None so callers can recover, not error.
-        let mut srv = mockito::Server::new();
-        let m = srv.mock("GET", "/api/agents/ghost").with_status(404).with_body("not found").create();
-        let client = Client::for_test(&srv.url(), None);
-        let out: Option<serde_json::Value> = client.get_json_optional("/agents/ghost").unwrap();
-        assert!(out.is_none());
-        m.assert();
-    }
-
-    #[test]
-    fn get_json_optional_some_on_200() {
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/live")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"live","version":"1.0.0"}"#)
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        let out: Option<serde_json::Value> = client.get_json_optional("/agents/live").unwrap();
-        assert_eq!(out.unwrap()["version"], "1.0.0");
-    }
-
-    #[test]
-    fn get_json_optional_errors_on_500() {
-        // Real failures must still surface — only 404 is treated as "absent".
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/boom").with_status(500).with_body("boom").create();
-        let client = Client::for_test(&srv.url(), None);
-        let out: Result<Option<serde_json::Value>> = client.get_json_optional("/agents/boom");
-        assert!(out.is_err());
     }
 
     #[test]

@@ -1,4 +1,6 @@
 use anyhow::Result;
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use crate::api::Client;
 use crate::config;
@@ -30,16 +32,34 @@ pub fn list() -> Result<()> {
         println!("No clusters configured. Run `nasiko connect <url>`.");
         return Ok(());
     }
-    println!("{:<8} {:<16} URL", "ACTIVE", "NAME");
-    for (name, entry) in &cfg.clusters {
-        let marker = if cfg.active.as_deref() == Some(name.as_str()) {
-            "*"
-        } else {
-            ""
-        };
-        println!("{:<8} {:<16} {}", marker, name, entry.url);
-    }
+    let rows: Vec<ClusterTableRow> = cfg
+        .clusters
+        .iter()
+        .map(|(name, entry)| {
+            let marker = if cfg.active.as_deref() == Some(name.as_str()) {
+                "*"
+            } else {
+                ""
+            };
+            ClusterTableRow {
+                active: marker.to_string(),
+                name: name.clone(),
+                url: entry.url.clone(),
+            }
+        })
+        .collect();
+    println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
     Ok(())
+}
+
+#[derive(Tabled)]
+struct ClusterTableRow {
+    #[tabled(rename = "ACTIVE")]
+    active: String,
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "URL")]
+    url: String,
 }
 
 /// Switch active cluster.

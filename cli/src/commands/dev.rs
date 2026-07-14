@@ -5,6 +5,8 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use crate::config;
 use crate::util::container_bin;
@@ -33,6 +35,18 @@ const DEV_ENV_VARS: &[EnvVar] = &[
     EnvVar { key: "GITHUB_CLIENT_SECRET", description: "GitHub OAuth secret", default: None, secret: true },
     EnvVar { key: "SEED_AGENTS", description: "Auto-deploy these images on start", default: None, secret: false },
 ];
+
+#[derive(Tabled)]
+struct EnvVarTableRow {
+    #[tabled(rename = "")]
+    num: String,
+    #[tabled(rename = "KEY")]
+    key: String,
+    #[tabled(rename = "VALUE")]
+    value: String,
+    #[tabled(rename = "DESCRIPTION")]
+    description: String,
+}
 
 struct DevEnv {
     vars: HashMap<String, String>,
@@ -65,17 +79,27 @@ impl DevEnv {
     fn print(&self) {
         let path = dev_env_path();
         println!("\nConfiguration ({}):", path.display());
-        for (i, ev) in DEV_ENV_VARS.iter().enumerate() {
-            let display = match self.vars.get(ev.key) {
-                Some(v) if ev.secret && v.len() > 8 => {
-                    format!("{}...{}", &v[..4], &v[v.len()-4..])
+        let rows: Vec<EnvVarTableRow> = DEV_ENV_VARS
+            .iter()
+            .enumerate()
+            .map(|(i, ev)| {
+                let display = match self.vars.get(ev.key) {
+                    Some(v) if ev.secret && v.len() > 8 => {
+                        format!("{}...{}", &v[..4], &v[v.len()-4..])
+                    }
+                    Some(_v) if ev.secret => "****".to_string(),
+                    Some(v) => v.clone(),
+                    None => "(not set)".to_string(),
+                };
+                EnvVarTableRow {
+                    num: format!("{}.", i + 1),
+                    key: ev.key.to_string(),
+                    value: display,
+                    description: ev.description.to_string(),
                 }
-                Some(_v) if ev.secret => "****".to_string(),
-                Some(v) => v.clone(),
-                None => "(not set)".to_string(),
-            };
-            println!("  {}. {:<25} {:<30} # {}", i + 1, ev.key, display, ev.description);
-        }
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
         println!();
     }
 

@@ -1,20 +1,30 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use nasiko_utils::display::{opt_or, trunc};
 use serde::{Deserialize, Serialize};
+use tabled::Tabled;
 
+use crate::commands::tui::opt_endpoint;
 use crate::config;
 
 // ─── CP session types (mirrors cp-lib/src/chat/models.rs) ───────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Tabled)]
 pub struct CpSession {
+    #[tabled(rename = "ID")]
     pub session_id: String,
+    #[tabled(skip)]
     pub agent_url: Option<String>,
-    pub title: String,
-    pub created_at: String,
-    pub updated_at: String,
+    #[tabled(rename = "AGENT", display("opt_or", "orchestrator"))]
     pub agent_name: Option<String>,
+    #[tabled(rename = "UPDATED", display("trunc", 19))]
+    pub updated_at: String,
+    #[tabled(rename = "TITLE")]
+    pub title: String,
+    #[tabled(skip)]
+    pub created_at: String,
+    #[tabled(skip)]
     pub last_message: Option<String>,
 }
 
@@ -33,13 +43,19 @@ pub struct CpMessage {
 
 // ─── Local session types (for direct-agent mode) ────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Tabled)]
 pub struct LocalSession {
+    #[tabled(rename = "ID")]
     pub id: String,
+    #[tabled(skip)]
     pub context_id: String,
+    #[tabled(rename = "ENDPOINT", display = "opt_endpoint")]
     pub endpoint: String,
+    #[tabled(rename = "CREATED", display("trunc", 19))]
     pub created_at: String,
+    #[tabled(rename = "TITLE")]
     pub title: String,
+    #[tabled(skip)]
     pub messages: Vec<LocalMessage>,
 }
 
