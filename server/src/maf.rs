@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/maf/workflow/{id}", get(get_maf).put(update_maf).delete(delete_maf))
         .route("/maf/workflow/{id}/run", post(run_workflow))
         .route("/maf/workflow/{id}/executions", get(list_executions))
+        .route("/maf/executions", get(list_all_executions))
         .route("/maf/execution/{id}", get(get_execution))
 }
 
@@ -122,6 +123,31 @@ struct ExecRow {
     created_at: DateTime<Utc>,
 }
 
+/// Same shape as ExecRow, plus the parent workflow's current name/status —
+/// fetched via LEFT JOIN so it's populated whether the workflow is active,
+/// soft-deleted, or (defensively) its maf_id has gone missing entirely.
+#[derive(Debug, sqlx::FromRow)]
+struct ExecWithWorkflowRow {
+    id: Uuid,
+    execution_number: i64,
+    maf_id: Option<Uuid>,
+    user_id: Uuid,
+    status: String,
+    attempt_count: i32,
+    max_attempts: i32,
+    tokens_used: i64,
+    started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+    duration_ms: Option<i64>,
+    output: Option<String>,
+    step_results: Option<String>,
+    error: Option<String>,
+    created_at: DateTime<Utc>,
+    workflow_name: Option<String>,
+    /// "active" | "deleted", or None if the workflow row itself is gone.
+    workflow_status: Option<String>,
+}
+
 // ─── Response types ────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -192,6 +218,53 @@ fn exec_row_to_response(row: ExecRow) -> ExecResponse {
         step_results,
         error: row.error,
         created_at: row.created_at,
+    }
+}
+
+#[derive(Serialize)]
+struct ExecWithWorkflowResponse {
+    id: Uuid,
+    execution_number: i64,
+    maf_id: Option<Uuid>,
+    user_id: Uuid,
+    status: String,
+    attempt_count: i32,
+    max_attempts: i32,
+    tokens_used: i64,
+    started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+    duration_ms: Option<i64>,
+    output: Option<String>,
+    step_results: Option<serde_json::Value>,
+    error: Option<String>,
+    created_at: DateTime<Utc>,
+    workflow_name: Option<String>,
+    workflow_status: Option<String>,
+}
+
+fn exec_with_workflow_row_to_response(row: ExecWithWorkflowRow) -> ExecWithWorkflowResponse {
+    let step_results = row
+        .step_results
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    ExecWithWorkflowResponse {
+        id: row.id,
+        execution_number: row.execution_number,
+        maf_id: row.maf_id,
+        user_id: row.user_id,
+        status: row.status,
+        attempt_count: row.attempt_count,
+        max_attempts: row.max_attempts,
+        tokens_used: row.tokens_used,
+        started_at: row.started_at,
+        completed_at: row.completed_at,
+        duration_ms: row.duration_ms,
+        output: row.output,
+        step_results,
+        error: row.error,
+        created_at: row.created_at,
+        workflow_name: row.workflow_name,
+        workflow_status: row.workflow_status,
     }
 }
 
@@ -756,6 +829,51 @@ async fn list_executions(
     match rows {
         Ok(data) => {
             let items: Vec<ExecResponse> = data.into_iter().map(exec_row_to_response).collect();
+            ok_json(StatusCode::OK, crate::Paginated::new(items), "Executions retrieved successfully")
+        }
+        Err(e) => internal_err(e),
+    }
+}
+
+// ─── 8b. GET /maf/executions ──────────────────────────────────────────────
+// Every execution the caller has ever run, across every workflow — unlike
+// list_executions (scoped to one workflow, and 404s once that workflow is
+// deleted since it gates through fetch_maf's active-only check), this queries
+// maf_executions directly by user_id, so a deleted workflow's runs still show
+// up here. workflow_status tells the caller which ones are for workflows that
+// no longer exist in the active list.
+
+async fn list_all_executions(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(q): Query<ListQuery>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&claims) {
+        Some(u) => u,
+        None => return unauthorized(),
+    };
+
+    let rows = sqlx::query_as::<_, ExecWithWorkflowRow>(
+        r#"SELECT e.id, e.execution_number, e.maf_id, e.user_id, e.status, e.attempt_count,
+                  e.max_attempts, e.tokens_used, e.started_at, e.completed_at, e.duration_ms,
+                  e.output, e.step_results::text AS step_results, e.error, e.created_at,
+                  m.name AS workflow_name, m.status AS workflow_status
+           FROM maf_executions e
+           LEFT JOIN mafs m ON m.id = e.maf_id
+           WHERE e.user_id = $1
+           ORDER BY e.created_at DESC
+           LIMIT $2 OFFSET $3"#,
+    )
+    .bind(user_id)
+    .bind(q.limit.min(50))
+    .bind(q.offset)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(data) => {
+            let items: Vec<ExecWithWorkflowResponse> =
+                data.into_iter().map(exec_with_workflow_row_to_response).collect();
             ok_json(StatusCode::OK, crate::Paginated::new(items), "Executions retrieved successfully")
         }
         Err(e) => internal_err(e),
