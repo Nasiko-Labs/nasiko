@@ -237,7 +237,7 @@ pub const STANCES: [&str; 3] = ["allow", "ask", "block"];
 /// `GET /agents/{id}/connectors` view: connectors this agent can use, with
 /// per-agent enabled + connected status.
 pub async fn list_connectors_view(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<Value> {
-    let connectors = repo::list_accessible_connectors(&state.db, user_id).await?;
+    let connectors = state.authorizer.list_accessible_connectors(&state.db, user_id).await?;
     let access = repo::get_agent_connector_access(&state.db, user_id, agent_id).await?;
     let enabled_map: HashMap<Uuid, bool> = access.into_iter().map(|r| (r.connector_id, r.enabled)).collect();
     let connected: HashSet<Uuid> = repo::list_user_connections(&state.db, user_id, Some("ACTIVE"))
@@ -273,7 +273,7 @@ pub async fn set_connector_access_view(
     connector_id: Uuid,
     enabled: bool,
 ) -> Result<Value> {
-    if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
         return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
     }
     let existing_rules = repo::get_agent_connector_access_row(&state.db, user_id, agent_id, connector_id)
@@ -294,7 +294,7 @@ pub async fn list_connector_tools_view(
     agent_id: Uuid,
     connector_id: Uuid,
 ) -> Result<Value> {
-    if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
         return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
     }
     let perms = load_permission_context(state, user_id, agent_id).await?;
@@ -395,7 +395,7 @@ pub async fn bulk_update_tools(
 
     let mut applied: Vec<Value> = Vec::new();
     for (connector_id, patterns) in by_connector {
-        if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+        if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
             return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
         }
         let enabled = repo::get_agent_connector_access_row(&state.db, user_id, agent_id, connector_id)

@@ -41,7 +41,7 @@ pub enum ConnectOutcome {
 pub async fn connect_service(state: &McpState, user_id: Uuid, input: ConnectInput) -> Result<ConnectOutcome> {
     let connector = resolve_target(state, user_id, &input).await?;
 
-    if !repo::can_access_connector(&state.db, user_id, connector.id).await? {
+    if !state.authorizer.can_access_connector(&state.db, user_id, connector.id).await? {
         return Err(McpError::Forbidden("you do not have access to this connector".into()));
     }
 
@@ -168,7 +168,7 @@ async fn composio_connect(
 /// `GET /api/mcp/connections` — the caller's connections, syncing pending ones.
 pub async fn list_connections_view(state: &McpState, user_id: Uuid) -> Result<Value> {
     // Map connector id → connector for names / auth_config_id.
-    let connectors: HashMap<Uuid, McpConnector> = repo::list_accessible_connectors(&state.db, user_id)
+    let connectors: HashMap<Uuid, McpConnector> = state.authorizer.list_accessible_connectors(&state.db, user_id)
         .await?
         .into_iter()
         .map(|c| (c.id, c))

@@ -20,6 +20,7 @@
 //! functions exposed here.
 
 pub mod aggregator;
+pub mod authorizer;
 pub mod cache;
 pub mod catalog;
 pub mod config;
@@ -43,6 +44,7 @@ pub mod webhooks;
 pub use permissions::PermissionContext;
 pub use session::ResolvedSession;
 
+pub use authorizer::{ConnectorAuthorizer, OssConnectorAuthorizer};
 pub use config::McpConfig;
 pub use error::{McpError, Result};
 pub use injector::McpInjector;

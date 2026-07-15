@@ -186,6 +186,7 @@ mod tests {
                 oauth_state_signing_key: "test".to_string(),
             },
             providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
+            authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
         }
     }
 

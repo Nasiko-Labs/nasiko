@@ -30,7 +30,7 @@ fn auth_flow_for(connector: &repo::McpConnector) -> &'static str {
 
 /// `GET /api/mcp/catalog` — connectable services (composio ∪ accessible custom).
 pub async fn get_catalog_view(state: &McpState, user_id: Uuid) -> Result<Value> {
-    let connectors = repo::list_accessible_connectors(&state.db, user_id).await?;
+    let connectors = state.authorizer.list_accessible_connectors(&state.db, user_id).await?;
     let services: Vec<Value> = connectors
         .iter()
         .map(|c| {

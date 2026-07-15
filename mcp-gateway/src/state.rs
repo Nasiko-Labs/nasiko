@@ -6,9 +6,12 @@
 //! pooled `reqwest::Client` the rest of the server already shares — so there is
 //! no duplicated infrastructure.
 
+use std::sync::Arc;
+
 use nasiko_config::Config;
 use sqlx::PgPool;
 
+use crate::authorizer::{ConnectorAuthorizer, OssConnectorAuthorizer};
 use crate::config::McpConfig;
 use crate::provider::Providers;
 
@@ -25,6 +28,9 @@ pub struct McpState {
     /// Tool backends: the Composio Tool Router client (when configured) + the
     /// shared generic MCP transport.
     pub providers: Providers,
+    /// Layer-1 connector reachability. Default = owner ∪ user/public grant; an
+    /// edition can swap a richer impl at startup.
+    pub authorizer: Arc<dyn ConnectorAuthorizer>,
 }
 
 impl McpState {
@@ -44,6 +50,7 @@ impl McpState {
             guarded_http_client: crate::net::guarded_http_client(),
             config: mcp_config,
             providers,
+            authorizer: Arc::new(OssConnectorAuthorizer),
         }
     }
 }

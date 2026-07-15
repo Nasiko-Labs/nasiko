@@ -282,7 +282,7 @@ pub async fn update_connector(
 
 /// `GET /api/mcp/connectors` — custom connectors visible to the caller.
 pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Value> {
-    let connectors = repo::list_accessible_mcp_connectors(&state.db, user_id).await?;
+    let connectors = state.authorizer.list_accessible_mcp_connectors(&state.db, user_id).await?;
     let data: Vec<Value> = connectors
         .iter()
         .map(|c| {
@@ -338,6 +338,61 @@ async fn owned_shareable(state: &McpState, caller: Uuid, is_admin: bool, connect
     Ok(connector)
 }
 
+/// Owner/admin-gated grant write, generic over `grant_type`/`grantee_id` (raw
+/// strings) so an edition can add grant kinds without this crate knowing them.
+/// `grantee_id` must already be resolved (a target id, or '*' for public).
+pub async fn create_share_grant(
+    state: &McpState,
+    caller: Uuid,
+    is_admin: bool,
+    connector_id: Uuid,
+    grant_type: &str,
+    grantee_id: &str,
+) -> Result<Value> {
+    let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
+    let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
+    tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "shared connector");
+    Ok(json!({ "grant_id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
+}
+
+/// Owner/admin-gated grant revoke — deletes the grant AND the grantee's
+/// connection (fix #2), then drops affected permission caches. Generic over
+/// `grant_type`/`grantee_id`. Invalidates every pair referencing the connector
+/// (a safe superset — covers multi-user grant kinds without resolving members;
+/// access itself is a live DB read, so this only keeps caches fresh).
+pub async fn revoke_share_grant(
+    state: &McpState,
+    caller: Uuid,
+    is_admin: bool,
+    connector_id: Uuid,
+    grant_type: &str,
+    grantee_id: &str,
+) -> Result<()> {
+    let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
+    let removed = repo::revoke_grant_and_connection(&state.db, connector.id, grant_type, grantee_id).await?;
+    if !removed {
+        return Err(McpError::NotFound("no matching share to revoke".into()));
+    }
+    for (uid, aid) in repo::get_agent_pairs_for_connector(&state.db, connector.id).await? {
+        permissions::invalidate_permission_cache(state, uid, aid).await;
+    }
+    tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "revoked share");
+    Ok(())
+}
+
+/// Resolve a [`ShareTarget`] to `(grant_type, grantee_id, grantee_user)`.
+async fn resolve_target(state: &McpState, target: ShareTarget) -> Result<(&'static str, String, Option<Uuid>)> {
+    match target {
+        ShareTarget::Public => Ok((GrantType::Public.as_str(), PUBLIC_GRANTEE.to_string(), None)),
+        ShareTarget::User(username) => {
+            let uid = repo::resolve_username_to_user_id(&state.db, &username)
+                .await?
+                .ok_or_else(|| McpError::NotFound(format!("user '{username}' not found")))?;
+            Ok((GrantType::User.as_str(), uid.to_string(), Some(uid)))
+        }
+    }
+}
+
 /// Share a connector with a user (by username) or everyone.
 pub async fn share_connector(
     state: &McpState,
@@ -346,24 +401,12 @@ pub async fn share_connector(
     connector_id: Uuid,
     target: ShareTarget,
 ) -> Result<Value> {
-    let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
-
-    let (grant_type, grantee_id, grantee_user) = match target {
-        ShareTarget::Public => (GrantType::Public.as_str(), PUBLIC_GRANTEE.to_string(), None),
-        ShareTarget::User(username) => {
-            let uid = repo::resolve_username_to_user_id(&state.db, &username)
-                .await?
-                .ok_or_else(|| McpError::NotFound(format!("user '{username}' not found")))?;
-            (GrantType::User.as_str(), uid.to_string(), Some(uid))
-        }
-    };
-
-    let grant = repo::create_grant(&state.db, connector.id, grant_type, &grantee_id, caller).await?;
+    let (grant_type, grantee_id, grantee_user) = resolve_target(state, target).await?;
+    let view = create_share_grant(state, caller, is_admin, connector_id, grant_type, &grantee_id).await?;
     if let Some(uid) = grantee_user {
         crate::session::invalidate_session_cache(state, uid).await;
     }
-    tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "shared connector");
-    Ok(json!({ "grant_id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
+    Ok(view)
 }
 
 /// Revoke a share — deletes the grant AND the grantee's connection (fix #2).
@@ -374,40 +417,11 @@ pub async fn revoke_share(
     connector_id: Uuid,
     target: ShareTarget,
 ) -> Result<()> {
-    let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
-
-    let (grant_type, grantee_id, grantee_user) = match target {
-        ShareTarget::Public => (GrantType::Public.as_str(), PUBLIC_GRANTEE.to_string(), None),
-        ShareTarget::User(username) => {
-            let uid = repo::resolve_username_to_user_id(&state.db, &username)
-                .await?
-                .ok_or_else(|| McpError::NotFound(format!("user '{username}' not found")))?;
-            (GrantType::User.as_str(), uid.to_string(), Some(uid))
-        }
-    };
-
-    let removed = repo::revoke_grant_and_connection(&state.db, connector.id, grant_type, &grantee_id).await?;
-    if !removed {
-        return Err(McpError::NotFound("no matching share to revoke".into()));
-    }
+    let (grant_type, grantee_id, grantee_user) = resolve_target(state, target).await?;
+    revoke_share_grant(state, caller, is_admin, connector_id, grant_type, &grantee_id).await?;
     if let Some(uid) = grantee_user {
         crate::session::invalidate_session_cache(state, uid).await;
     }
-
-    // Defense in depth: drop the affected grantee's cached permission contexts
-    // for any agent that referenced this connector (mirrors delete_connector).
-    // Access itself is a live DB read (`can_access_connector`) and the manifest
-    // key self-invalidates when the connector drops out of the grantee's
-    // accessible set, so this isn't required for correctness today — it keeps
-    // revocation immediate even if either of those is ever changed to cache.
-    // A public revoke (`grantee_user == None`) affects every pair.
-    for (uid, aid) in repo::get_agent_pairs_for_connector(&state.db, connector.id).await? {
-        if grantee_user.is_none_or(|g| g == uid) {
-            permissions::invalidate_permission_cache(state, uid, aid).await;
-        }
-    }
-
-    tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "revoked share");
     Ok(())
 }
 

@@ -94,7 +94,7 @@ CREATE TRIGGER trg_mcp_connectors_updated_at
 CREATE TABLE mcp_connector_grants (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     connector_id  UUID NOT NULL REFERENCES mcp_connectors(id) ON DELETE CASCADE,
-    grant_type    TEXT NOT NULL CHECK (grant_type IN ('user', 'public')),
+    grant_type    TEXT NOT NULL CONSTRAINT chk_mcp_grants_grant_type CHECK (grant_type IN ('user', 'public')),
     grantee_id    TEXT NOT NULL,              -- a user id as text, or '*' for everyone
     granted_by    UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

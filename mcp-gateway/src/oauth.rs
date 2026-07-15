@@ -396,7 +396,7 @@ pub async fn load_accessible_oauth_connector(
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
-    if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
         return Err(McpError::Forbidden("you do not have access to this connector".into()));
     }
     if connector.auth_type.as_deref() != Some("oauth2") {

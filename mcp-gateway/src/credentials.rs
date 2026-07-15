@@ -21,7 +21,7 @@ use crate::types::{MCPServerConfig, ServerType};
 
 /// Build the ordered list of generic backends for `user_id`, credentials injected.
 pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Vec<MCPServerConfig>> {
-    let connectors = repo::list_accessible_mcp_connectors(&state.db, user_id).await?;
+    let connectors = state.authorizer.list_accessible_mcp_connectors(&state.db, user_id).await?;
     if connectors.is_empty() {
         return Ok(Vec::new());
     }
@@ -132,7 +132,7 @@ pub async fn authorize_connector(state: &McpState, user_id: Uuid, connector_id: 
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
-    if !repo::can_access_connector(&state.db, user_id, connector_id).await? {
+    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
         return Err(McpError::Forbidden("you do not have access to this connector".into()));
     }
     Ok(connector)

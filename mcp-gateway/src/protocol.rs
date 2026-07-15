@@ -11,7 +11,6 @@ use uuid::Uuid;
 use crate::aggregator;
 use crate::permissions::{self, PermissionContext, ToolAccess, toolkit_from_composio_slug};
 use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
-use crate::repo;
 use crate::router;
 use crate::session::{self, ResolvedSession};
 use crate::state::McpState;
@@ -127,7 +126,7 @@ pub async fn handle_tools_call(
 
     // ── Generic MCP tool: Layer 1 (reachability) then Layer 2 (decide) ─────
     if server.kind == ServerType::Mcp {
-        match repo::can_access_connector(&state.db, perms.user_id, server.connector_id).await {
+        match state.authorizer.can_access_connector(&state.db, perms.user_id, server.connector_id).await {
             Ok(true) => {}
             Ok(false) => {
                 return err(req_id, codes::TOOL_BLOCKED, format!("Connector for '{tool_name}' is not available."));
@@ -304,6 +303,7 @@ mod tests {
                 oauth_state_signing_key: "test".to_string(),
             },
             providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
+            authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
         }
     }
 
