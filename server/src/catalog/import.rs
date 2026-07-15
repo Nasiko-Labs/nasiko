@@ -258,9 +258,31 @@ pub(crate) async fn build_and_deploy(
     crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
     let container_name = match state.runtime.deploy(&spec).await {
-        Ok(status) => Some(status.container_id.to_string()),
+        Ok(status) => {
+            // Sibling deploy paths (agents/upload.rs, agents/update.rs) all mark
+            // the agent `running` with its resolved URL immediately after a
+            // successful deploy — this path never did, so the agent stayed
+            // `status:"registered"`/`url:null` forever even though its
+            // container was genuinely up (CAT-9).
+            let agent_url = crate::agents::resolve_agent_url(
+                &state.runtime,
+                &status,
+                &nasiko_runtime::ContainerId::from_uuid(agent_id),
+            )
+            .await;
+            let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
+                .bind(agent_id)
+                .bind(&agent_url)
+                .execute(&state.db)
+                .await;
+            Some(status.container_id.to_string())
+        }
         Err(e) => {
             tracing::warn!(agent_id = %agent_id, %e, "deploy after build failed");
+            let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
+                .bind(agent_id)
+                .execute(&state.db)
+                .await;
             None
         }
     };
@@ -743,9 +765,26 @@ async fn import_registry(
         crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
         let container_name = match state.runtime.deploy(&spec).await {
-            Ok(status) => Some(status.container_id.to_string()),
+            Ok(status) => {
+                let agent_url = crate::agents::resolve_agent_url(
+                    &state.runtime,
+                    &status,
+                    &nasiko_runtime::ContainerId::from_uuid(agent_id),
+                )
+                .await;
+                let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
+                    .bind(agent_id)
+                    .bind(&agent_url)
+                    .execute(&state.db)
+                    .await;
+                Some(status.container_id.to_string())
+            }
             Err(e) => {
                 tracing::warn!(agent_id = %agent_id, %e, "deploy after pull failed");
+                let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
+                    .bind(agent_id)
+                    .execute(&state.db)
+                    .await;
                 None
             }
         };
