@@ -75,13 +75,6 @@ fn not_found(resource: &str) -> axum::response::Response {
     err_json(StatusCode::NOT_FOUND, &format!("{resource} not found"))
 }
 
-// `fetch_exec` joins on the parent workflow being active, so this covers both
-// "no such execution" and "execution exists but its workflow is deleted/gone"
-// — those two cases are indistinguishable from one query, so both get this message.
-fn execution_not_found() -> axum::response::Response {
-    err_json(StatusCode::NOT_FOUND, "execution not found either workflow is deleted or not found")
-}
-
 fn forbidden(msg: &str) -> axum::response::Response {
     err_json(StatusCode::FORBIDDEN, msg)
 }
@@ -699,7 +692,7 @@ async fn get_result(
             ok_json(StatusCode::OK, exec_row_to_response(row), "Execution result retrieved successfully")
         }
         Ok(Some(_)) => forbidden("not owned by caller"),
-        Ok(None) => execution_not_found(),
+        Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
     }
 }
@@ -767,7 +760,7 @@ async fn get_execution(
             ok_json(StatusCode::OK, exec_row_to_response(row), "Execution retrieved successfully")
         }
         Ok(Some(_)) => forbidden("not owned by caller"),
-        Ok(None) => execution_not_found(),
+        Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
     }
 }
@@ -893,17 +886,12 @@ async fn fetch_maf(db: &sqlx::PgPool, id: Uuid) -> Result<Option<MafRow>, sqlx::
     .await
 }
 
-// Inner-joins the parent workflow and requires it to still be active, so an
-// execution whose workflow was soft-deleted (or, via cascade, hard-deleted —
-// maf_id then NULL) is treated as not found rather than leaking its result.
 async fn fetch_exec(db: &sqlx::PgPool, id: Uuid) -> Result<Option<ExecRow>, sqlx::Error> {
     sqlx::query_as::<_, ExecRow>(
-        r#"SELECT e.id, e.execution_number, e.maf_id, e.user_id, e.status, e.attempt_count,
-                  e.max_attempts, e.tokens_used, e.started_at, e.completed_at, e.duration_ms,
-                  e.output, e.step_results::text AS step_results, e.error, e.created_at
-           FROM maf_executions e
-           INNER JOIN mafs m ON m.id = e.maf_id
-           WHERE e.id = $1 AND m.status = 'active'"#,
+        r#"SELECT id, execution_number, maf_id, user_id, status, attempt_count, max_attempts, tokens_used,
+                  started_at, completed_at, duration_ms, output,
+                  step_results::text AS step_results, error, created_at
+           FROM maf_executions WHERE id = $1"#,
     )
     .bind(id)
     .fetch_optional(db)

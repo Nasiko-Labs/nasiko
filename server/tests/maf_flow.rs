@@ -693,7 +693,7 @@ async fn test_deleted_maf_cannot_be_run() {
 
 #[tokio::test]
 #[serial]
-async fn test_execution_endpoints_404_after_workflow_deleted() {
+async fn test_execution_endpoints_survive_workflow_deletion() {
     let server = common::TestServer::start().await;
     let user_id = Uuid::new_v4();
     seed_user(&server, user_id).await;
@@ -711,9 +711,12 @@ async fn test_execution_endpoints_404_after_workflow_deleted() {
     .unwrap();
     let maf_id = maf["data"]["id"].as_str().unwrap();
 
-    // Run it while the workflow still exists — execution history should
+    // Run it while the workflow still exists — execution history must
     // survive the soft-delete below (maf_executions.maf_id is ON DELETE SET NULL,
-    // and the workflow row itself is never hard-deleted).
+    // and the workflow row itself is never hard-deleted). Only starting a NEW
+    // execution should require an active workflow — reading a past one's
+    // result must not, since a deleted workflow can still have real execution
+    // history a caller needs to see (e.g. an audit/history UI).
     let run_body: Value = auth(
         server.client.post(server.url(&format!("/api/maf/workflow/{maf_id}/run"))),
         user_id,
@@ -735,9 +738,7 @@ async fn test_execution_endpoints_404_after_workflow_deleted() {
     .await
     .unwrap();
 
-    let expected_message = "execution not found either workflow is deleted or not found";
-
-    // GET /maf/workflow/result/{exec_id} → 404, workflow is gone
+    // GET /maf/workflow/result/{exec_id} → still 200, execution result unaffected
     let result_res = auth(
         server.client.get(server.url(&format!("/api/maf/workflow/result/{exec_id}"))),
         user_id,
@@ -745,12 +746,11 @@ async fn test_execution_endpoints_404_after_workflow_deleted() {
     .send()
     .await
     .unwrap();
-    assert_eq!(result_res.status(), 404);
+    assert_eq!(result_res.status(), 200);
     let result_body: Value = result_res.json().await.unwrap();
-    assert_eq!(result_body["message"], expected_message);
-    assert!(result_body["data"].is_null());
+    assert_eq!(result_body["data"]["id"], exec_id);
 
-    // GET /maf/execution/{id} → same 404
+    // GET /maf/execution/{id} → same, still 200
     let exec_res = auth(
         server.client.get(server.url(&format!("/api/maf/execution/{exec_id}"))),
         user_id,
@@ -758,10 +758,19 @@ async fn test_execution_endpoints_404_after_workflow_deleted() {
     .send()
     .await
     .unwrap();
-    assert_eq!(exec_res.status(), 404);
+    assert_eq!(exec_res.status(), 200);
     let exec_body: Value = exec_res.json().await.unwrap();
-    assert_eq!(exec_body["message"], expected_message);
-    assert!(exec_body["data"].is_null());
+    assert_eq!(exec_body["data"]["id"], exec_id);
+
+    // But starting a NEW run against the now-deleted workflow must still 404.
+    let run_after_delete = auth(
+        server.client.post(server.url(&format!("/api/maf/workflow/{maf_id}/run"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(run_after_delete.status(), 404);
 
     server.cleanup().await;
 }

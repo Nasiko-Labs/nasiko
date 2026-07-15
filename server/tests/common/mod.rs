@@ -161,12 +161,6 @@ impl TestServer {
             .await
             .expect("connect to test db");
 
-        // `CREATE DATABASE` with no TEMPLATE clause clones Postgres's default
-        // `template1`, which is empty — the schema is never inherited from
-        // `nasiko_dev` (or wherever `pg_admin_url()` points), so every fresh
-        // per-test database needs migrations applied explicitly here.
-        AppState::run_migrations(&db).await;
-
         let s3_ep = s3_endpoint();
         let mut config = test_config(db_url, redis_url(), s3_ep.clone());
         configure(&mut config);
