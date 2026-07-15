@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use a2a::Message as A2aMessage;
 use a2a::{
-    A2AError, Artifact, AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill,
-    Part, PartContent, Role, StreamResponse, TaskArtifactUpdateEvent, TaskState, TaskStatus,
-    TaskStatusUpdateEvent, TRANSPORT_PROTOCOL_JSONRPC, new_artifact_id, new_message_id,
+    A2AError, AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, Artifact,
+    Part, PartContent, Role, StreamResponse, TRANSPORT_PROTOCOL_JSONRPC, TaskArtifactUpdateEvent,
+    TaskState, TaskStatus, TaskStatusUpdateEvent, new_artifact_id, new_message_id,
 };
 use a2a_server::{
     AgentExecutor, DefaultRequestHandler, ExecutorContext, InMemoryTaskStore, StaticAgentCard,
@@ -23,11 +23,16 @@ use rig::tool::{ToolDyn, ToolSet};
 mod telemetry;
 mod tools;
 
-use tools::{CompareDiff, FindReferences, GetCommit, ListCommits, ReadFile, SearchPrs};
+use tools::{CompareDiff, FindReferences, GetCommit, ListCommits, ReadFile, SearchPrs, short_hash};
 
-/// Max tool-calling turns per request: list_commits, compare_diff, search_prs, then a
-/// final answer comfortably fit in this budget even one call at a time.
+/// Upper bound on LLM tool-calling turns per request. The flow (survey the window, triage
+/// commits with get_commit, deep-dive risky ones with read_file/find_references) can make
+/// many calls; this caps a runaway while leaving ample room for a normal digest.
 const MAX_TOOL_TURNS: usize = 20;
+
+/// Sampling temperature for the digest — low, because this is factual reporting, not creative
+/// text.
+const COMPLETION_TEMPERATURE: f64 = 0.2;
 
 struct RepoWatchAgent {
     model: String,
@@ -112,7 +117,10 @@ async fn send_completion(
         tracing::Span::current().set_parent(cx.clone());
     }
 
-    let response = req.send().await.map_err(|e| format!("LLM API error: {e}"))?;
+    let response = req
+        .send()
+        .await
+        .map_err(|e| format!("LLM API error: {e}"))?;
 
     if let Some(usage) = &response.raw_response.usage {
         let span = tracing::Span::current();
@@ -144,9 +152,10 @@ fn system_prompt(default_repos: &[String], now: chrono::DateTime<chrono::Utc>) -
 diffs, and pull requests — since a point in time, and flag anything risky, across one or \
 more repos in a single request. You MUST use your tools; never answer from memory.\n\n\
 {default_line}\
-Every tool takes `repos` as a list of \"owner/name\" strings (e.g. \
-[\"Nasiko-Labs/nasiko-cloud-rs\"]) — pass every repo the user asked about in one call rather \
-than calling a tool once per repo.\n\n\
+The window-survey tools (list_commits, compare_diff, search_prs) take `repos` as a list of \
+\"owner/name\" strings (e.g. [\"Nasiko-Labs/nasiko-cloud-rs\"]) — pass every repo the user \
+asked about in one call. The per-commit tools (get_commit, read_file, find_references) take a \
+single `repo` string.\n\n\
 The current UTC time is {now_str}. If the user doesn't give an explicit time window, report \
 on the last 12 hours — pass since={since_12h} (ISO-8601) to time-windowed tool calls. Never \
 guess the current time; use the values given here.\n\n\
@@ -158,18 +167,18 @@ STEP 2 — Identify RISKY commits. A commit is risky if it touches: auth/authori
 secrets/credentials handling, database migrations (*.sql), dependency manifests \
 (Cargo.toml/Cargo.lock, package.json, pyproject.toml), Dockerfiles, or CI workflows \
 (.github/workflows/*). To attribute changed files to individual commits, call \
-get_commit(repo, sha) for each commit in the window (it returns that commit's file list + \
-parent_sha cheaply). Commits touching none of those areas need NO deep-dive — the window \
-summary is enough for them.\n\n\
+get_commit(repo, commit_hash) for each commit in the window (it returns that commit's file \
+list + parent_hash cheaply). Commits touching none of those areas need NO deep-dive — the \
+window summary is enough for them.\n\n\
 STEP 3 — Deep-dive ONLY the risky commits. For each risky commit, for its SIGNIFICANT changed \
 files (cap ~5 most-changed per commit — say when you rely on stats-only for the rest, never \
-skip silently): call read_file(repo, path, git_ref) TWICE — at the commit sha (AFTER) and at \
-parent_sha (BEFORE) — and read the real code, not just the patch. Then for each changed \
+skip silently): call read_file(repo, path, git_ref) TWICE — at the commit hash (AFTER) and at \
+parent_hash (BEFORE) — and read the real code, not just the patch. Then for each changed \
 symbol call find_references(repo, symbol) to ground what else is impacted.\n\n\
 Then respond with a markdown digest (note which repo each item belongs to when covering more \
 than one). Sections:\n\
 ## New Commits\n\
-One line per commit: short sha, message, author.\n\
+One line per commit: short hash, message, author.\n\
 ## File-Level Changes\n\
 Plain-English summary of the significant changes across the window.\n\
 ## PR Activity\n\
@@ -187,14 +196,17 @@ dep bump implies dependent crates). Mark each \"must change\" (reference to a ch
 signature/removed symbol, or a structural rule) vs \"worth checking\". Never assert impact \
 without a signal. If no commit is risky, say so plainly — don't invent risk.\n\n\
 If the user explicitly names a single commit, skip the window survey and deep-dive just that \
-commit (get_commit → read_file before/after → find_references).\n\n\
+commit (get_commit → read_file at the commit hash and parent_hash → find_references).\n\n\
 If there is no activity in the window at all, say so plainly instead of forcing the sections. \
 You MUST use tools for every claim; never answer from memory."
     )
 }
 
 impl AgentExecutor for RepoWatchAgent {
-    fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    fn execute(
+        &self,
+        ctx: ExecutorContext,
+    ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         // Join the caller's W3C trace (the platform forwards `traceparent` through the
         // agent proxy/orchestrator). Without adopting it, the OTel SDK mints a fresh root
         // trace id per request and the control plane's session-trace view can't find this
@@ -261,7 +273,7 @@ impl AgentExecutor for RepoWatchAgent {
                     .preamble(system.clone())
                     .messages(history.clone())
                     .tools(tool_defs.clone())
-                    .temperature(0.2);
+                    .temperature(COMPLETION_TEMPERATURE);
 
                 let response = match send_completion(req, &model_name, remote_cx.as_ref()).await {
                     Ok(r) => r,
@@ -339,7 +351,7 @@ impl AgentExecutor for RepoWatchAgent {
                     .completion_request(nudge)
                     .preamble(system.clone())
                     .messages(history.clone())
-                    .temperature(0.2);
+                    .temperature(COMPLETION_TEMPERATURE);
 
                 match send_completion(req, &model_name, remote_cx.as_ref()).await {
                     Ok(response) => {
@@ -531,7 +543,7 @@ fn status_failed(task_id: &str, context_id: &str, error: &str) -> StreamResponse
 }
 
 /// Build a short human-readable status line for a tool call. Window tools carry a `repos`
-/// array; the per-commit tools carry a single `repo` plus a path/symbol/sha detail.
+/// array; the per-commit tools carry a single `repo` plus a path/symbol/commit_hash detail.
 fn extract_preview(args: &serde_json::Value) -> String {
     let s = |k: &str| args.get(k).and_then(|v| v.as_str());
 
@@ -539,7 +551,11 @@ fn extract_preview(args: &serde_json::Value) -> String {
     if let Some(repos) = args.get("repos").and_then(|v| v.as_array())
         && !repos.is_empty()
     {
-        return repos.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ");
+        return repos
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
     }
 
     // Per-commit tools: repo + one distinguishing detail.
@@ -550,9 +566,8 @@ fn extract_preview(args: &serde_json::Value) -> String {
         if let Some(symbol) = s("symbol") {
             return format!("{repo} `{symbol}`");
         }
-        if let Some(sha) = s("sha") {
-            let short = &sha[..7.min(sha.len())];
-            return format!("{repo} @{short}");
+        if let Some(commit_hash) = s("commit_hash") {
+            return format!("{repo} @{}", short_hash(commit_hash));
         }
         return repo.to_string();
     }
