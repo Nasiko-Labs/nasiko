@@ -29,6 +29,16 @@ pub struct IdTokenClaims {
     /// for future role-mapping, not acted on today (see docs/OIDC_SSO_SETUP.md).
     #[serde(default)]
     pub roles: Option<Vec<String>>,
+    /// Entra Security Group Object IDs the user belongs to — only present
+    /// when the App Registration has Group Claims enabled (Token
+    /// configuration → Add groups claim), which is off by default. Used to
+    /// auto-assign role/team/department at login; see
+    /// `oidc_group_mappings` and `ee/server/src/oidc_group_mappings.rs`.
+    /// `None` (not an empty list) if the claim was omitted entirely — e.g.
+    /// group-overage tenants, where Entra requires a separate Graph API
+    /// call instead (not implemented; see docs/OIDC_SSO_SETUP.md).
+    #[serde(default)]
+    pub groups: Option<Vec<String>>,
     #[serde(default)]
     pub nonce: Option<String>,
 }
