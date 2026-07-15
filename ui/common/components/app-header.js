@@ -57,11 +57,18 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   }
 
   .nav-link-skel {
+    /* 21px bar + 7px margins = the 35px row a rendered .nav-link occupies,
+       so the nav doesn't shift when links load. */
     display: inline-block;
-    height: 24px;
+    height: 21px;
+    margin: 7px var(--space-sm);
     border-radius: var(--radius-sm);
-    background: var(--color-bg-base);
+    background: var(--color-border);
     animation: ah-skel-pulse 1.4s ease-in-out infinite;
+
+    @media (min-width: 1024px) {
+      margin: 7px var(--space-md);
+    }
 
     @media (prefers-reduced-motion: reduce) {
       animation: none;
@@ -74,7 +81,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     width: 96px;
     height: 20px;
     border-radius: var(--radius-sm);
-    background: var(--color-bg-base);
+    background: var(--color-border);
     flex-shrink: 0;
     animation: ah-skel-pulse 1.4s ease-in-out infinite;
 
@@ -123,8 +130,9 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 
   .brand-link {
     flex-shrink: 0;
+    font-family: var(--font-display);
     font-size: var(--font-size-base);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--color-text-main);
     text-decoration: none;
     overflow: hidden;
@@ -210,9 +218,13 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     min-width: 0;
     overflow: hidden;
     position: relative;
+    /* Fade the trailing edge so a horizontally scrollable nav reads as scrollable
+       instead of hard-clipping labels mid-word. */
+    mask-image: linear-gradient(to right, black calc(100% - var(--s-24)), transparent);
 
     @media (min-width: 1024px) {
       overflow: visible;
+      mask-image: none;
     }
   }
 
@@ -418,7 +430,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       clip: auto;
       white-space: normal;
       background: var(--color-primary);
-      color: white;
+      color: var(--color-on-primary);
       border-radius: var(--radius-md);
       font-size: var(--font-size-sm);
       font-weight: 600;
@@ -555,7 +567,7 @@ export class AppHeader extends HTMLElement {
     this.innerHTML = `
       <header class="bar" role="banner">
         <div class="center">
-          <span class="brand-link-skel" aria-hidden="true"></span>
+          ${this.getAttribute("brand-title") ? `<span class="brand-link-skel" aria-hidden="true"></span>` : ""}
           <nav class="nav" aria-label="Main navigation" aria-busy="true">
             <ul class="nav-list" role="list">
               ${widths.map((w) => `<li><span class="nav-link-skel" style="width:${w}px" aria-hidden="true"></span></li>`).join("")}

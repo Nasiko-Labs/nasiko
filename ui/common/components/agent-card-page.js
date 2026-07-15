@@ -306,12 +306,14 @@ class AgentCardPage extends HTMLElement {
 
   async #loadStats() {
     try {
-      const s = await fetchApi(`/observability/agent/${this.#agentId}/stats`);
+      // Same endpoint/shape as `nasiko observe stats`: {data:{project:{...}}}.
+      const resp = await fetchApi(`/observability/agent/${this.#agentId}/stats`);
+      const s = resp?.data?.project;
       const el = this.querySelector('#acp-stats');
       if (!el || !s) return;
 
-      const hasData = (s.total_requests != null && s.total_requests > 0) ||
-                      (s.total_cost != null && s.total_cost > 0);
+      const hasData = (s.trace_count != null && s.trace_count > 0) ||
+                      (s.cost_summary?.total?.cost > 0);
 
       if (!hasData) {
         el.innerHTML = `
@@ -336,10 +338,10 @@ class AgentCardPage extends HTMLElement {
       const fmtMs = (n) => n == null ? '—' : `${Math.round(n)} ms`;
 
       el.innerHTML = `
-        <div class="acp-stat"><div class="acp-stat-label">Total executions</div><div class="acp-stat-value">${fmtInt(s.total_requests)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">${fmtCost(s.total_cost)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">${fmtMs(s.p50_latency_ms)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">${fmtMs(s.p95_latency_ms)}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">Traces</div><div class="acp-stat-value">${fmtInt(s.trace_count)}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">${fmtCost(s.cost_summary?.total?.cost)}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">${fmtMs(s.latency_ms_p50)}</div></div>
+        <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">${fmtMs(s.latency_ms_p99)}</div></div>
       `;
     } catch {
       /* stats are optional — fail silently */
@@ -461,7 +463,7 @@ class AgentCardPage extends HTMLElement {
     }
 
     try {
-      const logs = await fetchApi(`/observability/agents/${this.#agentId}/logs?tail=${this.#logsTail}`);
+      const logs = await fetchApi(`/observability/agents/${this.#agentId}/logs?limit=${this.#logsTail}`);
       this.#logsLoaded = true;
 
       if (!logs || logs.length === 0) {

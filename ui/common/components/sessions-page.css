@@ -56,7 +56,7 @@ sessions-page:not(:defined) {
     &:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
 
@@ -101,7 +101,7 @@ sessions-page:not(:defined) {
 
     &:focus-visible {
       outline: none;
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
 
@@ -183,7 +183,7 @@ sessions-page:not(:defined) {
     &:focus-visible {
       opacity: 1;
       outline: none;
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
 

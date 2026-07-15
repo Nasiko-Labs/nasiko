@@ -1,4 +1,5 @@
 import styles from './usage-page.css' with { type: 'css' };
+import '/common/components/smart-table.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class UsagePage extends HTMLElement {

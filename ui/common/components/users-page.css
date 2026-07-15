@@ -54,7 +54,7 @@
     &:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
 
@@ -143,7 +143,7 @@
   .modal-form input:focus, .modal-form select:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
   .hint { font-size: var(--font-size-xs); color: var(--color-text-muted); margin: 0; }
   .form-actions {

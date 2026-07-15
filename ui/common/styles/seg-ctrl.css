@@ -28,5 +28,5 @@
 .seg-ctrl input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
 
 .seg-ctrl label:has(:checked) {
-  background: var(--color-primary); color: #fff; border-color: var(--color-primary);
+  background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary);
 }

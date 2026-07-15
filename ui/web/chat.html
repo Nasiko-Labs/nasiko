@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <script type="module" src="/navigation.js"></script>
+    <script type="module" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/chat-page.js"></script>
+  </head>
+  <body>
+    <app-header></app-header>
+    <chat-page>
+      <!-- Pre-upgrade skeleton; geometry rules live in common/styles/not-defined.css -->
+      <div class="chat-skel">
+        <div class="chat-skel__header">
+          <div class="skel-card__avatar chat-skel__avatar"></div>
+          <div class="chat-skel__info">
+            <div class="skel-card__line chat-skel__name"></div>
+            <div class="skel-card__line chat-skel__status"></div>
+          </div>
+        </div>
+        <div class="chat-skel__spacer"></div>
+        <div class="chat-skel__composer">
+          <div class="skel-block chat-skel__input"></div>
+        </div>
+      </div>
+    </chat-page>
+  </body>
+</html>

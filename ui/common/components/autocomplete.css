@@ -17,7 +17,7 @@
 
       &::placeholder { color: var(--color-text-muted); }
       &:hover { border-color: var(--color-primary); }
-      &:focus { border-color: var(--color-primary); outline: none; box-shadow: 0 0 0 3px var(--color-primary-ring); }
+      &:focus { border-color: var(--color-primary); outline: none; box-shadow: 0 0 0 2px var(--color-primary-ring); }
     }
     .ac-icon {
       position: absolute;

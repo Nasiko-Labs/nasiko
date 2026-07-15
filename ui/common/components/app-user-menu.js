@@ -26,7 +26,7 @@ styles.replaceSync(`@scope (app-user-menu) {
         background: color-mix(in srgb, var(--color-primary) 15%, transparent);
         box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 30%, transparent);
       }
-      &:focus { box-shadow: 0 0 0 3px var(--color-primary-ring); }
+      &:focus { box-shadow: 0 0 0 2px var(--color-primary-ring); }
       &.is-open {
         border-color: var(--color-primary);
         box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 22%, transparent);
@@ -44,7 +44,7 @@ styles.replaceSync(`@scope (app-user-menu) {
       height: 100%;
       border-radius: calc(var(--radius-md) - 2px);
       background: var(--color-primary);
-      color: white;
+      color: var(--color-on-primary);
       display: flex;
       align-items: center;
       justify-content: center;

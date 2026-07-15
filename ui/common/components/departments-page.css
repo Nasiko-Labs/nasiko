@@ -71,7 +71,7 @@
     &:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
   .modal-form textarea {

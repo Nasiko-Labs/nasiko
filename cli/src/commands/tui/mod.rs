@@ -27,11 +27,11 @@ pub(crate) fn opt_endpoint(endpoint: &String) -> String {
     }
 }
 
-pub fn run_tui(endpoint: &str, resume_id: Option<&str>) -> Result<()> {
+pub fn run_tui(endpoint: &str, resume_id: Option<&str>, target_label: &str) -> Result<()> {
     let (session, history) = if let Some(id) = resume_id {
         session::resume_session(id, endpoint)?
     } else {
-        (session::start_session(endpoint)?, Vec::new())
+        (session::start_session(endpoint, target_label)?, Vec::new())
     };
 
     terminal::enable_raw_mode().context("failed to enable raw mode")?;

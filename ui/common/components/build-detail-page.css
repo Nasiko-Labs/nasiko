@@ -27,7 +27,7 @@
     flex-shrink: 0;
   }
   .step-num.done { background: var(--color-success-bg); color: var(--color-success); }
-  .step-num.active { background: var(--color-primary); color: white; }
+  .step-num.active { background: var(--color-primary); color: var(--color-on-primary); }
   .step-num.pending { background: var(--color-bg-base); color: var(--color-text-muted); }
   .step-num.failed { background: var(--color-error-bg); color: var(--color-error); }
   .step-name { font-size: var(--font-size-sm); font-weight: 500; flex: 1; }

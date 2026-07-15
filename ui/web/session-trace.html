@@ -3,17 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Nasiko</title>
+    <title>Nasiko — Session Trace</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
     <script type="module" src="/common/components/app-header.js"></script>
-    <script type="module" src="/common/components/builds-page.js"></script>
+    <script type="module" src="/common/components/session-trace-page.js"></script>
   </head>
   <body>
     <app-header></app-header>
-    <builds-page>
-      <div class="skel-block" style="height:300px;margin:var(--space-lg) 0;"></div>
-    </builds-page>
+    <session-trace-page trace-id="8a880df26caf4c12a0e2d5f898f49420">
+      <div class="skel-block" style="height:200px;margin:var(--space-lg) auto;max-width:900px;"></div>
+    </session-trace-page>
   </body>
 </html>

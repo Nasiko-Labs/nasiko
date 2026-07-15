@@ -238,37 +238,36 @@ class AgentDetailPage extends HTMLElement {
     if (!el) return;
 
     try {
-      const s = await fetchApi(`/observability/agent/${this.#agentId}/stats`);
+      // Same endpoint/shape as `nasiko observe stats`: {data:{project:{...}}}.
+      // Defaults to the last 24 h server-side when start_time is omitted.
+      const resp = await fetchApi(`/observability/agent/${this.#agentId}/stats`);
+      const p = resp?.data?.project || {};
       const fmt = (n, dec = 0) => (n == null ? '—' : (+n).toFixed(dec));
+      const fmtCost = (n) => {
+        if (n == null) return '—';
+        const v = +n;
+        if (v === 0) return '$0';
+        return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+      };
       el.innerHTML = `
         <div class="stats-grid">
           <div class="stat-card">
-            <div class="stat-label">Requests (24 h)</div>
-            <div class="stat-value">${fmt(s.total_requests)}</div>
-            <div class="stat-sub">since ${new Date(s.period_start).toLocaleDateString()}</div>
+            <div class="stat-label">Traces (24 h)</div>
+            <div class="stat-value">${p.trace_count == null ? '—' : Number(p.trace_count).toLocaleString()}</div>
+            <div class="stat-sub">completed agent invocations</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Error Rate</div>
-            <div class="stat-value" style="color:${s.error_rate > 0.1 ? 'var(--color-error)' : 'inherit'}">${fmt(s.error_rate * 100, 1)}%</div>
-            <div class="stat-sub">HTTP 4xx / 5xx</div>
+            <div class="stat-label">Latency</div>
+            <div class="stat-value">${p.latency_ms_p50 != null ? fmt(p.latency_ms_p50, 0) + ' ms' : '—'}</div>
+            <div class="stat-sub">p50 · p99 ${p.latency_ms_p99 != null ? fmt(p.latency_ms_p99, 0) + ' ms' : '—'}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Avg Latency</div>
-            <div class="stat-value">${fmt(s.avg_latency_ms, 0)} ms</div>
+            <div class="stat-label">Cost</div>
+            <div class="stat-value">${fmtCost(p.cost_summary?.total?.cost)}</div>
             <div class="stat-sub">
-              p50 ${s.p50_latency_ms != null ? fmt(s.p50_latency_ms, 0) + ' ms' : '—'} ·
-              p95 ${s.p95_latency_ms != null ? fmt(s.p95_latency_ms, 0) + ' ms' : '—'}
+              prompt ${fmtCost(p.cost_summary?.prompt?.cost)} ·
+              completion ${fmtCost(p.cost_summary?.completion?.cost)}
             </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">Input Tokens</div>
-            <div class="stat-value">${fmt(s.total_input_tokens)}</div>
-            <div class="stat-sub">source: ${s.source}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">Output Tokens</div>
-            <div class="stat-value">${fmt(s.total_output_tokens)}</div>
-            <div class="stat-sub">source: ${s.source}</div>
           </div>
         </div>
       `;

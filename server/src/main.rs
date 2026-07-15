@@ -7,7 +7,7 @@ use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "../ui/oss/"]
+#[folder = "../ui/web/"]
 struct OssAssets;
 
 #[derive(Embed)]

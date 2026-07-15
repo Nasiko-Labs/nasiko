@@ -10,15 +10,22 @@ export default {
       avg_latency_ms: 342.5,
       period_days: 30,
     }],
-    [{ method: "GET", path: /^\/api\/usage\/history/ }, [
-      { date: "2026-06-24", request_count: 210, total_tokens: 86000, total_cost_usd: 1.52 },
-      { date: "2026-06-25", request_count: 245, total_tokens: 96000, total_cost_usd: 1.78 },
-      { date: "2026-06-26", request_count: 198, total_tokens: 76000, total_cost_usd: 1.35 },
-      { date: "2026-06-27", request_count: 312, total_tokens: 122000, total_cost_usd: 2.21 },
-      { date: "2026-06-28", request_count: 278, total_tokens: 107000, total_cost_usd: 1.95 },
-      { date: "2026-06-29", request_count: 290, total_tokens: 108000, total_cost_usd: 1.88 },
-      { date: "2026-06-30", request_count: 309, total_tokens: 102000, total_cost_usd: 1.78 },
-    ]],
+    // Dates roll with "today" so the last-7-days chart always has bars.
+    [{ method: "GET", path: /^\/api\/usage\/history/ }, () => {
+      const counts = [210, 245, 198, 312, 278, 290, 309];
+      const tokens = [86000, 96000, 76000, 122000, 107000, 108000, 102000];
+      const costs = [1.52, 1.78, 1.35, 2.21, 1.95, 1.88, 1.78];
+      return counts.map((request_count, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        return {
+          date: d.toISOString().slice(0, 10),
+          request_count,
+          total_tokens: tokens[i],
+          total_cost_usd: costs[i],
+        };
+      });
+    }],
     [{ method: "GET", path: /^\/api\/usage\/by-agent/ }, {
       data: [
         { agent_name: "coding-agent", request_count: 842, total_input_tokens: 220000, total_output_tokens: 98000, total_tokens: 318000, total_cost_usd: 5.62, avg_latency_ms: 380 },

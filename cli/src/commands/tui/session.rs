@@ -181,10 +181,10 @@ pub fn list_cp_sessions(
 pub fn create_cp_session(
     base_url: &str,
     token: &str,
-    agent_url: &str,
+    agent_id: Option<&str>,
     title: &str,
 ) -> Result<CpSession> {
-    create_cp_session_with_id(base_url, token, agent_url, title, None)
+    create_cp_session_with_id(base_url, token, agent_id, title, None)
 }
 
 /// Create a CP session, optionally with a client-chosen `session_id`.
@@ -193,7 +193,7 @@ pub fn create_cp_session(
 pub fn create_cp_session_with_id(
     base_url: &str,
     token: &str,
-    agent_url: &str,
+    agent_id: Option<&str>,
     title: &str,
     session_id: Option<&str>,
 ) -> Result<CpSession> {
@@ -201,10 +201,10 @@ pub fn create_cp_session_with_id(
         ureq::config::Config::builder().timeout_global(None).build(),
     );
     let url = format!("{base_url}/api/chat/sessions");
-    let mut body = serde_json::json!({
-        "agent_url": agent_url,
-        "title": title,
-    });
+    let mut body = serde_json::json!({ "title": title });
+    if let Some(id) = agent_id {
+        body["agent_id"] = serde_json::Value::String(id.to_string());
+    }
     if let Some(sid) = session_id {
         body["session_id"] = serde_json::Value::String(sid.to_string());
     }
@@ -278,9 +278,16 @@ pub fn delete_cp_session(base_url: &str, token: &str, session_id: &str) -> Resul
 
 // ─── Unified helpers ────────────────────────────────────────────────────────
 
-pub fn start_session(endpoint: &str) -> Result<Session> {
+pub fn start_session(endpoint: &str, target_label: &str) -> Result<Session> {
     if let Some((base_url, token)) = cp_credentials(endpoint) {
-        let cp_session = create_cp_session(&base_url, &token, endpoint, "New chat")?;
+        // `target_label` is the catalog agent's name/UUID as the user typed
+        // it — empty for the orchestrator, or a raw URL when the user passed
+        // one directly, neither of which the server can resolve to an agent row.
+        let agent_id = (!target_label.is_empty()
+            && !target_label.starts_with("http://")
+            && !target_label.starts_with("https://"))
+        .then_some(target_label);
+        let cp_session = create_cp_session(&base_url, &token, agent_id, "New chat")?;
         Ok(Session {
             id: cp_session.session_id.clone(),
             context_id: cp_session.session_id.clone(),

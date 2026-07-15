@@ -26,7 +26,7 @@ agent-steps .steps-header:hover {
 }
 agent-steps .steps-header:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--color-primary-ring);
+  box-shadow: 0 0 0 2px var(--color-primary-ring);
 }
 
 agent-steps .steps-chevron {
@@ -89,7 +89,7 @@ agent-steps .step-summary:hover {
 }
 agent-steps .step-summary:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--color-primary-ring);
+  box-shadow: 0 0 0 2px var(--color-primary-ring);
 }
 
 agent-steps .step-chevron {

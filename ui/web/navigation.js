@@ -42,15 +42,10 @@ window.fetchFlowDetail = async (flowId) => {
 };
 
 window.fetchTraceDetail = async (traceId) => {
-  // Server route: /api/observability/trace/{id}, response envelope {data:{trace,spans}}.
-  // Normalize to the flat {spans, duration_ms} shape session-trace-page renders.
+  // Server route: GET /api/observability/trace/{id} (same as `nasiko observe trace`).
+  // Envelope {data:{trace}}; trace.spans is a nested tree (children embedded).
   const resp = await fetchApi(`/observability/trace/${traceId}`);
-  const d = resp.data || resp;
-  return {
-    ...d,
-    spans: d.spans || [],
-    duration_ms: d.duration_ms ?? d.trace?.latency_ms ?? 0,
-  };
+  return resp.data?.trace ?? resp.trace ?? resp;
 };
 
 window.fetchUsageSummary = async () => {

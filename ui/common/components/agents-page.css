@@ -74,7 +74,7 @@ agents-page:not(:defined) {
   .search-wrap input:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
   .search-wrap input::placeholder { color: var(--color-text-muted); }
   .search-wrap input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
@@ -111,7 +111,7 @@ agents-page:not(:defined) {
   .filter-select:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
 
   /* ── Grid ────────────────────────────────────────────────────────────────── */
@@ -236,7 +236,7 @@ agents-page:not(:defined) {
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */
   .skeleton-card {
-    min-height: 130px;
+    min-height: 147px; /* matches a rendered two-line card so the grid doesn't shift on load */
   }
   .skel-dot {
     width: 48px;

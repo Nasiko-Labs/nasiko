@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56" width="56" height="56">
+  <!-- Nasiko DS placeholder mark: Chivo Mono Medium "n" on the brand square.
+       The glyph is outlined (extracted from ChivoMono-Medium.ttf) so the mark
+       renders correctly in favicon contexts, where SVG text cannot load fonts. -->
+  <rect x="0" y="0" width="56" height="56" rx="12" fill="#BB8F06"></rect>
+  <path fill="#FFFFFF" d="M23.88 40L19.24 40L19.24 19.56L23 19.56L23.44 22.32Q24.36 20.68 26 19.92Q27.64 19.16 29.68 19.16Q33 19.16 34.98 21.02Q36.96 22.88 36.96 26.44L36.96 40L32.28 40L32.28 27.64Q32.28 25.08 31.22 23.88Q30.16 22.68 28.24 22.68Q26.92 22.68 25.94 23.34Q24.96 24 24.42 25.16Q23.88 26.32 23.88 27.84Z"></path>
+</svg>

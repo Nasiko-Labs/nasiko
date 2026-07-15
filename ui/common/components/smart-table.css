@@ -39,7 +39,7 @@
     input.search:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
     input.search::placeholder { color: var(--color-text-muted); }
 
@@ -157,7 +157,7 @@
       & svg { width: 16px; height: 16px; }
       &:hover:not(:disabled) { background: var(--color-bg-base); border-color: var(--color-primary); }
       &:disabled { opacity: 0.35; cursor: not-allowed; }
-      &:focus-visible { box-shadow: 0 0 0 3px var(--color-primary-ring); outline: none; }
+      &:focus-visible { box-shadow: 0 0 0 2px var(--color-primary-ring); outline: none; }
     }
     .page-info {
       font-size: var(--font-size-sm);

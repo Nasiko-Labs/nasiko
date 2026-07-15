@@ -88,7 +88,7 @@ styles.replaceSync(`@scope (app-button) {
 
     &.is-danger {
       background: var(--color-error);
-      color: white;
+      color: var(--color-on-primary);
 
       &:hover:not(:disabled) {
         background: color-mix(in srgb, var(--color-error) 85%, black);

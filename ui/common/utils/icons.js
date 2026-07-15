@@ -14,7 +14,7 @@
 const s = (body, defaultSize = 24) =>
   (cls = '', size = defaultSize) =>
     `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
-    `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ` +
+    `stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ` +
     `style="width:${size}px;height:${size}px;flex-shrink:0"` +
     `${cls ? ` class="${cls}"` : ''}>${body}</svg>`;
 
@@ -22,7 +22,7 @@ const s = (body, defaultSize = 24) =>
 const sb = (body, defaultSize = 24) =>
   (cls = '', size = defaultSize) =>
     `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
-    `stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ` +
+    `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ` +
     `style="width:${size}px;height:${size}px;flex-shrink:0"` +
     `${cls ? ` class="${cls}"` : ''}>${body}</svg>`;
 

@@ -79,7 +79,7 @@ pub fn search(
         let rows: Vec<ArtifactRow> = results.iter().map(ArtifactRow::from).collect();
         println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
     }
-    println!("\n{} result(s)", results.len());
+    // println!("\n{} result(s)", results.len());
     Ok(())
 }
 

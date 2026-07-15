@@ -39,17 +39,23 @@ export default {
         },
       ],
     }],
-    [{ method: "GET", path: /^\/api\/observability\/agent\/.*\/stats$/ }, {
-      total_requests: 0,
-      total_cost: 0.0,
-      error_rate: 0,
-      avg_latency_ms: 0,
-      p50_latency_ms: 0,
-      p95_latency_ms: 0,
-      total_input_tokens: 0,
-      total_output_tokens: 0,
-      period_start: "2026-07-01T00:00:00Z",
-      source: "tempo",
+    // Shape mirrors GET /api/observability/agent/{id}/stats (`nasiko observe stats`).
+    [{ method: "GET", path: /^\/api\/observability\/agent\/.*\/stats/ }, {
+      data: {
+        project: {
+          id: "devops-agent",
+          trace_count: 128,
+          latency_ms_p50: 412,
+          latency_ms_p99: 2380,
+          cost_summary: {
+            total: { cost: 1.8642 },
+            prompt: { cost: 0.7121 },
+            completion: { cost: 1.1521 },
+          },
+          span_annotation_names: [],
+          document_evaluation_names: [],
+        },
+      },
     }],
     [{ method: "GET", path: /^\/api\/agents\/.*\/acl$/ }, {
       unrestricted: false,

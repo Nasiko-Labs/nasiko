@@ -519,7 +519,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
         AgentOpsCommands::Chat { url, message, agent, tui, resume, session_id } => {
             // `nasiko chat "some message"` — a lone positional *containing
-            // a space* is a natural-language message for the orchestrator,
+            // whitespace* is a natural-language message for the orchestrator,
             // not a resolvable target. Targets (a URL, an agent UUID/name,
             // or "orchestrator") are always a single token, so checking
             // for whitespace — not "isn't an http(s) URL" — is what
@@ -529,7 +529,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             // the message to the orchestrator instead of resolving it as
             // the chat target.
             let (url, message) = match (url, message) {
-                (Some(u), None) if u.contains(' ') => (None, Some(u)),
+                (Some(u), None) if u.contains(char::is_whitespace) => (None, Some(u)),
                 other => other,
             };
             let target_label = agent.as_deref().unwrap_or("").to_string();
@@ -553,7 +553,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 }
             };
             if tui || resume.is_some() {
-                commands::tui::run_tui(&resolved, resume.as_deref())
+                commands::tui::run_tui(&resolved, resume.as_deref(), &target_label)
             } else {
                 commands::chat::chat(&resolved, message.as_deref(), session_id.as_deref(), &target_label)
             }

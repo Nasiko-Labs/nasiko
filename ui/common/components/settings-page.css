@@ -63,7 +63,7 @@
   .form-group textarea:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
   .save-bar {
     display: flex;
@@ -75,7 +75,7 @@
   .save-btn {
     padding: var(--space-sm) var(--space-xl);
     background: var(--color-primary);
-    color: white;
+    color: var(--color-on-primary);
     border: none;
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);

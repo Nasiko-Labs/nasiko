@@ -271,6 +271,60 @@ access-control-page:not(:defined) {
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
+/* Chat page pre-upgrade skeleton — geometry mirrors chat-page.css :scope
+   (760px container, 75px header, 148px input area) so nothing shifts when
+   the component upgrades. */
+chat-page:not(:defined) .chat-skel {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--app-header-height));
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 var(--space-md);
+}
+
+@media (min-width: 1024px) {
+  chat-page:not(:defined) .chat-skel {
+    height: 100dvh;
+  }
+}
+
+.chat-skel__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  box-sizing: border-box;
+  min-height: 75px;
+  padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-skel__avatar {
+  border-radius: 50%;
+}
+
+.chat-skel__info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-skel__name { width: 100px; height: 1em; }
+.chat-skel__status { width: 60px; }
+
+.chat-skel__spacer {
+  flex: 1;
+}
+
+.chat-skel__composer {
+  padding: var(--space-md) 0;
+}
+
+.chat-skel__input {
+  height: 115px;
+  border-radius: var(--radius-lg);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .skel-card__avatar,
   .skel-card__badge,
