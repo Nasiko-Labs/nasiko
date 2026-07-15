@@ -5,6 +5,11 @@ use std::time::Instant;
 
 use crate::models::*;
 
+fn normalize_base_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string()
+}
+
 /// Provider abstraction for different LLM backends.
 #[derive(Clone)]
 pub struct LLMProvider {
@@ -14,8 +19,13 @@ pub struct LLMProvider {
 }
 
 impl LLMProvider {
+    // `chat_completion`/`chat_completion_stream`
+    /// hardcode a `/v1` segment; a caller-supplied `OPENAI_BASE_URL` that
+    /// already ends in `/v1` (a common way to write it, and how
+    /// `ee/server/.env` has it) would otherwise double up into
+    /// `.../v1/v1/chat/completions`, which 404s.
     pub fn new(client: Client, api_key: String, base_url: String) -> Self {
-        Self { client, api_key, base_url }
+        Self { client, api_key, base_url: normalize_base_url(&base_url) }
     }
 
     pub fn from_env(client: Client) -> Self {

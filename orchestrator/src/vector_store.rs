@@ -252,7 +252,12 @@ async fn embed_text(
     model: &str,
     text: &str,
 ) -> Result<Vec<f32>, RouterError> {
-    let url = format!("{}/v1/embeddings", base_url.trim_end_matches('/'));
+    // Same normalization as `providers::normalize_base_url` — a `base_url`
+    // already ending in `/v1` (as `OPENAI_BASE_URL` is commonly configured,
+    // e.g. `ee/server/.env`) must not double up into `.../v1/v1/embeddings`.
+    let trimmed = base_url.trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    let url = format!("{trimmed}/v1/embeddings");
     let resp = client
         .post(&url)
         .bearer_auth(api_key)
