@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::llm::{ChatMessage, LlmClient};
@@ -7,11 +8,18 @@ use super::types::{ExecutionResult, MafDefinition, MafStep, StepResult};
 
 pub async fn run_maf(
     client: &reqwest::Client,
+    db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
     llm: &LlmClient,
 ) -> Result<ExecutionResult, String> {
+    // Seed one "pending" entry per step and persist immediately, so the full
+    // step list is visible in the DB before the (possibly slow) planning LLM
+    // call even starts.
+    let mut step_results: Vec<StepResult> = maf_def.steps.iter().map(pending_result).collect();
+    persist_progress(db, execution_id, &step_results, 0).await;
+
     // ── LLM call 1: plan all steps at runtime ────────────────────────────────
     // Generates prompt templates (with <placeholders>), to_extract goals, and
     // the output_generation guideline from the task descriptions.
@@ -20,20 +28,36 @@ pub async fn run_maf(
         plan_execution(&maf_def.steps, llm).await?;
     let mut total_tokens = plan_tokens;
 
-    let mut step_results: Vec<StepResult> = Vec::with_capacity(maf_def.steps.len());
+    // Fill in the prompt template / extraction goal now that planning is
+    // done — steps stay "pending" until their turn in the loop below.
+    for (result, plan) in step_results.iter_mut().zip(step_plans.iter()) {
+        result.prompt_template = plan.prompt.clone();
+        result.to_extract = plan.to_extract.clone();
+    }
+    persist_progress(db, execution_id, &step_results, total_tokens).await;
 
-    for (step, plan) in maf_def.steps.iter().zip(step_plans.iter()) {
-        let context = build_context(&step_results);
+    for (i, (step, plan)) in maf_def.steps.iter().zip(step_plans.iter()).enumerate() {
+        let context = build_context(&step_results[..i]);
+
+        step_results[i].status = "running".to_string();
+        persist_progress(db, execution_id, &step_results, total_tokens).await;
 
         // ── LLM call 2: fill <placeholders> with context from previous steps ─
         let (actual_prompt, prompt_tokens) =
-            generate_step_prompt(&plan.prompt, &step.task_description, &context, llm)
-                .await
-                .map_err(|e| format!("step {}: prompt generation failed: {e}", step.step_index))?;
+            match generate_step_prompt(&plan.prompt, &step.task_description, &context, llm).await {
+                Ok(v) => v,
+                Err(e) => {
+                    let err = format!("step {}: prompt generation failed: {e}", step.step_index);
+                    step_results[i].status = "failed".to_string();
+                    step_results[i].error = Some(err.clone());
+                    persist_progress(db, execution_id, &step_results, total_tokens).await;
+                    return Err(err);
+                }
+            };
 
         // ── Agent call ────────────────────────────────────────────────────────
         let start = Instant::now();
-        let raw_response = call_agent(
+        let raw_response = match call_agent(
             client,
             &step.agent_endpoint,
             &execution_id.to_string(),
@@ -41,11 +65,22 @@ pub async fn run_maf(
             &actual_prompt,
         )
         .await
-        .map_err(|e| format!("step {} (agent '{}') failed: {e}", step.step_index, step.agent_name))?;
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let err =
+                    format!("step {} (agent '{}') failed: {e}", step.step_index, step.agent_name);
+                step_results[i].status = "failed".to_string();
+                step_results[i].prompt = actual_prompt;
+                step_results[i].error = Some(err.clone());
+                persist_progress(db, execution_id, &step_results, total_tokens).await;
+                return Err(err);
+            }
+        };
         let latency_ms = start.elapsed().as_millis() as i64;
 
         // ── LLM call 3: extract relevant info from agent response ─────────────
-        let (extracted, extract_tokens) = extract_info(
+        let (extracted, extract_tokens) = match extract_info(
             &plan.prompt,
             &actual_prompt,
             &raw_response,
@@ -54,7 +89,18 @@ pub async fn run_maf(
             llm,
         )
         .await
-        .map_err(|e| format!("step {}: extraction failed: {e}", step.step_index))?;
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let err = format!("step {}: extraction failed: {e}", step.step_index);
+                step_results[i].status = "failed".to_string();
+                step_results[i].prompt = actual_prompt;
+                step_results[i].latency_ms = latency_ms;
+                step_results[i].error = Some(err.clone());
+                persist_progress(db, execution_id, &step_results, total_tokens).await;
+                return Err(err);
+            }
+        };
 
         let tokens = prompt_tokens + extract_tokens;
         total_tokens += tokens;
@@ -65,20 +111,13 @@ pub async fn run_maf(
             format!("{}\nStep {} ({}): {}", context, step.step_index, step.agent_name, extracted)
         };
 
-        step_results.push(StepResult {
-            step_id: step.step_id,
-            step_index: step.step_index,
-            agent_id: step.agent_id,
-            agent_name: step.agent_name.clone(),
-            prompt_template: plan.prompt.clone(),
-            to_extract: plan.to_extract.clone(),
-            prompt: actual_prompt,
-            extracted_info: Some(extracted),
-            tokens_used: tokens,
-            latency_ms,
-            context: Some(new_context),
-            obs_logs: serde_json::Value::Null,
-        });
+        step_results[i].status = "success".to_string();
+        step_results[i].prompt = actual_prompt;
+        step_results[i].extracted_info = Some(extracted);
+        step_results[i].tokens_used = tokens;
+        step_results[i].latency_ms = latency_ms;
+        step_results[i].context = Some(new_context);
+        persist_progress(db, execution_id, &step_results, total_tokens).await;
     }
 
     // ── LLM call 4: synthesise final output ───────────────────────────────────
@@ -91,6 +130,43 @@ pub async fn run_maf(
     total_tokens += output_tokens;
 
     Ok(ExecutionResult { output, step_results, tokens_used: total_tokens })
+}
+
+/// Builds a placeholder "pending" entry for a step before planning/execution
+/// has produced any of its actual content.
+fn pending_result(step: &MafStep) -> StepResult {
+    StepResult {
+        step_id: step.step_id,
+        step_index: step.step_index,
+        agent_id: step.agent_id,
+        agent_name: step.agent_name.clone(),
+        status: "pending".to_string(),
+        error: None,
+        prompt_template: String::new(),
+        to_extract: String::new(),
+        prompt: String::new(),
+        extracted_info: None,
+        tokens_used: 0,
+        latency_ms: 0,
+        context: None,
+        obs_logs: serde_json::Value::Null,
+    }
+}
+
+/// Writes the current step progress snapshot to `maf_executions.step_results`.
+/// Best-effort: a transient write failure here shouldn't abort the run — the
+/// next transition will just overwrite with fresher data, and the final
+/// write in worker.rs remains the source of truth once the run completes.
+async fn persist_progress(db: &PgPool, execution_id: Uuid, step_results: &[StepResult], tokens_used: i64) {
+    let step_json = serde_json::to_value(step_results).unwrap_or_default();
+    let _ = sqlx::query(
+        "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2 WHERE id = $3",
+    )
+    .bind(step_json.to_string())
+    .bind(tokens_used)
+    .bind(execution_id)
+    .execute(db)
+    .await;
 }
 
 // ─── Step plan produced by plan_execution ────────────────────────────────────

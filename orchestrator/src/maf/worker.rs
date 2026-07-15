@@ -221,7 +221,7 @@ async fn process_job(
         }
     };
 
-    match executor::run_maf(http_client, execution_id, user_id, &maf_def, llm).await {
+    match executor::run_maf(http_client, db, execution_id, user_id, &maf_def, llm).await {
         Ok(result) => {
             let step_json = serde_json::to_value(&result.step_results).unwrap_or_default();
             let step_json_str = step_json.to_string();

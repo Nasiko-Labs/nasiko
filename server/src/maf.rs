@@ -95,6 +95,9 @@ struct MafRow {
     status: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    /// How many times this workflow has been run — COUNT(*) over maf_executions,
+    /// computed on read rather than stored, so it can never drift out of sync.
+    execution_count: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -131,6 +134,7 @@ struct MafResponse {
     status: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    execution_count: i64,
 }
 
 #[derive(Serialize)]
@@ -163,6 +167,7 @@ fn maf_row_to_response(row: MafRow) -> MafResponse {
         status: row.status,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        execution_count: row.execution_count,
     }
 }
 
@@ -259,11 +264,12 @@ async fn list_mafs(
     };
 
     let rows = sqlx::query_as::<_, MafRow>(
-        r#"SELECT id, user_id, name, description, maf_json::text AS maf_json,
-                  status, created_at, updated_at
-           FROM mafs
-           WHERE user_id = $1 AND status = 'active'
-           ORDER BY created_at DESC
+        r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
+                  m.status, m.created_at, m.updated_at,
+                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = m.id) AS execution_count
+           FROM mafs m
+           WHERE m.user_id = $1 AND m.status = 'active'
+           ORDER BY m.created_at DESC
            LIMIT $2 OFFSET $3"#,
     )
     .bind(user_id)
@@ -396,7 +402,7 @@ async fn create_maf(
         r#"INSERT INTO mafs (user_id, name, description, maf_json)
            VALUES ($1, $2, $3, $4::jsonb)
            RETURNING id, user_id, name, description, maf_json::text AS maf_json,
-                     status, created_at, updated_at"#,
+                     status, created_at, updated_at, 0::bigint AS execution_count"#,
     )
     .bind(user_id)
     .bind(&name)
@@ -548,7 +554,8 @@ async fn update_maf(
            SET name = $1, description = $2, maf_json = $3::jsonb, updated_at = now()
            WHERE id = $4 AND status = 'active'
            RETURNING id, user_id, name, description, maf_json::text AS maf_json,
-                     status, created_at, updated_at"#,
+                     status, created_at, updated_at,
+                     (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = mafs.id) AS execution_count"#,
     )
     .bind(new_name)
     .bind(new_description)
@@ -668,9 +675,21 @@ async fn run_workflow(
         return internal_err(format!("failed to enqueue job: {e}"));
     }
 
+    // Fresh count including the execution just created, so the caller can
+    // update its UI immediately without a separate re-fetch.
+    let execution_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM maf_executions WHERE maf_id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
     ok_json(
         StatusCode::ACCEPTED,
-        serde_json::json!({"execution_id": exec_id, "execution_number": exec_number}),
+        serde_json::json!({
+            "execution_id": exec_id,
+            "execution_number": exec_number,
+            "execution_count": execution_count,
+        }),
         "Execution started successfully",
     )
 }
@@ -877,9 +896,10 @@ async fn generate_maf(
 
 async fn fetch_maf(db: &sqlx::PgPool, id: Uuid) -> Result<Option<MafRow>, sqlx::Error> {
     sqlx::query_as::<_, MafRow>(
-        r#"SELECT id, user_id, name, description, maf_json::text AS maf_json,
-                  status, created_at, updated_at
-           FROM mafs WHERE id = $1 AND status = 'active'"#,
+        r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
+                  m.status, m.created_at, m.updated_at,
+                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = m.id) AS execution_count
+           FROM mafs m WHERE m.id = $1 AND m.status = 'active'"#,
     )
     .bind(id)
     .fetch_optional(db)
