@@ -104,5 +104,11 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         cors_allowed_origins: vec![],
         admin_username: "admin".into(),
         admin_password: "bench-admin-password".into(),
+        oidc_issuer_url: None,
+        oidc_client_id: None,
+        oidc_client_secret: None,
+        oidc_redirect_uri: None,
+        oidc_scopes: "openid profile email".into(),
+        oidc_provider_label: "microsoft_entra".into(),
     }
 }
