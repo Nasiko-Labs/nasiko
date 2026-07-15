@@ -124,12 +124,12 @@ fn handle_scroll_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
 // ─── Session management commands ────────────────────────────────────────────
 
-pub fn create_session(agent_url: Option<&str>) -> Result<()> {
+pub fn create_session(agent: Option<&str>) -> Result<()> {
     let base_url = crate::config::active_url().context("no active cluster — run `nasiko connect <url>`")?;
     let token = crate::config::active_token()
         .context("config error")?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
-    let s = session::create_cp_session(&base_url, &token, agent_url.unwrap_or(""), "New session")?;
+    let s = session::create_cp_session(&base_url, &token, agent, "New session")?;
     println!("{}", s.session_id);
     Ok(())
 }

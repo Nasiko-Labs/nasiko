@@ -177,7 +177,7 @@ pub enum AgentOpsCommands {
     /// Create a new chat session on the active cluster
     #[command(name = "create-session")]
     CreateSession {
-        /// A2A agent URL to associate with the session
+        /// Agent name or UUID to associate with the session (omit for the orchestrator)
         #[arg(long)]
         agent: Option<String>,
     },

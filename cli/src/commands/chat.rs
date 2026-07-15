@@ -83,6 +83,7 @@ fn resolve_cp_ctx(
     endpoint: &str,
     session_id: Option<&str>,
     target_label: &str,
+    message: Option<&str>,
 ) -> Option<(CpCtx, Vec<cp::CpMessage>)> {
     let (base_url, token) = cp::cp_credentials(endpoint)?;
     // `target_label` is the catalog agent's name/UUID as the user typed it —
@@ -98,12 +99,35 @@ fn resolve_cp_ctx(
             (s.to_string(), history)
         }
         None => {
+            // One-shot mode already knows the first message — use it as the
+            // title (same convention agent_proxy.rs falls back to) instead of
+            // a placeholder. Interactive mode has no message yet at session
+            // creation, so "New chat" stands until the first turn is typed.
+            let title = message.map(derive_title).unwrap_or_else(|| "New chat".to_string());
             let sess: CpSession =
-                cp::create_cp_session(&base_url, &token, agent_id, "New chat").ok()?;
+                cp::create_cp_session(&base_url, &token, agent_id, &title).ok()?;
             (sess.session_id, Vec::new())
         }
     };
     Some((CpCtx { base_url, token, session_id: sid }, history))
+}
+
+/// Collapse a message to one line and truncate to 60 chars for use as a
+/// session title — mirrors the fallback in `agent_proxy.rs`.
+fn derive_title(text: &str) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.is_empty() {
+        return "New chat".to_string();
+    }
+    if one_line.len() > 60 {
+        let mut n = 60;
+        while !one_line.is_char_boundary(n) {
+            n -= 1;
+        }
+        format!("{}…", &one_line[..n])
+    } else {
+        one_line
+    }
 }
 
 /// Print a session's prior turns before resuming it, in the same visual
@@ -136,7 +160,7 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>, target_l
     use std::io::IsTerminal;
 
     let endpoint = url.trim_end_matches('/').to_string();
-    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id, target_label) {
+    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id, target_label, message) {
         Some((ctx, history)) => (Some(ctx), history),
         None => (None, Vec::new()),
     };
