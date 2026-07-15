@@ -209,6 +209,7 @@ struct CreateStepRequest {
 struct CreateMafRequest {
     /// Optional name — if omitted, derived from the first task description.
     name: Option<String>,
+    description: Option<String>,
     steps: Vec<CreateStepRequest>,
 }
 
@@ -396,15 +397,17 @@ async fn create_maf(
     };
     let maf_json = serde_json::to_value(&maf_def).unwrap_or_default();
     let maf_json_str = maf_json.to_string();
+    let description = req.description.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
     let row = sqlx::query_as::<_, MafRow>(
         r#"INSERT INTO mafs (user_id, name, description, maf_json)
-           VALUES ($1, $2, NULL, $3::jsonb)
+           VALUES ($1, $2, $3, $4::jsonb)
            RETURNING id, user_id, name, description, maf_json::text AS maf_json,
                      status, created_at, updated_at"#,
     )
     .bind(user_id)
     .bind(&name)
+    .bind(description)
     .bind(&maf_json_str)
     .fetch_one(&state.db)
     .await;
