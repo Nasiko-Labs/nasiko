@@ -86,10 +86,23 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
     let agent_file = root.join(AGENT_FILE);
     let existing_id = load_agent_id(&agent_file);
 
-    let agent_id = match existing_id {
-        Some(id) => {
+    // Resolve the cached binding, tolerating a stale one: if the cached agent no
+    // longer exists server-side (e.g. after a DB reset), `get_json_optional`
+    // returns None and we fall through to registering a fresh agent instead of
+    // failing with a 404.
+    let existing = match &existing_id {
+        Some(id) => client
+            .get_json_optional::<serde_json::Value>(&format!("/agents/{id}"))?
+            .map(|current| (id.clone(), current)),
+        None => None,
+    };
+    if existing_id.is_some() && existing.is_none() {
+        println!("  ! Cached agent binding is stale — registering a new agent");
+    }
+
+    let agent_id = match existing {
+        Some((id, current)) => {
             // Update existing agent
-            let current: serde_json::Value = client.get_json(&format!("/agents/{id}"))?;
             let current_version = current.get("version").and_then(|v| v.as_str()).unwrap_or("");
             if current_version == version {
                 eprintln!("  ! Redeploying same version ({version}) — consider bumping version in AgentCard.json");

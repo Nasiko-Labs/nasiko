@@ -150,6 +150,86 @@ async fn generic_omits_traceparent_when_absent() {
     m.assert_async().await;
 }
 
+// A stateful MCP backend (SDK default) rejects a session-less `tools/list` with
+// 400/"session", so the client must run the `initialize` handshake, capture the
+// `Mcp-Session-Id`, and retry with it. Proves #4's fix end-to-end.
+#[tokio::test]
+async fn generic_stateful_backend_negotiates_session() {
+    let mut srv = mockito::Server::new_async().await;
+
+    // initialize → issues a session id (distinct from notifications/initialized)
+    let init = srv
+        .mock("POST", "/mcp")
+        .match_body(mockito::Matcher::Regex("\"initialize\"".into()))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_header("mcp-session-id", "sess-123")
+        .with_body(r#"{"jsonrpc":"2.0","id":"init","result":{"protocolVersion":"2025-06-18","capabilities":{}}}"#)
+        .create_async()
+        .await;
+
+    // bare tools/list (no session header) → stateful server rejects it
+    let bare = srv
+        .mock("POST", "/mcp")
+        .match_body(mockito::Matcher::Regex("tools/list".into()))
+        .match_header("mcp-session-id", mockito::Matcher::Missing)
+        .with_status(400)
+        .with_body("Bad Request: Missing session ID")
+        .create_async()
+        .await;
+
+    // tools/list WITH the negotiated session id → succeeds
+    let ok = srv
+        .mock("POST", "/mcp")
+        .match_body(mockito::Matcher::Regex("tools/list".into()))
+        .match_header("mcp-session-id", "sess-123")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search"}]}}"#)
+        .create_async()
+        .await;
+
+    // best-effort notifications/initialized follow-up
+    srv.mock("POST", "/mcp")
+        .match_body(mockito::Matcher::Regex("notifications/initialized".into()))
+        .with_status(202)
+        .create_async()
+        .await;
+
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let tools = provider
+        .list_tools(&cfg(format!("{}/mcp", srv.url())), std::time::Duration::from_secs(5), None)
+        .await
+        .unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "search");
+
+    bare.assert_async().await;
+    init.assert_async().await;
+    ok.assert_async().await;
+}
+
+// A 400 that ISN'T about a session must stay a hard error — the session
+// fallback must not swallow unrelated bad-request failures.
+#[tokio::test]
+async fn generic_non_session_400_stays_error() {
+    let mut srv = mockito::Server::new_async().await;
+    srv.mock("POST", "/mcp")
+        .with_status(400)
+        .with_body("Bad Request: malformed params")
+        .create_async()
+        .await;
+
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
+    assert!(
+        provider
+            .request(&cfg(format!("{}/mcp", srv.url())), &body, std::time::Duration::from_secs(5), None)
+            .await
+            .is_err()
+    );
+}
+
 // ─── ComposioProvider (v3 / v3.1) ───────────────────────────────────────────
 
 fn composio(url: String) -> ComposioProvider {

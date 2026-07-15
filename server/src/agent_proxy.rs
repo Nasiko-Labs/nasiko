@@ -151,6 +151,16 @@ pub async fn agent_proxy(
             if claims.is_superuser { "true" } else { "false" },
         );
 
+    // Mint a short-lived MCP delegation token so the agent can call back into
+    // /api/mcp on this user's behalf (the agent forwards this inbound header to
+    // MCP_GATEWAY_URL). Mirrors the orchestrator path (a2a_dispatch → A2aTool);
+    // best-effort — skipped if JWT_SECRET is unset rather than failing the proxy.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+        && let Ok(token) = nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &claims.sub, &agent_id_str)
+    {
+        forwarded = forwarded.header("x-nasiko-agent-token", token);
+    }
+
     // Best-effort: record the trace_id → session_id mapping in Redis so the
     // observability service can correlate sessions for pre-built agents that
     // don't set session.id themselves via our sitecustomize.py patch.

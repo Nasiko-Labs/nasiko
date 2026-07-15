@@ -16,6 +16,17 @@ pub fn instrument<R: ContainerRuntime>(
     base: R,
     config: &Config,
 ) -> InstrumentedRuntime<InstrumentedRuntime<R, OtelInjector>, McpInjector> {
+    // Loud warning for a silent footgun: with no public gateway URL configured,
+    // McpInjector is a no-op, so every deployed agent silently gets zero MCP
+    // tools. Better to surface it once at startup than debug empty tool lists.
+    if config.mcp_gateway_public_url.is_none() {
+        tracing::warn!(
+            "MCP_GATEWAY_PUBLIC_URL is unset — deployed agents will NOT receive MCP_GATEWAY_URL \
+             and cannot reach the MCP gateway (tools will be silently unavailable). Set it to the \
+             server's externally-reachable /api/mcp URL to enable agent tool access."
+        );
+    }
+
     let otel_instrumented = InstrumentedRuntime::new(
         base,
         OtelInjector,

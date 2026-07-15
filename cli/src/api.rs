@@ -118,6 +118,21 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
+    /// GET returning `Ok(None)` on 404 instead of erroring, while still bailing
+    /// on other failures. Lets callers tell "resource is gone" (e.g. a stale
+    /// local agent binding after a server-side delete / DB reset) apart from a
+    /// real error, so they can recover rather than fail.
+    pub fn get_json_optional<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<Option<T>> {
+        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
+        let url = self.api_url(path);
+        let mut resp = self.auth_get(&url).call().context("request failed")?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        check_status(&mut resp, &url)?;
+        Ok(Some(resp.body_mut().read_json()?))
+    }
+
     pub fn get_text(&self, path: &str) -> Result<String> {
         let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
         let url = self.api_url(path);
@@ -749,6 +764,43 @@ mod tests {
         assert_eq!(urlencode("nutrition planning"), "nutrition%20planning");
         assert_eq!(urlencode("a&b=c"), "a%26b%3Dc");
         assert_eq!(urlencode("safe-_.~"), "safe-_.~");
+    }
+
+    // ─── get_json_optional: 404 → None (stale-binding recovery), else normal ────
+
+    #[test]
+    fn get_json_optional_none_on_404() {
+        // A deleted/never-existed resource (e.g. a stale local agent binding after
+        // a DB reset) must come back as None so callers can recover, not error.
+        let mut srv = mockito::Server::new();
+        let m = srv.mock("GET", "/api/agents/ghost").with_status(404).with_body("not found").create();
+        let client = Client::for_test(&srv.url(), None);
+        let out: Option<serde_json::Value> = client.get_json_optional("/agents/ghost").unwrap();
+        assert!(out.is_none());
+        m.assert();
+    }
+
+    #[test]
+    fn get_json_optional_some_on_200() {
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/agents/live")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"live","version":"1.0.0"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+        let out: Option<serde_json::Value> = client.get_json_optional("/agents/live").unwrap();
+        assert_eq!(out.unwrap()["version"], "1.0.0");
+    }
+
+    #[test]
+    fn get_json_optional_errors_on_500() {
+        // Real failures must still surface — only 404 is treated as "absent".
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/agents/boom").with_status(500).with_body("boom").create();
+        let client = Client::for_test(&srv.url(), None);
+        let out: Result<Option<serde_json::Value>> = client.get_json_optional("/agents/boom");
+        assert!(out.is_err());
     }
 
     #[test]
