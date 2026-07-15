@@ -19,6 +19,7 @@ members = [
     "cli",
     "agents/coding",
     "github",
+    "oidc",
 ]
 
 [workspace.package]
@@ -32,6 +33,7 @@ nasiko-config = { path = "config" }
 nasiko-flow = { path = "flow" }
 nasiko-agent-proxy = { path = "agent-proxy" }
 nasiko-github = { path = "github" }
+nasiko-oidc = { path = "oidc" }
 nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }
