@@ -6,16 +6,34 @@ const GITHUB_ICON = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0
 const LOGO_ICON = `<svg viewBox="0 0 24 24"><path d="M3 3h18v18H3V3zm2 2v14h14V5H5zm3 3h2v8H8V8zm3 2h2v6h-2v-6zm3-1h2v7h-2V9z"/></svg>`;
 
 class LoginPage extends HTMLElement {
-  connectedCallback() {
+  async connectedCallback() {
     const brandTitle = this.getAttribute('brand-title') || 'Nasiko';
     const subtitle = this.getAttribute('subtitle') || 'Sign in to your workspace';
     const showGithub = !this.hasAttribute('no-github');
     const showGoogle = !this.hasAttribute('no-google');
     const showCredentials = !this.hasAttribute('no-credentials');
 
+    // Microsoft/OIDC is opt-in per deployment (unlike GitHub/Google, which
+    // are always offered) — only show the button once the backend confirms
+    // OIDC_ISSUER_URL/CLIENT_ID/CLIENT_SECRET/REDIRECT_URI (or the
+    // DB-configured equivalent, see `resolve_oidc_client`) are actually set,
+    // so a deployment that hasn't configured SSO never shows a button that
+    // would just 503. Fails closed (hidden) on a network error.
+    let showMicrosoft = false;
+    if (!this.hasAttribute('no-microsoft')) {
+      try {
+        const res = await fetch('/api/auth/oidc/status', { credentials: 'same-origin' });
+        const data = await res.json();
+        showMicrosoft = Boolean(data?.configured);
+      } catch {
+        showMicrosoft = false;
+      }
+    }
+
     let oauthSection = '';
-    if (showGithub || showGoogle) {
+    if (showGithub || showGoogle || showMicrosoft) {
       let buttons = '';
+      if (showMicrosoft) buttons += `<a href="/api/auth/oidc/login" class="btn-oauth">${icons.microsoft} Continue with Microsoft</a>`;
       if (showGithub) buttons += `<a href="/api/auth/github" class="btn-oauth">${GITHUB_ICON} Continue with GitHub</a>`;
       if (showGoogle) buttons += `<a href="/api/auth/google" class="btn-oauth">${icons.google} Continue with Google</a>`;
       oauthSection = `
