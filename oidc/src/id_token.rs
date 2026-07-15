@@ -27,7 +27,7 @@ pub struct IdTokenClaims {
     pub name: Option<String>,
     /// Entra "App Roles" claim, when the app manifest defines any — captured
     /// for future role-mapping, not acted on today (see docs/OIDC_SSO_SETUP.md).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_seq_opt")]
     pub roles: Option<Vec<String>>,
     /// Entra Security Group Object IDs the user belongs to — only present
     /// when the App Registration has Group Claims enabled (Token
@@ -37,10 +37,36 @@ pub struct IdTokenClaims {
     /// `None` (not an empty list) if the claim was omitted entirely — e.g.
     /// group-overage tenants, where Entra requires a separate Graph API
     /// call instead (not implemented; see docs/OIDC_SSO_SETUP.md).
-    #[serde(default)]
+    ///
+    /// Deserialized permissively (bare string OR array): several OIDC
+    /// providers (confirmed against a local oidc-server-mock instance, not
+    /// just a hypothetical) collapse a single-valued multi-valued claim to a
+    /// scalar rather than a one-element array, which a plain
+    /// `Vec<String>`/`Option<Vec<String>>` rejects outright.
+    #[serde(default, deserialize_with = "string_or_seq_opt")]
     pub groups: Option<Vec<String>>,
     #[serde(default)]
     pub nonce: Option<String>,
+}
+
+/// Accepts a claim that's missing, a bare string, or an array of strings,
+/// normalizing all three to `Option<Vec<String>>`. See `groups`'s doc
+/// comment for why this is needed instead of a plain `Vec<String>`.
+fn string_or_seq_opt<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+
+    Ok(Option::<StringOrVec>::deserialize(deserializer)?.map(|v| match v {
+        StringOrVec::Single(s) => vec![s],
+        StringOrVec::Multiple(v) => v,
+    }))
 }
 
 impl IdTokenClaims {
@@ -269,6 +295,31 @@ SG9MPTaBjgiZpuXgkxtEcCr35VYhcLOoR5RvoXyqGWKxecnhYsrPPA==\n\
             Err(OidcError::UnknownKid(Some(kid))) => assert_eq!(kid, "some-other-kid-not-in-jwks"),
             other => panic!("expected UnknownKid, got {other:?}"),
         }
+    }
+
+    /// Reproduces a real interop bug found testing against a local
+    /// oidc-server-mock instance: a provider that has exactly one group to
+    /// report sends `"groups": "grp-x"` (a bare string) rather than
+    /// `["grp-x"]`, which a plain `Vec<String>` field rejects with a
+    /// deserialize error (surfacing as a full login failure).
+    #[test]
+    fn single_valued_groups_and_roles_claims_deserialize_as_scalar() {
+        let mut claims = valid_claims();
+        claims["groups"] = json!("grp-solo");
+        claims["roles"] = json!("Nasiko.Admin");
+        let token = sign_rs256(&claims, TEST_KID);
+        let decoded = verify(&token, &test_jwks(), ISS, AUD, NONCE).expect("should verify");
+        assert_eq!(decoded.groups, Some(vec!["grp-solo".to_string()]));
+        assert_eq!(decoded.roles, Some(vec!["Nasiko.Admin".to_string()]));
+    }
+
+    #[test]
+    fn multi_valued_groups_claim_deserializes_as_array() {
+        let mut claims = valid_claims();
+        claims["groups"] = json!(["grp-a", "grp-b"]);
+        let token = sign_rs256(&claims, TEST_KID);
+        let decoded = verify(&token, &test_jwks(), ISS, AUD, NONCE).expect("should verify");
+        assert_eq!(decoded.groups, Some(vec!["grp-a".to_string(), "grp-b".to_string()]));
     }
 
     /// Blocks the classic alg:none / HMAC-confusion attack: a token whose
