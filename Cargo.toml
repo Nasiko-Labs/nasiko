@@ -15,6 +15,7 @@ members = [
     "oci",
     "flow",
     "agent-proxy",
+    "mcp-gateway",
 
     "cli",
     "agents/coding",
@@ -32,8 +33,10 @@ nasiko-auth = { path = "auth" }
 nasiko-config = { path = "config" }
 nasiko-flow = { path = "flow" }
 nasiko-agent-proxy = { path = "agent-proxy" }
+nasiko-mcp-gateway = { path = "mcp-gateway" }
 nasiko-github = { path = "github" }
 nasiko-oidc = { path = "oidc" }
+nasiko-secrets = { path = "secrets" }
 nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }
