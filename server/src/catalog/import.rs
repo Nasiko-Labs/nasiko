@@ -258,31 +258,9 @@ pub(crate) async fn build_and_deploy(
     crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
     let container_name = match state.runtime.deploy(&spec).await {
-        Ok(status) => {
-            // Sibling deploy paths (agents/upload.rs, agents/update.rs) all mark
-            // the agent `running` with its resolved URL immediately after a
-            // successful deploy — this path never did, so the agent stayed
-            // `status:"registered"`/`url:null` forever even though its
-            // container was genuinely up (CAT-9).
-            let agent_url = crate::agents::resolve_agent_url(
-                &state.runtime,
-                &status,
-                &nasiko_runtime::ContainerId::from_uuid(agent_id),
-            )
-            .await;
-            let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
-                .bind(agent_id)
-                .bind(&agent_url)
-                .execute(&state.db)
-                .await;
-            Some(status.container_id.to_string())
-        }
+        Ok(status) => Some(status.container_id.to_string()),
         Err(e) => {
             tracing::warn!(agent_id = %agent_id, %e, "deploy after build failed");
-            let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
-                .bind(agent_id)
-                .execute(&state.db)
-                .await;
             None
         }
     };
@@ -297,6 +275,13 @@ pub(crate) async fn build_and_deploy(
 
 // ─── POST /import/upload ────────────────────────────────────────────────────
 
+/// Meant to be quick and direct, not production-grade robust: unlike its
+/// sibling `/api/agents/upload` (`oss/server/src/agents/upload.rs`), which is
+/// asynchronous, tracked via `upload_status`, and retried on failure through
+/// a real job queue, this runs the whole build-and-deploy pipeline
+/// synchronously inside the request handler, with no progress tracking and
+/// no retry — you get a response once the build either finishes or fails,
+/// and that's it.
 async fn import_upload(
     State(state): State<AppState>,
     claims: Claims,
@@ -765,26 +750,9 @@ async fn import_registry(
         crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
 
         let container_name = match state.runtime.deploy(&spec).await {
-            Ok(status) => {
-                let agent_url = crate::agents::resolve_agent_url(
-                    &state.runtime,
-                    &status,
-                    &nasiko_runtime::ContainerId::from_uuid(agent_id),
-                )
-                .await;
-                let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
-                    .bind(agent_id)
-                    .bind(&agent_url)
-                    .execute(&state.db)
-                    .await;
-                Some(status.container_id.to_string())
-            }
+            Ok(status) => Some(status.container_id.to_string()),
             Err(e) => {
                 tracing::warn!(agent_id = %agent_id, %e, "deploy after pull failed");
-                let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
-                    .bind(agent_id)
-                    .execute(&state.db)
-                    .await;
                 None
             }
         };
