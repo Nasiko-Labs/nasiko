@@ -159,7 +159,7 @@ async fn orchestrator_stream(
 
     let mut agents: Vec<AgentInfo> = Vec::new();
     for summary in &agent_summaries {
-        let endpoint = match resolve_endpoint(state, &summary.name).await {
+        let endpoint = match resolve_endpoint(state, &summary.id.to_string(), &summary.name).await {
             Ok(url) => url,
             Err(_) => continue,
         };
@@ -187,7 +187,13 @@ async fn orchestrator_stream(
     }
 
     let config = OrchestratorConfig {
-        model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into()),
+        // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
+        // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
+        // default rather than re-reading the env var here with a placeholder
+        // fallback ("deepseek-v4-flash") that doesn't exist on a real OpenAI
+        // endpoint and silently 404s every orchestrator call when OPENAI_MODEL
+        // is unset.
+        model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         max_turns: 10,
@@ -225,15 +231,6 @@ async fn orchestrator_stream(
     let mut orchestrator = Orchestrator::new(config, RegistrySource::Static(agents))
         .with_a2a_client(a2a_client)
         .with_guard(guard);
-    // Each agent the orchestrator calls gets its own MCP delegation token
-    // minted per-call (see `A2aTool`) — best-effort, omitted if JWT_SECRET
-    // is unset rather than failing the whole chat/orchestration request.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET") {
-        orchestrator = orchestrator.with_delegation(nasiko_react_agent::DelegationContext {
-            user_id: user_id.to_string(),
-            jwt_secret,
-        });
-    }
     orchestrator
         .init()
         .await
@@ -249,7 +246,7 @@ async fn orchestrator_stream(
     let db = state.db.clone();
     let usage_tracker = state.usage_tracker.clone();
     let genai_metrics = state.genai_metrics.clone();
-    let orchestrator_model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
+    let orchestrator_model = state.config.openai_model.clone();
     let orchestrator_start = Instant::now();
 
     let stream = async_stream::stream! {
@@ -459,7 +456,7 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
 ) -> Result<Response, A2aDispatchError> {
-    let endpoint = resolve_endpoint(state, &agent.name)
+    let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
         .map_err(A2aDispatchError::Internal)?;
 
@@ -479,33 +476,13 @@ async fn agent_stream(
     .execute(&state.db)
     .await;
 
-    // Non-streaming (`message/send`), not `build_stream_request`: every example
-    // agent's `a2a-sdk` (Python) SSE producer spins the event loop indefinitely
-    // rather than terminating (upstream bug, not fixable here) — the
-    // non-streaming path is fully supported by both sides (the SDK's own
-    // `message/send` handler, and the JSON-response fallback branch just below,
-    // which already wraps a plain JSON reply into this endpoint's own SSE stream
-    // for the caller).
-    let req_body = nasiko_types::a2a::build_send_request(query, Some(context_id));
+    let req_body = nasiko_types::a2a::build_stream_request(query, Some(context_id));
 
-    let mut req = state
+    let response = state
         .http_client
         .post(&endpoint)
         .header("A2A-Version", "1.0")
-        .header("traceparent", flow_ctx.to_traceparent());
-
-    // Mint a delegation token so this agent can call back into `/api/mcp`
-    // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
-    // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
-    // unavailable to this agent rather than failing the whole chat call.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-        && let Ok(delegation_token) =
-            nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &user_id.to_string(), &agent.id.to_string())
-    {
-        req = req.header("x-nasiko-agent-token", delegation_token);
-    }
-
-    let response = req
+        .header("traceparent", flow_ctx.to_traceparent())
         .json(&req_body)
         .send()
         .await
@@ -785,27 +762,31 @@ fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
-async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
-    // One row gives us everything: the UUID (containers are UUID-keyed — see
-    // `build_agent_spec` — so a name-keyed runtime lookup always misses), the
-    // card-declared transport_path, and the deploy-time URL snapshot fallback.
-    let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, transport_path, url FROM agents WHERE name = $1 AND status = 'running'",
+async fn resolve_endpoint(state: &AppState, agent_id: &str, agent_name: &str) -> Result<String, String> {
+    // Containers are UUID-keyed (see `build_agent_spec`), so the runtime lookup
+    // below needs `agent_id`, not `agent_name` — a name-keyed lookup always
+    // misses. `agent_name` is kept only for the DB fallback query and error
+    // messages, which are keyed by name for readability.
+    let agent_id: Uuid = agent_id.parse().map_err(|e| format!("invalid agent id: {e}"))?;
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT transport_path, url FROM agents WHERE id = $1 AND status = 'running'",
     )
-    .bind(agent_name)
+    .bind(agent_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| format!("db lookup: {e}"))?;
 
-    let Some((agent_id, transport_path, stored_url)) = row else {
+    let Some((transport_path, stored_url)) = row else {
         return Err(format!("no running agent named '{agent_name}'"));
     };
 
     // The A2A spec fixes no path — it must come from the agent's card, never
-    // be assumed. Rows predating transport_path get the legacy Nasiko mount.
+    // be assumed. The a2a-server-lf crate (used by the example agents) mounts
+    // its JSON-RPC handler at the container root, not `/jsonrpc` — a row with
+    // no captured transport_path must default to root, not guess a path the
+    // agent doesn't actually serve.
     let path = match transport_path.as_deref() {
-        None => "/jsonrpc",
-        Some("/") | Some("") => "",
+        None | Some("/") | Some("") => "",
         Some(p) => p,
     };
 

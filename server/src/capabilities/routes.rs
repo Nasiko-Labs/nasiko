@@ -244,9 +244,13 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
 
 fn make_generator(state: &AppState) -> CapabilityGenerator {
     let provider = LLMProvider::from_env(state.http_client.clone());
-    let model = std::env::var("CAPABILITY_GENERATOR_MODEL")
-        .unwrap_or_else(|_| "deepseek-v4-flash".into());
-    CapabilityGenerator::new(provider, model)
+    // `state.config.capability_generator_model` is already loaded via
+    // `env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini")`
+    // (oss/config/src/lib.rs) — read that resolved config value instead of
+    // re-reading the env var here with a hardcoded placeholder
+    // ("deepseek-v4-flash") that doesn't exist on a real OpenAI-compatible
+    // endpoint and 404s every call once the env var is unset.
+    CapabilityGenerator::new(provider, state.config.capability_generator_model.clone())
 }
 
 fn error_response(e: GeneratorError) -> axum::response::Response {

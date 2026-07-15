@@ -243,6 +243,8 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 // Inject server LLM secrets at execution — not persisted in the payload (RUN-5).
                 state.config.openai_api_key.clone(),
                 state.config.openai_base_url.clone(),
+                state.config.agent_runtime.clone(),
+                state.config.agent_image_registry.clone(),
             )
             .await;
         }
@@ -322,6 +324,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.oci_storage.clone(),
                 state.http_client.clone(),
                 state.config.git_clone_allowed_hosts.clone(),
+                state.config.capability_generator_model.clone(),
             )
             .await;
         }

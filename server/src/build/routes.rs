@@ -230,6 +230,7 @@ pub async fn execute_build(
     oci_storage: nasiko_oci::storage::S3Storage,
     http_client: reqwest::Client,
     allowed_hosts: Vec<String>,
+    capability_generator_model: String,
 ) {
     set_build_status(&db, build_id, BuildStatus::Building).await;
 
@@ -334,7 +335,7 @@ pub async fn execute_build(
 
             if let Some(ref key) = source_key {
                 auto_generate_capabilities_pub(
-                    &db, &oci_storage, &http_client, key, &agent_name,
+                    &db, &oci_storage, &http_client, key, &agent_name, &capability_generator_model,
                 ).await;
             }
         }
@@ -625,6 +626,7 @@ pub async fn auto_generate_capabilities_pub(
     http_client: &reqwest::Client,
     source_key: &str,
     agent_name: &str,
+    capability_generator_model: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
     use nasiko_orchestrator::providers::LLMProvider;
@@ -643,9 +645,13 @@ pub async fn auto_generate_capabilities_pub(
     };
 
     let provider = LLMProvider::from_env(http_client.clone());
-    let model = std::env::var("CAPABILITY_GENERATOR_MODEL")
-        .unwrap_or_else(|_| "deepseek-v4-flash".into());
-    let generator = CapabilityGenerator::new(provider, model);
+    // Caller passes `state.config.capability_generator_model` (already
+    // resolved from `CAPABILITY_GENERATOR_MODEL`, default "gpt-4o-mini") —
+    // see `capabilities/routes.rs::make_generator` for the same fix; this
+    // function has no `AppState` of its own so the resolved value is threaded
+    // through `execute_build` instead of re-reading the env var here with a
+    // hardcoded placeholder.
+    let generator = CapabilityGenerator::new(provider, capability_generator_model.to_string());
 
     match generator.generate(&source, agent_name).await {
         Ok((card, _)) => {
