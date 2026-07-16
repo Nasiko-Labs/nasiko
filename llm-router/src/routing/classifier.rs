@@ -32,9 +32,20 @@ pub enum Tier {
 /// TODO: implement the real classification. The business logic that analyses `query`
 /// (and may use `provider`) to decide the tier is a separate, later effort. For now this
 /// returns a fixed mid tier so the surrounding precedence chain is exercisable end-to-end.
-pub fn classify(_query: &str, _provider: &str) -> Tier {
+pub fn classify(query: &str, provider: &str) -> Tier {
     // Placeholder — real query analysis to be added later.
-    Tier::Tier2
+    let tier = Tier::Tier2;
+    let preview: String = query.chars().take(120).collect();
+    tracing::info!(
+        target: "nasiko::llm_router::classifier",
+        provider = %provider,
+        query_chars = query.chars().count(),
+        query_preview = %preview,
+        classified_tier = ?tier,
+        implementation = "placeholder-fixed-tier2",
+        "classifier: classifying query into model tier (NOTE: real query analysis not yet implemented — always returns Tier2)"
+    );
+    tier
 }
 
 #[cfg(test)]

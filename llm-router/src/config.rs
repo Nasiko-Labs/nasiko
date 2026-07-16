@@ -20,8 +20,14 @@ pub struct GatewayConfig {
     pub default_provider: String,
     /// Backward-compat model when an agent has no `llm_config`. Default `gpt-4o-mini`.
     pub default_model: String,
-    /// Platform-owned key used when an agent sets no `api_key_secret_name`.
+    /// Platform-owned OpenAI key, used for the `openai` provider (and as the
+    /// backward-compat fallback for unknown providers) when an agent sets no
+    /// `api_key_secret_name`. Select via [`GatewayConfig::platform_key_for`].
     pub platform_openai_api_key: String,
+    /// Platform-owned Anthropic key, used for the `anthropic` provider.
+    pub platform_anthropic_api_key: String,
+    /// Platform-owned Gemini key, used for the `gemini` provider.
+    pub platform_gemini_api_key: String,
 
     /// TTL (seconds) for the in-process per-agent `llm_config` cache. Default 30.
     pub llm_config_cache_ttl_secs: u64,
@@ -56,6 +62,8 @@ impl Default for GatewayConfig {
             default_provider: "openai".into(),
             default_model: "gpt-4o-mini".into(),
             platform_openai_api_key: String::new(),
+            platform_anthropic_api_key: String::new(),
+            platform_gemini_api_key: String::new(),
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
@@ -77,7 +85,21 @@ impl GatewayConfig {
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),
             default_model: env_or("DEFAULT_MODEL", &d.default_model),
-            platform_openai_api_key: env_or("PLATFORM_OPENAI_API_KEY", &d.platform_openai_api_key),
+            // Per-provider platform keys. Prefer the explicit `PLATFORM_*` name, then
+            // fall back to the generic provider key env var (which agents/orchestrator
+            // already set), so a single provider key "just works" without duplication.
+            platform_openai_api_key: env_first(
+                &["PLATFORM_OPENAI_API_KEY", "OPENAI_API_KEY"],
+                &d.platform_openai_api_key,
+            ),
+            platform_anthropic_api_key: env_first(
+                &["PLATFORM_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"],
+                &d.platform_anthropic_api_key,
+            ),
+            platform_gemini_api_key: env_first(
+                &["PLATFORM_GEMINI_API_KEY", "GEMINI_API_KEY"],
+                &d.platform_gemini_api_key,
+            ),
             llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -93,8 +115,32 @@ impl GatewayConfig {
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
         }
     }
+
+    /// The platform-owned fallback key for `provider`, used when an agent sets no
+    /// per-user `api_key_secret_name`. Unknown providers fall back to the OpenAI key
+    /// for backward compatibility.
+    pub fn platform_key_for(&self, provider: &str) -> &str {
+        match provider {
+            "anthropic" => &self.platform_anthropic_api_key,
+            "gemini" => &self.platform_gemini_api_key,
+            _ => &self.platform_openai_api_key,
+        }
+    }
 }
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// First non-empty env var among `keys`, else `default`. Lets a `PLATFORM_*` key take
+/// precedence over the generic provider key env var while treating an empty value as unset.
+fn env_first(keys: &[&str], default: &str) -> String {
+    for key in keys {
+        if let Ok(val) = std::env::var(key)
+            && !val.is_empty()
+        {
+            return val;
+        }
+    }
+    default.to_string()
 }

@@ -1,9 +1,14 @@
 //! Config resolution: `(agent_id, owner_id)` → [`ResolvedConfig`].
 //!
 //! Reads the agent's `llm_config` (TTL-cached) and the owner's provider key, applying
-//! the backward-compat defaults and the platform-key fallback. **C4:** the incoming
-//! request's `model` is never consulted here — the registry/default model is
-//! authoritative on every path (chat, stream, embeddings).
+//! the backward-compat defaults and the platform-key fallback.
+//!
+//! **When the agent has an `llm_config` row it is authoritative** — the incoming request's
+//! `model`/provider are ignored (a configured agent is routed where its config says).
+//! **When the agent has no `llm_config`** we honor what the request itself asked for — the
+//! provider implied by the inbound SDK surface and the request body's `model` — falling
+//! back to the platform defaults (`DEFAULT_PROVIDER`/`DEFAULT_MODEL`) only as the last-resort
+//! safety net. Both hints ride in via [`RequestHint`].
 //!
 //! The registry/secret reads sit behind [`RegistryStore`] so the resolver is unit
 //! testable without a database; [`PgRegistry`] is the Postgres implementation.
@@ -62,6 +67,22 @@ pub struct ResolvedConfig {
     /// The compliance-locked model (Level 1), or `None` when the agent isn't pinned. When
     /// `Some`, the router returns it directly and the chat handler disables fallbacks.
     pub pinned_model: Option<String>,
+}
+
+/// What the incoming request itself asked for, used **only** when the agent has no
+/// `llm_config` — the passthrough hint that's honored before the platform defaults.
+///
+/// `provider` is the label implied by the inbound SDK surface
+/// ([`InboundFormat::provider_label`](crate::inbound::InboundFormat::provider_label)); `model`
+/// is the request body's `model` field. Both come from the same SDK call, so honoring them
+/// together yields a self-consistent `(provider, model)` pair. A configured agent
+/// (`llm_config` present) ignores this entirely.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RequestHint<'a> {
+    /// Destination provider implied by the caller's SDK surface. `None` ⇒ use the default.
+    pub provider: Option<&'a str>,
+    /// The `model` from the request body. `None` ⇒ use the default.
+    pub model: Option<&'a str>,
 }
 
 /// Storage seam for the resolver — mockable in tests.
@@ -129,6 +150,7 @@ pub async fn resolve(
     cfg: &GatewayConfig,
     agent_id: &str,
     owner_id: &str,
+    hint: RequestHint<'_>,
 ) -> Result<ResolvedConfig, GatewayError> {
     // A non-UUID agent_id can't match any row → treat as "no registry entry".
     let agent_uuid = Uuid::parse_str(agent_id)
@@ -136,10 +158,18 @@ pub async fn resolve(
 
     let llm_config = load_llm_config(store, cache, agent_uuid, agent_id).await?;
     let has_llm_config = llm_config.is_some();
-    let plan = plan_config(llm_config, cfg);
-    let api_key = resolve_api_key(store, cfg, owner_id, plan.api_key_secret_name.as_deref()).await?;
+    let secret_name = plan_secret_name(&llm_config);
+    let plan = plan_config(llm_config, cfg, hint);
+    let api_key = resolve_api_key(
+        store,
+        cfg,
+        owner_id,
+        &plan.provider,
+        plan.api_key_secret_name.as_deref(),
+    )
+    .await?;
 
-    Ok(ResolvedConfig {
+    let resolved = ResolvedConfig {
         litellm_model: format!("{}/{}", plan.provider, plan.model),
         provider: plan.provider,
         model: plan.model,
@@ -149,7 +179,31 @@ pub async fn resolve(
         max_tokens: plan.max_tokens,
         has_llm_config,
         pinned_model: plan.pinned_model,
-    })
+    };
+    tracing::info!(
+        target: "nasiko::llm_router::resolver",
+        %agent_id,
+        has_llm_config,
+        provider = %resolved.provider,
+        model = %resolved.model,
+        litellm_model = %resolved.litellm_model,
+        pinned_model = ?resolved.pinned_model,
+        temperature = ?resolved.temperature,
+        max_tokens = ?resolved.max_tokens,
+        fallback_models = ?resolved.fallback_models,
+        api_key_secret_name = ?secret_name,
+        api_key_source = if secret_name.is_some() && !owner_id.is_empty() { "per-user-secret" } else { "platform-key" },
+        api_key_present = !resolved.api_key.is_empty(),
+        "resolver: resolved agent config (source: {})",
+        if has_llm_config { "agents.llm_config row" } else { "platform defaults (no llm_config)" }
+    );
+    Ok(resolved)
+}
+
+/// The `api_key_secret_name` from an optional `llm_config` — used only for logging which
+/// key source the resolver will pick (never the secret value itself).
+fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
+    llm_config.as_ref().and_then(|c| c.api_key_secret_name.clone())
 }
 
 /// Load `llm_config` via the cache, falling back to the store. A missing agent row is
@@ -161,15 +215,51 @@ async fn load_llm_config(
     agent_id: &str,
 ) -> Result<Option<LLMConfig>, GatewayError> {
     if let Some(hit) = cache.get(agent_uuid) {
+        tracing::debug!(
+            target: "nasiko::llm_router::resolver",
+            %agent_id,
+            source = "config-cache",
+            has_llm_config = hit.is_some(),
+            provider = ?hit.as_ref().map(|c| &c.provider),
+            model = ?hit.as_ref().map(|c| &c.model),
+            pinned = ?hit.as_ref().map(|c| c.pinned),
+            pinned_model = ?hit.as_ref().and_then(|c| c.pinned_model.clone()),
+            "resolver: llm_config cache HIT"
+        );
         return Ok(hit);
     }
+    tracing::debug!(
+        target: "nasiko::llm_router::resolver",
+        %agent_id, "resolver: llm_config cache MISS — reading agents.llm_config from DB"
+    );
     match store
         .fetch_llm_config(agent_uuid)
         .await
         .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
     {
-        None => Err(GatewayError::NoRegistryEntry(agent_id.to_string())),
+        None => {
+            tracing::warn!(
+                target: "nasiko::llm_router::resolver",
+                %agent_id, "resolver: no agents row for agent_id — NoRegistryEntry"
+            );
+            Err(GatewayError::NoRegistryEntry(agent_id.to_string()))
+        }
         Some(config) => {
+            tracing::info!(
+                target: "nasiko::llm_router::resolver",
+                %agent_id,
+                source = "database",
+                has_llm_config = config.is_some(),
+                provider = ?config.as_ref().map(|c| &c.provider),
+                model = ?config.as_ref().map(|c| &c.model),
+                fallback_models = ?config.as_ref().map(|c| &c.fallback_models),
+                temperature = ?config.as_ref().and_then(|c| c.temperature),
+                max_tokens = ?config.as_ref().and_then(|c| c.max_tokens),
+                pinned = ?config.as_ref().map(|c| c.pinned),
+                pinned_model = ?config.as_ref().and_then(|c| c.pinned_model.clone()),
+                api_key_secret_name = ?config.as_ref().and_then(|c| c.api_key_secret_name.clone()),
+                "resolver: loaded llm_config from DB (now caching)"
+            );
             cache.put(agent_uuid, config.clone());
             Ok(config)
         }
@@ -187,9 +277,10 @@ struct ConfigPlan {
     pinned_model: Option<String>,
 }
 
-fn plan_config(llm_config: Option<LLMConfig>, cfg: &GatewayConfig) -> ConfigPlan {
+fn plan_config(llm_config: Option<LLMConfig>, cfg: &GatewayConfig, hint: RequestHint<'_>) -> ConfigPlan {
     match llm_config {
         Some(c) => {
+            // Configured agent: the config is authoritative — the request hint is ignored.
             // Pinned ⇒ lock to `pinned_model`, or the configured `model` if unspecified.
             let pinned_model = c
                 .pinned
@@ -204,9 +295,19 @@ fn plan_config(llm_config: Option<LLMConfig>, cfg: &GatewayConfig) -> ConfigPlan
                 pinned_model,
             }
         }
+        // No config: honor what the request asked for (provider from the SDK surface, model
+        // from the request body), falling back to the platform defaults only per-field when
+        // the request didn't supply one — DEFAULT_PROVIDER/DEFAULT_MODEL are the last-resort
+        // safety net, not the first choice.
         None => ConfigPlan {
-            provider: cfg.default_provider.clone(),
-            model: cfg.default_model.clone(),
+            provider: hint
+                .provider
+                .map(str::to_string)
+                .unwrap_or_else(|| cfg.default_provider.clone()),
+            model: hint
+                .model
+                .map(str::to_string)
+                .unwrap_or_else(|| cfg.default_model.clone()),
             fallback_models: Vec::new(),
             temperature: None,
             max_tokens: None,
@@ -222,6 +323,7 @@ async fn resolve_api_key(
     store: &dyn RegistryStore,
     cfg: &GatewayConfig,
     owner_id: &str,
+    provider: &str,
     secret_name: Option<&str>,
 ) -> Result<String, GatewayError> {
     if let Some(name) = secret_name
@@ -241,15 +343,16 @@ async fn resolve_api_key(
             .decrypt(&encrypted)
             .map_err(|e| GatewayError::Internal(format!("secret decryption failed: {e}")));
     }
-    platform_key(cfg)
+    platform_key(cfg, provider)
 }
 
-/// Pure: the platform-owned fallback key, or the 400 when none is configured.
-fn platform_key(cfg: &GatewayConfig) -> Result<String, GatewayError> {
-    if cfg.platform_openai_api_key.is_empty() {
+/// Pure: the platform-owned fallback key for `provider`, or the 400 when none is configured.
+fn platform_key(cfg: &GatewayConfig, provider: &str) -> Result<String, GatewayError> {
+    let key = cfg.platform_key_for(provider);
+    if key.is_empty() {
         Err(GatewayError::NoApiKey)
     } else {
-        Ok(cfg.platform_openai_api_key.clone())
+        Ok(key.to_string())
     }
 }
 
@@ -284,10 +387,15 @@ mod tests {
     }
 
     fn cfg(provider: &str, model: &str, platform_key: &str) -> GatewayConfig {
+        // Populate every provider's platform key with the same value: these tests
+        // exercise resolution independent of which provider the key belongs to.
+        // Provider-specific key selection is covered by the dedicated tests below.
         GatewayConfig {
             default_provider: provider.into(),
             default_model: model.into(),
             platform_openai_api_key: platform_key.into(),
+            platform_anthropic_api_key: platform_key.into(),
+            platform_gemini_api_key: platform_key.into(),
             ..Default::default()
         }
     }
@@ -307,8 +415,9 @@ mod tests {
 
     #[tokio::test]
     async fn defaults_when_no_llm_config() {
+        // Empty hint + no config → the platform-default safety net.
         let store = MockRegistry { config: Some(None), secret: None };
-        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap();
         assert_eq!(r.provider, "openai");
@@ -322,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn missing_agent_is_no_registry_entry() {
         let store = MockRegistry { config: None, secret: None };
-        let err = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "k"), AGENT, OWNER)
+        let err = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "k"), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap_err();
         assert!(matches!(err, GatewayError::NoRegistryEntry(_)));
@@ -332,22 +441,57 @@ mod tests {
     #[tokio::test]
     async fn no_secret_and_no_platform_key_is_bad_request() {
         let store = MockRegistry { config: Some(None), secret: None };
-        let err = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", ""), AGENT, OWNER)
+        let err = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", ""), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap_err();
         assert!(matches!(err, GatewayError::NoApiKey));
     }
 
     #[tokio::test]
-    async fn registry_model_wins_request_model_never_seen() {
-        // resolve() takes no request model at all — the registry model is authoritative (C4).
+    async fn platform_key_is_selected_by_resolved_provider() {
+        // Agent resolves to the anthropic default; only the anthropic platform key
+        // should be handed to the provider — never the OpenAI key.
+        let config = GatewayConfig {
+            default_provider: "anthropic".into(),
+            default_model: "claude-haiku-4-5".into(),
+            platform_openai_api_key: "sk-openai".into(),
+            platform_anthropic_api_key: "sk-ant".into(),
+            ..Default::default()
+        };
+        let store = MockRegistry { config: Some(None), secret: None };
+        let r = resolve(&store, &cache(), &config, AGENT, OWNER, RequestHint::default()).await.unwrap();
+        assert_eq!(r.provider, "anthropic");
+        assert_eq!(r.api_key, "sk-ant");
+    }
+
+    #[tokio::test]
+    async fn provider_without_its_platform_key_is_bad_request() {
+        // Only the OpenAI platform key is set, but the agent resolves to anthropic —
+        // the mismatch that caused the "invalid x-api-key" 401 must now fail closed.
+        let config = GatewayConfig {
+            default_provider: "anthropic".into(),
+            default_model: "claude-haiku-4-5".into(),
+            platform_openai_api_key: "sk-openai".into(),
+            ..Default::default()
+        };
+        let store = MockRegistry { config: Some(None), secret: None };
+        let err = resolve(&store, &cache(), &config, AGENT, OWNER, RequestHint::default()).await.unwrap_err();
+        assert!(matches!(err, GatewayError::NoApiKey));
+    }
+
+    #[tokio::test]
+    async fn config_wins_over_request_hint() {
+        // A configured agent ignores the request hint entirely — even a fully-populated
+        // hint (openai/gpt-4o) can't override the anthropic llm_config.
         let store = MockRegistry {
             config: Some(Some(llm_config("anthropic", "claude-3-5-sonnet-20241022", None))),
             secret: None,
         };
-        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+        let hint = RequestHint { provider: Some("openai"), model: Some("gpt-4o") };
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER, hint)
             .await
             .unwrap();
+        assert_eq!(r.provider, "anthropic");
         assert_eq!(r.model, "claude-3-5-sonnet-20241022");
         assert_eq!(r.litellm_model, "anthropic/claude-3-5-sonnet-20241022");
         assert_eq!(r.fallback_models, vec!["openai/gpt-4o-mini".to_string()]);
@@ -357,12 +501,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_config_honors_request_hint_over_defaults() {
+        // No llm_config: the request's own provider (from the SDK surface) + model are
+        // honored, not the platform defaults. Anthropic platform key follows the provider.
+        let config = GatewayConfig {
+            default_provider: "openai".into(),
+            default_model: "gpt-4o-mini".into(),
+            platform_openai_api_key: "sk-openai".into(),
+            platform_anthropic_api_key: "sk-ant".into(),
+            ..Default::default()
+        };
+        let store = MockRegistry { config: Some(None), secret: None };
+        let hint = RequestHint { provider: Some("anthropic"), model: Some("claude-3-5-sonnet-20241022") };
+        let r = resolve(&store, &cache(), &config, AGENT, OWNER, hint).await.unwrap();
+        assert_eq!(r.provider, "anthropic");
+        assert_eq!(r.model, "claude-3-5-sonnet-20241022");
+        assert_eq!(r.litellm_model, "anthropic/claude-3-5-sonnet-20241022");
+        assert_eq!(r.api_key, "sk-ant"); // key follows the request's provider, not the default
+        assert!(!r.has_llm_config);
+    }
+
+    #[tokio::test]
+    async fn no_config_falls_back_per_field_when_hint_absent() {
+        // Safety net: a hint field that's None falls back to the platform default for that
+        // field independently (here: provider from hint, model from default).
+        let store = MockRegistry { config: Some(None), secret: None };
+        let hint = RequestHint { provider: Some("openai"), model: None };
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER, hint)
+            .await
+            .unwrap();
+        assert_eq!(r.provider, "openai");
+        assert_eq!(r.model, "gpt-4o-mini"); // model absent in hint → default safety net
+    }
+
+    #[tokio::test]
     async fn missing_secret_row_is_secret_not_found() {
         let store = MockRegistry {
             config: Some(Some(llm_config("anthropic", "claude-x", Some("ANTHROPIC_API_KEY")))),
             secret: None,
         };
-        let err = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", ""), AGENT, OWNER)
+        let err = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", ""), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap_err();
         assert!(matches!(err, GatewayError::SecretNotFound(_, _)));
@@ -390,7 +568,7 @@ mod tests {
             config: Some(Some(llm_config("anthropic", "claude-x", Some("ANTHROPIC_API_KEY")))),
             secret: Some(ciphertext),
         };
-        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", ""), AGENT, OWNER)
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", ""), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap();
         assert_eq!(r.api_key, "sk-real-anthropic-key");
@@ -403,7 +581,7 @@ mod tests {
         c.pinned = true;
         c.pinned_model = Some("claude-locked".into());
         let store = MockRegistry { config: Some(Some(c)), secret: None };
-        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap();
         // The pin surfaces on ResolvedConfig; the router (Level 1) applies it. The
@@ -417,7 +595,7 @@ mod tests {
         let mut c = llm_config("anthropic", "claude-x", None);
         c.pinned = true; // no explicit pinned_model
         let store = MockRegistry { config: Some(Some(c)), secret: None };
-        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap();
         assert_eq!(r.pinned_model.as_deref(), Some("claude-x"));
@@ -429,7 +607,7 @@ mod tests {
             config: Some(Some(llm_config("anthropic", "claude-x", None))),
             secret: None,
         };
-        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER)
+        let r = resolve(&store, &cache(), &cfg("openai", "gpt-4o-mini", "platform-key"), AGENT, OWNER, RequestHint::default())
             .await
             .unwrap();
         assert!(r.pinned_model.is_none());
@@ -465,8 +643,8 @@ mod tests {
         let store = OnceStore { calls: Default::default() };
         let cache = cache();
         let cfg = cfg("openai", "gpt-4o-mini", "platform-key");
-        let a = resolve(&store, &cache, &cfg, AGENT, OWNER).await.unwrap();
-        let b = resolve(&store, &cache, &cfg, AGENT, OWNER).await.unwrap();
+        let a = resolve(&store, &cache, &cfg, AGENT, OWNER, RequestHint::default()).await.unwrap();
+        let b = resolve(&store, &cache, &cfg, AGENT, OWNER, RequestHint::default()).await.unwrap();
         assert_eq!(a.model, b.model);
         assert_eq!(store.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }

@@ -85,17 +85,58 @@ impl RedisCache {
 #[async_trait]
 impl DecisionCache for RedisCache {
     async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
-        let mut conn = self.client.get_multiplexed_async_connection().await.ok()?;
-        let raw: Option<String> = conn.get(Self::key(conv_id, agent_id)).await.ok()?;
-        let wire: WireDecision = serde_json::from_str(&raw?).ok()?;
-        Some(CachedDecision {
-            model: wire.model,
-            tier: wire.tier.and_then(Tier::from_level),
-        })
+        let key = Self::key(conv_id, agent_id);
+        let mut conn = match self.client.get_multiplexed_async_connection().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::decision_cache",
+                    error = %e, %key,
+                    "redis decision cache GET — connection failed; degrading to a cache miss (fail-open)"
+                );
+                return None;
+            }
+        };
+        let raw: Option<String> = conn.get(&key).await.ok()?;
+        match raw {
+            None => {
+                tracing::debug!(
+                    target: "nasiko::llm_router::decision_cache",
+                    %key, "redis decision cache GET — miss (no entry)"
+                );
+                None
+            }
+            Some(raw) => match serde_json::from_str::<WireDecision>(&raw) {
+                Ok(wire) => {
+                    tracing::info!(
+                        target: "nasiko::llm_router::decision_cache",
+                        %key, model = %wire.model, tier = ?wire.tier,
+                        "redis decision cache GET — hit"
+                    );
+                    Some(CachedDecision {
+                        model: wire.model,
+                        tier: wire.tier.and_then(Tier::from_level),
+                    })
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::decision_cache",
+                        error = %e, %key,
+                        "redis decision cache GET — malformed cached value; treating as miss"
+                    );
+                    None
+                }
+            },
+        }
     }
 
     async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
+        let key = Self::key(conv_id, agent_id);
         let Ok(mut conn) = self.client.get_multiplexed_async_connection().await else {
+            tracing::warn!(
+                target: "nasiko::llm_router::decision_cache",
+                %key, "redis decision cache PUT — connection failed; decision not cached (fail-open)"
+            );
             return;
         };
         let wire = WireDecision {
@@ -106,9 +147,19 @@ impl DecisionCache for RedisCache {
             return;
         };
         // SET key payload EX ttl — best-effort; a failure just means the next turn re-derives.
-        let _: Result<(), _> = conn
-            .set_ex(Self::key(conv_id, agent_id), payload, self.ttl_secs)
-            .await;
+        let res: Result<(), _> = conn.set_ex(&key, payload, self.ttl_secs).await;
+        match res {
+            Ok(()) => tracing::info!(
+                target: "nasiko::llm_router::decision_cache",
+                %key, model = %decision.model, tier = ?decision.tier, ttl_secs = self.ttl_secs,
+                "redis decision cache PUT — stored sticky decision"
+            ),
+            Err(e) => tracing::warn!(
+                target: "nasiko::llm_router::decision_cache",
+                error = %e, %key,
+                "redis decision cache PUT — write failed; decision not cached (fail-open)"
+            ),
+        }
     }
 }
 

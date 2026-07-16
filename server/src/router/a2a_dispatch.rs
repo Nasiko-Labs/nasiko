@@ -159,7 +159,7 @@ async fn orchestrator_stream(
 
     let mut agents: Vec<AgentInfo> = Vec::new();
     for summary in &agent_summaries {
-        let endpoint = match resolve_endpoint(state, &summary.id.to_string(), &summary.name).await {
+        let endpoint = match resolve_endpoint(state, &summary.name).await {
             Ok(url) => url,
             Err(_) => continue,
         };
@@ -187,13 +187,7 @@ async fn orchestrator_stream(
     }
 
     let config = OrchestratorConfig {
-        // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
-        // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
-        // default rather than re-reading the env var here with a placeholder
-        // fallback ("deepseek-v4-flash") that doesn't exist on a real OpenAI
-        // endpoint and silently 404s every orchestrator call when OPENAI_MODEL
-        // is unset.
-        model: state.config.openai_model.clone(),
+        model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into()),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         max_turns: 10,
@@ -216,6 +210,19 @@ async fn orchestrator_stream(
     .bind(query)
     .execute(&state.db)
     .await;
+
+    // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
+    // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
+    // back to this row (see derive_boundary_signals) — so compare this flow_id against the
+    // gateway's `nasiko::llm_router::boundary` log to spot a broken trace-propagation chain.
+    tracing::info!(
+        target: "nasiko::flow",
+        %flow_id,
+        context_id = %context_id,
+        task_id = %task_id,
+        %traceparent,
+        "orchestrator flow started — registered flows row; forwarding traceparent (trace_id == flow_id) to agents"
+    );
 
     let caller_uuid: Option<Uuid> = None;
     let guard = CpCallGuard::new(
@@ -246,7 +253,7 @@ async fn orchestrator_stream(
     let db = state.db.clone();
     let usage_tracker = state.usage_tracker.clone();
     let genai_metrics = state.genai_metrics.clone();
-    let orchestrator_model = state.config.openai_model.clone();
+    let orchestrator_model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let orchestrator_start = Instant::now();
 
     let stream = async_stream::stream! {
@@ -456,7 +463,7 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
 ) -> Result<Response, A2aDispatchError> {
-    let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
+    let endpoint = resolve_endpoint(state, &agent.name)
         .await
         .map_err(A2aDispatchError::Internal)?;
 
@@ -762,31 +769,27 @@ fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
-async fn resolve_endpoint(state: &AppState, agent_id: &str, agent_name: &str) -> Result<String, String> {
-    // Containers are UUID-keyed (see `build_agent_spec`), so the runtime lookup
-    // below needs `agent_id`, not `agent_name` — a name-keyed lookup always
-    // misses. `agent_name` is kept only for the DB fallback query and error
-    // messages, which are keyed by name for readability.
-    let agent_id: Uuid = agent_id.parse().map_err(|e| format!("invalid agent id: {e}"))?;
-    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT transport_path, url FROM agents WHERE id = $1 AND status = 'running'",
+async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
+    // One row gives us everything: the UUID (containers are UUID-keyed — see
+    // `build_agent_spec` — so a name-keyed runtime lookup always misses), the
+    // card-declared transport_path, and the deploy-time URL snapshot fallback.
+    let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, transport_path, url FROM agents WHERE name = $1 AND status = 'running'",
     )
-    .bind(agent_id)
+    .bind(agent_name)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| format!("db lookup: {e}"))?;
 
-    let Some((transport_path, stored_url)) = row else {
+    let Some((agent_id, transport_path, stored_url)) = row else {
         return Err(format!("no running agent named '{agent_name}'"));
     };
 
     // The A2A spec fixes no path — it must come from the agent's card, never
-    // be assumed. The a2a-server-lf crate (used by the example agents) mounts
-    // its JSON-RPC handler at the container root, not `/jsonrpc` — a row with
-    // no captured transport_path must default to root, not guess a path the
-    // agent doesn't actually serve.
+    // be assumed. Rows predating transport_path get the legacy Nasiko mount.
     let path = match transport_path.as_deref() {
-        None | Some("/") | Some("") => "",
+        None => "/jsonrpc",
+        Some("/") | Some("") => "",
         Some(p) => p,
     };
 

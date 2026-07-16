@@ -73,8 +73,31 @@ impl LlmRouterCtx {
     /// client). Gateway-specific config is read from the environment.
     pub fn from_shared(db: PgPool, http: reqwest::Client) -> Self {
         let cfg = GatewayConfig::from_env();
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            default_provider = %cfg.default_provider,
+            default_model = %cfg.default_model,
+            agent_jwt_secret_set = !cfg.agent_jwt_secret.is_empty(),
+            agent_jwt_algorithm = %cfg.agent_jwt_algorithm,
+            platform_openai_api_key_set = !cfg.platform_openai_api_key.is_empty(),
+            platform_anthropic_api_key_set = !cfg.platform_anthropic_api_key.is_empty(),
+            platform_gemini_api_key_set = !cfg.platform_gemini_api_key.is_empty(),
+            llm_config_cache_ttl_secs = cfg.llm_config_cache_ttl_secs,
+            redis_url_set = !cfg.redis_url.is_empty(),
+            router_decision_ttl_secs = cfg.router_decision_ttl_secs,
+            openai_api_base = %cfg.openai_api_base,
+            anthropic_api_base = %cfg.anthropic_api_base,
+            gemini_api_base = %cfg.gemini_api_base,
+            llm_gateway_base_url = %cfg.llm_gateway_base_url,
+            "llm-router: initializing with effective GatewayConfig"
+        );
+        log_seed_registry();
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(cfg.llm_config_cache_ttl_secs)));
         let tier_registry = Arc::new(PgTierRegistry::new(db.clone()));
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            "llm-router: tier registry = PgTierRegistry (DB model_registry table, static seeds as fallback)"
+        );
         let router_cache = build_router_cache(&cfg);
         Self {
             db,
@@ -92,13 +115,45 @@ impl LlmRouterCtx {
 /// degrades to `NoopCache` rather than failing startup — the cache is never load-bearing.
 fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
     if cfg.redis_url.is_empty() {
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            "llm-router: REDIS_URL unset → decision cache = NoopCache (every request re-derives its model; fail-open)"
+        );
         return Arc::new(NoopCache);
     }
     match redis::Client::open(cfg.redis_url.as_str()) {
-        Ok(client) => Arc::new(RedisCache::new(client, cfg.router_decision_ttl_secs)),
+        Ok(client) => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                ttl_secs = cfg.router_decision_ttl_secs,
+                "llm-router: decision cache = RedisCache (conversation-sticky model decisions)"
+            );
+            Arc::new(RedisCache::new(client, cfg.router_decision_ttl_secs))
+        }
         Err(e) => {
-            tracing::warn!(error = %e, "invalid REDIS_URL; router decision cache disabled");
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                error = %e, "invalid REDIS_URL; router decision cache disabled (NoopCache)"
+            );
             Arc::new(NoopCache)
+        }
+    }
+}
+
+/// Log the built-in static tier→model seed table at startup, so the effective
+/// `(provider, tier)` → model mapping is visible without a DB round-trip. The DB
+/// `model_registry` table (migration 018) can override any of these per row.
+fn log_seed_registry() {
+    use routing::Tier;
+    for provider in ["anthropic", "openai"] {
+        for tier in [Tier::Tier1, Tier::Tier2, Tier::Tier3] {
+            if let Some(model) = StaticTierRegistry::seed(provider, tier) {
+                tracing::info!(
+                    target: "nasiko::llm_router::startup",
+                    %provider, tier = ?tier, tier_level = tier.as_level(), %model,
+                    "llm-router: static tier seed (DB model_registry may override)"
+                );
+            }
         }
     }
 }

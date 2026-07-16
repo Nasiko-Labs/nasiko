@@ -13,8 +13,9 @@ fn object_embedding() -> String {
     "embedding".to_string()
 }
 
-/// Inbound embeddings request. `model` is discarded like chat (C4). `input` may be a
-/// string, an array of strings, or token-id arrays — kept as raw JSON.
+/// Inbound embeddings request. `model` is honored only for agents with no `llm_config`
+/// (passthrough), like chat — a configured agent ignores it. `input` may be a string, an
+/// array of strings, or token-id arrays — kept as raw JSON.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmbeddingsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]

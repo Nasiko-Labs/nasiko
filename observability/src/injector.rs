@@ -132,38 +132,54 @@ def _install():
         if getattr(_original, "_nasiko_instrumented", False):
             return
 
+        # Resolve the a2a-sdk "build a Task from the inbound message" helper ONCE,
+        # tolerating both its module moving (a2a.helpers → a2a.utils; 0.3.x has no
+        # a2a.helpers) and its rename (new_task_from_user_message → new_task in 0.3.x).
+        # None ⇒ we skip the session.id attribute only; span parenting still runs.
+        _new_task = None
+        for _modname in ("a2a.utils", "a2a.utils.task", "a2a.helpers"):
+            try:
+                _mod = __import__(_modname, fromlist=["*"])
+            except Exception:
+                continue
+            for _fname in ("new_task_from_user_message", "new_task"):
+                _fn = getattr(_mod, _fname, None)
+                if callable(_fn):
+                    _new_task = _fn
+                    break
+            if _new_task is not None:
+                break
+
         @functools.wraps(_original)
         async def _instrumented(self, context, event_queue):
-            # Resolve the A2A task to get the session (context) ID.
-            try:
-                from a2a.helpers import new_task_from_user_message
-
-                task = context.current_task or new_task_from_user_message(
-                    context.message
-                )
-                session_id = task.context_id
-            except Exception:
-                # If session resolution fails, run the original unmodified.
-                return await _original(self, context, event_queue)
-
-            tracer = trace.get_tracer("nasiko.agent")
-
-            # Use the W3C context extracted from the HTTP request by
-            # _TraceparentMiddleware (step 2).  asyncio copies ContextVars into
-            # child Tasks, so this value is the one from the specific request that
-            # spawned this execute() Task — not leaked from a previous request.
-            # Falling back to an empty Context() ensures a fresh root span when
-            # no traceparent header was present (e.g. direct agent card fetches).
+            # Parent the agent's work under the incoming request's trace context so
+            # the auto-instrumented outbound LLM call propagates the SAME trace id —
+            # which the gateway maps back to the platform flow (enabling the model
+            # router/classifier). This MUST happen regardless of whether the
+            # session.id can be resolved; gating it behind a best-effort helper (as a
+            # previous version did) silently broke trace propagation whenever the
+            # a2a-sdk helper import failed.
+            #
+            # The W3C context was extracted from the HTTP request by
+            # _TraceparentMiddleware. asyncio copies ContextVars into child Tasks, so
+            # this is the context from the specific request that spawned this Task.
+            # An empty Context() ⇒ a fresh root span when no traceparent was present.
             parent_ctx = _request_otel_ctx.get()
             if parent_ctx is None:
                 parent_ctx = otel_context.Context()
 
-            # start_as_current_span with an explicit context= means the span is
-            # parented under the incoming request's trace rather than whatever
-            # context happens to be active in the asyncio event loop.  This is
-            # what prevents all requests from landing in the same Tempo trace.
+            tracer = trace.get_tracer("nasiko.agent")
             with tracer.start_as_current_span("agent.request", context=parent_ctx) as span:
-                span.set_attribute("session.id", session_id)
+                # Best-effort session grouping — never let it break span parenting.
+                try:
+                    task = context.current_task
+                    if task is None and _new_task is not None:
+                        task = _new_task(context.message)
+                    session_id = getattr(task, "context_id", None)
+                    if session_id:
+                        span.set_attribute("session.id", session_id)
+                except Exception:
+                    pass
                 return await _original(self, context, event_queue)
 
         _instrumented._nasiko_instrumented = True

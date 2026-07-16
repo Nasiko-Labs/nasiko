@@ -78,7 +78,17 @@ impl StaticTierRegistry {
 #[async_trait]
 impl TierRegistry for StaticTierRegistry {
     async fn model_for(&self, provider: &str, tier: Tier) -> Option<String> {
-        Self::seed(provider, tier).map(str::to_string)
+        let model = Self::seed(provider, tier).map(str::to_string);
+        tracing::debug!(
+            target: "nasiko::llm_router::registry",
+            registry = "static-seed",
+            provider = %provider,
+            tier = ?tier,
+            tier_level = tier.as_level(),
+            model = ?model,
+            "tier registry lookup (static seed table)"
+        );
+        model
     }
 }
 
@@ -106,11 +116,28 @@ impl TierRegistry for PgTierRegistry {
                 .fetch_optional(&self.db)
                 .await;
         match row {
-            Ok(Some((model,))) => Some(model),
+            Ok(Some((model,))) => {
+                tracing::info!(
+                    target: "nasiko::llm_router::registry",
+                    registry = "postgres:model_registry",
+                    provider = %key, tier = ?tier, tier_level = tier.as_level(),
+                    model = %model,
+                    "tier registry lookup — resolved from DB model_registry table (tier→model override)"
+                );
+                Some(model)
+            }
             // No configured row for this provider/tier ⇒ fall back to the seeds.
-            Ok(None) => self.fallback.model_for(provider, tier).await,
+            Ok(None) => {
+                tracing::debug!(
+                    target: "nasiko::llm_router::registry",
+                    provider = %key, tier = ?tier,
+                    "tier registry lookup — no DB row for (provider, tier); falling back to static seed table"
+                );
+                self.fallback.model_for(provider, tier).await
+            }
             Err(e) => {
                 tracing::warn!(
+                    target: "nasiko::llm_router::registry",
                     error = %e, provider = %key, tier = ?tier,
                     "model_registry read failed; using static seed fallback"
                 );

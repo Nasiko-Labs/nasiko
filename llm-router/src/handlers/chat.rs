@@ -26,7 +26,7 @@ use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
 use crate::providers::{ProviderError, fallback};
-use crate::resolver::{PgRegistry, RegistryStore, resolve};
+use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, Mode, RouteInputs};
 use crate::usage::{self, UsageRecord};
@@ -84,13 +84,34 @@ async fn chat_core(
 ) -> Result<Response, GatewayError> {
     let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
     let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id, %owner_id, ?format,
+        has_traceparent = headers.get(TRACEPARENT_HEADER).is_some(),
+        "chat_core: request received (JWT verified)"
+    );
 
     let inbound = inbound_for(format);
     let mut req = inbound.parse_chat(body)?;
     if let Some(stream) = force_stream {
         req.stream = Some(stream);
     }
-    let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id).await?;
+    tracing::debug!(
+        target: "nasiko::llm_router::chat",
+        %agent_id,
+        message_count = req.messages.len(),
+        streaming = req.is_streaming(),
+        requested_model = ?req.model,
+        "chat_core: parsed inbound request (NOTE: requested_model is authoritative only when the agent has no llm_config — see resolver)"
+    );
+    // No-llm_config agents are routed to what the request itself asked for: the provider
+    // implied by the inbound SDK surface + the request body's model (defaults are the
+    // last-resort safety net). A configured agent ignores this hint.
+    let hint = RequestHint {
+        provider: Some(format.provider_label()),
+        model: req.model.as_deref(),
+    };
+    let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
 
     // Model routing: the resolver fixed the provider/key/params; the router may override
     // the *model* at a conversation boundary (else it stays the resolved model). Signals are
@@ -112,20 +133,45 @@ async fn chat_core(
         },
     )
     .await;
-    tracing::debug!(
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id,
         source = ?decision.source, tier = ?decision.tier,
-        provider = %resolved.provider, model = %decision.model,
-        "model routing decision"
+        provider = %resolved.provider,
+        resolved_model = %resolved.model,
+        decision_model = %decision.model,
+        model_overridden = decision.model != resolved.model,
+        "chat_core: model routing decision"
     );
     if decision.model != resolved.model {
+        tracing::info!(
+            target: "nasiko::llm_router::chat",
+            %agent_id,
+            from = %resolved.model, to = %decision.model,
+            "chat_core: router overrode the resolved model"
+        );
         resolved.litellm_model = format!("{}/{}", resolved.provider, decision.model);
         resolved.model = decision.model;
     }
     if resolved.pinned_model.is_some() {
         // Compliance lock (Level 1): a pinned agent never re-routes. Disable fallbacks so an
         // unavailable pinned model surfaces its error instead of silently switching models.
+        tracing::info!(
+            target: "nasiko::llm_router::chat",
+            %agent_id, pinned_model = ?resolved.pinned_model,
+            "chat_core: agent is pinned — fallbacks disabled (compliance lock)"
+        );
         resolved.fallback_models.clear();
     }
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id,
+        litellm_model = %resolved.litellm_model,
+        provider = %resolved.provider,
+        fallback_models = ?resolved.fallback_models,
+        streaming = req.is_streaming(),
+        "chat_core: final model selected — dispatching to provider"
+    );
 
     let started = Instant::now();
 
@@ -174,8 +220,17 @@ async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> Boun
         .and_then(|v| v.to_str().ok())
         .and_then(parse_flow_id)
     else {
+        tracing::info!(
+            target: "nasiko::llm_router::boundary",
+            conv_id = "None",
+            "derive_boundary_signals: no/unparseable traceparent → INERT (router will not fire; resolved model used)"
+        );
         return BoundarySignals::inert();
     };
+    tracing::debug!(
+        target: "nasiko::llm_router::boundary",
+        %flow_id, "derive_boundary_signals: parsed flow_id from traceparent; looking up flow in DB"
+    );
 
     let row: Result<Option<(Option<String>,)>, sqlx::Error> =
         sqlx::query_as("SELECT metadata->>'mode' FROM flows WHERE flow_id = $1")
@@ -185,11 +240,29 @@ async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> Boun
     match row {
         Ok(Some((mode,))) => {
             let mode = mode.as_deref().map(Mode::from_label).unwrap_or(Mode::FreeFlowing);
-            BoundarySignals::in_flow(flow_id, mode)
+            let signals = BoundarySignals::in_flow(flow_id.clone(), mode);
+            tracing::info!(
+                target: "nasiko::llm_router::boundary",
+                %flow_id, mode = ?mode, phase = ?signals.phase,
+                is_fireable_boundary = signals.is_fireable_boundary(),
+                "derive_boundary_signals: known flow → IN-FLOW signals (router may re-select the model at this boundary)"
+            );
+            signals
         }
-        Ok(None) => BoundarySignals::inert(), // trace id isn't a known flow → don't fire
+        Ok(None) => {
+            tracing::info!(
+                target: "nasiko::llm_router::boundary",
+                flow_id_lookup = %flow_id,
+                conv_id = "None",
+                "derive_boundary_signals: forwarded trace id is not a known flow → INERT (router will not fire; check the orchestrator's `nasiko::flow` flow_id — a mismatch means the agent didn't propagate the trace)"
+            );
+            BoundarySignals::inert() // trace id isn't a known flow → don't fire
+        }
         Err(e) => {
-            tracing::warn!(error = %e, %flow_id, "flow lookup failed; router inert for request");
+            tracing::warn!(
+                target: "nasiko::llm_router::boundary",
+                error = %e, %flow_id, "derive_boundary_signals: flow lookup failed; router INERT for request"
+            );
             BoundarySignals::inert()
         }
     }
@@ -366,22 +439,41 @@ mod tests {
         crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap()
     }
 
+    /// An llm_config pinning the destination to OpenAI `gpt-4o-mini` — used by the format-
+    /// translation tests so a non-OpenAI inbound surface still routes to the mocked OpenAI
+    /// endpoint (isolating inbound/outbound translation from the no-config passthrough path).
+    fn openai_config() -> LLMConfig {
+        LLMConfig {
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+            fallback_models: vec![],
+            temperature: None,
+            max_tokens: None,
+            api_key_secret_name: None,
+            pinned: false,
+            pinned_model: None,
+        }
+    }
+
     async fn body_string(resp: Response) -> String {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
     #[tokio::test]
-    async fn end_to_end_discards_request_model_and_returns_openai_shape() {
+    async fn end_to_end_honors_request_model_when_no_config_and_returns_openai_shape() {
+        // No llm_config ⇒ the request's own model ("gpt-4o") is honored (passthrough),
+        // NOT the platform default ("gpt-4o-mini"). Provider stays openai (the OpenAI SDK
+        // surface). The response `model` is normalized to that resolved model.
         let mut server = mockito::Server::new_async().await;
         server
             .mock("POST", "/chat/completions")
-            .match_body(mockito::Matcher::PartialJson(json!({ "model": "gpt-4o-mini" })))
+            .match_body(mockito::Matcher::PartialJson(json!({ "model": "gpt-4o" })))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
                 json!({
-                    "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o-mini-2024",
+                    "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o-2024",
                     "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hello" }, "finish_reason": "stop" }],
                     "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
                 })
@@ -396,15 +488,15 @@ mod tests {
         let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, InboundFormat::OpenAi, None).await.unwrap();
 
         let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
-        assert_eq!(v["model"], "gpt-4o-mini");
+        assert_eq!(v["model"], "gpt-4o");
         assert_eq!(v["choices"][0]["message"]["content"], "hello");
         assert_eq!(v["usage"]["total_tokens"], 7);
     }
 
     #[tokio::test]
     async fn anthropic_inbound_parses_and_renders_anthropic_shape() {
-        // An Anthropic-SDK agent POSTs an Anthropic request; we route to the (default)
-        // OpenAI provider and must return an Anthropic-shaped response.
+        // An Anthropic-SDK agent POSTs an Anthropic request; its llm_config pins the
+        // destination to the OpenAI provider, and we must return an Anthropic-shaped response.
         let mut server = mockito::Server::new_async().await;
         server
             .mock("POST", "/chat/completions")
@@ -424,7 +516,7 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store { config: None };
+        let store = Store { config: Some(openai_config()) };
         // Anthropic Messages request shape: top-level system + max_tokens.
         let body = json!({
             "model": "claude-3-5-sonnet-20241022",
@@ -449,8 +541,8 @@ mod tests {
 
     #[tokio::test]
     async fn gemini_inbound_parses_and_renders_gemini_shape() {
-        // A Gemini-SDK agent POSTs a Gemini request; we route to the (default) OpenAI
-        // provider and must return a Gemini `GenerateContentResponse` shape.
+        // A Gemini-SDK agent POSTs a Gemini request; its llm_config pins the destination to
+        // the OpenAI provider, and we must return a Gemini `GenerateContentResponse` shape.
         let mut server = mockito::Server::new_async().await;
         server
             .mock("POST", "/chat/completions")
@@ -469,7 +561,7 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store { config: None };
+        let store = Store { config: Some(openai_config()) };
         // Gemini Messages request shape: systemInstruction + contents.
         let body = json!({
             "systemInstruction": { "parts": [{ "text": "sys" }] },
@@ -514,8 +606,8 @@ mod tests {
 
         let body = body_string(resp).await;
         assert!(body.contains("\"content\":\"hi\""));
-        // model normalized to the resolved id inside the streamed chunks
-        assert!(body.contains("\"model\":\"gpt-4o-mini\""));
+        // No config ⇒ the request model is honored; chunks are normalized to that resolved id.
+        assert!(body.contains("\"model\":\"gpt-4o\""));
         assert!(body.trim_end().ends_with("data: [DONE]"));
     }
 

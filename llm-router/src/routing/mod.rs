@@ -36,7 +36,9 @@ pub enum RouteSource {
     Classified,
     /// Level 4 — the agent's configured (`llm_config`) model.
     Config,
-    /// Level 5 — the platform default model.
+    /// Level 5 — no `llm_config`: the resolver's passthrough model (the request's own
+    /// provider/model, per the inbound SDK surface), or the platform default as the
+    /// last-resort safety net when the request supplied none.
     Default,
 }
 
@@ -81,66 +83,164 @@ pub struct RouteDecision {
 ///    with a query present and a registry entry for `(provider, tier)`. Write-through to
 ///    the cache so the next turn short-circuits at Level 2.
 /// 4. **Config** — the agent's configured model (`has_llm_config`).
-/// 5. **Default** — the platform default model.
+/// 5. **Default** — no `llm_config`: the resolver's `fallback_model`, which is the request's
+///    own provider/model (passthrough) or the platform default as the last-resort safety net.
 pub async fn route_model(
     cache: &dyn DecisionCache,
     registry: &dyn TierRegistry,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
+    tracing::info!(
+        target: "nasiko::llm_router::routing",
+        agent_id = %inputs.agent_id,
+        provider = %inputs.provider,
+        fallback_model = %inputs.fallback_model,
+        has_llm_config = inputs.has_llm_config,
+        pinned_model = ?inputs.pinned_model,
+        conv_id = ?inputs.signals.conv_id,
+        phase = ?inputs.signals.phase,
+        mode = ?inputs.signals.mode,
+        is_fireable_boundary = inputs.signals.is_fireable_boundary(),
+        has_query = inputs.query.is_some(),
+        "route_model: begin 5-level precedence resolution"
+    );
+
     // Level 1 — pinned. Return directly; never cache, never re-route (that would defeat
     // the compliance lock — an unavailable pinned model surfaces downstream, not here).
     if let Some(model) = inputs.pinned_model {
+        tracing::info!(
+            target: "nasiko::llm_router::routing",
+            agent_id = %inputs.agent_id,
+            level = 1,
+            source = ?RouteSource::Pinned,
+            model = %model,
+            "route_model: LEVEL 1 (Pinned) — agent is compliance-locked; using pinned model, classifier skipped, cache bypassed"
+        );
         return RouteDecision {
             model: model.to_string(),
             tier: None,
             source: RouteSource::Pinned,
         };
     }
+    tracing::debug!(
+        target: "nasiko::llm_router::routing",
+        "route_model: LEVEL 1 (Pinned) skipped — agent not pinned"
+    );
 
     // Levels 2 & 3 apply only within a conversation. No `conv_id` (a direct-SDK agent not
     // driven by the orchestrator) ⇒ the router never fires and behaviour is identical to
     // before this layer — straight to the configured/default model.
     if let Some(conv_id) = inputs.signals.conv_id.as_deref() {
         // Level 2 — cache hit: the sticky decision for this conversation+agent.
+        tracing::debug!(
+            target: "nasiko::llm_router::routing",
+            agent_id = %inputs.agent_id, %conv_id,
+            "route_model: LEVEL 2 (CacheHit) — looking up sticky decision for (conv_id, agent_id)"
+        );
         if let Some(hit) = cache.get(conv_id, inputs.agent_id).await {
+            tracing::info!(
+                target: "nasiko::llm_router::routing",
+                agent_id = %inputs.agent_id, %conv_id,
+                level = 2,
+                source = ?RouteSource::CacheHit,
+                model = %hit.model,
+                tier = ?hit.tier,
+                "route_model: LEVEL 2 (CacheHit) — reusing conversation-sticky model from decision cache"
+            );
             return RouteDecision {
                 model: hit.model,
                 tier: hit.tier,
                 source: RouteSource::CacheHit,
             };
         }
+        tracing::debug!(
+            target: "nasiko::llm_router::routing",
+            agent_id = %inputs.agent_id, %conv_id,
+            "route_model: LEVEL 2 (CacheHit) miss — no sticky decision cached yet"
+        );
 
         // Level 3 — classify, but only at a boundary where re-selecting is safe.
         if inputs.signals.is_fireable_boundary()
             && let Some(query) = inputs.query
         {
+            tracing::info!(
+                target: "nasiko::llm_router::routing",
+                agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
+                "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
+            );
             let tier = classify(query, inputs.provider);
-            if let Some(model) = registry.model_for(inputs.provider, tier).await {
-                let decision = CachedDecision {
-                    model,
-                    tier: Some(tier),
-                };
-                // Write-through so continuation turns read the cache (Level 2).
-                cache.put(conv_id, inputs.agent_id, &decision).await;
-                return RouteDecision {
-                    model: decision.model,
-                    tier: Some(tier),
-                    source: RouteSource::Classified,
-                };
+            match registry.model_for(inputs.provider, tier).await {
+                Some(model) => {
+                    let decision = CachedDecision {
+                        model,
+                        tier: Some(tier),
+                    };
+                    // Write-through so continuation turns read the cache (Level 2).
+                    cache.put(conv_id, inputs.agent_id, &decision).await;
+                    tracing::info!(
+                        target: "nasiko::llm_router::routing",
+                        agent_id = %inputs.agent_id, %conv_id,
+                        level = 3,
+                        source = ?RouteSource::Classified,
+                        provider = %inputs.provider,
+                        tier = ?tier,
+                        model = %decision.model,
+                        "route_model: LEVEL 3 (Classified) — registry resolved (provider, tier) → model; wrote decision to cache for continuation turns"
+                    );
+                    return RouteDecision {
+                        model: decision.model,
+                        tier: Some(tier),
+                        source: RouteSource::Classified,
+                    };
+                }
+                None => {
+                    // Registry miss for this provider ⇒ fall through to configured/default model.
+                    tracing::warn!(
+                        target: "nasiko::llm_router::routing",
+                        agent_id = %inputs.agent_id, %conv_id,
+                        provider = %inputs.provider, tier = ?tier,
+                        "route_model: LEVEL 3 (Classified) — registry has no model for (provider, tier); falling through to configured/default model"
+                    );
+                }
             }
-            // Registry miss for this provider ⇒ fall through to configured/default model.
+        } else {
+            tracing::debug!(
+                target: "nasiko::llm_router::routing",
+                agent_id = %inputs.agent_id, %conv_id,
+                is_fireable_boundary = inputs.signals.is_fireable_boundary(),
+                has_query = inputs.query.is_some(),
+                "route_model: LEVEL 3 (Classified) skipped — not a fireable boundary or no query (model stays sticky)"
+            );
         }
+    } else {
+        tracing::debug!(
+            target: "nasiko::llm_router::routing",
+            agent_id = %inputs.agent_id,
+            "route_model: LEVELS 2 & 3 skipped — no conv_id (not an orchestrated conversation); behaviour identical to pre-router"
+        );
     }
 
     // Levels 4/5 — configured model, else platform default.
+    let source = if inputs.has_llm_config {
+        RouteSource::Config
+    } else {
+        RouteSource::Default
+    };
+    tracing::info!(
+        target: "nasiko::llm_router::routing",
+        agent_id = %inputs.agent_id,
+        level = if inputs.has_llm_config { 4 } else { 5 },
+        source = ?source,
+        model = %inputs.fallback_model,
+        "route_model: LEVEL {} ({}) — using {} model",
+        if inputs.has_llm_config { 4 } else { 5 },
+        if inputs.has_llm_config { "Config" } else { "Default" },
+        if inputs.has_llm_config { "agent-configured (llm_config)" } else { "request-passthrough or platform-default" }
+    );
     RouteDecision {
         model: inputs.fallback_model.to_string(),
         tier: None,
-        source: if inputs.has_llm_config {
-            RouteSource::Config
-        } else {
-            RouteSource::Default
-        },
+        source,
     }
 }
 

@@ -6,9 +6,8 @@
 //! records the fallback when one fires.
 //!
 //! Key selection (decision §6.5): a fallback whose provider matches the primary reuses
-//! the resolved key; a cross-provider fallback uses the platform key (which is an
-//! OpenAI key — so cross-provider fallback realistically targets OpenAI). A fallback
-//! with no usable key is skipped.
+//! the resolved key; a cross-provider fallback uses that provider's platform key (see
+//! [`GatewayConfig::platform_key_for`]). A fallback with no usable key is skipped.
 
 use futures::stream::BoxStream;
 
@@ -33,10 +32,14 @@ pub async fn execute_chat(
     let mut last: Option<GatewayError> = None;
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
+        log_request("chat", attempt, i, total);
         match provider_for(&attempt.provider, http, cfg) {
             Err(e) => last = Some(e),
             Ok(provider) => match provider.chat(req, attempt).await {
-                Ok(resp) => return Ok((resp, (attempt.provider.clone(), attempt.model.clone()))),
+                Ok(resp) => {
+                    log_response("chat", attempt, &resp);
+                    return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
+                }
                 Err(e) => {
                     warn_attempt(attempt, &e, i, total);
                     last = Some(e.into());
@@ -60,10 +63,19 @@ pub async fn execute_chat_stream(
     let mut last: Option<GatewayError> = None;
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
+        log_request("chat_stream", attempt, i, total);
         match provider_for(&attempt.provider, http, cfg) {
             Err(e) => last = Some(e),
             Ok(provider) => match provider.chat_stream(req, attempt).await {
-                Ok(stream) => return Ok((stream, (attempt.provider.clone(), attempt.model.clone()))),
+                Ok(stream) => {
+                    tracing::info!(
+                        target: "nasiko::llm_router::provider",
+                        provider = %attempt.provider,
+                        model = %attempt.model,
+                        "provider response ← chat_stream established (body streamed as SSE chunks)"
+                    );
+                    return Ok((stream, (attempt.provider.clone(), attempt.model.clone())));
+                }
                 Err(e) => {
                     warn_attempt(attempt, &e, i, total);
                     last = Some(e.into());
@@ -87,10 +99,14 @@ pub async fn execute_embeddings(
     let mut last: Option<GatewayError> = None;
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
+        log_request("embeddings", attempt, i, total);
         match provider_for(&attempt.provider, http, cfg) {
             Err(e) => last = Some(e),
             Ok(provider) => match provider.embeddings(req, attempt).await {
-                Ok(resp) => return Ok((resp, (attempt.provider.clone(), attempt.model.clone()))),
+                Ok(resp) => {
+                    log_response("embeddings", attempt, &resp);
+                    return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
+                }
                 Err(e) => {
                     warn_attempt(attempt, &e, i, total);
                     last = Some(e.into());
@@ -99,6 +115,35 @@ pub async fn execute_embeddings(
         }
     }
     Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
+}
+
+/// Log the outbound request to an upstream LLM — provider + model only (never the
+/// prompt/messages or the api key). Emitted per attempt so fallbacks are visible.
+fn log_request(op: &str, attempt: &ResolvedConfig, i: usize, total: usize) {
+    tracing::info!(
+        target: "nasiko::llm_router::provider",
+        op,
+        provider = %attempt.provider,
+        model = %attempt.model,
+        attempt = i + 1,
+        of = total,
+        "provider request → dispatching {op} to upstream LLM (provider/model)"
+    );
+}
+
+/// Log the response body returned by the upstream LLM. `info!` so it shows at the
+/// default log level; bodies can be large, so filter this target down to `warn` if
+/// it gets noisy (`RUST_LOG=nasiko::llm_router::provider=warn`).
+fn log_response<T: serde::Serialize>(op: &str, attempt: &ResolvedConfig, resp: &T) {
+    tracing::info!(
+        target: "nasiko::llm_router::provider",
+        op,
+        provider = %attempt.provider,
+        model = %attempt.model,
+        response_body = %serde_json::to_string(resp)
+            .unwrap_or_else(|e| format!("<serialize error: {e}>")),
+        "provider response ← {op} body"
+    );
 }
 
 fn warn_attempt(attempt: &ResolvedConfig, err: &ProviderError, i: usize, total: usize) {
@@ -118,10 +163,13 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
 
     for entry in &primary.fallback_models {
         let (provider, model) = split_prefixed(entry, &primary.provider);
+        // Same provider ⇒ reuse the resolved key (may be a per-user secret). A
+        // cross-provider fallback can't use that key, so fall back to the platform
+        // key for that provider.
         let api_key = if provider == primary.provider {
             primary.api_key.clone()
         } else {
-            cfg.platform_openai_api_key.clone()
+            cfg.platform_key_for(&provider).to_string()
         };
         if api_key.is_empty() {
             tracing::warn!(%entry, "skipping fallback: no api key available");

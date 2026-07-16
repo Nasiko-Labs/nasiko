@@ -47,7 +47,14 @@ impl ProviderClient for OpenAiProvider {
         let mut out = req.clone();
         out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
         out.temperature = cfg.temperature.or(req.temperature); // resolved wins when set
-        out.max_tokens = cfg.max_tokens.or(req.max_tokens);
+        // OpenAI deprecated `max_tokens`; newer models reject it. Emit the current
+        // `max_completion_tokens` param instead (via passthrough; the named field is
+        // cleared so it doesn't also serialize).
+        out.max_tokens = None;
+        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
+            out.extra
+                .insert("max_completion_tokens".to_string(), json!(mt));
+        }
         out.stream = Some(false);
 
         let resp = self
@@ -81,7 +88,12 @@ impl ProviderClient for OpenAiProvider {
         let mut out = req.clone();
         out.model = Some(cfg.model.clone());
         out.temperature = cfg.temperature.or(req.temperature);
-        out.max_tokens = cfg.max_tokens.or(req.max_tokens);
+        // See `chat` — OpenAI wants `max_completion_tokens`, not the deprecated `max_tokens`.
+        out.max_tokens = None;
+        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
+            out.extra
+                .insert("max_completion_tokens".to_string(), json!(mt));
+        }
         out.stream = Some(true);
         // Ask OpenAI to emit a final usage chunk (off by default when streaming).
         out.extra
@@ -193,7 +205,9 @@ mod tests {
             // outbound must carry the RESOLVED model (request's "gpt-4o" discarded),
             // the resolved temperature (0.2, not the request's 0.9), and stream:false.
             .match_body(mockito::Matcher::PartialJson(json!({
-                "model": "gpt-4o-mini", "temperature": 0.2, "stream": false
+                "model": "gpt-4o-mini", "temperature": 0.2, "stream": false,
+                // request's max_tokens must be emitted as max_completion_tokens
+                "max_completion_tokens": 256
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -205,7 +219,8 @@ mod tests {
         let req: ChatRequest = serde_json::from_value(json!({
             "model": "gpt-4o",
             "messages": [{ "role": "user", "content": "hi" }],
-            "temperature": 0.9
+            "temperature": 0.9,
+            "max_tokens": 256
         }))
         .unwrap();
         let resp = provider.chat(&req, &resolved("gpt-4o-mini", Some(0.2))).await.unwrap();

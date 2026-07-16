@@ -46,6 +46,20 @@ impl InboundFormat {
             _ => InboundFormat::OpenAi,
         }
     }
+
+    /// The destination-provider label this SDK surface implies, matching the provider
+    /// strings used by [`crate::config::GatewayConfig::platform_key_for`] and
+    /// [`crate::providers::provider_for`]. Used only as the passthrough provider hint when
+    /// an agent has no `llm_config` — the request's own SDK is honored before the platform
+    /// default (the model comes from the request body, this provider from the same call, so
+    /// the pair is self-consistent).
+    pub fn provider_label(self) -> &'static str {
+        match self {
+            InboundFormat::OpenAi => "openai",
+            InboundFormat::Anthropic => "anthropic",
+            InboundFormat::Gemini => "gemini",
+        }
+    }
 }
 
 /// Select the inbound parser for a wire format. Mirrors `providers::provider_for`: the

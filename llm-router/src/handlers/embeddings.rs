@@ -15,7 +15,7 @@ use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::providers::fallback;
-use crate::resolver::{PgRegistry, RegistryStore, resolve};
+use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::usage::{self, UsageRecord};
 
 /// Axum handler. Builds the Postgres-backed store and delegates to [`embeddings_core`].
@@ -37,10 +37,16 @@ async fn embeddings_core(
     let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
     let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
 
-    // `model` is discarded (C4) just like chat — resolved config is authoritative.
+    // Embeddings speak the OpenAI surface only. A configured agent ignores the request
+    // model; a no-llm_config agent is routed to what it asked for (openai + request model),
+    // with the platform default as the last-resort safety net.
     let inbound = inbound_for(InboundFormat::OpenAi);
     let req = inbound.parse_embeddings(body)?;
-    let resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id).await?;
+    let hint = RequestHint {
+        provider: Some(InboundFormat::OpenAi.provider_label()),
+        model: req.model.as_deref(),
+    };
+    let resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
 
     // Ordered fallbacks (same rules as chat); usage records the effective provider/model.
     let started = Instant::now();
@@ -90,7 +96,8 @@ mod tests {
             &self,
             _: Uuid,
         ) -> Result<Option<Option<LLMConfig>>, sqlx::Error> {
-            // defaults → openai / gpt-4o-mini (the configured default model)
+            // No llm_config ⇒ passthrough: provider openai (the embeddings surface) + the
+            // request's own model, defaults only as the safety net.
             Ok(Some(None))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -129,18 +136,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openai_embeddings_end_to_end() {
+    async fn openai_embeddings_end_to_end_honors_request_model() {
+        // No llm_config ⇒ the request's own model ("text-embedding-3-large") is honored,
+        // not the platform default ("text-embedding-3-small").
         let mut server = mockito::Server::new_async().await;
         server
             .mock("POST", "/embeddings")
-            .match_body(mockito::Matcher::PartialJson(json!({ "model": "text-embedding-3-small" })))
+            .match_body(mockito::Matcher::PartialJson(json!({ "model": "text-embedding-3-large" })))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
                 json!({
                     "object": "list",
                     "data": [{ "object": "embedding", "embedding": [0.1, 0.2, 0.3], "index": 0 }],
-                    "model": "text-embedding-3-small",
+                    "model": "text-embedding-3-large",
                     "usage": { "prompt_tokens": 4, "total_tokens": 4 }
                 })
                 .to_string(),
@@ -150,12 +159,12 @@ mod tests {
 
         let ctx = ctx_with(server.url());
         let token = crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
-        let body = json!({ "model": "irrelevant", "input": "hello" });
+        let body = json!({ "model": "text-embedding-3-large", "input": "hello" });
         let resp = embeddings_core(&ctx, &Store, &auth_headers(&token), body).await.unwrap();
 
         let v = body_json(resp).await;
         assert_eq!(v["object"], "list");
-        assert_eq!(v["model"], "text-embedding-3-small");
+        assert_eq!(v["model"], "text-embedding-3-large");
         assert_eq!(v["data"][0]["embedding"][1], 0.2);
     }
 }
