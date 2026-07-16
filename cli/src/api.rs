@@ -169,6 +169,20 @@ impl Client {
         Ok(())
     }
 
+    /// DELETE and parse the JSON response body (for endpoints that return
+    /// details about what was torn down, e.g. `DELETE /agents/{id}`).
+    pub fn delete_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
+        let url = self.api_url(path);
+        let mut req = self.agent.delete(&url);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let mut resp = req.call().context("request failed")?;
+        check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
     // ─── Public endpoints (no /api prefix, no auth) ─────────────────────────
 
     pub fn get_public_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
@@ -759,6 +773,16 @@ pub struct UploadedAgent {
     pub url: Option<String>,
     #[serde(default)]
     pub upload_info: Option<UploadInfo>,
+}
+
+/// Response from `DELETE /agents/{id}` — full teardown: every container for
+/// the agent is destroyed and the catalog row itself is deleted.
+#[derive(Debug, Deserialize)]
+pub struct DeletedAgent {
+    #[serde(default)]
+    pub containers_stopped: usize,
+    #[serde(default)]
+    pub runtime_errors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
