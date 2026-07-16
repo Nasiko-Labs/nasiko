@@ -53,13 +53,45 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+/// Short max-age lets repeat page loads skip the network entirely, while
+/// `must-revalidate` + the ETag bound staleness after a deploy to ~5 minutes
+/// instead of relying on users to hard-refresh (assets aren't content-hashed,
+/// so a stale cached JS/CSS file would silently run against a new backend).
+/// 5 min is safe at a once-a-day deploy cadence; revisit if deploys get more frequent.
+const STATIC_CACHE_CONTROL: &str = "max-age=300, must-revalidate";
+
 async fn static_handler(req: Request<Body>) -> Response {
     let path = req.uri().path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
 
     if let Some(file) = OssAssets::get(path).or_else(|| CommonAssets::get(path)) {
+        let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
+        if req
+            .headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            == Some(etag.as_str())
+        {
+            return (
+                StatusCode::NOT_MODIFIED,
+                [
+                    (header::CACHE_CONTROL, STATIC_CACHE_CONTROL.to_string()),
+                    (header::ETAG, etag),
+                ],
+            )
+                .into_response();
+        }
+
         let mime = mime_guess::from_path(path).first_or_octet_stream();
-        return ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response();
+        return (
+            [
+                (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                (header::CACHE_CONTROL, STATIC_CACHE_CONTROL.to_string()),
+                (header::ETAG, etag),
+            ],
+            file.data,
+        )
+            .into_response();
     }
 
     if let Some(file) = OssAssets::get("404.html") {

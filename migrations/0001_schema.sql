@@ -310,6 +310,7 @@ CREATE TRIGGER trg_upload_status_updated_at BEFORE UPDATE ON upload_status FOR E
 
 CREATE TABLE chat_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    --- todo: is this needed? we already have the auto id 
     session_id TEXT NOT NULL UNIQUE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,

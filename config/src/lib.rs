@@ -19,7 +19,14 @@ pub struct Config {
     /// Registry prefix prepended to agent image tags at build time.
     /// e.g. `"host.docker.internal:5001"` for local K8s dev.
     /// Empty string → no prefix (Docker local mode).
+    /// TODO: this needs to be removed. 
     pub agent_image_registry: String,
+    /// Shared credential the in-cluster BuildKit build Job presents (HTTP
+    /// Basic auth, username `"build-service"`) to push freshly-built agent
+    /// images into the built-in OCI registry — see
+    /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
+    /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
+    pub build_push_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -104,6 +111,7 @@ impl Config {
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
+            build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
