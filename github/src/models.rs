@@ -9,6 +9,9 @@ pub struct OAuthStateClaims {
     pub user_id: String,
     /// Unix timestamp (seconds) at which the state was issued.
     pub issued_at: u64,
+    /// OAuth flow that initiated this state: `"connect"` (link GitHub to an
+    /// existing authenticated user) or `"login"` (sign in via GitHub SSO).
+    pub flow: Option<String>,
 }
 
 // ── Token exchange ─────────────────────────────────────────────────────────

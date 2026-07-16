@@ -19,10 +19,6 @@ struct Spinner {
     sub_streamed: bool,
     /// When the current agent call started, for the completion timing.
     call_started: Option<std::time::Instant>,
-    /// Set whenever streamed answer text was printed to stdout without a
-    /// trailing newline. The next status/progress line (stderr) checks this
-    /// first so it never glues onto the end of the streamed text.
-    stdout_dirty: bool,
 }
 
 impl Spinner {
@@ -32,7 +28,6 @@ impl Spinner {
             sub_open: false,
             sub_streamed: false,
             call_started: None,
-            stdout_dirty: false,
         }
     }
 
@@ -54,23 +49,11 @@ impl Spinner {
             self.sub_open = false;
         }
     }
-
-    /// Emit a newline to stdout if streamed answer text is still mid-line.
-    /// Call this right before printing a new stderr status/progress line —
-    /// NOT from `pause()`/`close_sub()`, which also run between consecutive
-    /// chunks of the *same* streamed answer and must never break those apart.
-    fn break_stdout(&mut self) {
-        if self.stdout_dirty {
-            println!();
-            self.stdout_dirty = false;
-        }
-    }
 }
 
-/// Resolved CP session info used to persist messages.
+/// Resolved CP session info — just the session ID; message persistence is
+/// handled server-side by the agent proxy, not by the CLI.
 struct CpCtx {
-    base_url: String,
-    token: String,
     session_id: String,
 }
 
@@ -79,55 +62,19 @@ struct CpCtx {
 /// turns — otherwise `nasiko chat --session-id <id>` starts blank even though
 /// the session already has history on the server.
 /// Returns None when the endpoint does not belong to the active cluster.
-fn resolve_cp_ctx(
-    endpoint: &str,
-    session_id: Option<&str>,
-    target_label: &str,
-    message: Option<&str>,
-) -> Option<(CpCtx, Vec<cp::CpMessage>)> {
+fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<(CpCtx, Vec<cp::CpMessage>)> {
     let (base_url, token) = cp::cp_credentials(endpoint)?;
-    // `target_label` is the catalog agent's name/UUID as the user typed it —
-    // empty for the orchestrator, or a raw URL when the user passed one
-    // directly, neither of which the server can resolve to an agent row.
-    let agent_id = (!target_label.is_empty()
-        && !target_label.starts_with("http://")
-        && !target_label.starts_with("https://"))
-    .then_some(target_label);
     let (sid, history) = match session_id {
         Some(s) => {
             let history = cp::fetch_cp_messages(&base_url, &token, s).unwrap_or_default();
             (s.to_string(), history)
         }
         None => {
-            // One-shot mode already knows the first message — use it as the
-            // title (same convention agent_proxy.rs falls back to) instead of
-            // a placeholder. Interactive mode has no message yet at session
-            // creation, so "New chat" stands until the first turn is typed.
-            let title = message.map(derive_title).unwrap_or_else(|| "New chat".to_string());
-            let sess: CpSession =
-                cp::create_cp_session(&base_url, &token, agent_id, &title).ok()?;
+            let sess: CpSession = cp::create_cp_session(&base_url, &token, endpoint, "New chat").ok()?;
             (sess.session_id, Vec::new())
         }
     };
-    Some((CpCtx { base_url, token, session_id: sid }, history))
-}
-
-/// Collapse a message to one line and truncate to 60 chars for use as a
-/// session title — mirrors the fallback in `agent_proxy.rs`.
-fn derive_title(text: &str) -> String {
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.is_empty() {
-        return "New chat".to_string();
-    }
-    if one_line.len() > 60 {
-        let mut n = 60;
-        while !one_line.is_char_boundary(n) {
-            n -= 1;
-        }
-        format!("{}…", &one_line[..n])
-    } else {
-        one_line
-    }
+    Some((CpCtx { session_id: sid }, history))
 }
 
 /// Print a session's prior turns before resuming it, in the same visual
@@ -160,7 +107,7 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>, target_l
     use std::io::IsTerminal;
 
     let endpoint = url.trim_end_matches('/').to_string();
-    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id, target_label, message) {
+    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id) {
         Some((ctx, history)) => (Some(ctx), history),
         None => (None, Vec::new()),
     };
@@ -277,11 +224,6 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
     let span_id = &trace_id[..16];
     let traceparent = format!("00-{trace_id}-{span_id}-01");
 
-    // Persist user message to CP before sending
-    if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text);
-    }
-
     let mut req = http
         .post(endpoint)
         .header("Content-Type", "application/json")
@@ -317,7 +259,7 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         .unwrap_or("")
         .to_string();
 
-    let agent_text = if content_type.contains("text/event-stream") {
+    let _agent_text = if content_type.contains("text/event-stream") {
         spin.set("thinking");
         handle_sse_stream(resp, &mut spin)?
     } else {
@@ -337,11 +279,6 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
             bail!("unexpected response: {}", resp_json);
         }
     };
-
-    // Persist agent reply to CP
-    if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "assistant", &agent_text);
-    }
 
     Ok(())
 }
@@ -383,7 +320,6 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
                 spin.pause();
                 spin.close_sub();
                 if let Some(t) = handle_task_result(task) {
-                    spin.stdout_dirty = true;
                     collected.push_str(&t);
                 }
                 is_terminal = true;
@@ -399,7 +335,6 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
             if let Some(t) = nasiko_types::a2a::extract_text(result) {
                 print!("{t}");
                 std::io::stdout().flush().ok();
-                spin.stdout_dirty = true;
                 collected.push_str(&t);
             }
             is_terminal = true;
@@ -408,7 +343,6 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
             spin.pause();
             spin.close_sub();
             if let Some(t) = handle_artifact_update(artifact_update) {
-                spin.stdout_dirty = true;
                 collected.push_str(&t);
             }
         } else if let Some(kind) = result.get("kind").and_then(|k| k.as_str()) {
@@ -417,7 +351,6 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
                     spin.pause();
                     spin.close_sub();
                     if let Some(t) = handle_artifact_update(result) {
-                        spin.stdout_dirty = true;
                         collected.push_str(&t);
                     }
                 }
@@ -465,7 +398,6 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
                     } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                         spin.pause();
                         spin.close_sub();
-                        spin.break_stdout();
                         eprintln!("  \x1b[2m{text}\x1b[0m");
                         spin.set("working");
                     }
@@ -475,7 +407,6 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
         "TASK_STATE_FAILED" => {
             spin.pause();
             spin.close_sub();
-            spin.break_stdout();
             if let Some(parts) = event
                 .pointer("/status/message/parts")
                 .and_then(|p| p.as_array())
@@ -502,7 +433,6 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
                 } else {
                     spin.pause();
                     spin.close_sub();
-                    spin.break_stdout();
                     eprintln!("\x1b[2m{content}\x1b[0m");
                     spin.set("thinking");
                 }
@@ -513,7 +443,6 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             let message = data.get("message").and_then(|m| m.as_str()).unwrap_or("");
             spin.pause();
             spin.close_sub();
-            spin.break_stdout();
             // The call header is the visual anchor — bold, colored, flush
             // left. Everything the agent does below it is dim and indented.
             eprintln!("\x1b[1;36m❯ {agent}\x1b[0m \x1b[2m· {message}\x1b[0m");
@@ -529,7 +458,6 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             let color = if success { "32" } else { "31" };
             spin.pause();
             spin.close_sub();
-            spin.break_stdout();
             let elapsed = spin
                 .call_started
                 .take()
@@ -568,7 +496,6 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             let message = data.get("message").and_then(|m| m.as_str()).unwrap_or("");
             spin.pause();
             spin.close_sub();
-            spin.break_stdout();
             match message.split_once(": ") {
                 Some((tool, rest)) => {
                     eprintln!("\x1b[2m›\x1b[0m \x1b[1;36m{tool}\x1b[0m\x1b[2m: {rest}\x1b[0m")
@@ -586,7 +513,6 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             }
             spin.pause();
             if !spin.sub_open {
-                spin.break_stdout();
                 eprint!("  \x1b[2m");
                 spin.sub_open = true;
                 spin.sub_streamed = true;

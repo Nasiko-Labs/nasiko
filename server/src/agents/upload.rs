@@ -27,19 +27,11 @@ use super::utils::{set_build_status, set_upload_status};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/upload", post(upload_and_deploy))
+        .route("/upload",                          post(upload_and_deploy))
+        .route("/uploads",                         get(list_upload_status))
+        .route("/uploads/{upload_id}",             get(get_upload_status))
+        .route("/deploys/{build_id}/stream",       get(deploy_status_sse))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES as usize))
-}
-
-/// Mounted separately from `router()`, under `require_auth` only — each
-/// handler checks `can_deploy` itself (matching who could reach these
-/// before) and returns `crate::unavailable()` (200) instead of a
-/// blanket 403.
-pub fn degradable_router() -> Router<AppState> {
-    Router::new()
-        .route("/uploads",                   get(list_upload_status))
-        .route("/uploads/{upload_id}",       get(get_upload_status))
-        .route("/deploys/{build_id}/stream", get(deploy_status_sse))
 }
 
 pub fn user_routes() -> Router<AppState> {
@@ -621,13 +613,8 @@ pub async fn execute_upload_and_deploy(
 
 async fn deploy_status_sse(
     State(state): State<AppState>,
-    claims: Claims,
     Path(build_id): Path<Uuid>,
-) -> axum::response::Response {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
+) -> impl IntoResponse {
     let db = state.db.clone();
 
     let stream = async_stream::stream! {
@@ -669,7 +656,7 @@ async fn deploy_status_sse(
         }
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 // ─── GET /upload-status/{upload_id} ─────────────────────────────────────────
@@ -679,10 +666,6 @@ async fn get_upload_status(
     claims: Claims,
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
     let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
@@ -736,10 +719,6 @@ async fn list_upload_status(
     claims: Claims,
     Query(q): Query<UploadListQuery>,
 ) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
     let user_id: Uuid = match claims.sub.parse() {
         Ok(id) => id,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
@@ -783,6 +762,67 @@ async fn list_upload_status(
 
 // ─── GET /agents/upload-agents ───────────────────────────────────────────────
 
+#[derive(Debug, sqlx::FromRow)]
+struct UploadAgentRow {
+    agent_id: Option<Uuid>,
+    agent_name: String,
+    upload_id: String,
+    error_message: Option<String>,
+    description: Option<String>,
+    tags: Vec<String>,
+    icon_url: Option<String>,
+    version: Option<String>,
+    agent_status: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UploadInfoResponse {
+    upload_type: &'static str,
+    upload_status: String,
+    status_message: Option<String>,
+    error_detail: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UploadAgentResponse {
+    agent_id: String,
+    agent_name: String,
+    icon_url: Option<String>,
+    upload_info: UploadInfoResponse,
+    tags: Vec<String>,
+    description: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UploadAgentsListResponse {
+    data: Vec<UploadAgentResponse>,
+    status_code: u16,
+    message: String,
+}
+
+fn agent_display_status(agent_status: Option<&str>) -> &'static str {
+    match agent_status {
+        Some("running") => "Active",
+        Some("deploying") | Some("pending") | Some("building") => "Deploying",
+        Some("failed") => "Failed",
+        Some("stopped") | Some("registered") => "Stopped",
+        _ => "Unknown",
+    }
+}
+
+fn agent_status_message(display_status: &str, version: Option<&str>) -> Option<String> {
+    match display_status {
+        "Active" => Some(format!(
+            "Agent v{} deployed successfully",
+            version.unwrap_or("1.0.0")
+        )),
+        "Deploying" => Some("Agent is being deployed...".to_string()),
+        "Failed" => Some("Deployment failed".to_string()),
+        "Stopped" => Some("Agent is stopped".to_string()),
+        _ => None,
+    }
+}
+
 async fn list_upload_agents(
     State(state): State<AppState>,
     claims: Claims,
@@ -792,17 +832,44 @@ async fn list_upload_agents(
         Err(e) => return e.into_response(),
     };
 
-    let rows = if claims.is_superuser {
-        sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status ORDER BY created_at DESC LIMIT 50",
+    // Join with agents to pull live metadata (tags, description, icon_url, version, status).
+    // DISTINCT ON keeps the most recent upload row per agent.
+    let rows: Result<Vec<UploadAgentRow>, _> = if claims.is_superuser {
+        sqlx::query_as(
+            r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
+                   us.agent_id,
+                   us.agent_name,
+                   us.upload_id,
+                   us.error_message,
+                   a.description,
+                   COALESCE(a.tags, '{}') AS tags,
+                   a.icon_url,
+                   a.version,
+                   a.status AS agent_status
+               FROM upload_status us
+               LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+               ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
+               LIMIT 50"#,
         )
         .fetch_all(&state.db)
         .await
     } else {
-        sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 50",
+        sqlx::query_as(
+            r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
+                   us.agent_id,
+                   us.agent_name,
+                   us.upload_id,
+                   us.error_message,
+                   a.description,
+                   COALESCE(a.tags, '{}') AS tags,
+                   a.icon_url,
+                   a.version,
+                   a.status AS agent_status
+               FROM upload_status us
+               LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+               WHERE us.owner_id = $1
+               ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
+               LIMIT 50"#,
         )
         .bind(user_id)
         .fetch_all(&state.db)
@@ -810,7 +877,40 @@ async fn list_upload_agents(
     };
 
     match rows {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(rows) => {
+            let count = rows.len();
+            let data = rows
+                .into_iter()
+                .map(|r| {
+                    let display_status =
+                        agent_display_status(r.agent_status.as_deref());
+                    let status_message =
+                        agent_status_message(display_status, r.version.as_deref());
+                    UploadAgentResponse {
+                        agent_id: r
+                            .agent_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| r.upload_id.clone()),
+                        agent_name: r.agent_name,
+                        icon_url: r.icon_url,
+                        upload_info: UploadInfoResponse {
+                            upload_type: "zip",
+                            upload_status: display_status.to_string(),
+                            status_message,
+                            error_detail: r.error_message,
+                        },
+                        tags: r.tags,
+                        description: r.description,
+                    }
+                })
+                .collect();
+            Json(UploadAgentsListResponse {
+                data,
+                status_code: 200,
+                message: format!("Retrieved {count} upload agents for user"),
+            })
+            .into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "list_upload_agents db error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

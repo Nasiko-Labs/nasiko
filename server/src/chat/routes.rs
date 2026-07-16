@@ -198,6 +198,15 @@ async fn list_sessions(
     // no backward-paging input at all — a value here would be dead API surface
     // implying a capability that doesn't exist. The UI doesn't read this field
     // (grepped `oss/ui` — no references), so omitting it is a pure cleanup.
+    // Always return the proxy URL derived from agent_id so clients get a
+    // consistent, externally-reachable path regardless of what was stored
+    // (old sessions may have the internal cluster URL).
+    for row in &mut rows {
+        if let Some(id) = row.agent_id {
+            row.agent_url = Some(format!("/api/agents/{id}"));
+        }
+    }
+
     Json(CursorPage { data: rows, has_more, next_cursor, prev_cursor: None }).into_response()
 }
 
@@ -223,15 +232,15 @@ async fn create_session(
         None => (None, None),
         Some(id_or_name) => {
             let row = if let Ok(uuid) = id_or_name.parse::<Uuid>() {
-                sqlx::query_as::<_, (Uuid, Option<String>)>(
-                    "SELECT id, url FROM agents WHERE id = $1",
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM agents WHERE id = $1",
                 )
                 .bind(uuid)
                 .fetch_optional(&state.db)
                 .await
             } else {
-                sqlx::query_as::<_, (Uuid, Option<String>)>(
-                    "SELECT id, url FROM agents WHERE name = $1",
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM agents WHERE name = $1",
                 )
                 .bind(id_or_name)
                 .fetch_optional(&state.db)
@@ -239,11 +248,14 @@ async fn create_session(
             };
 
             match row {
-                Ok(Some((id, url))) => {
+                Ok(Some(id)) => {
                     if !crate::acl::can_access_agent(&state, &claims, id).await {
                         return StatusCode::FORBIDDEN.into_response();
                     }
-                    (Some(id), url)
+                    // Store the proxy path so clients can extract the agent id
+                    // from the URL (internal cluster URLs are not accessible from outside).
+                    let proxy_url = format!("/api/agents/{id}");
+                    (Some(id), Some(proxy_url))
                 }
                 Ok(None) => {
                     return (StatusCode::BAD_REQUEST, "agent not found").into_response();
@@ -268,7 +280,7 @@ async fn create_session(
             .await;
             match existing {
                 Ok(Some(session)) if session.user_id == user_id => {
-                    return (StatusCode::OK, Json(session)).into_response();
+                    return (StatusCode::OK, Json(session_response(session))).into_response();
                 }
                 Ok(Some(_)) => {
                     return (StatusCode::CONFLICT, "session_id already in use").into_response();
@@ -298,7 +310,7 @@ async fn create_session(
     .await;
 
     match result {
-        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
+        Ok(session) => (StatusCode::CREATED, Json(session_response(session))).into_response(),
         Err(e) => {
             // A dangling user_id FK means the (gateway-verified) JWT references
             // a user that no longer exists — e.g. the DB was reseeded after the
@@ -318,28 +330,88 @@ async fn create_session(
     }
 }
 
+#[derive(serde::Serialize)]
+struct SessionData {
+    session_id: String,
+    created_at: DateTime<Utc>,
+    title: String,
+    agent_id: Option<Uuid>,
+    agent_url: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct SessionResponse {
+    data: SessionData,
+    status_code: u16,
+    message: String,
+}
+
+fn session_response(s: ChatSession) -> SessionResponse {
+    SessionResponse {
+        data: SessionData {
+            session_id: s.session_id,
+            created_at: s.created_at,
+            title: s.title,
+            agent_id: s.agent_id,
+            agent_url: s.agent_url,
+        },
+        status_code: 201,
+        message: String::new(),
+    }
+}
+
 async fn get_session(
     State(state): State<AppState>,
     claims: Claims,
     Path(session_id): Path<String>,
+    Query(params): Query<ListMessagesParams>,
 ) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
 
-    match sqlx::query_as::<_, ChatSession>(
-        "SELECT * FROM chat_sessions WHERE session_id = $1 AND user_id = $2",
+    let owns = match sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
     )
     .bind(&session_id)
     .bind(user_id)
-    .fetch_optional(&state.db)
+    .fetch_one(&state.db)
     .await
     {
-        Ok(Some(s)) => Json(s).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    if !owns {
+        return StatusCode::NOT_FOUND.into_response();
     }
+
+    let limit = params.limit.clamp(1, 500);
+
+    let messages = match sqlx::query_as::<_, ChatMessage>(
+        r#"SELECT * FROM chat_messages
+           WHERE session_id = $1
+           ORDER BY timestamp ASC, id ASC
+           LIMIT $2"#,
+    )
+    .bind(&session_id)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(%e, session_id, "get_session messages: db error");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    #[derive(serde::Serialize)]
+    struct Response {
+        data: Vec<ChatMessage>,
+    }
+    Json(Response { data: messages }).into_response()
 }
 
 async fn update_session(
@@ -640,8 +712,8 @@ async fn send_message(
     };
 
     let msg = match sqlx::query_as::<_, ChatMessage>(
-        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts, trace_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -649,6 +721,7 @@ async fn send_message(
     .bind(&body.content)
     .bind(&file_parts_json)
     .bind(has_file_parts)
+    .bind(&body.trace_id)
     .fetch_one(&mut *tx)
     .await
     {

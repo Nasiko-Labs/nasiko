@@ -154,7 +154,12 @@ impl GitHubService {
             .ok_or_else(|| invalid("missing 'user_id' in state payload"))?
             .to_string();
 
-        Ok(OAuthStateClaims { user_id, issued_at: iat })
+        let flow = payload
+            .get("flow")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(OAuthStateClaims { user_id, issued_at: iat, flow })
     }
 
     // ── Authorization URL ────────────────────────────────────────────────────
@@ -185,6 +190,54 @@ impl GitHubService {
         .map_err(|e| Error::GitHubOAuth(format!("failed to build authorization URL: {e}")))?;
 
         info!(user_id, "generated GitHub authorization URL");
+        Ok(url.to_string())
+    }
+
+    /// Build the GitHub consent-page URL for the **login** flow (unauthenticated).
+    ///
+    /// Unlike [`authorization_url`](Self::authorization_url), there is no
+    /// existing user — a random UUID nonce is used in `user_id` purely to
+    /// satisfy the state format.  The callback detects `flow = "login"` and
+    /// uses the GitHub identity to find or create the user instead.
+    #[instrument(skip(self))]
+    pub fn login_authorization_url(&self) -> Result<String> {
+        let nonce = Uuid::new_v4().to_string();
+        let iat = unix_now();
+        let session_nonce = Uuid::new_v4().to_string();
+
+        let mut payload: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+        payload.insert("flow", serde_json::Value::String("login".into()));
+        payload.insert("iat", serde_json::Value::Number(iat.into()));
+        payload.insert("nonce", serde_json::Value::String(nonce));
+        payload.insert("user_id", serde_json::Value::String(session_nonce));
+
+        if let Some(ref cb) = self.cfg.central_callback_url {
+            payload.insert("gateway_callback_url", serde_json::Value::String(cb.clone()));
+        }
+
+        let serialized = serde_json::to_string(&payload)?;
+        let encoded = URL_SAFE_NO_PAD.encode(serialized.as_bytes());
+        let signature = self.sign_payload(&encoded);
+        let state = format!("{OAUTH_STATE_VERSION}.{encoded}.{signature}");
+
+        let redirect_uri = self
+            .cfg
+            .central_callback_url
+            .as_deref()
+            .unwrap_or(&self.cfg.callback_url);
+
+        let url = reqwest::Url::parse_with_params(
+            "https://github.com/login/oauth/authorize",
+            &[
+                ("client_id", self.cfg.client_id.as_str()),
+                ("redirect_uri", redirect_uri),
+                ("scope", "user:email"),
+                ("state", state.as_str()),
+            ],
+        )
+        .map_err(|e| Error::GitHubOAuth(format!("failed to build login authorization URL: {e}")))?;
+
+        info!("generated GitHub login authorization URL");
         Ok(url.to_string())
     }
 

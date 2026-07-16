@@ -18,14 +18,17 @@ use crate::{auth::Claims, secrets::crypto::SecretsCrypto, state::AppState};
 /// Merged at the root level in `lib.rs` so the callback URL is reachable
 /// without a bearer token.
 pub fn public_router() -> Router<AppState> {
-    Router::new().route("/api/github/callback", get(github_callback))
+    Router::new()
+        .route("/api/github/callback", get(github_callback))
+        // Unauthenticated SSO login: returns {"auth_url": "..."} so the client
+        // can open GitHub consent in a new tab without holding a session token.
+        .route("/api/v1/auth/github/login-user", get(github_login_user))
 }
 
 /// Protected routes — served under /api/v1 with require_auth middleware.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/github/login", get(github_login))
-        .route("/auth/github/login-user", get(github_login_user))
         .route("/auth/github/token", get(github_token))
         .route("/github/user", get(github_status))
         .route("/github/repositories", get(github_repos))
@@ -131,20 +134,21 @@ async fn github_login(State(state): State<AppState>, claims: Claims) -> impl Int
     }
 }
 
-/// `GET /api/v1/auth/github/login-user`
+/// `GET /api/v1/auth/github/login-user`  (public — no auth required)
 ///
 /// Returns the GitHub OAuth authorization URL as JSON so the client can open
-/// it in a popup or new tab. Unlike `github_login`, this does not redirect
-/// the browser directly — the client controls the navigation.
-async fn github_login_user(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+/// it in a new tab for SSO login. Uses `flow="login"` in the state so the
+/// callback handler knows to find/create a user rather than linking an
+/// existing one.
+async fn github_login_user(State(state): State<AppState>) -> impl IntoResponse {
     let Some(svc) = state.github_svc.as_ref() else {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "GitHub OAuth not configured"}))).into_response();
     };
 
-    match svc.authorization_url(&claims.sub) {
+    match svc.login_authorization_url() {
         Ok(url) => Json(serde_json::json!({"auth_url": url})).into_response(),
         Err(e) => {
-            warn!(user = %claims.sub, %e, "failed to build GitHub authorization URL (login-user)");
+            warn!(%e, "failed to build GitHub login authorization URL");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "failed to generate authorization URL"}))).into_response()
         }
     }
@@ -238,21 +242,29 @@ async fn github_callback(
     }
 
     // Exchange the authorization code for an access token + user profile.
-    let (token, user) = match svc.exchange_code(&params.code).await {
+    let (token, github_user) = match svc.exchange_code(&params.code).await {
         Ok(t) => t,
         Err(e) => {
-            warn!(user_id = %user_id, %e, "GitHub code exchange failed");
+            warn!(%e, "GitHub code exchange failed");
             return (StatusCode::BAD_GATEWAY, "GitHub OAuth failed").into_response();
         }
     };
 
+    // Dispatch on flow: "login" = SSO sign-in, anything else = connect existing account.
+    let flow = oauth_claims.flow.as_deref().unwrap_or("connect");
+    if flow == "login" {
+        return github_callback_login(state, token, github_user).await;
+    }
+
+    // ── connect flow ─────────────────────────────────────────────────────────
+    //
     // Encrypt before storing — provider_metadata is not encrypted at rest
     // by default, so we apply per-user AES-256-GCM here.
     let encrypted = SecretsCrypto::for_user(user_id).encrypt(&token.access_token);
     let meta = serde_json::json!({
         "access_token": encrypted,
-        "login": user.login,
-        "avatar_url": user.avatar_url,
+        "login": github_user.login,
+        "avatar_url": github_user.avatar_url,
     });
 
     // Upsert: ON CONFLICT on (provider, provider_id) so reconnecting the same
@@ -277,8 +289,8 @@ async fn github_callback(
                WHERE user_identities.user_id = EXCLUDED.user_id"#,
     )
     .bind(user_id)
-    .bind(user.id.to_string())
-    .bind(&user.login)
+    .bind(github_user.id.to_string())
+    .bind(&github_user.login)
     .bind(&meta)
     .execute(&state.db)
     .await
@@ -289,7 +301,7 @@ async fn github_callback(
         Ok(_) => {
             warn!(
                 user_id = %user_id,
-                github_login = %user.login,
+                github_login = %github_user.login,
                 "GitHub account already linked to a different Nasiko user — refusing to reassign"
             );
             (
@@ -304,6 +316,44 @@ async fn github_callback(
                 .into_response()
         }
     }
+}
+
+/// Login flow callback: find or create the Nasiko user from the GitHub identity,
+/// issue a JWT, and redirect to the Flutter login page with the token in query
+/// params. The Flutter login screen detects `?token=` and writes it to
+/// localStorage so the polling tab can complete the login.
+async fn github_callback_login(
+    state: AppState,
+    _token: nasiko_github::AccessToken,
+    github_user: nasiko_github::GitHubUser,
+) -> axum::response::Response {
+    let provider_id = github_user.id.to_string();
+
+    let result = match state.auth.upsert_oauth_user("github", &provider_id, &github_user.login).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%e, github_login = %github_user.login, "GitHub SSO login: upsert_oauth_user failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "failed to complete GitHub login").into_response();
+        }
+    };
+
+    // Redirect to the Flutter login page with token params. The login screen's
+    // _checkForOAuthCallback detects `?token=`, writes it to localStorage, and
+    // closes the tab so the original polling tab can complete sign-in.
+    //
+    // Use reqwest::Url for query-param encoding (already a dep, handles any
+    // chars in username safely).
+    let mut redirect = reqwest::Url::parse("http://placeholder/").expect("static URL");
+    {
+        let mut q = redirect.query_pairs_mut();
+        q.append_pair("token", &result.token);
+        q.append_pair("token_type", "bearer");
+        q.append_pair("username", &result.username);
+        q.append_pair("is_super_user", &result.is_superuser.to_string());
+    }
+    let redirect_path = format!("/?{}", redirect.query().unwrap_or_default());
+
+    Redirect::temporary(&redirect_path).into_response()
 }
 
 async fn github_status(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {

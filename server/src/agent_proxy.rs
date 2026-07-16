@@ -121,7 +121,30 @@ pub async fn agent_proxy(
 
     // Every message send must belong to a persisted session (may inject a
     // generated contextId into the body — see `ensure_chat_session`).
-    let body_bytes = ensure_chat_session(&state, &claims, agent_id, &agent_base, body_bytes).await?;
+    let (body_bytes, persist_info) =
+        ensure_chat_session(&state, &claims, agent_id, &agent_base, body_bytes).await?;
+
+    // Persist the user message to chat_messages (fire-and-forget, mirrors CLI behaviour).
+    if let Some(ref info) = persist_info {
+        if !info.user_text.is_empty() {
+            let db = state.db.clone();
+            let session_id = info.session_id.clone();
+            let user_text = info.user_text.clone();
+            let trace_id = flow_ctx.flow_id.clone();
+            tokio::spawn(async move {
+                let _ = sqlx::query(
+                    "INSERT INTO chat_messages (session_id, role, content, trace_id) \
+                     VALUES ($1, $2, $3, $4)",
+                )
+                .bind(&session_id)
+                .bind("user")
+                .bind(&user_text)
+                .bind(&trace_id)
+                .execute(&db)
+                .await;
+            });
+        }
+    }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
     // anything not named here is dropped rather than forwarded by default.
@@ -151,11 +174,10 @@ pub async fn agent_proxy(
             if claims.is_superuser { "true" } else { "false" },
         );
 
-    // Best-effort: record the session ↔ trace correlation so observability
-    // can map Tempo traces back to chat sessions for agents that don't set
-    // session.id on their spans (anything not running the Python patch).
-    // Fire-and-forget so it never delays the proxy; ensure_chat_session above
-    // already guaranteed the chat_sessions row, so the FK holds.
+    // Best-effort: record the trace_id → session_id mapping in Redis so the
+    // observability service can correlate sessions for pre-built agents that
+    // don't set session.id themselves via our sitecustomize.py patch.
+    // This runs in a fire-and-forget spawn so it never delays the proxy.
     if !body_bytes.is_empty()
         && let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
     {
@@ -168,21 +190,36 @@ pub async fn agent_proxy(
         if let Some(ctx_id) = context_id {
             let trace_id = flow_ctx.flow_id.clone();
             let agent_name = stored.name.clone();
-            let db = state.db.clone();
+            let redis = state.redis.clone();
             tokio::spawn(async move {
-                if let Err(e) = sqlx::query(
-                    "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (session_id, trace_id) DO NOTHING",
-                )
-                .bind(&ctx_id)
-                .bind(&trace_id)
-                .bind(agent_id)
-                .bind(&agent_name)
-                .execute(&db)
-                .await
-                {
-                    tracing::warn!(error = %e, session_id = %ctx_id, %trace_id, "agent proxy: session trace record failed");
+                if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+                    let key = format!("nasiko:trace:{trace_id}:session");
+                    let _: Result<(), _> = redis::cmd("SETEX")
+                        .arg(&key)
+                        .arg(604800u64) // 7-day TTL
+                        .arg(&ctx_id)
+                        .query_async(&mut conn)
+                        .await;
+                    let agent_key = format!("nasiko:session:{ctx_id}:agent");
+                    let _: Result<(), _> = redis::cmd("SETEX")
+                        .arg(&agent_key)
+                        .arg(604800u64)
+                        .arg(&agent_name)
+                        .query_async(&mut conn)
+                        .await;
+                    // Reverse index: session → set of trace_ids, so get_session_details
+                    // can enumerate all traces even for pre-built agents without sitecustomize.py.
+                    let traces_key = format!("nasiko:session:{ctx_id}:traces");
+                    let _: Result<(), _> = redis::cmd("SADD")
+                        .arg(&traces_key)
+                        .arg(&trace_id)
+                        .query_async(&mut conn)
+                        .await;
+                    let _: Result<(), _> = redis::cmd("EXPIRE")
+                        .arg(&traces_key)
+                        .arg(604800u64)
+                        .query_async(&mut conn)
+                        .await;
                 }
             });
         }
@@ -199,7 +236,60 @@ pub async fn agent_proxy(
 
     state.flow_guard.record_return(&flow_ctx).await;
 
-    to_axum_response(response, agent_id).await
+    // Build the response. For non-streaming replies we read the bytes once,
+    // which lets us persist the agent message to chat_messages before sending.
+    let status = response.status();
+    let resp_headers = response.headers().clone();
+    let is_stream = resp_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("text/event-stream"));
+
+    let mut builder = Response::builder().status(status.as_u16());
+    for (name, value) in resp_headers.iter() {
+        builder = builder.header(name, value);
+    }
+
+    if is_stream {
+        let stream = response.bytes_stream();
+        return builder.body(Body::from_stream(stream)).map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
+            StatusCode::INTERNAL_SERVER_ERROR
+        });
+    }
+
+    let bytes = response.bytes().await.map_err(|e| {
+        tracing::error!(error = %e, %agent_id, "agent proxy: failed to read agent response body");
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    // Persist agent reply fire-and-forget.
+    if let Some(ref info) = persist_info {
+        if let Ok(rpc_val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(agent_text) = extract_agent_reply_text(&rpc_val) {
+                let db = state.db.clone();
+                let session_id = info.session_id.clone();
+                let trace_id = flow_ctx.flow_id.clone();
+                tokio::spawn(async move {
+                    let _ = sqlx::query(
+                        "INSERT INTO chat_messages (session_id, role, content, trace_id) \
+                         VALUES ($1, $2, $3, $4)",
+                    )
+                    .bind(&session_id)
+                    .bind("assistant")
+                    .bind(&agent_text)
+                    .bind(&trace_id)
+                    .execute(&db)
+                    .await;
+                });
+            }
+        }
+    }
+
+    builder.body(Body::from(bytes)).map_err(|e| {
+        tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 /// A2A JSON-RPC methods that carry a user message and therefore must be bound
@@ -212,6 +302,14 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
     "message/stream",
 ];
 
+/// Session and user-message info extracted during `ensure_chat_session` so the
+/// proxy can persist both user and agent messages to `chat_messages` without
+/// re-parsing the request body a second time.
+struct PersistInfo {
+    session_id: String,
+    user_text: String,
+}
+
 /// Guarantee every agent chat happens inside a persisted `chat_sessions` row.
 ///
 /// A message that arrives with a `contextId` gets that id upserted as a
@@ -222,27 +320,29 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
 /// client, which can then resume with it.
 ///
 /// Non-message traffic (GetTask, card fetches, …) passes through untouched.
+/// Returns `(body_bytes, Some(PersistInfo))` for message-send requests so the
+/// caller can persist user + agent messages to `chat_messages`.
 async fn ensure_chat_session(
     state: &AppState,
     claims: &Claims,
     agent_id: Uuid,
-    agent_base_url: &str,
+    _agent_base_url: &str,
     body_bytes: axum::body::Bytes,
-) -> Result<axum::body::Bytes, StatusCode> {
+) -> Result<(axum::body::Bytes, Option<PersistInfo>), StatusCode> {
     // Not JSON, or not a message send → pass through; the agent is the
     // authority on whether the payload is valid A2A.
     let Ok(mut rpc) = serde_json::from_slice::<serde_json::Value>(&body_bytes) else {
-        return Ok(body_bytes);
+        return Ok((body_bytes, None));
     };
     let is_send = rpc
         .get("method")
         .and_then(|m| m.as_str())
         .is_some_and(|m| MESSAGE_SEND_METHODS.contains(&m));
     if !is_send {
-        return Ok(body_bytes);
+        return Ok((body_bytes, None));
     }
     let Some(message) = rpc.pointer_mut("/params/message") else {
-        return Ok(body_bytes);
+        return Ok((body_bytes, None));
     };
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -258,8 +358,9 @@ async fn ensure_chat_session(
     };
 
     // First user message doubles as the session title (same convention the
-    // web UI uses when it titles a fresh session).
-    let title = message
+    // web UI uses when it titles a fresh session). Also captured for
+    // message persistence in `chat_messages`.
+    let user_text: String = message
         .get("parts")
         .and_then(|p| p.as_array())
         .and_then(|parts| {
@@ -267,21 +368,24 @@ async fn ensure_chat_session(
                 .iter()
                 .find_map(|p| p.get("text").and_then(|t| t.as_str()))
         })
-        .map(|t| {
-            let t = t.trim();
-            if t.len() > 60 {
-                let mut n = 60;
-                while !t.is_char_boundary(n) {
-                    n -= 1;
-                }
-                format!("{}…", &t[..n])
-            } else {
-                t.to_string()
+        .unwrap_or("")
+        .to_string();
+    let title = {
+        let t = user_text.trim();
+        if t.is_empty() {
+            "New chat".to_string()
+        } else if t.len() > 60 {
+            let mut n = 60;
+            while !t.is_char_boundary(n) {
+                n -= 1;
             }
-        })
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "New chat".into());
+            format!("{}…", &t[..n])
+        } else {
+            t.to_string()
+        }
+    };
 
+    let proxy_url = format!("/api/agents/{agent_id}");
     let inserted = sqlx::query(
         "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title)
          VALUES ($1, $2, $3, $4, $5)
@@ -290,7 +394,7 @@ async fn ensure_chat_session(
     .bind(&session_id)
     .bind(user_id)
     .bind(agent_id)
-    .bind(agent_base_url)
+    .bind(&proxy_url)
     .bind(&title)
     .execute(&state.db)
     .await
@@ -324,48 +428,46 @@ async fn ensure_chat_session(
         }
     }
 
+    let persist_info = Some(PersistInfo { session_id: session_id.clone(), user_text });
+
     if injected {
         message["contextId"] = serde_json::Value::String(session_id);
         let rewritten = serde_json::to_vec(&rpc).map_err(|e| {
             tracing::error!(error = %e, "agent proxy: failed to re-serialize body after contextId injection");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        return Ok(rewritten.into());
+        return Ok((rewritten.into(), persist_info));
     }
-    Ok(body_bytes)
+    Ok((body_bytes, persist_info))
 }
 
-async fn to_axum_response(response: reqwest::Response, agent_id: Uuid) -> Result<Response, StatusCode> {
-    let status = response.status();
-    let resp_headers = response.headers().clone();
-    let is_stream = resp_headers
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.contains("text/event-stream"));
+/// Extract the agent's reply text from a JSON-RPC response for persistence.
+///
+/// Handles both the wrapped `result.task` format (older a2a-sdk) and the flat
+/// `result` format, preferring `artifacts[0].parts[].text` then falling back
+/// to `status.message.parts[].text`.
+fn extract_agent_reply_text(rpc: &serde_json::Value) -> Option<String> {
+    let result = rpc.get("result")?;
+    // Older a2a-sdk wraps the Task under result.task
+    let task = result.get("task").unwrap_or(result);
 
-    let mut builder = Response::builder().status(status.as_u16());
-    for (name, value) in resp_headers.iter() {
-        builder = builder.header(name, value);
+    // Prefer the final artifact text
+    if let Some(text) = task
+        .get("artifacts")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|artifact| artifact.get("parts"))
+        .and_then(|p| p.as_array())
+        .and_then(|parts| parts.iter().find_map(|p| p.get("text").and_then(|t| t.as_str())))
+        .filter(|s| !s.is_empty())
+    {
+        return Some(text.to_string());
     }
 
-    if is_stream {
-        let stream = response.bytes_stream();
-        builder
-            .body(Body::from_stream(stream))
-            .map_err(|e| {
-                tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })
-    } else {
-        let bytes = response.bytes().await.map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "agent proxy: failed to read agent response body");
-            StatusCode::BAD_GATEWAY
-        })?;
-        builder
-            .body(Body::from(bytes))
-            .map_err(|e| {
-                tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })
-    }
+    // Fall back to status.message.parts[].text
+    task.pointer("/status/message/parts")
+        .and_then(|p| p.as_array())
+        .and_then(|parts| parts.iter().find_map(|p| p.get("text").and_then(|t| t.as_str())))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }

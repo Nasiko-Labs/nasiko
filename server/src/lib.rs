@@ -41,7 +41,7 @@ use crate::state::AppState;
 /// deployments (see `main.rs`'s `static_handler`), so cross-origin access is
 /// opt-in only, via `CORS_ALLOWED_ORIGINS`. An empty allowlist (the default)
 /// allows no cross-origin browser requests at all.
-fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
+pub fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
     let origins: Vec<_> = allowed_origins
         .iter()
         .filter_map(|o| o.parse().ok())
@@ -50,7 +50,11 @@ fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
-        .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            "a2a-version".parse().unwrap(),
+        ])
         .allow_credentials(true)
 }
 
@@ -68,17 +72,6 @@ impl<T: Serialize> Paginated<T> {
     }
 }
 
-/// The shared "you don't have access to this" response for read-only (GET)
-/// endpoints: 200, not 403/401 — a caller who's authenticated but lacks the
-/// specific role/ownership this endpoint needs gets a body they can render
-/// gracefully ("Not available") instead of an error state. Mutations
-/// (POST/PUT/DELETE) do NOT use this — a rejected write must still return
-/// a real error status, or a client could believe the write succeeded.
-pub fn unavailable() -> axum::response::Response {
-    use axum::response::IntoResponse;
-    Json(serde_json::json!({"available": false})).into_response()
-}
-
 /// Build the full control plane Axum application.
 /// Called by both OSS and cloud binaries. The `fallback` handler serves
 /// static UI assets — each binary provides its own with appropriate embeds.
@@ -87,7 +80,9 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
+    let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
     build_app_with_user_router(state.clone(), fallback, users::router())
+        .merge(auth::login::public_router(login_limiter).with_state(state))
 }
 
 /// Build the full control plane Axum application with a custom user orchestrator.
@@ -102,51 +97,35 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    // Container lifecycle mutations (deploy/destroy/stop/start/restart/scale):
-    // deployer+ only. The read routes (list/status/logs) are split out into
-    // `degradable_routes` below — same `can_deploy` check, but inline per
-    // handler so a caller below deployer gets 200 {"available": false}
-    // instead of a blanket 403.
+    // Container lifecycle routes: deployer+ only
     let container_routes = Router::new()
         .nest("/containers", admin::router())
         .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
 
-    // Pool/scaling: read-only stub in OSS (EE's real scaling lives at
-    // /infra), no mutations to gate — mounted under require_auth only (via
-    // `protected`'s outer layer), no per-route role check needed.
-    let pool_routes = Router::new().nest("/pool", pool::degradable_router());
+    // Pool/scaling routes: require admin+ role
+    let pool_routes = Router::new()
+        .nest("/pool", pool::router())
+        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_admin));
 
     // User management: superuser only
     let user_routes = user_router
         .layer(middleware::from_fn(auth::rbac::require_superuser));
 
-    // Agent deploy MUTATIONS (upload, restart-deployment, update/rollback):
-    // deployer+ only. Reads are in `degradable_routes` below.
+    // Agent deploy routes (upload, deploy-status, deployments, ACL): deployer+ only.
     let agent_deploy_routes = Router::new()
         .nest("/agents", agents::router())
         .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
 
-    // Build MUTATIONS (create): deployer+ only. Reads (list/get/logs/
-    // progress) are in `degradable_routes` below.
+    // Build routes (trigger builds, view build history): deployer+ only
     let build_routes = Router::new()
         .merge(build::router())
         .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
-
-    // GET routes pulled out from the require_deployer-gated groups above —
-    // each handler checks `can_deploy` (and any resource-ownership check
-    // that already existed) itself, returning `nasiko_server::unavailable()`
-    // (200) instead of relying on a blanket 403 from middleware. Mounted
-    // directly into `protected` below, so only `require_auth` applies.
-    let degradable_routes = Router::new()
-        .nest("/containers", admin::degradable_router())
-        .nest("/agents", agents::degradable_router())
-        .merge(build::degradable_router());
 
     // Fixed-window limiters — see rate_limit.rs for why this app has none of
     // its own otherwise (gateway removal took the last rate limiting with it).
     let a2a_limiter = RateLimiter::new(30, Duration::from_secs(60));
     let oci_limiter = RateLimiter::new(300, Duration::from_secs(60));
-    let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
+    let non_login_limiter = RateLimiter::new(30, Duration::from_secs(60));
 
     let protected = Router::new()
         .route("/me", get(me))
@@ -158,7 +137,6 @@ where
         .merge(pool_routes)
         .merge(user_routes)
         .merge(build_routes)
-        .merge(degradable_routes)
         .merge(chat::router())
         .merge(secrets::router())
         .merge(settings::router())
@@ -203,7 +181,7 @@ where
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
-        .merge(auth::login::public_router(login_limiter))
+        .merge(auth::login::non_login_public_router(non_login_limiter))
         .merge(github::public_router())
         .nest("/api", protected)
         .nest("/api", proxy_routes)
