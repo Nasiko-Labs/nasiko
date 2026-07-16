@@ -1,0 +1,38 @@
+{
+  "name": "Nutrition Assistant",
+  "description": "Look up nutrition facts, compare foods, and answer diet questions using USDA and Open Food Facts data",
+  "version": "1.0.0",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.io"
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "skills": [
+    {
+      "id": "nutrition-lookup",
+      "name": "Nutrition Lookup",
+      "description": "Look up nutrition facts for any food and compare nutritional profiles",
+      "tags": [
+        "nutrition",
+        "food",
+        "health",
+        "diet"
+      ]
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "supportedInterfaces": [
+    {
+      "url": "http://0.0.0.0:{{PORT}}/",
+      "protocol": "JSONRPC"
+    }
+  ]
+}

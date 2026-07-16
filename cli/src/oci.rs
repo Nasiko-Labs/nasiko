@@ -80,15 +80,23 @@ pub fn pull_template(template_name: &str) -> Result<Vec<u8>> {
     oci.pull_blob(&repo, layer_digest)
 }
 
-// ─── Internal ───────────────────────────────────────────────────────────────
+// ─── Docker image → OCI conversion ──────────────────────────────────────────
+//
+// `docker_save`/`parse_docker_tar`/`build_oci_manifest`/`sha256_digest` are
+// pure conversion logic with no dependency on where the result gets pushed —
+// `ee/cli` reuses them (via `nasiko::oci::...`, since it already depends on
+// this crate for `dispatch_agent_dev`/`dispatch_agent_ops`/`dispatch_registry`)
+// to publish images to the artifact registry, while `push_image` above keeps
+// pushing to this cluster's own OCI registry. Same conversion, different
+// destination — don't fork this logic per destination.
 
-struct DockerTarEntries {
-    config: Vec<u8>,
-    layers: Vec<Vec<u8>>,
-    layer_digests: Vec<String>,
+pub struct DockerTarEntries {
+    pub config: Vec<u8>,
+    pub layers: Vec<Vec<u8>>,
+    pub layer_digests: Vec<String>,
 }
 
-fn docker_save(image: &str) -> Result<Vec<u8>> {
+pub fn docker_save(image: &str) -> Result<Vec<u8>> {
     let bin = container_bin();
     let output = Command::new(&bin)
         .args(["save", image])
@@ -102,7 +110,7 @@ fn docker_save(image: &str) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn parse_docker_tar(tar_data: &[u8]) -> Result<DockerTarEntries> {
+pub fn parse_docker_tar(tar_data: &[u8]) -> Result<DockerTarEntries> {
     let mut archive = tar::Archive::new(tar_data);
     let mut files: HashMap<String, Vec<u8>> = HashMap::new();
 
@@ -155,13 +163,13 @@ struct DockerManifest {
     layers: Vec<String>,
 }
 
-fn sha256_digest(data: &[u8]) -> String {
+pub fn sha256_digest(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
-fn build_oci_manifest(
+pub fn build_oci_manifest(
     entries: &DockerTarEntries,
     config_digest: &str,
 ) -> serde_json::Value {

@@ -273,41 +273,10 @@ async fn main() {
         InMemoryTaskStore::new(),
     ));
 
-    let agent_card = AgentCard {
-        name: "Nutrition Assistant".to_string(),
-        description: "Look up nutrition facts, compare foods, and answer diet questions using USDA and Open Food Facts data".to_string(),
-        version: "1.0.0".to_string(),
-        provider: Some(AgentProvider {
-            organization: "Nasiko".to_string(),
-            url: "https://nasiko.io".to_string(),
-        }),
-        capabilities: AgentCapabilities {
-            streaming: Some(true),
-            push_notifications: Some(false),
-            extensions: None,
-            extended_agent_card: None,
-        },
-        skills: vec![AgentSkill {
-            id: "nutrition-lookup".into(),
-            name: "Nutrition Lookup".into(),
-            description: "Look up nutrition facts for any food and compare nutritional profiles".into(),
-            tags: vec!["nutrition".into(), "food".into(), "health".into(), "diet".into()],
-            examples: None, input_modes: None, output_modes: None, security_requirements: None,
-        }],
-        default_input_modes: vec!["text/plain".to_string()],
-        default_output_modes: vec!["text/plain".to_string()],
-        supported_interfaces: vec![
-            AgentInterface::new(
-                &format!("http://0.0.0.0:{port}/"),
-                TRANSPORT_PROTOCOL_JSONRPC,
-            ),
-        ],
-        security_schemes: None,
-        security_requirements: None,
-        documentation_url: None,
-        icon_url: None,
-        signatures: None,
-    };
+    let agent_card_json = include_str!("../agent-card.json")
+        .replace("{{PORT}}", &port.to_string());
+    let agent_card: AgentCard =
+        serde_json::from_str(&agent_card_json).expect("invalid embedded agent-card.json");
 
     let card_producer = Arc::new(StaticAgentCard::new(agent_card));
 
