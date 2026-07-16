@@ -896,6 +896,42 @@ async fn restart_success_leaves_exactly_one_running_deployment_row() {
     server.cleanup().await;
 }
 
+/// The `nasiko` CLI's `deployments restart <id>` command (oss/cli/src/commands/deployments.rs)
+/// reads `deployment_id` (and optionally `warnings`) out of the restart response
+/// body — assert the field is actually present and is a fresh UUID distinct
+/// from the old deployment row, not just that the status code is 200.
+#[tokio::test]
+#[serial]
+async fn restart_response_body_includes_new_deployment_id() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner_id: Uuid = uid.parse().unwrap();
+
+    let (_, dep_id) = seed_deployment(
+        &server.db,
+        owner_id,
+        "restart-body-ng",
+        "stopped",
+        Some(vec![8000]),
+        Some("alpine:latest"),
+        None,
+    )
+    .await;
+
+    let res = call_restart(&server, uid, dep_id).await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+
+    let new_id = body["deployment_id"]
+        .as_str()
+        .expect("restart response must include a deployment_id field");
+    assert!(Uuid::parse_str(new_id).is_ok(), "deployment_id must be a valid UUID");
+    assert_ne!(new_id, dep_id.to_string(), "restart must record a NEW deployment row, not the old id");
+
+    server.cleanup().await;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Section 4 — Build worker (integration)
 // ═══════════════════════════════════════════════════════════════════════════════

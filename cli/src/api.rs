@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, bail};
-use nasiko_utils::display::opt_dash;
 use serde::{Deserialize, Serialize};
-use tabled::Tabled;
 use ureq::Agent;
 
 use crate::config;
@@ -485,6 +483,39 @@ impl RegistryClient {
     }
 }
 
+/// Build the multipart body for `PUT /api/agents/{id}/update`. Pure — split out
+/// from `Client::update_agent` so the byte-level construction (field order,
+/// CRLF placement, boundary terminator) can be unit-tested without a live server.
+/// `source` is `(filename, bytes)`.
+fn build_update_multipart_body(
+    boundary: &str,
+    version: Option<&str>,
+    changelog: Option<&str>,
+    source: Option<(&str, &[u8])>,
+) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+
+    if let Some(v) = version {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"version\"\r\n\r\n{v}\r\n").as_bytes(),
+        );
+    }
+    if let Some(c) = changelog {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"changelog\"\r\n\r\n{c}\r\n").as_bytes(),
+        );
+    }
+    if let Some((filename, bytes)) = source {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"{filename}\"\r\nContent-Type: application/zip\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
 impl Client {
     /// Upload a zip file to `POST /api/agents/upload` and return the queued build info.
     pub fn upload_agent(
@@ -550,6 +581,48 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
+    /// PUT multipart to `/api/agents/{id}/update` — rebuild the agent from new
+    /// source (or bump its version in place if `zip_path` is omitted, re-deploying
+    /// from the agent's recorded GitHub source) and return the queued build info.
+    pub fn update_agent(
+        &self,
+        agent_id: &str,
+        zip_path: Option<&std::path::Path>,
+        version: Option<&str>,
+        changelog: Option<&str>,
+    ) -> anyhow::Result<UpdateQueued> {
+        let boundary = "NasikoCloudBoundary1234567890";
+        let file_bytes = zip_path
+            .map(|path| {
+                std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))
+            })
+            .transpose()?;
+        let body = build_update_multipart_body(
+            boundary,
+            version,
+            changelog,
+            file_bytes.as_deref().map(|b| ("update.zip", b)),
+        );
+
+        let url = self.api_url(&format!("/agents/{agent_id}/update"));
+        let mut req = self.agent.put(&url)
+            .header("Content-Type", &format!("multipart/form-data; boundary={boundary}"));
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let _spin = nasiko_utils::term::start_status(format!(
+            "updating agent ({} KB)",
+            body.len() / 1024
+        ));
+        let mut resp = req.send(&body).context("update request failed")?;
+        drop(_spin);
+        if resp.status().as_u16() >= 400 {
+            let b = resp.body_mut().read_to_string().unwrap_or_default();
+            bail!("HTTP {}: {}", resp.status().as_u16(), b);
+        }
+        Ok(resp.body_mut().read_json()?)
+    }
+
     /// Poll `GET /api/agents/deploys/{build_id}/stream` (SSE) until the build finishes.
     /// Streams status transitions as they arrive, with a live spinner in between.
     /// Returns Ok(()) on success, Err on failure.
@@ -600,32 +673,23 @@ impl Client {
 
 // ─── API types ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize, Tabled)]
+#[derive(Debug, Deserialize)]
 pub struct AgentRecord {
-    #[tabled(rename = "ID")]
     pub id: String,
-    #[tabled(rename = "NAME")]
     pub name: String,
-    #[tabled(rename = "STATUS", display = "opt_dash")]
     #[serde(default)]
     pub status: Option<String>,
-    #[tabled(rename = "VERSION", display = "opt_dash")]
-    #[serde(default)]
-    pub version: Option<String>,
-    #[tabled(rename = "URL", display = "opt_dash")]
     #[serde(default)]
     pub url: Option<String>,
     /// JSON-RPC path from the agent's card (e.g. "/jsonrpc"), set by the server.
-    #[tabled(skip)]
     #[serde(default)]
     pub transport_path: Option<String>,
-    #[tabled(skip)]
     #[serde(default)]
     pub framework: Option<String>,
-    #[tabled(skip)]
+    #[serde(default)]
+    pub version: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
-    #[tabled(skip)]
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -639,30 +703,62 @@ pub struct UploadQueued {
     pub status: String,
 }
 
-#[derive(Debug, Deserialize, Tabled, Default)]
-pub struct UploadInfo {
-    #[tabled(rename = "STATUS", display = "opt_dash")]
-    #[serde(default)]
-    pub upload_status: Option<String>,
-    #[tabled(rename = "TYPE", display = "opt_dash")]
-    #[serde(default)]
-    pub upload_type: Option<String>,
+#[derive(Debug, Deserialize)]
+pub struct UpdateQueued {
+    pub build_id: String,
+    pub agent_id: String,
+    pub new_version: String,
+    pub previous_version: String,
+    pub status: String,
 }
 
-#[derive(Debug, Deserialize, Tabled)]
-pub struct UploadedAgent {
-    #[tabled(rename = "AGENT ID", display = "opt_dash")]
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    #[tabled(rename = "NAME", display = "opt_dash")]
+#[derive(Debug, Deserialize)]
+pub struct RollbackQueued {
+    pub build_id: String,
+    pub agent_id: String,
+    pub rolled_back_to: String,
+    pub rolled_back_from: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeploymentRecord {
+    pub id: String,
+    pub agent_id: String,
     #[serde(default)]
     pub agent_name: Option<String>,
-    #[tabled(inline)]
+    pub status: String,
     #[serde(default)]
-    pub upload_info: Option<UploadInfo>,
-    #[tabled(rename = "URL", display = "opt_dash")]
+    pub replicas: i32,
+    #[serde(default)]
+    pub service_url: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub crash_reason: Option<String>,
+    #[serde(default)]
+    pub crashed_at: Option<String>,
+    #[serde(default)]
+    pub restart_count: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UploadInfo {
+    #[serde(default)]
+    pub upload_type: Option<String>,
+    #[serde(default)]
+    pub upload_status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UploadedAgent {
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub upload_info: Option<UploadInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -691,6 +787,35 @@ pub struct DeploySpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multipart_body_omits_absent_fields() {
+        let body = build_update_multipart_body("BOUND", None, None, None);
+        assert_eq!(String::from_utf8(body).unwrap(), "--BOUND--\r\n");
+    }
+
+    #[test]
+    fn multipart_body_includes_version_and_changelog_fields() {
+        let body = build_update_multipart_body("BOUND", Some("1.2.3"), Some("fix bug"), None);
+        let s = String::from_utf8(body).unwrap();
+        assert!(s.contains("Content-Disposition: form-data; name=\"version\"\r\n\r\n1.2.3\r\n"));
+        assert!(s.contains("Content-Disposition: form-data; name=\"changelog\"\r\n\r\nfix bug\r\n"));
+        assert!(!s.contains("name=\"source\""));
+        assert!(s.ends_with("--BOUND--\r\n"));
+    }
+
+    #[test]
+    fn multipart_body_includes_source_file_with_zip_content_type() {
+        let bytes: &[u8] = b"PK\x03\x04fake-zip-bytes";
+        let body = build_update_multipart_body("BOUND", None, None, Some(("update.zip", bytes)));
+        let s = String::from_utf8_lossy(&body);
+        assert!(s.contains("name=\"source\"; filename=\"update.zip\"\r\nContent-Type: application/zip\r\n\r\n"));
+        assert!(!s.contains("name=\"version\""));
+        assert!(!s.contains("name=\"changelog\""));
+        // Raw file bytes must appear verbatim in the body (not escaped/mangled).
+        assert!(body.windows(bytes.len()).any(|w| w == bytes));
+        assert!(s.ends_with("--BOUND--\r\n"));
+    }
 
     #[test]
     fn urlencode_escapes_query_text() {

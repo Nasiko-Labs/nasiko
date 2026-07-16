@@ -137,6 +137,39 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
+    /// Update agent to a new version (rebuild from new source, or bump version/redeploy from GitHub)
+    #[command(after_help = "Reads: <source> if given (directory or .zip)\nSource can be a directory (auto-zipped), a .zip file, or omitted to re-deploy from the agent's recorded GitHub source")]
+    Update {
+        /// Agent name or ID
+        agent: String,
+        /// New source: directory or .zip file (omit to re-deploy from the agent's recorded GitHub source)
+        source: Option<String>,
+        /// New version: semver (e.g. 1.2.3) or a strategy keyword (auto, patch, minor, major)
+        #[arg(long)]
+        version: Option<String>,
+        /// Changelog message for this version
+        #[arg(long)]
+        changelog: Option<String>,
+    },
+    /// Roll back agent to a previous version
+    Rollback {
+        /// Agent name or ID
+        agent: String,
+        /// Target version (defaults to the most recent rollback-eligible version)
+        #[arg(long)]
+        version: Option<String>,
+        /// Reason for the rollback (recorded in logs)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Deployment-level ops (list/inspect/restart) — distinct from the container-level ps/restart above
+    Deployments {
+        #[command(subcommand)]
+        command: DeploymentsCommands,
+    },
     /// Terminate + deregister agent
     Rm {
         agent: String,
@@ -273,6 +306,22 @@ pub enum AgentsCommands {
         message: Option<String>,
         #[arg(long, short = 's')]
         session_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DeploymentsCommands {
+    /// List all deployments (crash reason, restart count, etc.)
+    #[command(alias = "list")]
+    Ls,
+    /// Show the current deployment for an agent
+    Get {
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Restart a specific deployment by its deployment ID (see `deployments ls`)
+    Restart {
+        deployment_id: String,
     },
 }
 
@@ -499,19 +548,47 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
         AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
+        AgentOpsCommands::Update { agent, source, version, changelog } => {
+            commands::update::update(&agent, source.as_deref(), version.as_deref(), changelog.as_deref())
+        }
+        AgentOpsCommands::Rollback { agent, version, reason, yes } => {
+            commands::update::rollback(&agent, version.as_deref(), reason.as_deref(), yes)
+        }
+        AgentOpsCommands::Deployments { command } => match command {
+            DeploymentsCommands::Ls => commands::deployments::ls(),
+            DeploymentsCommands::Get { agent } => commands::deployments::get(&agent),
+            DeploymentsCommands::Restart { deployment_id } => commands::deployments::restart(&deployment_id),
+        },
         AgentOpsCommands::Chat { url, message, agent, tui, resume, session_id } => {
-            // `nasiko chat "some message"` — a lone non-URL positional is
-            // the message, not the endpoint (URL falls back to the cluster).
+            // `nasiko chat "some message"` — a lone positional *containing
+            // a space* is a natural-language message for the orchestrator,
+            // not a resolvable target. Targets (a URL, an agent UUID/name,
+            // or "orchestrator") are always a single token, so checking
+            // for whitespace — not "isn't an http(s) URL" — is what
+            // actually distinguishes the two: the old check reclassified
+            // *any* non-URL positional (including a bare agent name) as
+            // the message, so `nasiko chat my-agent` sent "my-agent" as
+            // the message to the orchestrator instead of resolving it as
+            // the chat target.
             let (url, message) = match (url, message) {
-                (Some(u), None) if !u.starts_with("http://") && !u.starts_with("https://") => {
-                    (None, Some(u))
-                }
+                (Some(u), None) if u.contains(' ') => (None, Some(u)),
                 other => other,
             };
-            let target_label = agent.clone().unwrap_or_default();
+            let target_label = agent.as_deref().unwrap_or("").to_string();
             let resolved = match (url, agent) {
-                (Some(u), _) => u,
-                (None, Some(a)) => commands::agents::resolve_chat_target(&a)?,
+                // `url` is documented to accept a full URL, an agent
+                // UUID/name, or "orchestrator" — `resolve_chat_target`
+                // is what actually implements that (URL passthrough,
+                // orchestrator special-case, agent lookup by id/name);
+                // using `u` as-is here skipped that resolution entirely,
+                // so `nasiko chat <agent-name>` sent the literal name as
+                // the HTTP endpoint instead of resolving it first.
+                (Some(u), _) => commands::agents::resolve_chat_target(&u)?,
+                (None, Some(a)) => {
+                    let base = config::active_url()?;
+                    let id = commands::agents::resolve_agent_id(&a)?;
+                    format!("{}/api/agents/{}", base.trim_end_matches('/'), id)
+                }
                 (None, None) => {
                     let base = config::active_url()?;
                     format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))
@@ -607,391 +684,5 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
         RegistrySubCommands::List { artifact_type, json } => {
             commands::registry::list(artifact_type.as_deref(), json)
         }
-    }
-}
-
-// ─── MCP Gateway ────────────────────────────────────────────────────────────
-
-#[derive(Subcommand)]
-pub enum McpSubCommands {
-    /// Browse connectable services (Composio toolkits + custom MCP servers)
-    Catalog {
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Connect to a connector — by ID, by toolkit/service name, or auto-register a URL
-    Connect {
-        /// Connect to an existing connector by its ID
-        #[arg(long)]
-        connector_id: Option<String>,
-        /// Connect to a Composio toolkit (or a custom connector) by name
-        #[arg(long)]
-        toolkit: Option<String>,
-        /// Auto-register a new custom MCP connector at this URL, then connect
-        #[arg(long)]
-        url: Option<String>,
-        /// Credential value (bearer token / API key / basic value). Prompted (hidden) if needed and omitted.
-        #[arg(long)]
-        value: Option<String>,
-        #[arg(long)]
-        redirect_url: Option<String>,
-        /// Skip the confirmation prompt when auto-registering via --url
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-    /// List your own connections
-    Connections {
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Disconnect from a connector
-    Disconnect {
-        connector_id: String,
-    },
-    /// Manage Composio toolkit auth-configs (admin)
-    Toolkit {
-        #[command(subcommand)]
-        command: McpToolkitCommands,
-    },
-    /// Manage custom MCP server connectors
-    Connector {
-        #[command(subcommand)]
-        command: McpConnectorCommands,
-    },
-    /// Manage a per-connector stored credential
-    Credential {
-        #[command(subcommand)]
-        command: McpCredentialCommands,
-    },
-    /// Manage a connector's OAuth 2.1 authorization
-    Oauth {
-        #[command(subcommand)]
-        command: McpOauthCommands,
-    },
-    /// Manage per-agent connector access + tool permissions
-    #[command(name = "agent-tools")]
-    AgentTools {
-        #[command(subcommand)]
-        command: McpAgentToolsCommands,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum McpToolkitCommands {
-    /// List registered Composio toolkits
-    List {
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Register a Composio toolkit auth-config
-    Register {
-        toolkit: String,
-        #[arg(long)]
-        client_id: Option<String>,
-        #[arg(long)]
-        client_secret: Option<String>,
-        #[arg(long = "scope")]
-        scopes: Vec<String>,
-        #[arg(long)]
-        display_name: Option<String>,
-        #[arg(long)]
-        logo_url: Option<String>,
-    },
-    /// Update a toolkit's metadata
-    Update {
-        connector_id: String,
-        #[arg(long)]
-        display_name: Option<String>,
-        #[arg(long)]
-        logo_url: Option<String>,
-        #[arg(long)]
-        description: Option<String>,
-    },
-    /// Delete a toolkit auth-config
-    Delete {
-        connector_id: String,
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum McpConnectorCommands {
-    /// List connectors visible to you
-    List {
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Detect a URL's auth type before registering
-    Probe { url: String },
-    /// Register a custom MCP server
-    Register {
-        name: String,
-        url: String,
-        #[arg(long, default_value = "streamable_http")]
-        transport: String,
-        /// none | bearer | basic | oauth2 | url_param
-        #[arg(long, default_value = "none")]
-        auth_type: String,
-        #[arg(long)]
-        url_param_name: Option<String>,
-        #[arg(long)]
-        credential_header_name: Option<String>,
-        /// Extra header to send, "Key: Value" (repeatable)
-        #[arg(long = "header")]
-        headers: Vec<String>,
-        #[arg(long)]
-        basic_username: Option<String>,
-        #[arg(long)]
-        basic_password: Option<String>,
-        #[arg(long)]
-        description: Option<String>,
-        #[arg(long)]
-        display_name: Option<String>,
-        #[arg(long)]
-        logo_url: Option<String>,
-    },
-    /// Edit a connector's fields (owner/admin only)
-    Update {
-        connector_id: String,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        url: Option<String>,
-        #[arg(long)]
-        transport: Option<String>,
-        #[arg(long)]
-        auth_type: Option<String>,
-        #[arg(long)]
-        url_param_name: Option<String>,
-        #[arg(long)]
-        credential_header_name: Option<String>,
-        #[arg(long = "header")]
-        headers: Vec<String>,
-        #[arg(long)]
-        description: Option<String>,
-        #[arg(long)]
-        display_name: Option<String>,
-        #[arg(long)]
-        logo_url: Option<String>,
-        #[arg(long)]
-        active: Option<bool>,
-    },
-    /// Delete a connector (owner/admin only)
-    Delete {
-        connector_id: String,
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-    /// Manage sharing for a connector you own
-    Share {
-        #[command(subcommand)]
-        command: McpConnectorShareCommands,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum McpConnectorShareCommands {
-    /// List current grants
-    List {
-        connector_id: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Grant access to a user, or publicly
-    Add {
-        connector_id: String,
-        #[arg(long, short = 'u')]
-        user: Option<String>,
-        #[arg(long)]
-        public: bool,
-    },
-    /// Revoke access
-    Remove {
-        connector_id: String,
-        #[arg(long, short = 'u')]
-        user: Option<String>,
-        #[arg(long)]
-        public: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum McpCredentialCommands {
-    /// Store a credential for a connector (prompts hidden if value omitted)
-    Set {
-        connector_id: String,
-        value: Option<String>,
-    },
-    /// Show connection/credential status
-    Status {
-        connector_id: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Remove a stored credential
-    Delete {
-        connector_id: String,
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum McpOauthCommands {
-    /// Begin an OAuth 2.1 authorization flow
-    Authorize {
-        connector_id: String,
-        #[arg(long)]
-        client_id: Option<String>,
-        #[arg(long)]
-        redirect_url: Option<String>,
-    },
-    /// Show OAuth token status
-    Status {
-        connector_id: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Revoke the stored OAuth token
-    Revoke {
-        connector_id: String,
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum McpAgentToolsCommands {
-    /// List connectors visible to an agent (enabled/disabled, connected)
-    Connectors {
-        /// Agent name or ID
-        agent: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Enable a connector for an agent
-    Enable { agent: String, connector_id: String },
-    /// Disable a connector for an agent
-    Disable { agent: String, connector_id: String },
-    /// Show a connector's synced tool catalog + current stance for an agent
-    Tools {
-        agent: String,
-        connector_id: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// List all per-agent tool rules
-    Rules {
-        agent: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Set (or update) one tool-pattern rule for a connector on an agent
-    #[command(name = "set-rule")]
-    SetRule {
-        agent: String,
-        connector_id: String,
-        /// Glob pattern, e.g. "SEND_*" or an exact tool name
-        pattern: String,
-        /// allow | ask | block
-        stance: String,
-    },
-    /// Reset an agent back to full default-allow
-    Reset {
-        agent: String,
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-}
-
-pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
-    match cmd {
-        McpSubCommands::Catalog { json } => commands::mcp::catalog(json),
-        McpSubCommands::Connect { connector_id, toolkit, url, value, redirect_url, yes } => {
-            commands::mcp::connect(
-                connector_id.as_deref(),
-                toolkit.as_deref(),
-                url.as_deref(),
-                value.as_deref(),
-                redirect_url.as_deref(),
-                yes,
-            )
-        }
-        McpSubCommands::Connections { json } => commands::mcp::connections(json),
-        McpSubCommands::Disconnect { connector_id } => commands::mcp::disconnect(&connector_id),
-        McpSubCommands::Toolkit { command } => match command {
-            McpToolkitCommands::List { json } => commands::mcp::toolkit_list(json),
-            McpToolkitCommands::Register { toolkit, client_id, client_secret, scopes, display_name, logo_url } => {
-                commands::mcp::toolkit_register(
-                    &toolkit,
-                    client_id.as_deref(),
-                    client_secret.as_deref(),
-                    &scopes,
-                    display_name.as_deref(),
-                    logo_url.as_deref(),
-                )
-            }
-            McpToolkitCommands::Update { connector_id, display_name, logo_url, description } => {
-                commands::mcp::toolkit_update(&connector_id, display_name.as_deref(), logo_url.as_deref(), description.as_deref())
-            }
-            McpToolkitCommands::Delete { connector_id, yes } => commands::mcp::toolkit_delete(&connector_id, yes),
-        },
-        McpSubCommands::Connector { command } => match command {
-            McpConnectorCommands::List { json } => commands::mcp::connector_list(json),
-            McpConnectorCommands::Probe { url } => commands::mcp::connector_probe(&url),
-            McpConnectorCommands::Register {
-                name, url, transport, auth_type, url_param_name, credential_header_name,
-                headers, basic_username, basic_password, description, display_name, logo_url,
-            } => commands::mcp::connector_register(
-                &name, &url, &transport, &auth_type,
-                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
-                basic_username.as_deref(), basic_password.as_deref(),
-                description.as_deref(), display_name.as_deref(), logo_url.as_deref(),
-            ),
-            McpConnectorCommands::Update {
-                connector_id, name, url, transport, auth_type, url_param_name, credential_header_name,
-                headers, description, display_name, logo_url, active,
-            } => commands::mcp::connector_update(
-                &connector_id, name.as_deref(), url.as_deref(), transport.as_deref(), auth_type.as_deref(),
-                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
-                description.as_deref(), display_name.as_deref(), logo_url.as_deref(), active,
-            ),
-            McpConnectorCommands::Delete { connector_id, yes } => commands::mcp::connector_delete(&connector_id, yes),
-            McpConnectorCommands::Share { command } => match command {
-                McpConnectorShareCommands::List { connector_id, json } => commands::mcp::share_list(&connector_id, json),
-                McpConnectorShareCommands::Add { connector_id, user, public } => {
-                    commands::mcp::share_add(&connector_id, user.as_deref(), public)
-                }
-                McpConnectorShareCommands::Remove { connector_id, user, public } => {
-                    commands::mcp::share_remove(&connector_id, user.as_deref(), public)
-                }
-            },
-        },
-        McpSubCommands::Credential { command } => match command {
-            McpCredentialCommands::Set { connector_id, value } => commands::mcp::credential_set(&connector_id, value.as_deref()),
-            McpCredentialCommands::Status { connector_id, json } => commands::mcp::credential_status(&connector_id, json),
-            McpCredentialCommands::Delete { connector_id, yes } => commands::mcp::credential_delete(&connector_id, yes),
-        },
-        McpSubCommands::Oauth { command } => match command {
-            McpOauthCommands::Authorize { connector_id, client_id, redirect_url } => {
-                commands::mcp::oauth_authorize(&connector_id, client_id.as_deref(), redirect_url.as_deref())
-            }
-            McpOauthCommands::Status { connector_id, json } => commands::mcp::oauth_status(&connector_id, json),
-            McpOauthCommands::Revoke { connector_id, yes } => commands::mcp::oauth_revoke(&connector_id, yes),
-        },
-        McpSubCommands::AgentTools { command } => match command {
-            McpAgentToolsCommands::Connectors { agent, json } => commands::mcp::agent_tools_connectors(&agent, json),
-            McpAgentToolsCommands::Enable { agent, connector_id } => commands::mcp::agent_tools_enable(&agent, &connector_id),
-            McpAgentToolsCommands::Disable { agent, connector_id } => commands::mcp::agent_tools_disable(&agent, &connector_id),
-            McpAgentToolsCommands::Tools { agent, connector_id, json } => {
-                commands::mcp::agent_tools_tools(&agent, &connector_id, json)
-            }
-            McpAgentToolsCommands::Rules { agent, json } => commands::mcp::agent_tools_rules(&agent, json),
-            McpAgentToolsCommands::SetRule { agent, connector_id, pattern, stance } => {
-                commands::mcp::agent_tools_set_rule(&agent, &connector_id, &pattern, &stance)
-            }
-            McpAgentToolsCommands::Reset { agent, yes } => commands::mcp::agent_tools_reset(&agent, yes),
-        },
     }
 }
