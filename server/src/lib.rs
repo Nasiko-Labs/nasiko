@@ -9,7 +9,6 @@ pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
-pub mod maf;
 pub mod observability;
 pub mod pool;
 pub mod rate_limit;
@@ -69,6 +68,17 @@ impl<T: Serialize> Paginated<T> {
     }
 }
 
+/// The shared "you don't have access to this" response for read-only (GET)
+/// endpoints: 200, not 403/401 — a caller who's authenticated but lacks the
+/// specific role/ownership this endpoint needs gets a body they can render
+/// gracefully ("Not available") instead of an error state. Mutations
+/// (POST/PUT/DELETE) do NOT use this — a rejected write must still return
+/// a real error status, or a client could believe the write succeeded.
+pub fn unavailable() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    Json(serde_json::json!({"available": false})).into_response()
+}
+
 /// Build the full control plane Axum application.
 /// Called by both OSS and cloud binaries. The `fallback` handler serves
 /// static UI assets — each binary provides its own with appropriate embeds.
@@ -92,51 +102,45 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    // Spawn the MAF worker — requires an OpenAI API key for prompt generation,
-    // extraction, and final output synthesis. Degrades gracefully rather than
-    // panicking: MAF routes still work (create/list/run) without a key, jobs
-    // just queue in Redis unprocessed until one is configured.
-    if let Some(api_key) = state.config.openai_api_key.clone() {
-        let llm_config = nasiko_orchestrator::maf::LlmConfig {
-            api_key,
-            base_url: state.config.openai_base_url.clone(),
-            model: state.config.openai_model.clone(),
-        };
-        nasiko_orchestrator::maf::start_worker(
-            state.db.clone(),
-            state.redis.clone(),
-            state.http_client.clone(),
-            llm_config,
-        );
-    } else {
-        tracing::warn!(
-            "OPENAI_API_KEY not set — MAF worker not started; MAF executions will queue but not run"
-        );
-    }
-
-    // Container lifecycle routes: deployer+ only
+    // Container lifecycle mutations (deploy/destroy/stop/start/restart/scale):
+    // deployer+ only. The read routes (list/status/logs) are split out into
+    // `degradable_routes` below — same `can_deploy` check, but inline per
+    // handler so a caller below deployer gets 200 {"available": false}
+    // instead of a blanket 403.
     let container_routes = Router::new()
         .nest("/containers", admin::router())
         .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
 
-    // Pool/scaling routes: require admin+ role
-    let pool_routes = Router::new()
-        .nest("/pool", pool::router())
-        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_admin));
+    // Pool/scaling: read-only stub in OSS (EE's real scaling lives at
+    // /infra), no mutations to gate — mounted under require_auth only (via
+    // `protected`'s outer layer), no per-route role check needed.
+    let pool_routes = Router::new().nest("/pool", pool::degradable_router());
 
     // User management: superuser only
     let user_routes = user_router
         .layer(middleware::from_fn(auth::rbac::require_superuser));
 
-    // Agent deploy routes (upload, deploy-status, deployments, ACL): deployer+ only.
+    // Agent deploy MUTATIONS (upload, restart-deployment, update/rollback):
+    // deployer+ only. Reads are in `degradable_routes` below.
     let agent_deploy_routes = Router::new()
         .nest("/agents", agents::router())
         .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
 
-    // Build routes (trigger builds, view build history): deployer+ only
+    // Build MUTATIONS (create): deployer+ only. Reads (list/get/logs/
+    // progress) are in `degradable_routes` below.
     let build_routes = Router::new()
         .merge(build::router())
         .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
+
+    // GET routes pulled out from the require_deployer-gated groups above —
+    // each handler checks `can_deploy` (and any resource-ownership check
+    // that already existed) itself, returning `nasiko_server::unavailable()`
+    // (200) instead of relying on a blanket 403 from middleware. Mounted
+    // directly into `protected` below, so only `require_auth` applies.
+    let degradable_routes = Router::new()
+        .nest("/containers", admin::degradable_router())
+        .nest("/agents", agents::degradable_router())
+        .merge(build::degradable_router());
 
     // Fixed-window limiters — see rate_limit.rs for why this app has none of
     // its own otherwise (gateway removal took the last rate limiting with it).
@@ -154,8 +158,8 @@ where
         .merge(pool_routes)
         .merge(user_routes)
         .merge(build_routes)
+        .merge(degradable_routes)
         .merge(chat::router())
-        .merge(maf::router())
         .merge(secrets::router())
         .merge(settings::router())
         .merge(capabilities::router())

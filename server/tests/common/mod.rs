@@ -161,6 +161,8 @@ impl TestServer {
             .await
             .expect("connect to test db");
 
+        AppState::run_migrations(&db).await;
+
         let s3_ep = s3_endpoint();
         let mut config = test_config(db_url, redis_url(), s3_ep.clone());
         configure(&mut config);
@@ -269,6 +271,12 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        oidc_issuer_url: None,
+        oidc_client_id: None,
+        oidc_client_secret: None,
+        oidc_redirect_uri: None,
+        oidc_scopes: "openid profile email".into(),
+        oidc_provider_label: "microsoft_entra".into(),
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
         max_router_history_messages: 20,

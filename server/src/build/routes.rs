@@ -57,8 +57,18 @@ pub(crate) fn validate_version_tag(tag: &str) -> Result<(), String> {
 }
 
 pub fn router() -> Router<AppState> {
+    Router::new().route("/builds", post(create_build))
+}
+
+/// The GET routes here are mounted separately from `router()`'s
+/// `require_deployer`-gated mutation, under `require_auth` only — each
+/// handler checks `can_deploy` itself and returns `crate::unavailable()`
+/// (200) instead of what would otherwise be a blanket 403, replicating
+/// exactly who could see this data before (deployer+, same scoping the
+/// queries already apply for non-superusers), just without an error status.
+pub fn degradable_router() -> Router<AppState> {
     Router::new()
-        .route("/builds", post(create_build).get(list_all_builds))
+        .route("/builds", get(list_all_builds))
         .route("/builds/{id}", get(get_build))
         .route("/builds/{id}/progress", get(build_progress_sse))
         .route("/builds/{id}/logs", get(get_build_logs))
@@ -230,7 +240,6 @@ pub async fn execute_build(
     oci_storage: nasiko_oci::storage::S3Storage,
     http_client: reqwest::Client,
     allowed_hosts: Vec<String>,
-    capability_generator_model: String,
 ) {
     set_build_status(&db, build_id, BuildStatus::Building).await;
 
@@ -335,7 +344,7 @@ pub async fn execute_build(
 
             if let Some(ref key) = source_key {
                 auto_generate_capabilities_pub(
-                    &db, &oci_storage, &http_client, key, &agent_name, &capability_generator_model,
+                    &db, &oci_storage, &http_client, key, &agent_name,
                 ).await;
             }
         }
@@ -423,8 +432,13 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
 
 async fn get_build(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     match sqlx::query_as::<_, BuildRecord>("SELECT * FROM agent_builds WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
@@ -443,8 +457,13 @@ async fn get_build(
 
 async fn build_progress_sse(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let db = state.db.clone();
 
     let stream = async_stream::stream! {
@@ -485,15 +504,20 @@ async fn build_progress_sse(
         }
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
 }
 
 // ─── GET /builds/{id}/logs ──────────────────────────────────────────────────
 
 async fn get_build_logs(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let url: Option<String> =
         sqlx::query_scalar("SELECT logs_url FROM agent_builds WHERE id = $1")
             .bind(id)
@@ -526,6 +550,10 @@ async fn list_all_builds(
     claims: Claims,
     Query(q): Query<ListAllQuery>,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -582,6 +610,10 @@ async fn list_builds(
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -599,7 +631,7 @@ async fn list_builds(
         .unwrap_or(false);
 
         if !owned {
-            return StatusCode::FORBIDDEN.into_response();
+            return crate::unavailable();
         }
     }
 
@@ -626,7 +658,6 @@ pub async fn auto_generate_capabilities_pub(
     http_client: &reqwest::Client,
     source_key: &str,
     agent_name: &str,
-    capability_generator_model: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
     use nasiko_orchestrator::providers::LLMProvider;
@@ -645,13 +676,9 @@ pub async fn auto_generate_capabilities_pub(
     };
 
     let provider = LLMProvider::from_env(http_client.clone());
-    // Caller passes `state.config.capability_generator_model` (already
-    // resolved from `CAPABILITY_GENERATOR_MODEL`, default "gpt-4o-mini") —
-    // see `capabilities/routes.rs::make_generator` for the same fix; this
-    // function has no `AppState` of its own so the resolved value is threaded
-    // through `execute_build` instead of re-reading the env var here with a
-    // hardcoded placeholder.
-    let generator = CapabilityGenerator::new(provider, capability_generator_model.to_string());
+    let model = std::env::var("CAPABILITY_GENERATOR_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".into());
+    let generator = CapabilityGenerator::new(provider, model);
 
     match generator.generate(&source, agent_name).await {
         Ok((card, _)) => {

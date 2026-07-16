@@ -15,8 +15,16 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/deployments", get(list_deployments))
         .route("/deployment/{deployment_id}/restart", post(restart_deployment))
+}
+
+/// Mounted separately from `router()`, under `require_auth` only — each
+/// handler checks `can_deploy` (and, for the single-agent lookup, agent
+/// access) itself and returns `crate::unavailable()` (200) instead
+/// of a blanket 403.
+pub fn degradable_router() -> Router<AppState> {
+    Router::new()
+        .route("/deployments", get(list_deployments))
         .route("/{id}/deployment", get(get_agent_deployment))
 }
 
@@ -62,6 +70,10 @@ async fn list_deployments(
     State(state): State<AppState>,
     claims: Claims,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -113,9 +125,13 @@ async fn get_agent_deployment(
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
 
     if !crate::acl::can_access_agent(&state, &claims, agent_id).await {
-        return StatusCode::FORBIDDEN.into_response();
+        return crate::unavailable();
     }
 
     match sqlx::query_as::<_, DeploymentRow>(
@@ -292,6 +308,10 @@ async fn restart_deployment(
             // apply the runtime default (0.5 CPU / 512 MiB). No behavioral regression
             // until the API supports caller-specified resource limits.
             resources: None,
+            // Docker-only path (see the `if`/`else` above) — these fields are
+            // meaningless to DockerRuntime.
+            image_pull_secret_name: None,
+            image_pull_credential_seed: None,
         };
 
         match state.runtime.deploy(&spec).await {

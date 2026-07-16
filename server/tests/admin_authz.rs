@@ -96,12 +96,16 @@ impl Scenario {
 
 #[tokio::test]
 #[serial]
-async fn status_rejects_non_owner_allows_owner_and_superuser() {
+async fn status_degrades_for_non_owner_allows_owner_and_superuser() {
     let (s, _agent_id) = Scenario::setup("status-authz-agent").await;
     let path = s.server.url("/api/containers/status-authz-agent");
 
+    // GET (read) degrades to 200 {"available": false} instead of 403 — a
+    // non-owner simply can't see this container's status, no error state.
     let res = s.as_other(s.server.client.get(&path)).send().await.unwrap();
-    assert_eq!(res.status(), 403, "non-owner must be forbidden");
+    assert_eq!(res.status(), 200, "non-owner gets 200 unavailable, not an error");
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["available"], serde_json::json!(false));
 
     let res = s.as_owner(s.server.client.get(&path)).send().await.unwrap();
     assert_eq!(res.status(), 200, "owner must be allowed");
@@ -207,12 +211,14 @@ async fn restart_allows_superuser() {
     s.server.cleanup().await;
 }
 
-/// A name with no catalog entry has no owner to check against — the ad-hoc
-/// fallback path must remain open to any deployer (first-deploy-wins, same
-/// reasoning as `deploy`'s ad-hoc-image branch).
+/// A name with no catalog entry has no owner to check an ACL against — see
+/// `25abcbf fix: remove ACL-bypassing raw-ID fallback from container
+/// restart`, which removed the old raw-container-ID fallback (any deployer
+/// could previously restart any host container just by knowing its name,
+/// with no ownership check possible). Restart now 404s instead.
 #[tokio::test]
 #[serial]
-async fn restart_allows_any_deployer_when_no_agent_record_exists() {
+async fn restart_of_unregistered_container_is_404() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let super_id: Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
@@ -224,7 +230,7 @@ async fn restart_allows_any_deployer_when_no_agent_record_exists() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "ad-hoc restart with no catalog record must stay open");
+    assert_eq!(res.status(), 404, "ad-hoc restart with no catalog record must 404, not fall back to a raw container ID");
 
     server.cleanup().await;
 }
@@ -260,12 +266,15 @@ async fn scale_rejects_non_owner_allows_owner() {
 
 #[tokio::test]
 #[serial]
-async fn logs_rejects_non_owner_allows_owner() {
+async fn logs_degrades_for_non_owner_allows_owner() {
     let (s, _agent_id) = Scenario::setup("logs-authz-agent").await;
     let path = s.server.url("/api/containers/logs-authz-agent/logs");
 
+    // GET (read) degrades to 200 {"available": false} instead of 403.
     let res = s.as_other(s.server.client.get(&path)).send().await.unwrap();
-    assert_eq!(res.status(), 403, "non-owner must not read another team's logs");
+    assert_eq!(res.status(), 200, "non-owner gets 200 unavailable, not an error");
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["available"], serde_json::json!(false));
 
     let res = s.as_owner(s.server.client.get(&path)).send().await.unwrap();
     assert_eq!(res.status(), 200);
