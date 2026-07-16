@@ -5,6 +5,7 @@ import { withLoading } from '/common/utils/async-button.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-badge.js';
 import '/common/components/app-button.js';
+import '/common/components/app-empty-state.js';
 
 import styles from './users-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -44,9 +45,37 @@ function relativeTime(dateStr) {
 class UsersPage extends HTMLElement {
   #initialized = false;
 
-  connectedCallback() {
+  async connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
+
+    // EE: this page's APIs (fetchUsers/fetchUserStats) are superuser-only
+    // and degrade to `{available: false}` (200, not 403) for an
+    // authenticated-but-non-superuser caller (e.g. an org-hierarchy
+    // `admin` who isn't a platform superuser) — see
+    // ee/server/src/users.rs's `degradable_router()`. OSS's plain
+    // `fetchUserStats` never returns this shape, so this check is a no-op
+    // there. Checked via stats (cheap) rather than the full user list.
+    if (typeof window.fetchUserStats === 'function') {
+      try {
+        const stats = await window.fetchUserStats();
+        if (stats && stats.available === false) {
+          this.innerHTML = `
+            <div class="users-unavailable">
+              <app-empty-state
+                title="Not available for your role"
+                description="Full user management requires platform superuser access. Ask a superuser to manage users, or use Team Access to manage roles within your own team/department.">
+              </app-empty-state>
+            </div>
+          `;
+          return;
+        }
+      } catch {
+        // Stats endpoint unreachable — fall through to the normal page;
+        // the table's own fetch will surface whatever the real error is.
+      }
+    }
+
     this.#render();
     this.#bind();
   }

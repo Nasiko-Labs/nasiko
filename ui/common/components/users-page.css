@@ -1,6 +1,10 @@
 @scope (users-page) {
   :scope { display: block; }
 
+  .users-unavailable {
+    padding: var(--space-xl) var(--space-md);
+  }
+
   .users-header {
     display: flex;
     align-items: center;
