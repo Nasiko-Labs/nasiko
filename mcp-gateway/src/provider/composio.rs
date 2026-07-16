@@ -248,23 +248,29 @@ impl ToolProvider for ComposioProvider {
         };
 
         // Response is paginated: `{ items: [ { id, status, auth_config: { id } } ] }`.
-        let items = resp.get("items").and_then(|i| i.as_array());
-        if let Some(items) = items {
-            for item in items {
-                let item_ac_id = item
-                    .get("auth_config")
-                    .and_then(|a| first_str(a, &["id", "nanoid", "auth_config_id"]))
-                    .or_else(|| first_str(item, &["auth_config_id"]));
-                if item_ac_id.as_deref() == Some(auth_config_id) {
-                    return Ok(ConnectionStatus {
-                        status: first_str(item, &["status"]).unwrap_or_else(|| "UNKNOWN".to_string()),
-                        account_id: first_str(item, &["id", "nanoid"]),
-                    });
-                }
-            }
-        }
+        // A user can have MORE THAN ONE account for the same auth_config (e.g. a
+        // first OAuth attempt that expired, then a successful retry). Returning
+        // whichever the API happened to list first could bind the connection to a
+        // dead (EXPIRED) account — local status ACTIVE, every tool call failing.
+        // So prefer an ACTIVE account, tie-broken by recency (ISO-8601 timestamp
+        // if present); fall back to the newest of any status only if none active.
+        let best = resp
+            .get("items")
+            .and_then(|i| i.as_array())
+            .and_then(|items| {
+                items
+                    .iter()
+                    .filter(|&item| account_matches_auth_config(item, auth_config_id))
+                    .max_by_key(|&item| (account_is_active(item), account_recency(item)))
+            });
 
-        Ok(ConnectionStatus { status: "NOT_FOUND".to_string(), account_id: None })
+        Ok(match best {
+            Some(item) => ConnectionStatus {
+                status: first_str(item, &["status"]).unwrap_or_else(|| "UNKNOWN".to_string()),
+                account_id: first_str(item, &["id", "nanoid"]),
+            },
+            None => ConnectionStatus { status: "NOT_FOUND".to_string(), account_id: None },
+        })
     }
 
     async fn create_session(
@@ -389,4 +395,25 @@ fn item_toolkit_slug(item: &Value) -> Option<String> {
         .and_then(|t| first_str(t, &["slug", "name"]))
         .or_else(|| first_str(item, &["toolkit_slug", "toolkit"]))
         .map(|s| s.to_ascii_lowercase())
+}
+
+/// Does a connected-account item belong to `auth_config_id` (nested or flat key)?
+fn account_matches_auth_config(item: &Value, auth_config_id: &str) -> bool {
+    let ac = item
+        .get("auth_config")
+        .and_then(|a| first_str(a, &["id", "nanoid", "auth_config_id"]))
+        .or_else(|| first_str(item, &["auth_config_id"]));
+    ac.as_deref() == Some(auth_config_id)
+}
+
+/// True when a connected-account item's status is ACTIVE (case-insensitive).
+fn account_is_active(item: &Value) -> bool {
+    first_str(item, &["status"]).is_some_and(|s| s.eq_ignore_ascii_case("ACTIVE"))
+}
+
+/// Best-effort recency key for a connected-account item — an ISO-8601 timestamp
+/// sorts lexically. Empty when Composio returns no timestamp (then selection
+/// falls back to array order, with the last matching item winning ties).
+fn account_recency(item: &Value) -> String {
+    first_str(item, &["updated_at", "updatedAt", "created_at", "createdAt"]).unwrap_or_default()
 }

@@ -300,6 +300,80 @@ async fn composio_check_status_matches_by_auth_config() {
     assert_eq!(out.status, "ACTIVE");
 }
 
+// Two accounts for the SAME auth_config (a common real case: a first OAuth
+// attempt expired, then a successful retry). The client must pick the ACTIVE
+// one regardless of array order — never bind to the dead EXPIRED account.
+#[tokio::test]
+async fn composio_check_status_prefers_active_over_expired_regardless_of_order() {
+    // Dead account listed FIRST — the old "return first match" would pick it.
+    let mut srv = mockito::Server::new_async().await;
+    srv.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
+        .with_status(200)
+        .with_body(
+            r#"{"items":[
+                {"id":"ca_expired","status":"EXPIRED","auth_config":{"id":"ac_1"}},
+                {"id":"ca_active","status":"ACTIVE","auth_config":{"id":"ac_1"}}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+    let out = composio(srv.url()).check_connection_status("u1", "ac_1").await.unwrap();
+    assert_eq!(out.account_id.as_deref(), Some("ca_active"), "must pick the ACTIVE account, not the expired one");
+    assert_eq!(out.status, "ACTIVE");
+
+    // Same, ACTIVE listed first — must still pick ACTIVE (order-independent).
+    let mut srv2 = mockito::Server::new_async().await;
+    srv2.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
+        .with_status(200)
+        .with_body(
+            r#"{"items":[
+                {"id":"ca_active","status":"ACTIVE","auth_config":{"id":"ac_1"}},
+                {"id":"ca_expired","status":"EXPIRED","auth_config":{"id":"ac_1"}}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+    let out2 = composio(srv2.url()).check_connection_status("u1", "ac_1").await.unwrap();
+    assert_eq!(out2.account_id.as_deref(), Some("ca_active"));
+}
+
+// Multiple ACTIVE accounts → prefer the most recent by timestamp.
+#[tokio::test]
+async fn composio_check_status_breaks_active_ties_by_recency() {
+    let mut srv = mockito::Server::new_async().await;
+    srv.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
+        .with_status(200)
+        .with_body(
+            r#"{"items":[
+                {"id":"ca_new","status":"ACTIVE","auth_config":{"id":"ac_1"},"created_at":"2026-02-01T00:00:00Z"},
+                {"id":"ca_old","status":"ACTIVE","auth_config":{"id":"ac_1"},"created_at":"2026-01-01T00:00:00Z"}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+    let out = composio(srv.url()).check_connection_status("u1", "ac_1").await.unwrap();
+    assert_eq!(out.account_id.as_deref(), Some("ca_new"), "newest ACTIVE by created_at must win");
+}
+
+// No ACTIVE account → still report the (newest) non-active status, so the
+// callback correctly says "not active yet" instead of binding a dead account.
+#[tokio::test]
+async fn composio_check_status_reports_non_active_when_none_active() {
+    let mut srv = mockito::Server::new_async().await;
+    srv.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
+        .with_status(200)
+        .with_body(
+            r#"{"items":[
+                {"id":"ca_expired","status":"EXPIRED","auth_config":{"id":"ac_1"}}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+    let out = composio(srv.url()).check_connection_status("u1", "ac_1").await.unwrap();
+    assert_eq!(out.status, "EXPIRED");
+    assert_eq!(out.account_id.as_deref(), Some("ca_expired"));
+}
+
 #[tokio::test]
 async fn composio_check_status_not_found() {
     let mut srv = mockito::Server::new_async().await;
