@@ -11,6 +11,8 @@ pub struct Artifact {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
+    pub metadata: serde_json::Value,
+    #[serde(default)]
     pub oci_digest: Option<String>,
     #[serde(default)]
     pub size_bytes: Option<i64>,
@@ -37,6 +39,8 @@ pub struct PublishRequest {
     pub artifact_type: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]

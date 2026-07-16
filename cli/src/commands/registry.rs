@@ -89,6 +89,8 @@ struct ScoredArtifactRow {
     score: String,
     #[tabled(rename = "ARTIFACT")]
     artifact: String,
+    #[tabled(rename = "TYPE")]
+    artifact_type: String,
     #[tabled(rename = "DESCRIPTION")]
     description: String,
     #[tabled(rename = "TAGS")]
@@ -104,6 +106,7 @@ impl From<&crate::api::Artifact> for ScoredArtifactRow {
         ScoredArtifactRow {
             score,
             artifact: format!("{}/{}:{}", artifact.owner, artifact.name, artifact.version),
+            artifact_type: artifact.artifact_type.clone(),
             description,
             tags,
         }
@@ -114,6 +117,8 @@ impl From<&crate::api::Artifact> for ScoredArtifactRow {
 struct ArtifactRow {
     #[tabled(rename = "ARTIFACT")]
     artifact: String,
+    #[tabled(rename = "TYPE")]
+    artifact_type: String,
     #[tabled(rename = "DESCRIPTION")]
     description: String,
     #[tabled(rename = "TAGS")]
@@ -127,6 +132,7 @@ impl From<&crate::api::Artifact> for ArtifactRow {
         let description = if desc.len() > 57 { format!("{}...", &desc[..desc.floor_char_boundary(57)]) } else { desc.to_string() };
         ArtifactRow {
             artifact: format!("{}/{}:{}", artifact.owner, artifact.name, artifact.version),
+            artifact_type: artifact.artifact_type.clone(),
             description,
             tags,
         }

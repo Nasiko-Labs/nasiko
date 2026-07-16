@@ -13,26 +13,64 @@ static AGENTS_DIR: Dir = include_dir!("$OUT_DIR/agents");
 
 #[derive(Debug, Clone)]
 struct Framework {
-    key: &'static str,
-    label: &'static str,
-    model_providers: Option<&'static [&'static str]>,
+    key: String,
+    label: String,
+    model_providers: Vec<String>,
     streaming: bool,
+    language: String,
 }
 
-// TODO: add JS/TS and Rust framework templates + skill injection for those languages
-const FRAMEWORKS: &[Framework] = &[
-    // Python
-    Framework { key: "claude-sdk", label: "Anthropic Claude API (claude-sonnet-4-6) [Python]", model_providers: None, streaming: true },
-    Framework { key: "openai", label: "OpenAI Agents SDK [Python]", model_providers: None, streaming: false },
-    Framework { key: "gemini", label: "Google Gemini SDK [Python]", model_providers: None, streaming: false },
-    Framework { key: "google-adk", label: "Google Agent Development Kit (ADK) [Python]", model_providers: None, streaming: false },
-    Framework { key: "langchain", label: "LangChain tool-calling agent [Python]", model_providers: Some(&["openai", "anthropic", "gemini"]), streaming: false },
-    Framework { key: "langgraph", label: "LangGraph state-machine agent [Python]", model_providers: Some(&["openai", "anthropic", "gemini"]), streaming: true },
-    Framework { key: "crewai", label: "CrewAI role-based crew [Python]", model_providers: Some(&["openai", "anthropic"]), streaming: false },
-    Framework { key: "autogen", label: "Microsoft AutoGen conversational agents [Python]", model_providers: Some(&["openai", "anthropic"]), streaming: false },
-    // Go
-    Framework { key: "a2a-go", label: "A2A Go SDK [Go]", model_providers: None, streaming: false },
-];
+/// Framework templates are `agent`-type artifacts published under the
+/// `nasiko` owner with `metadata.isFrameworkTemplate = true`. The rest of
+/// `metadata` carries what the interactive picker needs beyond a generic
+/// artifact: `modelProviders` (string array, omit/empty when the framework
+/// hardcodes its provider), `streaming` (bool), and `language`
+/// ("python"/"go"/... — used for skill-injection compatibility and to
+/// finish AgentCard.json).
+fn fetch_frameworks() -> Result<Vec<Framework>> {
+    let client = crate::api::RegistryClient::new().context(
+        "no registry connected — run `nasiko registry connect <url>` \
+        (nasiko new fetches framework templates from the connected registry)",
+    )?;
+    let artifacts = client
+        .search(None, Some("agent"), None)
+        .context("failed to fetch framework templates from the registry")?;
+
+    let frameworks: Vec<Framework> = artifacts
+        .into_iter()
+        .filter(|a| {
+            a.owner == "nasiko"
+                && a.metadata.get("isFrameworkTemplate").and_then(|v| v.as_bool()).unwrap_or(false)
+        })
+        .map(|a| {
+            let model_providers = a
+                .metadata
+                .get("modelProviders")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let streaming = a.metadata.get("streaming").and_then(|v| v.as_bool()).unwrap_or(false);
+            let language = a
+                .metadata
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or("python")
+                .to_string();
+            Framework {
+                label: a.description.clone().unwrap_or_else(|| a.name.clone()),
+                key: a.name,
+                model_providers,
+                streaming,
+                language,
+            }
+        })
+        .collect();
+
+    if frameworks.is_empty() {
+        anyhow::bail!("no framework templates found in the connected registry");
+    }
+    Ok(frameworks)
+}
 
 // ─── Public entry points ────────────────────────────────────────────────────
 
@@ -72,7 +110,8 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
     let agent_name = agent_name.trim().to_lowercase().replace(' ', "-");
 
     // 1. Framework
-    let fw_labels: Vec<String> = FRAMEWORKS
+    let frameworks = fetch_frameworks()?;
+    let fw_labels: Vec<String> = frameworks
         .iter()
         .enumerate()
         .map(|(i, f)| format!("{}. {}", i + 1, f.label))
@@ -83,12 +122,12 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
         .items(&fw_labels)
         .default(0)
         .interact()?;
-    let framework = &FRAMEWORKS[fw_idx];
+    let framework = &frameworks[fw_idx];
 
     // 2. Starting point: blank template or existing artifact from registry
     let mut use_artifact: Option<crate::api::Artifact> = None;
     let registry_artifacts = crate::api::RegistryClient::new()
-        .and_then(|c| c.search(None, Some("agent"), Some(framework.key)).ok())
+        .and_then(|c| c.search(None, Some("agent"), Some(framework.key.as_str())).ok())
         .unwrap_or_default();
 
     if !registry_artifacts.is_empty() {
@@ -133,7 +172,7 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
         pull_artifact(&repo, &dest)?;
     } else {
         // Blank template flow
-        extract_template(framework.key, &dest)?;
+        extract_template(&framework.key, &dest)?;
 
         // Description
         let default_desc = format!("A Nasiko agent called {agent_name}");
@@ -143,24 +182,19 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
             .interact_text()?;
 
         // Model provider (only for frameworks that support multiple)
-        let _model_provider: Option<&str> = match framework.model_providers {
-            Some(providers) => {
-                let items: Vec<String> = providers.iter().map(|p| p.to_string()).collect();
-                let idx = Select::new()
-                    .with_prompt("Model provider")
-                    .items(&items)
-                    .default(0)
-                    .interact()?;
-                Some(providers[idx])
-            }
-            None => None,
+        let _model_provider: Option<&str> = if framework.model_providers.is_empty() {
+            None
+        } else {
+            let idx = Select::new()
+                .with_prompt("Model provider")
+                .items(&framework.model_providers)
+                .default(0)
+                .interact()?;
+            Some(framework.model_providers[idx].as_str())
         };
 
         // Skills
-        let project_lang = match framework.key {
-            "a2a-go" => "go",
-            _ => "python",
-        };
+        let project_lang = framework.language.as_str();
         let available_skills: Vec<String> = crate::skill::list_available_skills()
             .into_iter()
             .filter(|name| {
@@ -194,7 +228,7 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
         // Inject skills
         for skill_name in &selected_skills {
             let (manifest, impl_code) = crate::skill::resolve_skill(skill_name)?;
-            crate::skill::inject_skill(&dest, &manifest, &impl_code, framework.key)?;
+            crate::skill::inject_skill(&dest, &manifest, &impl_code, &framework.key)?;
         }
     }
 
@@ -237,9 +271,12 @@ fn extract_template(template: &str, dest: &Path) -> Result<()> {
                 && let Ok(templates) = client.list_templates() {
                     available = templates.iter().map(|a| a.name.clone()).collect();
                 }
-            // Fallback to embedded template names
+            // Fallback to the embedded template directory names
             if available.is_empty() {
-                available = FRAMEWORKS.iter().map(|f| f.key.to_string()).collect();
+                available = AGENTS_DIR
+                    .dirs()
+                    .filter_map(|d| d.path().file_name().and_then(|n| n.to_str()).map(String::from))
+                    .collect();
             }
             format!("template '{template}' not found.\nAvailable: {}", available.join(", "))
         })?;
