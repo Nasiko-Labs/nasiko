@@ -19,10 +19,10 @@ use crate::{auth::Claims, secrets::crypto::SecretsCrypto, state::AppState};
 /// without a bearer token.
 pub fn public_router() -> Router<AppState> {
     Router::new()
-        .route("/api/github/callback", get(github_callback))
+        .route("/api/auth/github/callback", get(github_callback))
         // Unauthenticated SSO login: returns {"auth_url": "..."} so the client
         // can open GitHub consent in a new tab without holding a session token.
-        .route("/api/v1/auth/github/login-user", get(github_login_user))
+        .route("/api/auth/github/login-user", get(github_login_user))
 }
 
 /// Protected routes — served under /api/v1 with require_auth middleware.
@@ -319,9 +319,7 @@ async fn github_callback(
 }
 
 /// Login flow callback: find or create the Nasiko user from the GitHub identity,
-/// issue a JWT, and redirect to the Flutter login page with the token in query
-/// params. The Flutter login screen detects `?token=` and writes it to
-/// localStorage so the polling tab can complete the login.
+/// issue a JWT, and redirect with the token in query params.
 async fn github_callback_login(
     state: AppState,
     _token: nasiko_github::AccessToken,
@@ -337,13 +335,15 @@ async fn github_callback_login(
         }
     };
 
-    // Redirect to the Flutter login page with token params. The login screen's
-    // _checkForOAuthCallback detects `?token=`, writes it to localStorage, and
-    // closes the tab so the original polling tab can complete sign-in.
-    //
-    // Use reqwest::Url for query-param encoding (already a dep, handles any
-    // chars in username safely).
-    let mut redirect = reqwest::Url::parse("http://placeholder/").expect("static URL");
+    // Use reqwest::Url for query-param encoding (handles any chars in username safely).
+    // APP_BASE_URL overrides the redirect base — useful when the server and the app
+    // run on different origins in dev. In prod both share the same base URL.
+    let base = if state.config.app_base_url.is_empty() {
+        "http://placeholder".to_string()
+    } else {
+        state.config.app_base_url.trim_end_matches('/').to_string()
+    };
+    let mut redirect = reqwest::Url::parse(&format!("{base}/")).expect("valid base URL");
     {
         let mut q = redirect.query_pairs_mut();
         q.append_pair("token", &result.token);
@@ -351,9 +351,13 @@ async fn github_callback_login(
         q.append_pair("username", &result.username);
         q.append_pair("is_super_user", &result.is_superuser.to_string());
     }
-    let redirect_path = format!("/?{}", redirect.query().unwrap_or_default());
+    let redirect_target = if state.config.app_base_url.is_empty() {
+        format!("/?{}", redirect.query().unwrap_or_default())
+    } else {
+        redirect.to_string()
+    };
 
-    Redirect::temporary(&redirect_path).into_response()
+    Redirect::temporary(&redirect_target).into_response()
 }
 
 async fn github_status(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {

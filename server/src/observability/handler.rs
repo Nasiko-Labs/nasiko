@@ -74,6 +74,7 @@ pub async fn get_all_sessions(
             None,
             None,
             params.start_time.as_deref(),
+            claims.is_superuser,
         )
         .await
     {

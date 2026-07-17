@@ -77,12 +77,13 @@ pub fn upload(
     }
 
     let queued = result?;
-    println!("Status: {} | build_id: {} | agent_id: {}", queued.status, queued.build_id, queued.agent_id);
-    println!("Waiting for server to build and deploy... (this may take a few minutes)");
-
-    client.poll_build_status(&queued.build_id)?;
-
-    println!("\nDeployed: {} ({})", queued.name, queued.image_tag);
+    println!("Status: {}", queued.data.status);
+    if let (Some(build_id), Some(agent_id)) = (&queued.data.build_id, &queued.data.agent_id) {
+        println!("build_id: {} | agent_id: {}", build_id, agent_id);
+        println!("Waiting for server to build and deploy... (this may take a few minutes)");
+        client.poll_build_status(build_id)?;
+    }
+    println!("\nDeployed: {}", queued.data.agent_name);
     Ok(())
 }
 

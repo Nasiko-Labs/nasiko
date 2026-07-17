@@ -39,13 +39,29 @@ pub fn user_routes() -> Router<AppState> {
         .route("/my-uploads", get(list_upload_agents))
 }
 
+/// Routes mounted at the top-level `/api` — not nested under `/agents`.
+pub fn status_router() -> Router<AppState> {
+    Router::new()
+        .route("/upload-status", get(list_upload_status))
+}
+
+#[derive(Debug, Serialize)]
+pub struct UploadQueuedData {
+    pub success: bool,
+    pub agent_name: String,
+    pub agent_id: String,
+    pub build_id: String,
+    pub status: &'static str,
+    pub capabilities_generated: bool,
+    pub orchestration_triggered: bool,
+    pub validation_errors: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct UploadAndDeployResponse {
-    pub build_id: Uuid,
-    pub agent_id: Uuid,
-    pub name: String,
-    pub image_tag: String,
-    pub status: &'static str,
+    pub data: UploadQueuedData,
+    pub status_code: u16,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -57,6 +73,7 @@ struct UploadStatusRow {
     status: String,
     owner_id: Option<Uuid>,
     error_message: Option<String>,
+    agent_url: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -163,9 +180,9 @@ async fn upload_and_deploy(
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
-            "name" => name = field.text().await.ok(),
+            "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
-            "source" => {
+            "source" | "file" => {
                 // Stream zip to disk rather than buffering it all in RAM. Key the
                 // temp dir on a fresh UUID, never the agent name (RUN-10) — two
                 // concurrent uploads of the same name previously shared one dir and
@@ -411,11 +428,18 @@ async fn upload_and_deploy(
     (
         StatusCode::ACCEPTED,
         Json(UploadAndDeployResponse {
-            build_id,
-            agent_id,
-            name,
-            image_tag,
-            status: "queued",
+            data: UploadQueuedData {
+                success: true,
+                agent_name: name,
+                agent_id: agent_id.to_string(),
+                build_id: build_id.to_string(),
+                status: "queued",
+                capabilities_generated: false,
+                orchestration_triggered: false,
+                validation_errors: vec![],
+            },
+            status_code: 202,
+            message: "Agent upload queued successfully".to_string(),
         }),
     )
         .into_response()
@@ -659,6 +683,106 @@ async fn deploy_status_sse(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+// ─── Upload status helpers ────────────────────────────────────────────────────
+
+fn status_progress(status: &str) -> i32 {
+    match status {
+        "initiated" => 10,
+        "processing" => 30,
+        "capabilities_generated" => 50,
+        "orchestration_triggered" => 60,
+        "orchestration_processing" => 80,
+        "completed" => 100,
+        _ => 0,
+    }
+}
+
+fn status_message_str(status: &str, agent_name: &str) -> String {
+    match status {
+        "initiated" => format!("Upload initiated for '{agent_name}'"),
+        "processing" => "Processing agent source...".to_string(),
+        "capabilities_generated" => "Agent capabilities generated".to_string(),
+        "orchestration_triggered" => "Deployment triggered".to_string(),
+        "orchestration_processing" => "Agent is being deployed...".to_string(),
+        "completed" => format!("Agent '{agent_name}' deployed successfully"),
+        "failed" => "Deployment failed".to_string(),
+        _ => status.to_string(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SourceInfoJson {
+    filename: String,
+    content_type: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UploadStatusItem {
+    upload_id: String,
+    agent_name: String,
+    status: String,
+    progress_percentage: i32,
+    source_info: SourceInfoJson,
+    file_size: i64,
+    capabilities_generated: bool,
+    orchestration_triggered: bool,
+    registry_updated: bool,
+    agent_url: Option<String>,
+    registry_id: Option<String>,
+    status_message: String,
+    error_details: Vec<String>,
+    validation_errors: Vec<serde_json::Value>,
+    created_at: String,
+    updated_at: String,
+    completed_at: Option<String>,
+    processing_duration: f64,
+    orchestration_duration: Option<f64>,
+}
+
+fn row_to_status_item(row: UploadStatusRow) -> UploadStatusItem {
+    let progress = status_progress(&row.status);
+    let is_done = matches!(row.status.as_str(), "completed" | "failed");
+    let cap_gen = matches!(
+        row.status.as_str(),
+        "capabilities_generated" | "orchestration_triggered" | "orchestration_processing" | "completed"
+    );
+    let orch_trig = matches!(
+        row.status.as_str(),
+        "orchestration_triggered" | "orchestration_processing" | "completed"
+    );
+    let processing_duration = (row.updated_at - row.created_at)
+        .num_milliseconds()
+        .max(0) as f64
+        / 1000.0;
+    let status_msg = status_message_str(&row.status, &row.agent_name);
+    let error_details: Vec<String> = row.error_message.into_iter().collect();
+    let filename = format!("{}.zip", row.agent_name);
+    UploadStatusItem {
+        upload_id: row.upload_id,
+        agent_name: row.agent_name.clone(),
+        status: row.status,
+        progress_percentage: progress,
+        source_info: SourceInfoJson {
+            filename,
+            content_type: "application/zip".to_string(),
+        },
+        file_size: 0,
+        capabilities_generated: cap_gen,
+        orchestration_triggered: orch_trig,
+        registry_updated: is_done && progress == 100,
+        agent_url: row.agent_url,
+        registry_id: None,
+        status_message: status_msg,
+        error_details,
+        validation_errors: vec![],
+        created_at: row.created_at.to_rfc3339(),
+        updated_at: row.updated_at.to_rfc3339(),
+        completed_at: is_done.then(|| row.updated_at.to_rfc3339()),
+        processing_duration,
+        orchestration_duration: None,
+    }
+}
+
 // ─── GET /upload-status/{upload_id} ─────────────────────────────────────────
 
 async fn get_upload_status(
@@ -673,16 +797,20 @@ async fn get_upload_status(
 
     let result = if claims.is_superuser {
         sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status WHERE upload_id = $1",
+            "SELECT us.id, us.upload_id, us.agent_id, us.agent_name, us.status::text as status, us.owner_id, us.error_message, a.url as agent_url, us.created_at, us.updated_at
+             FROM upload_status us
+             LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+             WHERE us.upload_id = $1",
         )
         .bind(&upload_id)
         .fetch_optional(&state.db)
         .await
     } else {
         sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status WHERE upload_id = $1 AND owner_id = $2",
+            "SELECT us.id, us.upload_id, us.agent_id, us.agent_name, us.status::text as status, us.owner_id, us.error_message, a.url as agent_url, us.created_at, us.updated_at
+             FROM upload_status us
+             LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+             WHERE us.upload_id = $1 AND us.owner_id = $2",
         )
         .bind(&upload_id)
         .bind(user_id)
@@ -691,7 +819,7 @@ async fn get_upload_status(
     };
 
     match result {
-        Ok(Some(row)) => Json(row).into_response(),
+        Ok(Some(row)) => Json(row_to_status_item(row)).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, upload_id, "get_upload_status db error");
@@ -729,8 +857,10 @@ async fn list_upload_status(
 
     let rows = if claims.is_superuser {
         sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            "SELECT us.id, us.upload_id, us.agent_id, us.agent_name, us.status::text as status, us.owner_id, us.error_message, a.url as agent_url, us.created_at, us.updated_at
+             FROM upload_status us
+             LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+             ORDER BY us.created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
@@ -738,8 +868,10 @@ async fn list_upload_status(
         .await
     } else {
         sqlx::query_as::<_, UploadStatusRow>(
-            "SELECT id, upload_id, agent_id, agent_name, status::text as status, owner_id, error_message, created_at, updated_at
-             FROM upload_status WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+            "SELECT us.id, us.upload_id, us.agent_id, us.agent_name, us.status::text as status, us.owner_id, us.error_message, a.url as agent_url, us.created_at, us.updated_at
+             FROM upload_status us
+             LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+             WHERE us.owner_id = $1 ORDER BY us.created_at DESC LIMIT $2 OFFSET $3",
         )
         .bind(user_id)
         .bind(limit)
@@ -750,8 +882,14 @@ async fn list_upload_status(
 
     match rows {
         Ok(data) => {
-            let total = data.len();
-            Json(serde_json::json!({"data": data, "total": total})).into_response()
+            let items: Vec<UploadStatusItem> = data.into_iter().map(row_to_status_item).collect();
+            let count = items.len();
+            Json(serde_json::json!({
+                "data": items,
+                "status_code": 200,
+                "message": format!("Retrieved {count} upload records"),
+            }))
+            .into_response()
         }
         Err(e) => {
             tracing::error!(%e, "list_upload_status db error");

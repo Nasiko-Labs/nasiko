@@ -5,7 +5,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::api::{AgentRecord, Client, DeletedAgent, UploadedAgent};
+use crate::api::{AgentRecord, Client, UploadedAgent};
 
 #[derive(Debug, Deserialize)]
 struct LogLine {
@@ -189,17 +189,9 @@ pub fn rm(agent: &str, force: bool) -> Result<()> {
             return Ok(());
         }
     }
-    // `DELETE /agents/{id}` (not `/containers/{agent}`) — it tears down every
-    // container for this agent *and* deletes the catalog row. The container-only
-    // route left the catalog entry behind, so the agent kept showing up in
-    // `ps`/`agents ls` forever after a "successful" removal.
-    let id = resolve_agent_id(agent)?;
     let client = Client::from_active_cluster()?;
-    let result: DeletedAgent = client.delete_json(&format!("/agents/{id}"))?;
-    for err in &result.runtime_errors {
-        eprintln!("warning: {err}");
-    }
-    println!("Removed: {agent} ({} container(s) stopped)", result.containers_stopped);
+    client.delete(&format!("/containers/{agent}"))?;
+    println!("Removed: {agent}");
     Ok(())
 }
 
@@ -229,29 +221,11 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
     }
 
     let client = Client::from_active_cluster()?;
+    let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
+    let agents = unwrap_agents(raw)?;
 
-    // Page through results — the server clamps `limit` to 100 per request and
-    // defaults to the 50 most-recently-created agents if omitted entirely, so a
-    // single unpaginated call silently misses any agent past the first page.
-    // `q=` pre-filters server-side (name/description ILIKE) to cut down how many
-    // pages a typical name needs to page through; the exact match below is what
-    // actually decides membership.
-    let mut matches: Vec<AgentRecord> = Vec::new();
-    let mut offset = 0i64;
-    loop {
-        let path = format!(
-            "/registry/user/agents?q={}&limit=100&offset={offset}",
-            crate::api::urlencode(name_or_id)
-        );
-        let raw: serde_json::Value = client.get_json(&path)?;
-        let page = unwrap_agents(raw)?;
-        let page_len = page.len();
-        matches.extend(page.into_iter().filter(|a| a.name == name_or_id));
-        if page_len < 100 {
-            break;
-        }
-        offset += 100;
-    }
+    let matches: Vec<&AgentRecord> =
+        agents.iter().filter(|a| a.name.eq_ignore_ascii_case(name_or_id)).collect();
 
     match matches.as_slice() {
         [one] => Ok(one.id.clone()),
@@ -267,7 +241,10 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
 
 pub fn cmd_ls() -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
+    // GET /agents returns Vec<Agent> directly — field names match AgentRecord.
+    // /registry/user/agents returns {data:[{agent_id,...}]} which uses agent_id
+    // instead of id, causing deserialization failures.
+    let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
     let agents = unwrap_agents(raw)?;
 
     if agents.is_empty() {
@@ -293,9 +270,10 @@ pub fn cmd_ls() -> Result<()> {
 
 pub fn cmd_get(agent_id: Option<&str>, name: Option<&str>, format: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
+    // GET /agents/{id} accepts either a UUID or an agent name.
     let raw: serde_json::Value = match (agent_id, name) {
-        (Some(id), _) => client.get_json(&format!("/registry/agent/id/{}", id))?,
-        (None, Some(n)) => client.get_json(&format!("/registry/agent/name/{}", n))?,
+        (Some(id), _) => client.get_json(&format!("/agents/{}", id))?,
+        (None, Some(n)) => client.get_json(&format!("/agents/{}", n))?,
         (None, None) => bail!("Provide at least one of --agent-id or --name"),
     };
     let agent: AgentRecord = if let Some(data) = raw.get("data") {
@@ -377,10 +355,13 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
     }
 
     let queued = result?;
-    println!("Status: {} | build_id: {} | agent_id: {}", queued.status, queued.build_id, queued.agent_id);
-    println!("Waiting for build to complete...");
-    client.poll_build_status(&queued.build_id)?;
-    println!("\nDeployed: {} ({})", queued.name, queued.image_tag);
+    println!("Status: {}", queued.data.status);
+    if let (Some(build_id), Some(agent_id)) = (&queued.data.build_id, &queued.data.agent_id) {
+        println!("build_id: {} | agent_id: {}", build_id, agent_id);
+        println!("Waiting for build to complete...");
+        client.poll_build_status(build_id)?;
+    }
+    println!("\nDeployed: {}", queued.data.agent_name);
     Ok(())
 }
 

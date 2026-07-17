@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use nasiko_config::Config;
 use nasiko_observability::{
     AgentFinOps, ObservabilityError, ObservabilityProvider, extract_token_attrs,
@@ -19,6 +19,14 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 // ─── Presentation helpers ─────────────────────────────────────────────────────
+
+/// Format a timestamp as RFC 3339 with millisecond precision.
+///
+/// Tempo stores span timestamps at nanosecond precision; Dart's DateTime.parse
+/// only handles up to microseconds. Capping at millis is safe for all consumers.
+fn fmt_ts(dt: DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
 
 fn round6(v: f64) -> f64 {
     (v * 1_000_000.0).round() / 1_000_000.0
@@ -96,21 +104,18 @@ fn build_span_tree(
     spans: &[nasiko_observability::Span],
 ) -> (Vec<SpanNode>, HashMap<String, SpanNode>) {
     let make_node = |s: &nasiko_observability::Span| {
-        let (input, output, model) = extract_token_attrs(&s.attributes);
+        let (input, output, _) = extract_token_attrs(&s.attributes);
         SpanNode {
             id: encode_span_id(&s.span_id),
             span_id: s.span_id.clone(),
             name: s.name.clone(),
             span_kind: span_kind_str(s.kind).to_string(),
             status_code: status_code_str(s.status_code).to_string(),
-            start_time: Some(s.started_at.to_rfc3339()),
-            end_time: s.ended_at.map(|t| t.to_rfc3339()),
+            start_time: Some(fmt_ts(s.started_at)),
+            end_time: s.ended_at.map(fmt_ts),
             parent_id: s.parent_span_id.as_deref().map(encode_span_id),
             latency_ms: s.duration_ms.map(|d| d as f64),
             token_count_total: input + output,
-            input_tokens: input,
-            output_tokens: output,
-            model,
             span_annotation_summaries: vec![],
             children: vec![],
         }
@@ -383,9 +388,6 @@ pub struct SpanNode {
     pub parent_id: Option<String>,
     pub latency_ms: Option<f64>,
     pub token_count_total: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub model: Option<String>,
     pub span_annotation_summaries: Vec<Value>,
     pub children: Vec<SpanNode>,
 }
@@ -563,33 +565,140 @@ impl ObservabilityService {
 
     pub async fn get_all_sessions(
         &self,
-        _user_id: &str,
+        user_id: &str,
         _role: Option<&str>,
         _department_id: Option<&str>,
         _team_id: Option<&str>,
         start_time: Option<&str>,
+        is_superuser: bool,
     ) -> Result<SessionListResponse, ObservabilityError> {
-        let agents = self.get_agent_names().await?;
-        let total = agents.len();
         let start = parse_iso_or_default(start_time, 7);
         let end = Utc::now();
 
+        // 1. Query chat_sessions as the authoritative source — every session
+        //    shows up here regardless of whether the agent is OTel-instrumented.
+        //    Non-superusers only see their own sessions.
+        let db_sessions: Vec<(String, Option<uuid::Uuid>, DateTime<Utc>)> = if is_superuser {
+            sqlx::query_as(
+                "SELECT session_id, agent_id, created_at \
+                 FROM chat_sessions \
+                 WHERE deleted_at IS NULL AND created_at >= $1 \
+                 ORDER BY created_at DESC LIMIT 500",
+            )
+            .bind(start)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+        } else {
+            let caller_uuid: uuid::Uuid = user_id.parse().map_err(|_| {
+                ObservabilityError::Internal("invalid user id in claims".into())
+            })?;
+            sqlx::query_as(
+                "SELECT session_id, agent_id, created_at \
+                 FROM chat_sessions \
+                 WHERE user_id = $1 AND deleted_at IS NULL AND created_at >= $2 \
+                 ORDER BY created_at DESC LIMIT 500",
+            )
+            .bind(caller_uuid)
+            .bind(start)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+        };
+
+        // 2. Build agent_id → name lookup for the agent_id column.
+        let agents = self.get_agent_names().await.unwrap_or_default();
+        let total = agents.len();
+        let agent_name_by_id: std::collections::HashMap<uuid::Uuid, String> = agents
+            .into_iter()
+            .map(|(id, name, _display)| (id, name))
+            .collect();
+
+        // 3. Enrich each DB session from Tempo (by session_id). For agents
+        //    without OTel, Tempo returns NotFound and we fall back to a minimal
+        //    summary built from the DB row — the session still appears in the UI.
         let mut all_sessions: Vec<SessionSummary> = Vec::new();
         let mut successful = 0usize;
 
-        for (_, agent_name, _) in &agents {
-            match self.provider.sessions_for_agent(agent_name, start, end).await {
-                Ok(sessions) => {
-                    all_sessions.extend(sessions.into_iter().map(session_to_summary));
+        for (session_id, agent_id_opt, created_at) in db_sessions {
+            let agent_name = agent_id_opt
+                .and_then(|id| agent_name_by_id.get(&id))
+                .cloned()
+                .unwrap_or_default();
+
+            match self.provider.get_session(&session_id, start, end).await {
+                Ok(details) => {
+                    let total_tokens = details.input_tokens + details.output_tokens;
+                    let started_at = details
+                        .traces
+                        .iter()
+                        .map(|t| t.root_span.started_at)
+                        .min();
+                    let ended_at = details
+                        .traces
+                        .iter()
+                        .filter_map(|t| t.root_span.ended_at)
+                        .max();
+                    let duration_ms = started_at.zip(ended_at).map(|(s, e)| {
+                        (e - s).num_milliseconds().max(0) as u64
+                    });
+                    all_sessions.push(SessionSummary {
+                        id: session_id.clone(),
+                        session_id,
+                        agent_id: agent_name,
+                        num_traces: Some(details.traces.len() as u32),
+                        start_time: started_at.map(fmt_ts),
+                        // Flutter's DateTime.parse requires a non-empty string —
+                        // fall back to start_time when no end time is known.
+                        end_time: ended_at.or(started_at).map(fmt_ts),
+                        duration_ms,
+                        first_input: details.traces.first().and_then(|t| t.input_content.clone()),
+                        last_output: details.traces.last().and_then(|t| t.output_content.clone()),
+                        token_usage: TokenUsageSummary {
+                            total: (total_tokens > 0).then_some(total_tokens),
+                        },
+                        trace_latency_ms_p50: details.latency_ms_p50,
+                        trace_latency_ms_p99: None,
+                        cost_summary: SimpleCostSummary {
+                            total: CostEntry {
+                                cost: (details.cost.total_usd > 0.0)
+                                    .then_some(details.cost.total_usd),
+                            },
+                        },
+                        session_annotations: vec![],
+                        session_annotation_summaries: vec![],
+                    });
                     successful += 1;
                 }
                 Err(e) => {
-                    tracing::warn!(agent_name, error = %e, "failed to get sessions from Tempo");
+                    // Not found in Tempo (agent not OTel-instrumented) or a
+                    // transient error — surface the session from DB metadata so
+                    // it still appears in the execution history.
+                    if !matches!(e, ObservabilityError::NotFound(_)) {
+                        tracing::warn!(session_id, error = %e, "tempo lookup failed for session");
+                    }
+                    all_sessions.push(SessionSummary {
+                        id: session_id.clone(),
+                        session_id,
+                        agent_id: agent_name,
+                        num_traces: None,
+                        start_time: Some(fmt_ts(created_at)),
+                        end_time: Some(fmt_ts(created_at)),
+                        duration_ms: None,
+                        first_input: None,
+                        last_output: None,
+                        token_usage: TokenUsageSummary { total: None },
+                        trace_latency_ms_p50: None,
+                        trace_latency_ms_p99: None,
+                        cost_summary: SimpleCostSummary {
+                            total: CostEntry { cost: None },
+                        },
+                        session_annotations: vec![],
+                        session_annotation_summaries: vec![],
+                    });
                 }
             }
         }
-
-        all_sessions.sort_by(|a, b| b.start_time.cmp(&a.start_time));
 
         Ok(SessionListResponse {
             data: SessionListData {
@@ -637,7 +746,7 @@ impl ObservabilityService {
                         attributes: serde_json::to_string(&flat_attrs).unwrap_or_default(),
                         cumulative_token_count_total: t.input_tokens + t.output_tokens,
                         latency_ms: round6(t.duration_ms.unwrap_or(0) as f64),
-                        start_time: Some(t.root_span.started_at.to_rfc3339()),
+                        start_time: Some(fmt_ts(t.root_span.started_at)),
                         span_annotations: vec![],
                         span_annotation_summaries: vec![],
                         project: ProjectRef { id: String::new() },
@@ -731,7 +840,7 @@ impl ObservabilityService {
                 span: RootSpanRef {
                     id: s.id.clone(),
                     span_id: s.span_id.clone(),
-                    parent_id: s.parent_id.clone(),
+                    parent_id: None,
                     status_code: s.status_code.clone(),
                 },
             })
@@ -831,8 +940,8 @@ impl ObservabilityService {
                     code: status.clone(),
                     status_code: status,
                     status_message: span.status_message.clone(),
-                    start_time: Some(span.started_at.to_rfc3339()),
-                    end_time: span.ended_at.map(|t| t.to_rfc3339()),
+                    start_time: Some(fmt_ts(span.started_at)),
+                    end_time: span.ended_at.map(fmt_ts),
                     parent_id: span.parent_span_id.clone(),
                     latency_ms: span.duration_ms.map(|d| d as f64),
                     token_count_total: input_tokens + output_tokens,
@@ -1074,32 +1183,6 @@ Data: {}"#,
 
 // ─── Mapping helpers ──────────────────────────────────────────────────────────
 
-fn session_to_summary(s: nasiko_observability::Session) -> SessionSummary {
-    let total_tokens = s.input_tokens + s.output_tokens;
-    SessionSummary {
-        id: s.session_id.clone(),
-        session_id: s.session_id,
-        agent_id: s.agent_id,
-        num_traces: Some(s.trace_ids.len() as u32),
-        start_time: s.started_at.map(|t| t.to_rfc3339()),
-        end_time: s.ended_at.map(|t| t.to_rfc3339()),
-        duration_ms: s.duration_ms,
-        first_input: None,
-        last_output: None,
-        token_usage: TokenUsageSummary {
-            total: (total_tokens > 0).then_some(total_tokens),
-        },
-        trace_latency_ms_p50: s.latency_ms_p50,
-        trace_latency_ms_p99: s.latency_ms_p99,
-        cost_summary: SimpleCostSummary {
-            total: CostEntry {
-                cost: (s.cost.total_usd > 0.0).then_some(s.cost.total_usd),
-            },
-        },
-        session_annotations: vec![],
-        session_annotation_summaries: vec![],
-    }
-}
 
 fn empty_agent_finops(agent_id: &str) -> AgentFinOps {
     AgentFinOps {

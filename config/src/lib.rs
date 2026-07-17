@@ -19,7 +19,6 @@ pub struct Config {
     /// Registry prefix prepended to agent image tags at build time.
     /// e.g. `"host.docker.internal:5001"` for local K8s dev.
     /// Empty string → no prefix (Docker local mode).
-    /// TODO: this needs to be removed. 
     pub agent_image_registry: String,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
@@ -49,19 +48,6 @@ pub struct Config {
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    /// OIDC issuer authority, e.g. `https://login.microsoftonline.com/<tenant-id>/v2.0`
-    /// for Microsoft Entra ID — or any other OIDC-compliant provider. `None`
-    /// disables OIDC login entirely (see `docs/OIDC_SSO_SETUP.md`).
-    pub oidc_issuer_url: Option<String>,
-    pub oidc_client_id: Option<String>,
-    pub oidc_client_secret: Option<String>,
-    /// Must exactly match the redirect URI registered with the IdP, e.g.
-    /// `https://<host>/api/auth/oidc/callback`.
-    pub oidc_redirect_uri: Option<String>,
-    pub oidc_scopes: String,
-    /// Stored as `user_identities.provider` for OIDC-authenticated users.
-    /// Override if fronting a non-Entra OIDC provider.
-    pub oidc_provider_label: String,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
     pub max_router_history_messages: usize,
@@ -70,6 +56,10 @@ pub struct Config {
     pub embedding_model: String,
     pub router_agent_timeout_secs: u64,
     pub github_callback_url: Option<String>,
+    /// Base URL to redirect to after a successful OAuth login. In production
+    /// this is the same origin as the server. Override via `APP_BASE_URL` in
+    /// dev when the server and app run on different ports.
+    pub app_base_url: String,
     pub git_clone_allowed_hosts: Vec<String>,
     /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
     /// Comma-separated.  Empty = reject all registry imports (safest default for
@@ -147,18 +137,13 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL").ok().filter(|s| !s.is_empty()),
-            oidc_client_id: std::env::var("OIDC_CLIENT_ID").ok().filter(|s| !s.is_empty()),
-            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
-            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI").ok().filter(|s| !s.is_empty()),
-            oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
-            oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
+            app_base_url: env_or("APP_BASE_URL", ""),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK").ok().filter(|s| !s.is_empty()),
             oci_registry_host: std::env::var("OCI_REGISTRY_HOST").ok().filter(|s| !s.is_empty()),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
