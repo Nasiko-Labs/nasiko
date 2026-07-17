@@ -134,11 +134,11 @@ pub fn agent_message(context_id: &str, task_id: &str, part: Part) -> Message {
 // ─── Request builders ───────────────────────────────────────────────────────
 
 pub fn build_send_request(text: &str, context_id: Option<&str>) -> JsonRpcRequest {
-    build_request("message/send", text, context_id)
+    build_request("SendMessage", text, context_id)
 }
 
 pub fn build_stream_request(text: &str, context_id: Option<&str>) -> JsonRpcRequest {
-    build_request("message/stream", text, context_id)
+    build_request("SendStreamingMessage", text, context_id)
 }
 
 pub fn build_stream_request_with_metadata(
@@ -146,7 +146,7 @@ pub fn build_stream_request_with_metadata(
     context_id: Option<&str>,
     metadata: serde_json::Value,
 ) -> JsonRpcRequest {
-    let mut req = build_request("message/stream", text, context_id);
+    let mut req = build_request("SendStreamingMessage", text, context_id);
     if let Some(params) = req.params.as_mut()
         && let Some(obj) = params.as_object_mut() {
             obj.insert("metadata".to_string(), metadata);
@@ -372,29 +372,19 @@ fn build_request(method: &str, text: &str, context_id: Option<&str>) -> JsonRpcR
         reference_task_ids: None,
     };
 
-    let mut params = serde_json::to_value(&SendMessageRequest {
-        message,
-        configuration: None,
-        metadata: None,
-        tenant: None,
-    })
-    .unwrap();
-
-    // `Role`'s own (de)serialization (from the external `a2a-lf` crate) uses the
-    // gRPC-style `ROLE_USER`/`ROLE_AGENT` enum names. This request is sent to
-    // agent containers, whose `a2a-sdk` (Python) pins the current spec's plain
-    // `"user"`/`"agent"` — patch just this one outbound field rather than
-    // touching the external crate. `role` is always `Role::User` above, so no
-    // need to handle the agent case here.
-    if let Some(role) = params.pointer_mut("/message/role") {
-        *role = serde_json::json!("user");
-    }
-
     JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: JsonRpcId::String(uuid::Uuid::new_v4().to_string()),
         method: method.into(),
-        params: Some(params),
+        params: Some(
+            serde_json::to_value(&SendMessageRequest {
+                message,
+                configuration: None,
+                metadata: None,
+                tenant: None,
+            })
+            .unwrap(),
+        ),
     }
 }
 

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY src/ /app
 
 RUN pip install --no-cache-dir \
-    "a2a-sdk[http-server]==1.1.0" \
+    "a2a-sdk[http-server]==1.1.1" \
     "click>=8.0.0" \
     "openai>=1.57.0" \
     "python-dotenv>=1.0.0" \

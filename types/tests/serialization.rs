@@ -635,28 +635,30 @@ fn jsonrpc_error_none_data_omitted() {
 fn build_send_request_has_correct_method_and_version() {
     let req = build_send_request("hello", Some("ctx-1"));
     assert_eq!(req.jsonrpc, "2.0");
-    // Current A2A JSON-RPC spec naming (matches what every example agent's
-    // `a2a-sdk` pin actually accepts), not the gRPC-style `SendMessage`.
-    assert_eq!(req.method, "message/send");
+    // gRPC-style method name — what every example agent's installed
+    // `a2a-sdk` actually registers in its dispatch table (confirmed against
+    // a real deployed `oss/agents/translator` build; the spec name
+    // `message/send` returns -32601 Method not found unless the agent opts
+    // into `enable_v0_3_compat`, which none of them do).
+    assert_eq!(req.method, "SendMessage");
     assert!(req.params.is_some());
 }
 
 #[test]
 fn build_stream_request_has_correct_method() {
     let req = build_stream_request("hello", None);
-    assert_eq!(req.method, "message/stream");
+    assert_eq!(req.method, "SendStreamingMessage");
 }
 
 #[test]
-fn build_send_request_params_have_lowercase_role_and_correct_text() {
-    // Deliberately asserted against the raw `Value`, not deserialized back into
-    // `SendMessageRequest`/`Role` — those (from the external `a2a-lf` crate) only
-    // accept the gRPC-style `"ROLE_USER"`, but this request is sent outbound to
-    // agent containers whose `a2a-sdk` (Python) only accepts current-spec
-    // lowercase `"user"`, which is what `build_request` deliberately patches in.
+fn build_send_request_params_have_grpc_role_and_correct_text() {
+    // `Role`'s own (de)serialization (from the external `a2a-lf` crate) uses
+    // the gRPC-style `ROLE_USER`/`ROLE_AGENT` names — that's also what every
+    // example agent's installed `a2a-sdk` expects, so `build_request` sends
+    // it through unpatched.
     let req = build_send_request("test text", Some("ctx-abc"));
     let params = req.params.unwrap();
-    assert_eq!(params["message"]["role"], json!("user"));
+    assert_eq!(params["message"]["role"], json!("ROLE_USER"));
     assert_eq!(params["message"]["parts"][0]["text"], json!("test text"));
 }
 

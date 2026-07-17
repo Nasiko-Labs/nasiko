@@ -573,6 +573,10 @@ async fn call_agent(
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "1",
+        // gRPC-style JSON-RPC method/role names — what every example agent's
+        // installed `a2a-sdk` actually registers in its dispatch table
+        // (confirmed against a real deployed `oss/agents/translator` build).
+        // Matches `oss/types::build_send_request`.
         "method": "SendMessage",
         "params": {
             "message": {

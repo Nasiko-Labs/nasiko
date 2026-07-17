@@ -99,12 +99,14 @@ fn do_stream_request(
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
-        // A2A JSON-RPC spec names, not gRPC-style `SendStreamingMessage`/`ROLE_USER`.
-        "method": "message/stream",
+        // gRPC-style JSON-RPC method/role names — what every example agent's
+        // installed `a2a-sdk` actually registers in its dispatch table
+        // (confirmed against a real deployed `oss/agents/translator` build).
+        "method": "SendStreamingMessage",
         "params": {
             "message": {
                 "messageId": uuid::Uuid::new_v4().to_string(),
-                "role": "user",
+                "role": "ROLE_USER",
                 "parts": [{"text": text}],
                 "contextId": context_id
             }

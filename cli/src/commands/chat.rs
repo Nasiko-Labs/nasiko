@@ -51,9 +51,10 @@ impl Spinner {
     }
 }
 
-/// Resolved CP session info — just the session ID; message persistence is
-/// handled server-side by the agent proxy, not by the CLI.
+/// Resolved CP session info used to persist messages.
 struct CpCtx {
+    base_url: String,
+    token: String,
     session_id: String,
 }
 
@@ -74,7 +75,7 @@ fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<(CpCtx, Ve
             (sess.session_id, Vec::new())
         }
     };
-    Some((CpCtx { session_id: sid }, history))
+    Some((CpCtx { base_url, token, session_id: sid }, history))
 }
 
 /// Print a session's prior turns before resuming it, in the same visual
@@ -179,6 +180,12 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
     let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
+        // gRPC-style JSON-RPC method/role names — what every example agent's
+        // installed `a2a-sdk` actually registers in its dispatch table
+        // (confirmed against a real deployed `oss/agents/translator` build).
+        // The CP orchestrator route ignores `method` entirely, but this body
+        // is also sent straight through to an agent via the CP agent-proxy
+        // or a direct agent endpoint, where it does matter.
         "method": "SendStreamingMessage",
         "params": {
             "message": {
@@ -224,6 +231,11 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
     let span_id = &trace_id[..16];
     let traceparent = format!("00-{trace_id}-{span_id}-01");
 
+    // Persist user message to CP before sending
+    if let Some(ctx) = cp_ctx {
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text, Some(&trace_id));
+    }
+
     let mut req = http
         .post(endpoint)
         .header("Content-Type", "application/json")
@@ -259,7 +271,7 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         .unwrap_or("")
         .to_string();
 
-    let _agent_text = if content_type.contains("text/event-stream") {
+    let agent_text = if content_type.contains("text/event-stream") {
         spin.set("thinking");
         handle_sse_stream(resp, &mut spin)?
     } else {
@@ -279,6 +291,11 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
             bail!("unexpected response: {}", resp_json);
         }
     };
+
+    // Persist agent reply to CP
+    if let Some(ctx) = cp_ctx {
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "assistant", &agent_text, Some(&trace_id));
+    }
 
     Ok(())
 }

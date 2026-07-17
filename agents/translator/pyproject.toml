@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Translation agent — text and web content between languages"
 requires-python = ">=3.12"
 dependencies = [
-    "a2a-sdk[http-server]==1.1.0",
+    "a2a-sdk[http-server]==1.1.1",
     "click>=8.0.0",
     "openai>=1.57.0",
     "python-dotenv>=1.0.0",
