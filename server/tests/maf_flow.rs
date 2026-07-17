@@ -17,7 +17,8 @@ use uuid::Uuid;
 // cookie) — it does not trust inbound identity headers. Reuse the shared JWT
 // helper so these requests actually authenticate under the current auth model.
 fn auth(rb: reqwest::RequestBuilder, user_id: Uuid) -> reqwest::RequestBuilder {
-    common::as_member(rb, &user_id.to_string(), &format!("user_{}", &user_id.to_string()[..8]))
+    let user_id_str = user_id.to_string();
+    common::as_member(rb, &user_id_str, &format!("user_{}", &user_id_str[..8]))
 }
 
 // ─── DB seed helpers ───────────────────────────────────────────────────────
@@ -438,16 +439,16 @@ async fn test_ownership_enforced_on_all_endpoints() {
     .unwrap();
     let maf_id = maf["data"]["id"].as_str().unwrap();
 
-    // GET by other user → 403
-    let status = auth(
+    // GET by other user → 403 (ownership-mismatch reads on MAF endpoints are
+    // real errors here, not the graceful-degradation 200 pattern).
+    let res = auth(
         server.client.get(server.url(&format!("/api/maf/workflow/{maf_id}"))),
         other,
     )
     .send()
     .await
-    .unwrap()
-    .status();
-    assert_eq!(status, 403, "GET by non-owner should be 403");
+    .unwrap();
+    assert_eq!(res.status(), 403, "GET by non-owner should be 403");
 
     // PUT by other user → 403
     let status = auth(
@@ -482,16 +483,15 @@ async fn test_ownership_enforced_on_all_endpoints() {
     .status();
     assert_eq!(status, 403, "run by non-owner should be 403");
 
-    // GET /executions by other user → 403
-    let status = auth(
+    // GET /executions by other user → 403.
+    let res = auth(
         server.client.get(server.url(&format!("/api/maf/workflow/{maf_id}/executions"))),
         other,
     )
     .send()
     .await
-    .unwrap()
-    .status();
-    assert_eq!(status, 403, "list_executions by non-owner should be 403");
+    .unwrap();
+    assert_eq!(res.status(), 403, "list_executions by non-owner should be 403");
 
     // Verify owner's MAF is untouched
     let owner_check = auth(
@@ -626,7 +626,8 @@ async fn test_result_isolation_between_users() {
     .unwrap();
     let exec_id = run["data"]["execution_id"].as_str().unwrap();
 
-    // Other user tries to GET result/{exec_id} → 403
+    // Other user tries to GET result/{exec_id} → 403 (real error, not the
+    // graceful-degradation pattern).
     let res = auth(
         server.client.get(server.url(&format!("/api/maf/workflow/result/{exec_id}"))),
         other,
@@ -636,7 +637,7 @@ async fn test_result_isolation_between_users() {
     .unwrap();
     assert_eq!(res.status(), 403);
 
-    // Other user tries to GET /execution/{id} → 403
+    // Other user tries to GET /execution/{id} → same.
     let res = auth(
         server.client.get(server.url(&format!("/api/maf/execution/{exec_id}"))),
         other,
