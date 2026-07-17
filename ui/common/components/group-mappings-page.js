@@ -29,6 +29,7 @@ class GroupMappingsPage extends HTMLElement {
     this.innerHTML = `
       <div class="page-header">
         <span></span>
+        <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 14)} Sync Azure AD Directory</app-button>
         <app-button variant="primary" size="sm" id="btn-create">${icons.plus('', 14)} New Mapping</app-button>
       </div>
       <smart-table id="mappings-table" data-fn="fetchGroupMappings" limit="20"></smart-table>
@@ -140,6 +141,27 @@ class GroupMappingsPage extends HTMLElement {
       modal.open();
     });
     this.querySelector('#btn-cancel').addEventListener('click', () => modal.close());
+
+    const syncBtn = this.querySelector('#btn-sync-azure');
+    syncBtn.addEventListener('click', async () => {
+      syncBtn.setAttribute('loading', '');
+      try {
+        const res = await window.syncAzureDirectory();
+        if (!res.ok) throw new Error(await res.text());
+        const summary = await res.json();
+        const errorCount = (summary.errors || []).length;
+        showToast(
+          `Synced: ${summary.departments_created} department(s), ${summary.teams_created} team(s), ` +
+          `${summary.users_created} new user(s) (${summary.users_skipped_existing} already synced)` +
+          (errorCount ? ` — ${errorCount} error(s), see console` : '')
+        );
+        if (errorCount) console.warn('directory sync errors:', summary.errors);
+      } catch (e) {
+        showToast(`Directory sync failed: ${e.message}`);
+      } finally {
+        syncBtn.removeAttribute('loading');
+      }
+    });
 
     const saveBtn = this.querySelector('#btn-save');
     saveBtn.addEventListener('click', async () => {

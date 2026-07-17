@@ -121,7 +121,8 @@ class TeamAccessPage extends HTMLElement {
     roleSelect.innerHTML = roles.map((r) => `<option value="${r}">${r}</option>`).join('');
 
     if (canReassignPlacement) {
-      teamSelect.innerHTML = this.#teams.map((t) => `<option value="${t.id}">${this.#esc(t.name)}</option>`).join('');
+      teamSelect.innerHTML = '<option value="">— No team (unassigned) —</option>'
+        + this.#teams.map((t) => `<option value="${t.id}">${this.#esc(t.name)}</option>`).join('');
     }
 
     this.querySelector('#edit-cancel').addEventListener('click', () => modal.close());
@@ -142,8 +143,10 @@ class TeamAccessPage extends HTMLElement {
           const res = await window.updateOrgUserRole(editingId, newRole);
           if (!res.ok) throw new Error(await res.text());
         }
-        if (canReassignPlacement && newTeamId && newTeamId !== originalTeamId) {
-          const res = await window.updateOrgUserPlacement(editingId, newTeamId);
+        if (canReassignPlacement && newTeamId !== originalTeamId) {
+          const res = newTeamId
+            ? await window.updateOrgUserPlacement(editingId, { teamId: newTeamId })
+            : await window.updateOrgUserPlacement(editingId, { clear: true });
           if (!res.ok) throw new Error(await res.text());
         }
 

@@ -3,6 +3,7 @@ import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-button.js';
 import '/common/components/app-badge.js';
 import '/common/components/app-skeleton.js';
+import '/common/components/app-modal.js';
 import '/common/components/smart-table.js';
 
 import styles from './access-control-page.css' with { type: 'css' };
@@ -11,12 +12,45 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 class AccessControlPage extends HTMLElement {
   #initialized = false;
   #data = null;
+  #pickerDepartments = [];
+  #pickerTeams = [];
+  #assigningId = null;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
+    // Delegated + attached once (not per-#render(), since #render() is
+    // re-invoked after a successful assign to refresh stats/warnings) —
+    // looks up the modal/selects fresh via this.querySelector at click
+    // time, so it stays correct across re-renders instead of accumulating
+    // one listener per render.
+    this.addEventListener('click', (e) => this.#onAssignClick(e));
     this.#setState('loading');
     this.#load();
+  }
+
+  #onAssignClick(e) {
+    const btn = e.target.closest('[data-action="assign"]');
+    if (!btn) return;
+    this.#assigningId = btn.dataset.id;
+    const deptSelect = this.querySelector('#assign-department');
+    const teamSelect = this.querySelector('#assign-team');
+    this.querySelector('#assign-target').textContent = `Assigning: ${btn.dataset.name || 'this user'}`;
+    deptSelect.value = '';
+    teamSelect.value = '';
+    this.#filterTeamsByDepartment();
+    this.querySelector('#assign-modal').open();
+  }
+
+  #filterTeamsByDepartment() {
+    const deptSelect = this.querySelector('#assign-department');
+    const teamSelect = this.querySelector('#assign-team');
+    const deptId = deptSelect.value;
+    for (const opt of teamSelect.options) {
+      if (!opt.value) continue;
+      opt.hidden = Boolean(deptId) && opt.dataset.departmentId !== deptId;
+    }
+    if (teamSelect.selectedOptions[0]?.hidden) teamSelect.value = '';
   }
 
   #setState(state, error) {
@@ -49,6 +83,12 @@ class AccessControlPage extends HTMLElement {
         throw new Error('fetchAccessControlOverview is not defined');
       }
       this.#data = await window.fetchAccessControlOverview();
+      try {
+        this.#pickerDepartments = (await window.fetchDepartmentList?.()) || [];
+      } catch { this.#pickerDepartments = []; }
+      try {
+        this.#pickerTeams = (await window.fetchTeamList?.()) || [];
+      } catch { this.#pickerTeams = []; }
       this.#setState('success');
     } catch (e) {
       this.#setState('error', e.message);
@@ -124,6 +164,24 @@ class AccessControlPage extends HTMLElement {
         </div>
         <smart-table id="unassigned-table" data-fn="_acpFetchUnassigned" limit="10"></smart-table>
       </div>
+
+      <app-modal id="assign-modal" heading="Assign department / team">
+        <div class="modal-form">
+          <p class="hint" id="assign-target"></p>
+          <div class="field">
+            <label for="assign-department">Department</label>
+            <select id="assign-department"><option value="">— Unassigned —</option></select>
+          </div>
+          <div class="field">
+            <label for="assign-team">Team <span class="hint">(optional — leave unset for a department-only placement)</span></label>
+            <select id="assign-team"><option value="">— No specific team —</option></select>
+          </div>
+          <div class="form-actions" data-slot="footer">
+            <app-button variant="secondary" id="assign-cancel">Cancel</app-button>
+            <app-button variant="primary" id="assign-save">Save</app-button>
+          </div>
+        </div>
+      </app-modal>
     `;
 
     // Configure departments table columns
@@ -146,10 +204,59 @@ class AccessControlPage extends HTMLElement {
         const variant = v === 'admin' ? 'info' : v === 'deployer' ? 'success' : 'neutral';
         return `<app-badge variant="${variant}">${v || 'member'}</app-badge>`;
       }},
-      { key: 'created_at', label: 'Created', width: '14%', render: (v) =>
+      { key: 'created_at', label: 'Created', width: '10%', render: (v) =>
         v ? new Date(v).toLocaleDateString() : '—'
       },
+      { key: 'actions', label: '', width: '4%', render: (_, row) => {
+        const esc = (s) => (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return `<button class="action-btn" data-action="assign" data-id="${esc(row.id)}" data-name="${esc(row.display_name || row.username)}" title="Assign department/team">${icons.folder('', 16)}</button>`;
+      }},
     ];
+
+    // Populate the assign-modal pickers
+    const deptSelect = this.querySelector('#assign-department');
+    for (const d of this.#pickerDepartments) {
+      const opt = document.createElement('option');
+      opt.value = d.id; opt.textContent = d.name;
+      deptSelect.appendChild(opt);
+    }
+    const teamSelect = this.querySelector('#assign-team');
+    for (const t of this.#pickerTeams) {
+      const opt = document.createElement('option');
+      opt.value = t.id; opt.textContent = t.name;
+      opt.dataset.departmentId = t.department_id || '';
+      teamSelect.appendChild(opt);
+    }
+    deptSelect.addEventListener('change', () => this.#filterTeamsByDepartment());
+
+    const assignModal = this.querySelector('#assign-modal');
+    this.querySelector('#assign-cancel').addEventListener('click', () => assignModal.close());
+
+    const assignSaveBtn = this.querySelector('#assign-save');
+    assignSaveBtn.addEventListener('click', async () => {
+      if (!this.#assigningId) return;
+      assignSaveBtn.setAttribute('loading', '');
+      try {
+        const teamId = teamSelect.value || null;
+        const departmentId = deptSelect.value || null;
+        const res = await window.updateUserPlacement(this.#assigningId, {
+          teamId,
+          departmentId,
+          clear: !teamId && !departmentId,
+        });
+        if (!res.ok) throw new Error(await res.text());
+        assignModal.close();
+        // Re-fetch the overview so the "Unassigned Members" table (and the
+        // warning counts above it) reflect the new placement immediately.
+        this.#data = await window.fetchAccessControlOverview();
+        this.#render();
+        showToast('Assignment updated');
+      } catch (e) {
+        showToast(`Failed: ${e.message}`);
+      } finally {
+        assignSaveBtn.removeAttribute('loading');
+      }
+    });
 
     // Button events
     this.querySelector('#btn-create-user')?.addEventListener('click', () => {
