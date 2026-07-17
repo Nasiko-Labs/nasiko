@@ -22,7 +22,9 @@ impl AuthServiceImpl {
     /// Record a user token JTI so it can be revoked later.
     /// Fire-and-forget — a failure to record doesn't fail the login.
     async fn record_token(&self, token: &str, user_id: uuid::Uuid) {
-        let Some(jti) = crate::jwt::extract_jti(token) else { return };
+        let Some(jti) = crate::jwt::extract_jti(token) else {
+            return;
+        };
         let hash = crate::jwt::hash_jti(&jti);
         let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
         let _ = sqlx::query(
@@ -40,7 +42,9 @@ impl AuthServiceImpl {
     /// Record an agent token JTI so it can be revoked later.
     /// Agent tokens store `agent_id` instead of `user_id` (different subject table).
     async fn record_agent_token(&self, token: &str, agent_id: uuid::Uuid) {
-        let Some(jti) = crate::jwt::extract_jti(token) else { return };
+        let Some(jti) = crate::jwt::extract_jti(token) else {
+            return;
+        };
         let hash = crate::jwt::hash_jti(&jti);
         let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
         let _ = sqlx::query(
@@ -93,8 +97,7 @@ impl AuthService for AuthServiceImpl {
         )
         .bind(username)
         .fetch_optional(&self.db)
-        .await
-?;
+        .await?;
 
         let row = row.ok_or(AuthError::InvalidCredentials)?;
 
@@ -172,8 +175,7 @@ impl AuthService for AuthServiceImpl {
         .bind(username)
         .bind(&access_secret_hash)
         .execute(&self.db)
-        .await
-?;
+        .await?;
 
         Ok(())
     }
@@ -220,8 +222,7 @@ impl AuthService for AuthServiceImpl {
         .bind(provider)
         .bind(provider_id)
         .fetch_optional(&self.db)
-        .await
-?;
+        .await?;
 
         let user_id = if let Some((uid,)) = existing {
             let _ = sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
@@ -292,8 +293,7 @@ impl AuthService for AuthServiceImpl {
         )
         .bind(user_uuid)
         .fetch_optional(&self.db)
-        .await
-?;
+        .await?;
 
         let row = row.ok_or(AuthError::NotFound)?;
 
@@ -364,8 +364,12 @@ impl AuthService for AuthServiceImpl {
         if identity.is_superuser {
             return true;
         }
-        let Ok(agent_uuid) = agent_id.parse::<uuid::Uuid>() else { return false };
-        let Ok(user_uuid) = identity.user_id.parse::<uuid::Uuid>() else { return false };
+        let Ok(agent_uuid) = agent_id.parse::<uuid::Uuid>() else {
+            return false;
+        };
+        let Ok(user_uuid) = identity.user_id.parse::<uuid::Uuid>() else {
+            return false;
+        };
 
         sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(

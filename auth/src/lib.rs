@@ -19,12 +19,6 @@ pub struct Identity {
     pub username: String,
     #[serde(default)]
     pub is_superuser: bool,
-    /// True for a token minted by `issue_agent_token` (an agent calling back
-    /// into the platform, e.g. to invoke another agent), false for a real
-    /// user session. `#[serde(default)]` so tokens issued before this field
-    /// existed keep decoding as non-agent rather than failing.
-    #[serde(default)]
-    pub is_agent: bool,
 }
 
 /// Consolidated auth trait — replaces AuthProvider, Authorizer, UserAuthService, TokenService.
@@ -40,7 +34,12 @@ pub trait AuthService: Send + Sync + 'static {
     async fn authenticate(&self, username: &str, password: &str) -> Result<LoginResult, AuthError>;
     async fn bootstrap_admin(&self, username: &str, password: &str) -> Result<(), AuthError>;
     async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError>;
-    async fn upsert_oauth_user(&self, provider: &str, provider_id: &str, username: &str) -> Result<LoginResult, AuthError>;
+    async fn upsert_oauth_user(
+        &self,
+        provider: &str,
+        provider_id: &str,
+        username: &str,
+    ) -> Result<LoginResult, AuthError>;
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
     async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError>;
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError>;
@@ -167,8 +166,11 @@ fn random_charset_string(len: usize) -> String {
     use rand::TryRngCore;
     use rand::rngs::OsRng;
     let mut bytes = vec![0u8; len];
-    OsRng.try_fill_bytes(&mut bytes).expect("OS CSPRNG unavailable");
-    bytes.iter()
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS CSPRNG unavailable");
+    bytes
+        .iter()
         .map(|&b| ACCESS_CHARSET[b as usize % ACCESS_CHARSET.len()] as char)
         .collect()
 }
@@ -223,7 +225,11 @@ impl AuthService for SimpleJwtAuth {
         jwt::encode_jwt(&self.secret, self.expiry_secs, identity)
     }
 
-    async fn authenticate(&self, _username: &str, _password: &str) -> Result<LoginResult, AuthError> {
+    async fn authenticate(
+        &self,
+        _username: &str,
+        _password: &str,
+    ) -> Result<LoginResult, AuthError> {
         Err(AuthError::Unsupported)
     }
 
@@ -235,7 +241,12 @@ impl AuthService for SimpleJwtAuth {
         Err(AuthError::Unsupported)
     }
 
-    async fn upsert_oauth_user(&self, _provider: &str, _provider_id: &str, _username: &str) -> Result<LoginResult, AuthError> {
+    async fn upsert_oauth_user(
+        &self,
+        _provider: &str,
+        _provider_id: &str,
+        _username: &str,
+    ) -> Result<LoginResult, AuthError> {
         Err(AuthError::Unsupported)
     }
 
