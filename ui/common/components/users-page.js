@@ -15,6 +15,20 @@ const AVATAR_COLORS = [
   '#dc2626', '#0891b2', '#4f46e5', '#be185d',
 ];
 
+// Server user_role enum — values must match exactly or POST/PUT /users 500s.
+const ROLE_LABELS = {
+  admin: 'Admin',
+  department_manager: 'Department Manager',
+  team_lead: 'Team Lead',
+  team_member: 'Team Member',
+  member: 'Member',
+};
+
+function roleLabel(role) {
+  if (!role) return 'Member';
+  return ROLE_LABELS[role] || role;
+}
+
 function avatarColor(name) {
   let hash = 0;
   const str = name || '';
@@ -44,8 +58,6 @@ function relativeTime(dateStr) {
 
 class UsersPage extends HTMLElement {
   #initialized = false;
-  #departments = [];
-  #teams = [];
 
   async connectedCallback() {
     if (this.#initialized) return;
@@ -78,37 +90,14 @@ class UsersPage extends HTMLElement {
       }
     }
 
-    await this.#loadLookups();
     this.#render();
     this.#bind();
-  }
-
-  async #loadLookups() {
-    try {
-      this.#departments = (await window.fetchDepartmentList?.()) || [];
-    } catch { this.#departments = []; }
-    try {
-      this.#teams = (await window.fetchTeamList?.()) || [];
-    } catch { this.#teams = []; }
-  }
-
-  #placementLabel(row) {
-    if (row.team_id) {
-      const team = this.#teams.find((t) => t.id === row.team_id);
-      return team ? this.#esc(team.name) : '<span class="muted">Unknown team</span>';
-    }
-    if (row.department_id) {
-      const dept = this.#departments.find((d) => d.id === row.department_id);
-      return dept ? this.#esc(dept.name) : '<span class="muted">Unknown department</span>';
-    }
-    return '<span class="muted">— Unassigned —</span>';
   }
 
   #render() {
     this.innerHTML = `
       <div class="users-header">
         <span class="users-header-stats" id="users-stats"></span>
-        <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 16)} Sync Azure AD Directory</app-button>
         <app-button variant="primary" size="sm" id="btn-add-user">${icons.plus('', 16)} Add User</app-button>
       </div>
 
@@ -116,8 +105,10 @@ class UsersPage extends HTMLElement {
         <select class="filter-select" id="filter-role" aria-label="Filter by role">
           <option value="">All Roles</option>
           <option value="admin">Admin</option>
-          <option value="deployer">Deployer</option>
-          <option value="viewer">Viewer</option>
+          <option value="department_manager">Department Manager</option>
+          <option value="team_lead">Team Lead</option>
+          <option value="team_member">Team Member</option>
+          <option value="member">Member</option>
         </select>
         <select class="filter-select" id="filter-department" aria-label="Filter by department">
           <option value="">All Departments</option>
@@ -132,7 +123,7 @@ class UsersPage extends HTMLElement {
       <smart-table id="users-table" data-fn="fetchUsers" search search-placeholder="Search users..." limit="20"></smart-table>
 
       <app-modal id="user-modal" heading="Add User">
-        <div class="modal-form">
+        <div class="modal-form" id="create-form">
           <div class="row">
             <div class="field">
               <label for="user-username">Username</label>
@@ -145,25 +136,51 @@ class UsersPage extends HTMLElement {
           </div>
           <div class="row">
             <div class="field">
-              <label for="user-password">Password</label>
-              <input type="password" id="user-password" placeholder="min 8 characters" required />
-            </div>
-            <div class="field">
               <label for="user-display-name">Display Name</label>
               <input type="text" id="user-display-name" placeholder="John Doe" />
             </div>
+            <div class="field">
+              <label for="user-role">Role</label>
+              <select id="user-role">
+                <option value="member" selected>Member</option>
+                <option value="team_member">Team Member</option>
+                <option value="team_lead">Team Lead</option>
+                <option value="department_manager">Department Manager</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
           </div>
-          <div class="field">
-            <label for="user-role">Role</label>
-            <select id="user-role">
-              <option value="viewer">Viewer</option>
-              <option value="deployer">Deployer</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
+          <p class="hint">A one-time access secret is generated on create — no password needed.</p>
           <div class="form-actions" data-slot="footer">
             <app-button variant="secondary" id="btn-cancel">Cancel</app-button>
             <app-button variant="primary" id="btn-save">Create</app-button>
+          </div>
+        </div>
+        <div class="modal-form credentials-view" id="create-credentials" hidden>
+          <p class="hint cred-warning" id="cred-message"></p>
+          <div class="field">
+            <label>Username</label>
+            <div class="cred-value">
+              <code id="cred-username"></code>
+              <button type="button" class="action-btn" data-copy="cred-username" title="Copy">${icons.copy('', 16)}</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Access Key</label>
+            <div class="cred-value">
+              <code id="cred-access-key"></code>
+              <button type="button" class="action-btn" data-copy="cred-access-key" title="Copy">${icons.copy('', 16)}</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Access Secret</label>
+            <div class="cred-value">
+              <code id="cred-access-secret"></code>
+              <button type="button" class="action-btn" data-copy="cred-access-secret" title="Copy">${icons.copy('', 16)}</button>
+            </div>
+          </div>
+          <div class="form-actions">
+            <app-button variant="primary" id="btn-done">Done</app-button>
           </div>
         </div>
       </app-modal>
@@ -197,24 +214,6 @@ class UsersPage extends HTMLElement {
           </div>
         </div>
       </app-modal>
-
-      <app-modal id="reassign-modal" heading="Assign department / team">
-        <div class="modal-form">
-          <p class="hint" id="reassign-target"></p>
-          <div class="field">
-            <label for="reassign-department">Department</label>
-            <select id="reassign-department"><option value="">— Unassigned —</option></select>
-          </div>
-          <div class="field">
-            <label for="reassign-team">Team <span class="hint">(optional — leave unset for a department-only placement)</span></label>
-            <select id="reassign-team"><option value="">— No specific team —</option></select>
-          </div>
-          <div class="form-actions" data-slot="footer">
-            <app-button variant="secondary" id="reassign-cancel">Cancel</app-button>
-            <app-button variant="primary" id="reassign-save">Save</app-button>
-          </div>
-        </div>
-      </app-modal>
     `;
 
     const table = this.querySelector('#users-table');
@@ -231,13 +230,14 @@ class UsersPage extends HTMLElement {
           </span>
         </div>`;
       }},
-      { key: 'role', label: 'Role', width: '10%', render: (v, row) => {
+      { key: 'role', label: 'Role', width: '12%', render: (v, row) => {
         if (row.is_superuser) return '<app-badge variant="warning">superuser</app-badge>';
-        const variant = v === 'admin' ? 'info' : v === 'deployer' ? 'success' : 'neutral';
-        return `<app-badge variant="${variant}">${v || 'viewer'}</app-badge>`;
+        const variant = v === 'admin' ? 'info'
+          : (v === 'department_manager' || v === 'team_lead') ? 'success'
+          : 'neutral';
+        return `<app-badge variant="${variant}">${this.#esc(roleLabel(v))}</app-badge>`;
       }},
-      { key: 'department_team', label: 'Department / Team', width: '14%', render: (_, row) => this.#placementLabel(row) },
-      { key: 'is_active', label: 'Status', width: '9%', render: (v) => {
+      { key: 'is_active', label: 'Status', width: '10%', render: (v) => {
         const cls = v ? 'is-active' : 'is-disabled';
         const label = v ? 'Active' : 'Disabled';
         return `<span class="status-cell"><span class="status-dot ${cls}"></span>${label}</span>`;
@@ -245,80 +245,24 @@ class UsersPage extends HTMLElement {
       { key: 'last_login', label: 'Last Active', width: '12%', render: (v) =>
         `<span title="${v || 'Never'}">${relativeTime(v)}</span>`
       },
-      { key: 'created_at', label: 'Created', width: '9%', render: (v) => v ? new Date(v).toLocaleDateString() : '--' },
-      { key: 'actions', label: '', width: '14%', render: (_, row) => {
+      { key: 'created_at', label: 'Created', width: '10%', render: (v) => v ? new Date(v).toLocaleDateString() : '--' },
+      { key: 'actions', label: '', width: '12%', render: (_, row) => {
         if (row.is_superuser) return '';
         const esc = (s) => (s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         const edit = `<button class="action-btn" data-action="edit" data-id="${esc(row.id)}" data-username="${esc(row.username)}" data-email="${esc(row.email)}" data-display-name="${esc(row.display_name || '')}" title="Edit">${icons.edit('', 16)}</button>`;
-        const reassign = `<button class="action-btn" data-action="reassign" data-id="${esc(row.id)}" data-name="${esc(row.display_name || row.username)}" data-department-id="${esc(row.department_id || '')}" data-team-id="${esc(row.team_id || '')}" title="Assign department/team">${icons.folder('', 16)}</button>`;
         const deactivate = row.is_active
           ? `<button class="action-btn action-btn--warn" data-action="deactivate" data-id="${esc(row.id)}" title="Deactivate">${icons.xCircle('', 16)}</button>`
           : `<button class="action-btn" data-action="activate" data-id="${esc(row.id)}" title="Activate">${icons.checkCircle('', 16)}</button>`;
-        return `${edit}${reassign}${deactivate}<button class="action-btn action-btn--danger" data-action="delete" data-id="${esc(row.id)}" data-name="${esc(row.username)}" title="Delete">${icons.trash('', 16)}</button>`;
+        return `${edit}${deactivate}<button class="action-btn action-btn--danger" data-action="delete" data-id="${esc(row.id)}" data-name="${esc(row.username)}" title="Delete">${icons.trash('', 16)}</button>`;
       }},
     ];
-
-    const deptSelect = this.querySelector('#reassign-department');
-    for (const d of this.#departments) {
-      const opt = document.createElement('option');
-      opt.value = d.id; opt.textContent = d.name;
-      deptSelect.appendChild(opt);
-    }
-    const teamSelect = this.querySelector('#reassign-team');
-    for (const t of this.#teams) {
-      const opt = document.createElement('option');
-      opt.value = t.id; opt.textContent = t.name;
-      opt.dataset.departmentId = t.department_id || '';
-      teamSelect.appendChild(opt);
-    }
   }
 
   #bind() {
     const table = this.querySelector('#users-table');
     const modal = this.querySelector('#user-modal');
     const editModal = this.querySelector('#edit-modal');
-    const reassignModal = this.querySelector('#reassign-modal');
     let editingId = null;
-    let reassigningId = null;
-
-    const reassignDept = this.querySelector('#reassign-department');
-    const reassignTeam = this.querySelector('#reassign-team');
-
-    const filterTeamsByDepartment = () => {
-      const deptId = reassignDept.value;
-      for (const opt of reassignTeam.options) {
-        if (!opt.value) continue;
-        opt.hidden = Boolean(deptId) && opt.dataset.departmentId !== deptId;
-      }
-      // Clear a team selection that no longer belongs to the picked department.
-      if (reassignTeam.selectedOptions[0]?.hidden) reassignTeam.value = '';
-    };
-    reassignDept.addEventListener('change', filterTeamsByDepartment);
-
-    this.querySelector('#reassign-cancel').addEventListener('click', () => reassignModal.close());
-
-    const reassignSaveBtn = this.querySelector('#reassign-save');
-    reassignSaveBtn.addEventListener('click', async () => {
-      if (!reassigningId) return;
-      reassignSaveBtn.setAttribute('loading', '');
-      try {
-        const teamId = reassignTeam.value || null;
-        const departmentId = reassignDept.value || null;
-        const res = await window.updateUserPlacement(reassigningId, {
-          teamId,
-          departmentId,
-          clear: !teamId && !departmentId,
-        });
-        if (!res.ok) throw new Error(await res.text());
-        reassignModal.close();
-        table.refresh();
-        showToast('Assignment updated');
-      } catch (e) {
-        showToast(`Failed: ${e.message}`);
-      } finally {
-        reassignSaveBtn.removeAttribute('loading');
-      }
-    });
 
     // Stats update after table loads
     table.addEventListener('loading-end', () => {
@@ -370,31 +314,25 @@ class UsersPage extends HTMLElement {
       }).catch(() => {});
     }
 
-    const syncBtn = this.querySelector('#btn-sync-azure');
-    syncBtn.addEventListener('click', async () => {
-      syncBtn.setAttribute('loading', '');
-      try {
-        const res = await window.syncAzureDirectory();
-        if (!res.ok) throw new Error(await res.text());
-        const summary = await res.json();
-        const errorCount = (summary.errors || []).length;
-        showToast(
-          `Synced: ${summary.departments_created} department(s), ${summary.teams_created} team(s), ` +
-          `${summary.users_created} new user(s) (${summary.users_skipped_existing} already in the system)` +
-          (errorCount ? ` — ${errorCount} error(s), see console` : '')
-        );
-        if (errorCount) console.warn('directory sync errors:', summary.errors);
-        table.refresh();
-      } catch (e) {
-        showToast(`Directory sync failed: ${e.message}`);
-      } finally {
-        syncBtn.removeAttribute('loading');
-      }
-    });
+    // Create modal — POST /users takes no password; the server returns
+    // one-time credentials (access_key/access_secret) in the 201 body,
+    // shown once in the credentials view before the modal is dismissed.
+    const resetCreateModal = () => {
+      this.querySelector('#user-username').value = '';
+      this.querySelector('#user-email').value = '';
+      this.querySelector('#user-display-name').value = '';
+      this.querySelector('#user-role').value = 'member';
+      this.querySelector('#create-form').hidden = false;
+      this.querySelector('#create-credentials').hidden = true;
+      modal.setAttribute('heading', 'Add User');
+    };
 
-    // Create modal
     this.querySelector('#btn-add-user').addEventListener('click', () => modal.open());
     this.querySelector('#btn-cancel').addEventListener('click', () => modal.close());
+    this.querySelector('#btn-done').addEventListener('click', () => modal.close());
+    // Reset on every close (X, backdrop, Cancel, Done) so a reopened modal
+    // never shows stale credentials. `close` doesn't bubble past <dialog>.
+    modal.querySelector('dialog').addEventListener('close', resetCreateModal);
 
     const createBtn = this.querySelector('#btn-save');
     createBtn.addEventListener('click', async () => {
@@ -402,24 +340,26 @@ class UsersPage extends HTMLElement {
       try {
         const username = this.querySelector('#user-username').value.trim();
         const email = this.querySelector('#user-email').value.trim();
-        const password = this.querySelector('#user-password').value;
         const display_name = this.querySelector('#user-display-name').value.trim();
         const role = this.querySelector('#user-role').value;
         if (!username || !email) { showToast('Username and email are required'); return; }
-        if (password.length < 8) { showToast('Password must be at least 8 characters'); return; }
 
         const res = await apiFetch('/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, email, password, display_name: display_name || null, role }),
+          body: JSON.stringify({ username, email, display_name: display_name || null, role }),
         });
         if (!res.ok) throw new Error(await res.text());
-        modal.close();
-        this.querySelector('#user-username').value = '';
-        this.querySelector('#user-email').value = '';
-        this.querySelector('#user-password').value = '';
-        this.querySelector('#user-display-name').value = '';
-        this.querySelector('#user-role').value = 'viewer';
+        const created = await res.json();
+
+        this.querySelector('#cred-username').textContent = created.username || username;
+        this.querySelector('#cred-access-key').textContent = created.access_key || '';
+        this.querySelector('#cred-access-secret').textContent = created.access_secret || '';
+        this.querySelector('#cred-message').textContent =
+          created.message || "Store access_secret securely — it won't be shown again.";
+        this.querySelector('#create-form').hidden = true;
+        this.querySelector('#create-credentials').hidden = false;
+        modal.setAttribute('heading', 'User Created');
         table.refresh();
         showToast('User created');
       } catch (e) {
@@ -427,6 +367,17 @@ class UsersPage extends HTMLElement {
       } finally {
         createBtn.removeAttribute('loading');
       }
+    });
+
+    // Copy-to-clipboard for the one-time credentials view
+    this.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-copy]');
+      if (!btn) return;
+      const target = this.querySelector(`#${btn.dataset.copy}`);
+      if (!target) return;
+      navigator.clipboard.writeText(target.textContent).catch(() => {});
+      btn.innerHTML = icons.check('', 16);
+      setTimeout(() => { btn.innerHTML = icons.copy('', 16); }, 1500);
     });
 
     // Edit modal
@@ -476,13 +427,6 @@ class UsersPage extends HTMLElement {
         this.querySelector('#edit-display-name').value = btn.dataset.displayName || '';
         this.querySelector('#edit-password').value = '';
         editModal.open();
-      } else if (action === 'reassign') {
-        reassigningId = id;
-        this.querySelector('#reassign-target').textContent = `Assigning: ${btn.dataset.name || 'this user'}`;
-        reassignDept.value = btn.dataset.departmentId || '';
-        reassignTeam.value = btn.dataset.teamId || '';
-        filterTeamsByDepartment();
-        reassignModal.open();
       } else if (action === 'delete') {
         if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
         try {

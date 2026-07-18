@@ -31,7 +31,7 @@ class TeamsPage extends HTMLElement {
           <div class="field">
             <label>Department</label>
             <select id="team-department">
-              <option value="">-- None --</option>
+              <option value="" disabled selected>Select department…</option>
             </select>
           </div>
           <div class="form-actions">
@@ -84,10 +84,16 @@ class TeamsPage extends HTMLElement {
       saveBtn.setAttribute('loading', '');
       try {
         const name = this.querySelector('#team-name').value.trim();
-        const department_id = this.querySelector('#team-department').value || null;
+        const department_id = this.querySelector('#team-department').value;
 
         if (!name) {
           showToast('Team name is required');
+          return;
+        }
+        // POST /teams requires department_id (server 422s on null) —
+        // every team belongs to a department by design.
+        if (!department_id) {
+          showToast('Department is required');
           return;
         }
 
@@ -118,7 +124,7 @@ class TeamsPage extends HTMLElement {
     try {
       const departments = await window.fetchDepartmentList();
       const current = select.value;
-      select.innerHTML = '<option value="">-- None --</option>';
+      select.innerHTML = '<option value="" disabled selected>Select department…</option>';
       if (departments && departments.length) {
         for (const dept of departments) {
           const opt = document.createElement('option');

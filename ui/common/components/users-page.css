@@ -5,11 +5,6 @@
     padding: var(--space-xl) var(--space-md);
   }
 
-  .muted {
-    color: var(--color-text-muted);
-    font-style: italic;
-  }
-
   .users-header {
     display: flex;
     align-items: center;
@@ -59,7 +54,7 @@
     &:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
 
@@ -148,9 +143,27 @@
   .modal-form input:focus, .modal-form select:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
   .hint { font-size: var(--font-size-xs); color: var(--color-text-muted); margin: 0; }
+  .cred-warning { color: var(--color-warning); }
+  .cred-value {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-base);
+    min-height: 36px;
+  }
+  .cred-value code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    word-break: break-all;
+  }
   .form-actions {
     display: flex;
     justify-content: flex-end;

@@ -63,6 +63,9 @@ pub fn router() -> Router<AppState> {
         .merge(management_router())
         // Role change must come before /{id} to avoid being swallowed as an id segment.
         .route("/users/{id}/role", put(change_role))
+        // Update is registered separately (see management_router()'s doc comment) so
+        // EE can override it to layer department_id/team_id assignment on top.
+        .route("/users/{id}", put(update_user))
         // Static sub-paths MUST come before /{id} to avoid being captured as IDs.
         .route("/users/me", get(get_me))
         .route("/users", get(list_users))
@@ -71,14 +74,16 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
 }
 
-/// Management-only orchestrator — create/update/delete users and related operations.
-/// The role-change endpoint is registered separately so it can be overridden
-/// without causing a duplicate-route panic.
+/// Management-only orchestrator — create/delete users and related operations.
+/// The role-change and update endpoints are registered separately (in `router()`)
+/// so each can be overridden without causing a duplicate-route panic: EE wraps
+/// `change_role` with its leadership cascade, and wraps `update_user` to also
+/// accept `department_id`/`team_id` (EE-only columns `oss/server`'s `users`
+/// table doesn't have — see `ee/server/src/users.rs::ee_update_user`).
 pub fn management_router() -> Router<AppState> {
     Router::new()
         .route("/users/admins", get(list_admins))
         .route("/users", post(create_user))
-        .route("/users/{id}", put(update_user))
         .route("/users/{id}", delete(delete_user))
         .route("/users/{id}/deactivate", post(deactivate))
         .route("/users/{id}/reinstate", post(reinstate))
@@ -94,10 +99,6 @@ struct UserRow {
     is_superuser: bool,
     is_active: bool,
     role: Option<String>,
-    #[sqlx(default)]
-    department_id: Option<Uuid>,
-    #[sqlx(default)]
-    team_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     last_login: Option<DateTime<Utc>>,
 }
@@ -283,21 +284,17 @@ async fn create_user(
     }
 }
 
+/// `pub` (fields included) so EE's `ee_update_user` can construct one directly
+/// and delegate to `update_user` for the fields both editions share, then layer
+/// its own `department_id`/`team_id` handling on top — see
+/// `ee/server/src/users.rs::ee_update_user`.
 #[derive(Deserialize)]
-struct UpdateUser {
-    username: Option<String>,
-    email: Option<String>,
-    display_name: Option<String>,
-    password: Option<String>,
-    is_active: Option<bool>,
-    /// Basic role update without cascade (use /role for leadership promotions).
-    role: Option<String>,
-    department_id: Option<serde_json::Value>,
-    team_id: Option<serde_json::Value>,
-    #[serde(default)]
-    clear_department: bool,
-    #[serde(default)]
-    clear_team: bool,
+pub struct UpdateUser {
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub password: Option<String>,
+    pub is_active: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -305,7 +302,7 @@ pub struct ChangeRoleRequest {
     pub role: String,
 }
 
-async fn update_user(
+pub async fn update_user(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -352,82 +349,27 @@ async fn update_user(
         None => None,
     };
 
-    // Resolve department_id / team_id as Option<Uuid>: null JSON value clears the
-    // field; absent key leaves it unchanged (handled by COALESCE in SQL).
-    let dept_uuid: Option<Option<Uuid>> = if body.clear_department {
-        Some(None) // explicitly NULL
-    } else {
-        match &body.department_id {
-            Some(serde_json::Value::Null) => Some(None),
-            Some(serde_json::Value::String(s)) => {
-                match s.parse::<Uuid>() {
-                    Ok(u) => Some(Some(u)),
-                    Err(_) => return (StatusCode::BAD_REQUEST, "invalid department_id").into_response(),
-                }
-            }
-            Some(_) => return (StatusCode::BAD_REQUEST, "invalid department_id").into_response(),
-            None => None, // not provided — no-op
-        }
-    };
-    let team_uuid: Option<Option<Uuid>> = if body.clear_team {
-        Some(None)
-    } else {
-        match &body.team_id {
-            Some(serde_json::Value::Null) => Some(None),
-            Some(serde_json::Value::String(s)) => {
-                match s.parse::<Uuid>() {
-                    Ok(u) => Some(Some(u)),
-                    Err(_) => return (StatusCode::BAD_REQUEST, "invalid team_id").into_response(),
-                }
-            }
-            Some(_) => return (StatusCode::BAD_REQUEST, "invalid team_id").into_response(),
-            None => None,
-        }
-    };
-
-    // Validate role if provided.
-    if let Some(ref r) = body.role {
-        let valid = ["admin", "member", "team_member", "team_lead", "department_manager"];
-        if !valid.contains(&r.as_str()) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("invalid role '{r}'")}))).into_response();
-        }
-    }
-
-    // Build a single UPDATE. department_id/team_id use explicit CASE so they can
-    // be set to NULL (COALESCE can't express "set to NULL").
-    let dept_set = dept_uuid.is_some();
-    let team_set = team_uuid.is_some();
-    let sql = format!(
+    // Single UPDATE with COALESCE — only provided fields change
+    let result = sqlx::query(
         r#"UPDATE users SET
-             username     = COALESCE($2, username),
-             email        = COALESCE($3, email),
+             username = COALESCE($2, username),
+             email = COALESCE($3, email),
              display_name = COALESCE($4, display_name),
-             is_active    = COALESCE($5, is_active),
-             role         = COALESCE($6::user_role, role),
-             department_id = CASE WHEN {dept_set} THEN $7 ELSE department_id END,
-             team_id       = CASE WHEN {team_set} THEN $8 ELSE team_id END,
-             updated_at   = now()
-           WHERE id = $1 AND deleted_at IS NULL
-           RETURNING id, username, email, display_name, is_superuser,
-                     is_active, role::text AS role, department_id, team_id,
-                     created_at, last_login"#
-    );
-
-    let result = sqlx::query_as::<_, UserRow>(&sql)
-        .bind(id)
-        .bind(&body.username)
-        .bind(&body.email)
-        .bind(&body.display_name)
-        .bind(body.is_active)
-        .bind(body.role.as_deref())
-        .bind(dept_uuid.and_then(|v| v))
-        .bind(team_uuid.and_then(|v| v))
-        .fetch_optional(&state.db)
-        .await;
+             is_active = COALESCE($5, is_active),
+             updated_at = now()
+           WHERE id = $1"#,
+    )
+    .bind(id)
+    .bind(&body.username)
+    .bind(&body.email)
+    .bind(&body.display_name)
+    .bind(body.is_active)
+    .execute(&state.db)
+    .await;
 
     match result {
-        Ok(None) => (StatusCode::NOT_FOUND, "user not found").into_response(),
-        Ok(Some(updated)) => {
+        Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, "user not found").into_response(),
+        Ok(_) => {
             if let Some(hash) = access_secret_hash {
                 match sqlx::query(
                     "UPDATE user_credentials SET access_secret_hash = $2, updated_at = now() WHERE user_id = $1",
@@ -450,10 +392,14 @@ async fn update_user(
                     }
                 }
             }
+
+            // Mirror deactivate's token revocation: stale JWTs must stop working
+            // immediately, not linger until natural expiry.
             if body.is_active == Some(false) {
                 let _ = state.auth.revoke_tokens_for_user(&id.to_string()).await;
             }
-            Json(updated).into_response()
+
+            StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
             if e.to_string().contains("duplicate key") {
@@ -785,13 +731,15 @@ struct AccessibleAgent {
     description: Option<String>,
     status: Option<String>,
     owner_id: Option<Uuid>,
+    // Consumed by the EE CLI's access my-agents/user-agents PUBLIC column.
+    is_public: bool,
 }
 
 async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::response::Response {
     // OSS: owner, public, or a direct user grant.
     // EE overrides this in ee/server/src/users.rs to also check team and department grants.
     let rows = sqlx::query_as::<_, AccessibleAgent>(
-        r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id
+        r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id, a.is_public
            FROM agents a
            WHERE a.deleted_at IS NULL
              AND (
