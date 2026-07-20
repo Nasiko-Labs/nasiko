@@ -37,7 +37,7 @@ pub enum AgentDevCommands {
         #[arg(default_value = ".")]
         path: String,
         /// Override port
-        #[arg(long, default_value = "5000")]
+        #[arg(long, default_value = "8000")]
         port: u16,
     },
     /// Validate agent directory structure
@@ -67,7 +67,9 @@ pub enum AgentDevCommands {
 #[command(next_help_heading = "Operate")]
 pub enum AgentOpsCommands {
     /// Build + push + deploy to active cluster
-    #[command(after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)")]
+    #[command(
+        after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)"
+    )]
     Deploy {
         /// Local Docker image or agent directory
         image: String,
@@ -75,7 +77,7 @@ pub enum AgentOpsCommands {
         #[arg(long)]
         name: Option<String>,
         /// Container port
-        #[arg(long, default_value = "5000")]
+        #[arg(long, default_value = "8000")]
         port: u16,
         /// Path to .env file with KEY=VALUE pairs
         #[arg(long)]
@@ -93,7 +95,9 @@ pub enum AgentOpsCommands {
         name: Option<String>,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
-    #[command(after_help = "Reads: AgentCard.json (for name/version defaults)\nSource can be a directory (auto-zipped) or a pre-made .zip file")]
+    #[command(
+        after_help = "Reads: AgentCard.json (for name/version defaults)\nSource can be a directory (auto-zipped) or a pre-made .zip file"
+    )]
     Upload {
         /// Agent directory or .zip file (defaults to current directory)
         #[arg(default_value = ".")]
@@ -105,7 +109,7 @@ pub enum AgentOpsCommands {
         #[arg(long, short = 'v')]
         version: Option<String>,
         /// Container port
-        #[arg(long, default_value = "5000")]
+        #[arg(long, default_value = "8000")]
         port: u16,
         /// Path to .env file with KEY=VALUE pairs
         #[arg(long)]
@@ -268,7 +272,7 @@ pub enum AgentsCommands {
     ListUploaded,
     /// Chat directly with a locally running agent
     Chat {
-        #[arg(long, short = 'u', default_value = "http://localhost:5000")]
+        #[arg(long, short = 'u', default_value = "http://localhost:8000")]
         url: String,
         message: Option<String>,
         #[arg(long, short = 's')]
@@ -481,12 +485,16 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
             Some(t) => commands::scaffold::new_agent(&t, name.as_deref().unwrap_or(&t)),
             None => commands::scaffold::new_agent_interactive(name.as_deref()),
         },
-        AgentDevCommands::Build { directory, tag, platform } => {
-            commands::build::build(&directory, tag.as_deref(), platform.as_deref())
-        }
+        AgentDevCommands::Build {
+            directory,
+            tag,
+            platform,
+        } => commands::build::build(&directory, tag.as_deref(), platform.as_deref()),
         AgentDevCommands::Run { path, port } => commands::dev::run(&path, port),
         AgentDevCommands::Validate { directory } => commands::validate::validate(&directory),
-        AgentDevCommands::Card { description, dir } => commands::card::card(&dir, description.as_deref()),
+        AgentDevCommands::Card { description, dir } => {
+            commands::card::card(&dir, description.as_deref())
+        }
         AgentDevCommands::Skill { command } => match command {
             SkillCommands::Add { name, dir } => commands::skill::add(&name, &dir),
             SkillCommands::Remove { name, dir } => commands::skill::remove(&name, &dir),
@@ -501,23 +509,48 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
 
 pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
     match cmd {
-        AgentOpsCommands::Deploy { image, name, port, env_file, env } => {
-            commands::deploy::deploy(&image, name.as_deref(), port, env_file.as_deref(), &env)
-        }
-        AgentOpsCommands::Push { image, name } => {
-            commands::push::push(&image, name.as_deref())
-        }
-        AgentOpsCommands::Upload { source, name, version, port, env_file, env } => {
-            commands::upload::upload(&source, name.as_deref(), version.as_deref(), port, env_file.as_deref(), &env)
-        }
+        AgentOpsCommands::Deploy {
+            image,
+            name,
+            port,
+            env_file,
+            env,
+        } => commands::deploy::deploy(&image, name.as_deref(), port, env_file.as_deref(), &env),
+        AgentOpsCommands::Push { image, name } => commands::push::push(&image, name.as_deref()),
+        AgentOpsCommands::Upload {
+            source,
+            name,
+            version,
+            port,
+            env_file,
+            env,
+        } => commands::upload::upload(
+            &source,
+            name.as_deref(),
+            version.as_deref(),
+            port,
+            env_file.as_deref(),
+            &env,
+        ),
         AgentOpsCommands::Ps { json } => commands::agents::ps(json),
-        AgentOpsCommands::Logs { agent, tail, follow } => commands::agents::logs(&agent, tail, follow),
+        AgentOpsCommands::Logs {
+            agent,
+            tail,
+            follow,
+        } => commands::agents::logs(&agent, tail, follow),
         AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
         AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
-        AgentOpsCommands::Chat { url, message, agent, tui, resume, session_id } => {
+        AgentOpsCommands::Chat {
+            url,
+            message,
+            agent,
+            tui,
+            resume,
+            session_id,
+        } => {
             // `nasiko chat "some message"` — a lone positional *containing
             // whitespace* is a natural-language message for the orchestrator,
             // not a resolvable target. Targets (a URL, an agent UUID/name,
@@ -555,18 +588,23 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             if tui || resume.is_some() {
                 commands::tui::run_tui(&resolved, resume.as_deref(), &target_label)
             } else {
-                commands::chat::chat(&resolved, message.as_deref(), session_id.as_deref(), &target_label)
+                commands::chat::chat(
+                    &resolved,
+                    message.as_deref(),
+                    session_id.as_deref(),
+                    &target_label,
+                )
             }
         }
-        AgentOpsCommands::Sessions { endpoint, cursor, limit } => {
-            commands::tui::list_sessions(endpoint.as_deref(), cursor.as_deref(), limit)
-        }
+        AgentOpsCommands::Sessions {
+            endpoint,
+            cursor,
+            limit,
+        } => commands::tui::list_sessions(endpoint.as_deref(), cursor.as_deref(), limit),
         AgentOpsCommands::CreateSession { agent } => {
             commands::tui::create_session(agent.as_deref())
         }
-        AgentOpsCommands::History { session_id } => {
-            commands::tui::session_history(&session_id)
-        }
+        AgentOpsCommands::History { session_id } => commands::tui::session_history(&session_id),
         AgentOpsCommands::DeleteSession { session_id, yes } => {
             commands::tui::delete_session(&session_id, yes)
         }
@@ -581,23 +619,41 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         },
         AgentOpsCommands::Agents { command } => match command {
             AgentsCommands::Ls => commands::agents::cmd_ls(),
-            AgentsCommands::Get { agent_id, name, format } => {
-                commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format)
-            }
+            AgentsCommands::Get {
+                agent_id,
+                name,
+                format,
+            } => commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format),
             AgentsCommands::Deploy { source, name } => {
                 commands::agents::cmd_deploy(&source, name.as_deref())
             }
-            AgentsCommands::Search { query, artifact_type, framework, tags, owner, limit } => {
-                commands::agents::cmd_search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), tags.as_deref(), owner.as_deref(), limit)
-            }
-            AgentsCommands::Info { name, owner, version } => {
-                commands::agents::cmd_info(&name, &owner, version.as_deref())
-            }
+            AgentsCommands::Search {
+                query,
+                artifact_type,
+                framework,
+                tags,
+                owner,
+                limit,
+            } => commands::agents::cmd_search(
+                query.as_deref(),
+                artifact_type.as_deref(),
+                framework.as_deref(),
+                tags.as_deref(),
+                owner.as_deref(),
+                limit,
+            ),
+            AgentsCommands::Info {
+                name,
+                owner,
+                version,
+            } => commands::agents::cmd_info(&name, &owner, version.as_deref()),
             AgentsCommands::Frameworks => commands::agents::cmd_frameworks(),
             AgentsCommands::ListUploaded => commands::agents::cmd_list_uploaded(),
-            AgentsCommands::Chat { url, message, session_id } => {
-                commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref())
-            }
+            AgentsCommands::Chat {
+                url,
+                message,
+                session_id,
+            } => commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref()),
         },
         AgentOpsCommands::Observe { command } => match command {
             ObserveCommands::Sessions { start_time, json } => {
@@ -609,12 +665,16 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             ObserveCommands::TraceDetail { trace_id, json } => {
                 commands::observe::trace_detail(&trace_id, json)
             }
-            ObserveCommands::Span { trace_id, span_id, json } => {
-                commands::observe::span_detail(&trace_id, &span_id, json)
-            }
-            ObserveCommands::ProjectStats { agent_id, start_time, json } => {
-                commands::observe::project_stats(&agent_id, start_time.as_deref(), json)
-            }
+            ObserveCommands::Span {
+                trace_id,
+                span_id,
+                json,
+            } => commands::observe::span_detail(&trace_id, &span_id, json),
+            ObserveCommands::ProjectStats {
+                agent_id,
+                start_time,
+                json,
+            } => commands::observe::project_stats(&agent_id, start_time.as_deref(), json),
             ObserveCommands::FinopsDashboard { start_time, json } => {
                 commands::observe::finops_dashboard(start_time.as_deref(), json)
             }
@@ -623,7 +683,9 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             }
         },
         AgentOpsCommands::Secrets { command } => match command {
-            SecretsCommands::Set { key, value, agent } => commands::secrets::set(&key, &value, agent.as_deref()),
+            SecretsCommands::Set { key, value, agent } => {
+                commands::secrets::set(&key, &value, agent.as_deref())
+            }
             SecretsCommands::Get { key, agent } => commands::secrets::get(&key, agent.as_deref()),
             SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
             SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
@@ -636,11 +698,24 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
         RegistrySubCommands::Connect { url } => commands::registry::connect(&url),
         RegistrySubCommands::Disconnect => commands::registry::disconnect(),
         RegistrySubCommands::Status => commands::registry::status(),
-        RegistrySubCommands::Search { query, artifact_type, framework, top, min_score, json } => {
-            commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), top, min_score, json)
-        }
-        RegistrySubCommands::List { artifact_type, json } => {
-            commands::registry::list(artifact_type.as_deref(), json)
-        }
+        RegistrySubCommands::Search {
+            query,
+            artifact_type,
+            framework,
+            top,
+            min_score,
+            json,
+        } => commands::registry::search(
+            query.as_deref(),
+            artifact_type.as_deref(),
+            framework.as_deref(),
+            top,
+            min_score,
+            json,
+        ),
+        RegistrySubCommands::List {
+            artifact_type,
+            json,
+        } => commands::registry::list(artifact_type.as_deref(), json),
     }
 }

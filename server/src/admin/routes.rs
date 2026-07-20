@@ -84,15 +84,21 @@ async fn deploy(
         None => ContainerId::new(&req.name),
     };
 
+    let ports = if req.ports.is_empty() {
+        vec![crate::agents::DEFAULT_AGENT_PORT]
+    } else {
+        req.ports
+    };
+    // The Service/port-mapping targets ports[0], so the agent must listen
+    // there — every in-tree agent honors PORT. Explicit env still wins.
+    env.entry("PORT".into())
+        .or_insert_with(|| ports[0].to_string());
+
     let mut spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
         image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
-        ports: if req.ports.is_empty() {
-            vec![crate::agents::DEFAULT_AGENT_PORT]
-        } else {
-            req.ports
-        },
+        ports,
         env_vars: env,
         min_replicas: req.replicas.unwrap_or(1),
         max_replicas: req.replicas.unwrap_or(1),

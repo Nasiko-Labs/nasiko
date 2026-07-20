@@ -4,55 +4,20 @@ use std::path::Path;
 use std::process::Command;
 
 use serde::Deserialize;
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use crate::api::{AgentRecord, Client, UploadedAgent};
 
 #[derive(Debug, Deserialize)]
 struct LogLine {
     timestamp: Option<String>,
-    level:     Option<String>,
-    message:   String,
-    source:    Option<String>,
+    level: Option<String>,
+    message: String,
+    source: Option<String>,
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
-
-/// Resolve a `nasiko chat` target to a full A2A endpoint URL.
-///
-/// Accepts a full URL as-is. Otherwise treats `target` as an agent UUID or
-/// name, looks it up against the active cluster's agent list (same data
-/// `nasiko ps` prints), and builds the proxy URL from its `id` +
-/// `transport_path` — sparing the caller from having to copy/paste the URL
-/// `nasiko ps` prints.
-pub fn resolve_chat_target(target: &str) -> Result<String> {
-    if target.starts_with("http://") || target.starts_with("https://") {
-        return Ok(target.to_string());
-    }
-
-    // "orchestrator" is not a catalog agent — it's the CP's own routing
-    // endpoint (same one `nasiko chat` with no target uses).
-    if target.eq_ignore_ascii_case("orchestrator") {
-        let base = crate::config::active_url()?;
-        return Ok(format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')));
-    }
-
-    let client = Client::from_active_cluster()?;
-    let agents: Vec<AgentRecord> = client.get_json("/agents?limit=100")?;
-    let agent = agents
-        .iter()
-        .find(|a| a.id == target || a.name == target)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no agent found with id or name '{target}' (see `nasiko ps`; \
-                 to message the orchestrator instead: nasiko chat \"{target}\" — \
-                 any argument with spaces goes to the orchestrator)"
-            )
-        })?;
-
-    let base = client.base_url().trim_end_matches('/');
-    let path = agent.transport_path.as_deref().unwrap_or("/");
-    Ok(format!("{}/api/agents/{}{}", base, agent.id, path))
-}
 
 pub fn ps(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
@@ -67,17 +32,41 @@ pub fn ps(json: bool) -> Result<()> {
         return Ok(());
     }
     let base = client.base_url().trim_end_matches('/');
-    println!("{:<28} {:<12} {:<8} URL", "NAME", "STATUS", "VERSION");
-    for a in &agents {
-        let status = a.status.as_deref().unwrap_or("unknown");
-        let version = a.version.as_deref().unwrap_or("-");
-        // transport_path comes from the agent's own card (persisted at deploy
-        // time); the proxy route requires the agent UUID, not the name.
-        let path = a.transport_path.as_deref().unwrap_or("/");
-        let url = format!("{}/api/agents/{}{}", base, a.id, path);
-        println!("{:<28} {:<12} {:<8} {}", a.name, status, version, url);
-    }
+    let rows: Vec<PsTableRow> = agents
+        .iter()
+        .map(|a| {
+            let status = a.status.as_deref().unwrap_or("unknown");
+            // transport_path comes from the agent's own card (persisted at deploy
+            // time); the proxy route requires the agent UUID, not the name.
+            let path = a.transport_path.as_deref().unwrap_or("/");
+            let url = format!("{}/api/agents/{}{}", base, a.id, path);
+            PsTableRow {
+                name: a.name.clone(),
+                status: status.to_string(),
+                version: a.version.as_deref().unwrap_or("-").to_string(),
+                url,
+            }
+        })
+        .collect();
+    println!(
+        "{}",
+        Table::new(rows)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     Ok(())
+}
+
+#[derive(Tabled)]
+struct PsTableRow {
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "STATUS")]
+    status: String,
+    #[tabled(rename = "VERSION")]
+    version: String,
+    #[tabled(rename = "URL")]
+    url: String,
 }
 
 /// Fetch or stream agent logs.
@@ -92,7 +81,9 @@ pub fn logs(agent: &str, tail: u32, follow: bool) -> Result<()> {
     }
 
     // One-shot: fetch structured log lines from the observe endpoint.
-    match client.get_json::<Vec<LogLine>>(&format!("/observability/agents/{agent}/logs?limit={tail}")) {
+    match client
+        .get_json::<Vec<LogLine>>(&format!("/observability/agents/{agent}/logs?limit={tail}"))
+    {
         Ok(lines) => {
             print_log_lines(&lines);
             Ok(())
@@ -110,7 +101,7 @@ pub fn logs(agent: &str, tail: u32, follow: bool) -> Result<()> {
 fn print_log_lines(lines: &[LogLine]) {
     // API returns newest-first; reverse for chronological display.
     for l in lines.iter().rev() {
-        let ts  = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
+        let ts = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
         let lvl = l.level.as_deref().unwrap_or("INFO");
         let src = l.source.as_deref().unwrap_or("?");
         println!("{ts} {lvl:<5} [{src}] {}", l.message);
@@ -121,11 +112,17 @@ fn print_log_lines(lines: &[LogLine]) {
 /// each arriving log line to stdout. Blocks until interrupted or server closes.
 fn stream_logs(agent: &str) -> Result<()> {
     let (_, entry) = crate::config::active_cluster()?;
-    let url = format!("{}/api/observability/agents/{}/logs/stream", entry.url, agent);
+    let url = format!(
+        "{}/api/observability/agents/{}/logs/stream",
+        entry.url, agent
+    );
 
     let mut resp = ureq::Agent::new_with_defaults()
         .get(&url)
-        .header("Authorization", &format!("Bearer {}", entry.token.as_deref().unwrap_or("")))
+        .header(
+            "Authorization",
+            &format!("Bearer {}", entry.token.as_deref().unwrap_or("")),
+        )
         .call()?;
 
     if resp.status().as_u16() >= 400 {
@@ -141,7 +138,7 @@ fn stream_logs(agent: &str) -> Result<()> {
         if let Some(json) = raw.strip_prefix("data: ")
             && let Ok(l) = serde_json::from_str::<LogLine>(json)
         {
-            let ts  = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
+            let ts = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
             let lvl = l.level.as_deref().unwrap_or("INFO");
             let src = l.source.as_deref().unwrap_or("?");
             println!("{ts} {lvl:<5} [{src}] {}", l.message);
@@ -173,7 +170,10 @@ pub fn restart(agent: &str) -> Result<()> {
 
 pub fn scale(agent: &str, replicas: u32) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    client.post_json_void(&format!("/containers/{agent}/scale"), &serde_json::json!({"replicas": replicas}))?;
+    client.post_json_void(
+        &format!("/containers/{agent}/scale"),
+        &serde_json::json!({"replicas": replicas}),
+    )?;
     println!("Scaled {agent} to {replicas} replica(s)");
     Ok(())
 }
@@ -203,12 +203,52 @@ fn registry_url() -> String {
 
 fn unwrap_agents(raw: serde_json::Value) -> Result<Vec<AgentRecord>> {
     if let Some(arr) = raw.as_array() {
-        Ok(serde_json::from_value(serde_json::Value::Array(arr.clone()))?)
+        Ok(serde_json::from_value(serde_json::Value::Array(
+            arr.clone(),
+        ))?)
     } else if let Some(data) = raw.get("data") {
         Ok(serde_json::from_value(data.clone())?)
     } else {
         Ok(serde_json::from_value(raw)?)
     }
+}
+
+/// Resolve a chat target (URL, "orchestrator", or agent name/id) into a full
+/// A2A endpoint URL.
+///
+/// Used by `nasiko chat -a <target>` so callers can pass a name instead of a
+/// full proxy URL.
+pub fn resolve_chat_target(target: &str) -> Result<String> {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        return Ok(target.to_string());
+    }
+
+    // "orchestrator" is not a catalog agent — it's the CP's own routing
+    // endpoint (same one `nasiko chat` with no target uses).
+    if target.eq_ignore_ascii_case("orchestrator") {
+        let base = crate::config::active_url()?;
+        return Ok(format!(
+            "{}/api/orchestrator/a2a",
+            base.trim_end_matches('/')
+        ));
+    }
+
+    let client = Client::from_active_cluster()?;
+    let agents: Vec<AgentRecord> = client.get_json("/agents?limit=100")?;
+    let agent = agents
+        .iter()
+        .find(|a| a.id == target || a.name == target)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no agent found with id or name '{target}' (see `nasiko ps`; \
+                 to message the orchestrator instead: nasiko chat \"{target}\" — \
+                 any argument with spaces goes to the orchestrator)"
+            )
+        })?;
+
+    let base = client.base_url().trim_end_matches('/');
+    let path = agent.transport_path.as_deref().unwrap_or("/");
+    Ok(format!("{}/api/agents/{}{}", base, agent.id, path))
 }
 
 /// Resolve a name or UUID into a deployed agent's UUID via the CP registry.
@@ -221,11 +261,13 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
     }
 
     let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
+    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
     let agents = unwrap_agents(raw)?;
 
-    let matches: Vec<&AgentRecord> =
-        agents.iter().filter(|a| a.name.eq_ignore_ascii_case(name_or_id)).collect();
+    let matches: Vec<&AgentRecord> = agents
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case(name_or_id))
+        .collect();
 
     match matches.as_slice() {
         [one] => Ok(one.id.clone()),
@@ -234,17 +276,17 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
         ),
         many => bail!(
             "multiple agents named '{name_or_id}': {} — use an ID instead",
-            many.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+            many.iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
 
 pub fn cmd_ls() -> Result<()> {
     let client = Client::from_active_cluster()?;
-    // GET /agents returns Vec<Agent> directly — field names match AgentRecord.
-    // /registry/user/agents returns {data:[{agent_id,...}]} which uses agent_id
-    // instead of id, causing deserialization failures.
-    let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
+    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
     let agents = unwrap_agents(raw)?;
 
     if agents.is_empty() {
@@ -252,28 +294,21 @@ pub fn cmd_ls() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<24} {:<10} {:<10} URL", "ID", "NAME", "STATUS", "VERSION");
-    println!("{}", "-".repeat(100));
-    for a in &agents {
-        println!(
-            "{:<36} {:<24} {:<10} {:<10} {}",
-            a.id,
-            a.name,
-            a.status.as_deref().unwrap_or("-"),
-            a.version.as_deref().unwrap_or("-"),
-            a.url.as_deref().unwrap_or("-"),
-        );
-    }
+    println!(
+        "{}",
+        Table::new(&agents)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     println!("\n{} agent(s) total.", agents.len());
     Ok(())
 }
 
 pub fn cmd_get(agent_id: Option<&str>, name: Option<&str>, format: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    // GET /agents/{id} accepts either a UUID or an agent name.
     let raw: serde_json::Value = match (agent_id, name) {
-        (Some(id), _) => client.get_json(&format!("/agents/{}", id))?,
-        (None, Some(n)) => client.get_json(&format!("/agents/{}", n))?,
+        (Some(id), _) => client.get_json(&format!("/registry/agent/id/{}", id))?,
+        (None, Some(n)) => client.get_json(&format!("/registry/agent/name/{}", n))?,
         (None, None) => bail!("Provide at least one of --agent-id or --name"),
     };
     let agent: AgentRecord = if let Some(data) = raw.get("data") {
@@ -283,20 +318,32 @@ pub fn cmd_get(agent_id: Option<&str>, name: Option<&str>, format: &str) -> Resu
     };
 
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "id": agent.id, "name": agent.name, "status": agent.status,
-            "version": agent.version, "framework": agent.framework,
-            "url": agent.url, "description": agent.description, "created_at": agent.created_at,
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": agent.id, "name": agent.name, "status": agent.status,
+                "version": agent.version, "framework": agent.framework,
+                "url": agent.url, "description": agent.description, "created_at": agent.created_at,
+            }))?
+        );
     } else {
         println!("ID          : {}", agent.id);
         println!("Name        : {}", agent.name);
         println!("Status      : {}", agent.status.as_deref().unwrap_or("-"));
         println!("Version     : {}", agent.version.as_deref().unwrap_or("-"));
-        println!("Framework   : {}", agent.framework.as_deref().unwrap_or("-"));
+        println!(
+            "Framework   : {}",
+            agent.framework.as_deref().unwrap_or("-")
+        );
         println!("URL         : {}", agent.url.as_deref().unwrap_or("-"));
-        println!("Description : {}", agent.description.as_deref().unwrap_or("-"));
-        println!("Created     : {}", agent.created_at.as_deref().unwrap_or("-"));
+        println!(
+            "Description : {}",
+            agent.description.as_deref().unwrap_or("-")
+        );
+        println!(
+            "Created     : {}",
+            agent.created_at.as_deref().unwrap_or("-")
+        );
     }
     Ok(())
 }
@@ -306,10 +353,16 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
 
     if !source_path.exists() {
         if source.contains('/') && !source.starts_with('/') {
-            println!("Detected GitHub repo '{}', cloning and deploying...", source);
+            println!(
+                "Detected GitHub repo '{}', cloning and deploying...",
+                source
+            );
             return crate::commands::github::clone(Some(source), None);
         }
-        bail!("'{}' does not exist and is not a GitHub owner/repo path.", source);
+        bail!(
+            "'{}' does not exist and is not a GitHub owner/repo path.",
+            source
+        );
     }
 
     let (zip_path, is_temp) = if source_path.is_dir() {
@@ -333,12 +386,18 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
     } else if source_path.extension().and_then(|e| e.to_str()) == Some("zip") {
         (source_path.to_path_buf(), false)
     } else {
-        bail!("source must be a .zip file or a directory, got: '{}'", source);
+        bail!(
+            "source must be a .zip file or a directory, got: '{}'",
+            source
+        );
     };
 
-    let name = agent_name.unwrap_or_else(|| source_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("agent"));
+    let name = agent_name.unwrap_or_else(|| {
+        source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("agent")
+    });
 
     let client = Client::from_active_cluster()?;
     println!("Uploading '{}'...", zip_path.display());
@@ -346,7 +405,7 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
         &zip_path,
         name,
         "latest",
-        &[5000],
+        &[8000],
         &std::collections::HashMap::new(),
     );
 
@@ -355,13 +414,13 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
     }
 
     let queued = result?;
-    println!("Status: {}", queued.data.status);
-    if let (Some(build_id), Some(agent_id)) = (&queued.data.build_id, &queued.data.agent_id) {
-        println!("build_id: {} | agent_id: {}", build_id, agent_id);
-        println!("Waiting for build to complete...");
-        client.poll_build_status(build_id)?;
-    }
-    println!("\nDeployed: {}", queued.data.agent_name);
+    println!(
+        "Status: {} | build_id: {} | agent_id: {}",
+        queued.status, queued.build_id, queued.agent_id
+    );
+    println!("Waiting for build to complete...");
+    client.poll_build_status(&queued.build_id)?;
+    println!("\nDeployed: {} ({})", queued.name, queued.image_tag);
     Ok(())
 }
 
@@ -376,40 +435,105 @@ pub fn cmd_search(
     let base = registry_url();
     use crate::api::urlencode;
     let mut url = format!("{}/v1/search?limit={}", base, limit);
-    if let Some(q) = query        { url.push_str(&format!("&q={}", urlencode(q))); }
-    if let Some(t) = artifact_type { url.push_str(&format!("&type={}", urlencode(t))); }
-    if let Some(f) = framework    { url.push_str(&format!("&framework={}", urlencode(f))); }
-    if let Some(t) = tags         { url.push_str(&format!("&tags={}", urlencode(t))); }
-    if let Some(o) = owner        { url.push_str(&format!("&owner={}", urlencode(o))); }
+    if let Some(q) = query {
+        url.push_str(&format!("&q={}", urlencode(q)));
+    }
+    if let Some(t) = artifact_type {
+        url.push_str(&format!("&type={}", urlencode(t)));
+    }
+    if let Some(f) = framework {
+        url.push_str(&format!("&framework={}", urlencode(f)));
+    }
+    if let Some(t) = tags {
+        url.push_str(&format!("&tags={}", urlencode(t)));
+    }
+    if let Some(o) = owner {
+        url.push_str(&format!("&owner={}", urlencode(o)));
+    }
 
-    let mut resp = ureq::get(&url).call().map_err(|e| anyhow::anyhow!("registry unreachable: {}", e))?;
+    let mut resp = ureq::get(&url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("registry unreachable: {}", e))?;
     let raw: serde_json::Value = resp.body_mut().read_json()?;
-    let items = raw.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    let items = raw
+        .get("data")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     if items.is_empty() {
         println!("No artifacts found.");
         return Ok(());
     }
 
-    println!("{:<28} {:<12} {:<10} {:<16} {:<10} TAGS", "NAME", "OWNER", "TYPE", "FRAMEWORK", "VERSION");
-    println!("{}", "-".repeat(100));
-    for item in &items {
-        let tags_str = item.get("tags")
-            .and_then(|t| t.as_array())
-            .map(|t| t.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
-            .unwrap_or_default();
-        println!(
-            "{:<28} {:<12} {:<10} {:<16} {:<10} {}",
-            item.get("name").and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("owner").and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("artifact_type").or_else(|| item.get("type")).and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("framework").and_then(|v| v.as_str()).unwrap_or("-"),
-            item.get("version").and_then(|v| v.as_str()).unwrap_or("-"),
-            tags_str,
-        );
-    }
+    let rows: Vec<SearchTableRow> = items
+        .iter()
+        .map(|item| {
+            let tags_str = item
+                .get("tags")
+                .and_then(|t| t.as_array())
+                .map(|t| {
+                    t.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            SearchTableRow {
+                name: item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_string(),
+                owner: item
+                    .get("owner")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_string(),
+                artifact_type: item
+                    .get("artifact_type")
+                    .or_else(|| item.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_string(),
+                framework: item
+                    .get("framework")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_string(),
+                version: item
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_string(),
+                tags: tags_str,
+            }
+        })
+        .collect();
+    println!(
+        "{}",
+        Table::new(rows)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     println!("\n{} artifact(s) found.", items.len());
     Ok(())
+}
+
+#[derive(Tabled)]
+struct SearchTableRow {
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "OWNER")]
+    owner: String,
+    #[tabled(rename = "TYPE")]
+    artifact_type: String,
+    #[tabled(rename = "FRAMEWORK")]
+    framework: String,
+    #[tabled(rename = "VERSION")]
+    version: String,
+    #[tabled(rename = "TAGS")]
+    tags: String,
 }
 
 pub fn cmd_info(name: &str, owner: &str, version: Option<&str>) -> Result<()> {
@@ -419,20 +543,52 @@ pub fn cmd_info(name: &str, owner: &str, version: Option<&str>) -> Result<()> {
         None => format!("{}/v1/artifacts/{}/{}", base, owner, name),
     };
 
-    let mut resp = ureq::get(&url).call().map_err(|e| anyhow::anyhow!("registry unreachable: {}", e))?;
+    let mut resp = ureq::get(&url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("registry unreachable: {}", e))?;
     let raw: serde_json::Value = resp.body_mut().read_json()?;
     let a = raw.get("data").cloned().unwrap_or(raw);
 
-    println!("Name        : {}", a.get("name").and_then(|v| v.as_str()).unwrap_or("-"));
-    println!("Owner       : {}", a.get("owner").and_then(|v| v.as_str()).unwrap_or("-"));
-    println!("Version     : {}", a.get("version").and_then(|v| v.as_str()).unwrap_or("-"));
-    println!("Type        : {}", a.get("artifact_type").or_else(|| a.get("type")).and_then(|v| v.as_str()).unwrap_or("-"));
-    println!("Framework   : {}", a.get("framework").and_then(|v| v.as_str()).unwrap_or("-"));
-    println!("Description : {}", a.get("description").and_then(|v| v.as_str()).unwrap_or("-"));
-    let tags_str = a.get("tags").and_then(|t| t.as_array())
-        .map(|t| t.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+    println!(
+        "Name        : {}",
+        a.get("name").and_then(|v| v.as_str()).unwrap_or("-")
+    );
+    println!(
+        "Owner       : {}",
+        a.get("owner").and_then(|v| v.as_str()).unwrap_or("-")
+    );
+    println!(
+        "Version     : {}",
+        a.get("version").and_then(|v| v.as_str()).unwrap_or("-")
+    );
+    println!(
+        "Type        : {}",
+        a.get("artifact_type")
+            .or_else(|| a.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-")
+    );
+    println!(
+        "Framework   : {}",
+        a.get("framework").and_then(|v| v.as_str()).unwrap_or("-")
+    );
+    println!(
+        "Description : {}",
+        a.get("description").and_then(|v| v.as_str()).unwrap_or("-")
+    );
+    let tags_str = a
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .map(|t| {
+            t.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
         .unwrap_or_default();
-    if !tags_str.is_empty() { println!("Tags        : {}", tags_str); }
+    if !tags_str.is_empty() {
+        println!("Tags        : {}", tags_str);
+    }
     Ok(())
 }
 
@@ -440,9 +596,15 @@ pub fn cmd_frameworks() -> Result<()> {
     let base = registry_url();
     let url = format!("{}/v1/meta/frameworks", base);
 
-    let mut resp = ureq::get(&url).call().map_err(|e| anyhow::anyhow!("registry unreachable: {}", e))?;
+    let mut resp = ureq::get(&url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("registry unreachable: {}", e))?;
     let raw: serde_json::Value = resp.body_mut().read_json()?;
-    let frameworks = raw.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    let frameworks = raw
+        .get("data")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     if frameworks.is_empty() {
         println!("No frameworks found.");
@@ -450,7 +612,9 @@ pub fn cmd_frameworks() -> Result<()> {
     }
     println!("Available frameworks:");
     for fw in &frameworks {
-        if let Some(name) = fw.as_str() { println!("  - {}", name); }
+        if let Some(name) = fw.as_str() {
+            println!("  - {}", name);
+        }
     }
     Ok(())
 }
@@ -471,21 +635,12 @@ pub fn cmd_list_uploaded() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<24} {:<10} {:<10} URL", "AGENT ID", "NAME", "STATUS", "TYPE");
-    println!("{}", "-".repeat(100));
-    for a in &agents {
-        let (status, utype) = a.upload_info.as_ref()
-            .map(|ui| (ui.upload_status.as_deref().unwrap_or("-"), ui.upload_type.as_deref().unwrap_or("-")))
-            .unwrap_or(("-", "-"));
-        println!(
-            "{:<36} {:<24} {:<10} {:<10} {}",
-            a.agent_id.as_deref().unwrap_or("-"),
-            a.agent_name.as_deref().unwrap_or("-"),
-            status, utype,
-            a.url.as_deref().unwrap_or("-"),
-        );
-    }
+    println!(
+        "{}",
+        Table::new(&agents)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     println!("\n{} agent(s).", agents.len());
     Ok(())
 }
-
