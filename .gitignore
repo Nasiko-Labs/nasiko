@@ -15,7 +15,6 @@ terraform.tfstate*
 *.tfstate*
 .DS_Store
 uv.lock
-omp.cache
 
 # IDE
 .idea/
@@ -23,3 +22,6 @@ omp.cache
 *.swp
 *.swo
 .envrc
+
+# Local MCP config — contains a registry credential, do not commit
+.mcp.json
