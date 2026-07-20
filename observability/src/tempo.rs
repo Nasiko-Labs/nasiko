@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use base64::Engine as _;
-use chrono::{ DateTime, Utc };
+use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::ObservabilityError;
-use crate::types::{ Span, SpanEvent, TraceDetails };
+use crate::types::{Span, SpanEvent, TraceDetails};
 
 // ---------------------------------------------------------------------------
 // Tempo search API response types
@@ -106,6 +106,9 @@ struct OtlpAttributeValue {
 // TempoClient
 // ---------------------------------------------------------------------------
 
+/// One `search()` result: `(trace_id, started_at, duration_ms)`.
+pub type TraceSearchResult = (String, Option<DateTime<Utc>>, Option<u64>);
+
 pub struct TempoClient {
     client: Client,
     base_url: String,
@@ -131,13 +134,11 @@ impl TempoClient {
         query: &str,
         start: Option<DateTime<Utc>>,
         end: Option<DateTime<Utc>>,
-        limit: usize
-    ) -> Result<Vec<(String, Option<DateTime<Utc>>, Option<u64>)>, ObservabilityError> {
+        limit: usize,
+    ) -> Result<Vec<TraceSearchResult>, ObservabilityError> {
         let url = format!("{}/api/search", self.base_url);
-        let mut params: Vec<(&str, String)> = vec![
-            ("q", query.to_string()),
-            ("limit", limit.to_string())
-        ];
+        let mut params: Vec<(&str, String)> =
+            vec![("q", query.to_string()), ("limit", limit.to_string())];
         if let Some(s) = start {
             params.push(("start", s.timestamp().to_string()));
         }
@@ -145,23 +146,29 @@ impl TempoClient {
             params.push(("end", e.timestamp().to_string()));
         }
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .query(&params)
-            .send().await
+            .send()
+            .await
             .map_err(|e| ObservabilityError::TempoError(e.to_string()))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(ObservabilityError::TempoError(format!("HTTP {status}: {body}")));
+            return Err(ObservabilityError::TempoError(format!(
+                "HTTP {status}: {body}"
+            )));
         }
 
         let search_resp: TempoSearchResponse = resp
-            .json().await
+            .json()
+            .await
             .map_err(|e| ObservabilityError::Deserialization(e.to_string()))?;
 
-        let results = search_resp.traces
+        let results = search_resp
+            .traces
             .unwrap_or_default()
             .into_iter()
             .map(|t| {
@@ -177,10 +184,12 @@ impl TempoClient {
     pub async fn get_trace(&self, trace_id: &str) -> Result<TraceDetails, ObservabilityError> {
         let url = format!("{}/api/traces/{}", self.base_url, trace_id);
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Accept", "application/json")
-            .send().await
+            .send()
+            .await
             .map_err(|e| ObservabilityError::TempoError(e.to_string()))?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -189,11 +198,14 @@ impl TempoClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(ObservabilityError::TempoError(format!("HTTP {status}: {body}")));
+            return Err(ObservabilityError::TempoError(format!(
+                "HTTP {status}: {body}"
+            )));
         }
 
         let otlp: OtlpTraceResponse = resp
-            .json().await
+            .json()
+            .await
             .map_err(|e| ObservabilityError::Deserialization(e.to_string()))?;
 
         parse_otlp_trace(trace_id, otlp)
@@ -232,9 +244,10 @@ fn otlp_attr_to_json(v: &OtlpAttributeValue) -> Value {
         }
 
         if let Some(s) = i.as_str()
-            && let Ok(n) = s.parse::<u64>() {
-                return Value::Number(n.into());
-            }
+            && let Ok(n) = s.parse::<u64>()
+        {
+            return Value::Number(n.into());
+        }
 
         return i.clone();
     }
@@ -284,12 +297,13 @@ fn extract_service_name(attrs: &[OtlpAttribute]) -> String {
 
 fn parse_otlp_trace(
     trace_id: &str,
-    otlp: OtlpTraceResponse
+    otlp: OtlpTraceResponse,
 ) -> Result<TraceDetails, ObservabilityError> {
     let mut spans = Vec::new();
 
     for batch in &otlp.batches {
-        let service_name = batch.resource
+        let service_name = batch
+            .resource
             .as_ref()
             .map(|r| extract_service_name(&r.attributes))
             .unwrap_or_default();
@@ -299,25 +313,27 @@ fn parse_otlp_trace(
                 let started_at = parse_nanos_str(&span.start_time_unix_nano).unwrap_or_default();
                 let ended_at = span.end_time_unix_nano.as_deref().and_then(parse_nanos_str);
 
-                let duration_ms = ended_at.map(
-                    |e| (e - started_at).num_milliseconds().max(0) as u64
-                );
+                let duration_ms =
+                    ended_at.map(|e| (e - started_at).num_milliseconds().max(0) as u64);
 
-                let attributes: HashMap<String, Value> = span.attributes
+                let attributes: HashMap<String, Value> = span
+                    .attributes
                     .as_deref()
                     .unwrap_or(&[])
                     .iter()
                     .map(|a| (a.key.clone(), otlp_attr_to_json(&a.value)))
                     .collect();
 
-                let events: Vec<SpanEvent> = span.events
+                let events: Vec<SpanEvent> = span
+                    .events
                     .as_deref()
                     .unwrap_or(&[])
                     .iter()
                     .map(|e| SpanEvent {
                         name: e.name.clone(),
                         timestamp: e.time_unix_nano.as_deref().and_then(parse_nanos_str),
-                        attributes: e.attributes
+                        attributes: e
+                            .attributes
                             .as_deref()
                             .unwrap_or(&[])
                             .iter()
@@ -331,11 +347,13 @@ fn parse_otlp_trace(
                     parent_span_id: span.parent_span_id.as_deref().map(otlp_id_to_hex),
                     name: span.name.clone(),
                     kind: parse_span_kind(span.kind.as_deref()),
-                    status_code: span.status
+                    status_code: span
+                        .status
                         .as_ref()
                         .map(|s| parse_status_code(&s.code))
                         .unwrap_or(0),
-                    status_message: span.status
+                    status_message: span
+                        .status
                         .as_ref()
                         .and_then(|s| s.message.clone())
                         .unwrap_or_default(),
@@ -350,14 +368,8 @@ fn parse_otlp_trace(
         }
     }
 
-    let started_at = spans
-        .iter()
-        .map(|s| s.started_at)
-        .min();
-    let ended_at = spans
-        .iter()
-        .filter_map(|s| s.ended_at)
-        .max();
+    let started_at = spans.iter().map(|s| s.started_at).min();
+    let ended_at = spans.iter().filter_map(|s| s.ended_at).max();
     let duration_ms = match (started_at, ended_at) {
         (Some(s), Some(e)) => Some((e - s).num_milliseconds().max(0) as u64),
         _ => None,

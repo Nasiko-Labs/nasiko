@@ -19,6 +19,10 @@ struct Spinner {
     sub_streamed: bool,
     /// When the current agent call started, for the completion timing.
     call_started: Option<std::time::Instant>,
+    /// Set whenever streamed answer text was printed to stdout without a
+    /// trailing newline. The next status/progress line (stderr) checks this
+    /// first so it never glues onto the end of the streamed text.
+    stdout_dirty: bool,
 }
 
 impl Spinner {
@@ -28,6 +32,7 @@ impl Spinner {
             sub_open: false,
             sub_streamed: false,
             call_started: None,
+            stdout_dirty: false,
         }
     }
 
@@ -49,6 +54,17 @@ impl Spinner {
             self.sub_open = false;
         }
     }
+
+    /// Emit a newline to stdout if streamed answer text is still mid-line.
+    /// Call this right before printing a new stderr status/progress line —
+    /// NOT from `pause()`/`close_sub()`, which also run between consecutive
+    /// chunks of the *same* streamed answer and must never break those apart.
+    fn break_stdout(&mut self) {
+        if self.stdout_dirty {
+            println!();
+            self.stdout_dirty = false;
+        }
+    }
 }
 
 /// Resolved CP session info used to persist messages.
@@ -63,19 +79,64 @@ struct CpCtx {
 /// turns — otherwise `nasiko chat --session-id <id>` starts blank even though
 /// the session already has history on the server.
 /// Returns None when the endpoint does not belong to the active cluster.
-fn resolve_cp_ctx(endpoint: &str, session_id: Option<&str>) -> Option<(CpCtx, Vec<cp::CpMessage>)> {
+fn resolve_cp_ctx(
+    endpoint: &str,
+    session_id: Option<&str>,
+    target_label: &str,
+    message: Option<&str>,
+) -> Option<(CpCtx, Vec<cp::CpMessage>)> {
     let (base_url, token) = cp::cp_credentials(endpoint)?;
+    // `target_label` is the catalog agent's name/UUID as the user typed it —
+    // empty for the orchestrator, or a raw URL when the user passed one
+    // directly, neither of which the server can resolve to an agent row.
+    let agent_id = (!target_label.is_empty()
+        && !target_label.starts_with("http://")
+        && !target_label.starts_with("https://"))
+    .then_some(target_label);
     let (sid, history) = match session_id {
         Some(s) => {
             let history = cp::fetch_cp_messages(&base_url, &token, s).unwrap_or_default();
             (s.to_string(), history)
         }
         None => {
-            let sess: CpSession = cp::create_cp_session(&base_url, &token, endpoint, "New chat").ok()?;
+            // One-shot mode already knows the first message — use it as the
+            // title (same convention agent_proxy.rs falls back to) instead of
+            // a placeholder. Interactive mode has no message yet at session
+            // creation, so "New chat" stands until the first turn is typed.
+            let title = message
+                .map(derive_title)
+                .unwrap_or_else(|| "New chat".to_string());
+            let sess: CpSession =
+                cp::create_cp_session(&base_url, &token, agent_id, &title).ok()?;
             (sess.session_id, Vec::new())
         }
     };
-    Some((CpCtx { base_url, token, session_id: sid }, history))
+    Some((
+        CpCtx {
+            base_url,
+            token,
+            session_id: sid,
+        },
+        history,
+    ))
+}
+
+/// Collapse a message to one line and truncate to 60 chars for use as a
+/// session title — mirrors the fallback in `agent_proxy.rs`.
+fn derive_title(text: &str) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.is_empty() {
+        return "New chat".to_string();
+    }
+    if one_line.len() > 60 {
+        let mut n = 60;
+        while !one_line.is_char_boundary(n) {
+            n -= 1;
+        }
+        format!("{}…", &one_line[..n])
+    } else {
+        one_line
+    }
 }
 
 /// Print a session's prior turns before resuming it, in the same visual
@@ -104,11 +165,16 @@ fn print_history(history: &[cp::CpMessage]) {
 ///
 /// `target_label` is what the user typed (agent name/id, or "" for the
 /// orchestrator) — used verbatim in the resume hint so it can be copy-pasted.
-pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>, target_label: &str) -> Result<()> {
+pub fn chat(
+    url: &str,
+    message: Option<&str>,
+    session_id: Option<&str>,
+    target_label: &str,
+) -> Result<()> {
     use std::io::IsTerminal;
 
     let endpoint = url.trim_end_matches('/').to_string();
-    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id) {
+    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id, target_label, message) {
         Some((ctx, history)) => (Some(ctx), history),
         None => (None, Vec::new()),
     };
@@ -163,7 +229,11 @@ pub fn chat(url: &str, message: Option<&str>, session_id: Option<&str>, target_l
 /// up. Goes to stderr so piped/scripted stdout stays clean.
 fn print_resume_hint(cp_ctx: Option<&CpCtx>, target_label: &str) {
     let Some(ctx) = cp_ctx else { return };
-    let target = if target_label.is_empty() { String::new() } else { format!("{target_label} ") };
+    let target = if target_label.is_empty() {
+        String::new()
+    } else {
+        format!("{target_label} ")
+    };
     eprintln!(
         "\x1b[2msession: {} — continue with: nasiko chat {}--session-id {}\x1b[0m",
         ctx.session_id, target, ctx.session_id
@@ -180,12 +250,6 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
     let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
-        // gRPC-style JSON-RPC method/role names — what every example agent's
-        // installed `a2a-sdk` actually registers in its dispatch table
-        // (confirmed against a real deployed `oss/agents/translator` build).
-        // The CP orchestrator route ignores `method` entirely, but this body
-        // is also sent straight through to an agent via the CP agent-proxy
-        // or a direct agent endpoint, where it does matter.
         "method": "SendStreamingMessage",
         "params": {
             "message": {
@@ -233,7 +297,7 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
 
     // Persist user message to CP before sending
     if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text, Some(&trace_id));
+        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text);
     }
 
     let mut req = http
@@ -247,21 +311,37 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
 
     let mut spin = Spinner::new();
     spin.set("connecting");
-    let mut resp = req.send_json(&body).context("failed to reach A2A endpoint")?;
+    let mut resp = req
+        .send_json(&body)
+        .context("failed to reach A2A endpoint")?;
 
     if resp.status().as_u16() >= 400 {
         let err_body = resp.body_mut().read_to_string().unwrap_or_default();
         let msg = serde_json::from_str::<serde_json::Value>(&err_body)
             .ok()
-            .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.pointer("/error/message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or(err_body);
-        let msg = if msg.trim().is_empty() { "(empty response body)".to_string() } else { msg };
+        let msg = if msg.trim().is_empty() {
+            "(empty response body)".to_string()
+        } else {
+            msg
+        };
         let hint = if resp.status().as_u16() == 401 {
             "\nhint: your session may have expired — run: nasiko auth login"
         } else {
             ""
         };
-        bail!("HTTP {} from {}: {}{}", resp.status().as_u16(), endpoint, msg, hint);
+        bail!(
+            "HTTP {} from {}: {}{}",
+            resp.status().as_u16(),
+            endpoint,
+            msg,
+            hint
+        );
     }
 
     let content_type = resp
@@ -276,8 +356,10 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         handle_sse_stream(resp, &mut spin)?
     } else {
         spin.set("thinking");
-        let resp_json: serde_json::Value =
-            resp.body_mut().read_json().context("invalid JSON response")?;
+        let resp_json: serde_json::Value = resp
+            .body_mut()
+            .read_json()
+            .context("invalid JSON response")?;
         spin.pause();
 
         let result = resp_json.get("result").unwrap_or(&resp_json);
@@ -294,7 +376,13 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
 
     // Persist agent reply to CP
     if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "assistant", &agent_text, Some(&trace_id));
+        let _ = cp::post_cp_message(
+            &ctx.base_url,
+            &ctx.token,
+            &ctx.session_id,
+            "assistant",
+            &agent_text,
+        );
     }
 
     Ok(())
@@ -332,11 +420,18 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
         if let Some(task) = result.get("task") {
             // A "task" event with terminal state means we're done (non-streaming response).
             // Otherwise it's the initial task submission — keep reading.
-            let state = task.pointer("/status/state").and_then(|s| s.as_str()).unwrap_or("");
-            if matches!(state, "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED") {
+            let state = task
+                .pointer("/status/state")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if matches!(
+                state,
+                "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED"
+            ) {
                 spin.pause();
                 spin.close_sub();
                 if let Some(t) = handle_task_result(task) {
+                    spin.stdout_dirty = true;
                     collected.push_str(&t);
                 }
                 is_terminal = true;
@@ -352,6 +447,7 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
             if let Some(t) = nasiko_types::a2a::extract_text(result) {
                 print!("{t}");
                 std::io::stdout().flush().ok();
+                spin.stdout_dirty = true;
                 collected.push_str(&t);
             }
             is_terminal = true;
@@ -360,6 +456,7 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
             spin.pause();
             spin.close_sub();
             if let Some(t) = handle_artifact_update(artifact_update) {
+                spin.stdout_dirty = true;
                 collected.push_str(&t);
             }
         } else if let Some(kind) = result.get("kind").and_then(|k| k.as_str()) {
@@ -368,6 +465,7 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
                     spin.pause();
                     spin.close_sub();
                     if let Some(t) = handle_artifact_update(result) {
+                        spin.stdout_dirty = true;
                         collected.push_str(&t);
                     }
                 }
@@ -415,6 +513,7 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
                     } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                         spin.pause();
                         spin.close_sub();
+                        spin.break_stdout();
                         eprintln!("  \x1b[2m{text}\x1b[0m");
                         spin.set("working");
                     }
@@ -424,6 +523,7 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
         "TASK_STATE_FAILED" => {
             spin.pause();
             spin.close_sub();
+            spin.break_stdout();
             if let Some(parts) = event
                 .pointer("/status/message/parts")
                 .and_then(|p| p.as_array())
@@ -450,6 +550,7 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
                 } else {
                     spin.pause();
                     spin.close_sub();
+                    spin.break_stdout();
                     eprintln!("\x1b[2m{content}\x1b[0m");
                     spin.set("thinking");
                 }
@@ -460,6 +561,7 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             let message = data.get("message").and_then(|m| m.as_str()).unwrap_or("");
             spin.pause();
             spin.close_sub();
+            spin.break_stdout();
             // The call header is the visual anchor — bold, colored, flush
             // left. Everything the agent does below it is dim and indented.
             eprintln!("\x1b[1;36m❯ {agent}\x1b[0m \x1b[2m· {message}\x1b[0m");
@@ -469,12 +571,16 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
         }
         "tool_result" => {
             let agent = data.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
-            let success = data.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+            let success = data
+                .get("success")
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false);
             let result = data.get("result").and_then(|r| r.as_str()).unwrap_or("");
             let icon = if success { "✓" } else { "✗" };
             let color = if success { "32" } else { "31" };
             spin.pause();
             spin.close_sub();
+            spin.break_stdout();
             let elapsed = spin
                 .call_started
                 .take()
@@ -487,8 +593,8 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
                 // Results arrive JSON-encoded ("\"…\"" with escaped
                 // quotes/newlines); decode and collapse to one line so the
                 // preview reads as prose.
-                let decoded = serde_json::from_str::<String>(result)
-                    .unwrap_or_else(|_| result.to_string());
+                let decoded =
+                    serde_json::from_str::<String>(result).unwrap_or_else(|_| result.to_string());
                 let one_line = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
                 let display = if one_line.len() > 200 {
                     let n = one_line.floor_char_boundary(200);
@@ -513,6 +619,7 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             let message = data.get("message").and_then(|m| m.as_str()).unwrap_or("");
             spin.pause();
             spin.close_sub();
+            spin.break_stdout();
             match message.split_once(": ") {
                 Some((tool, rest)) => {
                     eprintln!("\x1b[2m›\x1b[0m \x1b[1;36m{tool}\x1b[0m\x1b[2m: {rest}\x1b[0m")
@@ -530,6 +637,7 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             }
             spin.pause();
             if !spin.sub_open {
+                spin.break_stdout();
                 eprint!("  \x1b[2m");
                 spin.sub_open = true;
                 spin.sub_streamed = true;
@@ -551,13 +659,14 @@ fn handle_status_update_jsonrpc(result: &serde_json::Value) {
 
     if state == "failed"
         && let Some(msg) = result.pointer("/status/message/parts")
-            && let Some(parts) = msg.as_array() {
-                for part in parts {
-                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                        eprintln!("  \x1b[31merror: {text}\x1b[0m");
-                    }
-                }
+        && let Some(parts) = msg.as_array()
+    {
+        for part in parts {
+            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                eprintln!("  \x1b[31merror: {text}\x1b[0m");
             }
+        }
+    }
 }
 
 fn is_terminal_state(event: &serde_json::Value) -> bool {
@@ -565,8 +674,15 @@ fn is_terminal_state(event: &serde_json::Value) -> bool {
         .pointer("/status/state")
         .and_then(|s| s.as_str())
         .unwrap_or("");
-    matches!(state, "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED"
-        | "completed" | "failed" | "canceled")
+    matches!(
+        state,
+        "TASK_STATE_COMPLETED"
+            | "TASK_STATE_FAILED"
+            | "TASK_STATE_CANCELED"
+            | "completed"
+            | "failed"
+            | "canceled"
+    )
 }
 
 fn handle_artifact_update(event: &serde_json::Value) -> Option<String> {
@@ -592,18 +708,30 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
     let base = url.trim_end_matches('/');
 
     let agent_name = ureq::get(&format!("{}/.well-known/agent.json", base))
-        .call().ok()
+        .call()
+        .ok()
         .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
-        .and_then(|card| card.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .and_then(|card| {
+            card.get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .unwrap_or_else(|| "Agent".to_string());
 
     println!("Chatting with '{}' at {}", agent_name, base);
-    if let Some(sid) = session_id { println!("Session: {}", sid); }
+    if let Some(sid) = session_id {
+        println!("Session: {}", sid);
+    }
     println!("Type 'exit' to quit.\n");
 
     let send_msg = |msg: &str, ctx_id: Option<String>| -> Result<Option<String>> {
-        let msg_id = format!("{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let msg_id = format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let mut payload = serde_json::json!({
             "jsonrpc": "2.0", "method": "SendMessage", "id": &msg_id,
             "params": { "message": {
@@ -623,14 +751,32 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         drop(spin);
         let raw: serde_json::Value = resp.body_mut().read_json()?;
         let result = raw.get("result").cloned().unwrap_or_default();
-        let new_ctx = result.get("contextId").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let text = result.get("artifacts").and_then(|a| a.as_array()).and_then(|a| a.first())
-            .and_then(|a| a.get("parts")).and_then(|p| p.as_array())
-            .and_then(|p| p.iter().find(|x| x.get("kind").and_then(|k| k.as_str()) == Some("text")))
-            .and_then(|p| p.get("text")).and_then(|t| t.as_str())
-            .or_else(|| result.get("status").and_then(|s| s.get("message"))
-                .and_then(|m| m.get("parts")).and_then(|p| p.as_array())
-                .and_then(|p| p.first()).and_then(|p| p.get("text")).and_then(|t| t.as_str()))
+        let new_ctx = result
+            .get("contextId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let text = result
+            .get("artifacts")
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first())
+            .and_then(|a| a.get("parts"))
+            .and_then(|p| p.as_array())
+            .and_then(|p| {
+                p.iter()
+                    .find(|x| x.get("kind").and_then(|k| k.as_str()) == Some("text"))
+            })
+            .and_then(|p| p.get("text"))
+            .and_then(|t| t.as_str())
+            .or_else(|| {
+                result
+                    .get("status")
+                    .and_then(|s| s.get("message"))
+                    .and_then(|m| m.get("parts"))
+                    .and_then(|p| p.as_array())
+                    .and_then(|p| p.first())
+                    .and_then(|p| p.get("text"))
+                    .and_then(|t| t.as_str())
+            })
             .unwrap_or("(no response)");
         println!("Agent: {}\n", text);
         Ok(new_ctx.or(ctx_id))
@@ -650,8 +796,13 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         .interact_text()
     {
         let input = input.trim();
-        if input.is_empty() { continue; }
-        if input == "exit" || input == "quit" { println!("Goodbye."); break; }
+        if input.is_empty() {
+            continue;
+        }
+        if input == "exit" || input == "quit" {
+            println!("Goodbye.");
+            break;
+        }
         ctx_id = send_msg(input, ctx_id)?;
     }
     Ok(())

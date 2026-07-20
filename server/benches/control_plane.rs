@@ -58,8 +58,10 @@ async fn setup() -> Harness {
     let owner_id = manifest.users[0].id;
     let delete_pool = create_delete_pool(&db.pool, owner_id, DELETE_POOL_SIZE).await;
 
-    let auth: Arc<dyn nasiko_auth::AuthService> =
-        Arc::new(nasiko_auth::AuthServiceImpl::new(db.pool.clone(), config::BENCH_JWT_SECRET.to_string()));
+    let auth: Arc<dyn nasiko_auth::AuthService> = Arc::new(nasiko_auth::AuthServiceImpl::new(
+        db.pool.clone(),
+        config::BENCH_JWT_SECRET.to_string(),
+    ));
 
     let srv = server::start_server(cfg, db.pool.clone(), runtime, auth, |state| async move {
         nasiko_server::build_app(state, server::not_found)
@@ -118,7 +120,9 @@ fn bench_control_plane(c: &mut Criterion) {
     let harness = rt.block_on(setup());
 
     let mut catalog = c.benchmark_group("catalog_list");
-    catalog.sample_size(20).measurement_time(Duration::from_secs(10));
+    catalog
+        .sample_size(20)
+        .measurement_time(Duration::from_secs(10));
     catalog.bench_function("get_agents", |b| {
         b.to_async(&rt).iter(|| async {
             let resp = harness
@@ -135,14 +139,21 @@ fn bench_control_plane(c: &mut Criterion) {
     catalog.finish();
 
     let mut proxy = c.benchmark_group("agent_proxy_chat");
-    proxy.sample_size(20).measurement_time(Duration::from_secs(10));
+    proxy
+        .sample_size(20)
+        .measurement_time(Duration::from_secs(10));
     proxy.bench_function("post_agent", |b| {
         b.to_async(&rt).iter(|| async {
-            let body = nasiko_types::a2a::build_send_request("What is the weather like today?", None);
+            let body =
+                nasiko_types::a2a::build_send_request("What is the weather like today?", None);
             let resp = harness
                 .srv
                 .client
-                .post(harness.srv.url(&format!("/api/agents/{}", harness.agent_id)))
+                .post(
+                    harness
+                        .srv
+                        .url(&format!("/api/agents/{}", harness.agent_id)),
+                )
                 .bearer_auth(&harness.token)
                 .json(&body)
                 .send()
@@ -154,11 +165,15 @@ fn bench_control_plane(c: &mut Criterion) {
     proxy.finish();
 
     let mut orchestrator = c.benchmark_group("orchestrator_a2a");
-    orchestrator.sample_size(20).measurement_time(Duration::from_secs(10));
+    orchestrator
+        .sample_size(20)
+        .measurement_time(Duration::from_secs(10));
     orchestrator.bench_function("post_orchestrator", |b| {
         b.to_async(&rt).iter(|| async {
-            let body =
-                nasiko_types::a2a::build_send_request("Summarize the latest agent activity for me.", None);
+            let body = nasiko_types::a2a::build_send_request(
+                "Summarize the latest agent activity for me.",
+                None,
+            );
             let resp = harness
                 .srv
                 .client
@@ -174,7 +189,8 @@ fn bench_control_plane(c: &mut Criterion) {
     orchestrator.finish();
 
     let mut crud = c.benchmark_group("agent_registry_crud");
-    crud.sample_size(20).measurement_time(Duration::from_secs(10));
+    crud.sample_size(20)
+        .measurement_time(Duration::from_secs(10));
     crud.bench_function("create", |b| {
         b.to_async(&rt).iter_batched(
             || format!("bench-crud-create-{}", Uuid::new_v4()),
@@ -201,7 +217,11 @@ fn bench_control_plane(c: &mut Criterion) {
             let resp = harness
                 .srv
                 .client
-                .get(harness.srv.url(&format!("/api/agents/{}", harness.agent_id)))
+                .get(
+                    harness
+                        .srv
+                        .url(&format!("/api/agents/{}", harness.agent_id)),
+                )
                 .bearer_auth(&harness.token)
                 .send()
                 .await
@@ -214,7 +234,11 @@ fn bench_control_plane(c: &mut Criterion) {
             let resp = harness
                 .srv
                 .client
-                .put(harness.srv.url(&format!("/api/agents/{}", harness.agent_id)))
+                .put(
+                    harness
+                        .srv
+                        .url(&format!("/api/agents/{}", harness.agent_id)),
+                )
                 .bearer_auth(&harness.token)
                 .json(&serde_json::json!({ "description": "bench update" }))
                 .send()

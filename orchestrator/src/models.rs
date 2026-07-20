@@ -1,4 +1,4 @@
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use uuid::Uuid;
 
@@ -38,9 +38,8 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ResponseFormat {
-    #[serde(rename = "json_schema")] JsonSchema {
-        json_schema: JsonSchema,
-    },
+    #[serde(rename = "json_schema")]
+    JsonSchema { json_schema: JsonSchema },
     #[serde(rename = "json_object")]
     JsonObject,
 }
@@ -155,5 +154,5 @@ pub struct ChunkDelta {
 
 /// Type alias for a boxed stream of chunks from a provider
 pub type ChunkStream = Pin<
-    Box<dyn Stream<Item = Result<ChatCompletionChunk, crate::providers::ProviderError>> + Send>
+    Box<dyn Stream<Item = Result<ChatCompletionChunk, crate::providers::ProviderError>> + Send>,
 >;

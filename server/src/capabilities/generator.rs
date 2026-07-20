@@ -99,8 +99,16 @@ impl CapabilityGenerator {
         if card.default_output_modes.is_empty() {
             card.default_output_modes = vec!["application/json".to_string()];
         }
-        card.default_input_modes = card.default_input_modes.iter().map(|m| normalize_mime(m)).collect();
-        card.default_output_modes = card.default_output_modes.iter().map(|m| normalize_mime(m)).collect();
+        card.default_input_modes = card
+            .default_input_modes
+            .iter()
+            .map(|m| normalize_mime(m))
+            .collect();
+        card.default_output_modes = card
+            .default_output_modes
+            .iter()
+            .map(|m| normalize_mime(m))
+            .collect();
 
         Ok((card, result))
     }
@@ -284,7 +292,10 @@ fn split_manifests(source_code: &str) -> (String, String) {
     let mut current_body = String::new();
 
     for line in source_code.lines() {
-        if let Some(stripped) = line.strip_prefix("--- ").and_then(|l| l.strip_suffix(" ---")) {
+        if let Some(stripped) = line
+            .strip_prefix("--- ")
+            .and_then(|l| l.strip_suffix(" ---"))
+        {
             // Flush previous section
             if let Some(header) = current_header {
                 let lower = header.to_lowercase();

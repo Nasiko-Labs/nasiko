@@ -19,13 +19,11 @@ fn pg_admin_url() -> String {
 }
 
 fn redis_url() -> String {
-    std::env::var("TEST_REDIS_URL")
-        .unwrap_or_else(|_| "redis://localhost:6379".into())
+    std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into())
 }
 
 fn s3_endpoint() -> String {
-    std::env::var("TEST_S3_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".into())
+    std::env::var("TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into())
 }
 
 // ─── FakeRuntime ─────────────────────────────────────────────────────────────
@@ -59,7 +57,10 @@ fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
 impl ContainerRuntime for FakeRuntime {
     async fn deploy(&self, spec: &DeploymentSpec) -> RuntimeResult<DeploymentStatus> {
         let status = fake_status(&spec.container_id);
-        self.containers.lock().unwrap().insert(spec.container_id.clone(), status.clone());
+        self.containers
+            .lock()
+            .unwrap()
+            .insert(spec.container_id.clone(), status.clone());
         Ok(status)
     }
 
@@ -161,8 +162,6 @@ impl TestServer {
             .await
             .expect("connect to test db");
 
-        AppState::run_migrations(&db).await;
-
         let s3_ep = s3_endpoint();
         let mut config = test_config(db_url, redis_url(), s3_ep.clone());
         configure(&mut config);
@@ -177,9 +176,7 @@ impl TestServer {
 
         let app = nasiko_server::build_app(state, fallback);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
@@ -229,7 +226,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         std::env::set_var("S3_SECRET_KEY", "nasiko123");
         std::env::set_var("S3_REGION", "us-east-1");
         // 32 bytes of 0x41 ('A'), base64-encoded — required by SecretsCrypto::load_master_key()
-        std::env::set_var("SECRETS_ENCRYPTION_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=");
+        std::env::set_var(
+            "SECRETS_ENCRYPTION_KEY",
+            "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=",
+        );
     }
 
     Config {
@@ -316,8 +316,7 @@ pub fn sign_token(user_id: &str, username: &str, is_superuser: bool, _role: &str
         username: username.to_owned(),
         is_superuser,
     };
-    nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
-        .expect("test JWT signing failed")
+    nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity).expect("test JWT signing failed")
 }
 
 /// Sign a short-lived agent-typed JWT (as minted by `issue_agent_token`) —

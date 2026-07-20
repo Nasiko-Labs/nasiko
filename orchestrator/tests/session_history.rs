@@ -92,11 +92,7 @@ fn to_llm_messages_maps_correctly() {
 
 #[test]
 fn to_llm_messages_preserves_order() {
-    let h = make_history(&[
-        ("user", "a"),
-        ("assistant", "b"),
-        ("user", "c"),
-    ]);
+    let h = make_history(&[("user", "a"), ("assistant", "b"), ("user", "c")]);
     let msgs = h.to_llm_messages();
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0].role, "user");

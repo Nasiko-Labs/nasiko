@@ -65,7 +65,12 @@ fn render_message<'a>(lines: &mut Vec<Line<'a>>, msg: &ChatMessage) {
     match msg.role {
         Role::User => {
             lines.push(Line::from(vec![
-                Span::styled("you", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "you",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(": "),
             ]));
             for text_line in msg.text.lines() {
@@ -76,7 +81,9 @@ fn render_message<'a>(lines: &mut Vec<Line<'a>>, msg: &ChatMessage) {
             lines.push(Line::from(vec![
                 Span::styled(
                     "agent",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(": "),
             ]));
@@ -101,12 +108,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let status = Paragraph::new(Line::from(Span::styled(status_text, style)))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
+    let status = Paragraph::new(Line::from(Span::styled(status_text, style))).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
 
     frame.render_widget(status, area);
 }

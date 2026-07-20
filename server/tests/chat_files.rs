@@ -79,7 +79,9 @@ async fn upload_file(
         .unwrap();
     let form = reqwest::multipart::Form::new().part("file", part);
 
-    let rb = server.client.post(server.url(&format!("/api/chat/sessions/{session_id}/files")));
+    let rb = server
+        .client
+        .post(server.url(&format!("/api/chat/sessions/{session_id}/files")));
     let res = if is_super {
         common::as_superuser(rb, user_id, "u")
     } else {
@@ -102,7 +104,9 @@ async fn send_message_with_files(
     session_id: &str,
     file_ids: Vec<&str>,
 ) -> (u16, Value) {
-    let rb = server.client.post(server.url(&format!("/api/chat/sessions/{session_id}/messages")));
+    let rb = server
+        .client
+        .post(server.url(&format!("/api/chat/sessions/{session_id}/messages")));
     let res = if is_super {
         common::as_superuser(rb, user_id, "u")
     } else {
@@ -178,7 +182,9 @@ async fn list_files_for_message() {
     let msg_id = msg["id"].as_str().unwrap();
 
     let res = common::as_superuser(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
         uid,
         "admin",
     )
@@ -292,7 +298,9 @@ async fn delete_removes_file() {
     let file_id = files[0]["id"].as_str().unwrap();
 
     let del = common::as_superuser(
-        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/chat/files/{file_id}"))),
         uid,
         "admin",
     )
@@ -330,7 +338,9 @@ async fn session_delete_cleans_up_files() {
 
     // Delete the session.
     let del = common::as_superuser(
-        server.client.delete(server.url(&format!("/api/chat/sessions/{sid}"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/chat/sessions/{sid}"))),
         uid,
         "admin",
     )
@@ -374,7 +384,9 @@ async fn too_many_files_rejected() {
     }
 
     let res = common::as_superuser(
-        server.client.post(server.url(&format!("/api/chat/sessions/{sid}/files"))),
+        server
+            .client
+            .post(server.url(&format!("/api/chat/sessions/{sid}/files"))),
         uid,
         "admin",
     )
@@ -411,7 +423,9 @@ async fn multiple_files_attached_to_one_message() {
 
     let msg_id = msg["id"].as_str().unwrap();
     let res = common::as_superuser(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
         uid,
         "admin",
     )
@@ -440,7 +454,9 @@ async fn cannot_delete_other_users_file() {
     let alice_id = alice["id"].as_str().unwrap();
 
     let res = common::as_member(
-        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/chat/files/{file_id}"))),
         alice_id,
         "alice-del",
     )
@@ -463,7 +479,11 @@ async fn cannot_list_files_for_other_users_session() {
     let sid = session["session_id"].as_str().unwrap();
     let (_, files) = upload_file(&server, admin_id, true, sid, "x", "x.txt").await;
     let (_, msg) = send_message_with_files(
-        &server, admin_id, true, sid, vec![files[0]["id"].as_str().unwrap()],
+        &server,
+        admin_id,
+        true,
+        sid,
+        vec![files[0]["id"].as_str().unwrap()],
     )
     .await;
     let msg_id = msg["id"].as_str().unwrap();
@@ -472,14 +492,20 @@ async fn cannot_list_files_for_other_users_session() {
     let alice_id = alice["id"].as_str().unwrap();
 
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
         alice_id,
         "alice-list",
     )
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 404, "IDOR: other user must not list message files");
+    assert_eq!(
+        res.status(),
+        404,
+        "IDOR: other user must not list message files"
+    );
 
     server.cleanup().await;
 }
@@ -534,7 +560,10 @@ async fn empty_file_ids_sends_message_without_files() {
 
     let (status, msg) = send_message_with_files(&server, uid, true, sid, vec![]).await;
     assert_eq!(status, 201);
-    assert_eq!(msg["has_file_parts"], false, "empty file_ids → has_file_parts false");
+    assert_eq!(
+        msg["has_file_parts"], false,
+        "empty file_ids → has_file_parts false"
+    );
 
     server.cleanup().await;
 }
@@ -556,7 +585,9 @@ async fn delete_last_file_clears_has_file_parts() {
     assert_eq!(msg["has_file_parts"], true);
 
     common::as_superuser(
-        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/chat/files/{file_id}"))),
         uid,
         "admin",
     )
@@ -565,7 +596,9 @@ async fn delete_last_file_clears_has_file_parts() {
     .unwrap();
 
     let msgs: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
         uid,
         "admin",
     )
@@ -575,8 +608,16 @@ async fn delete_last_file_clears_has_file_parts() {
     .json()
     .await
     .unwrap();
-    let updated = msgs["data"].as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
-    assert_eq!(updated["has_file_parts"], false, "has_file_parts cleared after last file deleted");
+    let updated = msgs["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == msg_id)
+        .unwrap();
+    assert_eq!(
+        updated["has_file_parts"], false,
+        "has_file_parts cleared after last file deleted"
+    );
 
     server.cleanup().await;
 }
@@ -596,7 +637,9 @@ async fn delete_file_keeps_has_file_parts_when_inline_parts_present() {
 
     // Send a message with both an S3-backed file AND inline file_parts.
     let msg: Value = common::as_superuser(
-        server.client.post(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        server
+            .client
+            .post(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
         uid,
         "admin",
     )
@@ -617,7 +660,9 @@ async fn delete_file_keeps_has_file_parts_when_inline_parts_present() {
 
     // Delete only the S3 file — inline file_parts still present.
     common::as_superuser(
-        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/chat/files/{file_id}"))),
         uid,
         "admin",
     )
@@ -626,7 +671,9 @@ async fn delete_file_keeps_has_file_parts_when_inline_parts_present() {
     .unwrap();
 
     let msgs: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
         uid,
         "admin",
     )
@@ -636,7 +683,12 @@ async fn delete_file_keeps_has_file_parts_when_inline_parts_present() {
     .json()
     .await
     .unwrap();
-    let updated = msgs["data"].as_array().unwrap().iter().find(|m| m["id"] == msg_id).unwrap();
+    let updated = msgs["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == msg_id)
+        .unwrap();
     assert_eq!(
         updated["has_file_parts"], true,
         "has_file_parts must stay true when inline file_parts still present"
@@ -670,7 +722,9 @@ async fn unattached_file_can_be_downloaded_and_deleted() {
     assert_eq!(dl.status(), 307, "unattached file should be downloadable");
 
     let del = common::as_superuser(
-        server.client.delete(server.url(&format!("/api/chat/files/{file_id}"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/chat/files/{file_id}"))),
         uid,
         "admin",
     )
@@ -703,13 +757,18 @@ async fn duplicate_file_ids_in_send_message_do_not_cause_spurious_400() {
     // Same file_id listed three times.
     let (status, msg) =
         send_message_with_files(&server, uid, true, sid, vec![file_id, file_id, file_id]).await;
-    assert_eq!(status, 201, "duplicate file_ids must not cause a spurious 400: {msg}");
+    assert_eq!(
+        status, 201,
+        "duplicate file_ids must not cause a spurious 400: {msg}"
+    );
     assert_eq!(msg["has_file_parts"], true);
 
     // Exactly one file attached — not zero, not three.
     let msg_id = msg["id"].as_str().unwrap();
     let res = common::as_superuser(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages/{msg_id}/files"))),
         uid,
         "admin",
     )
@@ -717,7 +776,11 @@ async fn duplicate_file_ids_in_send_message_do_not_cause_spurious_400() {
     .await
     .unwrap();
     let listed: Value = res.json().await.unwrap();
-    assert_eq!(listed.as_array().unwrap().len(), 1, "file attached exactly once despite duplicates");
+    assert_eq!(
+        listed.as_array().unwrap().len(),
+        1,
+        "file attached exactly once despite duplicates"
+    );
 
     server.cleanup().await;
 }
@@ -736,7 +799,10 @@ async fn upload_to_another_users_session_rejected() {
     let alice_id = alice["id"].as_str().unwrap();
 
     let (status, _) = upload_file(&server, alice_id, false, sid, "evil", "evil.txt").await;
-    assert_eq!(status, 404, "upload to another user's session must be rejected");
+    assert_eq!(
+        status, 404,
+        "upload to another user's session must be rejected"
+    );
 
     server.cleanup().await;
 }

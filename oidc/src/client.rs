@@ -93,7 +93,10 @@ impl OidcClient {
 
         let arc = Arc::new(doc);
         let mut guard = self.discovery.write().await;
-        *guard = Some(Cached { value: arc.clone(), fetched_at: Instant::now() });
+        *guard = Some(Cached {
+            value: arc.clone(),
+            fetched_at: Instant::now(),
+        });
         Ok(arc)
     }
 
@@ -111,7 +114,10 @@ impl OidcClient {
         let jwks = fetch_jwks(&self.http, &doc.jwks_uri).await?;
         let arc = Arc::new(jwks);
         let mut guard = self.jwks.write().await;
-        *guard = Some(Cached { value: arc.clone(), fetched_at: Instant::now() });
+        *guard = Some(Cached {
+            value: arc.clone(),
+            fetched_at: Instant::now(),
+        });
         Ok(arc)
     }
 
@@ -165,7 +171,9 @@ impl OidcClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            return Err(OidcError::TokenExchange(format!("token endpoint returned {status}")));
+            return Err(OidcError::TokenExchange(format!(
+                "token endpoint returned {status}"
+            )));
         }
         resp.json::<TokenResponse>()
             .await
@@ -182,10 +190,22 @@ impl OidcClient {
     ) -> Result<IdTokenClaims, OidcError> {
         let doc = self.discovery_doc().await?;
         let jwks = self.jwks_doc(false).await?;
-        match id_token::verify(raw_id_token, &jwks, &doc.issuer, &self.config.client_id, expected_nonce) {
+        match id_token::verify(
+            raw_id_token,
+            &jwks,
+            &doc.issuer,
+            &self.config.client_id,
+            expected_nonce,
+        ) {
             Err(OidcError::UnknownKid(_)) => {
                 let refreshed = self.jwks_doc(true).await?;
-                id_token::verify(raw_id_token, &refreshed, &doc.issuer, &self.config.client_id, expected_nonce)
+                id_token::verify(
+                    raw_id_token,
+                    &refreshed,
+                    &doc.issuer,
+                    &self.config.client_id,
+                    expected_nonce,
+                )
             }
             other => other,
         }

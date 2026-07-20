@@ -37,7 +37,7 @@
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
-use nasiko_github::{ GitHubConfig, GitHubService };
+use nasiko_github::{GitHubConfig, GitHubService};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -76,8 +76,15 @@ async fn t01_state_build_verify() {
     let state = svc.build_state(user_id).expect("build_state failed");
 
     println!("  state string  : {state}");
-    assert!(state.starts_with("v1."), "state must begin with version prefix 'v1.'");
-    assert_eq!(state.splitn(3, '.').count(), 3, "state must have 3 dot-separated segments");
+    assert!(
+        state.starts_with("v1."),
+        "state must begin with version prefix 'v1.'"
+    );
+    assert_eq!(
+        state.splitn(3, '.').count(),
+        3,
+        "state must have 3 dot-separated segments"
+    );
 
     let claims = svc.verify_state(&state).expect("verify_state failed");
     println!("  user_id       : {}", claims.user_id);
@@ -108,7 +115,10 @@ async fn t02_state_tampered_rejected() {
 
     let err = svc.verify_state(&tampered).unwrap_err();
     println!("  rejection reason: {err}");
-    assert!(err.to_string().contains("invalid OAuth state"), "wrong error variant: {err}");
+    assert!(
+        err.to_string().contains("invalid OAuth state"),
+        "wrong error variant: {err}"
+    );
     println!("[PASS] t02_state_tampered_rejected");
 }
 
@@ -132,8 +142,7 @@ async fn t03_state_expired_rejected() {
     };
     let svc = nasiko_github::GitHubService::new(cfg.clone()).unwrap();
 
-    let stale_iat = std::time::SystemTime
-        ::now()
+    let stale_iat = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
@@ -150,7 +159,7 @@ async fn t03_state_expired_rejected() {
 
     // Re-implement the HMAC signing with the real secret so the state passes
     // the signature check and fails only at the age check.
-    use hmac::{ Hmac, Mac };
+    use hmac::{Hmac, Mac};
     use sha2::Sha256;
     let mut mac: Hmac<Sha256> = Mac::new_from_slice(cfg.oauth_state_secret.as_bytes()).unwrap();
     mac.update(encoded.as_bytes());
@@ -161,7 +170,10 @@ async fn t03_state_expired_rejected() {
     let err = svc.verify_state(&state).unwrap_err();
     println!("  rejection reason: {err}");
     // Must say "expired", not "signature mismatch" or anything else.
-    assert!(err.to_string().contains("expired"), "expected expiry rejection, got: {err}");
+    assert!(
+        err.to_string().contains("expired"),
+        "expected expiry rejection, got: {err}"
+    );
     println!("[PASS] t03_state_expired_rejected");
 }
 
@@ -177,16 +189,24 @@ async fn t04_authorization_url() {
         }
     };
 
-    let url = svc.authorization_url("test-user-99").expect("authorization_url failed");
+    let url = svc
+        .authorization_url("test-user-99")
+        .expect("authorization_url failed");
 
     println!("  authorization URL: {url}");
 
-    assert!(url.starts_with("https://github.com/login/oauth/authorize"), "wrong base URL");
+    assert!(
+        url.starts_with("https://github.com/login/oauth/authorize"),
+        "wrong base URL"
+    );
     assert!(url.contains("client_id="), "missing client_id param");
     assert!(url.contains("scope="), "missing scope param");
     assert!(url.contains("state="), "missing state param");
     assert!(url.contains("redirect_uri="), "missing redirect_uri param");
-    assert!(url.contains("repo") && url.contains("user"), "scope must include repo and user:email");
+    assert!(
+        url.contains("repo") && url.contains("user"),
+        "scope must include repo and user:email"
+    );
     println!("\n  Open this URL in a browser to test the real OAuth flow:");
     println!("  {url}\n");
     println!("[PASS] t04_authorization_url");
@@ -206,10 +226,16 @@ async fn t05_verify_token_valid() {
     };
     let token = need_env!("GITHUB_TEST_TOKEN");
 
-    let valid = svc.verify_token(&token).await.expect("verify_token returned Err (network/5xx)");
+    let valid = svc
+        .verify_token(&token)
+        .await
+        .expect("verify_token returned Err (network/5xx)");
 
     println!("  token valid: {valid}");
-    assert!(valid, "GITHUB_TEST_TOKEN appears expired or invalid — check the token");
+    assert!(
+        valid,
+        "GITHUB_TEST_TOKEN appears expired or invalid — check the token"
+    );
     println!("[PASS] t05_verify_token_valid");
 }
 
@@ -227,7 +253,8 @@ async fn t06_verify_token_invalid() {
     };
 
     let valid = svc
-        .verify_token("ghp_thisisnotarealtokenxxxxxxxxxxxxxxxxxx").await
+        .verify_token("ghp_thisisnotarealtokenxxxxxxxxxxxxxxxxxx")
+        .await
         .expect("verify_token should return Ok(false) on 401, not Err");
 
     println!("  garbage token valid: {valid}");
@@ -255,10 +282,18 @@ async fn t07_list_repos() {
     assert!(!repos.is_empty(), "Expected at least one repository");
 
     // Print a summary table of the first 5 repos.
-    println!("\n  {:<40} {:<8} {:<12}", "full_name", "private", "default_branch");
+    println!(
+        "\n  {:<40} {:<8} {:<12}",
+        "full_name", "private", "default_branch"
+    );
     println!("  {}", "-".repeat(62));
     for r in repos.iter().take(5) {
-        println!("  {:<40} {:<8} {:<12}", r.full_name, r.private.to_string(), r.default_branch);
+        println!(
+            "  {:<40} {:<8} {:<12}",
+            r.full_name,
+            r.private.to_string(),
+            r.default_branch
+        );
     }
     if repos.len() > 5 {
         println!("  ... and {} more", repos.len() - 5);
@@ -269,7 +304,10 @@ async fn t07_list_repos() {
         assert!(!r.name.is_empty(), "repo.name must not be empty");
         assert!(!r.full_name.is_empty(), "repo.full_name must not be empty");
         assert!(!r.clone_url.is_empty(), "repo.clone_url must not be empty");
-        assert!(!r.default_branch.is_empty(), "repo.default_branch must not be empty");
+        assert!(
+            !r.default_branch.is_empty(),
+            "repo.default_branch must not be empty"
+        );
     }
     println!("[PASS] t07_list_repos");
 }
@@ -293,7 +331,8 @@ async fn t08_clone_to_archive() {
     println!("  cloning {repo}@{branch} ...");
 
     let archive = svc
-        .clone_to_archive(&token, &repo, &branch).await
+        .clone_to_archive(&token, &repo, &branch)
+        .await
         .expect("clone_to_archive failed");
 
     println!("  s3_key           : {}", archive.s3_key);
@@ -304,13 +343,29 @@ async fn t08_clone_to_archive() {
     );
 
     // Basic assertions on the archive.
-    assert!(!archive.archive_bytes.is_empty(), "archive must not be empty");
-    assert!(archive.s3_key.starts_with("github/"), "s3_key must start with 'github/'");
-    assert!(archive.s3_key.ends_with(".tar.gz"), "s3_key must end with '.tar.gz'");
-    assert!(archive.s3_key.contains(&repo), "s3_key must contain repo name");
+    assert!(
+        !archive.archive_bytes.is_empty(),
+        "archive must not be empty"
+    );
+    assert!(
+        archive.s3_key.starts_with("github/"),
+        "s3_key must start with 'github/'"
+    );
+    assert!(
+        archive.s3_key.ends_with(".tar.gz"),
+        "s3_key must end with '.tar.gz'"
+    );
+    assert!(
+        archive.s3_key.contains(&repo),
+        "s3_key must contain repo name"
+    );
 
     // The first two bytes of a gzip stream are always 0x1f 0x8b.
-    assert_eq!(&archive.archive_bytes[..2], &[0x1f, 0x8b], "archive must be a valid gzip stream");
+    assert_eq!(
+        &archive.archive_bytes[..2],
+        &[0x1f, 0x8b],
+        "archive must be a valid gzip stream"
+    );
 
     println!("[PASS] t08_clone_to_archive");
 }
@@ -332,13 +387,17 @@ async fn t09_token_not_in_error() {
     let sentinel = "SENTINEL_TOKEN_DO_NOT_LOG_abc123xyz";
     // The service sends Basic auth as base64("x-access-token:<token>").
     // We verify the encoded form is also scrubbed.
-    let encoded_sentinel = base64::engine::general_purpose::STANDARD.encode(
-        format!("x-access-token:{sentinel}").as_bytes()
-    );
+    let encoded_sentinel = base64::engine::general_purpose::STANDARD
+        .encode(format!("x-access-token:{sentinel}").as_bytes());
 
     // Clone a repo that does not exist — triggers a git authentication error.
     let err = svc
-        .clone_to_archive(sentinel, "octocat/this-repo-definitely-does-not-exist-xyz", "main").await
+        .clone_to_archive(
+            sentinel,
+            "octocat/this-repo-definitely-does-not-exist-xyz",
+            "main",
+        )
+        .await
         .unwrap_err();
 
     let err_msg = err.to_string();
@@ -373,7 +432,10 @@ async fn t10_archive_structure() {
     let repo = need_env!("GITHUB_TEST_REPO");
     let branch = std::env::var("GITHUB_TEST_BRANCH").unwrap_or_else(|_| "main".into());
 
-    let archive = svc.clone_to_archive(&token, &repo, &branch).await.expect("clone failed");
+    let archive = svc
+        .clone_to_archive(&token, &repo, &branch)
+        .await
+        .expect("clone failed");
 
     // Decompress and list files in the archive.
     use flate2::read::GzDecoder;
@@ -400,7 +462,10 @@ async fn t10_archive_structure() {
         println!("    ... and {} more", entries.len() - 20);
     }
 
-    assert!(!entries.is_empty(), "archive must contain at least one file");
+    assert!(
+        !entries.is_empty(),
+        "archive must contain at least one file"
+    );
 
     // The .git directory must have been stripped.
     let git_entries: Vec<&str> = entries
@@ -414,7 +479,10 @@ async fn t10_archive_structure() {
         ".git directory must not be present in archive, found: {git_entries:?}"
     );
 
-    println!("[PASS] t10_archive_structure — {} files, no .git", entries.len());
+    println!(
+        "[PASS] t10_archive_structure — {} files, no .git",
+        entries.len()
+    );
 }
 
 // ── t11 ── Repository list is sorted newest-updated first ─────────────────────
@@ -434,7 +502,10 @@ async fn t11_list_repos_sorted_by_updated_desc() {
     let repos = svc.list_repos(&token).await.expect("list_repos failed");
 
     if repos.len() < 2 {
-        println!("[SKIP] only {} repo(s) — need at least 2 to test ordering", repos.len());
+        println!(
+            "[SKIP] only {} repo(s) — need at least 2 to test ordering",
+            repos.len()
+        );
         return;
     }
 
@@ -480,7 +551,10 @@ async fn t12_clone_rejects_invalid_repo_name() {
     ];
 
     for bad in invalid_names {
-        let err = svc.clone_to_archive("dummy-token", bad, "main").await.unwrap_err();
+        let err = svc
+            .clone_to_archive("dummy-token", bad, "main")
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, nasiko_github::Error::GitClone(_)),
             "expected GitClone for invalid repo {bad:?}, got: {err:?}"
@@ -506,7 +580,10 @@ async fn t13_clone_rejects_invalid_branch_name() {
     let invalid_branches = ["", "has space", "has~tilde", "has^caret", "has:colon"];
 
     for bad in invalid_branches {
-        let err = svc.clone_to_archive("dummy-token", "owner/repo", bad).await.unwrap_err();
+        let err = svc
+            .clone_to_archive("dummy-token", "owner/repo", bad)
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, nasiko_github::Error::GitClone(_)),
             "expected GitClone for invalid branch {bad:?}, got: {err:?}"

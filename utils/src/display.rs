@@ -14,7 +14,9 @@ pub fn trunc(s: &str, n: usize) -> String {
 
 /// `Some(v)` -> `v.to_string()`, `None` -> `"-"`.
 pub fn opt_dash<T: Display>(o: &Option<T>) -> String {
-    o.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "-".into())
+    o.as_ref()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "-".into())
 }
 
 /// `Some(v)` -> `v.to_string()`, `None` -> `default`.

@@ -23,7 +23,10 @@ pub struct CallerIdentity {
 impl<S: Send + Sync> FromRequestParts<S> for CallerIdentity {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<CallerIdentity>()
@@ -48,7 +51,10 @@ pub struct PullOnlyIdentity {
 impl<S: Send + Sync> FromRequestParts<S> for PullOnlyIdentity {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<PullOnlyIdentity>()
@@ -85,7 +91,10 @@ pub struct BuildServiceIdentity;
 impl<S: Send + Sync> FromRequestParts<S> for BuildServiceIdentity {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<BuildServiceIdentity>()
@@ -110,7 +119,10 @@ pub enum Caller {
 impl<S: Send + Sync> FromRequestParts<S> for Caller {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
         if let Some(identity) = parts.extensions.get::<CallerIdentity>() {
             return Ok(Caller::Session(identity.clone()));
         }
@@ -143,7 +155,10 @@ pub enum Writer {
 impl<S: Send + Sync> FromRequestParts<S> for Writer {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
         if let Some(identity) = parts.extensions.get::<CallerIdentity>() {
             return Ok(Writer::Session(identity.clone()));
         }
@@ -166,7 +181,11 @@ impl<S: Send + Sync> FromRequestParts<S> for Writer {
 /// someone else's. Asking two yes/no questions instead is sound regardless of
 /// how many owners share a name: "do I own a match" and "does anyone" never
 /// require picking a single arbitrary winner.
-async fn repo_claim_status(state: &OciState, caller: &CallerIdentity, repo: &str) -> Result<(bool, bool)> {
+async fn repo_claim_status(
+    state: &OciState,
+    caller: &CallerIdentity,
+    repo: &str,
+) -> Result<(bool, bool)> {
     let Ok(caller_uuid) = caller.user_id.parse::<uuid::Uuid>() else {
         return Ok((false, false));
     };
@@ -196,7 +215,11 @@ async fn repo_claim_status(state: &OciState, caller: &CallerIdentity, repo: &str
 /// gap this closes.
 ///
 /// Use [`check_repo_delete_access`] instead for destructive operations.
-pub async fn check_repo_access(state: &OciState, caller: &CallerIdentity, repo: &str) -> Result<()> {
+pub async fn check_repo_access(
+    state: &OciState,
+    caller: &CallerIdentity,
+    repo: &str,
+) -> Result<()> {
     if caller.is_superuser {
         return Ok(());
     }
@@ -204,7 +227,9 @@ pub async fn check_repo_access(state: &OciState, caller: &CallerIdentity, repo: 
     if owns || !claimed {
         Ok(())
     } else {
-        Err(OciError::Forbidden(format!("not permitted to access repository '{repo}'")))
+        Err(OciError::Forbidden(format!(
+            "not permitted to access repository '{repo}'"
+        )))
     }
 }
 
@@ -219,15 +244,18 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
     match caller {
         Caller::Session(identity) => check_repo_access(state, identity, repo).await,
         Caller::PullOnly(pull) => {
-            let bound_repo: Option<String> = sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL")
-                .bind(pull.agent_id)
-                .fetch_optional(&state.pool)
-                .await
-                .map_err(OciError::Database)?;
+            let bound_repo: Option<String> =
+                sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL")
+                    .bind(pull.agent_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map_err(OciError::Database)?;
             if bound_repo.as_deref() == Some(repo) {
                 Ok(())
             } else {
-                Err(OciError::Forbidden(format!("not permitted to access repository '{repo}'")))
+                Err(OciError::Forbidden(format!(
+                    "not permitted to access repository '{repo}'"
+                )))
             }
         }
         // Trusted, server-orchestrated infrastructure — no per-repo restriction.
@@ -257,7 +285,11 @@ pub async fn check_write_access(state: &OciState, writer: &Writer, repo: &str) -
 /// registered repo name purely to reach `delete_blob` and destroy a blob
 /// that's actually shared with someone else's claimed, registered agent.
 /// Destroying something must require an existing claim (or superuser).
-pub async fn check_repo_delete_access(state: &OciState, caller: &CallerIdentity, repo: &str) -> Result<()> {
+pub async fn check_repo_delete_access(
+    state: &OciState,
+    caller: &CallerIdentity,
+    repo: &str,
+) -> Result<()> {
     if caller.is_superuser {
         return Ok(());
     }
@@ -265,6 +297,8 @@ pub async fn check_repo_delete_access(state: &OciState, caller: &CallerIdentity,
     if owns {
         Ok(())
     } else {
-        Err(OciError::Forbidden(format!("not permitted to delete from repository '{repo}'")))
+        Err(OciError::Forbidden(format!(
+            "not permitted to delete from repository '{repo}'"
+        )))
     }
 }

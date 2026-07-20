@@ -30,12 +30,14 @@ async fn insert_user(db: &sqlx::PgPool, username: &str) -> Uuid {
 }
 
 async fn insert_agent(db: &sqlx::PgPool, name: &str, owner_id: Uuid) {
-    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')")
-        .bind(name)
-        .bind(owner_id)
-        .execute(db)
-        .await
-        .expect("insert test agent");
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .execute(db)
+    .await
+    .expect("insert test agent");
 }
 
 #[tokio::test]
@@ -104,7 +106,10 @@ async fn chunked_upload_rejects_once_total_size_cap_exceeded() {
         .fetch_one(&server.db)
         .await
         .unwrap();
-    assert_eq!(remaining, 0, "overflowed upload session must be deleted, not left dangling");
+    assert_eq!(
+        remaining, 0,
+        "overflowed upload session must be deleted, not left dangling"
+    );
 
     server.cleanup().await;
 }
@@ -177,7 +182,10 @@ async fn complete_upload_rejects_final_chunk_that_pushes_past_total_cap() {
         .fetch_one(&server.db)
         .await
         .unwrap();
-    assert_eq!(remaining, 0, "overflowed upload session must be deleted, not left dangling");
+    assert_eq!(
+        remaining, 0,
+        "overflowed upload session must be deleted, not left dangling"
+    );
 
     server.cleanup().await;
 }

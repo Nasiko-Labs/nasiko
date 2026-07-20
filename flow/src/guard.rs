@@ -44,11 +44,26 @@ fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 #[derive(Debug, Clone)]
 pub enum FlowRejection {
-    MaxDepthExceeded { depth: u32, max: u32 },
-    CycleDetected { agent_id: String, chain: Vec<String> },
-    MaxFanOutExceeded { invocations: u32, max: u32 },
-    TokenBudgetExhausted { used: u64, max: u64 },
-    FlowTimeout { elapsed_secs: u64, max: u64 },
+    MaxDepthExceeded {
+        depth: u32,
+        max: u32,
+    },
+    CycleDetected {
+        agent_id: String,
+        chain: Vec<String>,
+    },
+    MaxFanOutExceeded {
+        invocations: u32,
+        max: u32,
+    },
+    TokenBudgetExhausted {
+        used: u64,
+        max: u64,
+    },
+    FlowTimeout {
+        elapsed_secs: u64,
+        max: u64,
+    },
     /// Redis (the sole backing store for depth/cycle/fan-out/token state) was
     /// unreachable. Fails CLOSED rather than silently disabling every limit —
     /// the threat model is explicitly unvetted agent/build code, so a Redis
@@ -63,7 +78,10 @@ impl std::fmt::Display for FlowRejection {
                 write!(f, "max call depth exceeded: {depth}/{max}")
             }
             Self::CycleDetected { agent_id, chain } => {
-                write!(f, "cycle detected: agent {agent_id} already in chain {chain:?}")
+                write!(
+                    f,
+                    "cycle detected: agent {agent_id} already in chain {chain:?}"
+                )
             }
             Self::MaxFanOutExceeded { invocations, max } => {
                 write!(f, "max fan-out exceeded: {invocations}/{max} invocations")
@@ -75,7 +93,10 @@ impl std::fmt::Display for FlowRejection {
                 write!(f, "flow timeout: {elapsed_secs}s/{max}s")
             }
             Self::GuardUnavailable => {
-                write!(f, "flow guard unavailable (redis unreachable) — failing closed")
+                write!(
+                    f,
+                    "flow guard unavailable (redis unreachable) — failing closed"
+                )
             }
         }
     }
@@ -233,7 +254,10 @@ impl FlowGuard {
         } else {
             format!("{},{}", chain, target_agent_id)
         };
-        let _: () = conn.hset(&key, "call_chain", &new_chain).await.unwrap_or(());
+        let _: () = conn
+            .hset(&key, "call_chain", &new_chain)
+            .await
+            .unwrap_or(());
 
         let _: () = conn
             .expire(&key, self.config.flow_state_ttl_secs as i64)

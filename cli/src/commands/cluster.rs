@@ -48,7 +48,12 @@ pub fn list() -> Result<()> {
             }
         })
         .collect();
-    println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
+    println!(
+        "{}",
+        Table::new(rows)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     Ok(())
 }
 

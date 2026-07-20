@@ -98,7 +98,11 @@ fn generate_traceparent_from_new_root() {
     let ctx = FlowContext::new_root();
     let tp = ctx.to_traceparent();
     let parts: Vec<&str> = tp.split('-').collect();
-    assert_eq!(parts.len(), 4, "W3C traceparent has exactly 4 dash-separated segments");
+    assert_eq!(
+        parts.len(),
+        4,
+        "W3C traceparent has exactly 4 dash-separated segments"
+    );
     assert_eq!(parts[0], "00", "version must be 00");
     assert_eq!(parts[1].len(), 32, "trace_id must be 32 chars");
     assert_eq!(parts[2].len(), 16, "span_id must be 16 chars");
@@ -124,7 +128,10 @@ fn round_trip_trace_id_preserved() {
     let generated = ctx.to_traceparent();
     // Re-parse the generated header
     let ctx2 = FlowContext::from_traceparent(&generated).expect("re-parse");
-    assert_eq!(ctx2.flow_id, ctx.flow_id, "trace_id survives encode-decode round-trip");
+    assert_eq!(
+        ctx2.flow_id, ctx.flow_id,
+        "trace_id survives encode-decode round-trip"
+    );
 }
 
 #[test]
@@ -132,7 +139,10 @@ fn round_trip_generates_parseable_header() {
     let ctx = FlowContext::new_root();
     let tp = ctx.to_traceparent();
     let reparsed = FlowContext::from_traceparent(&tp);
-    assert!(reparsed.is_some(), "to_traceparent() output must be parseable by from_traceparent()");
+    assert!(
+        reparsed.is_some(),
+        "to_traceparent() output must be parseable by from_traceparent()"
+    );
 }
 
 #[test]
@@ -147,10 +157,9 @@ fn round_trip_reparsed_trace_id_matches_original() {
 fn round_trip_span_id_is_fresh() {
     // to_traceparent() generates a new child span_id, so the reparsed context
     // will have a different parent_span_id than the original.
-    let ctx = FlowContext::from_traceparent(
-        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-    )
-    .unwrap();
+    let ctx =
+        FlowContext::from_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+            .unwrap();
     let tp = ctx.to_traceparent();
     let child_ctx = FlowContext::from_traceparent(&tp).unwrap();
     assert_ne!(
@@ -167,5 +176,8 @@ fn multiple_round_trips_keep_same_trace_id() {
     let tp2 = ctx1.to_traceparent();
     let ctx2 = FlowContext::from_traceparent(&tp2).unwrap();
 
-    assert_eq!(ctx2.flow_id, root.flow_id, "trace_id must remain stable across multiple hops");
+    assert_eq!(
+        ctx2.flow_id, root.flow_id,
+        "trace_id must remain stable across multiple hops"
+    );
 }

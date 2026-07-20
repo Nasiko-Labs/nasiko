@@ -63,14 +63,15 @@ async fn setup_session(user: &mut GooseUser) -> TransactionResult {
         .map(|u| u.token.clone())
         .expect("manifest must have at least one user");
 
-    user.set_session_data(Session { token, agents: Arc::new(manifest.agents.clone()) });
+    user.set_session_data(Session {
+        token,
+        agents: Arc::new(manifest.agents.clone()),
+    });
     Ok(())
 }
 
 fn auth_header<'a>(user: &'a GooseUser) -> &'a str {
-    &user
-        .get_session_data_unchecked::<Session>()
-        .token
+    &user.get_session_data_unchecked::<Session>().token
 }
 
 async fn catalog_list(user: &mut GooseUser) -> TransactionResult {
@@ -78,7 +79,9 @@ async fn catalog_list(user: &mut GooseUser) -> TransactionResult {
     let request_builder = user
         .get_request_builder(&GooseMethod::Get, "/api/catalog/agents")?
         .header("Authorization", format!("Bearer {token}"));
-    let goose_request = GooseRequest::builder().set_request_builder(request_builder).build();
+    let goose_request = GooseRequest::builder()
+        .set_request_builder(request_builder)
+        .build();
     user.request(goose_request).await?;
     Ok(())
 }
@@ -95,7 +98,9 @@ async fn agent_proxy_chat(user: &mut GooseUser) -> TransactionResult {
         .get_request_builder(&GooseMethod::Post, &path)?
         .header("Authorization", format!("Bearer {}", session.token))
         .json(&body);
-    let goose_request = GooseRequest::builder().set_request_builder(request_builder).build();
+    let goose_request = GooseRequest::builder()
+        .set_request_builder(request_builder)
+        .build();
     user.request(goose_request).await?;
     Ok(())
 }
@@ -107,7 +112,9 @@ async fn orchestrator_a2a(user: &mut GooseUser) -> TransactionResult {
         .get_request_builder(&GooseMethod::Post, "/api/orchestrator/a2a")?
         .header("Authorization", format!("Bearer {token}"))
         .json(&body);
-    let goose_request = GooseRequest::builder().set_request_builder(request_builder).build();
+    let goose_request = GooseRequest::builder()
+        .set_request_builder(request_builder)
+        .build();
     user.request(goose_request).await?;
     Ok(())
 }

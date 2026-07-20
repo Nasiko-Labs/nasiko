@@ -6,7 +6,12 @@ use std::time::Duration;
 // ── Output helpers ────────────────────────────────────────────────────────────
 
 /// Print a PASS/FAIL line and increment the counter. Returns true on pass.
-pub fn step(label: &str, result: Result<String, String>, passed: &mut u32, failed: &mut u32) -> bool {
+pub fn step(
+    label: &str,
+    result: Result<String, String>,
+    passed: &mut u32,
+    failed: &mut u32,
+) -> bool {
     match result {
         Ok(msg) => {
             println!("[ PASS ] {label:<38} → {msg}");
@@ -46,7 +51,10 @@ pub fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
 /// Uses a nonexistent base image so Docker fails quickly in dev without pulling.
 pub fn make_valid_zip() -> Vec<u8> {
     make_zip(&[
-        ("Dockerfile", b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]"),
+        (
+            "Dockerfile",
+            b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]",
+        ),
         ("main.py", b"print('hello from nasiko e2e')"),
     ])
 }
@@ -58,7 +66,8 @@ pub fn make_traversal_zip() -> Vec<u8> {
         let mut zw = zip::ZipWriter::new(&mut cursor);
         let opts = zip::write::SimpleFileOptions::default();
         zw.start_file("Dockerfile", opts).unwrap();
-        zw.write_all(b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]").unwrap();
+        zw.write_all(b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]")
+            .unwrap();
         zw.start_file("main.py", opts).unwrap();
         zw.write_all(b"print('hi')").unwrap();
         zw.start_file("../evil.txt", opts).unwrap();
@@ -75,7 +84,8 @@ pub fn make_many_files_zip(extra: usize) -> Vec<u8> {
         let mut zw = zip::ZipWriter::new(&mut cursor);
         let opts = zip::write::SimpleFileOptions::default();
         zw.start_file("Dockerfile", opts).unwrap();
-        zw.write_all(b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]").unwrap();
+        zw.write_all(b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]")
+            .unwrap();
         zw.start_file("main.py", opts).unwrap();
         zw.write_all(b"print('hi')").unwrap();
         for i in 0..extra {
@@ -133,15 +143,19 @@ pub async fn get_admin_auth(
 
     if status.is_success() {
         // First time — print credentials so the user can save them.
-        if let (Some(key), Some(secret)) = (body["access_key"].as_str(), body["access_secret"].as_str()) {
+        if let (Some(key), Some(secret)) =
+            (body["access_key"].as_str(), body["access_secret"].as_str())
+        {
             println!("[ INFO ] Admin created. Save these credentials for future runs:");
             println!("[ INFO ]   --access-key {key}");
             println!("[ INFO ]   --access-secret {secret}");
         }
-        let uid = body["user_id"].as_str()
+        let uid = body["user_id"]
+            .as_str()
             .ok_or_else(|| format!("no user_id in initialize-admin response: {body}"))?
             .to_string();
-        let token = body["token"].as_str()
+        let token = body["token"]
+            .as_str()
             .ok_or_else(|| format!("no token in initialize-admin response: {body}"))?
             .to_string();
         return Ok((uid, token));
@@ -165,10 +179,12 @@ pub async fn get_admin_auth(
             .await
             .map_err(|e| e.to_string())?;
         let login_body: serde_json::Value = login_res.json().await.map_err(|e| e.to_string())?;
-        let uid = login_body["user_id"].as_str()
+        let uid = login_body["user_id"]
+            .as_str()
             .ok_or_else(|| format!("login failed: {login_body}"))?
             .to_string();
-        let token = login_body["token"].as_str()
+        let token = login_body["token"]
+            .as_str()
             .ok_or_else(|| format!("no token in login response: {login_body}"))?
             .to_string();
         return Ok((uid, token));
@@ -237,7 +253,8 @@ pub async fn poll_build_status(
         if res.status() == 200 {
             let body: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
             if let Some(s) = body["status"].as_str()
-                && (s == "success" || s == "failed") {
+                && (s == "success" || s == "failed")
+            {
                 return Ok(s.to_string());
             }
         }

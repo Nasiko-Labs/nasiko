@@ -43,8 +43,8 @@ impl GitHubConfig {
     ///           `GITHUB_CLONE_TIMEOUT_SECS`, `GITHUB_CLONE_MAX_SIZE_MB`.
     pub fn from_env() -> anyhow::Result<Self> {
         let client_secret = required_env("GITHUB_CLIENT_SECRET")?;
-        let oauth_state_secret = std::env::var("OAUTH_STATE_SIGNING_KEY")
-            .unwrap_or_else(|_| client_secret.clone());
+        let oauth_state_secret =
+            std::env::var("OAUTH_STATE_SIGNING_KEY").unwrap_or_else(|_| client_secret.clone());
 
         let clone_timeout_secs: u64 = nasiko_utils::env_parse("GITHUB_CLONE_TIMEOUT_SECS", 300u64);
         let clone_max_size_mb: u64 = nasiko_utils::env_parse("GITHUB_CLONE_MAX_SIZE_MB", 500u64);

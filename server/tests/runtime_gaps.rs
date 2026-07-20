@@ -29,7 +29,10 @@ use uuid::Uuid;
 /// keeping `build_worker_transitions_job_to_terminal_state` fast and deterministic.
 fn make_valid_agent_zip() -> Vec<u8> {
     common::make_zip(&[
-        ("Dockerfile", b"FROM nasiko-nonexistent-base-xyz:does-not-exist\nCMD [\"python\", \"main.py\"]"),
+        (
+            "Dockerfile",
+            b"FROM nasiko-nonexistent-base-xyz:does-not-exist\nCMD [\"python\", \"main.py\"]",
+        ),
         ("main.py", b"print('hello')"),
     ])
 }
@@ -107,7 +110,10 @@ fn zip_guards_rejects_too_many_files() {
     let _ = std::fs::remove_dir_all(&dest);
     assert!(result.is_err(), "expected error for 1001 files");
     let msg = result.unwrap_err();
-    assert!(msg.contains("1001") || msg.contains("limit"), "error should mention file count: {msg}");
+    assert!(
+        msg.contains("1001") || msg.contains("limit"),
+        "error should mention file count: {msg}"
+    );
 }
 
 #[test]
@@ -117,7 +123,10 @@ fn zip_guards_accepts_at_file_limit() {
     let dest = std::env::temp_dir().join(format!("ng-test-{}", Uuid::new_v4()));
     let result = nasiko_server::build::routes::extract_zip_to_dir(&zip, &dest);
     let _ = std::fs::remove_dir_all(&dest);
-    assert!(result.is_ok(), "1000-file zip should be accepted: {result:?}");
+    assert!(
+        result.is_ok(),
+        "1000-file zip should be accepted: {result:?}"
+    );
 }
 
 #[test]
@@ -144,7 +153,10 @@ fn zip_guards_rejects_path_traversal_dotdot() {
     let _ = std::fs::remove_dir_all(&dest);
     assert!(result.is_err(), "expected traversal rejection");
     let msg = result.unwrap_err();
-    assert!(msg.contains("traversal"), "error should mention traversal: {msg}");
+    assert!(
+        msg.contains("traversal"),
+        "error should mention traversal: {msg}"
+    );
 }
 
 #[test]
@@ -153,7 +165,10 @@ fn zip_guards_accepts_valid_flat_zip() {
     let dest = std::env::temp_dir().join(format!("ng-test-{}", Uuid::new_v4()));
     let result = nasiko_server::build::routes::extract_zip_to_dir(&zip, &dest);
     let _ = std::fs::remove_dir_all(&dest);
-    assert!(result.is_ok(), "valid agent zip should be accepted: {result:?}");
+    assert!(
+        result.is_ok(),
+        "valid agent zip should be accepted: {result:?}"
+    );
 }
 
 #[test]
@@ -168,7 +183,10 @@ fn zip_guards_accepts_nested_structure() {
     let dest = std::env::temp_dir().join(format!("ng-test-{}", Uuid::new_v4()));
     let result = nasiko_server::build::routes::extract_zip_to_dir(&zip, &dest);
     let _ = std::fs::remove_dir_all(&dest);
-    assert!(result.is_ok(), "nested structure should be accepted: {result:?}");
+    assert!(
+        result.is_ok(),
+        "nested structure should be accepted: {result:?}"
+    );
 }
 
 #[test]
@@ -183,7 +201,10 @@ fn zip_from_file_rejects_path_traversal() {
     let result = nasiko_server::build::routes::extract_zip_from_file(&zip_path, &dest);
     let _ = std::fs::remove_file(&zip_path);
     let _ = std::fs::remove_dir_all(&dest);
-    assert!(result.is_err(), "expected traversal rejection from file path");
+    assert!(
+        result.is_err(),
+        "expected traversal rejection from file path"
+    );
     assert!(result.unwrap_err().contains("traversal"));
 }
 
@@ -231,7 +252,10 @@ async fn do_upload(
     for (k, v) in extra_fields {
         form = form.text(k, v);
     }
-    form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
+    form = form.part(
+        "source",
+        reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
+    );
     common::as_superuser(
         server.client.post(server.url("/api/agents/upload")),
         uid,
@@ -250,7 +274,14 @@ async fn upload_valid_agent_returns_202() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = do_upload(&server, uid, "valid-agent-202", vec![], make_valid_agent_zip()).await;
+    let res = do_upload(
+        &server,
+        uid,
+        "valid-agent-202",
+        vec![],
+        make_valid_agent_zip(),
+    )
+    .await;
 
     assert_eq!(res.status(), 202, "expected 202 Accepted for valid zip");
     let body: Value = res.json().await.unwrap();
@@ -269,7 +300,14 @@ async fn upload_creates_build_job_in_db() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = do_upload(&server, uid, "job-row-agent", vec![], make_valid_agent_zip()).await;
+    let res = do_upload(
+        &server,
+        uid,
+        "job-row-agent",
+        vec![],
+        make_valid_agent_zip(),
+    )
+    .await;
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
     let agent_id: Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
@@ -279,7 +317,10 @@ async fn upload_creates_build_job_in_db() {
         .fetch_one(&server.db)
         .await
         .unwrap();
-    assert_eq!(count, 1, "expected exactly one build_jobs row immediately after 202");
+    assert_eq!(
+        count, 1,
+        "expected exactly one build_jobs row immediately after 202"
+    );
 
     server.cleanup().await;
 }
@@ -303,10 +344,14 @@ async fn update_creates_build_job_in_db() {
     .unwrap();
 
     let zip = common::make_zip(&[("README.md", b"no dockerfile")]);
-    let form = reqwest::multipart::Form::new()
-        .part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
+    let form = reqwest::multipart::Form::new().part(
+        "source",
+        reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
+    );
     let res = common::as_superuser(
-        server.client.put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        server
+            .client
+            .put(server.url(&format!("/api/agents/{agent_id}/update"))),
         uid,
         "admin",
     )
@@ -323,7 +368,11 @@ async fn update_creates_build_job_in_db() {
             .await
             .unwrap();
     let payload = payload.expect("update handler should insert a build_jobs row");
-    assert_eq!(payload["kind"].as_str().unwrap(), "Update", "payload kind should be Update");
+    assert_eq!(
+        payload["kind"].as_str().unwrap(),
+        "Update",
+        "payload kind should be Update"
+    );
 
     server.cleanup().await;
 }
@@ -356,7 +405,9 @@ async fn rollback_creates_build_job_in_db() {
     .unwrap();
 
     let res = common::as_superuser(
-        server.client.post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
+        server
+            .client
+            .post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
         uid,
         "admin",
     )
@@ -372,9 +423,14 @@ async fn rollback_creates_build_job_in_db() {
             .await
             .unwrap();
     let payload = payload.expect("rollback handler should insert a build_jobs row");
-    assert_eq!(payload["kind"].as_str().unwrap(), "Rollback", "payload kind should be Rollback");
     assert_eq!(
-        payload["target_version"].as_str().unwrap(), "1.0.0",
+        payload["kind"].as_str().unwrap(),
+        "Rollback",
+        "payload kind should be Rollback"
+    );
+    assert_eq!(
+        payload["target_version"].as_str().unwrap(),
+        "1.0.0",
         "rollback payload should carry the target version"
     );
 
@@ -408,10 +464,18 @@ async fn upload_build_job_payload_contains_ports() {
             .await
             .unwrap();
 
-    let ports = payload["ports"].as_array().expect("ports should be an array");
+    let ports = payload["ports"]
+        .as_array()
+        .expect("ports should be an array");
     let port_nums: Vec<u64> = ports.iter().filter_map(|v| v.as_u64()).collect();
-    assert!(port_nums.contains(&3000), "expected port 3000 in payload: {port_nums:?}");
-    assert!(port_nums.contains(&4000), "expected port 4000 in payload: {port_nums:?}");
+    assert!(
+        port_nums.contains(&3000),
+        "expected port 3000 in payload: {port_nums:?}"
+    );
+    assert!(
+        port_nums.contains(&4000),
+        "expected port 4000 in payload: {port_nums:?}"
+    );
 
     server.cleanup().await;
 }
@@ -442,7 +506,14 @@ async fn upload_dockerfile_without_from_returns_400() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = do_upload(&server, uid, "no-from-400", vec![], make_zip_dockerfile_no_from()).await;
+    let res = do_upload(
+        &server,
+        uid,
+        "no-from-400",
+        vec![],
+        make_zip_dockerfile_no_from(),
+    )
+    .await;
 
     assert_eq!(res.status(), 400);
     let text = res.text().await.unwrap();
@@ -460,7 +531,14 @@ async fn upload_missing_entrypoint_returns_400() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = do_upload(&server, uid, "no-entry-400", vec![], make_zip_no_entrypoint()).await;
+    let res = do_upload(
+        &server,
+        uid,
+        "no-entry-400",
+        vec![],
+        make_zip_no_entrypoint(),
+    )
+    .await;
 
     assert_eq!(res.status(), 400);
     let text = res.text().await.unwrap();
@@ -514,7 +592,11 @@ async fn upload_src_main_py_entrypoint_accepted() {
     ]);
     let res = do_upload(&server, uid, "src-main-agent", vec![], zip).await;
 
-    assert_eq!(res.status(), 202, "src/main.py should be accepted as entrypoint");
+    assert_eq!(
+        res.status(),
+        202,
+        "src/main.py should be accepted as entrypoint"
+    );
     server.cleanup().await;
 }
 
@@ -532,7 +614,11 @@ async fn upload_dunder_main_entrypoint_accepted() {
     ]);
     let res = do_upload(&server, uid, "dunder-main-agent", vec![], zip).await;
 
-    assert_eq!(res.status(), 202, "__main__.py should be accepted as entrypoint");
+    assert_eq!(
+        res.status(),
+        202,
+        "__main__.py should be accepted as entrypoint"
+    );
     server.cleanup().await;
 }
 
@@ -596,7 +682,9 @@ async fn call_restart(
     deployment_id: Uuid,
 ) -> reqwest::Response {
     common::as_superuser(
-        server.client.post(server.url(&format!("/api/agents/deployment/{deployment_id}/restart"))),
+        server
+            .client
+            .post(server.url(&format!("/api/agents/deployment/{deployment_id}/restart"))),
         uid,
         "admin",
     )
@@ -624,9 +712,16 @@ async fn restart_stopped_agent_does_not_409() {
     let uid = admin["user_id"].as_str().unwrap();
     let owner_id: Uuid = uid.parse().unwrap();
 
-    let (_, dep_id) =
-        seed_deployment(&server.db, owner_id, "stopped-restart-ng", "stopped", None, None, None)
-            .await;
+    let (_, dep_id) = seed_deployment(
+        &server.db,
+        owner_id,
+        "stopped-restart-ng",
+        "stopped",
+        None,
+        None,
+        None,
+    )
+    .await;
 
     let res = call_restart(&server, uid, dep_id).await;
     // Expect 200 (success) or 500 (Docker deploy failed — no real image in test env).
@@ -675,9 +770,16 @@ async fn restart_running_agent_returns_409() {
     let uid = admin["user_id"].as_str().unwrap();
     let owner_id: Uuid = uid.parse().unwrap();
 
-    let (_, dep_id) =
-        seed_deployment(&server.db, owner_id, "running-restart-ng", "running", None, None, None)
-            .await;
+    let (_, dep_id) = seed_deployment(
+        &server.db,
+        owner_id,
+        "running-restart-ng",
+        "running",
+        None,
+        None,
+        None,
+    )
+    .await;
 
     let res = call_restart(&server, uid, dep_id).await;
     assert_eq!(res.status(), 409, "running agent must return 409");
@@ -694,9 +796,16 @@ async fn restart_starting_agent_returns_409() {
     let uid = admin["user_id"].as_str().unwrap();
     let owner_id: Uuid = uid.parse().unwrap();
 
-    let (_, dep_id) =
-        seed_deployment(&server.db, owner_id, "starting-restart-ng", "starting", None, None, None)
-            .await;
+    let (_, dep_id) = seed_deployment(
+        &server.db,
+        owner_id,
+        "starting-restart-ng",
+        "starting",
+        None,
+        None,
+        None,
+    )
+    .await;
 
     let res = call_restart(&server, uid, dep_id).await;
     assert_eq!(res.status(), 409, "starting agent must return 409");
@@ -727,13 +836,12 @@ async fn restart_spec_ports_stored_and_read() {
     .await;
 
     // Read back from DB to confirm the columns are present and correct.
-    let (ports, image): (Option<Vec<i32>>, Option<String>) = sqlx::query_as(
-        "SELECT spec_ports, spec_image FROM agent_deployments WHERE id = $1",
-    )
-    .bind(dep_id)
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
+    let (ports, image): (Option<Vec<i32>>, Option<String>) =
+        sqlx::query_as("SELECT spec_ports, spec_image FROM agent_deployments WHERE id = $1")
+            .bind(dep_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
 
     assert_eq!(
         ports,
@@ -784,7 +892,10 @@ async fn restart_null_spec_ports_does_not_error() {
     // Should find the deployment (not 404) and attempt restart (not 409).
     let res = call_restart(&server, uid, dep_id).await;
     let status = res.status().as_u16();
-    assert_ne!(status, 404, "should find deployment even with null spec_ports");
+    assert_ne!(
+        status, 404,
+        "should find deployment even with null spec_ports"
+    );
     assert_ne!(status, 409, "should not conflict for a stopped agent");
 
     server.cleanup().await;
@@ -820,7 +931,10 @@ async fn restart_old_deployment_stopped_after_restart() {
                 .fetch_one(&server.db)
                 .await
                 .unwrap();
-        assert_eq!(old_status, "stopped", "old deployment row should be stopped");
+        assert_eq!(
+            old_status, "stopped",
+            "old deployment row should be stopped"
+        );
     }
     // If Docker fails (500 in test env), the old row may remain unchanged — that's OK.
     // We don't assert on the 500 path to keep the test hermetic.
@@ -842,11 +956,23 @@ async fn restart_atomic_guard_rejects_when_already_starting_even_if_initial_read
     let uid = admin["user_id"].as_str().unwrap();
     let owner_id: Uuid = uid.parse().unwrap();
 
-    let (_, dep_id) =
-        seed_deployment(&server.db, owner_id, "atomic-guard-ng", "starting", None, None, None).await;
+    let (_, dep_id) = seed_deployment(
+        &server.db,
+        owner_id,
+        "atomic-guard-ng",
+        "starting",
+        None,
+        None,
+        None,
+    )
+    .await;
 
     let res = call_restart(&server, uid, dep_id).await;
-    assert_eq!(res.status(), 409, "a deployment already in 'starting' must be rejected by the atomic guard");
+    assert_eq!(
+        res.status(),
+        409,
+        "a deployment already in 'starting' must be rejected by the atomic guard"
+    );
 
     server.cleanup().await;
 }
@@ -875,7 +1001,11 @@ async fn restart_success_leaves_exactly_one_running_deployment_row() {
     .await;
 
     let res = call_restart(&server, uid, dep_id).await;
-    assert_eq!(res.status(), 200, "restart of a stopped deployment must succeed");
+    assert_eq!(
+        res.status(),
+        200,
+        "restart of a stopped deployment must succeed"
+    );
 
     let running_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM agent_deployments WHERE agent_id = $1 AND status = 'running'",
@@ -884,50 +1014,21 @@ async fn restart_success_leaves_exactly_one_running_deployment_row() {
     .fetch_one(&server.db)
     .await
     .unwrap();
-    assert_eq!(running_count, 1, "exactly one running deployment row must exist after a successful restart");
+    assert_eq!(
+        running_count, 1,
+        "exactly one running deployment row must exist after a successful restart"
+    );
 
-    let old_status: String = sqlx::query_scalar("SELECT status::text FROM agent_deployments WHERE id = $1")
-        .bind(dep_id)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    assert_eq!(old_status, "stopped", "the old deployment row must be stopped, not left at 'starting'");
-
-    server.cleanup().await;
-}
-
-/// The `nasiko` CLI's `deployments restart <id>` command (oss/cli/src/commands/deployments.rs)
-/// reads `deployment_id` (and optionally `warnings`) out of the restart response
-/// body — assert the field is actually present and is a fresh UUID distinct
-/// from the old deployment row, not just that the status code is 200.
-#[tokio::test]
-#[serial]
-async fn restart_response_body_includes_new_deployment_id() {
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let uid = admin["user_id"].as_str().unwrap();
-    let owner_id: Uuid = uid.parse().unwrap();
-
-    let (_, dep_id) = seed_deployment(
-        &server.db,
-        owner_id,
-        "restart-body-ng",
-        "stopped",
-        Some(vec![8000]),
-        Some("alpine:latest"),
-        None,
-    )
-    .await;
-
-    let res = call_restart(&server, uid, dep_id).await;
-    assert_eq!(res.status(), 200);
-    let body: Value = res.json().await.unwrap();
-
-    let new_id = body["deployment_id"]
-        .as_str()
-        .expect("restart response must include a deployment_id field");
-    assert!(Uuid::parse_str(new_id).is_ok(), "deployment_id must be a valid UUID");
-    assert_ne!(new_id, dep_id.to_string(), "restart must record a NEW deployment row, not the old id");
+    let old_status: String =
+        sqlx::query_scalar("SELECT status::text FROM agent_deployments WHERE id = $1")
+            .bind(dep_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        old_status, "stopped",
+        "the old deployment row must be stopped, not left at 'starting'"
+    );
 
     server.cleanup().await;
 }
@@ -946,7 +1047,14 @@ async fn build_worker_transitions_job_to_terminal_state() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = do_upload(&server, uid, "worker-terminal-ng", vec![], make_valid_agent_zip()).await;
+    let res = do_upload(
+        &server,
+        uid,
+        "worker-terminal-ng",
+        vec![],
+        make_valid_agent_zip(),
+    )
+    .await;
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
     let agent_id: Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
@@ -1053,7 +1161,10 @@ async fn build_worker_inline_exhaustion_terminalizes_agent() {
             break;
         }
     }
-    assert_eq!(job_status, "failed", "job should be marked failed by the inline attempt cap");
+    assert_eq!(
+        job_status, "failed",
+        "job should be marked failed by the inline attempt cap"
+    );
 
     let (agent_status, build_status): (String, String) = sqlx::query_as(
         "SELECT a.status::text, b.status::text FROM agents a
@@ -1064,8 +1175,14 @@ async fn build_worker_inline_exhaustion_terminalizes_agent() {
     .fetch_one(&server.db)
     .await
     .unwrap();
-    assert_eq!(agent_status, "failed", "agent must reach a terminal state, not stay 'deploying' forever");
-    assert_eq!(build_status, "failed", "agent_builds must reach a terminal state, not stay 'building' forever");
+    assert_eq!(
+        agent_status, "failed",
+        "agent must reach a terminal state, not stay 'deploying' forever"
+    );
+    assert_eq!(
+        build_status, "failed",
+        "agent_builds must reach a terminal state, not stay 'building' forever"
+    );
 
     server.cleanup().await;
 }
@@ -1126,13 +1243,15 @@ async fn build_worker_stuck_job_recovery_sql() {
 
     assert_eq!(affected, 1, "recovery should reset the stuck job");
 
-    let new_status: String =
-        sqlx::query_scalar("SELECT status FROM build_jobs WHERE id = $1")
-            .bind(job_id)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(new_status, "pending", "stuck job should be reset to pending");
+    let new_status: String = sqlx::query_scalar("SELECT status FROM build_jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        new_status, "pending",
+        "stuck job should be reset to pending"
+    );
 
     server.cleanup().await;
 }
@@ -1195,7 +1314,10 @@ async fn build_worker_does_not_reset_recent_in_progress_jobs() {
         .fetch_one(&server.db)
         .await
         .unwrap();
-    assert_eq!(status, "in_progress", "recently-claimed job should remain in_progress");
+    assert_eq!(
+        status, "in_progress",
+        "recently-claimed job should remain in_progress"
+    );
 
     server.cleanup().await;
 }
@@ -1208,7 +1330,14 @@ async fn build_job_has_correct_initial_status() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let res = do_upload(&server, uid, "initial-status-ng", vec![], make_valid_agent_zip()).await;
+    let res = do_upload(
+        &server,
+        uid,
+        "initial-status-ng",
+        vec![],
+        make_valid_agent_zip(),
+    )
+    .await;
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
     let agent_id: Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
@@ -1248,7 +1377,10 @@ async fn migration_013_spec_ports_column_exists() {
     .await;
 
     let count = result.expect("spec_ports column query failed");
-    assert_eq!(count, 1, "spec_ports column should exist on agent_deployments");
+    assert_eq!(
+        count, 1,
+        "spec_ports column should exist on agent_deployments"
+    );
 
     server.cleanup().await;
 }
@@ -1266,7 +1398,10 @@ async fn migration_013_spec_image_column_exists() {
     .await
     .unwrap();
 
-    assert_eq!(count, 1, "spec_image column should exist on agent_deployments");
+    assert_eq!(
+        count, 1,
+        "spec_image column should exist on agent_deployments"
+    );
     server.cleanup().await;
 }
 
@@ -1301,8 +1436,17 @@ async fn migration_013_build_jobs_has_required_columns() {
     .await
     .unwrap();
 
-    let required = ["agent_id", "completed_at", "created_at", "error_msg", "id",
-                    "owner_id", "payload", "picked_at", "status"];
+    let required = [
+        "agent_id",
+        "completed_at",
+        "created_at",
+        "error_msg",
+        "id",
+        "owner_id",
+        "payload",
+        "picked_at",
+        "status",
+    ];
     for col in required {
         assert!(
             cols.iter().any(|c| c == col),

@@ -24,7 +24,10 @@ impl HttpClient {
             .user_agent(USER_AGENT)
             .build()
             .map_err(Error::Http)?;
-        Ok(Self { inner, base_url: base_url.into() })
+        Ok(Self {
+            inner,
+            base_url: base_url.into(),
+        })
     }
 
     // ── raw request builder ────────────────────────────────────────────────
@@ -37,7 +40,13 @@ impl HttpClient {
 
     /// GET `path` with a Bearer token; deserialize response body into `T`.
     pub async fn get_authed<T: DeserializeOwned>(&self, path: &str, token: &str) -> Result<T> {
-        let resp = self.inner.get(self.url(path)).bearer_auth(token).send().await.map_err(Error::Http)?;
+        let resp = self
+            .inner
+            .get(self.url(path))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(Error::Http)?;
         Self::parse(resp).await
     }
 

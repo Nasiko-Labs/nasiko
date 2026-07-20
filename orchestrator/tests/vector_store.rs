@@ -30,7 +30,10 @@ fn disabled_store_score_agents_returns_equal_weights() {
     let scored = store.score_agents(&[1.0, 0.0], &agents);
     assert_eq!(scored.len(), 3);
     for (score, _) in &scored {
-        assert!((*score - 1.0).abs() < 1e-6, "expected weight 1.0, got {score}");
+        assert!(
+            (*score - 1.0).abs() < 1e-6,
+            "expected weight 1.0, got {score}"
+        );
     }
 }
 
@@ -98,7 +101,10 @@ async fn exactly_at_threshold_returns_all() {
 async fn disabled_store_embed_returns_error() {
     let store = VectorStore::disabled();
     let result = store.embed("test text").await;
-    assert!(result.is_err(), "disabled store should return Err on embed()");
+    assert!(
+        result.is_err(),
+        "disabled store should return Err on embed()"
+    );
 }
 
 // ── score_agents: empty agents list ──────────────────────────────────────────
@@ -130,8 +136,8 @@ fn disabled_score_preserves_agent_identity() {
 #[ignore = "requires live OpenAI-compatible embeddings API"]
 async fn build_with_api_key_embeds_agents() {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY required");
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com".into());
+    let base_url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
     let model = "text-embedding-3-small".to_string();
 
     let agents = make_agents(&["coding-agent", "data-agent"]);
@@ -156,7 +162,8 @@ async fn build_reuses_cached_embedding_on_second_call() {
         .with_header("content-type", "application/json")
         .with_body(r#"{"data":[{"embedding":[0.1,0.2,0.3]}]}"#)
         .expect(1)
-        .create_async().await;
+        .create_async()
+        .await;
 
     let agents = make_agents(&["agent-1"]);
     let cache: EmbeddingCache = Default::default();
@@ -193,7 +200,8 @@ async fn build_re_embeds_when_agent_content_changes() {
         .with_header("content-type", "application/json")
         .with_body(r#"{"data":[{"embedding":[0.1,0.2,0.3]}]}"#)
         .expect(2)
-        .create_async().await;
+        .create_async()
+        .await;
 
     let mut agents = make_agents(&["agent-1"]);
     let cache: EmbeddingCache = Default::default();

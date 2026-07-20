@@ -74,7 +74,9 @@ struct ListQuery {
     status: Option<String>,
     q: Option<String>,
 }
-fn default_limit() -> i64 { 50 }
+fn default_limit() -> i64 {
+    50
+}
 
 async fn list_flows(
     State(state): State<AppState>,
@@ -121,13 +123,11 @@ async fn get_flow(
         Err(e) => return e.into_response(),
     };
 
-    let flow = sqlx::query_as::<_, Flow>(
-        "SELECT * FROM flows WHERE flow_id = $1 AND user_id = $2",
-    )
-    .bind(&flow_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await;
+    let flow = sqlx::query_as::<_, Flow>("SELECT * FROM flows WHERE flow_id = $1 AND user_id = $2")
+        .bind(&flow_id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await;
 
     match flow {
         Ok(Some(f)) => {
@@ -192,7 +192,11 @@ async fn create_flow(
         Ok(flow) => (StatusCode::CREATED, Json(flow)).into_response(),
         Err(e) => {
             tracing::error!(%e, %user_id, flow_id = %body.flow_id, "create_flow: db error");
-            (StatusCode::CONFLICT, "flow already exists or invalid reference").into_response()
+            (
+                StatusCode::CONFLICT,
+                "flow already exists or invalid reference",
+            )
+                .into_response()
         }
     }
 }
@@ -235,7 +239,11 @@ async fn complete_flow(
     .bind(user_id)
     .bind(&body.status)
     .bind(body.total_tokens_used)
-    .bind(body.total_cost_usd.map(rust_decimal::Decimal::try_from).and_then(Result::ok))
+    .bind(
+        body.total_cost_usd
+            .map(rust_decimal::Decimal::try_from)
+            .and_then(Result::ok),
+    )
     .bind(&body.error_message)
     .bind(body.max_depth_reached)
     .bind(body.total_invocations)

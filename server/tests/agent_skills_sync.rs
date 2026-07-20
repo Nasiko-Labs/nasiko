@@ -38,7 +38,12 @@ async fn rows(pool: &PgPool, agent_id: Uuid) -> Vec<(String, Vec<String>)> {
         .await
         .unwrap()
         .into_iter()
-        .map(|r| (r.get::<String, _>("skill_key"), r.get::<Vec<String>, _>("tags")))
+        .map(|r| {
+            (
+                r.get::<String, _>("skill_key"),
+                r.get::<Vec<String>, _>("tags"),
+            )
+        })
         .collect()
 }
 
@@ -82,10 +87,16 @@ async fn setup() -> (PgPool, String, Uuid) {
 }
 
 async fn teardown(db_name: &str) {
-    let admin = PgPoolOptions::new().max_connections(1).connect(&admin_url()).await.unwrap();
-    let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"))
-        .execute(&admin)
-        .await;
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&admin_url())
+        .await
+        .unwrap();
+    let _ = sqlx::query(&format!(
+        "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
+    ))
+    .execute(&admin)
+    .await;
 }
 
 #[tokio::test]
@@ -120,8 +131,16 @@ async fn replace_dedup_empty_and_roundtrip() {
     )
     .await
     .unwrap();
-    let keys: Vec<String> = rows(&pool, agent_id).await.into_iter().map(|(k, _)| k).collect();
-    assert_eq!(keys, vec!["b".to_string(), "c".to_string()], "replace semantics");
+    let keys: Vec<String> = rows(&pool, agent_id)
+        .await
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["b".to_string(), "c".to_string()],
+        "replace semantics"
+    );
 
     // 3. Duplicate skill_key in input → single row (dedup, no 'affect row twice').
     sync_agent_skills(
@@ -142,14 +161,19 @@ async fn replace_dedup_empty_and_roundtrip() {
     assert!(rows(&pool, agent_id).await.is_empty());
 
     // 5. examples jsonb round-trips.
-    sync_agent_skills(&mut pool.acquire().await.unwrap(), agent_id, &[skill("e", &[])])
-        .await
-        .unwrap();
-    let ex: Value = sqlx::query_scalar("SELECT examples FROM agent_skills WHERE agent_id=$1 AND skill_key='e'")
-        .bind(agent_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    sync_agent_skills(
+        &mut pool.acquire().await.unwrap(),
+        agent_id,
+        &[skill("e", &[])],
+    )
+    .await
+    .unwrap();
+    let ex: Value =
+        sqlx::query_scalar("SELECT examples FROM agent_skills WHERE agent_id=$1 AND skill_key='e'")
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(ex, json!([{"q": "e"}]));
 
     teardown(&db_name).await;
@@ -168,7 +192,11 @@ async fn json_helper_handles_valid_and_malformed() {
     // Malformed JSON (object, not array) is a no-op — must not panic or wipe rows.
     let malformed = json!({"not": "an array"});
     sync_agent_skills_json(&pool, agent_id, &malformed).await;
-    assert_eq!(rows(&pool, agent_id).await.len(), 1, "malformed JSON must not change rows");
+    assert_eq!(
+        rows(&pool, agent_id).await.len(),
+        1,
+        "malformed JSON must not change rows"
+    );
 
     teardown(&db_name).await;
     drop(pool);

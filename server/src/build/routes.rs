@@ -32,7 +32,9 @@ pub(crate) fn validate_github_url(url: &str, allowed_hosts: &[String]) -> Result
     if parsed.scheme() != "https" {
         return Err("only https:// URLs are allowed".into());
     }
-    let host = parsed.host_str().ok_or_else(|| "missing host".to_string())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "missing host".to_string())?;
     if !allowed_hosts.iter().any(|h| h == host) {
         return Err(format!("host '{host}' is not in the allowed list"));
     }
@@ -57,18 +59,8 @@ pub(crate) fn validate_version_tag(tag: &str) -> Result<(), String> {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/builds", post(create_build))
-}
-
-/// The GET routes here are mounted separately from `router()`'s
-/// `require_deployer`-gated mutation, under `require_auth` only — each
-/// handler checks `can_deploy` itself and returns `crate::unavailable()`
-/// (200) instead of what would otherwise be a blanket 403, replicating
-/// exactly who could see this data before (deployer+, same scoping the
-/// queries already apply for non-superusers), just without an error status.
-pub fn degradable_router() -> Router<AppState> {
     Router::new()
-        .route("/builds", get(list_all_builds))
+        .route("/builds", post(create_build).get(list_all_builds))
         .route("/builds/{id}", get(get_build))
         .route("/builds/{id}/progress", get(build_progress_sse))
         .route("/builds/{id}/logs", get(get_build_logs))
@@ -143,19 +135,20 @@ async fn create_build(
     };
 
     // Verify agent exists and caller owns it
-    let agent_name: Option<String> = sqlx::query_scalar(
-        "SELECT name FROM agents WHERE id = $1 AND owner_id = $2",
-    )
-    .bind(agent_id)
-    .bind(owner_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let agent_name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND owner_id = $2")
+            .bind(agent_id)
+            .bind(owner_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
 
     let agent_name = match agent_name {
         Some(name) => name,
-        None => return (StatusCode::NOT_FOUND, "agent not found or not owned by you").into_response(),
+        None => {
+            return (StatusCode::NOT_FOUND, "agent not found or not owned by you").into_response();
+        }
     };
 
     // Validate user-supplied inputs before any side effects.
@@ -173,7 +166,11 @@ async fn create_build(
     // If source ZIP provided, upload to S3
     let source_key = if let Some(data) = &source_data {
         let key = format!("sources/{agent_id}/{version_tag}.zip");
-        if let Err(e) = state.oci_storage.put_blob(&key, bytes::Bytes::from(data.clone())).await {
+        if let Err(e) = state
+            .oci_storage
+            .put_blob(&key, bytes::Bytes::from(data.clone()))
+            .await
+        {
             tracing::error!(%e, %agent_id, %key, "create_build: failed to upload source");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
@@ -211,14 +208,13 @@ async fn create_build(
         source_key,
         version_tag,
     };
-    if let Err(e) = sqlx::query(
-        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
-    )
-    .bind(agent_id)
-    .bind(owner_id)
-    .bind(serde_json::to_value(&payload).expect("serialize build payload"))
-    .execute(&state.db)
-    .await
+    if let Err(e) =
+        sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
+            .bind(agent_id)
+            .bind(owner_id)
+            .bind(serde_json::to_value(&payload).expect("serialize build payload"))
+            .execute(&state.db)
+            .await
     {
         tracing::error!(%e, %agent_id, build_id = %build.id, "create_build: failed to queue build job");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
@@ -240,6 +236,7 @@ pub async fn execute_build(
     oci_storage: nasiko_oci::storage::S3Storage,
     http_client: reqwest::Client,
     allowed_hosts: Vec<String>,
+    capability_generator_model: String,
 ) {
     set_build_status(&db, build_id, BuildStatus::Building).await;
 
@@ -255,13 +252,15 @@ pub async fn execute_build(
             validate_github_url(url, &allowed_hosts)
                 .map_err(|e| format!("invalid github_url: {e}"))?;
 
-            tokio::fs::create_dir_all(&tmp_dir).await
+            tokio::fs::create_dir_all(&tmp_dir)
+                .await
                 .map_err(|e| format!("create tmp dir: {e}"))?;
 
             // tmp_dir.to_str() fails only on non-UTF8 paths (exotic OS configs).
             // Falling back to "." is dangerous: tar_directory would then package the
             // server's working directory (binaries, env files) into the build context.
-            let tmp_path = tmp_dir.to_str()
+            let tmp_path = tmp_dir
+                .to_str()
                 .ok_or_else(|| "temp path contains non-UTF8 characters".to_string())?;
 
             let clone_status = tokio::time::timeout(
@@ -279,13 +278,17 @@ pub async fn execute_build(
             .map_err(|e| format!("git clone: {e}"))?;
 
             if !clone_status.success() {
-                return Err(format!("git clone failed with exit code {}", clone_status.code().unwrap_or(1)));
+                return Err(format!(
+                    "git clone failed with exit code {}",
+                    clone_status.code().unwrap_or(1)
+                ));
             }
         } else if let Some(key) = &source_key {
-            let data = oci_storage.get_blob(key).await
+            let data = oci_storage
+                .get_blob(key)
+                .await
                 .map_err(|e| format!("fetch source from S3: {e}"))?;
-            extract_zip_to_dir(&data, &tmp_dir)
-                .map_err(|e| format!("extract zip: {e}"))?;
+            extract_zip_to_dir(&data, &tmp_dir).map_err(|e| format!("extract zip: {e}"))?;
         } else {
             return Err("no source provided (neither github_url nor source zip)".into());
         }
@@ -297,11 +300,13 @@ pub async fn execute_build(
         }
 
         // Patch Dockerfile to inject OTel auto-instrumentation (zero-code change for the agent).
-        let original = tokio::fs::read_to_string(&dockerfile_path).await
+        let original = tokio::fs::read_to_string(&dockerfile_path)
+            .await
             .map_err(|e| format!("read Dockerfile: {e}"))?;
         let patched = nasiko_observability::patch_dockerfile_for_otel(&original);
         if patched != original {
-            tokio::fs::write(&dockerfile_path, &patched).await
+            tokio::fs::write(&dockerfile_path, &patched)
+                .await
                 .map_err(|e| format!("write patched Dockerfile: {e}"))?;
             tracing::info!(build_id = %build_id, "patched Dockerfile with OTel instrumentation");
 
@@ -315,13 +320,16 @@ pub async fn execute_build(
         }
 
         // Build image
-        let tar_bytes = crate::build::tar_directory(&tmp_dir)
-            .map_err(|e| format!("tar source: {e}"))?;
-        runtime.build(&tar_bytes, &image_tag).await
+        let tar_bytes =
+            crate::build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
+        runtime
+            .build(&tar_bytes, &image_tag)
+            .await
             .map_err(|e| format!("docker build: {e}"))?;
 
         Ok(())
-    }.await;
+    }
+    .await;
 
     // Clean up temp dir
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -344,8 +352,14 @@ pub async fn execute_build(
 
             if let Some(ref key) = source_key {
                 auto_generate_capabilities_pub(
-                    &db, &oci_storage, &http_client, key, &agent_name,
-                ).await;
+                    &db,
+                    &oci_storage,
+                    &http_client,
+                    key,
+                    &agent_name,
+                    &capability_generator_model,
+                )
+                .await;
             }
         }
         Err(e) => {
@@ -366,7 +380,10 @@ pub fn extract_zip_to_dir(data: &[u8], dest: &std::path::Path) -> std::result::R
 
 /// Extract a zip archive from a file on disk into `dest`.
 /// Used by the upload path after streaming the zip to disk.
-pub fn extract_zip_from_file(zip_path: &std::path::Path, dest: &std::path::Path) -> std::result::Result<(), String> {
+pub fn extract_zip_from_file(
+    zip_path: &std::path::Path,
+    dest: &std::path::Path,
+) -> std::result::Result<(), String> {
     let f = std::fs::File::open(zip_path).map_err(|e| format!("open zip: {e}"))?;
     extract_zip_reader(std::io::BufReader::new(f), dest)
 }
@@ -379,7 +396,10 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
 
     if archive.len() > MAX_ZIP_FILES {
-        return Err(format!("zip contains {} files, limit is {MAX_ZIP_FILES}", archive.len()));
+        return Err(format!(
+            "zip contains {} files, limit is {MAX_ZIP_FILES}",
+            archive.len()
+        ));
     }
 
     let mut uncompressed_total: u64 = 0;
@@ -401,7 +421,10 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
 
         // Belt-and-suspenders: verify the resolved path stays inside dest
         if !path.starts_with(dest) {
-            return Err(format!("zip traversal attempt (join escaped dest): {}", safe_path.display()));
+            return Err(format!(
+                "zip traversal attempt (join escaped dest): {}",
+                safe_path.display()
+            ));
         }
 
         if file.is_dir() {
@@ -415,8 +438,9 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
             // `file.size()` (a bomb declares 0 while inflating to gigabytes).
             // Read at most `remaining + 1` so an over-limit entry is detected.
             let remaining = MAX_ZIP_UNCOMPRESSED.saturating_sub(uncompressed_total);
-            let written = std::io::copy(&mut std::io::Read::take(&mut file, remaining + 1), &mut out)
-                .map_err(|e| e.to_string())?;
+            let written =
+                std::io::copy(&mut std::io::Read::take(&mut file, remaining + 1), &mut out)
+                    .map_err(|e| e.to_string())?;
             uncompressed_total = uncompressed_total.saturating_add(written);
             if uncompressed_total > MAX_ZIP_UNCOMPRESSED {
                 return Err(format!(
@@ -430,15 +454,7 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
 
 // ─── GET /builds/{id} ───────────────────────────────────────────────────────
 
-async fn get_build(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
+async fn get_build(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     match sqlx::query_as::<_, BuildRecord>("SELECT * FROM agent_builds WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
@@ -457,13 +473,8 @@ async fn get_build(
 
 async fn build_progress_sse(
     State(state): State<AppState>,
-    claims: Claims,
     Path(id): Path<Uuid>,
-) -> axum::response::Response {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
+) -> impl IntoResponse {
     let db = state.db.clone();
 
     let stream = async_stream::stream! {
@@ -504,27 +515,18 @@ async fn build_progress_sse(
         }
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 // ─── GET /builds/{id}/logs ──────────────────────────────────────────────────
 
-async fn get_build_logs(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
-    let url: Option<String> =
-        sqlx::query_scalar("SELECT logs_url FROM agent_builds WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+async fn get_build_logs(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    let url: Option<String> = sqlx::query_scalar("SELECT logs_url FROM agent_builds WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
 
     match url {
         Some(u) => u.into_response(),
@@ -543,17 +545,15 @@ struct ListAllQuery {
     status: Option<String>,
     q: Option<String>,
 }
-fn default_list_limit() -> i64 { 20 }
+fn default_list_limit() -> i64 {
+    20
+}
 
 async fn list_all_builds(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<ListAllQuery>,
 ) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -610,10 +610,6 @@ async fn list_builds(
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -631,7 +627,7 @@ async fn list_builds(
         .unwrap_or(false);
 
         if !owned {
-            return crate::unavailable();
+            return StatusCode::FORBIDDEN.into_response();
         }
     }
 
@@ -658,6 +654,7 @@ pub async fn auto_generate_capabilities_pub(
     http_client: &reqwest::Client,
     source_key: &str,
     agent_name: &str,
+    capability_generator_model: &str,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
     use nasiko_orchestrator::providers::LLMProvider;
@@ -676,9 +673,13 @@ pub async fn auto_generate_capabilities_pub(
     };
 
     let provider = LLMProvider::from_env(http_client.clone());
-    let model = std::env::var("CAPABILITY_GENERATOR_MODEL")
-        .unwrap_or_else(|_| "deepseek-v4-flash".into());
-    let generator = CapabilityGenerator::new(provider, model);
+    // Caller passes `state.config.capability_generator_model` (already
+    // resolved from `CAPABILITY_GENERATOR_MODEL`, default "gpt-4o-mini") —
+    // see `capabilities/routes.rs::make_generator` for the same fix; this
+    // function has no `AppState` of its own so the resolved value is threaded
+    // through `execute_build` instead of re-reading the env var here with a
+    // hardcoded placeholder.
+    let generator = CapabilityGenerator::new(provider, capability_generator_model.to_string());
 
     match generator.generate(&source, agent_name).await {
         Ok((card, _)) => {
@@ -746,8 +747,23 @@ fn extract_source_text(data: &[u8]) -> Option<String> {
     };
 
     let code_extensions = [
-        "py", "rs", "ts", "js", "go", "java", "rb", "ex", "exs", "toml", "yaml", "yml", "json",
-        "md", "txt", "dockerfile", "sh",
+        "py",
+        "rs",
+        "ts",
+        "js",
+        "go",
+        "java",
+        "rb",
+        "ex",
+        "exs",
+        "toml",
+        "yaml",
+        "yml",
+        "json",
+        "md",
+        "txt",
+        "dockerfile",
+        "sh",
     ];
 
     let mut combined = String::new();
@@ -803,13 +819,19 @@ mod extract_source_text_tests {
     fn reads_small_source_file_content_in_full() {
         let zip = make_zip(&[("main.py", b"print('hello')\n")]);
         let text = extract_source_text(&zip).expect("should extract source text");
-        assert!(text.contains("print('hello')"), "small file content must round-trip untruncated");
+        assert!(
+            text.contains("print('hello')"),
+            "small file content must round-trip untruncated"
+        );
     }
 
     #[test]
     fn ignores_non_code_extensions() {
         let zip = make_zip(&[("data.bin", b"\x00\x01\x02\x03")]);
-        assert!(extract_source_text(&zip).is_none(), "non-code extensions should be skipped");
+        assert!(
+            extract_source_text(&zip).is_none(),
+            "non-code extensions should be skipped"
+        );
     }
 
     #[test]
@@ -824,6 +846,9 @@ mod extract_source_text_tests {
         let zip = make_zip(&[("boundary.md", &content)]);
         let text = extract_source_text(&zip).expect("should extract source text");
         let q_count = text.bytes().filter(|&b| b == b'q').count();
-        assert_eq!(q_count, 50_000, "a file exactly at the cap must be read in full, not truncated early");
+        assert_eq!(
+            q_count, 50_000,
+            "a file exactly at the cap must be read in full, not truncated early"
+        );
     }
 }

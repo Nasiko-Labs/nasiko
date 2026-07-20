@@ -50,7 +50,12 @@ async fn seed_user(server: &common::TestServer, username: &str) -> Uuid {
 /// Seed an agent row whose `url` points at a real (stub) HTTP server, so
 /// `nasiko_agent_proxy::resolve` finds a running endpoint without needing an
 /// actual container.
-async fn seed_running_agent(server: &common::TestServer, owner_id: Uuid, name: &str, url: &str) -> Uuid {
+async fn seed_running_agent(
+    server: &common::TestServer,
+    owner_id: Uuid,
+    name: &str,
+    url: &str,
+) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agents (name, owner_id, image, status, url, is_public) VALUES ($1, $2, 'x:1.0.0', 'running', $3, false) RETURNING id",
     )
@@ -65,7 +70,10 @@ async fn seed_running_agent(server: &common::TestServer, owner_id: Uuid, name: &
 async fn echo_headers(req: Request) -> Json<Value> {
     let mut out = serde_json::Map::new();
     for (name, value) in req.headers().iter() {
-        out.insert(name.as_str().to_string(), json!(value.to_str().unwrap_or("")));
+        out.insert(
+            name.as_str().to_string(),
+            json!(value.to_str().unwrap_or("")),
+        );
     }
     Json(Value::Object(out))
 }
@@ -92,7 +100,9 @@ async fn proxy_strips_credentials_and_spoofed_identity_headers() {
     let agent_id = seed_running_agent(&server, owner_id, "proxy-authz-agent", &stub_url).await;
 
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/agents/{agent_id}/echo"))),
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}/echo"))),
         &owner_id.to_string(),
         "proxy-owner",
     )
@@ -107,14 +117,27 @@ async fn proxy_strips_credentials_and_spoofed_identity_headers() {
     assert_eq!(res.status(), 200);
     let echoed: Value = res.json().await.unwrap();
 
-    assert!(echoed.get("authorization").is_none(), "Authorization must not reach the agent: {echoed}");
-    assert!(echoed.get("cookie").is_none(), "Cookie must not reach the agent: {echoed}");
+    assert!(
+        echoed.get("authorization").is_none(),
+        "Authorization must not reach the agent: {echoed}"
+    );
+    assert!(
+        echoed.get("cookie").is_none(),
+        "Cookie must not reach the agent: {echoed}"
+    );
     assert_eq!(
-        echoed["x-user-id"], owner_id.to_string(),
+        echoed["x-user-id"],
+        owner_id.to_string(),
         "x-user-id must be the server-derived owner id, not the spoofed value: {echoed}"
     );
-    assert_eq!(echoed["x-username"], "proxy-owner", "x-username must be server-derived: {echoed}");
-    assert_eq!(echoed["x-is-superuser"], "false", "x-is-superuser must be server-derived, not spoofed true: {echoed}");
+    assert_eq!(
+        echoed["x-username"], "proxy-owner",
+        "x-username must be server-derived: {echoed}"
+    );
+    assert_eq!(
+        echoed["x-is-superuser"], "false",
+        "x-is-superuser must be server-derived, not spoofed true: {echoed}"
+    );
 
     server.cleanup().await;
 }
@@ -127,10 +150,13 @@ async fn proxy_rejects_non_owner_non_grantee_with_404() {
     let owner_id = seed_user(&server, "proxy-owner-2").await;
     let other_id = seed_user(&server, "proxy-other").await;
     let stub_url = start_stub_agent().await;
-    let agent_id = seed_running_agent(&server, owner_id, "proxy-authz-private-agent", &stub_url).await;
+    let agent_id =
+        seed_running_agent(&server, owner_id, "proxy-authz-private-agent", &stub_url).await;
 
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/agents/{agent_id}/echo"))),
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}/echo"))),
         &other_id.to_string(),
         "proxy-other",
     )
@@ -138,7 +164,11 @@ async fn proxy_rejects_non_owner_non_grantee_with_404() {
     .await
     .unwrap();
 
-    assert_eq!(res.status(), 404, "non-owner/non-grantee must not reach a private agent");
+    assert_eq!(
+        res.status(),
+        404,
+        "non-owner/non-grantee must not reach a private agent"
+    );
 
     server.cleanup().await;
 }
@@ -150,10 +180,13 @@ async fn proxy_allows_owner_through_to_the_agent() {
     let _ = init_admin(&server).await;
     let owner_id = seed_user(&server, "proxy-owner-3").await;
     let stub_url = start_stub_agent().await;
-    let agent_id = seed_running_agent(&server, owner_id, "proxy-authz-owner-agent", &stub_url).await;
+    let agent_id =
+        seed_running_agent(&server, owner_id, "proxy-authz-owner-agent", &stub_url).await;
 
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/agents/{agent_id}/echo"))),
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}/echo"))),
         &owner_id.to_string(),
         "proxy-owner-3",
     )

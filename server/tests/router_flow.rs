@@ -313,7 +313,11 @@ async fn test_routing_single_agent() {
     .unwrap();
 
     // 500 means the engine selected an agent and tried to reach it — not 503
-    assert_ne!(resp.status(), 503, "expected routing to select the agent, not NoAgentsAvailable");
+    assert_ne!(
+        resp.status(),
+        503,
+        "expected routing to select the agent, not NoAgentsAvailable"
+    );
 
     server.cleanup().await;
 }
@@ -340,7 +344,11 @@ async fn test_routing_lte_15_agents() {
     .await
     .unwrap();
 
-    assert_ne!(resp.status(), 503, "expected an agent to be selected from the catalog");
+    assert_ne!(
+        resp.status(),
+        503,
+        "expected an agent to be selected from the catalog"
+    );
 
     server.cleanup().await;
 }
@@ -369,7 +377,11 @@ async fn test_routing_ollama_disabled_gt_threshold() {
     .unwrap();
 
     // VectorStore disabled → all 16 pass Stage 1 → agent selected → 500 (unreachable)
-    assert_ne!(resp.status(), 503, "Ollama fallback should not block routing");
+    assert_ne!(
+        resp.status(),
+        503,
+        "Ollama fallback should not block routing"
+    );
 
     server.cleanup().await;
 }
@@ -423,7 +435,10 @@ async fn test_routing_fallback_to_first_candidate() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert!(count > 0, "expect at least one non-fallback selection when LLM is available");
+    assert!(
+        count > 0,
+        "expect at least one non-fallback selection when LLM is available"
+    );
 
     server.cleanup().await;
 }
@@ -452,10 +467,15 @@ async fn test_routing_with_history() {
         }
     });
 
-    let resp = as_superuser(server.client.post(server.url("/api/orchestrator/a2a")).json(&body))
-        .send()
-        .await
-        .unwrap();
+    let resp = as_superuser(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&body),
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_ne!(resp.status(), 503);
     server.cleanup().await;
@@ -543,7 +563,11 @@ async fn test_direct_agent_by_name_denies_non_owner() {
     .send()
     .await
     .unwrap();
-    assert_eq!(resp_by_name.status(), 404, "name-addressed request to a private agent must be denied for a non-owner");
+    assert_eq!(
+        resp_by_name.status(),
+        404,
+        "name-addressed request to a private agent must be denied for a non-owner"
+    );
     let body: Value = resp_by_name.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32604);
 
@@ -560,9 +584,11 @@ async fn test_direct_agent_by_name_denies_non_owner() {
     .send()
     .await
     .unwrap();
-    assert_eq!(resp_by_uuid.status(), 404, "UUID-addressed request to a private agent must be denied for a non-owner");
+    assert_eq!(
+        resp_by_uuid.status(),
+        404,
+        "UUID-addressed request to a private agent must be denied for a non-owner"
+    );
 
     server.cleanup().await;
 }
-
-

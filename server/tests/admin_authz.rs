@@ -76,7 +76,15 @@ impl Scenario {
         let other_id = seed_user(&server, "other-user").await;
         let agent_id = seed_agent(&server, owner_id, agent_name).await;
 
-        (Self { server, owner_id, other_id, super_id }, agent_id)
+        (
+            Self {
+                server,
+                owner_id,
+                other_id,
+                super_id,
+            },
+            agent_id,
+        )
     }
 
     fn as_owner(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -96,16 +104,12 @@ impl Scenario {
 
 #[tokio::test]
 #[serial]
-async fn status_degrades_for_non_owner_allows_owner_and_superuser() {
+async fn status_rejects_non_owner_allows_owner_and_superuser() {
     let (s, _agent_id) = Scenario::setup("status-authz-agent").await;
     let path = s.server.url("/api/containers/status-authz-agent");
 
-    // GET (read) degrades to 200 {"available": false} instead of 403 — a
-    // non-owner simply can't see this container's status, no error state.
     let res = s.as_other(s.server.client.get(&path)).send().await.unwrap();
-    assert_eq!(res.status(), 200, "non-owner gets 200 unavailable, not an error");
-    let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(body["available"], serde_json::json!(false));
+    assert_eq!(res.status(), 403, "non-owner must be forbidden");
 
     let res = s.as_owner(s.server.client.get(&path)).send().await.unwrap();
     assert_eq!(res.status(), 200, "owner must be allowed");
@@ -124,10 +128,18 @@ async fn destroy_rejects_non_owner() {
     let (s, _agent_id) = Scenario::setup("destroy-authz-agent").await;
     let path = s.server.url("/api/containers/destroy-authz-agent");
 
-    let res = s.as_other(s.server.client.delete(&path)).send().await.unwrap();
+    let res = s
+        .as_other(s.server.client.delete(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 403, "non-owner must be forbidden");
 
-    let res = s.as_owner(s.server.client.delete(&path)).send().await.unwrap();
+    let res = s
+        .as_owner(s.server.client.delete(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 204, "owner must be allowed");
 
     s.server.cleanup().await;
@@ -139,7 +151,11 @@ async fn destroy_allows_superuser() {
     let (s, _agent_id) = Scenario::setup("destroy-authz-super-agent").await;
     let path = s.server.url("/api/containers/destroy-authz-super-agent");
 
-    let res = s.as_super(s.server.client.delete(&path)).send().await.unwrap();
+    let res = s
+        .as_super(s.server.client.delete(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 204, "superuser must be allowed");
 
     s.server.cleanup().await;
@@ -153,10 +169,18 @@ async fn stop_rejects_non_owner_allows_owner() {
     let (s, _agent_id) = Scenario::setup("stop-authz-agent").await;
     let path = s.server.url("/api/containers/stop-authz-agent/stop");
 
-    let res = s.as_other(s.server.client.post(&path)).send().await.unwrap();
+    let res = s
+        .as_other(s.server.client.post(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 403);
 
-    let res = s.as_owner(s.server.client.post(&path)).send().await.unwrap();
+    let res = s
+        .as_owner(s.server.client.post(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
 
     s.server.cleanup().await;
@@ -168,10 +192,18 @@ async fn start_rejects_non_owner_allows_owner() {
     let (s, _agent_id) = Scenario::setup("start-authz-agent").await;
     let path = s.server.url("/api/containers/start-authz-agent/start");
 
-    let res = s.as_other(s.server.client.post(&path)).send().await.unwrap();
+    let res = s
+        .as_other(s.server.client.post(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 403);
 
-    let res = s.as_owner(s.server.client.post(&path)).send().await.unwrap();
+    let res = s
+        .as_owner(s.server.client.post(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
 
     s.server.cleanup().await;
@@ -190,10 +222,18 @@ async fn restart_rejects_non_owner_allows_owner_and_superuser() {
     let (s, _agent_id) = Scenario::setup("restart-authz-agent").await;
     let path = s.server.url("/api/containers/restart-authz-agent/restart");
 
-    let res = s.as_other(s.server.client.post(&path)).send().await.unwrap();
+    let res = s
+        .as_other(s.server.client.post(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 403, "non-owner must be forbidden");
 
-    let res = s.as_owner(s.server.client.post(&path)).send().await.unwrap();
+    let res = s
+        .as_owner(s.server.client.post(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200, "owner must be allowed");
 
     s.server.cleanup().await;
@@ -203,22 +243,26 @@ async fn restart_rejects_non_owner_allows_owner_and_superuser() {
 #[serial]
 async fn restart_allows_superuser() {
     let (s, _agent_id) = Scenario::setup("restart-authz-super-agent").await;
-    let path = s.server.url("/api/containers/restart-authz-super-agent/restart");
+    let path = s
+        .server
+        .url("/api/containers/restart-authz-super-agent/restart");
 
-    let res = s.as_super(s.server.client.post(&path)).send().await.unwrap();
+    let res = s
+        .as_super(s.server.client.post(&path))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200, "superuser must be allowed");
 
     s.server.cleanup().await;
 }
 
-/// A name with no catalog entry has no owner to check an ACL against — see
-/// `25abcbf fix: remove ACL-bypassing raw-ID fallback from container
-/// restart`, which removed the old raw-container-ID fallback (any deployer
-/// could previously restart any host container just by knowing its name,
-/// with no ownership check possible). Restart now 404s instead.
+/// A name with no catalog entry has no owner to check against — the ad-hoc
+/// fallback path must remain open to any deployer (first-deploy-wins, same
+/// reasoning as `deploy`'s ad-hoc-image branch).
 #[tokio::test]
 #[serial]
-async fn restart_of_unregistered_container_is_404() {
+async fn restart_allows_any_deployer_when_no_agent_record_exists() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let super_id: Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
@@ -226,11 +270,19 @@ async fn restart_of_unregistered_container_is_404() {
     let _ = super_id;
 
     let path = server.url("/api/containers/never-registered-container/restart");
-    let res = common::as_member(server.client.post(&path), &other_id.to_string(), "no-record-user")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 404, "ad-hoc restart with no catalog record must 404, not fall back to a raw container ID");
+    let res = common::as_member(
+        server.client.post(&path),
+        &other_id.to_string(),
+        "no-record-user",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "ad-hoc restart with no catalog record must stay open"
+    );
 
     server.cleanup().await;
 }
@@ -266,15 +318,16 @@ async fn scale_rejects_non_owner_allows_owner() {
 
 #[tokio::test]
 #[serial]
-async fn logs_degrades_for_non_owner_allows_owner() {
+async fn logs_rejects_non_owner_allows_owner() {
     let (s, _agent_id) = Scenario::setup("logs-authz-agent").await;
     let path = s.server.url("/api/containers/logs-authz-agent/logs");
 
-    // GET (read) degrades to 200 {"available": false} instead of 403.
     let res = s.as_other(s.server.client.get(&path)).send().await.unwrap();
-    assert_eq!(res.status(), 200, "non-owner gets 200 unavailable, not an error");
-    let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(body["available"], serde_json::json!(false));
+    assert_eq!(
+        res.status(),
+        403,
+        "non-owner must not read another team's logs"
+    );
 
     let res = s.as_owner(s.server.client.get(&path)).send().await.unwrap();
     assert_eq!(res.status(), 200);
@@ -299,7 +352,11 @@ async fn deploy_onto_existing_agent_name_rejects_non_owner() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403, "non-owner must not redeploy another owner's agent name");
+    assert_eq!(
+        res.status(),
+        403,
+        "non-owner must not redeploy another owner's agent name"
+    );
 
     let res = s
         .as_owner(s.server.client.post(&path))
@@ -307,7 +364,11 @@ async fn deploy_onto_existing_agent_name_rejects_non_owner() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 201, "owner must be allowed to redeploy their own agent");
+    assert_eq!(
+        res.status(),
+        201,
+        "owner must be allowed to redeploy their own agent"
+    );
 
     s.server.cleanup().await;
 }
@@ -338,8 +399,16 @@ async fn list_scoped_to_owner_excludes_other_teams_containers() {
         .json()
         .await
         .unwrap();
-    let ids: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["container_id"].as_str().unwrap()).collect();
-    assert!(ids.contains(&agent_id.to_string().as_str()), "owner must see their own container: {ids:?}");
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["container_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&agent_id.to_string().as_str()),
+        "owner must see their own container: {ids:?}"
+    );
 
     // A non-owner must NOT see it — previously `list` returned every
     // container in the runtime regardless of caller.
@@ -351,8 +420,16 @@ async fn list_scoped_to_owner_excludes_other_teams_containers() {
         .json()
         .await
         .unwrap();
-    let ids: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["container_id"].as_str().unwrap()).collect();
-    assert!(!ids.contains(&agent_id.to_string().as_str()), "non-owner must not see another team's container: {ids:?}");
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["container_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        !ids.contains(&agent_id.to_string().as_str()),
+        "non-owner must not see another team's container: {ids:?}"
+    );
 
     // A superuser bypasses the scoping and sees everything.
     let body: Value = s
@@ -363,8 +440,16 @@ async fn list_scoped_to_owner_excludes_other_teams_containers() {
         .json()
         .await
         .unwrap();
-    let ids: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["container_id"].as_str().unwrap()).collect();
-    assert!(ids.contains(&agent_id.to_string().as_str()), "superuser must see every container: {ids:?}");
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["container_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&agent_id.to_string().as_str()),
+        "superuser must see every container: {ids:?}"
+    );
 
     s.server.cleanup().await;
 }
@@ -378,12 +463,20 @@ async fn deploy_with_unclaimed_name_allows_any_deployer() {
     let other_id = seed_user(&server, "unclaimed-deploy-user").await;
 
     let path = server.url("/api/containers");
-    let res = common::as_member(server.client.post(&path), &other_id.to_string(), "unclaimed-deploy-user")
-        .json(&json!({"image": "some/image:1.0.0", "name": "brand-new-adhoc-container"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 201, "deploying under an unclaimed name must stay open");
+    let res = common::as_member(
+        server.client.post(&path),
+        &other_id.to_string(),
+        "unclaimed-deploy-user",
+    )
+    .json(&json!({"image": "some/image:1.0.0", "name": "brand-new-adhoc-container"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        201,
+        "deploying under an unclaimed name must stay open"
+    );
 
     server.cleanup().await;
 }

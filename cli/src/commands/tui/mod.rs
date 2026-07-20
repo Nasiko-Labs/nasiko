@@ -11,8 +11,8 @@ use crossterm::{
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::prelude::CrosstermBackend;
-use tabled::settings::{Alignment, Style};
 use tabled::Table;
+use tabled::settings::{Alignment, Style};
 
 use app::{App, AppMode};
 use event::{AppEvent, EventLoop};
@@ -36,7 +36,8 @@ pub fn run_tui(endpoint: &str, resume_id: Option<&str>, target_label: &str) -> R
 
     terminal::enable_raw_mode().context("failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen).context("failed to enter alternate screen")?;
+    crossterm::execute!(stdout, EnterAlternateScreen)
+        .context("failed to enter alternate screen")?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
@@ -54,7 +55,9 @@ pub fn run_tui(endpoint: &str, resume_id: Option<&str>, target_label: &str) -> R
         if let Some(ev) = event_loop.next() {
             match ev {
                 AppEvent::Key(key) => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
                         break;
                     }
                     match app.mode {
@@ -125,7 +128,8 @@ fn handle_scroll_key(app: &mut App, key: crossterm::event::KeyEvent) {
 // ─── Session management commands ────────────────────────────────────────────
 
 pub fn create_session(agent: Option<&str>) -> Result<()> {
-    let base_url = crate::config::active_url().context("no active cluster — run `nasiko connect <url>`")?;
+    let base_url =
+        crate::config::active_url().context("no active cluster — run `nasiko connect <url>`")?;
     let token = crate::config::active_token()
         .context("config error")?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
@@ -172,7 +176,11 @@ pub fn delete_session(session_id: &str, yes: bool) -> Result<()> {
 
 // ─── Sessions list command ──────────────────────────────────────────────────
 
-pub fn list_sessions(endpoint: Option<&str>, cursor: Option<&str>, limit: Option<u32>) -> Result<()> {
+pub fn list_sessions(
+    endpoint: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<()> {
     // Resolve CP credentials: prefer explicit endpoint, fall back to active cluster.
     let cp_creds = if let Some(ep) = endpoint {
         session::cp_credentials(ep)
@@ -189,7 +197,12 @@ pub fn list_sessions(endpoint: Option<&str>, cursor: Option<&str>, limit: Option
             println!("No sessions found.");
             return Ok(());
         }
-        println!("{}", Table::new(&page.data).with(Style::blank()).with(Alignment::left()));
+        println!(
+            "{}",
+            Table::new(&page.data)
+                .with(Style::blank())
+                .with(Alignment::left())
+        );
         if let Some(cursor) = page.next_cursor {
             println!("\n(more results — use --cursor {cursor} to continue)");
         }
@@ -201,6 +214,11 @@ pub fn list_sessions(endpoint: Option<&str>, cursor: Option<&str>, limit: Option
         println!("No local sessions found.");
         return Ok(());
     }
-    println!("{}", Table::new(&sessions).with(Style::blank()).with(Alignment::left()));
+    println!(
+        "{}",
+        Table::new(&sessions)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     Ok(())
 }

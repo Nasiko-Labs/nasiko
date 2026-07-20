@@ -9,14 +9,23 @@ pub fn status() -> Result<()> {
     let registry_url = config::artifact_registry_url();
     println!("Cluster:  {}", name);
     println!("CP URL:   {}", entry.url);
-    println!("Registry: {}", registry_url.as_deref().unwrap_or("(not set — export NASIKO_REGISTRY_URL)"));
+    println!(
+        "Registry: {}",
+        registry_url
+            .as_deref()
+            .unwrap_or("(not set — export NASIKO_REGISTRY_URL)")
+    );
     println!();
 
     let client = Client::from_active_cluster()?;
 
     let readiness: serde_json::Value = client.get_public_json("/readiness")?;
     let check = |key: &str| -> &str {
-        if readiness.get(key).and_then(|v| v.as_bool()).unwrap_or(false) {
+        if readiness
+            .get(key)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             "ok"
         } else {
             "FAIL"

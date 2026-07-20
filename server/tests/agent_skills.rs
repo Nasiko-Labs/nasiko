@@ -40,15 +40,11 @@ async fn create_user(server: &common::TestServer, admin_id: &str, username: &str
 
 /// POST /api/agents as a superuser; returns the created agent JSON.
 async fn create_agent(server: &common::TestServer, uid: &str, body: Value) -> Value {
-    let res = common::as_superuser(
-        server.client.post(server.url("/api/agents")),
-        uid,
-        "admin",
-    )
-    .json(&body)
-    .send()
-    .await
-    .unwrap();
+    let res = common::as_superuser(server.client.post(server.url("/api/agents")), uid, "admin")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 201, "create agent should succeed");
     res.json::<Value>().await.unwrap()
 }
@@ -60,7 +56,9 @@ async fn by_skill(
     is_super: bool,
     query: &str,
 ) -> (u16, Vec<String>) {
-    let rb = server.client.get(server.url(&format!("/api/agents/by-skill?{query}")));
+    let rb = server
+        .client
+        .get(server.url(&format!("/api/agents/by-skill?{query}")));
     let res = if is_super {
         common::as_superuser(rb, uid, "u")
     } else {
@@ -103,7 +101,10 @@ async fn by_skill_finds_and_excludes() {
 
     let (st, names) = by_skill(&server, uid, true, "tag=nlp").await;
     assert_eq!(st, 200);
-    assert!(names.contains(&"nlp-agent".to_string()), "tag match: {names:?}");
+    assert!(
+        names.contains(&"nlp-agent".to_string()),
+        "tag match: {names:?}"
+    );
 
     let (_, none) = by_skill(&server, uid, true, "tag=does-not-exist").await;
     assert!(none.is_empty(), "non-matching tag returns empty");
@@ -139,9 +140,15 @@ async fn update_resyncs_skill_tags() {
     assert_eq!(res.status(), 200);
 
     let (_, nlp) = by_skill(&server, uid, true, "tag=nlp").await;
-    assert!(!nlp.contains(&"mut-agent".to_string()), "old tag dropped after update");
+    assert!(
+        !nlp.contains(&"mut-agent".to_string()),
+        "old tag dropped after update"
+    );
     let (_, vision) = by_skill(&server, uid, true, "tag=vision").await;
-    assert!(vision.contains(&"mut-agent".to_string()), "new tag present after update");
+    assert!(
+        vision.contains(&"mut-agent".to_string()),
+        "new tag present after update"
+    );
 
     server.cleanup().await;
 }
@@ -180,8 +187,18 @@ async fn limit_is_honored() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    create_agent(&server, uid, json!({"name": "a1", "skills": [skill("s", &["shared"])]})).await;
-    create_agent(&server, uid, json!({"name": "a2", "skills": [skill("s", &["shared"])]})).await;
+    create_agent(
+        &server,
+        uid,
+        json!({"name": "a1", "skills": [skill("s", &["shared"])]}),
+    )
+    .await;
+    create_agent(
+        &server,
+        uid,
+        json!({"name": "a2", "skills": [skill("s", &["shared"])]}),
+    )
+    .await;
 
     let (_, both) = by_skill(&server, uid, true, "tag=shared").await;
     assert_eq!(both.len(), 2, "both agents share the tag");
@@ -212,7 +229,10 @@ async fn by_skill_is_owner_scoped() {
     let alice_id = alice["id"].as_str().unwrap();
     let (st, names) = by_skill(&server, alice_id, false, "tag=secret").await;
     assert_eq!(st, 200);
-    assert!(!names.contains(&"owned-agent".to_string()), "IDOR guard: member sees only own agents");
+    assert!(
+        !names.contains(&"owned-agent".to_string()),
+        "IDOR guard: member sees only own agents"
+    );
 
     // Superuser does see it.
     let (_, admin_view) = by_skill(&server, admin_id, true, "tag=secret").await;

@@ -36,7 +36,13 @@ pub(crate) async fn fetch_jwks(http: &reqwest::Client, jwks_uri: &str) -> Result
         .await
         .map_err(|e| OidcError::Jwks(e.to_string()))?;
     if !resp.status().is_success() {
-        return Err(OidcError::Jwks(format!("{} returned {}", jwks_uri, resp.status())));
+        return Err(OidcError::Jwks(format!(
+            "{} returned {}",
+            jwks_uri,
+            resp.status()
+        )));
     }
-    resp.json::<Jwks>().await.map_err(|e| OidcError::Jwks(e.to_string()))
+    resp.json::<Jwks>()
+        .await
+        .map_err(|e| OidcError::Jwks(e.to_string()))
 }

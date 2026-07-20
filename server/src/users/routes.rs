@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use crate::Paginated;
 use crate::auth::Claims;
 use crate::state::AppState;
-use crate::Paginated;
 
 /// Returns 409 if `target_id` is the only active admin left.
 async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::response::Response> {
@@ -47,7 +47,11 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
 
         if other_active_admins == 0 {
             return Some(
-                (StatusCode::CONFLICT, Json(serde_json::json!({"error": "cannot deactivate the last admin"}))).into_response(),
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"error": "cannot deactivate the last admin"})),
+                )
+                    .into_response(),
             );
         }
     }
@@ -71,7 +75,10 @@ pub fn router() -> Router<AppState> {
         .route("/users", get(list_users))
         .route("/users/{id}", get(get_user))
         .route("/users/me/accessible-agents", get(my_accessible_agents))
-        .route("/users/{id}/accessible-agents", get(accessible_agents_for_user))
+        .route(
+            "/users/{id}/accessible-agents",
+            get(accessible_agents_for_user),
+        )
 }
 
 /// Management-only orchestrator — create/delete users and related operations.
@@ -87,7 +94,10 @@ pub fn management_router() -> Router<AppState> {
         .route("/users/{id}", delete(delete_user))
         .route("/users/{id}/deactivate", post(deactivate))
         .route("/users/{id}/reinstate", post(reinstate))
-        .route("/users/{id}/regenerate-credentials", post(regenerate_credentials))
+        .route(
+            "/users/{id}/regenerate-credentials",
+            post(regenerate_credentials),
+        )
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -174,7 +184,11 @@ async fn list_users(
                     .await
                     .unwrap_or(0)
             };
-            Json(Paginated { data, total: total as usize }).into_response()
+            Json(Paginated {
+                data,
+                total: total as usize,
+            })
+            .into_response()
         }
         Err(e) => {
             tracing::error!(%e, "list_users: db error");
@@ -183,10 +197,7 @@ async fn list_users(
     }
 }
 
-async fn get_user(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+async fn get_user(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
         r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
                   u.is_active, u.role::text as role,
@@ -266,7 +277,8 @@ async fn create_user(
                         "access_secret": access_secret,
                         "message": "Store access_secret securely — it won't be shown again.",
                     })),
-                ).into_response(),
+                )
+                    .into_response(),
                 Err(e) => {
                     tracing::error!(%e, %id, "create_user: insert credentials failed");
                     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -316,9 +328,14 @@ pub async fn update_user(
         return (StatusCode::BAD_REQUEST, "email cannot be empty").into_response();
     }
     if let Some(ref p) = body.password
-        && p.len() < 8 {
-            return (StatusCode::BAD_REQUEST, "password must be at least 8 characters").into_response();
-        }
+        && p.len() < 8
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "password must be at least 8 characters",
+        )
+            .into_response();
+    }
 
     // AUTH-2: an `is_active: false` transition through this generic PUT must go
     // through the exact same guards as the dedicated /deactivate route — otherwise
@@ -326,7 +343,11 @@ pub async fn update_user(
     // `is_active: false` into an update instead of using /deactivate.
     if body.is_active == Some(false) {
         if claims.sub == id.to_string() {
-            return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot deactivate your own account"}))).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "cannot deactivate your own account"})),
+            )
+                .into_response();
         }
         if let Some(err) = check_last_admin(&state, id).await {
             return err;
@@ -368,7 +389,9 @@ pub async fn update_user(
     .await;
 
     match result {
-        Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, "user not found").into_response(),
+        Ok(r) if r.rows_affected() == 0 => {
+            (StatusCode::NOT_FOUND, "user not found").into_response()
+        }
         Ok(_) => {
             if let Some(hash) = access_secret_hash {
                 match sqlx::query(
@@ -419,7 +442,11 @@ async fn delete_user(
 ) -> impl IntoResponse {
     // Prevent self-deletion.
     if claims.sub == id.to_string() {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot delete your own account"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "cannot delete your own account"})),
+        )
+            .into_response();
     }
 
     let is_super: Option<bool> = sqlx::query_scalar("SELECT is_superuser FROM users WHERE id = $1")
@@ -430,7 +457,11 @@ async fn delete_user(
         .flatten();
 
     if is_super == Some(true) {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot delete superuser"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "cannot delete superuser"})),
+        )
+            .into_response();
     }
 
     // Prevent deletion if the user owns any non-deleted agents.
@@ -449,7 +480,8 @@ async fn delete_user(
                 "error": "user owns agents — reassign or delete them first",
                 "agent_count": owned_agents,
             })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     match sqlx::query("DELETE FROM users WHERE id = $1")
@@ -457,11 +489,19 @@ async fn delete_user(
         .execute(&state.db)
         .await
     {
-        Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "user not found"}))).into_response(),
+        Ok(r) if r.rows_affected() == 0 => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "user not found"})),
+        )
+            .into_response(),
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             tracing::error!(%e, %id, "delete_user: db error");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
         }
     }
 }
@@ -475,7 +515,11 @@ async fn deactivate(
 ) -> impl IntoResponse {
     // Prevent self-deactivation.
     if claims.sub == id.to_string() {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot deactivate your own account"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "cannot deactivate your own account"})),
+        )
+            .into_response();
     }
 
     // Prevent deactivating the last admin.
@@ -483,12 +527,10 @@ async fn deactivate(
         return err;
     }
 
-    match sqlx::query(
-        "UPDATE users SET is_active = false WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .execute(&state.db)
-    .await
+    match sqlx::query("UPDATE users SET is_active = false WHERE id = $1 AND deleted_at IS NULL")
+        .bind(id)
+        .execute(&state.db)
+        .await
     {
         Ok(r) if r.rows_affected() > 0 => {
             // Revoke all live tokens immediately so the gateway stops accepting them.
@@ -498,29 +540,32 @@ async fn deactivate(
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %id, "deactivate: db error");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
         }
     }
 }
 
 // ─── POST /users/{id}/reinstate ─────────────────────────────────────────────
 
-async fn reinstate(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
-    match sqlx::query(
-        "UPDATE users SET is_active = true WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .execute(&state.db)
-    .await
+async fn reinstate(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    match sqlx::query("UPDATE users SET is_active = true WHERE id = $1 AND deleted_at IS NULL")
+        .bind(id)
+        .execute(&state.db)
+        .await
     {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %id, "reinstate: db error");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
         }
     }
 }
@@ -560,15 +605,23 @@ async fn regenerate_credentials(
             .execute(&state.db)
             .await;
 
-            (StatusCode::OK, Json(serde_json::json!({
-                "access_key": access_key,
-                "access_secret": access_secret,
-                "message": "Store access_secret securely — it won't be shown again.",
-            }))).into_response()
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "access_key": access_key,
+                    "access_secret": access_secret,
+                    "message": "Store access_secret securely — it won't be shown again.",
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!(%e, %id, "regenerate_credentials: db error");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
         }
     }
 }
@@ -584,11 +637,21 @@ pub async fn change_role(
 ) -> impl IntoResponse {
     // Cannot change your own role through the admin API.
     if claims.sub == id.to_string() {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "cannot change your own role"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "cannot change your own role"})),
+        )
+            .into_response();
     }
 
     let new_role = req.role.trim().to_lowercase();
-    let valid_roles = ["admin", "member", "team_member", "team_lead", "department_manager"];
+    let valid_roles = [
+        "admin",
+        "member",
+        "team_member",
+        "team_lead",
+        "department_manager",
+    ];
     if !valid_roles.contains(&new_role.as_str()) {
         return (
             StatusCode::BAD_REQUEST,
@@ -597,21 +660,25 @@ pub async fn change_role(
     }
 
     // Fetch current role — ensures the user exists and enables last-admin guard.
-    let current_role: Option<String> = sqlx::query_scalar(
-        "SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let current_role: Option<String> =
+        sqlx::query_scalar("SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
 
     let Some(current_role) = current_role else {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "user not found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "user not found"})),
+        )
+            .into_response();
     };
 
     // Last-admin guard: prevent demoting the only remaining admin.
-    if current_role == "admin" && new_role != "admin"
+    if current_role == "admin"
+        && new_role != "admin"
         && let Some(err) = check_last_admin(&state, id).await
     {
         return err;
@@ -683,10 +750,7 @@ async fn accessible_agents_for_user(
 
 // ─── GET /users/me/accessible-agents ────────────────────────────────────────
 
-async fn my_accessible_agents(
-    State(state): State<AppState>,
-    claims: Claims,
-) -> impl IntoResponse {
+async fn my_accessible_agents(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),

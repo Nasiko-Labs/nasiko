@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
-use nasiko_orchestrator::RoutingEngine;
 use nasiko_observability::ObservabilityProvider;
+use nasiko_orchestrator::RoutingEngine;
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
-use nasiko_config::Config;
-use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
+use nasiko_config::Config;
+use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -75,10 +75,10 @@ impl AppState {
         runtime: Arc<dyn ContainerRuntime>,
         db: PgPool,
     ) -> Self {
-        let redis = redis::Client::open(config.redis_url.as_str())
-            .expect("invalid redis url");
+        let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
 
-        let oci_storage = nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await;
+        let oci_storage =
+            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await;
         oci_storage.ensure_bucket(false).await.ok();
 
         let usage_tracker = UsageTracker::new(db.clone());
@@ -90,7 +90,7 @@ impl AppState {
             .expect("failed to build http client");
 
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
-            nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone())
+            nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
 
         let flow_config = FlowConfig {
@@ -106,10 +106,11 @@ impl AppState {
 
         // Tempo+Loki observability backend. Model pricing resolves through
         // the model_pricing DB table with the static table as fallback; the
-        // Redis resolver maps trace_id → session_id for pre-built agents.
+        // session_traces resolver maps session ↔ trace both ways for agents
+        // that never set session.id on their spans.
         let observability: Arc<dyn ObservabilityProvider> = {
+            use crate::observability::session_resolver::PgSessionIdResolver;
             use nasiko_observability::{DbPricing, TempoLokiProvider};
-            use crate::observability::session_resolver::RedisSessionIdResolver;
             tracing::info!(
                 tempo_url = %config.tempo_url,
                 loki_url = %config.loki_url,
@@ -121,7 +122,7 @@ impl AppState {
                     config.loki_url.clone(),
                     Arc::new(DbPricing::new(db.clone())),
                 )
-                .with_session_resolver(Arc::new(RedisSessionIdResolver::new(redis.clone()))),
+                .with_session_resolver(Arc::new(PgSessionIdResolver::new(db.clone()))),
             )
         };
 
@@ -157,7 +158,10 @@ impl AppState {
                     redirect_uri: redirect_uri.clone(),
                     scopes: config.oidc_scopes.clone(),
                 };
-                Arc::new(nasiko_oidc::OidcClient::new(oidc_config, http_client.clone()))
+                Arc::new(nasiko_oidc::OidcClient::new(
+                    oidc_config,
+                    http_client.clone(),
+                ))
             });
 
         if let Some(svc) = oidc_svc.clone() {
@@ -206,8 +210,7 @@ impl AppState {
         if let (Ok(admin_user), Ok(admin_pass)) = (
             std::env::var("ADMIN_USERNAME"),
             std::env::var("ADMIN_PASSWORD"),
-        )
-            && let Err(e) = self.auth.bootstrap_admin(&admin_user, &admin_pass).await
+        ) && let Err(e) = self.auth.bootstrap_admin(&admin_user, &admin_pass).await
         {
             tracing::warn!(%e, "admin bootstrap failed (may already exist)");
         }
@@ -261,31 +264,6 @@ impl AppState {
         }
     }
 
-    /// Same resolution order as [`resolve_oidc_client`](Self::resolve_oidc_client)
-    /// (DB `settings` row, falling back to env config) but returns the raw
-    /// `OidcConfig` fields instead of a built `OidcClient` — for callers that
-    /// need `client_id`/`client_secret`/`issuer_url` directly for a different
-    /// OAuth2 flow (e.g. EE's Azure AD directory sync uses Graph API's
-    /// client-credentials flow, not the login authorization-code flow
-    /// `OidcClient` is built for). Critically, the returned label is the same
-    /// one `resolve_oidc_client`'s caller writes to `user_identities.provider`
-    /// at login — any caller minting `user_identities` rows ahead of time
-    /// (like directory sync) must reuse this exact label or a later real
-    /// login's `(provider, provider_id)` lookup will never match.
-    pub async fn resolve_raw_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {
-        if let Some(db_config) = self.fetch_db_oidc_config().await {
-            return Some(db_config);
-        }
-        let config = nasiko_oidc::OidcConfig {
-            issuer_url: self.config.oidc_issuer_url.clone()?,
-            client_id: self.config.oidc_client_id.clone()?,
-            client_secret: self.config.oidc_client_secret.clone()?,
-            redirect_uri: self.config.oidc_redirect_uri.clone()?,
-            scopes: self.config.oidc_scopes.clone(),
-        };
-        Some((config, self.config.oidc_provider_label.clone()))
-    }
-
     async fn fetch_db_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {
         #[derive(sqlx::FromRow)]
         struct Row {
@@ -315,16 +293,27 @@ impl AppState {
             client_id: row.oidc_client_id?,
             client_secret: secret,
             redirect_uri: row.oidc_redirect_uri?,
-            scopes: row.oidc_scopes.unwrap_or_else(|| "openid profile email".to_string()),
+            scopes: row
+                .oidc_scopes
+                .unwrap_or_else(|| "openid profile email".to_string()),
         };
-        let label = row.oidc_provider_label.unwrap_or_else(|| "microsoft_entra".to_string());
+        let label = row
+            .oidc_provider_label
+            .unwrap_or_else(|| "microsoft_entra".to_string());
         Some((config, label))
     }
 
-    async fn cached_or_build_oidc_client(&self, config: nasiko_oidc::OidcConfig) -> Arc<nasiko_oidc::OidcClient> {
+    async fn cached_or_build_oidc_client(
+        &self,
+        config: nasiko_oidc::OidcConfig,
+    ) -> Arc<nasiko_oidc::OidcClient> {
         let fingerprint = format!(
             "{}|{}|{}|{}|{}",
-            config.issuer_url, config.client_id, config.client_secret, config.redirect_uri, config.scopes
+            config.issuer_url,
+            config.client_id,
+            config.client_secret,
+            config.redirect_uri,
+            config.scopes
         );
         {
             let cached = self.oidc_dynamic_cache.read().await;
@@ -334,19 +323,27 @@ impl AppState {
                 return client.clone();
             }
         }
-        let client = Arc::new(nasiko_oidc::OidcClient::new(config, self.http_client.clone()));
+        let client = Arc::new(nasiko_oidc::OidcClient::new(
+            config,
+            self.http_client.clone(),
+        ));
         *self.oidc_dynamic_cache.write().await = Some((fingerprint, client.clone()));
         client
     }
 
     /// Build the full environment for an agent container: platform-level vars + agent-specific secrets.
-    pub async fn agent_env(&self, agent_id: uuid::Uuid) -> std::collections::HashMap<String, String> {
+    pub async fn agent_env(
+        &self,
+        agent_id: uuid::Uuid,
+    ) -> std::collections::HashMap<String, String> {
         let mut env = crate::catalog::agent_secrets::resolve_agent_env(&self.db, agent_id).await;
         if let Some(ref key) = self.config.openai_api_key {
-            env.entry("OPENAI_API_KEY".into()).or_insert_with(|| key.clone());
+            env.entry("OPENAI_API_KEY".into())
+                .or_insert_with(|| key.clone());
         }
         if let Some(ref url) = self.config.openai_base_url {
-            env.entry("OPENAI_BASE_URL".into()).or_insert_with(|| url.clone());
+            env.entry("OPENAI_BASE_URL".into())
+                .or_insert_with(|| url.clone());
         }
         env.entry("OPENAI_MODEL".into())
             .or_insert_with(|| self.config.openai_model.clone());

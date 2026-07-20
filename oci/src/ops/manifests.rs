@@ -80,11 +80,19 @@ pub struct PutManifestResult {
 /// PUT separately and DOES have real layers/config, so this isn't a coverage
 /// gap for the standard buildx/multi-arch push flow.
 fn extract_referenced_blob_digests(content: &serde_json::Value) -> Vec<String> {
-    if content.get("manifests").and_then(|v| v.as_array()).is_some() {
+    if content
+        .get("manifests")
+        .and_then(|v| v.as_array())
+        .is_some()
+    {
         return Vec::new();
     }
     let mut digests = Vec::new();
-    if let Some(d) = content.get("config").and_then(|c| c.get("digest")).and_then(|v| v.as_str()) {
+    if let Some(d) = content
+        .get("config")
+        .and_then(|c| c.get("digest"))
+        .and_then(|v| v.as_str())
+    {
         digests.push(d.to_string());
     }
     if let Some(layers) = content.get("layers").and_then(|v| v.as_array()) {
@@ -163,13 +171,14 @@ pub async fn put_manifest(
 
     // Referrers API: if manifest has a "subject" field, index it
     if let Some(subject) = content.get("subject")
-        && let Some(subject_digest) = subject.get("digest").and_then(|v| v.as_str()) {
-            let artifact_type = content
-                .get("artifactType")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let annotations = content.get("annotations").cloned();
-            let _ = sqlx::query(
+        && let Some(subject_digest) = subject.get("digest").and_then(|v| v.as_str())
+    {
+        let artifact_type = content
+            .get("artifactType")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let annotations = content.get("annotations").cloned();
+        let _ = sqlx::query(
                 r#"
                 INSERT INTO oci_referrers (subject_digest, repository, referrer_digest, artifact_type, annotations, size_bytes)
                 VALUES ($1, $2, $3, $4, $5, $6)
@@ -184,16 +193,12 @@ pub async fn put_manifest(
             .bind(size_bytes)
             .execute(&state.pool)
             .await;
-        }
+    }
 
     Ok(PutManifestResult { digest })
 }
 
-pub async fn delete_manifest(
-    state: &OciState,
-    repository: &str,
-    reference: &str,
-) -> Result<()> {
+pub async fn delete_manifest(state: &OciState, repository: &str, reference: &str) -> Result<()> {
     let rows = sqlx::query(
         "DELETE FROM oci_manifests WHERE repository = $1 AND (digest = $2 OR reference = $2)",
     )

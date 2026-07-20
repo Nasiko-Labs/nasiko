@@ -31,18 +31,31 @@ pub(crate) struct JwtClaims {
 }
 
 /// Encode a user session JWT (token_type = "user").
-pub fn encode_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result<String, AuthError> {
+pub fn encode_jwt(
+    secret: &str,
+    expiry_secs: u64,
+    identity: &Identity,
+) -> Result<String, AuthError> {
     encode_jwt_inner(secret, expiry_secs, TOKEN_TYPE_USER, identity)
 }
 
 /// Encode an agent service-account JWT (token_type = "agent").
 /// These tokens are REJECTED by `decode_jwt` / `decode_jwt_with_jti` so they
 /// cannot be used to authenticate as a human user (AUTH-3).
-pub fn encode_agent_jwt(secret: &str, expiry_secs: u64, identity: &Identity) -> Result<String, AuthError> {
+pub fn encode_agent_jwt(
+    secret: &str,
+    expiry_secs: u64,
+    identity: &Identity,
+) -> Result<String, AuthError> {
     encode_jwt_inner(secret, expiry_secs, TOKEN_TYPE_AGENT, identity)
 }
 
-fn encode_jwt_inner(secret: &str, expiry_secs: u64, token_type: &str, identity: &Identity) -> Result<String, AuthError> {
+fn encode_jwt_inner(
+    secret: &str,
+    expiry_secs: u64,
+    token_type: &str,
+    identity: &Identity,
+) -> Result<String, AuthError> {
     let now = Utc::now().timestamp() as u64;
     let claims = JwtClaims {
         sub: identity.user_id.clone(),
@@ -141,5 +154,8 @@ pub fn extract_jti(token: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?;
     let decoded = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
-    claims.get("jti").and_then(|v| v.as_str()).map(str::to_owned)
+    claims
+        .get("jti")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
 }

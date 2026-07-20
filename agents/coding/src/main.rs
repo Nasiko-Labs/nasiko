@@ -86,7 +86,10 @@ identical command.
 (no tool call).";
 
 impl AgentExecutor for CodingAgent {
-    fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    fn execute(
+        &self,
+        ctx: ExecutorContext,
+    ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
 
@@ -255,33 +258,43 @@ async fn main() {
             AgentSkill {
                 id: "code-edit".into(),
                 name: "Code Editing".into(),
-                description: "Read, write, and make targeted search/replace edits to source files".into(),
+                description: "Read, write, and make targeted search/replace edits to source files"
+                    .into(),
                 tags: vec!["coding".into(), "edit".into(), "refactor".into()],
-                examples: None, input_modes: None, output_modes: None, security_requirements: None,
+                examples: None,
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
             },
             AgentSkill {
                 id: "code-test".into(),
                 name: "Build & Test".into(),
-                description: "Run builds, linters, and the project's test suite, then iterate on failures".into(),
+                description:
+                    "Run builds, linters, and the project's test suite, then iterate on failures"
+                        .into(),
                 tags: vec!["coding".into(), "test".into(), "build".into()],
-                examples: None, input_modes: None, output_modes: None, security_requirements: None,
+                examples: None,
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
             },
             AgentSkill {
                 id: "code-refactor".into(),
                 name: "Refactoring".into(),
                 description: "Search the codebase and apply structured multi-file refactors".into(),
                 tags: vec!["coding".into(), "refactor".into(), "search".into()],
-                examples: None, input_modes: None, output_modes: None, security_requirements: None,
+                examples: None,
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
             },
         ],
         default_input_modes: vec!["text/plain".to_string()],
         default_output_modes: vec!["text/plain".to_string()],
-        supported_interfaces: vec![
-            AgentInterface::new(
-                format!("http://0.0.0.0:{port}/"),
-                TRANSPORT_PROTOCOL_JSONRPC,
-            ),
-        ],
+        supported_interfaces: vec![AgentInterface::new(
+            format!("http://0.0.0.0:{port}/"),
+            TRANSPORT_PROTOCOL_JSONRPC,
+        )],
         security_schemes: None,
         security_requirements: None,
         documentation_url: None,

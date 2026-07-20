@@ -47,7 +47,6 @@ pub fn extract_embedded_dir(dir: &Dir, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-
 pub fn title_case(s: &str) -> String {
     s.split_whitespace()
         .map(|w| {

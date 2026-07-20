@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
 use rig::completion::message::{ToolCall, ToolFunction};
+use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
 use rig::providers::openai;
 use rig::streaming::StreamingChoice;
 use rig::tool::{ToolDyn, ToolSet};
@@ -126,12 +126,18 @@ impl Orchestrator {
     }
 
     /// Run the ReAct loop for a user query.
-    pub async fn run(&mut self, user_query: &str) -> Result<OrchestrationResult, OrchestratorError> {
+    pub async fn run(
+        &mut self,
+        user_query: &str,
+    ) -> Result<OrchestrationResult, OrchestratorError> {
         self.context.push_user(user_query);
 
         if self.context.needs_compaction() {
             self.context.compact_simple();
-            tracing::info!(tokens = self.context.estimated_tokens(), "context compacted");
+            tracing::info!(
+                tokens = self.context.estimated_tokens(),
+                "context compacted"
+            );
         }
 
         let agents = self.registry.agents().await;
@@ -183,7 +189,11 @@ impl Orchestrator {
             // call). Without this, `after_call` always received a literal 0
             // and `FlowGuard::record_tokens`/`TokenBudgetExhausted` could
             // never fire.
-            let completion_tokens = response.raw_response.usage.as_ref().map(|u| u.total_tokens as u64);
+            let completion_tokens = response
+                .raw_response
+                .usage
+                .as_ref()
+                .map(|u| u.total_tokens as u64);
 
             // Partition the response into text and tool calls
             let mut text_parts = Vec::new();
@@ -222,16 +232,17 @@ impl Orchestrator {
 
                     // Enforce call guard
                     if let Some(g) = &self.guard
-                        && let Err(reason) = g.before_call(&agent_display).await {
-                            tracing::warn!(tool = %name, %reason, "call guard blocked");
-                            trace.tool_calls.push(ToolCallTrace {
-                                tool_name: name.clone(),
-                                arguments: tc.function.arguments.clone(),
-                                result: Err(format!("blocked: {}", reason)),
-                            });
-                            results_for_context.push(format!("[{}] Blocked: {}", name, reason));
-                            continue;
-                        }
+                        && let Err(reason) = g.before_call(&agent_display).await
+                    {
+                        tracing::warn!(tool = %name, %reason, "call guard blocked");
+                        trace.tool_calls.push(ToolCallTrace {
+                            tool_name: name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                            result: Err(format!("blocked: {}", reason)),
+                        });
+                        results_for_context.push(format!("[{}] Blocked: {}", name, reason));
+                        continue;
+                    }
 
                     tracing::info!(turn = turn_idx + 1, tool = %name, "executing tool");
 
@@ -240,7 +251,10 @@ impl Orchestrator {
                     let call_trace = ToolCallTrace {
                         tool_name: name.clone(),
                         arguments: tc.function.arguments.clone(),
-                        result: result.as_ref().map(|s| s.clone()).map_err(|e| e.to_string()),
+                        result: result
+                            .as_ref()
+                            .map(|s| s.clone())
+                            .map_err(|e| e.to_string()),
                     };
                     trace.tool_calls.push(call_trace);
 
@@ -249,8 +263,7 @@ impl Orchestrator {
                             if let Some(g) = &self.guard {
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
-                            results_for_context
-                                .push(format!("[{}] Result: {}", name, output));
+                            results_for_context.push(format!("[{}] Result: {}", name, output));
                         }
                         Err(e) => {
                             // Balance the before_call() depth increment even on
@@ -261,8 +274,7 @@ impl Orchestrator {
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
                             tracing::warn!(tool = %name, error = %e, "tool failed");
-                            results_for_context
-                                .push(format!("[{}] Error: {}", name, e));
+                            results_for_context.push(format!("[{}] Error: {}", name, e));
                         }
                     }
                 }
@@ -301,7 +313,10 @@ impl Orchestrator {
             if self.context.needs_compaction() {
                 self.context.compact_simple();
                 context_compacted = true;
-                tracing::info!(tokens = self.context.estimated_tokens(), "mid-loop compaction");
+                tracing::info!(
+                    tokens = self.context.estimated_tokens(),
+                    "mid-loop compaction"
+                );
             }
         }
 
@@ -310,10 +325,7 @@ impl Orchestrator {
 
     /// Run the ReAct loop, streaming events to the caller via a channel.
     /// Returns a receiver; the orchestration runs in the background.
-    pub fn run_stream(
-        &mut self,
-        user_query: &str,
-    ) -> mpsc::Receiver<OrchestratorEvent> {
+    pub fn run_stream(&mut self, user_query: &str) -> mpsc::Receiver<OrchestratorEvent> {
         let (tx, rx) = mpsc::channel(64);
         let query = user_query.to_string();
 
@@ -325,7 +337,16 @@ impl Orchestrator {
         let guard = self.guard.clone();
 
         tokio::spawn(async move {
-            let _ = run_stream_inner(&config, &registry, &a2a_client, &mut context, &query, &tx, guard.as_deref()).await;
+            let _ = run_stream_inner(
+                &config,
+                &registry,
+                &a2a_client,
+                &mut context,
+                &query,
+                &tx,
+                guard.as_deref(),
+            )
+            .await;
         });
 
         rx
@@ -336,9 +357,7 @@ impl Orchestrator {
         self.context = ContextManager::new(self.config.context.clone());
     }
 
-    fn build_model(
-        &self,
-    ) -> Result<openai::CompletionModel, OrchestratorError> {
+    fn build_model(&self) -> Result<openai::CompletionModel, OrchestratorError> {
         let api_key = self
             .config
             .api_key
@@ -441,17 +460,27 @@ async fn run_stream_inner(
 
     let agents = registry.agents().await;
     if agents.is_empty() {
-        let _ = tx.send(OrchestratorEvent::Error {
-            message: "no agents available".into(),
-        }).await;
+        let _ = tx
+            .send(OrchestratorEvent::Error {
+                message: "no agents available".into(),
+            })
+            .await;
         return Err(OrchestratorError::NoAgents);
     }
 
-    let api_key = match config.api_key.clone().or_else(|| std::env::var("OPENAI_API_KEY").ok()) {
+    let api_key = match config
+        .api_key
+        .clone()
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+    {
         Some(k) => k,
         None => {
             let message = "OPENAI_API_KEY not set".to_string();
-            let _ = tx.send(OrchestratorEvent::Error { message: message.clone() }).await;
+            let _ = tx
+                .send(OrchestratorEvent::Error {
+                    message: message.clone(),
+                })
+                .await;
             return Err(OrchestratorError::LlmConfig(message));
         }
     };
@@ -562,9 +591,11 @@ async fn run_stream_inner(
             let response = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.send(OrchestratorEvent::Error {
-                        message: e.to_string(),
-                    }).await;
+                    let _ = tx
+                        .send(OrchestratorEvent::Error {
+                            message: e.to_string(),
+                        })
+                        .await;
                     return Err(OrchestratorError::Completion(e.to_string()));
                 }
             };
@@ -576,11 +607,13 @@ async fn run_stream_inner(
                 let total = usage.total_tokens as u64;
                 let output = total.saturating_sub(input);
                 completion_tokens = Some(total);
-                let _ = tx.send(OrchestratorEvent::Usage {
-                    input_tokens: input,
-                    output_tokens: output,
-                    model: config.model.clone(),
-                }).await;
+                let _ = tx
+                    .send(OrchestratorEvent::Usage {
+                        input_tokens: input,
+                        output_tokens: output,
+                        model: config.model.clone(),
+                    })
+                    .await;
             }
 
             // Partition the response
@@ -596,9 +629,11 @@ async fn run_stream_inner(
 
             if !tool_calls.is_empty() {
                 if !text_parts.is_empty() {
-                    let _ = tx.send(OrchestratorEvent::Thinking {
-                        content: text_parts.join(""),
-                    }).await;
+                    let _ = tx
+                        .send(OrchestratorEvent::Thinking {
+                            content: text_parts.join(""),
+                        })
+                        .await;
                 }
 
                 // This completion's total token cost, attributed evenly across
@@ -612,7 +647,9 @@ async fn run_stream_inner(
                     let name = &tc.function.name;
                     let args_str = tc.function.arguments.to_string();
 
-                    let msg = tc.function.arguments
+                    let msg = tc
+                        .function
+                        .arguments
                         .get("message")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
@@ -624,24 +661,29 @@ async fn run_stream_inner(
                         .replace('_', "-");
 
                     if let Some(g) = guard
-                        && let Err(reason) = g.before_call(&agent_display).await {
-                            let _ = tx.send(OrchestratorEvent::PolicyRejected {
+                        && let Err(reason) = g.before_call(&agent_display).await
+                    {
+                        let _ = tx
+                            .send(OrchestratorEvent::PolicyRejected {
                                 agent: agent_display.clone(),
                                 reason: reason.clone(),
                                 turn: turn_idx + 1,
-                            }).await;
-                            results_for_context.push(format!(
-                                "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
-                                name, reason
-                            ));
-                            continue;
-                        }
+                            })
+                            .await;
+                        results_for_context.push(format!(
+                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+                            name, reason
+                        ));
+                        continue;
+                    }
 
-                    let _ = tx.send(OrchestratorEvent::ToolCall {
-                        agent: agent_display.clone(),
-                        message: msg,
-                        turn: turn_idx + 1,
-                    }).await;
+                    let _ = tx
+                        .send(OrchestratorEvent::ToolCall {
+                            agent: agent_display.clone(),
+                            message: msg,
+                            turn: turn_idx + 1,
+                        })
+                        .await;
 
                     let result = toolset.call(name, args_str).await;
 
@@ -650,12 +692,14 @@ async fn run_stream_inner(
                             if let Some(g) = guard {
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
-                            let _ = tx.send(OrchestratorEvent::ToolResult {
-                                agent: agent_display,
-                                result: output.clone(),
-                                success: true,
-                                turn: turn_idx + 1,
-                            }).await;
+                            let _ = tx
+                                .send(OrchestratorEvent::ToolResult {
+                                    agent: agent_display,
+                                    result: output.clone(),
+                                    success: true,
+                                    turn: turn_idx + 1,
+                                })
+                                .await;
                             results_for_context.push(format!("[{}] Result: {}", name, output));
                         }
                         Err(e) => {
@@ -667,12 +711,14 @@ async fn run_stream_inner(
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
                             let err_str = e.to_string();
-                            let _ = tx.send(OrchestratorEvent::ToolResult {
-                                agent: agent_display,
-                                result: err_str.clone(),
-                                success: false,
-                                turn: turn_idx + 1,
-                            }).await;
+                            let _ = tx
+                                .send(OrchestratorEvent::ToolResult {
+                                    agent: agent_display,
+                                    result: err_str.clone(),
+                                    success: false,
+                                    turn: turn_idx + 1,
+                                })
+                                .await;
                             results_for_context.push(format!("[{}] Error: {}", name, err_str));
                         }
                     }
@@ -696,10 +742,12 @@ async fn run_stream_inner(
                 }
                 context.push_assistant(&final_text);
 
-                let _ = tx.send(OrchestratorEvent::Done {
-                    turns: turn_idx + 1,
-                    context_compacted,
-                }).await;
+                let _ = tx
+                    .send(OrchestratorEvent::Done {
+                        turns: turn_idx + 1,
+                        context_compacted,
+                    })
+                    .await;
 
                 return Ok(());
             }
@@ -717,9 +765,11 @@ async fn run_stream_inner(
             let mut stream = match req.stream().await {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = tx.send(OrchestratorEvent::Error {
-                        message: e.to_string(),
-                    }).await;
+                    let _ = tx
+                        .send(OrchestratorEvent::Error {
+                            message: e.to_string(),
+                        })
+                        .await;
                     return Err(OrchestratorError::Completion(e.to_string()));
                 }
             };
@@ -731,9 +781,7 @@ async fn run_stream_inner(
                 match chunk {
                     Ok(StreamingChoice::Message(text)) => {
                         text_parts.push(text.clone());
-                        let _ = tx.send(OrchestratorEvent::Content {
-                            content: text,
-                        }).await;
+                        let _ = tx.send(OrchestratorEvent::Content { content: text }).await;
                     }
                     Ok(StreamingChoice::ToolCall(name, id, params)) => {
                         tool_calls.push(ToolCall {
@@ -745,9 +793,11 @@ async fn run_stream_inner(
                         });
                     }
                     Err(e) => {
-                        let _ = tx.send(OrchestratorEvent::Error {
-                            message: e.to_string(),
-                        }).await;
+                        let _ = tx
+                            .send(OrchestratorEvent::Error {
+                                message: e.to_string(),
+                            })
+                            .await;
                         return Err(OrchestratorError::Completion(e.to_string()));
                     }
                 }
@@ -771,7 +821,9 @@ async fn run_stream_inner(
                     let name = &tc.function.name;
                     let args_str = tc.function.arguments.to_string();
 
-                    let msg = tc.function.arguments
+                    let msg = tc
+                        .function
+                        .arguments
                         .get("message")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
@@ -783,24 +835,29 @@ async fn run_stream_inner(
                         .replace('_', "-");
 
                     if let Some(g) = guard
-                        && let Err(reason) = g.before_call(&agent_display).await {
-                            let _ = tx.send(OrchestratorEvent::PolicyRejected {
+                        && let Err(reason) = g.before_call(&agent_display).await
+                    {
+                        let _ = tx
+                            .send(OrchestratorEvent::PolicyRejected {
                                 agent: agent_display.clone(),
                                 reason: reason.clone(),
                                 turn: turn_idx + 1,
-                            }).await;
-                            results_for_context.push(format!(
-                                "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
-                                name, reason
-                            ));
-                            continue;
-                        }
+                            })
+                            .await;
+                        results_for_context.push(format!(
+                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+                            name, reason
+                        ));
+                        continue;
+                    }
 
-                    let _ = tx.send(OrchestratorEvent::ToolCall {
-                        agent: agent_display.clone(),
-                        message: msg,
-                        turn: turn_idx + 1,
-                    }).await;
+                    let _ = tx
+                        .send(OrchestratorEvent::ToolCall {
+                            agent: agent_display.clone(),
+                            message: msg,
+                            turn: turn_idx + 1,
+                        })
+                        .await;
 
                     let result = toolset.call(name, args_str).await;
 
@@ -809,12 +866,14 @@ async fn run_stream_inner(
                             if let Some(g) = guard {
                                 g.after_call(&agent_display, 0).await;
                             }
-                            let _ = tx.send(OrchestratorEvent::ToolResult {
-                                agent: agent_display,
-                                result: output.clone(),
-                                success: true,
-                                turn: turn_idx + 1,
-                            }).await;
+                            let _ = tx
+                                .send(OrchestratorEvent::ToolResult {
+                                    agent: agent_display,
+                                    result: output.clone(),
+                                    success: true,
+                                    turn: turn_idx + 1,
+                                })
+                                .await;
                             results_for_context.push(format!("[{}] Result: {}", name, output));
                         }
                         Err(e) => {
@@ -826,12 +885,14 @@ async fn run_stream_inner(
                                 g.after_call(&agent_display, 0).await;
                             }
                             let err_str = e.to_string();
-                            let _ = tx.send(OrchestratorEvent::ToolResult {
-                                agent: agent_display,
-                                result: err_str.clone(),
-                                success: false,
-                                turn: turn_idx + 1,
-                            }).await;
+                            let _ = tx
+                                .send(OrchestratorEvent::ToolResult {
+                                    agent: agent_display,
+                                    result: err_str.clone(),
+                                    success: false,
+                                    turn: turn_idx + 1,
+                                })
+                                .await;
                             results_for_context.push(format!("[{}] Error: {}", name, err_str));
                         }
                     }
@@ -851,10 +912,12 @@ async fn run_stream_inner(
                 let final_text = text_parts.join("");
                 context.push_assistant(&final_text);
 
-                let _ = tx.send(OrchestratorEvent::Done {
-                    turns: turn_idx + 1,
-                    context_compacted,
-                }).await;
+                let _ = tx
+                    .send(OrchestratorEvent::Done {
+                        turns: turn_idx + 1,
+                        context_compacted,
+                    })
+                    .await;
 
                 return Ok(());
             }
@@ -866,9 +929,11 @@ async fn run_stream_inner(
         }
     }
 
-    let _ = tx.send(OrchestratorEvent::Error {
-        message: format!("max turns ({}) exceeded", config.max_turns),
-    }).await;
+    let _ = tx
+        .send(OrchestratorEvent::Error {
+            message: format!("max turns ({}) exceeded", config.max_turns),
+        })
+        .await;
     Err(OrchestratorError::MaxTurnsExceeded(config.max_turns))
 }
 

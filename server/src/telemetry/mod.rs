@@ -1,5 +1,5 @@
 pub mod genai;
 mod setup;
 
-pub use genai::{GenAiSpan, GenAiMetrics};
-pub use setup::{init_telemetry, TelemetryConfig};
+pub use genai::{GenAiMetrics, GenAiSpan};
+pub use setup::{TelemetryConfig, init_telemetry};

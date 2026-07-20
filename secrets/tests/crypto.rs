@@ -141,7 +141,10 @@ fn encrypting_same_plaintext_twice_produces_different_ciphertext() {
     let plaintext = "determinism test";
     let c1 = crypto.encrypt(plaintext).unwrap();
     let c2 = crypto.encrypt(plaintext).unwrap();
-    assert_ne!(c1, c2, "random nonce must cause different ciphertext on each call");
+    assert_ne!(
+        c1, c2,
+        "random nonce must cause different ciphertext on each call"
+    );
 }
 
 #[test]

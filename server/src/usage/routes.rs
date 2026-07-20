@@ -27,7 +27,9 @@ struct SummaryQuery {
     #[serde(default = "default_days")]
     days: i64,
 }
-fn default_days() -> i64 { 30 }
+fn default_days() -> i64 {
+    30
+}
 
 #[derive(Debug, Serialize)]
 struct UsageSummaryResponse {
@@ -161,7 +163,9 @@ struct PaginatedQuery {
     #[serde(default = "default_days")]
     days: i64,
 }
-fn default_limit() -> i64 { 50 }
+fn default_limit() -> i64 {
+    50
+}
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct AgentUsage {

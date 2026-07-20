@@ -8,8 +8,8 @@ mod docker;
 mod simulated;
 
 pub use error::{Result, RuntimeError};
-pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState};
 pub use types::validate_build_inputs;
+pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState};
 
 // ─── Legacy type aliases (used by server during transition from old orchestrator) ─────
 pub type ContainerSpec = DeploymentSpec;
@@ -43,7 +43,6 @@ pub use docker::{DockerRuntime, DockerRuntimeConfig};
 
 #[cfg(feature = "simulated")]
 pub use simulated::SimulatedRuntime;
-
 
 use async_trait::async_trait;
 

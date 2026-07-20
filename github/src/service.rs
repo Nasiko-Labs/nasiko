@@ -50,11 +50,7 @@ impl GitHubService {
     }
 
     /// Construct with overridable base URLs (used in tests with `mockito`).
-    pub fn with_base_urls(
-        cfg: GitHubConfig,
-        github_base: &str,
-        api_base: &str,
-    ) -> Result<Self> {
+    pub fn with_base_urls(cfg: GitHubConfig, github_base: &str, api_base: &str) -> Result<Self> {
         Ok(Self {
             github_client: HttpClient::new(github_base)?,
             api_client: HttpClient::new(api_base)?,
@@ -88,7 +84,10 @@ impl GitHubService {
         payload.insert("user_id", serde_json::Value::String(user_id.into()));
 
         if let Some(ref cb) = self.cfg.central_callback_url {
-            payload.insert("gateway_callback_url", serde_json::Value::String(cb.clone()));
+            payload.insert(
+                "gateway_callback_url",
+                serde_json::Value::String(cb.clone()),
+            );
         }
 
         let serialized = serde_json::to_string(&payload)?;
@@ -122,8 +121,7 @@ impl GitHubService {
         }
 
         // Constant-time HMAC verification.
-        let sig_bytes =
-            hex::decode(hex_sig).map_err(|_| invalid("signature is not valid hex"))?;
+        let sig_bytes = hex::decode(hex_sig).map_err(|_| invalid("signature is not valid hex"))?;
         let mut mac = HmacSha256::new_from_slice(self.cfg.oauth_state_secret.as_bytes())
             .map_err(|_| invalid("invalid signing key"))?;
         mac.update(encoded_payload.as_bytes());
@@ -154,12 +152,10 @@ impl GitHubService {
             .ok_or_else(|| invalid("missing 'user_id' in state payload"))?
             .to_string();
 
-        let flow = payload
-            .get("flow")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        Ok(OAuthStateClaims { user_id, issued_at: iat, flow })
+        Ok(OAuthStateClaims {
+            user_id,
+            issued_at: iat,
+        })
     }
 
     // ── Authorization URL ────────────────────────────────────────────────────
@@ -190,54 +186,6 @@ impl GitHubService {
         .map_err(|e| Error::GitHubOAuth(format!("failed to build authorization URL: {e}")))?;
 
         info!(user_id, "generated GitHub authorization URL");
-        Ok(url.to_string())
-    }
-
-    /// Build the GitHub consent-page URL for the **login** flow (unauthenticated).
-    ///
-    /// Unlike [`authorization_url`](Self::authorization_url), there is no
-    /// existing user — a random UUID nonce is used in `user_id` purely to
-    /// satisfy the state format.  The callback detects `flow = "login"` and
-    /// uses the GitHub identity to find or create the user instead.
-    #[instrument(skip(self))]
-    pub fn login_authorization_url(&self) -> Result<String> {
-        let nonce = Uuid::new_v4().to_string();
-        let iat = unix_now();
-        let session_nonce = Uuid::new_v4().to_string();
-
-        let mut payload: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
-        payload.insert("flow", serde_json::Value::String("login".into()));
-        payload.insert("iat", serde_json::Value::Number(iat.into()));
-        payload.insert("nonce", serde_json::Value::String(nonce));
-        payload.insert("user_id", serde_json::Value::String(session_nonce));
-
-        if let Some(ref cb) = self.cfg.central_callback_url {
-            payload.insert("gateway_callback_url", serde_json::Value::String(cb.clone()));
-        }
-
-        let serialized = serde_json::to_string(&payload)?;
-        let encoded = URL_SAFE_NO_PAD.encode(serialized.as_bytes());
-        let signature = self.sign_payload(&encoded);
-        let state = format!("{OAUTH_STATE_VERSION}.{encoded}.{signature}");
-
-        let redirect_uri = self
-            .cfg
-            .central_callback_url
-            .as_deref()
-            .unwrap_or(&self.cfg.callback_url);
-
-        let url = reqwest::Url::parse_with_params(
-            "https://github.com/login/oauth/authorize",
-            &[
-                ("client_id", self.cfg.client_id.as_str()),
-                ("redirect_uri", redirect_uri),
-                ("scope", "user:email"),
-                ("state", state.as_str()),
-            ],
-        )
-        .map_err(|e| Error::GitHubOAuth(format!("failed to build login authorization URL: {e}")))?;
-
-        info!("generated GitHub login authorization URL");
         Ok(url.to_string())
     }
 
@@ -272,10 +220,11 @@ impl GitHubService {
 
         let token = match token_resp {
             GitHubTokenResponse::Token(t) => t,
-            GitHubTokenResponse::Error { error, error_description } => {
-                return Err(Error::GitHubOAuth(
-                    error_description.unwrap_or(error),
-                ));
+            GitHubTokenResponse::Error {
+                error,
+                error_description,
+            } => {
+                return Err(Error::GitHubOAuth(error_description.unwrap_or(error)));
             }
         };
 
@@ -286,10 +235,13 @@ impl GitHubService {
             .map_err(|e| match e {
                 // A 401/403 after a successful token exchange means the OAuth
                 // flow itself is broken — surface as GitHubOAuth, not GitHubApi.
-                Error::Auth(_) => Error::GitHubOAuth(
-                    "GitHub rejected the newly issued token on /user".into(),
-                ),
-                Error::HttpStatus { status, body } => Error::GitHubApi { status, message: body },
+                Error::Auth(_) => {
+                    Error::GitHubOAuth("GitHub rejected the newly issued token on /user".into())
+                }
+                Error::HttpStatus { status, body } => Error::GitHubApi {
+                    status,
+                    message: body,
+                },
                 other => other,
             })?;
 
@@ -312,7 +264,10 @@ impl GitHubService {
             401 | 403 => Ok(false),
             code => {
                 let body = resp.text().await.unwrap_or_default();
-                Err(Error::GitHubApi { status: code, message: body })
+                Err(Error::GitHubApi {
+                    status: code,
+                    message: body,
+                })
             }
         }
     }
@@ -331,7 +286,11 @@ impl GitHubService {
             .get_authed_params(
                 "/user/repos",
                 token,
-                &[("sort", "updated"), ("direction", "desc"), ("per_page", "100")],
+                &[
+                    ("sort", "updated"),
+                    ("direction", "desc"),
+                    ("per_page", "100"),
+                ],
             )
             .await
             .map_err(|e| match e {
@@ -345,7 +304,10 @@ impl GitHubService {
                 other => other,
             })?;
 
-        info!(count = repos.len(), "fetched GitHub repositories (capped at 100)");
+        info!(
+            count = repos.len(),
+            "fetched GitHub repositories (capped at 100)"
+        );
         Ok(repos)
     }
 
@@ -452,12 +414,16 @@ impl GitHubService {
             Duration::from_secs(self.cfg.clone_timeout_secs),
             Command::new("git")
                 .kill_on_drop(true)
-                .arg("-c").arg("credential.helper=")
-                .arg("-c").arg(&auth_header)
+                .arg("-c")
+                .arg("credential.helper=")
+                .arg("-c")
+                .arg(&auth_header)
                 .arg("clone")
-                .arg("--depth").arg("1")
+                .arg("--depth")
+                .arg("1")
                 .arg("--single-branch")
-                .arg("--branch").arg(branch)
+                .arg("--branch")
+                .arg(branch)
                 .arg(&clone_url)
                 .arg(&target)
                 .env("GIT_TERMINAL_PROMPT", "0")
@@ -489,7 +455,9 @@ impl GitHubService {
         // Strip the .git directory.
         let git_dir = target.join(".git");
         if git_dir.exists() {
-            tokio::fs::remove_dir_all(&git_dir).await.map_err(Error::Io)?;
+            tokio::fs::remove_dir_all(&git_dir)
+                .await
+                .map_err(Error::Io)?;
         }
 
         // Both `dir_size_bytes` and `pack_tar_gz` perform synchronous recursive
@@ -525,7 +493,10 @@ impl GitHubService {
             "repository cloned and archived"
         );
 
-        Ok(CloneArchive { archive_bytes, s3_key })
+        Ok(CloneArchive {
+            archive_bytes,
+            s3_key,
+        })
     }
 
     // ── Input validation (lightweight, no network) ───────────────────────────
@@ -673,7 +644,12 @@ mod tests {
     }
 
     fn standalone_svc() -> GitHubService {
-        GitHubService::with_base_urls(test_config(), "https://github.com", "https://api.github.com").unwrap()
+        GitHubService::with_base_urls(
+            test_config(),
+            "https://github.com",
+            "https://api.github.com",
+        )
+        .unwrap()
     }
 
     // ── OAuth state crypto ─────────────────────────────────────────────────
@@ -711,8 +687,8 @@ mod tests {
 
     #[test]
     fn state_expired_rejected() {
-        use std::collections::BTreeMap;
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use std::collections::BTreeMap;
 
         let svc = standalone_svc();
         // Build a state with iat far in the past.
@@ -734,8 +710,14 @@ mod tests {
     fn authorization_url_contains_client_id() {
         let svc = standalone_svc();
         let url = svc.authorization_url("user-abc").unwrap();
-        assert!(url.contains("client_id=test-client-id"), "URL should contain client_id");
-        assert!(url.starts_with("https://github.com/login/oauth/authorize"), "Wrong base URL");
+        assert!(
+            url.contains("client_id=test-client-id"),
+            "URL should contain client_id"
+        );
+        assert!(
+            url.starts_with("https://github.com/login/oauth/authorize"),
+            "Wrong base URL"
+        );
     }
 
     // ── Scrub helper ───────────────────────────────────────────────────────
@@ -746,7 +728,10 @@ mod tests {
             "fatal: could not read Username for 'https://mytoken@github.com': terminal prompts disabled\nmytoken",
             "mytoken",
         );
-        assert!(!scrubbed.contains("mytoken"), "token must be scrubbed from error text");
+        assert!(
+            !scrubbed.contains("mytoken"),
+            "token must be scrubbed from error text"
+        );
         assert!(scrubbed.contains("[REDACTED]"));
     }
 
@@ -791,7 +776,12 @@ mod tests {
     #[tokio::test]
     async fn verify_token_returns_true_on_200() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server.mock("GET", "/user").with_status(200).with_body("{}").create_async().await;
+        let mock = server
+            .mock("GET", "/user")
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
 
         let svc = test_svc("https://github.com", &server.url());
         assert!(svc.verify_token("valid-token").await.unwrap());
@@ -801,7 +791,12 @@ mod tests {
     #[tokio::test]
     async fn verify_token_returns_false_on_401() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server.mock("GET", "/user").with_status(401).with_body("{}").create_async().await;
+        let mock = server
+            .mock("GET", "/user")
+            .with_status(401)
+            .with_body("{}")
+            .create_async()
+            .await;
 
         let svc = test_svc("https://github.com", &server.url());
         assert!(!svc.verify_token("expired-token").await.unwrap());
@@ -904,8 +899,14 @@ mod tests {
     #[test]
     fn state_too_few_segments_rejected() {
         let svc = standalone_svc();
-        assert!(svc.verify_state("v1.onlytwo").is_err(), "two segments should fail");
-        assert!(svc.verify_state("noseparatorsatall").is_err(), "no separators should fail");
+        assert!(
+            svc.verify_state("v1.onlytwo").is_err(),
+            "two segments should fail"
+        );
+        assert!(
+            svc.verify_state("noseparatorsatall").is_err(),
+            "no separators should fail"
+        );
     }
 
     #[test]
@@ -1014,8 +1015,14 @@ mod tests {
             .map(|(_, v)| v.to_string())
             .unwrap_or_default();
 
-        assert!(scope.contains("repo"), "scope must include 'repo', got: {scope}");
-        assert!(scope.contains("user"), "scope must include 'user', got: {scope}");
+        assert!(
+            scope.contains("repo"),
+            "scope must include 'repo', got: {scope}"
+        );
+        assert!(
+            scope.contains("user"),
+            "scope must include 'user', got: {scope}"
+        );
     }
 
     #[test]
@@ -1041,12 +1048,9 @@ mod tests {
             central_callback_url: Some("https://central.example.com/github/callback".into()),
             ..test_config()
         };
-        let svc = GitHubService::with_base_urls(
-            cfg,
-            "https://github.com",
-            "https://api.github.com",
-        )
-        .unwrap();
+        let svc =
+            GitHubService::with_base_urls(cfg, "https://github.com", "https://api.github.com")
+                .unwrap();
 
         let url = svc.authorization_url("user-1").unwrap();
         let parsed = reqwest::Url::parse(&url).unwrap();
@@ -1067,18 +1071,31 @@ mod tests {
     #[tokio::test]
     async fn verify_token_returns_false_on_403() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server.mock("GET", "/user").with_status(403).with_body("{}").create_async().await;
+        let mock = server
+            .mock("GET", "/user")
+            .with_status(403)
+            .with_body("{}")
+            .create_async()
+            .await;
 
         let svc = test_svc("https://github.com", &server.url());
         let result = svc.verify_token("insufficient-scope-token").await.unwrap();
-        assert!(!result, "403 Forbidden must be treated as an invalid/insufficient token");
+        assert!(
+            !result,
+            "403 Forbidden must be treated as an invalid/insufficient token"
+        );
         mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn verify_token_returns_err_on_server_error() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server.mock("GET", "/user").with_status(500).with_body("Internal Server Error").create_async().await;
+        let mock = server
+            .mock("GET", "/user")
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
 
         let svc = test_svc("https://github.com", &server.url());
         let result = svc.verify_token("any-token").await;
@@ -1102,7 +1119,10 @@ mod tests {
 
         let svc = test_svc("https://github.com", &server.url());
         let repos = svc.list_repos("token").await.unwrap();
-        assert!(repos.is_empty(), "empty array response must yield empty Vec");
+        assert!(
+            repos.is_empty(),
+            "empty array response must yield empty Vec"
+        );
         mock.assert_async().await;
     }
 
@@ -1221,7 +1241,10 @@ mod tests {
         // Point the github client at a port nothing is listening on.
         let svc = test_svc("http://127.0.0.1:1", "http://127.0.0.1:1");
         let err = svc.exchange_code("code").await.unwrap_err();
-        assert!(matches!(err, Error::Http(_)), "connection refused must be Error::Http");
+        assert!(
+            matches!(err, Error::Http(_)),
+            "connection refused must be Error::Http"
+        );
     }
 
     #[tokio::test]
@@ -1243,7 +1266,8 @@ mod tests {
 
     #[tokio::test]
     async fn exchange_code_success() {
-        let token_body = r#"{"access_token":"gho_abc123","token_type":"bearer","scope":"repo,user:email"}"#;
+        let token_body =
+            r#"{"access_token":"gho_abc123","token_type":"bearer","scope":"repo,user:email"}"#;
         let user_body = r#"{"id":42,"login":"octocat","name":"The Octocat","email":"octocat@github.com","avatar_url":"https://avatars.githubusercontent.com/u/583231"}"#;
 
         let mut gh_server = mockito::Server::new_async().await;

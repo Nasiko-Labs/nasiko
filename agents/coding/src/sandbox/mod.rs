@@ -41,8 +41,11 @@ pub trait Sandbox: Send + Sync {
     fn read_file_raw<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String, String>>;
 
     /// Create or overwrite a file.
-    fn write_file<'a>(&'a self, path: &'a str, content: &'a str)
-        -> BoxFuture<'a, Result<(), String>>;
+    fn write_file<'a>(
+        &'a self,
+        path: &'a str,
+        content: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>>;
 
     /// List a directory tree (relative paths), up to `depth` levels (None = unbounded).
     fn list_dir<'a>(
@@ -72,6 +75,8 @@ pub fn from_env() -> Result<Box<dyn Sandbox>, String> {
             Ok(Box::new(LocalSandbox::new(&root)?))
         }
         "remote" => Err("SANDBOX_MODE=remote is not implemented yet (Phase 2)".into()),
-        other => Err(format!("unknown SANDBOX_MODE '{other}' (expected 'local' or 'remote')")),
+        other => Err(format!(
+            "unknown SANDBOX_MODE '{other}' (expected 'local' or 'remote')"
+        )),
     }
 }

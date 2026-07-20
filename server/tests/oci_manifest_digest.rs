@@ -24,12 +24,14 @@ async fn insert_user(db: &sqlx::PgPool, username: &str) -> Uuid {
 }
 
 async fn insert_agent(db: &sqlx::PgPool, name: &str, owner_id: Uuid) {
-    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')")
-        .bind(name)
-        .bind(owner_id)
-        .execute(db)
-        .await
-        .expect("insert test agent");
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .execute(db)
+    .await
+    .expect("insert test agent");
 }
 
 /// Push-by-digest verification: PUTting a manifest under a digest reference
@@ -47,14 +49,23 @@ async fn put_manifest_by_digest_rejects_mismatched_reference() {
     let body = serde_json::json!({"schemaVersion": 2});
 
     let resp = common::as_member(
-        server.client.put(server.url(&format!("/v2/nasiko/{agent_name}/manifests/{wrong_digest}"))),
-        &owner_id.to_string(), "oci-push-digest-owner",
+        server
+            .client
+            .put(server.url(&format!("/v2/nasiko/{agent_name}/manifests/{wrong_digest}"))),
+        &owner_id.to_string(),
+        "oci-push-digest-owner",
     )
     .header("content-type", "application/vnd.oci.image.manifest.v1+json")
     .json(&body)
-    .send().await.unwrap();
+    .send()
+    .await
+    .unwrap();
 
-    assert_eq!(resp.status(), 400, "a digest reference that doesn't match the pushed body must be rejected");
+    assert_eq!(
+        resp.status(),
+        400,
+        "a digest reference that doesn't match the pushed body must be rejected"
+    );
 
     server.cleanup().await;
 }
@@ -73,18 +84,30 @@ async fn put_manifest_by_matching_digest_succeeds() {
     let body_bytes = serde_json::to_vec(&body).unwrap();
     let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
     sha2::Digest::update(&mut hasher, &body_bytes);
-    let hex_digest: String = sha2::Digest::finalize(hasher).iter().map(|b| format!("{b:02x}")).collect();
+    let hex_digest: String = sha2::Digest::finalize(hasher)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let real_digest = format!("sha256:{hex_digest}");
 
     let resp = common::as_member(
-        server.client.put(server.url(&format!("/v2/nasiko/{agent_name}/manifests/{real_digest}"))),
-        &owner_id.to_string(), "oci-push-digest-owner-ok",
+        server
+            .client
+            .put(server.url(&format!("/v2/nasiko/{agent_name}/manifests/{real_digest}"))),
+        &owner_id.to_string(),
+        "oci-push-digest-owner-ok",
     )
     .header("content-type", "application/vnd.oci.image.manifest.v1+json")
     .body(body_bytes)
-    .send().await.unwrap();
+    .send()
+    .await
+    .unwrap();
 
-    assert_eq!(resp.status(), 201, "a digest reference matching the pushed body must succeed");
+    assert_eq!(
+        resp.status(),
+        201,
+        "a digest reference matching the pushed body must succeed"
+    );
 
     server.cleanup().await;
 }
@@ -173,7 +196,11 @@ async fn get_manifest_by_matching_digest_succeeds() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 200, "a self-consistent manifest row must still be servable by digest");
+    assert_eq!(
+        resp.status(),
+        200,
+        "a self-consistent manifest row must still be servable by digest"
+    );
 
     server.cleanup().await;
 }
@@ -202,7 +229,9 @@ async fn get_manifest_by_tag_is_not_digest_verified() {
     .unwrap();
 
     let resp = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/manifests/latest"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/manifests/latest"))),
         &owner_id.to_string(),
         "oci-digest-owner-tag",
     )

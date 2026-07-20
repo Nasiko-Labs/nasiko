@@ -29,7 +29,11 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(limit: u32, window: Duration) -> Self {
-        Self { buckets: Arc::new(DashMap::new()), limit, window }
+        Self {
+            buckets: Arc::new(DashMap::new()),
+            limit,
+            window,
+        }
     }
 
     /// Records one request for `key`; returns `false` if it exceeds the
@@ -50,7 +54,11 @@ impl RateLimiter {
 }
 
 pub(crate) fn too_many_requests() -> Response {
-    (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded, try again shortly").into_response()
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate limit exceeded, try again shortly",
+    )
+        .into_response()
 }
 
 /// Rate-limit by authenticated caller. Must be layered so it runs AFTER
@@ -75,7 +83,11 @@ pub async fn limit_by_user(
 /// configuration — but it bounds worst-case bcrypt-cost-12 CPU burn from a
 /// single runaway loop, which is the concern in this threat model
 /// (self-hosted single-org PaaS, not an internet-facing multi-tenant login).
-pub async fn limit_globally(State(limiter): State<RateLimiter>, req: Request, next: Next) -> Response {
+pub async fn limit_globally(
+    State(limiter): State<RateLimiter>,
+    req: Request,
+    next: Next,
+) -> Response {
     if limiter.allow("global") {
         next.run(req).await
     } else {
@@ -93,14 +105,20 @@ mod tests {
         assert!(limiter.allow("a"));
         assert!(limiter.allow("a"));
         assert!(limiter.allow("a"));
-        assert!(!limiter.allow("a"), "4th request in the window must be rejected");
+        assert!(
+            !limiter.allow("a"),
+            "4th request in the window must be rejected"
+        );
     }
 
     #[test]
     fn keys_are_independent() {
         let limiter = RateLimiter::new(1, Duration::from_secs(60));
         assert!(limiter.allow("a"));
-        assert!(limiter.allow("b"), "a different key must have its own budget");
+        assert!(
+            limiter.allow("b"),
+            "a different key must have its own budget"
+        );
         assert!(!limiter.allow("a"));
     }
 

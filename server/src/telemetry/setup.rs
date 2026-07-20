@@ -1,14 +1,14 @@
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use opentelemetry_otlp::{WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
-    metrics::SdkMeterProvider,
-    trace::{SdkTracerProvider, Sampler},
     Resource,
+    metrics::SdkMeterProvider,
+    trace::{Sampler, SdkTracerProvider},
 };
 use tonic::metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Configuration for OTel export.
 /// Enterprise customers configure their own OTLP endpoint.
@@ -45,7 +45,10 @@ impl TelemetryConfig {
             .split(',')
             .filter_map(|kv| {
                 let mut parts = kv.splitn(2, '=');
-                Some((parts.next()?.trim().to_string(), parts.next()?.trim().to_string()))
+                Some((
+                    parts.next()?.trim().to_string(),
+                    parts.next()?.trim().to_string(),
+                ))
             })
             .collect();
 

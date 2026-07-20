@@ -27,7 +27,10 @@ pub async fn spawn_sim_agent() -> SimAgentHandle {
         let _ = axum::serve(listener, app).await;
     });
 
-    SimAgentHandle { base_url: format!("http://{addr}"), _task: task }
+    SimAgentHandle {
+        base_url: format!("http://{addr}"),
+        _task: task,
+    }
 }
 
 async fn handle(Json(body): Json<Value>) -> Json<Value> {

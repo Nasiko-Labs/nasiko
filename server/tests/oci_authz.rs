@@ -28,12 +28,14 @@ async fn insert_user(db: &PgPool, username: &str) -> Uuid {
 }
 
 async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) {
-    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')")
-        .bind(name)
-        .bind(owner_id)
-        .execute(db)
-        .await
-        .expect("insert test agent");
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .execute(db)
+    .await
+    .expect("insert test agent");
 }
 
 async fn insert_manifest(db: &PgPool, repository: &str) {
@@ -61,7 +63,9 @@ async fn tags_list_denies_non_owner_of_claimed_repo() {
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
 
     let resp = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
         &stranger_id.to_string(),
         "oci-stranger",
     )
@@ -69,7 +73,11 @@ async fn tags_list_denies_non_owner_of_claimed_repo() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 403, "non-owner must be forbidden from a claimed repo");
+    assert_eq!(
+        resp.status(),
+        403,
+        "non-owner must be forbidden from a claimed repo"
+    );
 
     server.cleanup().await;
 }
@@ -85,7 +93,9 @@ async fn tags_list_allows_owner_of_claimed_repo() {
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
 
     let resp = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
         &owner_id.to_string(),
         "oci-owner2",
     )
@@ -93,7 +103,11 @@ async fn tags_list_allows_owner_of_claimed_repo() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 200, "the owner must be able to list their own repo's tags");
+    assert_eq!(
+        resp.status(),
+        200,
+        "the owner must be able to list their own repo's tags"
+    );
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["tags"], serde_json::json!(["latest"]));
 
@@ -113,7 +127,9 @@ async fn tags_list_allows_anyone_on_unclaimed_repo() {
     insert_manifest(&server.db, &format!("nasiko/{unclaimed_name}")).await;
 
     let resp = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{unclaimed_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{unclaimed_name}/tags/list"))),
         &stranger_id.to_string(),
         "oci-stranger2",
     )
@@ -121,7 +137,11 @@ async fn tags_list_allows_anyone_on_unclaimed_repo() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 200, "an unclaimed (not-yet-registered) repo must not block access");
+    assert_eq!(
+        resp.status(),
+        200,
+        "an unclaimed (not-yet-registered) repo must not block access"
+    );
 
     server.cleanup().await;
 }
@@ -137,7 +157,9 @@ async fn tags_list_allows_superuser_on_any_repo() {
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
 
     let resp = common::as_superuser(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
         &Uuid::new_v4().to_string(),
         "admin",
     )
@@ -145,7 +167,11 @@ async fn tags_list_allows_superuser_on_any_repo() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 200, "a superuser must be able to access any repo");
+    assert_eq!(
+        resp.status(),
+        200,
+        "a superuser must be able to access any repo"
+    );
 
     server.cleanup().await;
 }
@@ -173,7 +199,9 @@ async fn tags_list_sound_when_two_owners_share_an_agent_name() {
 
     for (owner_id, username) in [(owner_a, "oci-collision-a"), (owner_b, "oci-collision-b")] {
         let resp = common::as_member(
-            server.client.get(server.url(&format!("/v2/nasiko/{shared_name}/tags/list"))),
+            server
+                .client
+                .get(server.url(&format!("/v2/nasiko/{shared_name}/tags/list"))),
             &owner_id.to_string(),
             username,
         )
@@ -181,7 +209,8 @@ async fn tags_list_sound_when_two_owners_share_an_agent_name() {
         .await
         .unwrap();
         assert_eq!(
-            resp.status(), 200,
+            resp.status(),
+            200,
             "owner {username} must not be denied due to the other owner's row sharing this name"
         );
     }
@@ -199,9 +228,16 @@ async fn tags_list_sound_when_two_owners_share_an_agent_name() {
 // content that's actually shared with someone else's claimed, registered
 // agent. Destructive ops must require an existing claim (or superuser).
 
-async fn delete_manifest(server: &common::TestServer, repo: &str, user_id: &str, username: &str) -> reqwest::Response {
+async fn delete_manifest(
+    server: &common::TestServer,
+    repo: &str,
+    user_id: &str,
+    username: &str,
+) -> reqwest::Response {
     common::as_member(
-        server.client.delete(server.url(&format!("/v2/nasiko/{repo}/manifests/latest"))),
+        server
+            .client
+            .delete(server.url(&format!("/v2/nasiko/{repo}/manifests/latest"))),
         user_id,
         username,
     )
@@ -218,10 +254,17 @@ async fn manifest_delete_denies_unclaimed_repo() {
     let unclaimed_name = format!("oci-del-unclaimed-{}", Uuid::new_v4());
     insert_manifest(&server.db, &format!("nasiko/{unclaimed_name}")).await;
 
-    let resp = delete_manifest(&server, &unclaimed_name, &stranger_id.to_string(), "oci-del-stranger").await;
+    let resp = delete_manifest(
+        &server,
+        &unclaimed_name,
+        &stranger_id.to_string(),
+        "oci-del-stranger",
+    )
+    .await;
 
     assert_eq!(
-        resp.status(), 403,
+        resp.status(),
+        403,
         "delete on an unclaimed repo must be denied — read access being open to an unclaimed repo must not extend to destroying its content"
     );
 
@@ -239,7 +282,11 @@ async fn manifest_delete_allows_owner() {
 
     let resp = delete_manifest(&server, &agent_name, &owner_id.to_string(), "oci-del-owner").await;
 
-    assert_eq!(resp.status(), 202, "the owner must be able to delete their own repo's manifest");
+    assert_eq!(
+        resp.status(),
+        202,
+        "the owner must be able to delete their own repo's manifest"
+    );
 
     server.cleanup().await;
 }
@@ -254,9 +301,19 @@ async fn manifest_delete_denies_non_owner_of_claimed_repo() {
     insert_agent(&server.db, &agent_name, owner_id).await;
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
 
-    let resp = delete_manifest(&server, &agent_name, &stranger_id.to_string(), "oci-del-stranger2").await;
+    let resp = delete_manifest(
+        &server,
+        &agent_name,
+        &stranger_id.to_string(),
+        "oci-del-stranger2",
+    )
+    .await;
 
-    assert_eq!(resp.status(), 403, "a non-owner must not be able to delete another owner's manifest");
+    assert_eq!(
+        resp.status(),
+        403,
+        "a non-owner must not be able to delete another owner's manifest"
+    );
 
     server.cleanup().await;
 }

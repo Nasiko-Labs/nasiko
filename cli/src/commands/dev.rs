@@ -26,14 +26,54 @@ struct EnvVar {
 }
 
 const DEV_ENV_VARS: &[EnvVar] = &[
-    EnvVar { key: "DOCKERHUB_USER", description: "DockerHub org for CP image", default: Some("nasiko"), secret: false },
-    EnvVar { key: "OPENAI_API_KEY", description: "AI routing + card generation", default: None, secret: true },
-    EnvVar { key: "OPENAI_BASE_URL", description: "Custom LLM endpoint", default: None, secret: false },
-    EnvVar { key: "OPENAI_MODEL", description: "Default model for agents", default: Some("deepseek-v4-flash"), secret: false },
-    EnvVar { key: "ROUTER_MODEL", description: "Model for smart routing", default: Some("deepseek-v4-pro"), secret: false },
-    EnvVar { key: "GITHUB_CLIENT_ID", description: "GitHub OAuth (login with GitHub)", default: None, secret: false },
-    EnvVar { key: "GITHUB_CLIENT_SECRET", description: "GitHub OAuth secret", default: None, secret: true },
-    EnvVar { key: "SEED_AGENTS", description: "Auto-deploy these images on start", default: None, secret: false },
+    EnvVar {
+        key: "DOCKERHUB_USER",
+        description: "DockerHub org for CP image",
+        default: Some("nasiko"),
+        secret: false,
+    },
+    EnvVar {
+        key: "OPENAI_API_KEY",
+        description: "AI routing + card generation",
+        default: None,
+        secret: true,
+    },
+    EnvVar {
+        key: "OPENAI_BASE_URL",
+        description: "Custom LLM endpoint",
+        default: None,
+        secret: false,
+    },
+    EnvVar {
+        key: "OPENAI_MODEL",
+        description: "Default model for agents",
+        default: Some("deepseek-v4-flash"),
+        secret: false,
+    },
+    EnvVar {
+        key: "ROUTER_MODEL",
+        description: "Model for smart routing",
+        default: Some("deepseek-v4-pro"),
+        secret: false,
+    },
+    EnvVar {
+        key: "GITHUB_CLIENT_ID",
+        description: "GitHub OAuth (login with GitHub)",
+        default: None,
+        secret: false,
+    },
+    EnvVar {
+        key: "GITHUB_CLIENT_SECRET",
+        description: "GitHub OAuth secret",
+        default: None,
+        secret: true,
+    },
+    EnvVar {
+        key: "SEED_AGENTS",
+        description: "Auto-deploy these images on start",
+        default: None,
+        secret: false,
+    },
 ];
 
 #[derive(Tabled)]
@@ -85,7 +125,7 @@ impl DevEnv {
             .map(|(i, ev)| {
                 let display = match self.vars.get(ev.key) {
                     Some(v) if ev.secret && v.len() > 8 => {
-                        format!("{}...{}", &v[..4], &v[v.len()-4..])
+                        format!("{}...{}", &v[..4], &v[v.len() - 4..])
                     }
                     Some(_v) if ev.secret => "****".to_string(),
                     Some(v) => v.clone(),
@@ -99,7 +139,12 @@ impl DevEnv {
                 }
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
+        println!(
+            "{}",
+            Table::new(rows)
+                .with(Style::blank())
+                .with(Alignment::left())
+        );
         println!();
     }
 
@@ -214,7 +259,10 @@ pub fn start(infra_only: bool) -> Result<()> {
 
     let mut cmd = Command::new(&cp_bin);
     cmd.env("CP_BIND", "0.0.0.0:8080")
-        .env("DATABASE_URL", "postgresql://nasiko:nasiko@localhost:5432/nasiko_dev")
+        .env(
+            "DATABASE_URL",
+            "postgresql://nasiko:nasiko@localhost:5432/nasiko_dev",
+        )
         .env("REDIS_URL", "redis://localhost:6379")
         .env("AGENT_RUNTIME", "local")
         .env("S3_ENDPOINT", "http://localhost:9000")
@@ -224,12 +272,22 @@ pub fn start(infra_only: bool) -> Result<()> {
         .env("S3_REGION", "us-east-1")
         // Valid base64-encoded 32 bytes (32x 'D') — SecretsCrypto::from_key requires
         // exactly 32 decoded bytes, unlike a raw 32-character string.
-        .env("SECRETS_ENCRYPTION_KEY", "REREREREREREREREREREREREREREREREREREREREREQ=")
+        .env(
+            "SECRETS_ENCRYPTION_KEY",
+            "REREREREREREREREREREREREREREREREREREREREREQ=",
+        )
         .env("RUST_LOG", "info,nasiko_cp_lib=debug");
 
     // Pass optional env vars from DevEnv
-    for key in &["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL", "ROUTER_MODEL",
-                 "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "SEED_AGENTS"] {
+    for key in &[
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "ROUTER_MODEL",
+        "GITHUB_CLIENT_ID",
+        "GITHUB_CLIENT_SECRET",
+        "SEED_AGENTS",
+    ] {
         if let Some(val) = env.get(key) {
             cmd.env(key, val);
         }
@@ -245,11 +303,12 @@ pub fn start(infra_only: bool) -> Result<()> {
     for _ in 0..30 {
         thread::sleep(Duration::from_secs(1));
         if let Ok(resp) = http.get("http://localhost:8080/health").call()
-            && resp.status().as_u16() == 200 {
-                println!(" ok");
-                healthy = true;
-                break;
-            }
+            && resp.status().as_u16() == 200
+        {
+            println!(" ok");
+            healthy = true;
+            break;
+        }
         print!(".");
     }
     if !healthy {
@@ -295,10 +354,11 @@ pub fn stop() -> Result<()> {
     let pid_file = pid_file_path()?;
     if pid_file.exists() {
         if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-            && let Ok(pid) = pid_str.trim().parse::<u32>() {
-                println!("Stopping CP (pid {pid})...");
-                let _ = Command::new("kill").arg(pid.to_string()).status();
-            }
+            && let Ok(pid) = pid_str.trim().parse::<u32>()
+        {
+            println!("Stopping CP (pid {pid})...");
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
         let _ = std::fs::remove_file(&pid_file);
     }
 
@@ -344,7 +404,15 @@ pub fn run(path: &str, port: u16) -> Result<()> {
     let _ = Command::new(&bin).args(["rm", "-f", name]).output();
     println!("Running {name} on port {port}...");
     let run = Command::new(&bin)
-        .args(["run", "-d", "--name", name, "-p", &format!("{port}:{port}"), &image])
+        .args([
+            "run",
+            "-d",
+            "--name",
+            name,
+            "-p",
+            &format!("{port}:{port}"),
+            &image,
+        ])
         .status()?;
     if !run.success() {
         bail!("{bin} run failed");
@@ -364,31 +432,32 @@ fn ensure_cp_binary(env: &DevEnv) -> Result<std::path::PathBuf> {
         return Ok(bin_path);
     }
 
-    let image = env.get("DOCKERHUB_USER")
+    let image = env
+        .get("DOCKERHUB_USER")
         .map(|user| format!("{user}/cp:latest"))
         .unwrap_or_else(|| CP_IMAGE_DEFAULT.to_string());
 
     let bin = container_bin();
 
     println!("  Pulling CP image ({image})...");
-    let status = Command::new(&bin)
-        .args(["pull", &image])
-        .status()?;
+    let status = Command::new(&bin).args(["pull", &image]).status()?;
     if !status.success() {
         bail!("failed to pull {image}");
     }
 
     println!("  Extracting CP binary...");
-    let output = Command::new(&bin)
-        .args(["create", &image])
-        .output()?;
+    let output = Command::new(&bin).args(["create", &image]).output()?;
     if !output.status.success() {
         bail!("{bin} create failed");
     }
     let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     let cp_status = Command::new(&bin)
-        .args(["cp", &format!("{container_id}:{CP_BINARY_PATH_IN_IMAGE}"), &bin_path.to_string_lossy()])
+        .args([
+            "cp",
+            &format!("{container_id}:{CP_BINARY_PATH_IN_IMAGE}"),
+            &bin_path.to_string_lossy(),
+        ])
         .status()?;
 
     let _ = Command::new(&bin).args(["rm", &container_id]).output();

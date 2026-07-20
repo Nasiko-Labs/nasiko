@@ -6,7 +6,9 @@ use axum::{
 };
 
 use crate::OciState;
-use crate::authz::{Caller, CallerIdentity, Writer, check_pull_access, check_repo_delete_access, check_write_access};
+use crate::authz::{
+    Caller, CallerIdentity, Writer, check_pull_access, check_repo_delete_access, check_write_access,
+};
 use crate::error::Result;
 use crate::ops;
 

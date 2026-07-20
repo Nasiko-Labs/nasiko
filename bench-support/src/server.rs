@@ -66,7 +66,12 @@ impl BenchDb {
 
         AppState::run_migrations(&pool).await;
 
-        BenchDb { pool, database_url, db_name, admin_pool }
+        BenchDb {
+            pool,
+            database_url,
+            db_name,
+            admin_pool,
+        }
     }
 
     pub async fn drop_db(&self) {
@@ -130,7 +135,10 @@ where
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind bench server");
-    let port = listener.local_addr().expect("bench server local_addr").port();
+    let port = listener
+        .local_addr()
+        .expect("bench server local_addr")
+        .port();
 
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -140,5 +148,8 @@ where
     // accept loop needs a tick to actually start polling the listener.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    ServerHandle { base_url: format!("http://127.0.0.1:{port}"), client: reqwest::Client::new() }
+    ServerHandle {
+        base_url: format!("http://127.0.0.1:{port}"),
+        client: reqwest::Client::new(),
+    }
 }

@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bollard::Docker;
+use bollard::container::LogsOptions;
 use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
     RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
@@ -9,15 +11,13 @@ use bollard::container::{
 use bollard::image::{BuildImageOptions, CreateImageOptions};
 use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
 use bollard::network::ConnectNetworkOptions;
-use bollard::container::LogsOptions;
-use bollard::Docker;
 use futures_util::StreamExt;
 use tracing::{instrument, warn};
 
 use crate::{
-    error::{Result, RuntimeError},
-    types::{validate_build_inputs, ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState},
     ContainerRuntime,
+    error::{Result, RuntimeError},
+    types::{ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState, validate_build_inputs},
 };
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -120,9 +120,7 @@ impl DockerRuntime {
     fn container_id_from_name(name: &str) -> Option<ContainerId> {
         // Docker names arrive as "/nasiko-agent-{id}" from the list API
         let stripped = name.strip_prefix('/').unwrap_or(name);
-        stripped
-            .strip_prefix("nasiko-agent-")
-            .map(ContainerId::new)
+        stripped.strip_prefix("nasiko-agent-").map(ContainerId::new)
     }
 }
 
@@ -240,13 +238,14 @@ fn build_port_config(ports: &[u16], bind_host: &str) -> (PortBindingsMap, Expose
 /// Extract the first bound host port from a `NetworkSettings.Ports` map.
 /// Ports are sorted numerically so the lowest container port is preferred.
 /// Returns `None` if no bindings are present.
-fn extract_host_port(
-    ports: &HashMap<String, Option<Vec<PortBinding>>>,
-) -> Option<String> {
+fn extract_host_port(ports: &HashMap<String, Option<Vec<PortBinding>>>) -> Option<String> {
     let mut keys: Vec<&String> = ports.keys().collect();
     // Numeric sort: "10000/tcp" < "9000/tcp" lexicographically but 9000 < 10000 numerically
     keys.sort_by_key(|k| {
-        k.split('/').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(0)
+        k.split('/')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(0)
     });
 
     for key in keys {
@@ -268,13 +267,25 @@ fn parse_memory_bytes(s: &str) -> i64 {
     let msg = "parse_memory_bytes called with unvalidated input";
     let overflow = "memory value overflows i64 — validate() should have rejected this";
     if let Some(n) = s.strip_suffix("Gi") {
-        n.parse::<i64>().expect(msg).checked_mul(1024 * 1024 * 1024).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1024 * 1024 * 1024)
+            .expect(overflow)
     } else if let Some(n) = s.strip_suffix("Mi") {
-        n.parse::<i64>().expect(msg).checked_mul(1024 * 1024).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1024 * 1024)
+            .expect(overflow)
     } else if let Some(n) = s.strip_suffix("G") {
-        n.parse::<i64>().expect(msg).checked_mul(1_000_000_000).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1_000_000_000)
+            .expect(overflow)
     } else if let Some(n) = s.strip_suffix("M") {
-        n.parse::<i64>().expect(msg).checked_mul(1_000_000).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1_000_000)
+            .expect(overflow)
     } else {
         s.parse::<i64>().expect(msg)
     }
@@ -309,10 +320,15 @@ fn extract_endpoint(
             if let Some(ports) = ns.ports.as_ref() {
                 let mut keys: Vec<&String> = ports.keys().collect();
                 keys.sort_by_key(|k| {
-                    k.split('/').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(0)
+                    k.split('/')
+                        .next()
+                        .and_then(|p| p.parse::<u16>().ok())
+                        .unwrap_or(0)
                 });
                 for key in keys {
-                    if let Some(container_port) = key.split('/').next().and_then(|p| p.parse::<u16>().ok()) {
+                    if let Some(container_port) =
+                        key.split('/').next().and_then(|p| p.parse::<u16>().ok())
+                    {
                         return Some(format!("http://{ip}:{container_port}"));
                     }
                 }
@@ -341,7 +357,9 @@ const ENV_VARS_LABEL: &str = "nasiko.com/env-vars";
 /// Read back the env vars recorded in [`ENV_VARS_LABEL`] on a running container.
 /// Returns `None` if the label is missing (pre-fix container) or fails to parse —
 /// callers should treat that as "unknown, assume changed" rather than as "unchanged".
-fn stored_env_vars(config: Option<&bollard::models::ContainerConfig>) -> Option<HashMap<String, String>> {
+fn stored_env_vars(
+    config: Option<&bollard::models::ContainerConfig>,
+) -> Option<HashMap<String, String>> {
     config
         .and_then(|c| c.labels.as_ref())
         .and_then(|l| l.get(ENV_VARS_LABEL))
@@ -373,11 +391,16 @@ async fn create_and_start(
             Some(host) if !spec.image.starts_with(host) => format!("{host}/{}", spec.image),
             _ => spec.image.clone(),
         };
-        let opts = CreateImageOptions { from_image: pull_ref.as_str(), ..Default::default() };
+        let opts = CreateImageOptions {
+            from_image: pull_ref.as_str(),
+            ..Default::default()
+        };
         let mut stream = client.create_image(Some(opts), None, None);
         while let Some(res) = stream.next().await {
             if let Err(e) = res {
-                return Err(RuntimeError::ImageNotFound(format!("pull {pull_ref} failed: {e}")));
+                return Err(RuntimeError::ImageNotFound(format!(
+                    "pull {pull_ref} failed: {e}"
+                )));
             }
         }
     }
@@ -520,14 +543,23 @@ impl ContainerRuntime for DockerRuntime {
 
         match tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         {
             Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
             Ok(Err(ref e)) if is_not_found(e) => {
                 // Container does not exist: create and start it
-                create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout, self.config.registry_host.as_deref()).await?;
+                create_and_start(
+                    &self.client,
+                    spec,
+                    &self.config.bind_host,
+                    self.config.network.as_deref(),
+                    timeout,
+                    self.config.registry_host.as_deref(),
+                )
+                .await?;
             }
             Ok(Err(e)) => return Err(map_bollard_err(e)),
             Ok(Ok(existing)) => {
@@ -548,19 +580,23 @@ impl ContainerRuntime for DockerRuntime {
 
                 if existing_image == spec.image && !env_changed {
                     // Same image, same env: ensure the container is running (idempotent)
-                    let current_status = existing
-                        .state
-                        .as_ref()
-                        .and_then(|s| s.status);
+                    let current_status = existing.state.as_ref().and_then(|s| s.status);
 
                     if current_status != Some(ContainerStateStatusEnum::RUNNING) {
                         tokio::time::timeout(
                             timeout,
-                            self.client.start_container(&name, None::<StartContainerOptions<String>>),
+                            self.client
+                                .start_container(&name, None::<StartContainerOptions<String>>),
                         )
                         .await
                         .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
-                        .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+                        .or_else(|e| {
+                            if is_not_modified(&e) {
+                                Ok(())
+                            } else {
+                                Err(map_bollard_err(e))
+                            }
+                        })?;
                     }
                 } else {
                     // Different image or changed env/secrets: stop → remove → recreate.
@@ -569,11 +605,18 @@ impl ContainerRuntime for DockerRuntime {
                     // the container was recreated rather than left running.
                     tokio::time::timeout(
                         timeout,
-                        self.client.stop_container(&name, None::<StopContainerOptions>),
+                        self.client
+                            .stop_container(&name, None::<StopContainerOptions>),
                     )
                     .await
                     .map_err(|_| RuntimeError::Timeout("stop_container".to_owned()))?
-                    .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+                    .or_else(|e| {
+                        if is_not_modified(&e) {
+                            Ok(())
+                        } else {
+                            Err(map_bollard_err(e))
+                        }
+                    })?;
 
                     tokio::time::timeout(
                         timeout,
@@ -589,12 +632,26 @@ impl ContainerRuntime for DockerRuntime {
                     .map_err(|_| RuntimeError::Timeout("remove_container".to_owned()))?
                     .map_err(map_bollard_err)?;
 
-                    create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout, self.config.registry_host.as_deref()).await?;
+                    create_and_start(
+                        &self.client,
+                        spec,
+                        &self.config.bind_host,
+                        self.config.network.as_deref(),
+                        timeout,
+                        self.config.registry_host.as_deref(),
+                    )
+                    .await?;
                 }
             }
         }
 
-        inspect_to_status(&self.client, &spec.container_id, self.config.network.as_deref(), timeout).await
+        inspect_to_status(
+            &self.client,
+            &spec.container_id,
+            self.config.network.as_deref(),
+            timeout,
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -605,7 +662,8 @@ impl ContainerRuntime for DockerRuntime {
 
         match tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         {
@@ -618,11 +676,18 @@ impl ContainerRuntime for DockerRuntime {
         // Stop first (ignore 304 = already stopped)
         tokio::time::timeout(
             timeout,
-            self.client.stop_container(&name, None::<StopContainerOptions>),
+            self.client
+                .stop_container(&name, None::<StopContainerOptions>),
         )
         .await
         .map_err(|_| RuntimeError::Timeout("stop_container".to_owned()))?
-        .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+        .or_else(|e| {
+            if is_not_modified(&e) {
+                Ok(())
+            } else {
+                Err(map_bollard_err(e))
+            }
+        })?;
 
         tokio::time::timeout(
             timeout,
@@ -654,13 +719,14 @@ impl ContainerRuntime for DockerRuntime {
         // Verify the container exists
         match tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         {
             Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
             Ok(Err(ref e)) if is_not_found(e) => {
-                return Err(RuntimeError::ContainerNotFound(container_id.clone()))
+                return Err(RuntimeError::ContainerNotFound(container_id.clone()));
             }
             Ok(Err(e)) => return Err(map_bollard_err(e)),
             Ok(Ok(_)) => {}
@@ -669,11 +735,18 @@ impl ContainerRuntime for DockerRuntime {
         if replicas == 0 {
             tokio::time::timeout(
                 timeout,
-                self.client.stop_container(&name, None::<StopContainerOptions>),
+                self.client
+                    .stop_container(&name, None::<StopContainerOptions>),
             )
             .await
             .map_err(|_| RuntimeError::Timeout("stop_container".to_owned()))?
-            .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+            .or_else(|e| {
+                if is_not_modified(&e) {
+                    Ok(())
+                } else {
+                    Err(map_bollard_err(e))
+                }
+            })?;
         } else {
             if replicas > 1 {
                 // Docker supports only a single container per name. Scaling to N > 1
@@ -687,11 +760,18 @@ impl ContainerRuntime for DockerRuntime {
             }
             tokio::time::timeout(
                 timeout,
-                self.client.start_container(&name, None::<StartContainerOptions<String>>),
+                self.client
+                    .start_container(&name, None::<StartContainerOptions<String>>),
             )
             .await
             .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
-            .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+            .or_else(|e| {
+                if is_not_modified(&e) {
+                    Ok(())
+                } else {
+                    Err(map_bollard_err(e))
+                }
+            })?;
         }
 
         Ok(())
@@ -705,7 +785,8 @@ impl ContainerRuntime for DockerRuntime {
 
         tokio::time::timeout(
             timeout,
-            self.client.restart_container(&name, None::<RestartContainerOptions>),
+            self.client
+                .restart_container(&name, None::<RestartContainerOptions>),
         )
         .await
         .map_err(|_| RuntimeError::Timeout("restart_container".to_owned()))?
@@ -723,7 +804,13 @@ impl ContainerRuntime for DockerRuntime {
     #[instrument(skip(self))]
     async fn status(&self, container_id: &ContainerId) -> Result<DeploymentStatus> {
         container_id.validate()?;
-        inspect_to_status(&self.client, container_id, self.config.network.as_deref(), self.config.operation_timeout).await
+        inspect_to_status(
+            &self.client,
+            container_id,
+            self.config.network.as_deref(),
+            self.config.operation_timeout,
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -782,7 +869,8 @@ impl ContainerRuntime for DockerRuntime {
 
         let info = tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         .map_err(|_| RuntimeError::Timeout("inspect_container".to_owned()))?
@@ -794,8 +882,9 @@ impl ContainerRuntime for DockerRuntime {
             }
         })?;
 
-        extract_endpoint(&info.network_settings, self.config.network.as_deref())
-            .ok_or_else(|| RuntimeError::Internal(format!("container {name} has no reachable endpoint")))
+        extract_endpoint(&info.network_settings, self.config.network.as_deref()).ok_or_else(|| {
+            RuntimeError::Internal(format!("container {name} has no reachable endpoint"))
+        })
     }
 
     #[instrument(skip(self))]
@@ -885,4 +974,3 @@ impl ContainerRuntime for DockerRuntime {
             .map_err(|_| RuntimeError::Timeout("image build".to_owned()))?
     }
 }
-

@@ -27,10 +27,6 @@ pub fn router() -> Router<AppState> {
     routes::router()
 }
 
-pub fn degradable_router() -> Router<AppState> {
-    routes::degradable_router()
-}
-
 /// Create a tar archive from a directory (for passing to ContainerRuntime::build).
 pub fn tar_directory(dir: &std::path::Path) -> Result<Vec<u8>, String> {
     use tar::Builder;
@@ -74,7 +70,10 @@ pub fn extract_tar_gzip(data: &[u8], dest: &std::path::Path) -> Result<(), Strin
         // symlink/hardlink that escapes `dest` on a later write.
         if etype.is_symlink() || etype.is_hard_link() {
             let p = entry.path().map(|p| p.into_owned()).unwrap_or_default();
-            return Err(format!("tar contains a link entry which is not allowed: {}", p.display()));
+            return Err(format!(
+                "tar contains a link entry which is not allowed: {}",
+                p.display()
+            ));
         }
 
         count += 1;
@@ -86,13 +85,18 @@ pub fn extract_tar_gzip(data: &[u8], dest: &std::path::Path) -> Result<(), Strin
         // then confirm the joined path stays inside `dest`.
         let rel = entry.path().map_err(|e| e.to_string())?.into_owned();
         if rel.is_absolute()
-            || rel.components().any(|c| matches!(c, std::path::Component::ParentDir))
+            || rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
         {
             return Err(format!("tar traversal attempt: {}", rel.display()));
         }
         let out_path = dest.join(&rel);
         if !out_path.starts_with(dest) {
-            return Err(format!("tar traversal attempt (join escaped dest): {}", rel.display()));
+            return Err(format!(
+                "tar traversal attempt (join escaped dest): {}",
+                rel.display()
+            ));
         }
 
         if etype.is_dir() {
@@ -101,8 +105,7 @@ pub fn extract_tar_gzip(data: &[u8], dest: &std::path::Path) -> Result<(), Strin
         }
 
         // Tar-bomb guard: check declared size before writing.
-        uncompressed_total = uncompressed_total
-            .saturating_add(entry.header().size().unwrap_or(0));
+        uncompressed_total = uncompressed_total.saturating_add(entry.header().size().unwrap_or(0));
         if uncompressed_total > MAX_TAR_UNCOMPRESSED {
             return Err(format!(
                 "tar uncompressed size exceeds {MAX_TAR_UNCOMPRESSED} bytes — possible tar bomb"
@@ -130,7 +133,8 @@ pub(crate) fn is_valid_repo_name(repo: &str) -> bool {
     let is_safe_segment = |s: &str| {
         !s.is_empty()
             && s.len() <= 100
-            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
     };
     is_safe_segment(owner) && is_safe_segment(name)
 }

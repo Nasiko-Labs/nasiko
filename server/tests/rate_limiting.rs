@@ -32,6 +32,9 @@ async fn login_route_is_rate_limited() {
         }
     }
 
-    assert!(saw_429, "expected a 429 within 40 rapid login attempts (limit is 30/60s)");
+    assert!(
+        saw_429,
+        "expected a 429 within 40 rapid login attempts (limit is 30/60s)"
+    );
     server.cleanup().await;
 }

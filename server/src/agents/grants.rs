@@ -8,7 +8,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::acl::user_can_access_agent;
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -17,31 +16,45 @@ pub fn router() -> Router<AppState> {
         // Overall grant summary
         .route("/{id}/grants", get(list_grants))
         // Public visibility
-        .route("/{id}/grants/public", post(make_public).delete(make_private))
+        .route(
+            "/{id}/grants/public",
+            post(make_public).delete(make_private),
+        )
         .route("/{id}/visibility", get(get_visibility))
         // Per-user shares
         .route("/{id}/users", get(list_user_grants))
-        .route("/{id}/grants/users", get(list_user_grants).post(add_user_grant))
+        .route(
+            "/{id}/grants/users",
+            get(list_user_grants).post(add_user_grant),
+        )
         .route("/{id}/grants/users/{user_id}", delete(remove_user_grant))
         // Agent-to-agent call ACL
-        .route("/{id}/grants/agents", get(list_agent_grants).post(add_agent_grant))
-        .route("/{id}/grants/agents/{target_agent_id}", delete(remove_agent_grant))
+        .route(
+            "/{id}/grants/agents",
+            get(list_agent_grants).post(add_agent_grant),
+        )
+        .route(
+            "/{id}/grants/agents/{target_agent_id}",
+            delete(remove_agent_grant),
+        )
         // Ownership transfer
         .route("/{id}/owner", put(transfer_owner))
 }
 
 // ── Access check helper ───────────────────────────────────────────────────────
 
+/// All grant endpoints — reading who has access as well as adding/removing grants,
+/// toggling public visibility, and transferring ownership — are management
+/// operations over an agent's access-control list. Gate them on owner-or-superuser
+/// (`can_manage_agent`), never on mere view access: otherwise a public agent's
+/// viewer or an invoke-grantee could enumerate or rewrite its grants, or transfer
+/// its ownership (RUN-9 / AUTH-1).
 async fn check_access(
     state: &AppState,
     claims: &Claims,
     agent_id: Uuid,
 ) -> Result<(), axum::response::Response> {
-    let user_id: Uuid = claims
-        .sub
-        .parse()
-        .map_err(|_| StatusCode::UNAUTHORIZED.into_response())?;
-    if !claims.is_superuser && !user_can_access_agent(&state.db, user_id, agent_id).await {
+    if !crate::acl::can_manage_agent(state, claims, agent_id).await {
         return Err(StatusCode::FORBIDDEN.into_response());
     }
     Ok(())
@@ -68,15 +81,14 @@ async fn list_grants(
         return r;
     }
 
-    let is_public: bool = sqlx::query_scalar(
-        "SELECT is_public FROM agents WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or(false);
+    let is_public: bool =
+        sqlx::query_scalar("SELECT is_public FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false);
 
     let user_grants: Vec<Uuid> = sqlx::query_scalar::<_, String>(
         "SELECT grantee_id FROM agent_grants WHERE agent_id = $1 AND grant_type = 'user'",
@@ -89,15 +101,20 @@ async fn list_grants(
     .filter_map(|s| s.parse().ok())
     .collect();
 
-    let agent_acl: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT target_agent_id FROM agent_acl WHERE caller_agent_id = $1",
-    )
-    .bind(agent_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let agent_acl: Vec<Uuid> =
+        sqlx::query_scalar("SELECT target_agent_id FROM agent_acl WHERE caller_agent_id = $1")
+            .bind(agent_id)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
 
-    Json(GrantsSummary { agent_id, is_public, user_grants, agent_acl }).into_response()
+    Json(GrantsSummary {
+        agent_id,
+        is_public,
+        user_grants,
+        agent_acl,
+    })
+    .into_response()
 }
 
 // ── GET /{id}/visibility ─────────────────────────────────────────────────────
@@ -111,14 +128,13 @@ async fn get_visibility(
         return r;
     }
 
-    let row: Option<(bool,)> = sqlx::query_as(
-        "SELECT is_public FROM agents WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let row: Option<(bool,)> =
+        sqlx::query_as("SELECT is_public FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
 
     match row {
         Some((is_public,)) => {
@@ -400,13 +416,11 @@ async fn remove_agent_grant(
         return r;
     }
 
-    match sqlx::query(
-        "DELETE FROM agent_acl WHERE caller_agent_id = $1 AND target_agent_id = $2",
-    )
-    .bind(caller_id)
-    .bind(target_id)
-    .execute(&state.db)
-    .await
+    match sqlx::query("DELETE FROM agent_acl WHERE caller_agent_id = $1 AND target_agent_id = $2")
+        .bind(caller_id)
+        .bind(target_id)
+        .execute(&state.db)
+        .await
     {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {

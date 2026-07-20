@@ -7,10 +7,11 @@ use crate::skill;
 pub fn add(name: &str, directory: &str) -> Result<()> {
     let project_dir = Path::new(directory);
 
-    let framework = skill::detect_framework(project_dir)
-        .ok_or_else(|| anyhow::anyhow!(
+    let framework = skill::detect_framework(project_dir).ok_or_else(|| {
+        anyhow::anyhow!(
             "cannot detect framework. Ensure AgentCard.json exists with agentFramework field."
-        ))?;
+        )
+    })?;
 
     println!("Detected framework: {framework}");
 
@@ -42,7 +43,10 @@ pub fn add(name: &str, directory: &str) -> Result<()> {
         println!("  → deps: {}", manifest.runtime.dependencies.join(", "));
     }
     if !manifest.runtime.env_vars.is_empty() {
-        println!("  → env vars needed: {}", manifest.runtime.env_vars.join(", "));
+        println!(
+            "  → env vars needed: {}",
+            manifest.runtime.env_vars.join(", ")
+        );
     }
 
     Ok(())
@@ -51,8 +55,7 @@ pub fn add(name: &str, directory: &str) -> Result<()> {
 pub fn remove(name: &str, directory: &str) -> Result<()> {
     let project_dir = Path::new(directory);
 
-    let framework = skill::detect_framework(project_dir)
-        .unwrap_or_else(|| "openai".into());
+    let framework = skill::detect_framework(project_dir).unwrap_or_else(|| "openai".into());
 
     println!("Removing skill: {name}...");
     skill::remove_skill(project_dir, name, &framework)?;
@@ -83,7 +86,15 @@ pub fn list(directory: &str) -> Result<()> {
     let (ext, excludes): (&str, &[&str]) = if is_go {
         (".go", &[])
     } else {
-        (".py", &["__init__.py", "__main__.py", "agent.py", "agent_executor.py"])
+        (
+            ".py",
+            &[
+                "__init__.py",
+                "__main__.py",
+                "agent.py",
+                "agent_executor.py",
+            ],
+        )
     };
 
     for entry in std::fs::read_dir(&skill_dir)?.flatten() {
@@ -112,19 +123,20 @@ pub fn search(query: Option<&str>, framework: Option<&str>) -> Result<()> {
     // Try registry API first (fast, no blob pulls)
     if let Some(client) = crate::api::RegistryClient::new()
         && let Ok(results) = client.search(query, Some("skill"), framework)
-            && !results.is_empty() {
-                println!("Available skills (registry):");
-                for artifact in &results {
-                    let desc = artifact.description.as_deref().unwrap_or("");
-                    println!("  • {} — {}", artifact.name, desc);
-                    if !artifact.tags.is_empty() {
-                        println!("    tags: {}", artifact.tags.join(", "));
-                    }
-                }
-                // Also show embedded-only skills not in registry
-                print_embedded_only(query, &results);
-                return Ok(());
+        && !results.is_empty()
+    {
+        println!("Available skills (registry):");
+        for artifact in &results {
+            let desc = artifact.description.as_deref().unwrap_or("");
+            println!("  • {} — {}", artifact.name, desc);
+            if !artifact.tags.is_empty() {
+                println!("    tags: {}", artifact.tags.join(", "));
             }
+        }
+        // Also show embedded-only skills not in registry
+        print_embedded_only(query, &results);
+        return Ok(());
+    }
 
     // Fallback: embedded skills only
     let available = skill::list_available_skills();
@@ -189,7 +201,10 @@ pub fn info(name: &str) -> Result<()> {
     println!("  Function:     {}", manifest.interface.function);
     println!("  Tags:         {}", manifest.metadata.tags.join(", "));
     if !manifest.runtime.dependencies.is_empty() {
-        println!("  Dependencies: {}", manifest.runtime.dependencies.join(", "));
+        println!(
+            "  Dependencies: {}",
+            manifest.runtime.dependencies.join(", ")
+        );
     }
     if !manifest.runtime.env_vars.is_empty() {
         println!("  Env vars:     {}", manifest.runtime.env_vars.join(", "));

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -17,13 +17,6 @@ pub enum FlowEvent {
         depth: u32,
         success: bool,
         latency_ms: u64,
-    },
-    /// An MCP tool call needs human approval (ask-stance permission, -32001)
-    /// before it can proceed. Surfaced to the chat UI as an approval prompt.
-    ToolApprovalRequired {
-        agent_id: String,
-        server: String,
-        tool: String,
     },
 }
 

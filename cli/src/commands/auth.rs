@@ -32,7 +32,10 @@ pub fn login() -> Result<()> {
     }
 
     let mut resp = resp;
-    let body: serde_json::Value = resp.body_mut().read_json().context("invalid login response")?;
+    let body: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .context("invalid login response")?;
 
     let token = body
         .get("token")
@@ -63,7 +66,10 @@ pub fn status() -> Result<()> {
 
     match config::token_expired(token) {
         Some(true) => {
-            println!("Session expired for {}{} — run: nasiko auth login", name, who);
+            println!(
+                "Session expired for {}{} — run: nasiko auth login",
+                name, who
+            );
         }
         Some(false) => {
             let remaining = config::token_expiry(token)

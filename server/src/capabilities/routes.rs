@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use nasiko_orchestrator::providers::LLMProvider;
 use crate::state::AppState;
+use nasiko_orchestrator::providers::LLMProvider;
 
 use super::generator::{CapabilityGenerator, GeneratedCard, GeneratorError};
 
@@ -92,7 +92,7 @@ async fn generate_and_apply(
     let agent_name = match agent_name {
         Some(n) => n,
         None => {
-            return (StatusCode::NOT_FOUND, "agent not found or not owned by you").into_response()
+            return (StatusCode::NOT_FOUND, "agent not found or not owned by you").into_response();
         }
     };
 
@@ -175,20 +175,15 @@ async fn resolve_source(
             version_tag.ok_or_else(|| "build not found for this agent".to_string())?;
 
         let key = format!("sources/{agent_id}/{version_tag}.zip");
-        let data = state
-            .oci_storage
-            .get_blob(&key)
-            .await
-            .map_err(|e| {
-                tracing::error!(%e, %agent_id, %key, "resolve_source: failed to fetch source from S3");
-                "failed to fetch build source".to_string()
-            })?;
+        let data = state.oci_storage.get_blob(&key).await.map_err(|e| {
+            tracing::error!(%e, %agent_id, %key, "resolve_source: failed to fetch source from S3");
+            "failed to fetch build source".to_string()
+        })?;
 
-        let text = extract_text_from_zip(&data)
-            .map_err(|e| {
-                tracing::error!(%e, %agent_id, "resolve_source: failed to read source ZIP");
-                "failed to read build source archive".to_string()
-            })?;
+        let text = extract_text_from_zip(&data).map_err(|e| {
+            tracing::error!(%e, %agent_id, "resolve_source: failed to read source ZIP");
+            "failed to read build source archive".to_string()
+        })?;
         return Ok(text);
     }
 
@@ -203,8 +198,23 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
     let mut combined = String::new();
 
     let code_extensions = [
-        "py", "rs", "ts", "js", "go", "java", "rb", "ex", "exs", "toml", "yaml", "yml", "json",
-        "md", "txt", "dockerfile", "sh",
+        "py",
+        "rs",
+        "ts",
+        "js",
+        "go",
+        "java",
+        "rb",
+        "ex",
+        "exs",
+        "toml",
+        "yaml",
+        "yml",
+        "json",
+        "md",
+        "txt",
+        "dockerfile",
+        "sh",
     ];
 
     for i in 0..archive.len() {
@@ -214,15 +224,9 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
         }
 
         let name = file.name().to_string();
-        let ext = name
-            .rsplit('.')
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
+        let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
 
-        if !code_extensions.contains(&ext.as_str())
-            && !name.to_lowercase().contains("dockerfile")
-        {
+        if !code_extensions.contains(&ext.as_str()) && !name.to_lowercase().contains("dockerfile") {
             continue;
         }
 
@@ -255,7 +259,10 @@ fn make_generator(state: &AppState) -> CapabilityGenerator {
 
 fn error_response(e: GeneratorError) -> axum::response::Response {
     let (status, message) = match &e {
-        GeneratorError::Provider(_) => (StatusCode::BAD_GATEWAY, "capability generator provider error"),
+        GeneratorError::Provider(_) => (
+            StatusCode::BAD_GATEWAY,
+            "capability generator provider error",
+        ),
         GeneratorError::ParseError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     };
     tracing::error!(%e, "capability generation failed");

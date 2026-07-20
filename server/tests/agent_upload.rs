@@ -44,7 +44,10 @@ async fn upload(
         form = form.text(k, v);
     }
     if let Some(zip) = source {
-        form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
+        form = form.part(
+            "source",
+            reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
+        );
     }
     common::as_superuser(
         server.client.post(server.url("/api/agents/upload")),
@@ -57,9 +60,15 @@ async fn upload(
     .unwrap()
 }
 
-async fn get_build(server: &common::TestServer, user_id: &str, build_id: &str) -> reqwest::Response {
+async fn get_build(
+    server: &common::TestServer,
+    user_id: &str,
+    build_id: &str,
+) -> reqwest::Response {
     common::as_superuser(
-        server.client.get(server.url(&format!("/api/builds/{build_id}"))),
+        server
+            .client
+            .get(server.url(&format!("/api/builds/{build_id}"))),
         user_id,
         "admin",
     )
@@ -97,7 +106,10 @@ const NO_DOCKERFILE_ZIP_ENTRY: (&str, &[u8]) = ("README.md", b"no dockerfile her
 /// image build is triggered by the validation layer, so status transitions are still testable.
 fn make_valid_structure_zip() -> Vec<u8> {
     common::make_zip(&[
-        ("Dockerfile", b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]"),
+        (
+            "Dockerfile",
+            b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]",
+        ),
         ("main.py", b"print('hello')"),
     ])
 }
@@ -142,7 +154,10 @@ async fn upload_without_identity_returns_401() {
     let form = reqwest::multipart::Form::new()
         .text("name", "demo")
         .text("version_tag", "v1")
-        .part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
+        .part(
+            "source",
+            reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
+        );
     let res = server
         .client
         .post(server.url("/api/agents/upload"))
@@ -182,24 +197,24 @@ async fn upload_persists_agent_and_build_record() {
     assert_eq!(body["status"], "queued");
 
     // Agent persisted in the catalog.
-    let agents: Value = common::as_superuser(
-        server.client.get(server.url("/api/agents")),
-        uid,
-        "admin",
-    )
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
+    let agents: Value =
+        common::as_superuser(server.client.get(server.url("/api/agents")), uid, "admin")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
     let names: Vec<&str> = agents
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|a| a["name"].as_str())
         .collect();
-    assert!(names.contains(&"demo-agent"), "catalog should list the agent: {names:?}");
+    assert!(
+        names.contains(&"demo-agent"),
+        "catalog should list the agent: {names:?}"
+    );
 
     // Build record persisted and its enum status decodes through build/routes.rs.
     let build_res = get_build(&server, uid, build_id).await;
@@ -228,7 +243,10 @@ async fn upload_persists_build_job_atomically_with_agent_and_build() {
     let res = upload(
         &server,
         uid,
-        vec![("name", "atomic-agent".into()), ("version_tag", "v1".into())],
+        vec![
+            ("name", "atomic-agent".into()),
+            ("version_tag", "v1".into()),
+        ],
         Some(zip),
     )
     .await;
@@ -301,12 +319,19 @@ async fn upload_marks_build_failed_without_dockerfile() {
     let res = upload(
         &server,
         uid,
-        vec![("name", "nodockerfile".into()), ("version_tag", "v1".into())],
+        vec![
+            ("name", "nodockerfile".into()),
+            ("version_tag", "v1".into()),
+        ],
         Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
     )
     .await;
 
-    assert_eq!(res.status(), 400, "missing Dockerfile must be rejected immediately");
+    assert_eq!(
+        res.status(),
+        400,
+        "missing Dockerfile must be rejected immediately"
+    );
     let body = res.text().await.unwrap();
     assert!(
         body.to_lowercase().contains("dockerfile"),
@@ -327,7 +352,9 @@ async fn deploy_status_unknown_build_reports_not_found() {
 
     let random = uuid::Uuid::new_v4();
     let res = common::as_superuser(
-        server.client.get(server.url(&format!("/api/agents/deploys/{random}/stream"))),
+        server
+            .client
+            .get(server.url(&format!("/api/agents/deploys/{random}/stream"))),
         uid,
         "admin",
     )
@@ -338,7 +365,10 @@ async fn deploy_status_unknown_build_reports_not_found() {
     assert_eq!(res.status(), 200);
     // Unknown build → the stream emits a single not_found event and closes.
     let body = res.text().await.unwrap();
-    assert!(body.contains("not_found"), "expected not_found event, got: {body}");
+    assert!(
+        body.contains("not_found"),
+        "expected not_found event, got: {body}"
+    );
 
     server.cleanup().await;
 }

@@ -34,7 +34,10 @@ impl SimulatedRuntime {
             "AGENT_RUNTIME=simulated — no real containers will be deployed; \
              agent endpoints resolve to this address. For benchmarking/load-testing only."
         );
-        Self { sim_agent_endpoint, containers: Mutex::new(HashMap::new()) }
+        Self {
+            sim_agent_endpoint,
+            containers: Mutex::new(HashMap::new()),
+        }
     }
 }
 

@@ -64,7 +64,10 @@ impl UsageTracker {
     }
 
     /// Track a orchestrator request
-    pub async fn track_router_request(&self, log: CreateRouterRequestLog) -> Result<Uuid, sqlx::Error> {
+    pub async fn track_router_request(
+        &self,
+        log: CreateRouterRequestLog,
+    ) -> Result<Uuid, sqlx::Error> {
         let id: Uuid = sqlx::query_scalar(
             r#"
             INSERT INTO router_request_log (
@@ -109,12 +112,10 @@ impl UsageTracker {
 
     /// Get token usage for a specific request
     pub async fn get_token_usage(&self, id: Uuid) -> Result<TokenUsage, sqlx::Error> {
-        sqlx::query_as::<_, TokenUsage>(
-            "SELECT * FROM token_usage WHERE id = $1"
-        )
-        .bind(id)
-        .fetch_one(&self.db)
-        .await
+        sqlx::query_as::<_, TokenUsage>("SELECT * FROM token_usage WHERE id = $1")
+            .bind(id)
+            .fetch_one(&self.db)
+            .await
     }
 
     /// Get token usage summary for a user in a date range

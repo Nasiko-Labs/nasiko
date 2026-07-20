@@ -182,7 +182,11 @@ async fn observe_trace_by_id_returns_503_without_backend() {
         .await
         .unwrap();
 
-    assert_eq!(res.status(), 404, "get_trace returns 404 when trace not found in DB fallback");
+    assert_eq!(
+        res.status(),
+        404,
+        "get_trace returns 404 when trace not found in DB fallback"
+    );
 
     server.cleanup().await;
 }
@@ -359,7 +363,15 @@ async fn agent_logs_returns_proxy_log_entries() {
     // Seed 3 proxy log rows for this agent
     seed_proxy_log(&server, user_id, agent_id, 200, 42, None).await;
     seed_proxy_log(&server, user_id, agent_id, 500, 88, Some("upstream error")).await;
-    seed_proxy_log(&server, user_id, agent_id, 404, 15, Some("agent returned 404")).await;
+    seed_proxy_log(
+        &server,
+        user_id,
+        agent_id,
+        404,
+        15,
+        Some("agent returned 404"),
+    )
+    .await;
 
     let res = server
         .client
@@ -390,7 +402,10 @@ async fn agent_logs_returns_proxy_log_entries() {
 
     // Each entry should have required fields
     for entry in &proxy_entries {
-        assert!(entry["timestamp"].is_string(), "timestamp should be a string");
+        assert!(
+            entry["timestamp"].is_string(),
+            "timestamp should be a string"
+        );
         assert!(entry["message"].is_string(), "message should be a string");
         assert!(entry["level"].is_string(), "level should be a string");
     }
@@ -411,9 +426,9 @@ async fn proxy_log_level_reflects_http_status() {
     let agent = create_agent(&server, uid, "level-test-agent").await;
     let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
 
-    seed_proxy_log(&server, user_id, agent_id, 200, 10, None).await;    // INFO
-    seed_proxy_log(&server, user_id, agent_id, 404, 20, None).await;    // WARN
-    seed_proxy_log(&server, user_id, agent_id, 503, 30, None).await;    // ERROR
+    seed_proxy_log(&server, user_id, agent_id, 200, 10, None).await; // INFO
+    seed_proxy_log(&server, user_id, agent_id, 404, 20, None).await; // WARN
+    seed_proxy_log(&server, user_id, agent_id, 503, 30, None).await; // ERROR
 
     let res = server
         .client
@@ -437,8 +452,8 @@ async fn proxy_log_level_reflects_http_status() {
         .filter_map(|e| e["level"].as_str())
         .collect();
 
-    assert!(levels.contains(&"INFO"),  "200 → INFO");
-    assert!(levels.contains(&"WARN"),  "404 → WARN");
+    assert!(levels.contains(&"INFO"), "200 → INFO");
+    assert!(levels.contains(&"WARN"), "404 → WARN");
     assert!(levels.contains(&"ERROR"), "503 → ERROR");
 
     server.cleanup().await;
@@ -457,8 +472,8 @@ async fn agent_logs_level_filter_returns_only_matching_level() {
     let agent = create_agent(&server, uid, "filter-level-agent").await;
     let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
 
-    seed_proxy_log(&server, user_id, agent_id, 200, 10, None).await;  // INFO
-    seed_proxy_log(&server, user_id, agent_id, 200, 12, None).await;  // INFO
+    seed_proxy_log(&server, user_id, agent_id, 200, 10, None).await; // INFO
+    seed_proxy_log(&server, user_id, agent_id, 200, 12, None).await; // INFO
     seed_proxy_log(&server, user_id, agent_id, 500, 50, Some("boom")).await; // ERROR
 
     let res = server
@@ -524,7 +539,10 @@ async fn agent_logs_search_filter_returns_only_matching_messages() {
             "all entries should contain 'upstream': got {msg}"
         );
     }
-    assert!(!entries.is_empty(), "should have at least one matching entry");
+    assert!(
+        !entries.is_empty(),
+        "should have at least one matching entry"
+    );
 
     server.cleanup().await;
 }
@@ -559,9 +577,15 @@ async fn agent_stats_returns_proxy_logs_source_without_tempo() {
         "should fall back to proxy_logs: {body}"
     );
     assert_eq!(body["agent_id"].as_str(), Some(agent_id_str));
-    assert!(body["period_start"].is_string(), "period_start should be set");
+    assert!(
+        body["period_start"].is_string(),
+        "period_start should be set"
+    );
     assert_eq!(body["total_input_tokens"], 0, "no token data without Tempo");
-    assert_eq!(body["total_output_tokens"], 0, "no token data without Tempo");
+    assert_eq!(
+        body["total_output_tokens"], 0,
+        "no token data without Tempo"
+    );
 
     server.cleanup().await;
 }
@@ -604,10 +628,7 @@ async fn agent_stats_counts_proxy_log_requests_correctly() {
     );
 
     let avg_ms = body["avg_latency_ms"].as_f64().unwrap_or(-1.0);
-    assert!(
-        avg_ms > 0.0,
-        "avg latency should be positive, got {avg_ms}"
-    );
+    assert!(avg_ms > 0.0, "avg latency should be positive, got {avg_ms}");
 
     server.cleanup().await;
 }
@@ -691,8 +712,14 @@ async fn metrics_endpoint_is_publicly_accessible() {
 
     let body: Value = res.json().await.unwrap();
     // Should include known counter fields
-    assert!(body["agents_total"].is_number(), "agents_total should be a number");
-    assert!(body["users_total"].is_number(), "users_total should be a number");
+    assert!(
+        body["agents_total"].is_number(),
+        "agents_total should be a number"
+    );
+    assert!(
+        body["users_total"].is_number(),
+        "users_total should be a number"
+    );
 
     server.cleanup().await;
 }
@@ -948,9 +975,8 @@ async fn agent_logs_since_parameter_filters_old_entries() {
     // RFC-3339 timestamps contain '+' which must be percent-encoded in query strings.
     let since_raw = (chrono::Utc::now() - chrono::Duration::try_minutes(90).unwrap()).to_rfc3339();
     let since_encoded = since_raw.replace('+', "%2B");
-    let url = format!(
-        "/api/observability/agents/since-test-agent/logs?since={since_encoded}&limit=10"
-    );
+    let url =
+        format!("/api/observability/agents/since-test-agent/logs?since={since_encoded}&limit=10");
 
     let res = server
         .client

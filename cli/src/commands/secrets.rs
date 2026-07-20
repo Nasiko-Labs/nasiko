@@ -27,7 +27,8 @@ pub fn get(key: &str, agent: Option<&str>) -> Result<()> {
     match agent {
         Some(name) => {
             let agent_id = resolve_agent_id(&client, name)?;
-            let resp: serde_json::Value = client.get_json(&format!("/agents/{agent_id}/secrets/{key}"))?;
+            let resp: serde_json::Value =
+                client.get_json(&format!("/agents/{agent_id}/secrets/{key}"))?;
             if let Some(v) = resp.get("value").and_then(|v| v.as_str()) {
                 println!("{v}");
             }
@@ -47,7 +48,8 @@ pub fn ls(agent: Option<&str>) -> Result<()> {
     match agent {
         Some(name) => {
             let agent_id = resolve_agent_id(&client, name)?;
-            let secrets: Vec<serde_json::Value> = client.get_json(&format!("/agents/{agent_id}/secrets"))?;
+            let secrets: Vec<serde_json::Value> =
+                client.get_json(&format!("/agents/{agent_id}/secrets"))?;
             if secrets.is_empty() {
                 println!("No secrets on agent '{name}'.");
                 return Ok(());
@@ -96,9 +98,10 @@ fn resolve_agent_id(client: &Client, name: &str) -> Result<String> {
     for a in &agents {
         let agent_name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
         if agent_name == name
-            && let Some(id) = a.get("id").and_then(|v| v.as_str()) {
-                return Ok(id.to_string());
-            }
+            && let Some(id) = a.get("id").and_then(|v| v.as_str())
+        {
+            return Ok(id.to_string());
+        }
     }
     anyhow::bail!("agent '{name}' not found — is it registered? (check `nasiko ps`)")
 }

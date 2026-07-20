@@ -27,7 +27,11 @@ pub(crate) async fn fetch_discovery(
         .await
         .map_err(|e| OidcError::Discovery(e.to_string()))?;
     if !resp.status().is_success() {
-        return Err(OidcError::Discovery(format!("{} returned {}", url, resp.status())));
+        return Err(OidcError::Discovery(format!(
+            "{} returned {}",
+            url,
+            resp.status()
+        )));
     }
     resp.json::<DiscoveryDocument>()
         .await

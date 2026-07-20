@@ -246,9 +246,9 @@ fn env_parse_empty_string_falls_back_to_default() {
 #[test]
 #[serial]
 fn env_parse_float_is_parsed() {
-    set("TEST_PARSE_FLOAT", "3.14");
+    set("TEST_PARSE_FLOAT", "4.25");
     let val = env_parse::<f64>("TEST_PARSE_FLOAT", 0.0);
-    assert!((val - 3.14).abs() < 1e-9);
+    assert!((val - 4.25).abs() < 1e-9);
     unset("TEST_PARSE_FLOAT");
 }
 

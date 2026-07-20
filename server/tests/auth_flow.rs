@@ -1,8 +1,8 @@
 mod common;
 
 use common::{as_member, as_superuser};
-use serial_test::serial;
 use serde_json::{Value, json};
+use serial_test::serial;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -56,7 +56,12 @@ async fn create_alice(server: &common::TestServer, admin_id: &str) -> Value {
 async fn test_health() {
     let server = common::TestServer::start().await;
 
-    let res = server.client.get(server.url("/health")).send().await.unwrap();
+    let res = server
+        .client
+        .get(server.url("/health"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(res.text().await.unwrap(), "ok");
 
@@ -104,7 +109,12 @@ async fn test_login_with_valid_credentials() {
     let server = common::TestServer::start().await;
 
     let admin = init_admin(&server).await;
-    let body = login(&server, admin["access_key"].as_str().unwrap(), admin["access_secret"].as_str().unwrap()).await;
+    let body = login(
+        &server,
+        admin["access_key"].as_str().unwrap(),
+        admin["access_secret"].as_str().unwrap(),
+    )
+    .await;
 
     assert!(!body["token"].as_str().unwrap().is_empty());
     assert_eq!(body["username"], "admin");
@@ -158,7 +168,12 @@ async fn test_login_with_nonexistent_key_is_rejected() {
 async fn test_protected_route_requires_auth() {
     let server = common::TestServer::start().await;
 
-    let res = server.client.get(server.url("/api/users")).send().await.unwrap();
+    let res = server
+        .client
+        .get(server.url("/api/users"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 401);
 
     server.cleanup().await;
@@ -232,8 +247,18 @@ async fn test_jwt_without_jti_is_rejected() {
     )
     .unwrap();
 
-    let res = server.client.get(server.url("/api/me")).bearer_auth(&token).send().await.unwrap();
-    assert_eq!(res.status(), 401, "a signature-valid token with no jti must be rejected, not silently skip revocation");
+    let res = server
+        .client
+        .get(server.url("/api/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        401,
+        "a signature-valid token with no jti must be rejected, not silently skip revocation"
+    );
 
     server.cleanup().await;
 }
@@ -255,15 +280,30 @@ async fn test_login_sets_secure_cookie() {
         .await
         .unwrap();
 
-    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
-    assert!(cookie.contains("Secure"), "session cookie must set Secure: {cookie}");
+    let cookie = res
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        cookie.contains("Secure"),
+        "session cookie must set Secure: {cookie}"
+    );
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Strict"));
 
     server.cleanup().await;
 }
 
-// ─── agent-typed tokens must not pass as user sessions ─────────────────────
+// ─── agent-typed tokens must not pass as user sessions, anywhere ───────────
+//
+// AUTH-3: `decode_jwt`/`decode_jwt_with_jti` reject any token with
+// `token_type == "agent"` outright, before an `Identity` is ever constructed.
+// `require_auth` calls `state.auth.validate_token`, which goes through those
+// same decode functions, so an agent token 401s at that point on every route
+// — there is no allowlisted path an agent token can use to authenticate.
 
 #[tokio::test]
 #[serial]
@@ -272,25 +312,29 @@ async fn test_agent_token_rejected_on_user_endpoint() {
     let _ = init_admin(&server).await;
     let token = common::sign_agent_token(&uuid::Uuid::new_v4().to_string());
 
-    let res = server.client.get(server.url("/api/me")).bearer_auth(&token).send().await.unwrap();
-    assert_eq!(res.status(), 403, "an agent-typed token must not pass as a user session");
-    let body = res.text().await.unwrap();
-    assert!(body.contains("agent"), "rejection reason should mention agent tokens: {body}");
+    let res = server
+        .client
+        .get(server.url("/api/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        401,
+        "an agent-typed token must not pass as a user session"
+    );
 
     server.cleanup().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn test_agent_token_passes_middleware_on_proxy_path() {
+async fn test_agent_token_rejected_on_proxy_path() {
     let server = common::TestServer::start().await;
     let _ = init_admin(&server).await;
     let token = common::sign_agent_token(&uuid::Uuid::new_v4().to_string());
 
-    // Some other random agent id — the request reaches agent_proxy's own
-    // authz/resolution logic and 404s there, but must NOT be rejected by the
-    // token-type gate in require_auth (which would also be 403/never reach
-    // agent_proxy at all).
     let target = uuid::Uuid::new_v4();
     let res = server
         .client
@@ -299,14 +343,18 @@ async fn test_agent_token_passes_middleware_on_proxy_path() {
         .send()
         .await
         .unwrap();
-    assert_ne!(res.status(), 403, "an agent token must be let through require_auth on the proxy path");
+    assert_eq!(
+        res.status(),
+        401,
+        "an agent token must be rejected by require_auth on the proxy path too"
+    );
 
     server.cleanup().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn test_agent_token_passes_middleware_on_a2a_dispatch_path() {
+async fn test_agent_token_rejected_on_a2a_dispatch_path() {
     let server = common::TestServer::start().await;
     let _ = init_admin(&server).await;
     let token = common::sign_agent_token(&uuid::Uuid::new_v4().to_string());
@@ -319,7 +367,11 @@ async fn test_agent_token_passes_middleware_on_a2a_dispatch_path() {
         .send()
         .await
         .unwrap();
-    assert_ne!(res.status(), 403, "an agent token must be let through require_auth on the A2A dispatch path");
+    assert_eq!(
+        res.status(),
+        401,
+        "an agent token must be rejected by require_auth on the A2A dispatch path too"
+    );
 
     server.cleanup().await;
 }
@@ -393,10 +445,14 @@ async fn test_logout_succeeds_with_jwt() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let res = as_superuser(server.client.post(server.url("/api/auth/logout")), user_id, "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = as_superuser(
+        server.client.post(server.url("/api/auth/logout")),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 204);
 
@@ -523,13 +579,17 @@ async fn test_protected_route_accessible_with_jwt() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let body: Value = as_superuser(server.client.get(server.url("/api/users")), user_id, "admin")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let body: Value = as_superuser(
+        server.client.get(server.url("/api/users")),
+        user_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
 
     assert_eq!(body["total"], 1);
 
@@ -545,7 +605,12 @@ async fn test_admin_can_create_user_with_jwt() {
 
     let new_user = create_alice(&server, admin_id).await;
 
-    assert!(new_user["access_key"].as_str().unwrap().starts_with("NASK_"));
+    assert!(
+        new_user["access_key"]
+            .as_str()
+            .unwrap()
+            .starts_with("NASK_")
+    );
     assert!(!new_user["access_secret"].as_str().unwrap().is_empty());
 
     server.cleanup().await;
@@ -562,11 +627,15 @@ async fn test_member_cannot_create_users() {
     let alice_id = alice["id"].as_str().unwrap();
 
     // Alice (member) tries to create a user — forbidden
-    let res = as_member(server.client.post(server.url("/api/users")), alice_id, "alice")
-        .json(&json!({"username": "bob", "email": "bob@test.local"}))
-        .send()
-        .await
-        .unwrap();
+    let res = as_member(
+        server.client.post(server.url("/api/users")),
+        alice_id,
+        "alice",
+    )
+    .json(&json!({"username": "bob", "email": "bob@test.local"}))
+    .send()
+    .await
+    .unwrap();
 
     assert_eq!(res.status(), 403);
 
@@ -584,7 +653,9 @@ async fn test_admin_can_get_user_by_id() {
     let alice_id = alice["id"].as_str().unwrap();
 
     let body: Value = as_superuser(
-        server.client.get(server.url(&format!("/api/users/{alice_id}"))),
+        server
+            .client
+            .get(server.url(&format!("/api/users/{alice_id}"))),
         admin_id,
         "admin",
     )
@@ -634,7 +705,9 @@ async fn test_deactivated_user_cannot_login() {
 
     // Admin deactivates alice
     let res = as_superuser(
-        server.client.post(server.url(&format!("/api/users/{alice_id}/deactivate"))),
+        server
+            .client
+            .post(server.url(&format!("/api/users/{alice_id}/deactivate"))),
         admin_id,
         "admin",
     )
@@ -672,7 +745,9 @@ async fn test_reinstated_user_can_login() {
 
     // Deactivate then reinstate
     as_superuser(
-        server.client.post(server.url(&format!("/api/users/{alice_id}/deactivate"))),
+        server
+            .client
+            .post(server.url(&format!("/api/users/{alice_id}/deactivate"))),
         admin_id,
         "admin",
     )
@@ -681,7 +756,9 @@ async fn test_reinstated_user_can_login() {
     .unwrap();
 
     let res = as_superuser(
-        server.client.post(server.url(&format!("/api/users/{alice_id}/reinstate"))),
+        server
+            .client
+            .post(server.url(&format!("/api/users/{alice_id}/reinstate"))),
         admin_id,
         "admin",
     )
@@ -713,7 +790,9 @@ async fn test_regenerate_credentials_invalidates_old_ones() {
     let admin_id = admin["user_id"].as_str().unwrap().to_owned();
 
     let new_creds: Value = as_superuser(
-        server.client.post(server.url(&format!("/api/users/{admin_id}/regenerate-credentials"))),
+        server
+            .client
+            .post(server.url(&format!("/api/users/{admin_id}/regenerate-credentials"))),
         &admin_id,
         "admin",
     )
@@ -755,7 +834,9 @@ async fn test_admin_can_delete_user() {
     let alice_id = alice["id"].as_str().unwrap();
 
     let res = as_superuser(
-        server.client.delete(server.url(&format!("/api/users/{alice_id}"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/users/{alice_id}"))),
         admin_id,
         "admin",
     )
@@ -792,7 +873,9 @@ async fn test_update_user_cannot_deactivate_self() {
     let admin_id = admin["user_id"].as_str().unwrap();
 
     let res = as_superuser(
-        server.client.put(server.url(&format!("/api/users/{admin_id}"))),
+        server
+            .client
+            .put(server.url(&format!("/api/users/{admin_id}"))),
         admin_id,
         "admin",
     )
@@ -835,7 +918,9 @@ async fn test_update_user_cannot_deactivate_last_admin() {
     // last-admin guard (which reads role/is_superuser from the DB, never the
     // JWT) from self-deactivation, which is covered separately above.
     let res = as_superuser(
-        server.client.put(server.url(&format!("/api/users/{admin_id}"))),
+        server
+            .client
+            .put(server.url(&format!("/api/users/{admin_id}"))),
         alice_id,
         "alice",
     )
@@ -872,7 +957,9 @@ async fn test_update_user_deactivate_blocks_login() {
     let alice_id = alice["id"].as_str().unwrap();
 
     let res = as_superuser(
-        server.client.put(server.url(&format!("/api/users/{alice_id}"))),
+        server
+            .client
+            .put(server.url(&format!("/api/users/{alice_id}"))),
         admin_id,
         "admin",
     )
@@ -919,7 +1006,9 @@ async fn test_update_user_can_redeactivate_already_inactive_admin_with_other_act
     // Promote alice to admin, then deactivate her — she is now an inactive
     // admin while the original admin remains the sole ACTIVE admin.
     let res = as_superuser(
-        server.client.put(server.url(&format!("/api/users/{alice_id}/role"))),
+        server
+            .client
+            .put(server.url(&format!("/api/users/{alice_id}/role"))),
         admin_id,
         "admin",
     )
@@ -930,7 +1019,9 @@ async fn test_update_user_can_redeactivate_already_inactive_admin_with_other_act
     assert_eq!(res.status(), 204);
 
     let res = as_superuser(
-        server.client.post(server.url(&format!("/api/users/{alice_id}/deactivate"))),
+        server
+            .client
+            .post(server.url(&format!("/api/users/{alice_id}/deactivate"))),
         admin_id,
         "admin",
     )
@@ -942,7 +1033,9 @@ async fn test_update_user_can_redeactivate_already_inactive_admin_with_other_act
     // Re-issuing is_active:false on the already-inactive admin must succeed —
     // the original admin is still there as an active admin, so this is safe.
     let res = as_superuser(
-        server.client.put(server.url(&format!("/api/users/{alice_id}"))),
+        server
+            .client
+            .put(server.url(&format!("/api/users/{alice_id}"))),
         admin_id,
         "admin",
     )
@@ -978,7 +1071,9 @@ async fn test_update_user_password_change_takes_effect_on_login() {
     let old_secret = alice["access_secret"].as_str().unwrap().to_owned();
 
     let res = as_superuser(
-        server.client.put(server.url(&format!("/api/users/{alice_id}"))),
+        server
+            .client
+            .put(server.url(&format!("/api/users/{alice_id}"))),
         admin_id,
         "admin",
     )
@@ -1038,7 +1133,10 @@ async fn test_login_records_token_and_logout_revokes_it() {
         .json()
         .await
         .unwrap();
-    assert_eq!(validate_before["valid"], true, "token should be valid before logout");
+    assert_eq!(
+        validate_before["valid"], true,
+        "token should be valid before logout"
+    );
 
     // Logout — sets revoked_at in auth_tokens
     let logout_res = as_superuser(
@@ -1055,13 +1153,15 @@ async fn test_login_records_token_and_logout_revokes_it() {
     // token_validate calls AuthService::validate_token which is stateless (no DB check
     // at server level — revocation enforcement happens at the gateway). We verify the
     // DB row directly.
-    let revoked_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM auth_tokens WHERE revoked_at IS NOT NULL",
-    )
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
-    assert!(revoked_count >= 1, "at least one token should be revoked in auth_tokens");
+    let revoked_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM auth_tokens WHERE revoked_at IS NOT NULL")
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert!(
+        revoked_count >= 1,
+        "at least one token should be revoked in auth_tokens"
+    );
 
     server.cleanup().await;
 }

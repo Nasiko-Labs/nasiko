@@ -1,9 +1,5 @@
 use axum::{
-    Json, Router,
-    extract::State,
-    http::StatusCode,
-    middleware,
-    response::IntoResponse,
+    Json, Router, extract::State, http::StatusCode, middleware, response::IntoResponse,
     routing::get,
 };
 use serde::{Deserialize, Serialize};
@@ -65,10 +61,7 @@ pub struct SettingsUpdate {
     pub oidc_client_secret: Option<String>,
 }
 
-async fn get_settings(
-    State(state): State<AppState>,
-    _claims: Claims,
-) -> impl IntoResponse {
+async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
     let row = sqlx::query_as::<_, Settings>(
         r#"SELECT
             router_model, default_provider, max_flow_depth,

@@ -36,7 +36,11 @@ pub struct A2aToolError {
 
 impl A2aTool {
     pub fn new(agent: AgentInfo, client: Arc<A2aClient>) -> Self {
-        Self { agent, client, progress: None }
+        Self {
+            agent,
+            client,
+            progress: None,
+        }
     }
 
     /// Relay the agent's live progress into the orchestrator's event stream.
@@ -128,7 +132,11 @@ impl Tool for A2aTool {
             None => {
                 let response = self
                     .client
-                    .send_message(&self.agent.endpoint, &args.message, args.context_id.as_deref())
+                    .send_message(
+                        &self.agent.endpoint,
+                        &args.message,
+                        args.context_id.as_deref(),
+                    )
                     .await
                     .map_err(|e| A2aToolError {
                         agent: self.agent.name.clone(),
@@ -150,9 +158,8 @@ impl Tool for A2aTool {
 }
 
 impl A2aTool {
-    /// Call the agent via streaming (`message/stream`, or the proto
-    /// `SendStreamingMessage` fallback), forwarding its live events into the
-    /// orchestrator stream as `SubStatus`/`SubContent`.
+    /// Call the agent via `SendStreamingMessage`, forwarding its live events
+    /// into the orchestrator stream as `SubStatus`/`SubContent`.
     async fn call_streaming(
         &self,
         args: &A2aToolArgs,

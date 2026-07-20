@@ -9,8 +9,8 @@
 //!   JWT_SECRET=... DATABASE_URL=... cargo run --bin bench_seed -- \
 //!     --users 500 --agents 50 --sim-agent-url http://localhost:8000 --ee
 use clap::Parser;
-use nasiko_auth::jwt::encode_jwt;
 use nasiko_auth::Identity;
+use nasiko_auth::jwt::encode_jwt;
 use rand::seq::IndexedRandom;
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
@@ -86,7 +86,10 @@ async fn main() -> anyhow::Result<()> {
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = PgPoolOptions::new().max_connections(10).connect(&database_url).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await?;
 
     if args.reset {
         reset(&pool, args.ee).await?;
@@ -116,11 +119,19 @@ async fn main() -> anyhow::Result<()> {
 /// Delete this tool's previously seeded rows, identified by the `bench_`
 /// username prefix and `bench-agent-` name prefix — never touches real data.
 async fn reset(pool: &sqlx::PgPool, ee: bool) -> anyhow::Result<()> {
-    sqlx::query("DELETE FROM agents WHERE name LIKE 'bench-agent-%'").execute(pool).await?;
-    sqlx::query("DELETE FROM users WHERE username LIKE 'bench\\_%' ESCAPE '\\'").execute(pool).await?;
+    sqlx::query("DELETE FROM agents WHERE name LIKE 'bench-agent-%'")
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM users WHERE username LIKE 'bench\\_%' ESCAPE '\\'")
+        .execute(pool)
+        .await?;
     if ee {
-        sqlx::query("DELETE FROM teams WHERE name LIKE 'bench-team-%'").execute(pool).await?;
-        sqlx::query("DELETE FROM departments WHERE name LIKE 'bench-dept-%'").execute(pool).await?;
+        sqlx::query("DELETE FROM teams WHERE name LIKE 'bench-team-%'")
+            .execute(pool)
+            .await?;
+        sqlx::query("DELETE FROM departments WHERE name LIKE 'bench-dept-%'")
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }
@@ -129,12 +140,11 @@ async fn reset(pool: &sqlx::PgPool, ee: bool) -> anyhow::Result<()> {
 async fn seed_ee_hierarchy(pool: &sqlx::PgPool, tenants: u32) -> anyhow::Result<Vec<(Uuid, Uuid)>> {
     let mut pairs = Vec::with_capacity(tenants as usize);
     for i in 0..tenants {
-        let dept_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO departments (name) VALUES ($1) RETURNING id",
-        )
-        .bind(format!("bench-dept-{i}"))
-        .fetch_one(pool)
-        .await?;
+        let dept_id: Uuid =
+            sqlx::query_scalar("INSERT INTO departments (name) VALUES ($1) RETURNING id")
+                .bind(format!("bench-dept-{i}"))
+                .fetch_one(pool)
+                .await?;
 
         let team_id: Uuid = sqlx::query_scalar(
             "INSERT INTO teams (name, department_id) VALUES ($1, $2) RETURNING id",
@@ -162,7 +172,8 @@ async fn seed_users(
         let username = format!("bench_user_{i}");
         let email = format!("{username}@bench.local");
 
-        let (role, department_id, team_id): (&str, Option<Uuid>, Option<Uuid>) = match dept_team_ids {
+        let (role, department_id, team_id): (&str, Option<Uuid>, Option<Uuid>) = match dept_team_ids
+        {
             Some(pairs) if !pairs.is_empty() => {
                 let (dept, team) = pairs[i as usize % pairs.len()];
                 let role = EE_ROLES.choose(&mut rng).copied().unwrap_or("member");
@@ -193,16 +204,28 @@ async fn seed_users(
             .await?
         };
 
-        let identity = Identity { user_id: user_id.to_string(), username: username.clone(), is_superuser: false };
+        let identity = Identity {
+            user_id: user_id.to_string(),
+            username: username.clone(),
+            is_superuser: false,
+        };
         let token = encode_jwt(jwt_secret, args.token_expiry_secs, &identity)?;
 
-        out.push(ManifestUser { id: user_id, username, token });
+        out.push(ManifestUser {
+            id: user_id,
+            username,
+            token,
+        });
     }
 
     Ok(out)
 }
 
-async fn seed_agents(pool: &sqlx::PgPool, args: &Args, owner_id: Uuid) -> anyhow::Result<Vec<ManifestAgent>> {
+async fn seed_agents(
+    pool: &sqlx::PgPool,
+    args: &Args,
+    owner_id: Uuid,
+) -> anyhow::Result<Vec<ManifestAgent>> {
     let mut out = Vec::with_capacity(args.agents as usize);
 
     for i in 0..args.agents {
@@ -228,7 +251,11 @@ async fn seed_agents(pool: &sqlx::PgPool, args: &Args, owner_id: Uuid) -> anyhow
         .execute(pool)
         .await?;
 
-        out.push(ManifestAgent { id: agent_id, name, url: args.sim_agent_url.clone() });
+        out.push(ManifestAgent {
+            id: agent_id,
+            name,
+            url: args.sim_agent_url.clone(),
+        });
     }
 
     Ok(out)

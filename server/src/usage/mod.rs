@@ -1,6 +1,6 @@
 mod models;
-mod tracker;
 pub mod routes;
+mod tracker;
 
 pub use models::*;
 pub use tracker::UsageTracker;

@@ -8,7 +8,9 @@ fn random_unreserved_string(len: usize) -> String {
     use rand::TryRngCore;
     use rand::rngs::OsRng;
     let mut bytes = vec![0u8; len];
-    OsRng.try_fill_bytes(&mut bytes).expect("OS CSPRNG unavailable");
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS CSPRNG unavailable");
     bytes
         .iter()
         .map(|&b| UNRESERVED[b as usize % UNRESERVED.len()] as char)
@@ -41,7 +43,11 @@ mod tests {
     #[test]
     fn code_verifier_has_valid_length_and_charset() {
         let v = generate_code_verifier();
-        assert!(v.len() >= 43 && v.len() <= 128, "len {} out of RFC 7636 range", v.len());
+        assert!(
+            v.len() >= 43 && v.len() <= 128,
+            "len {} out of RFC 7636 range",
+            v.len()
+        );
         assert!(v.bytes().all(|b| UNRESERVED.contains(&b)));
     }
 
@@ -68,7 +74,10 @@ mod tests {
     #[test]
     fn challenge_matches_rfc7636_appendix_b_vector() {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        assert_eq!(code_challenge_s256(verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert_eq!(
+            code_challenge_s256(verifier),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
     }
 
     #[test]

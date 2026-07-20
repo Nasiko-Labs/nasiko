@@ -204,7 +204,7 @@ async fn test_github_logout_clears_stored_token() {
 
     // Verify row is gone
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM user_identities WHERE user_id = $1 AND provider = 'github'"
+        "SELECT COUNT(*) FROM user_identities WHERE user_id = $1 AND provider = 'github'",
     )
     .bind(user_uuid)
     .fetch_one(&server.db)
@@ -270,7 +270,11 @@ async fn test_github_identity_upsert_rejects_cross_user_relink() {
         .execute(&server.db)
         .await
         .unwrap();
-    assert_eq!(r1.rows_affected(), 1, "first link should insert a fresh row");
+    assert_eq!(
+        r1.rows_affected(),
+        1,
+        "first link should insert a fresh row"
+    );
 
     // User B attempts to link the SAME GitHub account — must be rejected
     // (0 rows affected), not silently reassigned.
@@ -296,8 +300,14 @@ async fn test_github_identity_upsert_rejects_cross_user_relink() {
     .fetch_one(&server.db)
     .await
     .unwrap();
-    assert_eq!(owner, user_a, "row must still belong to the original linking user");
-    assert_eq!(meta["access_token"], "a-token", "original token must be untouched");
+    assert_eq!(
+        owner, user_a,
+        "row must still belong to the original linking user"
+    );
+    assert_eq!(
+        meta["access_token"], "a-token",
+        "original token must be untouched"
+    );
 
     server.cleanup().await;
 }
@@ -339,7 +349,11 @@ async fn test_github_identity_upsert_allows_same_user_refresh() {
         .execute(&server.db)
         .await
         .unwrap();
-    assert_eq!(r2.rows_affected(), 1, "same-user refresh must still update the row");
+    assert_eq!(
+        r2.rows_affected(),
+        1,
+        "same-user refresh must still update the row"
+    );
 
     let meta: serde_json::Value = sqlx::query_scalar(
         "SELECT provider_metadata FROM user_identities WHERE provider = 'github' AND provider_id = $1",

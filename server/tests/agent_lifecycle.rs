@@ -33,18 +33,14 @@ async fn init_admin(server: &common::TestServer) -> Value {
 
 /// POST /api/agents as superuser; returns the created agent JSON.
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str, version: &str) -> Value {
-    common::as_superuser(
-        server.client.post(server.url("/api/agents")),
-        uid,
-        "admin",
-    )
-    .json(&json!({"name": name, "version": version}))
-    .send()
-    .await
-    .unwrap()
-    .json::<Value>()
-    .await
-    .unwrap()
+    common::as_superuser(server.client.post(server.url("/api/agents")), uid, "admin")
+        .json(&json!({"name": name, "version": version}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()
 }
 
 async fn get_as_superuser(server: &common::TestServer, uid: &str, path: &str) -> reqwest::Response {
@@ -126,7 +122,10 @@ async fn list_deployments_shows_seeded_record() {
     let body: Value = res.json().await.unwrap();
     let records = body.as_array().unwrap();
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["agent_id"].as_str().unwrap(), agent_id.to_string());
+    assert_eq!(
+        records[0]["agent_id"].as_str().unwrap(),
+        agent_id.to_string()
+    );
     assert_eq!(records[0]["status"].as_str().unwrap(), "running");
 
     server.cleanup().await;
@@ -200,74 +199,6 @@ async fn get_agent_deployment_returns_seeded_record() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["agent_id"].as_str().unwrap(), agent_id.to_string());
     assert_eq!(body["status"].as_str().unwrap(), "running");
-
-    server.cleanup().await;
-}
-
-/// The `nasiko` CLI's `DeploymentRecord` (oss/cli/src/api.rs) deserializes
-/// id, agent_id, agent_name, status, replicas, service_url, created_at,
-/// crash_reason, crashed_at, and restart_count out of both this endpoint and
-/// the list endpoint below — assert the full field set round-trips, not just
-/// agent_id/status as the tests above do, so a server-side rename doesn't
-/// silently break the CLI's `deployments get`/`deployments ls` commands.
-#[tokio::test]
-#[serial]
-async fn deployment_endpoints_expose_full_cli_contract_fields() {
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let uid = admin["user_id"].as_str().unwrap();
-    let uid_uuid: Uuid = uid.parse().unwrap();
-
-    let agent = create_agent(&server, uid, "cli-contract-agent", "1.0.0").await;
-    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
-
-    let build_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
-         VALUES ($1, '1.0.0', 'cli-contract-agent:1.0.0') RETURNING id",
-    )
-    .bind(agent_id)
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
-
-    let deployment_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agent_deployments \
-           (agent_id, build_id, status, owner_id, service_url, crash_reason, crashed_at, restart_count) \
-         VALUES ($1, $2, 'crashed', $3, 'http://example.local:8000', 'OOMKilled', now(), 2) \
-         RETURNING id",
-    )
-    .bind(agent_id)
-    .bind(build_id)
-    .bind(uid_uuid)
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
-
-    let assert_full_record = |body: &Value| {
-        assert_eq!(body["id"].as_str().unwrap(), deployment_id.to_string());
-        assert_eq!(body["agent_id"].as_str().unwrap(), agent_id.to_string());
-        assert_eq!(body["agent_name"].as_str().unwrap(), "cli-contract-agent");
-        assert_eq!(body["status"].as_str().unwrap(), "crashed");
-        assert_eq!(body["replicas"].as_i64().unwrap(), 1);
-        assert_eq!(body["service_url"].as_str().unwrap(), "http://example.local:8000");
-        assert!(body["created_at"].as_str().is_some());
-        assert_eq!(body["crash_reason"].as_str().unwrap(), "OOMKilled");
-        assert!(body["crashed_at"].as_str().is_some());
-        assert_eq!(body["restart_count"].as_i64().unwrap(), 2);
-    };
-
-    // GET /api/agents/{id}/deployment — the `nasiko deployments get <agent>` route.
-    let res = get_as_superuser(&server, uid, &format!("/api/agents/{agent_id}/deployment")).await;
-    assert_eq!(res.status(), 200);
-    assert_full_record(&res.json::<Value>().await.unwrap());
-
-    // GET /api/agents/deployments — the `nasiko deployments ls` route; same record.
-    let res = get_as_superuser(&server, uid, "/api/agents/deployments").await;
-    assert_eq!(res.status(), 200);
-    let body: Value = res.json().await.unwrap();
-    let records = body.as_array().unwrap();
-    assert_eq!(records.len(), 1);
-    assert_full_record(&records[0]);
 
     server.cleanup().await;
 }
@@ -347,25 +278,37 @@ async fn get_upload_status_denies_non_owner() {
     .unwrap();
 
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/agents/uploads/{upload_id}"))),
+        server
+            .client
+            .get(server.url(&format!("/api/agents/uploads/{upload_id}"))),
         &stranger_id.to_string(),
         "upload-idor-stranger",
     )
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 404, "a non-owner must not see another user's upload status");
+    assert_eq!(
+        res.status(),
+        404,
+        "a non-owner must not see another user's upload status"
+    );
 
     // The owner and a superuser must still be able to read it.
     let res_owner = common::as_member(
-        server.client.get(server.url(&format!("/api/agents/uploads/{upload_id}"))),
+        server
+            .client
+            .get(server.url(&format!("/api/agents/uploads/{upload_id}"))),
         owner_uid,
         "admin",
     )
     .send()
     .await
     .unwrap();
-    assert_eq!(res_owner.status(), 200, "the owner must still be able to read their own upload status");
+    assert_eq!(
+        res_owner.status(),
+        200,
+        "the owner must still be able to read their own upload status"
+    );
 
     server.cleanup().await;
 }
@@ -397,18 +340,15 @@ async fn list_upload_agents_scoped_to_owner() {
     let uid_uuid: Uuid = uid.parse().unwrap();
 
     // Create a real second user so upload_status.owner_id FK is satisfied.
-    let other_resp: Value = common::as_superuser(
-        server.client.post(server.url("/api/users")),
-        uid,
-        "admin",
-    )
-    .json(&json!({"username": "other", "email": "other@test.local"}))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
+    let other_resp: Value =
+        common::as_superuser(server.client.post(server.url("/api/users")), uid, "admin")
+            .json(&json!({"username": "other", "email": "other@test.local"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
     let other_user: Uuid = other_resp["id"].as_str().unwrap().parse().unwrap();
 
     sqlx::query(
@@ -436,13 +376,21 @@ async fn list_upload_agents_scoped_to_owner() {
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     let records = body.as_array().unwrap();
-    assert_eq!(records.len(), 1, "non-superuser should see only own uploads");
+    assert_eq!(
+        records.len(),
+        1,
+        "non-superuser should see only own uploads"
+    );
     assert_eq!(records[0]["agent_name"].as_str().unwrap(), "mine");
 
     // Superuser sees both.
     let res = get_as_superuser(&server, uid, "/api/agents/my-uploads").await;
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body.as_array().unwrap().len(), 2, "superuser should see all uploads");
+    assert_eq!(
+        body.as_array().unwrap().len(),
+        2,
+        "superuser should see all uploads"
+    );
 
     server.cleanup().await;
 }

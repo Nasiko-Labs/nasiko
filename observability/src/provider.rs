@@ -192,15 +192,14 @@ impl TempoLokiProvider {
         limit: usize,
     ) -> Result<Vec<TraceSearchResult>, ObservabilityError> {
         let start = clamp_tempo_range(start, end);
-        self.tempo.search(query, Some(start), Some(end), limit).await
+        self.tempo
+            .search(query, Some(start), Some(end), limit)
+            .await
     }
 
     /// Fetch tokens/model/latency-p50 over up to
     /// [`TOKEN_AGGREGATION_TRACE_CAP`] traces.
-    async fn aggregate_traces(
-        &self,
-        results: &[TraceSearchResult],
-    ) -> (u64, u64, Option<String>) {
+    async fn aggregate_traces(&self, results: &[TraceSearchResult]) -> (u64, u64, Option<String>) {
         let mut input = 0u64;
         let mut output = 0u64;
         let mut model: Option<String> = None;
@@ -500,7 +499,9 @@ impl ObservabilityProvider for TempoLokiProvider {
         };
 
         let (input_tokens, output_tokens, model) = extract_token_attrs(&span.attributes);
-        let cost = self.cost(model.as_deref(), input_tokens, output_tokens).await;
+        let cost = self
+            .cost(model.as_deref(), input_tokens, output_tokens)
+            .await;
 
         Ok(SpanDetails {
             span,

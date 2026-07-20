@@ -16,7 +16,9 @@ const REQUIRED_CARD_FIELDS: &[&str] = &[
 ];
 
 pub fn validate(directory: &str) -> Result<()> {
-    let root = Path::new(directory).canonicalize().unwrap_or_else(|_| Path::new(directory).to_path_buf());
+    let root = Path::new(directory)
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(directory).to_path_buf());
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -33,9 +35,8 @@ pub fn validate(directory: &str) -> Result<()> {
     }
 
     // src/ directory (Python) or cmd/ (Go) — at least one
-    let has_src = root.join("src").is_dir()
-        || root.join("cmd").is_dir()
-        || root.join("main.go").exists();
+    let has_src =
+        root.join("src").is_dir() || root.join("cmd").is_dir() || root.join("main.go").exists();
     if has_src {
         println!("  ✓ source directory");
     } else {
@@ -97,8 +98,14 @@ pub fn validate(directory: &str) -> Result<()> {
     // Summary
     println!();
     if !errors.is_empty() {
-        println!("✗ {} error(s){}", errors.len(),
-            if warnings.is_empty() { String::new() } else { format!(", {} warning(s)", warnings.len()) }
+        println!(
+            "✗ {} error(s){}",
+            errors.len(),
+            if warnings.is_empty() {
+                String::new()
+            } else {
+                format!(", {} warning(s)", warnings.len())
+            }
         );
         for e in &errors {
             println!("  • {e}");

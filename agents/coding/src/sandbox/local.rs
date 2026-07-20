@@ -47,7 +47,9 @@ impl LocalSandbox {
                     }
                 }
                 Component::RootDir | Component::Prefix(_) => {
-                    return Err(format!("absolute path '{rel}' is not allowed; use a relative path"));
+                    return Err(format!(
+                        "absolute path '{rel}' is not allowed; use a relative path"
+                    ));
                 }
             }
         }
@@ -219,7 +221,10 @@ mod tests {
         // Unique per test via thread name; created fresh.
         let base = std::env::temp_dir().join(format!(
             "coding-agent-test-{}",
-            std::thread::current().name().unwrap_or("t").replace("::", "_")
+            std::thread::current()
+                .name()
+                .unwrap_or("t")
+                .replace("::", "_")
         ));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
@@ -230,7 +235,9 @@ mod tests {
     async fn write_read_roundtrip() {
         let root = temp_root();
         let sb = LocalSandbox::new(root.to_str().unwrap()).unwrap();
-        sb.write_file("src/lib.rs", "fn a() {}\nfn b() {}\n").await.unwrap();
+        sb.write_file("src/lib.rs", "fn a() {}\nfn b() {}\n")
+            .await
+            .unwrap();
         let out = sb.read_file("src/lib.rs", None).await.unwrap();
         assert!(out.contains("1\tfn a() {}"));
         assert!(out.contains("2\tfn b() {}"));
@@ -262,7 +269,10 @@ mod tests {
     async fn exec_captures_output_and_code() {
         let root = temp_root();
         let sb = LocalSandbox::new(root.to_str().unwrap()).unwrap();
-        let r = sb.exec("echo hi; echo err 1>&2; exit 3", None).await.unwrap();
+        let r = sb
+            .exec("echo hi; echo err 1>&2; exit 3", None)
+            .await
+            .unwrap();
         assert_eq!(r.stdout.trim(), "hi");
         assert_eq!(r.stderr.trim(), "err");
         assert_eq!(r.exit_code, 3);

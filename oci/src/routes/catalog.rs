@@ -31,6 +31,7 @@ pub async fn catalog(
     } else {
         caller.user_id.parse().ok()
     };
-    let repositories = ops::list_repositories(&state, owner_filter, params.last.as_deref(), limit).await?;
+    let repositories =
+        ops::list_repositories(&state, owner_filter, params.last.as_deref(), limit).await?;
     Ok(Json(Catalog { repositories }))
 }

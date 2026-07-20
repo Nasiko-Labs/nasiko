@@ -23,7 +23,10 @@ pub async fn sync_agent_skills(
     // Deduplicate by skill id (first occurrence wins, deterministic). Postgres
     // raises an error if the same key appears twice in one INSERT batch.
     let mut seen: HashSet<&str> = HashSet::with_capacity(skills.len());
-    let unique: Vec<&Skill> = skills.iter().filter(|s| seen.insert(s.id.as_str())).collect();
+    let unique: Vec<&Skill> = skills
+        .iter()
+        .filter(|s| seen.insert(s.id.as_str()))
+        .collect();
     if unique.len() < skills.len() {
         tracing::warn!(%agent_id, dupes = skills.len() - unique.len(), "sync_agent_skills: duplicate skill ids dropped");
     }

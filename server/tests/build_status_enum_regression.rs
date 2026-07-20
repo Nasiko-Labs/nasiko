@@ -46,7 +46,11 @@ async fn agent_builds_status_reads_and_writes_via_enum() {
     let admin_dsn = admin_url();
 
     // Isolated test DB (mirrors common::TestServer) so we don't depend on seed data.
-    let admin = match PgPoolOptions::new().max_connections(1).connect(&admin_dsn).await {
+    let admin = match PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&admin_dsn)
+        .await
+    {
         Ok(p) => p,
         Err(e) => {
             eprintln!("SKIP: cannot reach Postgres at {admin_dsn}: {e}");
@@ -61,16 +65,21 @@ async fn agent_builds_status_reads_and_writes_via_enum() {
 
     let db_url = {
         // swap the trailing /<db> in the admin DSN for our test db
-        let base = admin_dsn.rsplit_once('/').map(|(b, _)| b).unwrap_or(&admin_dsn);
+        let base = admin_dsn
+            .rsplit_once('/')
+            .map(|(b, _)| b)
+            .unwrap_or(&admin_dsn);
         format!("{base}/{db_name}")
     };
 
     let result = run_checks(&db_url).await;
 
     // Always drop the test DB, even on failure.
-    let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"))
-        .execute(&admin)
-        .await;
+    let _ = sqlx::query(&format!(
+        "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
+    ))
+    .execute(&admin)
+    .await;
 
     result.expect("build_status enum read/write checks");
 }
@@ -88,23 +97,21 @@ async fn run_checks(db_url: &str) -> Result<(), String> {
         .map_err(|e| format!("run migrations: {e}"))?;
 
     // Seed our own user (the OSS seed user migration was removed).
-    let owner: Uuid = sqlx::query_scalar(
-        "INSERT INTO users (username, email) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(format!("buildstatus-{}", Uuid::new_v4().simple()))
-    .bind(format!("bs-{}@test.local", Uuid::new_v4().simple()))
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| format!("insert user: {e}"))?;
+    let owner: Uuid =
+        sqlx::query_scalar("INSERT INTO users (username, email) VALUES ($1, $2) RETURNING id")
+            .bind(format!("buildstatus-{}", Uuid::new_v4().simple()))
+            .bind(format!("bs-{}@test.local", Uuid::new_v4().simple()))
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| format!("insert user: {e}"))?;
 
-    let agent_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(format!("enumtest-{}", Uuid::new_v4().simple()))
-    .bind(owner)
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| format!("insert agent: {e}"))?;
+    let agent_id: Uuid =
+        sqlx::query_scalar("INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id")
+            .bind(format!("enumtest-{}", Uuid::new_v4().simple()))
+            .bind(owner)
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| format!("insert agent: {e}"))?;
 
     let build_id: Uuid = sqlx::query_scalar(
         "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \

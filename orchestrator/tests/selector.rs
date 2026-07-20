@@ -47,12 +47,10 @@ fn agent_card_summary_constructs_with_all_fields() {
         id,
         name: "code-agent".to_string(),
         description: "Writes code".to_string(),
-        skills: vec![
-            SkillSummary {
-                name: "rust".to_string(),
-                description: "Rust programming".to_string(),
-            },
-        ],
+        skills: vec![SkillSummary {
+            name: "rust".to_string(),
+            description: "Rust programming".to_string(),
+        }],
         tags: vec!["engineering".to_string()],
     };
     assert_eq!(summary.id, id);
@@ -126,8 +124,8 @@ async fn select_agent_with_empty_list_returns_error() {
 #[ignore = "requires live OpenAI-compatible LLM API"]
 async fn select_agent_with_live_llm_returns_valid_selection() {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY required");
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com".into());
+    let base_url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
 
     let provider = LLMProvider::new(reqwest::Client::new(), api_key, base_url);
     let selector = AgentSelector::new(provider, "gpt-4o-mini".to_string());
@@ -155,7 +153,9 @@ async fn select_agent_with_live_llm_returns_valid_selection() {
         },
     ];
 
-    let result = selector.select_agent("write a Rust function", &[], &agents).await;
+    let result = selector
+        .select_agent("write a Rust function", &[], &agents)
+        .await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
     let (selection, _usage) = result.unwrap();
     assert!(!selection.reasoning.is_empty());

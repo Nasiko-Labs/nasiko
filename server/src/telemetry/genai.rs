@@ -1,7 +1,6 @@
 use opentelemetry::{
-    global,
+    KeyValue, global,
     metrics::{Counter, Histogram},
-    KeyValue,
 };
 use std::time::Instant;
 
@@ -150,21 +149,10 @@ impl GenAiMetrics {
     pub fn record_flow_depth(&self, depth: u64, root_agent: &str) {
         self.flow_depth.record(
             depth,
-            &[KeyValue::new(attr::NASIKO_FLOW_ROOT_AGENT, root_agent.to_string())],
-        );
-    }
-
-    /// Record an MCP tool call's latency, tagged as a `gen_ai.operation.name =
-    /// "execute_tool"` span per the GenAI semconv (reuses the shared
-    /// `operation_duration` histogram rather than adding a dedicated one).
-    pub fn record_tool_call(&self, duration_secs: f64, tool_name: &str, agent_id: &str) {
-        self.operation_duration.record(
-            duration_secs,
-            &[
-                KeyValue::new(attr::GEN_AI_OPERATION_NAME, "execute_tool"),
-                KeyValue::new(attr::GEN_AI_TOOL_NAME, tool_name.to_string()),
-                KeyValue::new(attr::NASIKO_AGENT_ID, agent_id.to_string()),
-            ],
+            &[KeyValue::new(
+                attr::NASIKO_FLOW_ROOT_AGENT,
+                root_agent.to_string(),
+            )],
         );
     }
 

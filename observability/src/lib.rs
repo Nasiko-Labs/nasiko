@@ -10,15 +10,21 @@ pub mod types;
 
 pub use db_pricing::DbPricing;
 pub use error::ObservabilityError;
-pub use injector::{AgentContext, InstrumentationInjector, OtelInjector, patch_dockerfile_for_otel};
+pub use injector::{
+    AgentContext, InstrumentationInjector, OtelInjector, patch_dockerfile_for_otel,
+    write_otel_patch_file,
+};
 pub use loki::{LokiClient, SpanContent, parse_trace_logs};
 pub use pricing::{CostBreakdown, PricingSource, StaticPricing, compute_cost};
-pub use provider::{ObservabilityProvider, TempoLokiProvider, clamp_tempo_range, find_root_span};
+pub use provider::{
+    NoSessionIdResolver, ObservabilityProvider, SessionIdResolver, TempoLokiProvider,
+    clamp_tempo_range, find_root_span,
+};
 pub use runtime_ext::InstrumentedRuntime;
 pub use tempo::TempoClient;
 pub use types::{
-    AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage,
-    TraceDetails, TraceSummary, extract_token_attrs, latency_percentiles,
+    AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage, TraceDetails,
+    TraceSummary, extract_token_attrs, latency_percentiles,
 };
 
 pub struct TelemetryConfig {
@@ -32,8 +38,7 @@ pub struct TelemetryConfig {
 impl TelemetryConfig {
     pub fn from_env() -> Self {
         Self {
-            service_name: std::env::var("OTEL_SERVICE_NAME")
-                .unwrap_or_else(|_| "nasiko".into()),
+            service_name: std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "nasiko".into()),
             otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otlp_protocol: std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL")
                 .unwrap_or_else(|_| "grpc".into()),
@@ -61,8 +66,7 @@ pub fn init_telemetry(config: &TelemetryConfig) {
     };
     use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info".parse().unwrap());
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".parse().unwrap());
 
     if let Some(endpoint) = &config.otlp_endpoint {
         let resource = Resource::builder_empty()

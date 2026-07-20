@@ -82,7 +82,10 @@ impl AgentRegistry {
     /// Find a specific agent by name or ID.
     pub async fn find(&self, name_or_id: &str) -> Option<AgentInfo> {
         let cache = self.cache.read().await;
-        cache.iter().find(|a| a.id == name_or_id || a.name == name_or_id).cloned()
+        cache
+            .iter()
+            .find(|a| a.id == name_or_id || a.name == name_or_id)
+            .cloned()
     }
 
     async fn discover_from_cp(

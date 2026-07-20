@@ -39,7 +39,11 @@ impl IntoResponse for OciError {
             }
             OciError::Forbidden(m) => (StatusCode::FORBIDDEN, m.clone()),
         };
-        (status, Json(json!({"errors": [{"code": "UNKNOWN", "message": message}]}))).into_response()
+        (
+            status,
+            Json(json!({"errors": [{"code": "UNKNOWN", "message": message}]})),
+        )
+            .into_response()
     }
 }
 

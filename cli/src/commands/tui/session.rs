@@ -70,7 +70,11 @@ pub struct LocalMessage {
 
 #[derive(Debug, Clone)]
 pub enum SessionBackend {
-    Cp { base_url: String, token: String, session_id: String },
+    Cp {
+        base_url: String,
+        token: String,
+        session_id: String,
+    },
     Local,
 }
 
@@ -103,9 +107,10 @@ pub fn list_local_sessions() -> Result<Vec<LocalSession>> {
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "json")
             && let Ok(content) = std::fs::read_to_string(&path)
-                && let Ok(session) = serde_json::from_str::<LocalSession>(&content) {
-                    sessions.push(session);
-                }
+            && let Ok(session) = serde_json::from_str::<LocalSession>(&content)
+        {
+            sessions.push(session);
+        }
     }
     sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(sessions)
@@ -162,14 +167,20 @@ pub fn list_cp_sessions(
     cursor: Option<&str>,
     limit: Option<u32>,
 ) -> Result<CpSessionPage> {
-    let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder().timeout_global(None).build(),
-    );
+    let http =
+        ureq::Agent::new_with_config(ureq::config::Config::builder().timeout_global(None).build());
     let mut url = format!("{base_url}/api/chat/sessions");
     let mut params: Vec<String> = Vec::new();
-    if let Some(c) = cursor { params.push(format!("cursor={}", crate::api::urlencode(c))); }
-    if let Some(l) = limit { params.push(format!("limit={l}")); }
-    if !params.is_empty() { url.push('?'); url.push_str(&params.join("&")); }
+    if let Some(c) = cursor {
+        params.push(format!("cursor={}", crate::api::urlencode(c)));
+    }
+    if let Some(l) = limit {
+        params.push(format!("limit={l}"));
+    }
+    if !params.is_empty() {
+        url.push('?');
+        url.push_str(&params.join("&"));
+    }
     let mut resp = http
         .get(&url)
         .header("Authorization", &format!("Bearer {token}"))
@@ -197,9 +208,8 @@ pub fn create_cp_session_with_id(
     title: &str,
     session_id: Option<&str>,
 ) -> Result<CpSession> {
-    let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder().timeout_global(None).build(),
-    );
+    let http =
+        ureq::Agent::new_with_config(ureq::config::Config::builder().timeout_global(None).build());
     let url = format!("{base_url}/api/chat/sessions");
     let mut body = serde_json::json!({ "title": title });
     if let Some(id) = agent_id {
@@ -214,28 +224,31 @@ pub fn create_cp_session_with_id(
         .header("Content-Type", "application/json")
         .send_json(&body)
         .context("failed to create CP session")?;
-    let session: CpSession = resp.body_mut().read_json().context("invalid session JSON")?;
+    let session: CpSession = resp
+        .body_mut()
+        .read_json()
+        .context("invalid session JSON")?;
     Ok(session)
 }
 
-pub fn fetch_cp_messages(
-    base_url: &str,
-    token: &str,
-    session_id: &str,
-) -> Result<Vec<CpMessage>> {
+pub fn fetch_cp_messages(base_url: &str, token: &str, session_id: &str) -> Result<Vec<CpMessage>> {
     #[derive(Deserialize)]
-    struct Page { data: Vec<CpMessage> }
+    struct Page {
+        data: Vec<CpMessage>,
+    }
 
-    let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder().timeout_global(None).build(),
-    );
+    let http =
+        ureq::Agent::new_with_config(ureq::config::Config::builder().timeout_global(None).build());
     let url = format!("{base_url}/api/chat/sessions/{session_id}/messages");
     let mut resp = http
         .get(&url)
         .header("Authorization", &format!("Bearer {token}"))
         .call()
         .context("failed to fetch messages")?;
-    let page: Page = resp.body_mut().read_json().context("invalid messages JSON")?;
+    let page: Page = resp
+        .body_mut()
+        .read_json()
+        .context("invalid messages JSON")?;
     Ok(page.data)
 }
 
@@ -246,9 +259,8 @@ pub fn post_cp_message(
     role: &str,
     content: &str,
 ) -> Result<()> {
-    let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder().timeout_global(None).build(),
-    );
+    let http =
+        ureq::Agent::new_with_config(ureq::config::Config::builder().timeout_global(None).build());
     let url = format!("{base_url}/api/chat/sessions/{session_id}/messages");
     let body = serde_json::json!({ "role": role, "content": content });
     http.post(&url)
@@ -260,9 +272,8 @@ pub fn post_cp_message(
 }
 
 pub fn delete_cp_session(base_url: &str, token: &str, session_id: &str) -> Result<()> {
-    let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder().timeout_global(None).build(),
-    );
+    let http =
+        ureq::Agent::new_with_config(ureq::config::Config::builder().timeout_global(None).build());
     let url = format!("{base_url}/api/chat/sessions/{session_id}");
     let resp = http
         .delete(&url)
@@ -312,7 +323,10 @@ pub fn start_session(endpoint: &str, target_label: &str) -> Result<Session> {
     }
 }
 
-pub fn resume_session(session_id: &str, endpoint: &str) -> Result<(Session, Vec<(String, String)>)> {
+pub fn resume_session(
+    session_id: &str,
+    endpoint: &str,
+) -> Result<(Session, Vec<(String, String)>)> {
     if let Some((base_url, token)) = cp_credentials(endpoint) {
         let messages = fetch_cp_messages(&base_url, &token, session_id)?;
         let history: Vec<(String, String)> = messages

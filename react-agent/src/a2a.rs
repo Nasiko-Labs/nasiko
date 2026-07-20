@@ -84,19 +84,6 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
     ) -> Result<A2aResponse, A2aClientError> {
-        self.send_message_with_headers(endpoint, message, context_id, &[]).await
-    }
-
-    /// Like [`send_message`], plus per-call headers layered on top of the
-    /// client-wide `extra_headers` (e.g. a delegation token scoped to the one
-    /// specific agent being called, which differs per call unlike `traceparent`).
-    pub async fn send_message_with_headers(
-        &self,
-        endpoint: &str,
-        message: &str,
-        context_id: Option<&str>,
-        per_call_headers: &[(String, String)],
-    ) -> Result<A2aResponse, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -104,12 +91,6 @@ impl A2aClient {
         let mut body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": Uuid::new_v4().to_string(),
-            // gRPC-style JSON-RPC method/role names — what every example
-            // agent's installed `a2a-sdk` actually registers in its dispatch
-            // table (confirmed against a real deployed `oss/agents/translator`
-            // build; the spec names `message/send`/`"user"` returned
-            // -32601 Method not found unless the agent opts into
-            // `enable_v0_3_compat`, which none of them do).
             "method": "SendMessage",
             "params": {
                 "message": {
@@ -122,9 +103,12 @@ impl A2aClient {
         });
 
         if let Some(ref metadata) = self.request_metadata
-            && let Some(params) = body.get_mut("params") {
-                params.as_object_mut().map(|p| p.insert("metadata".to_string(), metadata.clone()));
-            }
+            && let Some(params) = body.get_mut("params")
+        {
+            params
+                .as_object_mut()
+                .map(|p| p.insert("metadata".to_string(), metadata.clone()));
+        }
 
         let mut req = self
             .http
@@ -133,11 +117,13 @@ impl A2aClient {
             .json(&body)
             .timeout(self.default_timeout);
 
-        for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
+        for (key, value) in &self.extra_headers {
             req = req.header(key, value);
         }
 
-        let resp = req.send().await
+        let resp = req
+            .send()
+            .await
             .map_err(|e| A2aClientError::Network(e.to_string()))?;
 
         let status = resp.status();
@@ -161,7 +147,7 @@ impl A2aClient {
         Ok(a2a_resp)
     }
 
-    /// Send a message via `message/stream` and consume the SSE stream.
+    /// Send a message via `SendStreamingMessage` and consume the SSE stream.
     ///
     /// Live events are relayed through `progress` (if provided): the agent's
     /// working-status updates (its internal tool activity) and its reply text
@@ -177,7 +163,6 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
         progress: Option<tokio::sync::mpsc::Sender<AgentStreamEvent>>,
-        per_call_headers: &[(String, String)],
     ) -> Result<String, A2aClientError> {
         use futures::StreamExt as _;
 
@@ -188,7 +173,6 @@ impl A2aClient {
         let mut body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": Uuid::new_v4().to_string(),
-            // See the naming note in `send_message_with_headers` above.
             "method": "SendStreamingMessage",
             "params": {
                 "message": {
@@ -201,9 +185,12 @@ impl A2aClient {
         });
 
         if let Some(ref metadata) = self.request_metadata
-            && let Some(params) = body.get_mut("params") {
-                params.as_object_mut().map(|p| p.insert("metadata".to_string(), metadata.clone()));
-            }
+            && let Some(params) = body.get_mut("params")
+        {
+            params
+                .as_object_mut()
+                .map(|p| p.insert("metadata".to_string(), metadata.clone()));
+        }
 
         let mut req = self
             .http
@@ -215,11 +202,13 @@ impl A2aClient {
             // the caller informed, so allow long-running agent work.
             .timeout(std::time::Duration::from_secs(600));
 
-        for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
+        for (key, value) in &self.extra_headers {
             req = req.header(key, value);
         }
 
-        let resp = req.send().await
+        let resp = req
+            .send()
+            .await
             .map_err(|e| A2aClientError::Network(e.to_string()))?;
 
         let status = resp.status();
@@ -237,7 +226,9 @@ impl A2aClient {
 
         if !content_type.contains("text/event-stream") {
             // Agent answered non-streaming — treat as a SendMessage response.
-            let a2a: A2aResponse = resp.json().await
+            let a2a: A2aResponse = resp
+                .json()
+                .await
                 .map_err(|e| A2aClientError::InvalidResponse(e.to_string()))?;
             if let Some(ref err) = a2a.error {
                 return Err(A2aClientError::A2aProtocol {
@@ -263,7 +254,9 @@ impl A2aClient {
                 let line = String::from_utf8_lossy(&line_bytes);
                 let line = line.trim_end_matches(['\n', '\r']);
 
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
                 if data.is_empty() {
                     continue;
@@ -300,7 +293,10 @@ impl A2aClient {
                             break 'stream;
                         }
                         SseEvent::Failed { reason } => {
-                            return Err(A2aClientError::A2aProtocol { code: -1, message: reason });
+                            return Err(A2aClientError::A2aProtocol {
+                                code: -1,
+                                message: reason,
+                            });
                         }
                     }
                 }

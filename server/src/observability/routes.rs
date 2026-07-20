@@ -2,21 +2,23 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::{
-    Json,
-    Router,
-    extract::{ Path, Query, State },
+    Json, Router,
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::{ IntoResponse, Response, sse::{ Event, KeepAlive, Sse } },
-    routing::{ get, post },
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
+    routing::{get, post},
 };
-use chrono::{ DateTime, Utc };
-use serde::{ Deserialize, Serialize };
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::state::AppState;
 use super::handler;
-use super::logs::{ LogLine, LogQuery, parse_container_logs, parse_loki_logs, query_proxy_logs };
+use super::logs::{LogLine, LogQuery, parse_container_logs, parse_loki_logs, query_proxy_logs};
+use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
 // Agent resolution helper
@@ -29,20 +31,22 @@ use super::logs::{ LogLine, LogQuery, parse_container_logs, parse_loki_logs, que
 pub(super) async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid, String)> {
     if let Ok(id) = agent_ref.parse::<Uuid>() {
         sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, name FROM agents WHERE id = $1 AND deleted_at IS NULL"
+            "SELECT id, name FROM agents WHERE id = $1 AND deleted_at IS NULL",
         )
-            .bind(id)
-            .fetch_optional(db).await
-            .ok()
-            .flatten()
+        .bind(id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
     } else {
         sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, name FROM agents WHERE name = $1 AND deleted_at IS NULL"
+            "SELECT id, name FROM agents WHERE name = $1 AND deleted_at IS NULL",
         )
-            .bind(agent_ref)
-            .fetch_optional(db).await
-            .ok()
-            .flatten()
+        .bind(agent_ref)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
     }
 }
 
@@ -52,7 +56,9 @@ pub(super) async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid,
 
 /// Internal health/metrics endpoints — mounted at orchestrator root (no auth required).
 pub fn router() -> Router<AppState> {
-    Router::new().route("/metrics", get(metrics)).route("/readiness", get(readiness))
+    Router::new()
+        .route("/metrics", get(metrics))
+        .route("/readiness", get(readiness))
 }
 
 /// Protected observability router — mounted under /api/observability (auth required).
@@ -93,7 +99,6 @@ fn default_limit() -> usize {
     200
 }
 
-
 // ---------------------------------------------------------------------------
 // Observe handlers
 // ---------------------------------------------------------------------------
@@ -109,14 +114,24 @@ fn default_limit() -> usize {
 async fn agent_logs(
     State(state): State<AppState>,
     Path(agent_ref): Path<String>,
-    Query(params): Query<LogParams>
+    Query(params): Query<LogParams>,
 ) -> Response {
     let Some((agent_id, agent_name)) = resolve_agent(&state.db, &agent_ref).await else {
-        return (StatusCode::NOT_FOUND, format!("Agent '{}' not found", agent_ref)).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            format!("Agent '{}' not found", agent_ref),
+        )
+            .into_response();
     };
 
-    let since = params.since.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
-    let until = params.until.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let since = params
+        .since
+        .as_deref()
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let until = params
+        .until
+        .as_deref()
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
     let q = LogQuery {
         since,
@@ -140,8 +155,10 @@ async fn agent_logs(
     }
 
     // ── Source 3: Loki (optional — fails soft when the stack is absent) ─────
-    if let Ok(entries) = state.observability
-        .query_logs(&agent_name, q.since, q.until, q.limit).await
+    if let Ok(entries) = state
+        .observability
+        .query_logs(&agent_name, q.since, q.until, q.limit)
+        .await
     {
         all_logs.extend(parse_loki_logs(entries));
     }
@@ -172,10 +189,14 @@ async fn agent_logs(
 ///   • Sends an SSE comment `keepalive` every cycle so the connection stays alive.
 async fn agent_logs_stream(
     State(state): State<AppState>,
-    Path(agent_ref): Path<String>
+    Path(agent_ref): Path<String>,
 ) -> Response {
     let Some((agent_id, agent_name)) = resolve_agent(&state.db, &agent_ref).await else {
-        return (StatusCode::NOT_FOUND, format!("Agent '{}' not found", agent_ref)).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            format!("Agent '{}' not found", agent_ref),
+        )
+            .into_response();
     };
 
     let db = state.db.clone();
@@ -250,9 +271,10 @@ async fn agent_logs_stream(
         }
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
-
 
 // ---------------------------------------------------------------------------
 // Internal health / metrics handlers (mounted at root, no auth)
@@ -271,44 +293,49 @@ struct Metrics {
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    let agents_total: i64 = sqlx
-        ::query_scalar("SELECT COUNT(*) FROM agents")
-        .fetch_one(&state.db).await
+    let agents_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+        .fetch_one(&state.db)
+        .await
         .unwrap_or(0);
 
-    let agents_running: i64 = sqlx
-        ::query_scalar("SELECT COUNT(*) FROM agents WHERE status = 'running'")
-        .fetch_one(&state.db).await
-        .unwrap_or(0);
+    let agents_running: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE status = 'running'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
-    let containers_total = state.runtime
-        .list().await
+    let containers_total = state
+        .runtime
+        .list()
+        .await
         .map(|c| c.len() as i64)
         .unwrap_or(0);
 
-    let users_total: i64 = sqlx
-        ::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.db).await
+    let users_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&state.db)
+        .await
         .unwrap_or(0);
 
-    let builds_total: i64 = sqlx
-        ::query_scalar("SELECT COUNT(*) FROM agent_builds")
-        .fetch_one(&state.db).await
+    let builds_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_builds")
+        .fetch_one(&state.db)
+        .await
         .unwrap_or(0);
 
-    let builds_pending: i64 = sqlx
-        ::query_scalar("SELECT COUNT(*) FROM agent_builds WHERE status IN ('queued', 'building')")
-        .fetch_one(&state.db).await
+    let builds_pending: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_builds WHERE status IN ('queued', 'building')",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let chat_sessions_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_sessions")
+        .fetch_one(&state.db)
+        .await
         .unwrap_or(0);
 
-    let chat_sessions_total: i64 = sqlx
-        ::query_scalar("SELECT COUNT(*) FROM chat_sessions")
-        .fetch_one(&state.db).await
-        .unwrap_or(0);
-
-    let token_usage_total: i64 = sqlx
-        ::query_scalar("SELECT COUNT(*) FROM token_usage")
-        .fetch_one(&state.db).await
+    let token_usage_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_usage")
+        .fetch_one(&state.db)
+        .await
         .unwrap_or(0);
 
     Json(Metrics {
@@ -335,7 +362,10 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let pg_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
 
     let redis_ok = match state.redis.get_multiplexed_async_connection().await {
-        Ok(mut conn) => redis::cmd("PING").query_async::<String>(&mut conn).await.is_ok(),
+        Ok(mut conn) => redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .is_ok(),
         Err(_) => false,
     };
 
@@ -343,7 +373,11 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
 
     let all_ok = pg_ok && orch_ok;
     let status = if all_ok { "ready" } else { "degraded" };
-    let http_status = if all_ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let http_status = if all_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
     (
         http_status,

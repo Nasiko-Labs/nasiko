@@ -275,7 +275,10 @@ mod tests {
         ctx.compact_simple(); // must not panic
 
         let summary = ctx.window().summary.expect("summary should be set");
-        assert!(summary.contains('…'), "expected truncation marker in summary: {summary}");
+        assert!(
+            summary.contains('…'),
+            "expected truncation marker in summary: {summary}"
+        );
         assert!(
             !summary.contains("bbbb"),
             "content past the 300-char cutoff should have been dropped: {summary}"

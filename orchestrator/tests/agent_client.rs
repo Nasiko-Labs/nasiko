@@ -1,5 +1,5 @@
-use nasiko_orchestrator::agent_client::AgentClient;
 use nasiko_orchestrator::FilePart;
+use nasiko_orchestrator::agent_client::AgentClient;
 
 // ── AgentClient construction ──────────────────────────────────────────────────
 
@@ -73,8 +73,8 @@ fn file_encode_empty_bytes_produces_valid_uri() {
 async fn send_to_live_agent_streams_events() {
     use futures::StreamExt;
 
-    let agent_url = std::env::var("TEST_AGENT_URL")
-        .unwrap_or_else(|_| "http://localhost:9000".into());
+    let agent_url =
+        std::env::var("TEST_AGENT_URL").unwrap_or_else(|_| "http://localhost:9000".into());
 
     let client = AgentClient::new(30);
     let stream = client.send(

@@ -28,31 +28,47 @@ use std::time::Duration;
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
 struct Args {
-    server:        String,
-    access_key:    Option<String>,
+    server: String,
+    access_key: Option<String>,
     access_secret: Option<String>,
-    test_large:    bool,
-    no_poll:       bool,
+    test_large: bool,
+    no_poll: bool,
 }
 
 fn parse_args() -> Args {
-    let mut server        = "http://localhost:9090".to_string();
-    let mut access_key    = None;
+    let mut server = "http://localhost:9090".to_string();
+    let mut access_key = None;
     let mut access_secret = None;
-    let mut test_large    = false;
-    let mut no_poll       = false;
+    let mut test_large = false;
+    let mut no_poll = false;
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--server"         => { server        = it.next().unwrap_or(server); }
-            "--access-key"     => { access_key    = it.next(); }
-            "--access-secret"  => { access_secret = it.next(); }
-            "--test-large"     => { test_large    = true; }
-            "--no-poll"        => { no_poll       = true; }
-            _                  => {}
+            "--server" => {
+                server = it.next().unwrap_or(server);
+            }
+            "--access-key" => {
+                access_key = it.next();
+            }
+            "--access-secret" => {
+                access_secret = it.next();
+            }
+            "--test-large" => {
+                test_large = true;
+            }
+            "--no-poll" => {
+                no_poll = true;
+            }
+            _ => {}
         }
     }
-    Args { server, access_key, access_secret, test_large, no_poll }
+    Args {
+        server,
+        access_key,
+        access_secret,
+        test_large,
+        no_poll,
+    }
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -122,7 +138,15 @@ async fn main() {
 
     // 3. Upload a valid agent zip — expect 202 + queued build.
     let (first_agent_id, first_build_id) = {
-        match common::upload(&client, &args.server, &token, "e2e-upload-agent", common::make_valid_zip()).await {
+        match common::upload(
+            &client,
+            &args.server,
+            &token,
+            "e2e-upload-agent",
+            common::make_valid_zip(),
+        )
+        .await
+        {
             Ok(res) if res.status() == 202 => {
                 let body: serde_json::Value = res.json().await.unwrap_or_default();
                 let aid = body["agent_id"].as_str().unwrap_or("").to_string();
@@ -152,24 +176,41 @@ async fn main() {
 
     // 4. Upload same name again — expect same agent_id (owner-scoped upsert).
     if !first_agent_id.is_empty() {
-        match common::upload(&client, &args.server, &token, "e2e-upload-agent", common::make_valid_zip()).await {
+        match common::upload(
+            &client,
+            &args.server,
+            &token,
+            "e2e-upload-agent",
+            common::make_valid_zip(),
+        )
+        .await
+        {
             Ok(res) if res.status() == 202 => {
                 let body: serde_json::Value = res.json().await.unwrap_or_default();
                 let aid = body["agent_id"].as_str().unwrap_or("");
                 let bid = body["build_id"].as_str().unwrap_or("");
                 if aid == first_agent_id && bid != first_build_id {
-                    println!("[ PASS ] upload same name → agent upsert       → same agent_id, new build_id");
+                    println!(
+                        "[ PASS ] upload same name → agent upsert       → same agent_id, new build_id"
+                    );
                     passed += 1;
                 } else if aid != first_agent_id {
-                    println!("[ FAIL ] upload same name → agent upsert       → different agent_id: {aid:.8}..");
+                    println!(
+                        "[ FAIL ] upload same name → agent upsert       → different agent_id: {aid:.8}.."
+                    );
                     failed += 1;
                 } else {
-                    println!("[ FAIL ] upload same name → agent upsert       → build_id not unique");
+                    println!(
+                        "[ FAIL ] upload same name → agent upsert       → build_id not unique"
+                    );
                     failed += 1;
                 }
             }
             Ok(res) => {
-                println!("[ FAIL ] upload same name → agent upsert       → HTTP {}", res.status());
+                println!(
+                    "[ FAIL ] upload same name → agent upsert       → HTTP {}",
+                    res.status()
+                );
                 failed += 1;
             }
             Err(e) => {
@@ -197,12 +238,17 @@ async fn main() {
                 println!("[ PASS ] upload no Dockerfile → 400            → {body:.80}");
                 passed += 1;
             } else {
-                println!("[ FAIL ] upload no Dockerfile → 400 but 'Dockerfile' missing in: {body:.80}");
+                println!(
+                    "[ FAIL ] upload no Dockerfile → 400 but 'Dockerfile' missing in: {body:.80}"
+                );
                 failed += 1;
             }
         }
         Ok(res) => {
-            println!("[ FAIL ] upload no Dockerfile                  → expected 400, got {}", res.status());
+            println!(
+                "[ FAIL ] upload no Dockerfile                  → expected 400, got {}",
+                res.status()
+            );
             failed += 1;
         }
         Err(e) => {
@@ -228,7 +274,9 @@ async fn main() {
         Ok(res) => {
             let status = res.status();
             let body = res.text().await.unwrap_or_default();
-            println!("[ FAIL ] upload path traversal                 → expected 400, got {status} body={body:.80}");
+            println!(
+                "[ FAIL ] upload path traversal                 → expected 400, got {status} body={body:.80}"
+            );
             failed += 1;
         }
         Err(e) => {
@@ -256,17 +304,24 @@ async fn main() {
             let aid = body["agent_id"].as_str().unwrap_or("");
             let bid = body["build_id"].as_str().unwrap_or("");
             if !aid.is_empty() && !bid.is_empty() {
-                println!("[ PASS ] upload 1000 files → 202               → agent={:.8}.. build={:.8}..", aid, bid);
+                println!(
+                    "[ PASS ] upload 1000 files → 202               → agent={:.8}.. build={:.8}..",
+                    aid, bid
+                );
                 passed += 1;
             } else {
-                println!("[ FAIL ] upload 1000 files → 202 but body missing agent_id/build_id: {body}");
+                println!(
+                    "[ FAIL ] upload 1000 files → 202 but body missing agent_id/build_id: {body}"
+                );
                 failed += 1;
             }
         }
         Ok(res) => {
             let status = res.status();
             let body = res.text().await.unwrap_or_default();
-            println!("[ FAIL ] upload 1000 files                     → expected 202, got {status}: {body:.80}");
+            println!(
+                "[ FAIL ] upload 1000 files                     → expected 202, got {status}: {body:.80}"
+            );
             failed += 1;
         }
         Err(e) => {
@@ -293,7 +348,10 @@ async fn main() {
             passed += 1;
         }
         Ok(res) => {
-            println!("[ FAIL ] upload 1001 files                     → expected 400, got {}", res.status());
+            println!(
+                "[ FAIL ] upload 1001 files                     → expected 400, got {}",
+                res.status()
+            );
             failed += 1;
         }
         Err(e) => {
@@ -313,11 +371,17 @@ async fn main() {
             .unwrap();
         match common::upload(&big_client, &args.server, &token, "e2e-oversize", large).await {
             Ok(res) if matches!(res.status().as_u16(), 400 | 413) => {
-                println!("[ PASS ] upload {size_mib} MiB → {}              → size guard fired", res.status());
+                println!(
+                    "[ PASS ] upload {size_mib} MiB → {}              → size guard fired",
+                    res.status()
+                );
                 passed += 1;
             }
             Ok(res) => {
-                println!("[ FAIL ] upload {size_mib} MiB                      → expected 400 or 413, got {}", res.status());
+                println!(
+                    "[ FAIL ] upload {size_mib} MiB                      → expected 400 or 413, got {}",
+                    res.status()
+                );
                 failed += 1;
             }
             Err(e) => {
@@ -332,7 +396,10 @@ async fn main() {
     // 9. Poll build status until terminal (the first valid upload).
     //    In dev the Docker build will fail (no real base image) — 'failed' is a valid terminal state.
     if !first_build_id.is_empty() && !args.no_poll {
-        println!("[ INFO ] polling build/{:.8}.. (up to 90s, Docker build expected to fail fast)...", first_build_id);
+        println!(
+            "[ INFO ] polling build/{:.8}.. (up to 90s, Docker build expected to fail fast)...",
+            first_build_id
+        );
         match common::poll_build_status(&client, &args.server, &token, &first_build_id, 90).await {
             Ok(status) => {
                 println!("[ PASS ] build reaches terminal state          → status={status}");

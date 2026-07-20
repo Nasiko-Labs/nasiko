@@ -61,7 +61,10 @@ impl ContainerId {
                 "container_id exceeds 63 characters".to_owned(),
             ));
         }
-        if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
             return Err(RuntimeError::InvalidSpec(
                 "container_id must contain only [A-Za-z0-9_-]".to_owned(),
             ));
@@ -124,7 +127,7 @@ impl fmt::Display for RuntimeState {
             RuntimeState::Pending => "pending",
             RuntimeState::Running => "running",
             RuntimeState::Crashed => "crashed",
-            RuntimeState::Failed  => "failed",
+            RuntimeState::Failed => "failed",
             RuntimeState::Stopped => "stopped",
             RuntimeState::Unknown => "unknown",
         };
@@ -167,8 +170,8 @@ impl ResourceLimits {
         let suffixes: &[(&str, i64)] = &[
             ("Gi", 1024 * 1024 * 1024),
             ("Mi", 1024 * 1024),
-            ("G",  1_000_000_000),
-            ("M",  1_000_000),
+            ("G", 1_000_000_000),
+            ("M", 1_000_000),
         ];
         let mut recognized = false;
         for (sfx, multiplier) in suffixes {
@@ -178,7 +181,8 @@ impl ResourceLimits {
                 }
                 let parsed: i64 = n.parse().map_err(|_| {
                     RuntimeError::InvalidSpec(format!(
-                        "memory {:?} numeric part is too large", self.memory
+                        "memory {:?} numeric part is too large",
+                        self.memory
                     ))
                 })?;
                 if parsed.checked_mul(*multiplier).is_none() {
@@ -193,7 +197,8 @@ impl ResourceLimits {
         }
         if !recognized {
             // bare integer
-            let is_bare = !self.memory.is_empty() && self.memory.chars().all(|c| c.is_ascii_digit());
+            let is_bare =
+                !self.memory.is_empty() && self.memory.chars().all(|c| c.is_ascii_digit());
             if !is_bare {
                 return Err(RuntimeError::InvalidSpec(format!(
                     "memory {:?} is not a recognized quantity (e.g. \"512Mi\", \"1Gi\", \"536870912\")",
@@ -303,7 +308,8 @@ impl DeploymentSpec {
                 "name exceeds 63 characters".to_owned(),
             ));
         }
-        let valid_label_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
+        let valid_label_char =
+            |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
         if !self.name.chars().all(valid_label_char)
             || !self.name.starts_with(|c: char| c.is_ascii_alphanumeric())
             || !self.name.ends_with(|c: char| c.is_ascii_alphanumeric())
@@ -375,7 +381,10 @@ pub fn validate_build_inputs(tar_context: &[u8], image_tag: &str) -> Result<()> 
         ));
     }
     // Reject characters that could inject key=value pairs into buildctl --output spec.
-    if !image_tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@')) {
+    if !image_tag
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@'))
+    {
         return Err(RuntimeError::InvalidSpec(format!(
             "image_tag {:?} contains invalid characters — only [A-Za-z0-9._-/:@] are allowed",
             image_tag,

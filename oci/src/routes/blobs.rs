@@ -8,7 +8,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::OciState;
-use crate::authz::{Caller, CallerIdentity, Writer, check_pull_access, check_repo_delete_access, check_write_access};
+use crate::authz::{
+    Caller, CallerIdentity, Writer, check_pull_access, check_repo_delete_access, check_write_access,
+};
 use crate::error::{OciError, Result};
 use crate::ops;
 
@@ -153,14 +155,8 @@ pub async fn complete_upload(
         .await
         .map_err(|e| OciError::BadRequest(e.to_string()))?;
 
-    let result = ops::complete_upload(
-        &state,
-        &name,
-        upload_id,
-        put_body,
-        params.digest.as_deref(),
-    )
-    .await?;
+    let result =
+        ops::complete_upload(&state, &name, upload_id, put_body, params.digest.as_deref()).await?;
 
     let location = format!("/v2/{name}/blobs/{}", result.digest);
 

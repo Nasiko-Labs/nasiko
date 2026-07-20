@@ -39,8 +39,14 @@ impl AgentSelector {
         let request = ChatCompletionRequest {
             model: self.model.clone(),
             messages: vec![
-                ChatMessage { role: "system".to_string(), content: Some(system_prompt) },
-                ChatMessage { role: "user".to_string(), content: Some(user_prompt) },
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: Some(system_prompt),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(user_prompt),
+                },
             ],
             stream: false,
             temperature: Some(0.0),
@@ -71,19 +77,20 @@ impl AgentSelector {
 
         // Validate agent UUID exists in the candidate list; fall back to first if hallucinated.
         if !agents.iter().any(|a| a.id == selection.agent_id)
-            && let Some(first) = agents.first() {
-                return Ok((
-                    AgentSelection {
-                        agent_id: first.id,
-                        agent_name: first.name.clone(),
-                        reasoning: format!(
-                            "LLM selected unknown agent '{}', falling back to '{}'",
-                            selection.agent_name, first.name
-                        ),
-                    },
-                    result,
-                ));
-            }
+            && let Some(first) = agents.first()
+        {
+            return Ok((
+                AgentSelection {
+                    agent_id: first.id,
+                    agent_name: first.name.clone(),
+                    reasoning: format!(
+                        "LLM selected unknown agent '{}', falling back to '{}'",
+                        selection.agent_name, first.name
+                    ),
+                },
+                result,
+            ));
+        }
 
         Ok((selection, result))
     }

@@ -1,16 +1,18 @@
-pub(crate) mod utils;
 pub mod acl;
 pub mod build_worker;
 pub mod deployments;
 pub mod grants;
 pub mod update;
 pub mod upload;
+pub(crate) mod utils;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Router;
-use nasiko_runtime::{ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, ResourceLimits};
+use nasiko_runtime::{
+    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, ResourceLimits,
+};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -75,17 +77,26 @@ pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
 /// (`upload::execute_upload_and_deploy`, which runs detached from a request's
 /// `AppState` and already threads individual config values the same way —
 /// see its `openai_api_key`/`openai_base_url` params) can call it too.
-pub(crate) async fn attach_pull_credential(db: &sqlx::PgPool, agent_runtime: &str, agent_image_registry: &str, spec: &mut DeploymentSpec, agent_id: Uuid) {
+pub(crate) async fn attach_pull_credential(
+    db: &sqlx::PgPool,
+    agent_runtime: &str,
+    agent_image_registry: &str,
+    spec: &mut DeploymentSpec,
+    agent_id: Uuid,
+) {
     if agent_runtime != "kubernetes" {
         return;
     }
     spec.image_pull_secret_name = Some(format!("pull-{agent_id}"));
     match nasiko_oci::pull_credentials::get_or_create(db, agent_id).await {
         Ok(Some(cred)) => {
-            spec.image_pull_credential_seed = Some((cred.username, cred.token, agent_image_registry.to_string()));
+            spec.image_pull_credential_seed =
+                Some((cred.username, cred.token, agent_image_registry.to_string()));
         }
         Ok(None) => {}
-        Err(e) => tracing::error!(%e, %agent_id, "failed to mint OCI pull credential; image pulls may fail"),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "failed to mint OCI pull credential; image pulls may fail")
+        }
     }
 }
 
@@ -151,7 +162,11 @@ pub(crate) fn build_agent_spec(
         container_id: ContainerId::from_uuid(agent_id),
         name: name.to_string(),
         image: image.into(),
-        ports: if ports.is_empty() { vec![DEFAULT_AGENT_PORT] } else { ports },
+        ports: if ports.is_empty() {
+            vec![DEFAULT_AGENT_PORT]
+        } else {
+            ports
+        },
         env_vars: env,
         min_replicas: 1,
         max_replicas: 1,
@@ -174,14 +189,6 @@ pub fn router() -> Router<AppState> {
     // in a dedicated pass rather than mounting two incompatible APIs.
 }
 
-/// GET routes pulled out from under `router()`'s `require_deployer` gate —
-/// mounted separately under `require_auth` only, each handler checks
-/// `can_deploy` itself. See `upload::degradable_router`/
-/// `deployments::degradable_router`.
-pub fn degradable_router() -> Router<AppState> {
-    upload::degradable_router().merge(deployments::degradable_router())
-}
-
 pub fn user_routes() -> Router<AppState> {
     upload::user_routes()
 }
@@ -196,7 +203,14 @@ mod spec_tests {
         // Same agent_id → same ContainerId regardless of the display name, so every
         // deploy path converges on one workload.
         let a = build_agent_spec(id, "My.Agent", "img:1", vec![], HashMap::new(), None);
-        let b = build_agent_spec(id, "totally-different-name", "img:2", vec![], HashMap::new(), None);
+        let b = build_agent_spec(
+            id,
+            "totally-different-name",
+            "img:2",
+            vec![],
+            HashMap::new(),
+            None,
+        );
         assert_eq!(a.container_id, ContainerId::from_uuid(id));
         assert_eq!(a.container_id, b.container_id);
         // Empty ports → canonical 8000 (not 5000).
@@ -212,7 +226,10 @@ mod spec_tests {
 
     #[test]
     fn qualify_deploy_image_passthrough_when_registry_empty() {
-        assert_eq!(qualify_deploy_image("", "nasiko/my-agent:1.0.0"), "nasiko/my-agent:1.0.0");
+        assert_eq!(
+            qualify_deploy_image("", "nasiko/my-agent:1.0.0"),
+            "nasiko/my-agent:1.0.0"
+        );
     }
 
     #[test]
@@ -225,7 +242,10 @@ mod spec_tests {
 
     #[test]
     fn qualify_deploy_image_leaves_third_party_image_untouched() {
-        assert_eq!(qualify_deploy_image("registry.example.com", "nginx:latest"), "nginx:latest");
+        assert_eq!(
+            qualify_deploy_image("registry.example.com", "nginx:latest"),
+            "nginx:latest"
+        );
     }
 
     #[test]
@@ -240,6 +260,9 @@ mod spec_tests {
 
     #[test]
     fn build_image_tag_includes_nasiko_owner_segment_without_registry() {
-        assert_eq!(build_image_tag("", "my-agent", "1.0.0"), "nasiko/my-agent:1.0.0");
+        assert_eq!(
+            build_image_tag("", "my-agent", "1.0.0"),
+            "nasiko/my-agent:1.0.0"
+        );
     }
 }

@@ -4,5 +4,5 @@ pub mod middleware;
 pub mod rbac;
 
 pub use claims::Claims;
+pub use login::{protected_router as auth_protected_router, public_router as login_router};
 pub use middleware::require_auth;
-pub use login::{public_router as login_router, protected_router as auth_protected_router};

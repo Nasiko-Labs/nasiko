@@ -31,7 +31,10 @@ fn verify_password_empty_password_fails_against_nonempty_hash() {
 fn hash_is_not_plaintext() {
     let pw = "mysecretpassword";
     let hash = hash_password(pw).unwrap();
-    assert_ne!(hash, pw, "stored hash must not equal the plaintext password");
+    assert_ne!(
+        hash, pw,
+        "stored hash must not equal the plaintext password"
+    );
 }
 
 #[test]
@@ -49,7 +52,10 @@ fn two_hashes_of_same_password_differ() {
     // bcrypt uses a random salt — identical passwords must produce different hashes.
     let h1 = hash_password("samepassword").unwrap();
     let h2 = hash_password("samepassword").unwrap();
-    assert_ne!(h1, h2, "bcrypt hashes of the same password must differ due to random salt");
+    assert_ne!(
+        h1, h2,
+        "bcrypt hashes of the same password must differ due to random salt"
+    );
 }
 
 #[test]

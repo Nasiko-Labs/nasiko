@@ -13,11 +13,11 @@ use nasiko_runtime::DeploymentStatus;
 use crate::agents::upload::BuildJobPayload;
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus, download_repo_tarball, routes::extract_zip_to_dir};
-use crate::catalog::agent_secrets;
 use crate::github::load_github_token;
 use crate::state::AppState;
 
 use super::utils::{set_build_status, set_upload_status};
+use crate::catalog::agent_secrets;
 
 /// Max multipart body for an agent update (mirrors the upload router). Without
 /// this the update route inherited axum's 2 MiB default, and `field.bytes()`
@@ -77,19 +77,18 @@ async fn update_agent(
 
     // Fetch agent — verify it exists and capture state we need for the update.
     // Include `image` so we can roll it back if the build fails.
-    let agent: Option<(String, String, Option<String>, Uuid)> = match sqlx::query_as(
-        "SELECT name, version, image, owner_id FROM agents WHERE id = $1",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(%e, %agent_id, "update_agent: db error fetching agent");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
+    let agent: Option<(String, String, Option<String>, Uuid)> =
+        match sqlx::query_as("SELECT name, version, image, owner_id FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(%e, %agent_id, "update_agent: db error fetching agent");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
 
     let (agent_name, current_version, prev_image, _agent_owner_id) = match agent {
         Some(r) => r,
@@ -214,7 +213,11 @@ async fn update_agent(
             .into_response();
     }
 
-    let image_tag = crate::agents::build_image_tag(&state.config.agent_image_registry, &agent_name, &new_version);
+    let image_tag = crate::agents::build_image_tag(
+        &state.config.agent_image_registry,
+        &agent_name,
+        &new_version,
+    );
 
     // Optimistic write — lets the UI show "deploying to <image_tag>".
     // On failure the background task rolls both version and image back.
@@ -276,14 +279,13 @@ async fn update_agent(
         prev_image,
         changelog,
     };
-    if let Err(e) = sqlx::query(
-        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
-    )
-    .bind(agent_id)
-    .bind(owner_id)
-    .bind(serde_json::to_value(&payload).expect("serialize update payload"))
-    .execute(&state.db)
-    .await
+    if let Err(e) =
+        sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
+            .bind(agent_id)
+            .bind(owner_id)
+            .bind(serde_json::to_value(&payload).expect("serialize update payload"))
+            .execute(&state.db)
+            .await
     {
         tracing::error!(%e, %agent_id, "update: queue build_jobs db error");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
@@ -305,19 +307,31 @@ async fn update_agent(
 
 fn bump_patch_version(current: &str) -> String {
     semver::Version::parse(current)
-        .map(|mut v| { v.patch += 1; v.to_string() })
+        .map(|mut v| {
+            v.patch += 1;
+            v.to_string()
+        })
         .unwrap_or_else(|_| format!("{current}.1"))
 }
 
 fn bump_minor_version(current: &str) -> String {
     semver::Version::parse(current)
-        .map(|mut v| { v.minor += 1; v.patch = 0; v.to_string() })
+        .map(|mut v| {
+            v.minor += 1;
+            v.patch = 0;
+            v.to_string()
+        })
         .unwrap_or_else(|_| format!("{current}.1"))
 }
 
 fn bump_major_version(current: &str) -> String {
     semver::Version::parse(current)
-        .map(|mut v| { v.major += 1; v.minor = 0; v.patch = 0; v.to_string() })
+        .map(|mut v| {
+            v.major += 1;
+            v.minor = 0;
+            v.patch = 0;
+            v.to_string()
+        })
         .unwrap_or_else(|_| format!("{current}.1"))
 }
 
@@ -391,15 +405,11 @@ pub async fn execute_agent_update(
             tmp_dir.clone()
         } else {
             // GitHub re-deploy: download the tarball and find the inner top-level dir.
-            let (full_repo, token) =
-                resolve_agent_github_source(db, agent_id, owner_id)
-                    .await
-                    .ok_or_else(|| {
-                        "no source provided and no GitHub source on record".to_string()
-                    })?;
+            let (full_repo, token) = resolve_agent_github_source(db, agent_id, owner_id)
+                .await
+                .ok_or_else(|| "no source provided and no GitHub source on record".to_string())?;
 
-            let tarball = download_repo_tarball(&state.http_client, &token, &full_repo)
-                .await?;
+            let tarball = download_repo_tarball(&state.http_client, &token, &full_repo).await?;
 
             let tmp = tmp_dir.clone();
             tokio::task::spawn_blocking(move || build::extract_tar_gzip(&tarball, &tmp))
@@ -438,27 +448,69 @@ pub async fn execute_agent_update(
             tokio::fs::write(&dockerfile_path, &patched)
                 .await
                 .map_err(|e| format!("write Dockerfile: {e}"))?;
+            nasiko_observability::write_otel_patch_file(&agent_source_dir)
+                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
         }
 
         let src = agent_source_dir.clone();
         let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
             .await
             .map_err(|e| format!("tar task failed: {e}"))??;
-        state.runtime.build(&tar_bytes, &image_tag).await.map_err(|e| format!("build: {e}"))?;
+        state
+            .runtime
+            .build(&tar_bytes, &image_tag)
+            .await
+            .map_err(|e| format!("build: {e}"))?;
 
-        set_upload_status(db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
+        set_upload_status(
+            db,
+            &upload_id,
+            &name,
+            owner_id,
+            "orchestration_triggered",
+            None,
+            None,
+        )
+        .await;
 
         let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
         // Key on the agent UUID (not name) so the update re-targets the existing
         // workload instead of spawning an orphaned name-keyed duplicate (RUN-2/7).
-        let mut spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), vec![], secrets, None);
-        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+        let mut spec = crate::agents::build_agent_spec(
+            agent_id,
+            &name,
+            image_tag.clone(),
+            vec![],
+            secrets,
+            None,
+        );
+        crate::agents::attach_pull_credential(
+            &state.db,
+            &state.config.agent_runtime,
+            &state.config.agent_image_registry,
+            &mut spec,
+            agent_id,
+        )
+        .await;
         // Capture the ports build_agent_spec actually resolved (defaults empty -> 8000)
         // so they can be persisted below (RUN-3b) — restart reads this back.
         let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
-        let deploy_status = state.runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
+        let deploy_status = state
+            .runtime
+            .deploy(&spec)
+            .await
+            .map_err(|e| format!("deploy: {e}"))?;
 
-        set_upload_status(db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
+        set_upload_status(
+            db,
+            &upload_id,
+            &name,
+            owner_id,
+            "orchestration_processing",
+            None,
+            None,
+        )
+        .await;
         Ok((deploy_status, spec_ports))
     }
     .await;
@@ -516,6 +568,14 @@ pub async fn execute_agent_update(
             .bind(&agent_url)
             .execute(db)
             .await;
+            // Refresh card-derived fields (skills, description, transport_path)
+            // for the newly deployed version.
+            tokio::spawn(super::utils::fetch_agent_card_with_retry(
+                state.db.clone(),
+                state.http_client.clone(),
+                agent_id,
+                agent_url.clone(),
+            ));
 
             // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
             // so the crash guardian and restart can find/rebuild this workload after an
@@ -535,7 +595,16 @@ pub async fn execute_agent_update(
             .await;
 
             set_build_status(db, build_id, BuildStatus::Success).await;
-            set_upload_status(db, &upload_id, &name, owner_id, "completed", Some(agent_id), None).await;
+            set_upload_status(
+                db,
+                &upload_id,
+                &name,
+                owner_id,
+                "completed",
+                Some(agent_id),
+                None,
+            )
+            .await;
             tracing::info!(build_id = %build_id, %agent_id, %new_version, "agent update succeeded");
         }
         Err(e) => {
@@ -557,7 +626,16 @@ pub async fn execute_agent_update(
             // text) — log it, but the `upload_status.error_message` column is read
             // back by clients via GET /agents/uploads, so store a generic reason there
             // instead of leaking internals through the status-polling API.
-            set_upload_status(db, &upload_id, &name, owner_id, "failed", None, Some("agent update failed")).await;
+            set_upload_status(
+                db,
+                &upload_id,
+                &name,
+                owner_id,
+                "failed",
+                None,
+                Some("agent update failed"),
+            )
+            .await;
             tracing::error!(build_id = %build_id, %agent_id, %e, "agent update failed");
         }
     }
@@ -584,24 +662,25 @@ async fn rollback_agent(
     } else {
         match serde_json::from_slice(&body) {
             Ok(r) => Some(r),
-            Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, "invalid JSON body").into_response(),
+            Err(_) => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, "invalid JSON body").into_response();
+            }
         }
     };
 
     // Fetch agent — verify exists.
-    let agent: Option<(String, String, Uuid)> = match sqlx::query_as(
-        "SELECT name, version, owner_id FROM agents WHERE id = $1",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(%e, %agent_id, "rollback_agent: db error");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
+    let agent: Option<(String, String, Uuid)> =
+        match sqlx::query_as("SELECT name, version, owner_id FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(%e, %agent_id, "rollback_agent: db error");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
 
     let (agent_name, current_version, _agent_owner_id) = match agent {
         Some(r) => r,
@@ -637,14 +716,15 @@ async fn rollback_agent(
 
             match row {
                 None => {
-                    return (StatusCode::NOT_FOUND, format!("version {v} not found")).into_response()
+                    return (StatusCode::NOT_FOUND, format!("version {v} not found"))
+                        .into_response();
                 }
                 Some(r) if !r.can_rollback => {
                     return (
                         StatusCode::BAD_REQUEST,
                         format!("version {v} is not rollback-eligible"),
                     )
-                        .into_response()
+                        .into_response();
                 }
                 Some(r) => r,
             }
@@ -667,7 +747,7 @@ async fn rollback_agent(
                         StatusCode::CONFLICT,
                         "no eligible rollback version — agent has only one version",
                     )
-                        .into_response()
+                        .into_response();
                 }
                 Err(e) => {
                     tracing::error!(%e, %agent_id, "rollback_agent: find rollback version");
@@ -707,14 +787,13 @@ async fn rollback_agent(
         target_image_tag: target.image_tag,
         reason,
     };
-    if let Err(e) = sqlx::query(
-        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
-    )
-    .bind(agent_id)
-    .bind(caller_id)
-    .bind(serde_json::to_value(&payload).expect("serialize rollback payload"))
-    .execute(&state.db)
-    .await
+    if let Err(e) =
+        sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
+            .bind(agent_id)
+            .bind(caller_id)
+            .bind(serde_json::to_value(&payload).expect("serialize rollback payload"))
+            .execute(&state.db)
+            .await
     {
         tracing::error!(%e, %agent_id, "rollback: queue build_jobs db error");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
@@ -758,8 +837,22 @@ pub async fn execute_agent_rollback(
 
     let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
     // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
-    let mut spec = crate::agents::build_agent_spec(agent_id, &agent_name, target.image_tag.clone(), vec![], secrets, None);
-    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+    let mut spec = crate::agents::build_agent_spec(
+        agent_id,
+        &agent_name,
+        target.image_tag.clone(),
+        vec![],
+        secrets,
+        None,
+    );
+    crate::agents::attach_pull_credential(
+        &state.db,
+        &state.config.agent_runtime,
+        &state.config.agent_image_registry,
+        &mut spec,
+        agent_id,
+    )
+    .await;
     // Capture the resolved ports so they can be persisted below (RUN-3b).
     let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
 
@@ -799,6 +892,14 @@ pub async fn execute_agent_rollback(
             .bind(&target.image_tag)
             .execute(db)
             .await;
+            // Refresh card-derived fields (skills, description, transport_path)
+            // for the rolled-back version.
+            tokio::spawn(super::utils::fetch_agent_card_with_retry(
+                state.db.clone(),
+                state.http_client.clone(),
+                agent_id,
+                agent_url.clone(),
+            ));
 
             // Persist identity + image + ports for guardian/restart (RUN-3/RUN-3b), as on update.
             let _ = sqlx::query(

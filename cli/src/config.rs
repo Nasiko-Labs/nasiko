@@ -136,7 +136,6 @@ pub fn save_login(username: &str, token: &str) -> Result<()> {
     save(&config)
 }
 
-
 /// Clear the token for the active cluster.
 pub fn clear_token() -> Result<()> {
     let mut config = load()?;
@@ -154,7 +153,11 @@ pub fn clear_token() -> Result<()> {
 pub fn use_cluster(name: &str) -> Result<()> {
     let mut config = load()?;
     if !config.clusters.contains_key(name) {
-        anyhow::bail!("cluster '{}' not found. Available: {:?}", name, config.clusters.keys().collect::<Vec<_>>());
+        anyhow::bail!(
+            "cluster '{}' not found. Available: {:?}",
+            name,
+            config.clusters.keys().collect::<Vec<_>>()
+        );
     }
     config.active = Some(name.to_string());
     save(&config)
@@ -182,4 +185,3 @@ pub fn clear_registry_url() -> Result<()> {
     config.registry_url = None;
     save(&config)
 }
-

@@ -40,10 +40,7 @@ fn inject_adds_all_seven_otel_env_vars() {
     ];
 
     for key in &expected_keys {
-        assert!(
-            env.contains_key(*key),
-            "missing key: {key}"
-        );
+        assert!(env.contains_key(*key), "missing key: {key}");
     }
     assert_eq!(env.len(), 7, "expected exactly 7 OTEL_ env vars");
 }
@@ -53,10 +50,7 @@ fn inject_adds_all_seven_otel_env_vars() {
 #[test]
 fn inject_sets_correct_otlp_endpoint() {
     let env = inject(make_ctx("my-agent"));
-    assert_eq!(
-        env["OTEL_EXPORTER_OTLP_ENDPOINT"],
-        TEST_ENDPOINT
-    );
+    assert_eq!(env["OTEL_EXPORTER_OTLP_ENDPOINT"], TEST_ENDPOINT);
 }
 
 #[test]
@@ -158,7 +152,10 @@ fn inject_resource_attrs_tenant_id_only() {
     let attrs = &env["OTEL_RESOURCE_ATTRIBUTES"];
 
     assert!(attrs.contains("tenant.id=acme-corp"), "got: {attrs}");
-    assert!(!attrs.contains("service.version"), "version should be absent; got: {attrs}");
+    assert!(
+        !attrs.contains("service.version"),
+        "version should be absent; got: {attrs}"
+    );
 }
 
 #[test]
@@ -175,7 +172,10 @@ fn inject_resource_attrs_version_only() {
     let attrs = &env["OTEL_RESOURCE_ATTRIBUTES"];
 
     assert!(attrs.contains("service.version=1.0.0"), "got: {attrs}");
-    assert!(!attrs.contains("tenant.id"), "tenant.id should be absent; got: {attrs}");
+    assert!(
+        !attrs.contains("tenant.id"),
+        "tenant.id should be absent; got: {attrs}"
+    );
 }
 
 #[test]
@@ -193,12 +193,18 @@ fn inject_resource_attrs_minimal_has_only_agent_id() {
 fn inject_preserves_existing_env_vars() {
     let mut env_vars = HashMap::new();
     env_vars.insert("MY_APP_KEY".to_owned(), "my-value".to_owned());
-    env_vars.insert("DATABASE_URL".to_owned(), "postgres://localhost/db".to_owned());
+    env_vars.insert(
+        "DATABASE_URL".to_owned(),
+        "postgres://localhost/db".to_owned(),
+    );
 
     OtelInjector.inject(&mut env_vars, &make_ctx("my-agent"));
 
     // Existing vars still present
-    assert_eq!(env_vars.get("MY_APP_KEY").map(|s| s.as_str()), Some("my-value"));
+    assert_eq!(
+        env_vars.get("MY_APP_KEY").map(|s| s.as_str()),
+        Some("my-value")
+    );
     assert_eq!(
         env_vars.get("DATABASE_URL").map(|s| s.as_str()),
         Some("postgres://localhost/db")
@@ -235,7 +241,10 @@ mod dockerfile_patch {
     fn idempotent_if_already_patched() {
         let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
         let patched = patch_dockerfile_for_otel(dockerfile);
-        assert!(patched.contains(".nasiko_otel_patch.py"), "first pass should inject patch");
+        assert!(
+            patched.contains(".nasiko_otel_patch.py"),
+            "first pass should inject patch"
+        );
         let double_patched = patch_dockerfile_for_otel(&patched);
         assert_eq!(patched, double_patched, "second pass should be a no-op");
     }

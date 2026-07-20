@@ -40,16 +40,27 @@ fn fetch_frameworks() -> Result<Vec<Framework>> {
         .into_iter()
         .filter(|a| {
             a.owner == "nasiko"
-                && a.metadata.get("isFrameworkTemplate").and_then(|v| v.as_bool()).unwrap_or(false)
+                && a.metadata
+                    .get("isFrameworkTemplate")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
         })
         .map(|a| {
             let model_providers = a
                 .metadata
                 .get("modelProviders")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
-            let streaming = a.metadata.get("streaming").and_then(|v| v.as_bool()).unwrap_or(false);
+            let streaming = a
+                .metadata
+                .get("streaming")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let language = a
                 .metadata
                 .get("language")
@@ -127,7 +138,10 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
     // 2. Starting point: blank template or existing artifact from registry
     let mut use_artifact: Option<crate::api::Artifact> = None;
     let registry_artifacts = crate::api::RegistryClient::new()
-        .and_then(|c| c.search(None, Some("agent"), Some(framework.key.as_str())).ok())
+        .and_then(|c| {
+            c.search(None, Some("agent"), Some(framework.key.as_str()))
+                .ok()
+        })
         .unwrap_or_default();
 
     if !registry_artifacts.is_empty() {
@@ -156,14 +170,18 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
         .interact_text()?;
     let dest = PathBuf::from(&out_dir);
 
-    if dest.exists() && fs::read_dir(&dest)?.next().is_some()
+    if dest.exists()
+        && fs::read_dir(&dest)?.next().is_some()
         && !Confirm::new()
-            .with_prompt(format!("{} already exists and is non-empty. Overwrite?", dest.display()))
+            .with_prompt(format!(
+                "{} already exists and is non-empty. Overwrite?",
+                dest.display()
+            ))
             .default(false)
             .interact()?
-        {
-            anyhow::bail!("aborted");
-        }
+    {
+        anyhow::bail!("aborted");
+    }
 
     if let Some(ref artifact) = use_artifact {
         // Pull the specific artifact from registry
@@ -223,7 +241,15 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
             .interact_text()?;
 
         // Generate AgentCard.json
-        write_agent_card(&dest, &agent_name, framework, &description, &selected_skills, &capabilities, &version)?;
+        write_agent_card(
+            &dest,
+            &agent_name,
+            framework,
+            &description,
+            &selected_skills,
+            &capabilities,
+            &version,
+        )?;
 
         // Inject skills
         for skill_name in &selected_skills {
@@ -262,24 +288,31 @@ fn extract_template(template: &str, dest: &Path) -> Result<()> {
     }
 
     // Fallback: embedded templates
-    let dir = AGENTS_DIR
-        .get_dir(template)
-        .with_context(|| {
-            let mut available: Vec<String> = Vec::new();
-            // Try registry for the canonical list
-            if let Some(client) = crate::api::RegistryClient::new()
-                && let Ok(templates) = client.list_templates() {
-                    available = templates.iter().map(|a| a.name.clone()).collect();
-                }
-            // Fallback to the embedded template directory names
-            if available.is_empty() {
-                available = AGENTS_DIR
-                    .dirs()
-                    .filter_map(|d| d.path().file_name().and_then(|n| n.to_str()).map(String::from))
-                    .collect();
-            }
-            format!("template '{template}' not found.\nAvailable: {}", available.join(", "))
-        })?;
+    let dir = AGENTS_DIR.get_dir(template).with_context(|| {
+        let mut available: Vec<String> = Vec::new();
+        // Try registry for the canonical list
+        if let Some(client) = crate::api::RegistryClient::new()
+            && let Ok(templates) = client.list_templates()
+        {
+            available = templates.iter().map(|a| a.name.clone()).collect();
+        }
+        // Fallback to the embedded template directory names
+        if available.is_empty() {
+            available = AGENTS_DIR
+                .dirs()
+                .filter_map(|d| {
+                    d.path()
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(String::from)
+                })
+                .collect();
+        }
+        format!(
+            "template '{template}' not found.\nAvailable: {}",
+            available.join(", ")
+        )
+    })?;
 
     util::extract_embedded_dir(dir, dest)
 }
@@ -294,10 +327,12 @@ fn pull_artifact(repo: &str, dest: &Path) -> Result<()> {
         .context("failed to connect to artifact registry")?;
 
     // Resolve the latest tag (artifacts use semver tags, not "latest")
-    let tags_json = oci.list_tags(repo)
+    let tags_json = oci
+        .list_tags(repo)
         .with_context(|| format!("artifact '{repo}' not found in registry"))?;
     let tags: serde_json::Value = serde_json::from_str(&tags_json)?;
-    let tag = tags.get("tags")
+    let tag = tags
+        .get("tags")
         .and_then(|t| t.as_array())
         .and_then(|arr| arr.last())
         .and_then(|t| t.as_str())
@@ -305,7 +340,8 @@ fn pull_artifact(repo: &str, dest: &Path) -> Result<()> {
 
     println!("  pulling {repo}:{tag}...");
 
-    let manifest_json = oci.pull_manifest(repo, tag)
+    let manifest_json = oci
+        .pull_manifest(repo, tag)
         .with_context(|| format!("failed to pull manifest for '{repo}:{tag}'"))?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_json)?;
 
@@ -416,6 +452,9 @@ fn write_agent_card(
         "skills": skill_entries
     });
 
-    fs::write(dest.join("AgentCard.json"), serde_json::to_string_pretty(&card)?)?;
+    fs::write(
+        dest.join("AgentCard.json"),
+        serde_json::to_string_pretty(&card)?,
+    )?;
     Ok(())
 }

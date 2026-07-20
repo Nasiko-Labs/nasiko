@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 
-use crate::api::{Client, DeploySpec, ContainerStatus};
+use crate::api::{Client, ContainerStatus, DeploySpec};
 use crate::oci;
 
 const AGENT_FILE: &str = ".nasiko/agent.json";
@@ -18,7 +18,13 @@ const AGENT_FILE: &str = ".nasiko/agent.json";
 ///    - Exists → update agent + restart container
 ///    - Not found → create new agent, save ID
 /// 4. Deploy/restart container
-pub fn deploy(image: &str, name: Option<&str>, port: u16, env_file: Option<&str>, env_args: &[String]) -> Result<()> {
+pub fn deploy(
+    image: &str,
+    name: Option<&str>,
+    port: u16,
+    env_file: Option<&str>,
+    env_args: &[String],
+) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let env = parse_env(env_file, env_args)?;
 
@@ -33,8 +39,8 @@ fn parse_env(env_file: Option<&str>, env_args: &[String]) -> Result<HashMap<Stri
     let mut env = HashMap::new();
 
     if let Some(path) = env_file {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("cannot read env file: {path}"))?;
+        let content =
+            fs::read_to_string(path).with_context(|| format!("cannot read env file: {path}"))?;
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -58,18 +64,28 @@ fn parse_env(env_file: Option<&str>, env_args: &[String]) -> Result<HashMap<Stri
     Ok(env)
 }
 
-fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env: &HashMap<String, String>, client: &Client) -> Result<()> {
+fn deploy_from_directory(
+    dir: &str,
+    name_override: Option<&str>,
+    port: u16,
+    env: &HashMap<String, String>,
+    client: &Client,
+) -> Result<()> {
     let root = Path::new(dir);
     let card_path = root.join("AgentCard.json");
     let card: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&card_path).context("cannot read AgentCard.json")?
-    ).context("invalid AgentCard.json")?;
+        &fs::read_to_string(&card_path).context("cannot read AgentCard.json")?,
+    )
+    .context("invalid AgentCard.json")?;
 
     let agent_name = name_override
         .map(String::from)
         .or_else(|| card.get("name").and_then(|n| n.as_str()).map(String::from))
         .unwrap_or_else(|| "agent".into());
-    let version = card.get("version").and_then(|v| v.as_str()).unwrap_or("latest");
+    let version = card
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("latest");
     let image_tag = format!("{agent_name}:{version}");
 
     // Auto-build before pushing
@@ -86,26 +102,18 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
     let agent_file = root.join(AGENT_FILE);
     let existing_id = load_agent_id(&agent_file);
 
-    // Resolve the cached binding, tolerating a stale one: if the cached agent no
-    // longer exists server-side (e.g. after a DB reset), `get_json_optional`
-    // returns None and we fall through to registering a fresh agent instead of
-    // failing with a 404.
-    let existing = match &existing_id {
-        Some(id) => client
-            .get_json_optional::<serde_json::Value>(&format!("/agents/{id}"))?
-            .map(|current| (id.clone(), current)),
-        None => None,
-    };
-    if existing_id.is_some() && existing.is_none() {
-        println!("  ! Cached agent binding is stale — registering a new agent");
-    }
-
-    let agent_id = match existing {
-        Some((id, current)) => {
+    let agent_id = match existing_id {
+        Some(id) => {
             // Update existing agent
-            let current_version = current.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            let current: serde_json::Value = client.get_json(&format!("/agents/{id}"))?;
+            let current_version = current
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if current_version == version {
-                eprintln!("  ! Redeploying same version ({version}) — consider bumping version in AgentCard.json");
+                eprintln!(
+                    "  ! Redeploying same version ({version}) — consider bumping version in AgentCard.json"
+                );
             } else {
                 println!("  Updating: {current_version} → {version}");
             }
@@ -134,7 +142,11 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
                 "capabilities": card.get("capabilities"),
             });
             let resp: serde_json::Value = client.post_json("/agents", &create)?;
-            let id = resp.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+            let id = resp
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string();
             save_agent_id(&agent_file, &id, &agent_name)?;
             id
         }
@@ -154,7 +166,13 @@ fn deploy_from_directory(dir: &str, name_override: Option<&str>, port: u16, env:
     Ok(())
 }
 
-fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &HashMap<String, String>, client: &Client) -> Result<()> {
+fn deploy_from_image(
+    image: &str,
+    name_override: Option<&str>,
+    port: u16,
+    env: &HashMap<String, String>,
+    client: &Client,
+) -> Result<()> {
     let agent_name = name_override
         .map(String::from)
         .unwrap_or_else(|| image.split(':').next().unwrap_or("agent").replace('/', "-"));
@@ -172,7 +190,8 @@ fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &
     oci::push_image(image, &repo, version)?;
 
     // Upsert agent in registry: update if exists, create otherwise.
-    let existing: Option<serde_json::Value> = client.get_json(&format!("/agents/{agent_name}")).ok();
+    let existing: Option<serde_json::Value> =
+        client.get_json(&format!("/agents/{agent_name}")).ok();
     if let Some(existing) = existing {
         let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
         println!("  Updating agent: {agent_name}");
@@ -206,7 +225,9 @@ fn deploy_from_image(image: &str, name_override: Option<&str>, port: u16, env: &
 fn load_agent_id(path: &Path) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
-    val.get("agent_id").and_then(|i| i.as_str()).map(String::from)
+    val.get("agent_id")
+        .and_then(|i| i.as_str())
+        .map(String::from)
 }
 
 fn save_agent_id(path: &Path, agent_id: &str, name: &str) -> Result<()> {

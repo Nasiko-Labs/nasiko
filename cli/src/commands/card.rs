@@ -7,7 +7,9 @@ use dialoguer::{Confirm, Input};
 use crate::util;
 
 pub fn card(directory: &str, description: Option<&str>) -> Result<()> {
-    let root = Path::new(directory).canonicalize().unwrap_or_else(|_| Path::new(directory).to_path_buf());
+    let root = Path::new(directory)
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(directory).to_path_buf());
     let card_path = root.join("AgentCard.json");
 
     println!("Agent Card Generator\n");
@@ -33,7 +35,11 @@ fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>)
         return false;
     }
 
-    let agent_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let agent_name = root
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     let mut body = serde_json::json!({
         "agent_name": agent_name,
@@ -51,7 +57,10 @@ fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>)
             if let Some(card) = resp.get("card") {
                 let json = serde_json::to_string_pretty(card).unwrap_or_default();
                 if fs::write(card_path, &json).is_ok() {
-                    let tokens = resp.get("tokens_used").and_then(|t| t.as_i64()).unwrap_or(0);
+                    let tokens = resp
+                        .get("tokens_used")
+                        .and_then(|t| t.as_i64())
+                        .unwrap_or(0);
                     println!("✓ Wrote AgentCard.json (LLM, {} tokens)", tokens);
                     return true;
                 }
@@ -86,7 +95,11 @@ fn collect_source(root: &Path) -> Option<String> {
         }
     }
 
-    if source.is_empty() { None } else { Some(source) }
+    if source.is_empty() {
+        None
+    } else {
+        Some(source)
+    }
 }
 
 fn collect_dir_sources(dir: &Path, out: &mut String) {
@@ -113,14 +126,19 @@ fn collect_dir_sources(dir: &Path, out: &mut String) {
 fn generate_static(root: &Path, card_path: &Path, user_description: Option<&str>) -> Result<()> {
     let existing = load_existing_card(card_path);
 
-    let dir_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let dir_name = root
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     let name: String = Input::new()
         .with_prompt("Agent name")
         .default(existing_str(&existing, "name").unwrap_or(dir_name))
         .interact_text()?;
 
-    let desc_default = user_description.map(String::from)
+    let desc_default = user_description
+        .map(String::from)
         .or_else(|| existing_str(&existing, "description"))
         .unwrap_or_default();
 
@@ -200,14 +218,30 @@ fn detect_framework(root: &Path) -> Option<String> {
     };
 
     let lower = source.to_lowercase();
-    if lower.contains("crewai") { return Some("crewai".into()); }
-    if lower.contains("langgraph") { return Some("langgraph".into()); }
-    if lower.contains("langchain") { return Some("langchain".into()); }
-    if lower.contains("autogen") { return Some("autogen".into()); }
-    if lower.contains("anthropic") { return Some("claude-sdk".into()); }
-    if lower.contains("google.adk") || lower.contains("google-adk") { return Some("google-adk".into()); }
-    if lower.contains("google.generativeai") || lower.contains("genai") { return Some("gemini".into()); }
-    if lower.contains("openai") { return Some("openai".into()); }
+    if lower.contains("crewai") {
+        return Some("crewai".into());
+    }
+    if lower.contains("langgraph") {
+        return Some("langgraph".into());
+    }
+    if lower.contains("langchain") {
+        return Some("langchain".into());
+    }
+    if lower.contains("autogen") {
+        return Some("autogen".into());
+    }
+    if lower.contains("anthropic") {
+        return Some("claude-sdk".into());
+    }
+    if lower.contains("google.adk") || lower.contains("google-adk") {
+        return Some("google-adk".into());
+    }
+    if lower.contains("google.generativeai") || lower.contains("genai") {
+        return Some("gemini".into());
+    }
+    if lower.contains("openai") {
+        return Some("openai".into());
+    }
     None
 }
 
@@ -229,7 +263,10 @@ fn detect_skills(root: &Path) -> Vec<serde_json::Value> {
             continue;
         }
         if prev_is_decorator && trimmed.starts_with("def ") {
-            if let Some(name) = trimmed.strip_prefix("def ").and_then(|s| s.split('(').next()) {
+            if let Some(name) = trimmed
+                .strip_prefix("def ")
+                .and_then(|s| s.split('(').next())
+            {
                 let name = name.trim();
                 skills.push(serde_json::json!({
                     "id": name,

@@ -19,12 +19,14 @@ use uuid::Uuid;
 const TEST_BUILD_PUSH_TOKEN: &str = "test-build-push-token-do-not-use-in-prod";
 
 async fn insert_user(db: &PgPool, username: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO users (username, email, is_superuser) VALUES ($1, $2, false) RETURNING id")
-        .bind(username)
-        .bind(format!("{username}@oci-build-push-test.com"))
-        .fetch_one(db)
-        .await
-        .expect("insert test user")
+    sqlx::query_scalar(
+        "INSERT INTO users (username, email, is_superuser) VALUES ($1, $2, false) RETURNING id",
+    )
+    .bind(username)
+    .bind(format!("{username}@oci-build-push-test.com"))
+    .fetch_one(db)
+    .await
+    .expect("insert test user")
 }
 
 async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) -> Uuid {
@@ -66,7 +68,11 @@ async fn build_service_credential_can_push_a_manifest() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 201, "a valid build-push credential must be able to push a manifest");
+    assert_eq!(
+        resp.status(),
+        201,
+        "a valid build-push credential must be able to push a manifest"
+    );
 
     server.cleanup().await;
 }
@@ -81,7 +87,10 @@ async fn pull_credential_still_cannot_push_a_manifest_when_build_push_token_is_c
     let owner_id = insert_user(&server.db, "build-push-owner2").await;
     let agent_name = format!("build-push-agent-{}", Uuid::new_v4());
     let agent_id = insert_agent(&server.db, &agent_name, owner_id).await;
-    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap().unwrap();
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     let resp = common::as_pull_credential(
         server
@@ -96,7 +105,11 @@ async fn pull_credential_still_cannot_push_a_manifest_when_build_push_token_is_c
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 401, "a pull credential must never be able to push a manifest, build-push token or not");
+    assert_eq!(
+        resp.status(),
+        401,
+        "a pull credential must never be able to push a manifest, build-push token or not"
+    );
 
     server.cleanup().await;
 }
@@ -172,14 +185,20 @@ async fn build_service_credential_has_unrestricted_read_and_write_access() {
     insert_agent(&server.db, &agent_name, owner_id).await;
 
     let tags_resp = common::as_pull_credential(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
         "build-service",
         TEST_BUILD_PUSH_TOKEN,
     )
     .send()
     .await
     .unwrap();
-    assert_eq!(tags_resp.status(), 200, "build-service credential must be able to read any repo");
+    assert_eq!(
+        tags_resp.status(),
+        200,
+        "build-service credential must be able to read any repo"
+    );
 
     server.cleanup().await;
 }

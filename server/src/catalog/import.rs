@@ -1,16 +1,15 @@
 use axum::{
-    Json,
-    Router,
-    extract::{ Multipart, State },
+    Json, Router,
+    extract::{Multipart, State},
     http::StatusCode,
     response::IntoResponse,
     routing::post,
 };
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use crate::build::{ download_repo_tarball, extract_tar_gzip, is_valid_repo_name };
+use crate::build::{download_repo_tarball, extract_tar_gzip, is_valid_repo_name};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -43,12 +42,10 @@ pub(crate) struct AgentMetadata {
 
 pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
     let card_path = dir.join("AgentCard.json");
-    let content = std::fs
-        ::read_to_string(&card_path)
+    let content = std::fs::read_to_string(&card_path)
         .map_err(|e| format!("cannot read AgentCard.json: {e}"))?;
-    let card: serde_json::Value = serde_json
-        ::from_str(&content)
-        .map_err(|e| format!("invalid AgentCard.json: {e}"))?;
+    let card: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("invalid AgentCard.json: {e}"))?;
 
     Ok(AgentMetadata {
         name: card
@@ -56,10 +53,7 @@ pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, St
             .and_then(|v| v.as_str())
             .unwrap_or("agent")
             .to_string(),
-        display_name: card
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        display_name: card.get("name").and_then(|v| v.as_str()).map(String::from),
         description: card
             .get("description")
             .and_then(|v| v.as_str())
@@ -68,20 +62,21 @@ pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, St
         // matching Python's store-time strip (registry_repository.py) and its
         // version-equality/rollback checks (agent_update_service.py).
         version: {
-            let raw = card.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
+            let raw = card
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("1.0.0");
             raw.strip_prefix('v').unwrap_or(raw).to_string()
         },
         skills: card.get("skills").cloned().unwrap_or(serde_json::json!([])),
         capabilities: card
             .get("capabilities")
             .cloned()
-            .unwrap_or(
-                serde_json::json!({
-            "streaming": false,
-            "pushNotifications": false,
-            "stateTransitionHistory": false,
-        })
-            ),
+            .unwrap_or(serde_json::json!({
+                "streaming": false,
+                "pushNotifications": false,
+                "stateTransitionHistory": false,
+            })),
     })
 }
 
@@ -93,12 +88,10 @@ where
     F: FnOnce() -> Result<T, String> + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| {
-            tracing::error!(%e, "run_blocking: background task join failed");
-            "background task failed".to_string()
-        })?
+    tokio::task::spawn_blocking(f).await.map_err(|e| {
+        tracing::error!(%e, "run_blocking: background task join failed");
+        "background task failed".to_string()
+    })?
 }
 
 /// Find the caller's own agent by name, if any.
@@ -116,32 +109,43 @@ async fn find_owned_agent<'e, E>(
 where
     E: sqlx::PgExecutor<'e>,
 {
-    sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL")
-        .bind(name)
-        .bind(owner_id)
-        .fetch_optional(executor)
-        .await
+    sqlx::query_scalar(
+        "SELECT id FROM agents WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .fetch_optional(executor)
+    .await
 }
 
 pub(crate) async fn build_and_deploy(
     source_dir: &std::path::Path,
     meta: &AgentMetadata,
     owner_id: Uuid,
-    state: &AppState
+    state: &AppState,
 ) -> Result<ImportResult, (StatusCode, String)> {
-    let image_tag = crate::agents::build_image_tag(&state.config.agent_image_registry, &meta.name, &meta.version);
+    let image_tag = crate::agents::build_image_tag(
+        &state.config.agent_image_registry,
+        &meta.name,
+        &meta.version,
+    );
 
     // Verify Dockerfile exists
     if !source_dir.join("Dockerfile").exists() {
-        return Err((StatusCode::BAD_REQUEST, "no Dockerfile found in source".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "no Dockerfile found in source".into(),
+        ));
     }
 
     // Register agent in catalog and sync skills projection atomically.
-    let mut tx = state.db.begin().await
-        .map_err(|e| {
-            tracing::error!(%e, agent_name = %meta.name, %owner_id, "build_and_deploy: begin tx");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-        })?;
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(%e, agent_name = %meta.name, %owner_id, "build_and_deploy: begin tx");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error".to_string(),
+        )
+    })?;
     // Run the existence check and the update on the SAME transaction as the
     // INSERT/skills/build-record writes — otherwise a later commit failure leaves
     // the agent pointing at a rolled-back build (CAT-1), and two concurrent
@@ -188,13 +192,21 @@ pub(crate) async fn build_and_deploy(
         .ok_or_else(|| (StatusCode::CONFLICT, "agent name already in use by another owner".into()))?
     };
 
-    let skills: Vec<crate::catalog::models::Skill> =
-        serde_json::from_value(meta.skills.clone())
-            .map_err(|_| (StatusCode::BAD_REQUEST, "skills must be an array of skill objects".into()))?;
-    crate::catalog::skills::sync_agent_skills(&mut tx, agent_id, &skills).await
+    let skills: Vec<crate::catalog::models::Skill> = serde_json::from_value(meta.skills.clone())
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "skills must be an array of skill objects".into(),
+            )
+        })?;
+    crate::catalog::skills::sync_agent_skills(&mut tx, agent_id, &skills)
+        .await
         .map_err(|e| {
             tracing::error!(%e, %agent_id, "build_and_deploy: sync skills");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_string(),
+            )
         })?;
 
     // Create the build record inside the same transaction so the agent row
@@ -211,14 +223,19 @@ pub(crate) async fn build_and_deploy(
     .await
     .map_err(|e| {
         tracing::error!(%e, %agent_id, "build_and_deploy: create build record");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error".to_string(),
+        )
     })?;
 
-    tx.commit().await
-        .map_err(|e| {
-            tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: commit tx");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-        })?;
+    tx.commit().await.map_err(|e| {
+        tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: commit tx");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error".to_string(),
+        )
+    })?;
 
     // Build image
     // TODO: migrate to new runtime API — build() now takes tar bytes, not a directory path.
@@ -228,22 +245,29 @@ pub(crate) async fn build_and_deploy(
         .await
         .map_err(|e| {
             tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: tar source");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_string(),
+            )
         })?;
     if let Err(e) = state.runtime.build(&tar_bytes, &image_tag).await {
         tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: docker build failed");
-        let _ = sqlx
-            ::query("UPDATE agent_builds SET status = 'failed' WHERE id = $1")
+        let _ = sqlx::query("UPDATE agent_builds SET status = 'failed' WHERE id = $1")
             .bind(build_id)
-            .execute(&state.db).await;
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()));
+            .execute(&state.db)
+            .await;
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error".to_string(),
+        ));
     }
 
     // Mark build successful
-    let _ = sqlx
-        ::query("UPDATE agent_builds SET status = 'success', updated_at = now() WHERE id = $1")
-        .bind(build_id)
-        .execute(&state.db).await;
+    let _ =
+        sqlx::query("UPDATE agent_builds SET status = 'success', updated_at = now() WHERE id = $1")
+            .bind(build_id)
+            .execute(&state.db)
+            .await;
 
     // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
     // existing workload on re-import and can't collide cross-team on the name.
@@ -255,12 +279,45 @@ pub(crate) async fn build_and_deploy(
         std::collections::HashMap::new(),
         None,
     );
-    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+    crate::agents::attach_pull_credential(
+        &state.db,
+        &state.config.agent_runtime,
+        &state.config.agent_image_registry,
+        &mut spec,
+        agent_id,
+    )
+    .await;
 
     let container_name = match state.runtime.deploy(&spec).await {
-        Ok(status) => Some(status.container_id.to_string()),
+        Ok(status) => {
+            // Sibling deploy paths (agents/upload.rs, agents/update.rs) all mark
+            // the agent `running` with its resolved URL immediately after a
+            // successful deploy — this path never did, so the agent stayed
+            // `status:"registered"`/`url:null` forever even though its
+            // container was genuinely up (CAT-9).
+            let agent_url = crate::agents::resolve_agent_url(
+                &state.runtime,
+                &status,
+                &nasiko_runtime::ContainerId::from_uuid(agent_id),
+            )
+            .await;
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .bind(&agent_url)
+            .execute(&state.db)
+            .await;
+            Some(status.container_id.to_string())
+        }
         Err(e) => {
             tracing::warn!(agent_id = %agent_id, %e, "deploy after build failed");
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .execute(&state.db)
+            .await;
             None
         }
     };
@@ -285,7 +342,7 @@ pub(crate) async fn build_and_deploy(
 async fn import_upload(
     State(state): State<AppState>,
     claims: Claims,
-    mut multipart: Multipart
+    mut multipart: Multipart,
 ) -> impl IntoResponse {
     let owner_id = match claims.user_uuid() {
         Ok(id) => id,
@@ -303,10 +360,8 @@ async fn import_upload(
                 }
             };
             if data.len() > MAX_UPLOAD_BYTES {
-                return (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "upload exceeds 200 MB limit",
-                ).into_response();
+                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 200 MB limit")
+                    .into_response();
             }
             package_data = Some(data.to_vec());
         }
@@ -358,7 +413,7 @@ struct GithubImportRequest {
 async fn import_github(
     State(state): State<AppState>,
     claims: Claims,
-    Json(req): Json<GithubImportRequest>
+    Json(req): Json<GithubImportRequest>,
 ) -> impl IntoResponse {
     let owner_id = match claims.user_uuid() {
         Ok(id) => id,
@@ -371,7 +426,8 @@ async fn import_github(
         return (
             StatusCode::BAD_REQUEST,
             "invalid repository format — expected 'owner/repo'",
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Load and decrypt the user's stored GitHub access token.
@@ -381,19 +437,28 @@ async fn import_github(
             return (
                 StatusCode::FORBIDDEN,
                 "GitHub not connected — visit /add-agent.html to connect",
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-github-{}", Uuid::new_v4()));
 
-    let tarball_bytes = match
-        download_repo_tarball(&state.http_client, &access_token, &req.repository).await
+    let tarball_bytes = match download_repo_tarball(
+        &state.http_client,
+        &access_token,
+        &req.repository,
+    )
+    .await
     {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(%e, %owner_id, repository = %req.repository, "import_github: download tarball failed");
-            return (StatusCode::BAD_GATEWAY, "failed to download repository archive").into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                "failed to download repository archive",
+            )
+                .into_response();
         }
     };
 
@@ -410,20 +475,15 @@ async fn import_github(
             return (
                 StatusCode::BAD_REQUEST,
                 "failed to extract repository archive",
-            ).into_response();
+            )
+                .into_response();
         }
     }
-    let actual_root = (
-        match tokio::fs::read_dir(&tmp_dir).await {
-            Ok(mut rd) =>
-                rd
-                    .next_entry().await
-                    .ok()
-                    .flatten()
-                    .map(|e| e.path()),
-            Err(_) => None,
-        }
-    ).unwrap_or_else(|| tmp_dir.clone());
+    let actual_root = (match tokio::fs::read_dir(&tmp_dir).await {
+        Ok(mut rd) => rd.next_entry().await.ok().flatten().map(|e| e.path()),
+        Err(_) => None,
+    })
+    .unwrap_or_else(|| tmp_dir.clone());
 
     let meta = {
         let root = actual_root.clone();
@@ -454,19 +514,20 @@ struct RegistryImportRequest {
 
 const SOURCE_MEDIA_TYPE: &str = "application/vnd.nasiko.agent.v1.tar+gzip";
 
-fn validate_registry_host(
-    host: &str,
-    allowed: &[String],
-) -> Result<(), (StatusCode, String)> {
+fn validate_registry_host(host: &str, allowed: &[String]) -> Result<(), (StatusCode, String)> {
     if allowed.is_empty() {
         return Err((
             StatusCode::FORBIDDEN,
-            "registry import is disabled — set REGISTRY_IMPORT_ALLOWED_HOSTS to enable it".to_string(),
+            "registry import is disabled — set REGISTRY_IMPORT_ALLOWED_HOSTS to enable it"
+                .to_string(),
         ));
     }
     // Strip port before comparing (ghcr.io:443 → ghcr.io)
     let host_no_port = host.split(':').next().unwrap_or(host);
-    if !allowed.iter().any(|h| h.split(':').next().unwrap_or(h) == host_no_port) {
+    if !allowed
+        .iter()
+        .any(|h| h.split(':').next().unwrap_or(h) == host_no_port)
+    {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("registry host '{host_no_port}' is not in the allowed list"),
@@ -478,7 +539,7 @@ fn validate_registry_host(
 async fn import_registry(
     State(state): State<AppState>,
     claims: Claims,
-    Json(req): Json<RegistryImportRequest>
+    Json(req): Json<RegistryImportRequest>,
 ) -> impl IntoResponse {
     let owner_id = match claims.user_uuid() {
         Ok(id) => id,
@@ -498,11 +559,14 @@ async fn import_registry(
             return (
                 StatusCode::BAD_REQUEST,
                 "invalid reference: expected registry.host/owner/name[:tag]".to_string(),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
-    if let Err((code, msg)) = validate_registry_host(host, &state.config.registry_import_allowed_hosts) {
+    if let Err((code, msg)) =
+        validate_registry_host(host, &state.config.registry_import_allowed_hosts)
+    {
         return (code, msg).into_response();
     }
 
@@ -529,7 +593,8 @@ async fn import_registry(
     let manifest_res = registry_client
         .get(&manifest_url)
         .header("Accept", "application/vnd.oci.image.manifest.v1+json")
-        .send().await;
+        .send()
+        .await;
 
     let manifest_res = match manifest_res {
         Ok(r) if r.status().is_success() => r,
@@ -539,7 +604,8 @@ async fn import_registry(
             return (
                 StatusCode::BAD_REQUEST,
                 format!("registry returned {status}: {body}"),
-            ).into_response();
+            )
+                .into_response();
         }
         Err(e) => {
             tracing::error!(%e, %registry_url, "import_registry: cannot reach registry");
@@ -551,7 +617,11 @@ async fn import_registry(
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(%e, %registry_url, "import_registry: invalid manifest response");
-            return (StatusCode::BAD_GATEWAY, "registry returned an invalid manifest").into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                "registry returned an invalid manifest",
+            )
+                .into_response();
         }
     };
 
@@ -566,18 +636,18 @@ async fn import_registry(
 
     if is_source {
         // Source artifact: download, extract, build, deploy
-        let blob_digest = match
-            layers
-                .and_then(|l| l.first())
-                .and_then(|layer| layer.get("digest"))
-                .and_then(|d| d.as_str())
+        let blob_digest = match layers
+            .and_then(|l| l.first())
+            .and_then(|layer| layer.get("digest"))
+            .and_then(|d| d.as_str())
         {
             Some(d) => d.to_string(),
             None => {
                 return (
                     StatusCode::BAD_GATEWAY,
                     "manifest has no layer digest".to_string(),
-                ).into_response();
+                )
+                    .into_response();
             }
         };
 
@@ -588,7 +658,8 @@ async fn import_registry(
                 return (
                     StatusCode::BAD_GATEWAY,
                     format!("blob fetch failed: {}", r.status()),
-                ).into_response();
+                )
+                    .into_response();
             }
             Err(e) => {
                 tracing::error!(%e, %blob_url, "import_registry: blob fetch error");
@@ -597,8 +668,8 @@ async fn import_registry(
         };
 
         let blob_data = {
-            use futures::StreamExt;
             use bytes::BufMut;
+            use futures::StreamExt;
             const MAX_BLOB_BYTES: usize = 100 * 1024 * 1024;
             let mut buf = bytes::BytesMut::with_capacity(64 * 1024);
             let mut stream = blob_res.bytes_stream();
@@ -609,17 +680,16 @@ async fn import_registry(
                     }
                     Some(Err(e)) => {
                         tracing::error!(%e, %blob_url, "import_registry: blob read error");
-                        return (
-                            StatusCode::BAD_GATEWAY,
-                            "failed to read registry blob",
-                        ).into_response();
+                        return (StatusCode::BAD_GATEWAY, "failed to read registry blob")
+                            .into_response();
                     }
                     Some(Ok(chunk)) => {
                         if buf.len() + chunk.len() > MAX_BLOB_BYTES {
                             return (
                                 StatusCode::BAD_REQUEST,
                                 "registry blob exceeds 100 MB limit",
-                            ).into_response();
+                            )
+                                .into_response();
                         }
                         buf.put(chunk);
                     }
@@ -659,7 +729,9 @@ async fn import_registry(
         // Container image: pull via docker and deploy directly
         let image_ref = format!(
             "{}/{}",
-            registry_url.trim_start_matches("https://").trim_start_matches("http://"),
+            registry_url
+                .trim_start_matches("https://")
+                .trim_start_matches("http://"),
             repo
         );
         let image_with_tag = format!("{}:{}", image_ref, tag);
@@ -674,25 +746,16 @@ async fn import_registry(
 
         match tokio::time::timeout(PULL_TIMEOUT, pull_fut).await {
             Err(_) => {
-                return (
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "docker pull timed out",
-                ).into_response();
+                return (StatusCode::GATEWAY_TIMEOUT, "docker pull timed out").into_response();
             }
             Ok(Ok(output)) if !output.status.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 tracing::error!(%stderr, %image_with_tag, "import_registry: docker pull failed");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    "docker pull failed",
-                ).into_response();
+                return (StatusCode::BAD_GATEWAY, "docker pull failed").into_response();
             }
             Ok(Err(e)) => {
                 tracing::error!(%e, "import_registry: docker pull spawn error");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal error",
-                ).into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
             Ok(Ok(_)) => {}
         }
@@ -701,40 +764,37 @@ async fn import_registry(
         let agent_name = repo.rsplit('/').next().unwrap_or("agent").to_string();
 
         // Register agent in catalog — only update if this caller owns the existing entry.
-        let agent_id: Uuid = match
-            sqlx
-                ::query_scalar(
-                    // Conflict target is the (owner_id, name) partial unique index
-                    // (migration 015); the owner is part of the key, so a conflict
-                    // only ever updates the same owner's row (no cross-owner takeover).
-                    r#"INSERT INTO agents (name, display_name, owner_id, version, image)
+        let agent_id: Uuid = match sqlx::query_scalar(
+            // Conflict target is the (owner_id, name) partial unique index
+            // (migration 015); the owner is part of the key, so a conflict
+            // only ever updates the same owner's row (no cross-owner takeover).
+            r#"INSERT INTO agents (name, display_name, owner_id, version, image)
                VALUES ($1, $1, $2, $3, $4)
                ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE
                  SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
-               RETURNING id"#
-                )
-                .bind(&agent_name)
-                .bind(owner_id)
-                // Store the logical version with a single leading "v" stripped
-                // (parity with read_agent_card / Python), while the image ref
-                // below keeps the original OCI tag for pulls.
-                .bind(tag.strip_prefix('v').unwrap_or(&tag))
-                .bind(&image_with_tag)
-                .fetch_optional(&state.db).await
+               RETURNING id"#,
+        )
+        .bind(&agent_name)
+        .bind(owner_id)
+        // Store the logical version with a single leading "v" stripped
+        // (parity with read_agent_card / Python), while the image ref
+        // below keeps the original OCI tag for pulls.
+        .bind(tag.strip_prefix('v').unwrap_or(&tag))
+        .bind(&image_with_tag)
+        .fetch_optional(&state.db)
+        .await
         {
             Ok(Some(id)) => id,
             Ok(None) => {
                 return (
                     StatusCode::CONFLICT,
                     "agent name already in use by another owner",
-                ).into_response();
+                )
+                    .into_response();
             }
             Err(e) => {
                 tracing::error!(%e, %agent_name, %owner_id, "import_registry: register agent");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal error",
-                ).into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         };
 
@@ -747,12 +807,38 @@ async fn import_registry(
             std::collections::HashMap::new(),
             None,
         );
-        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+        crate::agents::attach_pull_credential(
+            &state.db,
+            &state.config.agent_runtime,
+            &state.config.agent_image_registry,
+            &mut spec,
+            agent_id,
+        )
+        .await;
 
         let container_name = match state.runtime.deploy(&spec).await {
-            Ok(status) => Some(status.container_id.to_string()),
+            Ok(status) => {
+                let agent_url = crate::agents::resolve_agent_url(
+                    &state.runtime,
+                    &status,
+                    &nasiko_runtime::ContainerId::from_uuid(agent_id),
+                )
+                .await;
+                let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
+                    .bind(agent_id)
+                    .bind(&agent_url)
+                    .execute(&state.db)
+                    .await;
+                Some(status.container_id.to_string())
+            }
             Err(e) => {
                 tracing::warn!(agent_id = %agent_id, %e, "deploy after pull failed");
+                let _ = sqlx::query(
+                    "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
+                )
+                .bind(agent_id)
+                .execute(&state.db)
+                .await;
                 None
             }
         };
@@ -765,7 +851,8 @@ async fn import_registry(
                 container_name,
                 status: "success".into(),
             }),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
@@ -786,7 +873,9 @@ mod tests {
             eprintln!("skipping: DATABASE_URL not set");
             return;
         };
-        let pool = sqlx::PgPool::connect(&database_url).await.expect("connect to test DB");
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
+            .expect("connect to test DB");
 
         let owner_a = uuid::Uuid::new_v4();
         let owner_b = uuid::Uuid::new_v4();
@@ -814,24 +903,40 @@ mod tests {
         .expect("insert owner A's agent");
 
         // Owner B imports the SAME name — must find nothing of Owner A's.
-        let found_by_b = find_owned_agent(&pool, &shared_name, owner_b).await.unwrap();
-        assert_eq!(found_by_b, None, "owner B must not see owner A's agent by name collision");
+        let found_by_b = find_owned_agent(&pool, &shared_name, owner_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            found_by_b, None,
+            "owner B must not see owner A's agent by name collision"
+        );
 
         // Owner A re-importing the same name must still find their own row.
-        let found_by_a = find_owned_agent(&pool, &shared_name, owner_a).await.unwrap();
-        assert_eq!(found_by_a, Some(agent_a), "owner A must find their own existing agent");
+        let found_by_a = find_owned_agent(&pool, &shared_name, owner_a)
+            .await
+            .unwrap();
+        assert_eq!(
+            found_by_a,
+            Some(agent_a),
+            "owner A must find their own existing agent"
+        );
 
-        let _ = sqlx::query("DELETE FROM agents WHERE id = $1").bind(agent_a).execute(&pool).await;
+        let _ = sqlx::query("DELETE FROM agents WHERE id = $1")
+            .bind(agent_a)
+            .execute(&pool)
+            .await;
         for owner in [owner_a, owner_b] {
-            let _ = sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(owner)
+                .execute(&pool)
+                .await;
         }
     }
 
     fn write_card(dir: &std::path::Path, version: &str) {
         std::fs::create_dir_all(dir).unwrap();
-        let body = format!(
-            r#"{{"name":"demo","description":"d","version":"{version}","skills":[]}}"#
-        );
+        let body =
+            format!(r#"{{"name":"demo","description":"d","version":"{version}","skills":[]}}"#);
         std::fs::write(dir.join("AgentCard.json"), body).unwrap();
     }
 

@@ -2,22 +2,63 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::pricing;
+use crate::pricing::CostBreakdown;
 
-/// A single distributed trace session, identified by its W3C trace_id.
-/// In the Nasiko model, one session == one trace_id shared across all agents
-/// that participated in a single user interaction.
+/// A user-facing conversation, identified by the A2A `contextId`
+/// (e.g. `ses_14cda...`), carried on spans as the `session.id` attribute.
+///
+/// One session groups **many** traces: each user query produces one
+/// `trace_id`, and all agents participating in that query share it via
+/// W3C `traceparent` propagation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
-    pub trace_id: String,
-    /// All agent service names observed in this trace.
-    pub agent_ids: Vec<String>,
-    pub started_at: DateTime<Utc>,
+    /// A2A contextId (`session.id` span attribute) — NOT a trace id.
+    pub session_id: String,
+    /// Agent (Tempo `resource.service.name`) this summary was aggregated for.
+    pub agent_id: String,
+    /// One trace per user query in this session.
+    pub trace_ids: Vec<String>,
+    pub started_at: Option<DateTime<Utc>>,
     pub ended_at: Option<DateTime<Utc>>,
     pub duration_ms: Option<u64>,
-    pub span_count: u32,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// First model observed in the session's spans.
+    pub model_used: Option<String>,
+    /// Percentiles over chat-span durations within the session.
+    pub latency_ms_p50: Option<f64>,
+    pub latency_ms_p99: Option<f64>,
+    #[serde(skip)]
+    pub cost: CostBreakdown,
+}
+
+/// Full session drill-down: one [`TraceSummary`] per user query.
+#[derive(Debug, Clone)]
+pub struct SessionDetails {
+    pub session_id: String,
+    pub traces: Vec<TraceSummary>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model_used: Option<String>,
+    pub latency_ms_p50: Option<f64>,
+    pub cost: CostBreakdown,
+}
+
+/// One user query (= one trace) inside a session.
+#[derive(Debug, Clone)]
+pub struct TraceSummary {
+    pub trace_id: String,
+    /// Root span of the trace (entry point of the user query).
+    pub root_span: Span,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model_used: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub cost: CostBreakdown,
+    /// Prompt content from Loki for the root span, when captured.
+    pub input_content: Option<String>,
+    /// Completion content from Loki for the root span, when captured.
+    pub output_content: Option<String>,
 }
 
 /// A single event attached to a span (e.g. `gen_ai.content.prompt`,
@@ -63,96 +104,141 @@ pub struct TraceDetails {
     pub duration_ms: Option<u64>,
 }
 
-impl TraceDetails {
-    /// Aggregate `gen_ai.usage.*_tokens` across all spans in this trace.
-    ///
-    /// Cost is computed per-span using `gen_ai.request.model` so that mixed-model
-    /// traces (e.g. an orchestrator using gpt-4o and a sub-agent using claude-haiku)
-    /// are priced correctly.  Spans with no model attribute use the unknown-model
-    /// fallback in the pricing table.
-    pub fn token_usage(&self) -> TokenUsage {
-        let mut usage = TokenUsage::default();
-        for span in &self.spans {
-            let input = span
-                .attributes
-                .get("gen_ai.usage.input_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let output = span
-                .attributes
-                .get("gen_ai.usage.output_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+/// Extract `(input_tokens, output_tokens, model)` from a span's attributes.
+/// Covers current GenAI semconv names and older/deprecated variants.
+pub fn extract_token_attrs(
+    attrs: &HashMap<String, serde_json::Value>,
+) -> (u64, u64, Option<String>) {
+    let get_u64 = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| attrs.get(*k))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
+            .unwrap_or(0)
+    };
 
-            if input == 0 && output == 0 {
+    let input = get_u64(&[
+        "gen_ai.usage.input_tokens",  // semconv v1.27+
+        "gen_ai.usage.prompt_tokens", // pre-1.27, still common
+        "llm.usage.prompt_tokens",    // LangChain / LlamaIndex
+        "input_tokens",
+    ]);
+    let output = get_u64(&[
+        "gen_ai.usage.output_tokens",
+        "gen_ai.usage.completion_tokens",
+        "llm.usage.completion_tokens",
+        "output_tokens",
+    ]);
+
+    let model = ["gen_ai.request.model", "llm.request.model", "model"]
+        .iter()
+        .find_map(|k| attrs.get(*k))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    (input, output, model)
+}
+
+impl TraceDetails {
+    /// Aggregate token counts across all spans:
+    /// `(input_tokens, output_tokens, first_model_seen)`.
+    ///
+    /// Cost is intentionally not computed here — resolve it through a
+    /// [`crate::pricing::PricingSource`] (see [`crate::pricing::compute_cost`]).
+    pub fn token_totals(&self) -> (u64, u64, Option<String>) {
+        let mut input = 0u64;
+        let mut output = 0u64;
+        let mut model: Option<String> = None;
+        for span in &self.spans {
+            let (inp, out, m) = extract_token_attrs(&span.attributes);
+            if inp == 0 && out == 0 {
                 continue;
             }
-
-            let model = span
-                .attributes
-                .get("gen_ai.request.model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            usage.input_tokens += input;
-            usage.output_tokens += output;
-            usage.estimated_cost_usd += pricing::estimate_cost(model, input, output);
+            input += inp;
+            output += out;
+            if model.is_none() {
+                model = m;
+            }
         }
-        usage.total_tokens = usage.input_tokens + usage.output_tokens;
-        usage
+        (input, output, model)
+    }
+
+    /// Per-model token totals, for pricing mixed-model traces correctly.
+    pub fn token_totals_by_model(&self) -> Vec<(Option<String>, u64, u64)> {
+        let mut by_model: Vec<(Option<String>, u64, u64)> = Vec::new();
+        for span in &self.spans {
+            let (inp, out, model) = extract_token_attrs(&span.attributes);
+            if inp == 0 && out == 0 {
+                continue;
+            }
+            match by_model.iter_mut().find(|(m, _, _)| *m == model) {
+                Some((_, i, o)) => {
+                    *i += inp;
+                    *o += out;
+                }
+                None => by_model.push((model, inp, out)),
+            }
+        }
+        by_model
     }
 }
 
-/// Span detail enriched with prompt/completion log lines fetched from Loki.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Span detail enriched with prompt/completion content parsed from Loki logs.
+#[derive(Debug, Clone)]
 pub struct SpanDetails {
     pub span: Span,
-    /// Raw prompt log line from Loki, if captured (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`).
-    pub prompt_content: Option<String>,
-    /// Raw completion log line from Loki, if captured.
-    pub completion_content: Option<String>,
+    /// Prompt content, when captured (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`).
+    pub input_content: Option<String>,
+    /// Completion content, when captured.
+    pub output_content: Option<String>,
+    pub cost: CostBreakdown,
 }
 
-/// Aggregated token counts with cost estimate.
+/// Aggregated token counts.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
-    /// USD cost estimated from per-span model pricing. Zero when no model info is available.
-    pub estimated_cost_usd: f64,
 }
 
 /// Per-agent performance stats over a time window.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AgentStats {
     pub agent_id: String,
-    pub total_requests: u64,
-    pub total_tokens: TokenUsage,
-    pub avg_latency_ms: f64,
-    /// Fraction of requests where any span has `otel.status_code = "ERROR"` (0.0–1.0).
-    pub error_rate: f64,
+    /// Number of user-query traces in the window.
+    pub trace_count: usize,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model_used: Option<String>,
+    pub latency_ms_p50: Option<f64>,
+    pub latency_ms_p99: Option<f64>,
+    pub cost: CostBreakdown,
     pub period_start: DateTime<Utc>,
 }
 
 /// Cost and token breakdown for a single agent in the FinOps view.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AgentFinOps {
     pub agent_id: String,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
-    /// Rough USD estimate based on a blended token price.
-    pub estimated_cost_usd: f64,
-    pub request_count: u64,
+    /// User-query trace count in the window.
+    pub operations: usize,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model_used: Option<String>,
+    pub latency_ms_p50: Option<f64>,
+    pub cost: CostBreakdown,
 }
 
-/// Aggregated FinOps dashboard across all requested agents.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FinOpsDashboard {
-    pub period_start: DateTime<Utc>,
-    pub period_end: DateTime<Utc>,
-    pub agents: Vec<AgentFinOps>,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
-    pub total_estimated_cost_usd: f64,
+/// Sorted-percentile helper over millisecond durations.
+pub fn latency_percentiles(mut durations: Vec<u64>) -> (Option<f64>, Option<f64>) {
+    durations.sort_unstable();
+    let len = durations.len();
+    let p50 = durations.get(len / 2).map(|&v| v as f64);
+    let p99 = durations
+        .get((len * 99 / 100).saturating_sub(1))
+        .map(|&v| v as f64);
+    (p50, p99)
 }

@@ -6,14 +6,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
-
 use crate::agent_registry;
 use crate::error::RouterError;
 use crate::models::AgentCardSummary;
-use crate::selector::ConversationMessage;
 use crate::providers::LLMProvider;
 use crate::reranker::Reranker;
 use crate::selector::AgentSelector;
+use crate::selector::ConversationMessage;
 use crate::session_history::SessionHistory;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
 use crate::vector_store::{EmbeddingCache, VectorStore};
@@ -92,7 +91,10 @@ impl OssRoutingEngine {
             router_config,
             http_client,
             config.openai_api_key.clone().unwrap_or_default(),
-            config.openai_base_url.clone().unwrap_or_else(|| "https://api.openai.com".into()),
+            config
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".into()),
             config.router_model.clone(),
             config.embedding_model.clone(),
         )
@@ -135,7 +137,11 @@ impl RoutingEngine for OssRoutingEngine {
             .await
         });
         let shortlist = store
-            .shortlist(&req.query, self.config.shortlist_size, self.config.shortlist_threshold)
+            .shortlist(
+                &req.query,
+                self.config.shortlist_size,
+                self.config.shortlist_threshold,
+            )
             .await;
         let stage1_count = shortlist.len();
         let _stage1_ms = t1.elapsed().as_millis() as i32;
@@ -157,26 +163,32 @@ impl RoutingEngine for OssRoutingEngine {
         let history_msgs: Vec<ConversationMessage> = history
             .to_llm_messages()
             .into_iter()
-            .map(|m| ConversationMessage { role: m.role, content: m.content })
+            .map(|m| ConversationMessage {
+                role: m.role,
+                content: m.content,
+            })
             .collect();
 
-        let (selected_agent, fallback_used, reasoning, selector_usage) =
-            match self.selector.select_agent(&req.query, &history_msgs, &summaries).await {
-                Ok((sel, completion_result)) => {
-                    let agent = candidates
-                        .iter()
-                        .find(|a| a.id == sel.agent_id)
-                        .cloned()
-                        .unwrap_or_else(|| candidates[0].clone());
-                    let reasoning = sel.reasoning.clone();
-                    let usage = Some(completion_result);
-                    (agent, false, reasoning, usage)
-                }
-                Err(e) => {
-                    tracing::warn!(%e, "Stage 3 selector failed, using first candidate as fallback");
-                    (candidates[0].clone(), true, format!("fallback: {e}"), None)
-                }
-            };
+        let (selected_agent, fallback_used, reasoning, selector_usage) = match self
+            .selector
+            .select_agent(&req.query, &history_msgs, &summaries)
+            .await
+        {
+            Ok((sel, completion_result)) => {
+                let agent = candidates
+                    .iter()
+                    .find(|a| a.id == sel.agent_id)
+                    .cloned()
+                    .unwrap_or_else(|| candidates[0].clone());
+                let reasoning = sel.reasoning.clone();
+                let usage = Some(completion_result);
+                (agent, false, reasoning, usage)
+            }
+            Err(e) => {
+                tracing::warn!(%e, "Stage 3 selector failed, using first candidate as fallback");
+                (candidates[0].clone(), true, format!("fallback: {e}"), None)
+            }
+        };
         let stage3_ms = t3.elapsed().as_millis() as i32;
         let total_ms = t0.elapsed().as_millis() as i32;
 
@@ -212,7 +224,10 @@ impl RoutingEngine for OssRoutingEngine {
             write_router_log(&pool2, entry).await;
         });
 
-        Ok(RouteResult { agent: selected_agent, fallback_used })
+        Ok(RouteResult {
+            agent: selected_agent,
+            fallback_used,
+        })
     }
 }
 
@@ -308,10 +323,14 @@ fn card_to_summary(a: &AgentCard) -> AgentCardSummary {
         id: a.id,
         name: a.name.clone(),
         description: a.description.clone(),
-        skills: a.skills.iter().map(|s| crate::models::SkillSummary {
-            name: s.clone(),
-            description: s.clone(),
-        }).collect(),
+        skills: a
+            .skills
+            .iter()
+            .map(|s| crate::models::SkillSummary {
+                name: s.clone(),
+                description: s.clone(),
+            })
+            .collect(),
         tags: a.tags.clone(),
     }
 }

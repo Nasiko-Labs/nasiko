@@ -44,8 +44,9 @@ pub fn search(
     min_score: Option<f32>,
     json: bool,
 ) -> Result<()> {
-    let client = RegistryClient::new()
-        .ok_or_else(|| anyhow::anyhow!("no registry connected — run `nasiko registry connect <url>`"))?;
+    let client = RegistryClient::new().ok_or_else(|| {
+        anyhow::anyhow!("no registry connected — run `nasiko registry connect <url>`")
+    })?;
 
     let results = client.search_opts(query, artifact_type, framework, top, min_score)?;
 
@@ -63,21 +64,33 @@ pub fn search(
     let scored = results.iter().any(|a| a.score.is_some());
 
     // Highlight the top match when ranking semantically.
-    if scored && query.is_some()
-        && let Some(best) = results.first() {
-            let pct = best.score.map(|s| (s * 100.0).round() as i32).unwrap_or(0);
-            println!(
-                "Top match: {}/{}:{}  ({pct}% relevant)\n",
-                best.owner, best.name, best.version
-            );
-        }
+    if scored
+        && query.is_some()
+        && let Some(best) = results.first()
+    {
+        let pct = best.score.map(|s| (s * 100.0).round() as i32).unwrap_or(0);
+        println!(
+            "Top match: {}/{}:{}  ({pct}% relevant)\n",
+            best.owner, best.name, best.version
+        );
+    }
 
     if scored {
         let rows: Vec<ScoredArtifactRow> = results.iter().map(ScoredArtifactRow::from).collect();
-        println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
+        println!(
+            "{}",
+            Table::new(rows)
+                .with(Style::blank())
+                .with(Alignment::left())
+        );
     } else {
         let rows: Vec<ArtifactRow> = results.iter().map(ArtifactRow::from).collect();
-        println!("{}", Table::new(rows).with(Style::blank()).with(Alignment::left()));
+        println!(
+            "{}",
+            Table::new(rows)
+                .with(Style::blank())
+                .with(Alignment::left())
+        );
     }
     // println!("\n{} result(s)", results.len());
     Ok(())
@@ -100,9 +113,20 @@ struct ScoredArtifactRow {
 impl From<&crate::api::Artifact> for ScoredArtifactRow {
     fn from(artifact: &crate::api::Artifact) -> Self {
         let desc = artifact.description.as_deref().unwrap_or("—");
-        let tags = if artifact.tags.is_empty() { "—".to_string() } else { artifact.tags.join(", ") };
-        let score = artifact.score.map(|s| format!("{:.0}%", s * 100.0)).unwrap_or_else(|| "—".to_string());
-        let description = if desc.len() > 47 { format!("{}...", &desc[..desc.floor_char_boundary(47)]) } else { desc.to_string() };
+        let tags = if artifact.tags.is_empty() {
+            "—".to_string()
+        } else {
+            artifact.tags.join(", ")
+        };
+        let score = artifact
+            .score
+            .map(|s| format!("{:.0}%", s * 100.0))
+            .unwrap_or_else(|| "—".to_string());
+        let description = if desc.len() > 47 {
+            format!("{}...", &desc[..desc.floor_char_boundary(47)])
+        } else {
+            desc.to_string()
+        };
         ScoredArtifactRow {
             score,
             artifact: format!("{}/{}:{}", artifact.owner, artifact.name, artifact.version),
@@ -128,8 +152,16 @@ struct ArtifactRow {
 impl From<&crate::api::Artifact> for ArtifactRow {
     fn from(artifact: &crate::api::Artifact) -> Self {
         let desc = artifact.description.as_deref().unwrap_or("—");
-        let tags = if artifact.tags.is_empty() { "—".to_string() } else { artifact.tags.join(", ") };
-        let description = if desc.len() > 57 { format!("{}...", &desc[..desc.floor_char_boundary(57)]) } else { desc.to_string() };
+        let tags = if artifact.tags.is_empty() {
+            "—".to_string()
+        } else {
+            artifact.tags.join(", ")
+        };
+        let description = if desc.len() > 57 {
+            format!("{}...", &desc[..desc.floor_char_boundary(57)])
+        } else {
+            desc.to_string()
+        };
         ArtifactRow {
             artifact: format!("{}/{}:{}", artifact.owner, artifact.name, artifact.version),
             artifact_type: artifact.artifact_type.clone(),

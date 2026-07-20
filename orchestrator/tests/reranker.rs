@@ -1,5 +1,5 @@
-use nasiko_orchestrator::{AgentCard, Reranker, SessionHistory, VectorStore};
 use nasiko_orchestrator::session_history::ChatMessage;
+use nasiko_orchestrator::{AgentCard, Reranker, SessionHistory, VectorStore};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -127,7 +127,9 @@ async fn empty_history_preserves_input_order() {
     let store = make_store_disabled(agents.clone());
     let reranker = Reranker::new(store);
 
-    let result = reranker.rerank(agents, &SessionHistory::default(), "q", 3).await;
+    let result = reranker
+        .rerank(agents, &SessionHistory::default(), "q", 3)
+        .await;
     assert_eq!(result[0].name, "first");
     assert_eq!(result[1].name, "second");
     assert_eq!(result[2].name, "third");
@@ -139,8 +141,8 @@ async fn empty_history_preserves_input_order() {
 #[ignore = "requires live OpenAI-compatible embeddings API"]
 async fn with_history_and_live_store_returns_scored_results() {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY required");
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com".into());
+    let base_url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
     let model = "text-embedding-3-small".to_string();
 
     let agents: Vec<AgentCard> = vec![
@@ -163,9 +165,8 @@ async fn with_history_and_live_store_returns_scored_results() {
     ];
 
     let cache = Default::default();
-    let store = Arc::new(
-        VectorStore::build(agents.clone(), api_key, base_url, model, &cache).await,
-    );
+    let store =
+        Arc::new(VectorStore::build(agents.clone(), api_key, base_url, model, &cache).await);
     let reranker = Reranker::new(store);
     let history = SessionHistory {
         messages: vec![ChatMessage {
@@ -174,6 +175,8 @@ async fn with_history_and_live_store_returns_scored_results() {
         }],
     };
 
-    let result = reranker.rerank(agents, &history, "what about ETH?", 2).await;
+    let result = reranker
+        .rerank(agents, &history, "what about ETH?", 2)
+        .await;
     assert!(!result.is_empty());
 }

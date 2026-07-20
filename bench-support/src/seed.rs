@@ -46,7 +46,10 @@ pub async fn seed(
     jwt_secret: &str,
     runtime: &Arc<dyn ContainerRuntime>,
 ) -> Manifest {
-    assert!(users >= 1, "seed() requires at least one user (agents need an owner)");
+    assert!(
+        users >= 1,
+        "seed() requires at least one user (agents need an owner)"
+    );
 
     let mut out_users = Vec::with_capacity(users as usize);
     for i in 0..users {
@@ -62,10 +65,18 @@ pub async fn seed(
         .await
         .expect("seed: insert user");
 
-        let identity = Identity { user_id: user_id.to_string(), username: username.clone(), is_superuser: false };
+        let identity = Identity {
+            user_id: user_id.to_string(),
+            username: username.clone(),
+            is_superuser: false,
+        };
         let token = encode_jwt(jwt_secret, 24 * 60 * 60, &identity).expect("seed: mint jwt");
 
-        out_users.push(ManifestUser { id: user_id, username, token });
+        out_users.push(ManifestUser {
+            id: user_id,
+            username,
+            token,
+        });
     }
 
     let owner_id = out_users[0].id;
@@ -103,10 +114,16 @@ pub async fn seed(
             image_pull_secret_name: None,
             image_pull_credential_seed: None,
         };
-        runtime.deploy(&spec).await.expect("seed: deploy into SimulatedRuntime");
+        runtime
+            .deploy(&spec)
+            .await
+            .expect("seed: deploy into SimulatedRuntime");
 
         out_agents.push(ManifestAgent { id: agent_id, name });
     }
 
-    Manifest { users: out_users, agents: out_agents }
+    Manifest {
+        users: out_users,
+        agents: out_agents,
+    }
 }

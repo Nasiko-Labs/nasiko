@@ -58,13 +58,11 @@ impl Default for LogQuery {
 ///
 /// These are A2A-level call records: every proxied request through the CP is
 /// logged here with caller, method, latency, and HTTP status.
-pub async fn query_proxy_logs(
-    db: &PgPool,
-    agent_id: Uuid,
-    q: &LogQuery,
-) -> Vec<LogLine> {
-    let since = q.since.unwrap_or_else(|| Utc::now() - chrono::Duration::hours(24));
-    let limit  = q.limit.min(500) as i64;
+pub async fn query_proxy_logs(db: &PgPool, agent_id: Uuid, q: &LogQuery) -> Vec<LogLine> {
+    let since = q
+        .since
+        .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(24));
+    let limit = q.limit.min(500) as i64;
 
     // Postgres: status=i32, latency_ms=i64
     let rows: Vec<(DateTime<Utc>, i32, i64, Option<String>)> = sqlx::query_as(
@@ -95,9 +93,15 @@ pub async fn query_proxy_logs(
             };
             let message = match error {
                 Some(e) => format!("A2A call → HTTP {status}  ({latency_ms}ms) — {e}"),
-                None    => format!("A2A call → HTTP {status}  ({latency_ms}ms)"),
+                None => format!("A2A call → HTTP {status}  ({latency_ms}ms)"),
             };
-            LogLine { timestamp: ts, level, message, trace_id: None, source: "proxy" }
+            LogLine {
+                timestamp: ts,
+                level,
+                message,
+                trace_id: None,
+                source: "proxy",
+            }
         })
         .collect()
 }
@@ -136,33 +140,54 @@ pub fn parse_loki_logs(entries: Vec<(DateTime<Utc>, String)>) -> Vec<LogLine> {
 fn parse_log_line(line: String, fallback_ts: DateTime<Utc>, source: &'static str) -> LogLine {
     // Try to parse as OTel/structured JSON: {"timestamp":"…","level":"…","body":"…","trace_id":"…"}
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-        let timestamp = v.get("timestamp")
+        let timestamp = v
+            .get("timestamp")
             .and_then(|t| t.as_str())
             .and_then(|s| s.parse::<DateTime<Utc>>().ok())
             .unwrap_or(fallback_ts);
-        let level = v.get("level")
+        let level = v
+            .get("level")
             .or_else(|| v.get("severity"))
             .and_then(|l| l.as_str())
             .map(|s| s.to_uppercase());
-        let message = v.get("body")
+        let message = v
+            .get("body")
             .or_else(|| v.get("message").or_else(|| v.get("msg")))
             .and_then(|m| m.as_str())
             .unwrap_or(&line)
             .to_string();
-        let trace_id = v.get("trace_id")
+        let trace_id = v
+            .get("trace_id")
             .and_then(|t| t.as_str())
             .map(str::to_string);
-        LogLine { timestamp, level, message, trace_id, source }
+        LogLine {
+            timestamp,
+            level,
+            message,
+            trace_id,
+            source,
+        }
     } else {
         // Raw text — detect common log level prefixes
         let level = Some(detect_level(&line).into());
-        LogLine { timestamp: fallback_ts, level, message: line, trace_id: None, source }
+        LogLine {
+            timestamp: fallback_ts,
+            level,
+            message: line,
+            trace_id: None,
+            source,
+        }
     }
 }
 
 fn detect_level(line: &str) -> &'static str {
-    if line.contains("ERROR") || line.contains("CRITICAL") { "ERROR" }
-    else if line.contains("WARN") { "WARN" }
-    else if line.contains("DEBUG") { "DEBUG" }
-    else { "INFO" }
+    if line.contains("ERROR") || line.contains("CRITICAL") {
+        "ERROR"
+    } else if line.contains("WARN") {
+        "WARN"
+    } else if line.contains("DEBUG") {
+        "DEBUG"
+    } else {
+        "INFO"
+    }
 }

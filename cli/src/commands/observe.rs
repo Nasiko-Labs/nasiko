@@ -373,7 +373,10 @@ fn print_raw_json(client: &Client, path: &str) -> Result<()> {
 pub fn sessions(start_time: Option<&str>, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let path = match start_time {
-        Some(t) => format!("/observability/session/list?start_time={}", crate::api::urlencode(t)),
+        Some(t) => format!(
+            "/observability/session/list?start_time={}",
+            crate::api::urlencode(t)
+        ),
         None => "/observability/session/list".to_string(),
     };
     if json {
@@ -394,7 +397,12 @@ pub fn sessions(start_time: Option<&str>, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", Table::new(&data.sessions).with(Style::blank()).with(Alignment::left()));
+    println!(
+        "{}",
+        Table::new(&data.sessions)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     println!("\n{} session(s).", data.sessions.len());
     Ok(())
 }
@@ -416,15 +424,15 @@ pub fn session_detail(session_id: &str, json: bool) -> Result<()> {
     if let Some(p50) = s.latency_p50 {
         println!("p50 lat:    {:.0} ms", p50);
     }
-    println!("Tokens:     {} total  ({} prompt / {} completion)",
+    println!(
+        "Tokens:     {} total  ({} prompt / {} completion)",
         s.token_usage.total.unwrap_or(0),
         s.cost_summary.prompt.tokens,
         s.cost_summary.completion.tokens,
     );
-    println!("Cost:       ${:.6}  (prompt ${:.6} / completion ${:.6})",
-        s.cost_summary.total.cost,
-        s.cost_summary.prompt.cost,
-        s.cost_summary.completion.cost,
+    println!(
+        "Cost:       ${:.6}  (prompt ${:.6} / completion ${:.6})",
+        s.cost_summary.total.cost, s.cost_summary.prompt.cost, s.cost_summary.completion.cost,
     );
     println!();
 
@@ -433,7 +441,12 @@ pub fn session_detail(session_id: &str, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", Table::new(&s.traces).with(Style::blank()).with(Alignment::left()));
+    println!(
+        "{}",
+        Table::new(&s.traces)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     Ok(())
 }
 
@@ -457,10 +470,9 @@ pub fn trace_detail(trace_id: &str, json: bool) -> Result<()> {
     if let Some(lat) = t.latency_ms {
         println!("Latency:  {:.0} ms", lat);
     }
-    println!("Cost:     ${:.6}  (prompt ${:.6} / completion ${:.6})",
-        t.cost_summary.total.cost,
-        t.cost_summary.prompt.cost,
-        t.cost_summary.completion.cost,
+    println!(
+        "Cost:     ${:.6}  (prompt ${:.6} / completion ${:.6})",
+        t.cost_summary.total.cost, t.cost_summary.prompt.cost, t.cost_summary.completion.cost,
     );
     println!();
 
@@ -493,7 +505,12 @@ pub fn trace_detail(trace_id: &str, json: bool) -> Result<()> {
     for root in &t.spans {
         flatten_span_node(root, 0, &mut rows);
     }
-    println!("{}", Table::new(&rows).with(Style::blank()).with(Alignment::left()));
+    println!(
+        "{}",
+        Table::new(&rows)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
 
     Ok(())
 }
@@ -549,7 +566,9 @@ pub fn span_detail(trace_id: &str, span_id: &str, json: bool) -> Result<()> {
     flat_attrs.sort_by(|a, b| a.0.cmp(&b.0));
     let gen_ai_attrs: Vec<_> = flat_attrs
         .iter()
-        .filter(|(k, _)| k.starts_with("gen_ai.") || k.starts_with("llm.") || k.starts_with("openinference."))
+        .filter(|(k, _)| {
+            k.starts_with("gen_ai.") || k.starts_with("llm.") || k.starts_with("openinference.")
+        })
         .collect();
     if !gen_ai_attrs.is_empty() {
         println!("── Attributes ─────────────────────────────────────");
@@ -571,9 +590,15 @@ pub fn project_stats(agent_id: &str, start_time: Option<&str>, json: bool) -> Re
         let default = (chrono::Utc::now() - chrono::Duration::hours(24))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
-        format!("/observability/agent/{agent_id}/stats?start_time={}", crate::api::urlencode(&default))
+        format!(
+            "/observability/agent/{agent_id}/stats?start_time={}",
+            crate::api::urlencode(&default)
+        )
     } else {
-        format!("/observability/agent/{agent_id}/stats?start_time={}", crate::api::urlencode(t))
+        format!(
+            "/observability/agent/{agent_id}/stats?start_time={}",
+            crate::api::urlencode(t)
+        )
     };
     if json {
         return print_raw_json(&client, &path);
@@ -590,10 +615,9 @@ pub fn project_stats(agent_id: &str, start_time: Option<&str>, json: bool) -> Re
     if let Some(p99) = p.latency_ms_p99 {
         println!("p99 lat:    {:.0} ms", p99);
     }
-    println!("Cost:       ${:.6}  (prompt ${:.6} / completion ${:.6})",
-        p.cost_summary.total.cost,
-        p.cost_summary.prompt.cost,
-        p.cost_summary.completion.cost,
+    println!(
+        "Cost:       ${:.6}  (prompt ${:.6} / completion ${:.6})",
+        p.cost_summary.total.cost, p.cost_summary.prompt.cost, p.cost_summary.completion.cost,
     );
     Ok(())
 }
@@ -604,7 +628,10 @@ pub fn project_stats(agent_id: &str, start_time: Option<&str>, json: bool) -> Re
 pub fn finops_dashboard(start_time: Option<&str>, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let path = match start_time {
-        Some(t) => format!("/observability/finops/dashboard?start_time={}", crate::api::urlencode(t)),
+        Some(t) => format!(
+            "/observability/finops/dashboard?start_time={}",
+            crate::api::urlencode(t)
+        ),
         None => "/observability/finops/dashboard".to_string(),
     };
     if json {
@@ -616,9 +643,16 @@ pub fn finops_dashboard(start_time: Option<&str>, json: bool) -> Result<()> {
     let s = &data.summary;
 
     println!("Total cost:   ${:.4}", s.total_cost);
-    println!("Operations:   {} total  ({} last 24h, avg ${:.4}/op)", s.total_operations, s.operations_last_24h, s.average_cost);
-    println!("Agents:       {} active / {} total", s.active_agents, s.total_agents);
-    println!("Tokens:       {} total  ({} prompt / {} completion, avg {}/op)",
+    println!(
+        "Operations:   {} total  ({} last 24h, avg ${:.4}/op)",
+        s.total_operations, s.operations_last_24h, s.average_cost
+    );
+    println!(
+        "Agents:       {} active / {} total",
+        s.active_agents, s.total_agents
+    );
+    println!(
+        "Tokens:       {} total  ({} prompt / {} completion, avg {}/op)",
         data.token_usage.total_tokens,
         data.token_usage.prompt_tokens,
         data.token_usage.completion_tokens,
@@ -631,7 +665,12 @@ pub fn finops_dashboard(start_time: Option<&str>, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", Table::new(&data.agents).with(Style::blank()).with(Alignment::left()));
+    println!(
+        "{}",
+        Table::new(&data.agents)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     Ok(())
 }
 
@@ -647,13 +686,20 @@ pub fn insights(start_time: Option<&str>) -> Result<()> {
 
     // Step 1: fetch dashboard data to use as input.
     let path = match start_time {
-        Some(t) => format!("/observability/finops/dashboard?start_time={}", crate::api::urlencode(t)),
+        Some(t) => format!(
+            "/observability/finops/dashboard?start_time={}",
+            crate::api::urlencode(t)
+        ),
         None => "/observability/finops/dashboard".to_string(),
     };
     let dashboard: serde_json::Value = client.get_json(&path)?;
 
-    let kpi = dashboard.pointer("/data/summary").cloned().unwrap_or(serde_json::json!({}));
-    let agent_costs = dashboard.pointer("/data/agents")
+    let kpi = dashboard
+        .pointer("/data/summary")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    let agent_costs = dashboard
+        .pointer("/data/agents")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();

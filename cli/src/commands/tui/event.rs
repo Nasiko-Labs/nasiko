@@ -52,9 +52,10 @@ impl EventLoop {
             loop {
                 if event::poll(Duration::from_millis(50)).unwrap_or(false)
                     && let Ok(CrosstermEvent::Key(key)) = event::read()
-                        && tick_tx.send(AppEvent::Key(key)).is_err() {
-                            break;
-                        }
+                    && tick_tx.send(AppEvent::Key(key)).is_err()
+                {
+                    break;
+                }
                 if tick_tx.send(AppEvent::Tick).is_err() {
                     break;
                 }
@@ -62,7 +63,13 @@ impl EventLoop {
             }
         });
 
-        (EventLoop { rx, _tick_handle: tick_handle }, tx)
+        (
+            EventLoop {
+                rx,
+                _tick_handle: tick_handle,
+            },
+            tx,
+        )
     }
 
     pub fn next(&self) -> Option<AppEvent> {
@@ -99,9 +106,6 @@ fn do_stream_request(
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
-        // gRPC-style JSON-RPC method/role names — what every example agent's
-        // installed `a2a-sdk` actually registers in its dispatch table
-        // (confirmed against a real deployed `oss/agents/translator` build).
         "method": "SendStreamingMessage",
         "params": {
             "message": {
@@ -113,9 +117,8 @@ fn do_stream_request(
         }
     });
 
-    let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder().timeout_global(None).build(),
-    );
+    let http =
+        ureq::Agent::new_with_config(ureq::config::Config::builder().timeout_global(None).build());
 
     let token = config::active_token().ok().flatten().filter(|_| {
         config::active_url()
@@ -294,7 +297,10 @@ fn emit_status_data(data: &serde_json::Value, tx: &mpsc::Sender<AppEvent>) {
         }
         "tool_result" => {
             let agent = data.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
-            let success = data.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+            let success = data
+                .get("success")
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false);
             let result = data.get("result").and_then(|r| r.as_str()).unwrap_or("");
             let display = if result.len() > 120 {
                 let n = result.floor_char_boundary(120);

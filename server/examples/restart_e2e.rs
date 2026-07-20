@@ -19,34 +19,47 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::time::Duration;
 use serde_json::Value;
+use std::time::Duration;
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
 struct Args {
-    server:        String,
-    access_key:    Option<String>,
+    server: String,
+    access_key: Option<String>,
     access_secret: Option<String>,
-    agent_id:      Option<String>,
+    agent_id: Option<String>,
 }
 
 fn parse_args() -> Args {
-    let mut server        = "http://localhost:9090".to_string();
-    let mut access_key    = None;
+    let mut server = "http://localhost:9090".to_string();
+    let mut access_key = None;
     let mut access_secret = None;
-    let mut agent_id      = None;
+    let mut agent_id = None;
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--server"        => { server        = it.next().unwrap_or(server); }
-            "--access-key"    => { access_key    = it.next(); }
-            "--access-secret" => { access_secret = it.next(); }
-            "--agent-id"      => { agent_id      = it.next(); }
+            "--server" => {
+                server = it.next().unwrap_or(server);
+            }
+            "--access-key" => {
+                access_key = it.next();
+            }
+            "--access-secret" => {
+                access_secret = it.next();
+            }
+            "--agent-id" => {
+                agent_id = it.next();
+            }
             _ => {}
         }
     }
-    Args { server, access_key, access_secret, agent_id }
+    Args {
+        server,
+        access_key,
+        access_secret,
+        agent_id,
+    }
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -71,7 +84,9 @@ async fn restart_deployment(
     deployment_id: &str,
 ) -> Result<reqwest::Response, String> {
     client
-        .post(format!("{server}/api/agents/deployment/{deployment_id}/restart"))
+        .post(format!(
+            "{server}/api/agents/deployment/{deployment_id}/restart"
+        ))
         .bearer_auth(token)
         .send()
         .await
@@ -147,7 +162,10 @@ async fn main() {
             passed += 1;
         }
         Ok(res) => {
-            println!("[ FAIL ] restart unknown deployment            → expected 404, got {}", res.status());
+            println!(
+                "[ FAIL ] restart unknown deployment            → expected 404, got {}",
+                res.status()
+            );
             failed += 1;
         }
         Err(e) => {
@@ -160,10 +178,14 @@ async fn main() {
     println!("[ INFO ] fetching current deployments...");
     let all_deployments = list_deployments(&client, &args.server, &token).await;
     let deployments: Vec<&Value> = if let Some(ref aid) = args.agent_id {
-        let filtered: Vec<&Value> = all_deployments.iter()
+        let filtered: Vec<&Value> = all_deployments
+            .iter()
             .filter(|d| d["agent_id"].as_str() == Some(aid.as_str()))
             .collect();
-        println!("[ INFO ] found {} deployment(s) for agent {aid}", filtered.len());
+        println!(
+            "[ INFO ] found {} deployment(s) for agent {aid}",
+            filtered.len()
+        );
         filtered
     } else {
         println!("[ INFO ] found {} deployment(s)", all_deployments.len());
@@ -171,17 +193,23 @@ async fn main() {
     };
 
     // 4a. 409: restart a running/starting agent — must be rejected.
-    let running = deployments.iter().copied().find(|d| {
-        matches!(d["status"].as_str(), Some("running") | Some("starting"))
-    });
+    let running = deployments
+        .iter()
+        .copied()
+        .find(|d| matches!(d["status"].as_str(), Some("running") | Some("starting")));
 
     match running {
         Some(dep) => {
             let did = dep["id"].as_str().unwrap_or("");
-            let name = dep["name"].as_str().or(dep["agent_name"].as_str()).unwrap_or("?");
+            let name = dep["name"]
+                .as_str()
+                .or(dep["agent_name"].as_str())
+                .unwrap_or("?");
             match restart_deployment(&client, &args.server, &token, did).await {
                 Ok(res) if res.status() == 409 => {
-                    println!("[ PASS ] restart running agent → 409           → conflict guard works (agent={name})");
+                    println!(
+                        "[ PASS ] restart running agent → 409           → conflict guard works (agent={name})"
+                    );
                     passed += 1;
                 }
                 Ok(res) => {
@@ -210,40 +238,60 @@ async fn main() {
 
     // 4b. Happy path: restart a stopped or crashed agent — must return 200.
     let restartable = deployments.iter().copied().find(|d| {
-        matches!(d["status"].as_str(), Some("stopped") | Some("crashed") | Some("failed"))
+        matches!(
+            d["status"].as_str(),
+            Some("stopped") | Some("crashed") | Some("failed")
+        )
     });
 
     match restartable {
         Some(dep) => {
             let did = dep["id"].as_str().unwrap_or("");
             let status = dep["status"].as_str().unwrap_or("?");
-            let name = dep["name"].as_str().or(dep["agent_name"].as_str()).unwrap_or("?");
+            let name = dep["name"]
+                .as_str()
+                .or(dep["agent_name"].as_str())
+                .unwrap_or("?");
             match restart_deployment(&client, &args.server, &token, did).await {
                 Ok(res) if res.status() == 200 => {
                     let body: serde_json::Value = res.json().await.unwrap_or_default();
                     let new_did = body["deployment_id"].as_str().unwrap_or("").to_string();
-                    println!("[ PASS ] restart {status} agent → 200         → restart accepted (agent={name})");
+                    println!(
+                        "[ PASS ] restart {status} agent → 200         → restart accepted (agent={name})"
+                    );
                     passed += 1;
 
                     // Verify the new deployment row is in a live state.
                     if !new_did.is_empty() {
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         let refreshed = list_deployments(&client, &args.server, &token).await;
-                        if let Some(new_dep) = refreshed.iter().find(|d| d["id"].as_str() == Some(new_did.as_str())) {
+                        if let Some(new_dep) = refreshed
+                            .iter()
+                            .find(|d| d["id"].as_str() == Some(new_did.as_str()))
+                        {
                             let new_status = new_dep["status"].as_str().unwrap_or("?");
                             if matches!(new_status, "running" | "starting") {
-                                println!("[ PASS ] new deployment after restart          → status={new_status}");
+                                println!(
+                                    "[ PASS ] new deployment after restart          → status={new_status}"
+                                );
                                 passed += 1;
                             } else {
-                                println!("[ FAIL ] new deployment after restart          → status={new_status}");
+                                println!(
+                                    "[ FAIL ] new deployment after restart          → status={new_status}"
+                                );
                                 failed += 1;
                             }
                         } else {
-                            println!("[ FAIL ] new deployment after restart          → id={new_did:.8}.. not found in list");
+                            println!(
+                                "[ FAIL ] new deployment after restart          → id={new_did:.8}.. not found in list"
+                            );
                             failed += 1;
                         }
                     } else {
-                        common::skip("new deployment status after restart", "server returned no deployment_id");
+                        common::skip(
+                            "new deployment status after restart",
+                            "server returned no deployment_id",
+                        );
                     }
                 }
                 Ok(res) => {

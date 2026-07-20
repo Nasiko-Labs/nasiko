@@ -27,11 +27,11 @@
 //! The nonce is freshly sampled from the OS CSPRNG on every call, so encrypting
 //! the same plaintext twice produces different ciphertexts (IND-CPA security).
 
+use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, OsRng},
 };
-use aes_gcm::aead::rand_core::RngCore;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use hkdf::Hkdf;
 use sha2::Sha256;
@@ -144,7 +144,11 @@ impl SecretsCrypto {
         let bytes = BASE64
             .decode(&b64)
             .expect("SECRETS_ENCRYPTION_KEY: invalid base64");
-        assert_eq!(bytes.len(), 32, "SECRETS_ENCRYPTION_KEY must be exactly 32 bytes");
+        assert_eq!(
+            bytes.len(),
+            32,
+            "SECRETS_ENCRYPTION_KEY must be exactly 32 bytes"
+        );
         bytes
     }
 }

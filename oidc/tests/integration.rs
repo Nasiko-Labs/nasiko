@@ -63,9 +63,15 @@ async fn discovery_and_jwks_are_cached_across_repeated_calls() {
     let token = support::sign_id_token(&claims, support::TEST_KID);
 
     // Triggers a JWKS fetch (discovery already cached from the call above).
-    client.verify_id_token(&token, NONCE).await.expect("first verify should succeed");
+    client
+        .verify_id_token(&token, NONCE)
+        .await
+        .expect("first verify should succeed");
     // A second verification must hit neither endpoint again.
-    client.verify_id_token(&token, NONCE).await.expect("second verify should succeed");
+    client
+        .verify_id_token(&token, NONCE)
+        .await
+        .expect("second verify should succeed");
     client
         .authorization_url("state-2", "nonce-2", "challenge-2")
         .await
@@ -100,7 +106,10 @@ async fn discovery_issuer_mismatched_with_config_is_rejected() {
 
     let client = OidcClient::new(test_config(issuer), reqwest::Client::new());
     let err = client.authorization_url("s", "n", "c").await.unwrap_err();
-    assert!(err.to_string().contains("does not match configured"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("does not match configured"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]
@@ -193,7 +202,10 @@ async fn authorization_url_contains_pkce_state_and_nonce() {
     assert_eq!(pairs.get("nonce").unwrap(), "my-nonce");
     assert_eq!(pairs.get("code_challenge").unwrap(), "my-challenge");
     assert_eq!(pairs.get("code_challenge_method").unwrap(), "S256");
-    assert_eq!(pairs.get("redirect_uri").unwrap(), "https://app.example.com/api/auth/oidc/callback");
+    assert_eq!(
+        pairs.get("redirect_uri").unwrap(),
+        "https://app.example.com/api/auth/oidc/callback"
+    );
     assert_eq!(pairs.get("scope").unwrap(), "openid profile email");
 }
 
@@ -250,7 +262,10 @@ async fn full_flow_exchange_code_then_verify_id_token_succeeds() {
         .exchange_code("fixture-auth-code", "fixture-code-verifier")
         .await
         .expect("code exchange should succeed");
-    assert_eq!(token_response.access_token.as_deref(), Some("fixture-access-token"));
+    assert_eq!(
+        token_response.access_token.as_deref(),
+        Some("fixture-access-token")
+    );
 
     let verified = client
         .verify_id_token(&token_response.id_token, NONCE)
@@ -292,6 +307,9 @@ async fn token_endpoint_error_status_is_surfaced() {
         .await;
 
     let client = OidcClient::new(test_config(issuer), reqwest::Client::new());
-    let err = client.exchange_code("bad-code", "verifier").await.unwrap_err();
+    let err = client
+        .exchange_code("bad-code", "verifier")
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("400"), "unexpected error: {err}");
 }

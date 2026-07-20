@@ -63,10 +63,12 @@ where
         Multiple(Vec<String>),
     }
 
-    Ok(Option::<StringOrVec>::deserialize(deserializer)?.map(|v| match v {
-        StringOrVec::Single(s) => vec![s],
-        StringOrVec::Multiple(v) => v,
-    }))
+    Ok(
+        Option::<StringOrVec>::deserialize(deserializer)?.map(|v| match v {
+            StringOrVec::Single(s) => vec![s],
+            StringOrVec::Multiple(v) => v,
+        }),
+    )
 }
 
 impl IdTokenClaims {
@@ -118,8 +120,8 @@ pub fn verify(
         (Some(n), Some(e)) => (n, e),
         _ => return Err(OidcError::UnknownKid(header.kid.clone())),
     };
-    let decoding_key =
-        DecodingKey::from_rsa_components(n, e).map_err(|e| OidcError::InvalidToken(e.to_string()))?;
+    let decoding_key = DecodingKey::from_rsa_components(n, e)
+        .map_err(|e| OidcError::InvalidToken(e.to_string()))?;
 
     let mut validation = Validation::new(Algorithm::RS256);
     validation.set_audience(&[expected_client_id]);
@@ -319,7 +321,10 @@ SG9MPTaBjgiZpuXgkxtEcCr35VYhcLOoR5RvoXyqGWKxecnhYsrPPA==\n\
         claims["groups"] = json!(["grp-a", "grp-b"]);
         let token = sign_rs256(&claims, TEST_KID);
         let decoded = verify(&token, &test_jwks(), ISS, AUD, NONCE).expect("should verify");
-        assert_eq!(decoded.groups, Some(vec!["grp-a".to_string(), "grp-b".to_string()]));
+        assert_eq!(
+            decoded.groups,
+            Some(vec!["grp-a".to_string(), "grp-b".to_string()])
+        );
     }
 
     /// Blocks the classic alg:none / HMAC-confusion attack: a token whose

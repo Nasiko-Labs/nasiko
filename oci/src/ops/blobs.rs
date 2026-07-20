@@ -41,7 +41,8 @@ pub async fn blob_linked(state: &OciState, repository: &str, digest: &str) -> Re
 /// `nasiko-server` instead reuses the exact path (ingress + TLS) that
 /// manifest pulls already prove reachable from real nodes, and keeps every
 /// byte behind this app's own auth check instead of a bearer-token URL that's
-/// valid for anyone who has it until it expires.
+/// valid for anyone who has it until it expires. Mirrors `ee/artifact-registry`'s
+/// `get_blob`, which has always streamed directly for the same reason.
 pub async fn get_blob_bytes(state: &OciState, repository: &str, digest: &str) -> Result<Bytes> {
     if !blob_linked(state, repository, digest).await? {
         return Err(OciError::NotFound(format!("blob {digest} not found")));
@@ -73,13 +74,16 @@ pub async fn delete_blob(state: &OciState, repository: &str, digest: &str) -> Re
         .await?
         .rows_affected();
     if removed == 0 {
-        return Err(OciError::NotFound(format!("blob {digest} not found in repository '{repository}'")));
+        return Err(OciError::NotFound(format!(
+            "blob {digest} not found in repository '{repository}'"
+        )));
     }
 
-    let still_referenced: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oci_blob_refs WHERE digest = $1)")
-        .bind(digest)
-        .fetch_one(&mut *tx)
-        .await?;
+    let still_referenced: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oci_blob_refs WHERE digest = $1)")
+            .bind(digest)
+            .fetch_one(&mut *tx)
+            .await?;
 
     if still_referenced {
         // Another repo still needs it — this repo's link is gone, object stays.
@@ -130,14 +134,13 @@ pub async fn append_chunk(
     upload_id: Uuid,
     chunk: Bytes,
 ) -> Result<ChunkResult> {
-    let row = sqlx::query(
-        "SELECT offset_bytes FROM oci_uploads WHERE uuid = $1 AND repository = $2",
-    )
-    .bind(upload_id)
-    .bind(repository)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| OciError::NotFound("upload session not found".into()))?;
+    let row =
+        sqlx::query("SELECT offset_bytes FROM oci_uploads WHERE uuid = $1 AND repository = $2")
+            .bind(upload_id)
+            .bind(repository)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| OciError::NotFound("upload session not found".into()))?;
 
     let current_offset: i64 = row.try_get("offset_bytes")?;
     let chunk_len = chunk.len() as i64;
@@ -171,7 +174,10 @@ pub async fn append_chunk(
         .execute(&state.pool)
         .await?;
 
-    Ok(ChunkResult { upload_id, new_offset })
+    Ok(ChunkResult {
+        upload_id,
+        new_offset,
+    })
 }
 
 pub struct CompleteResult {
@@ -228,11 +234,12 @@ pub async fn complete_upload(
     let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
 
     if let Some(expected) = expected_digest
-        && expected != computed {
-            return Err(OciError::BadRequest(format!(
-                "digest mismatch: expected {expected}, got {computed}"
-            )));
-        }
+        && expected != computed
+    {
+        return Err(OciError::BadRequest(format!(
+            "digest mismatch: expected {expected}, got {computed}"
+        )));
+    }
 
     state.storage.put_blob(&computed, data).await?;
 

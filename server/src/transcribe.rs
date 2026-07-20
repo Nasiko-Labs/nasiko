@@ -1,4 +1,4 @@
-use axum::{Router, extract::State, extract::Multipart, Json, routing::post};
+use axum::{Json, Router, extract::Multipart, extract::State, routing::post};
 use serde::Serialize;
 
 use crate::state::AppState;
@@ -12,10 +12,15 @@ async fn transcribe(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<TranscriptionResponse>, (axum::http::StatusCode, String)> {
-    let api_key = state.config.openai_api_key.as_deref()
-        .ok_or((axum::http::StatusCode::SERVICE_UNAVAILABLE, "Transcription not configured".into()))?;
+    let api_key = state.config.openai_api_key.as_deref().ok_or((
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "Transcription not configured".into(),
+    ))?;
 
-    let base_url = state.config.openai_base_url.as_deref()
+    let base_url = state
+        .config
+        .openai_base_url
+        .as_deref()
         .unwrap_or("https://api.openai.com");
 
     let mut audio_data: Option<Vec<u8>> = None;
@@ -27,18 +32,25 @@ async fn transcribe(
                 filename = name.to_string();
             }
             audio_data = Some(
-                field.bytes().await
+                field
+                    .bytes()
+                    .await
                     .map_err(|e| {
                         tracing::error!(%e, "failed to read uploaded audio file");
-                        (axum::http::StatusCode::BAD_REQUEST, "failed to read file".to_string())
+                        (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            "failed to read file".to_string(),
+                        )
                     })?
-                    .to_vec()
+                    .to_vec(),
             );
         }
     }
 
-    let audio = audio_data
-        .ok_or((axum::http::StatusCode::BAD_REQUEST, "No audio file provided".into()))?;
+    let audio = audio_data.ok_or((
+        axum::http::StatusCode::BAD_REQUEST,
+        "No audio file provided".into(),
+    ))?;
 
     let part = reqwest::multipart::Part::bytes(audio)
         .file_name(filename)
@@ -52,7 +64,8 @@ async fn transcribe(
 
     let url = format!("{}/v1/audio/transcriptions", base_url.trim_end_matches('/'));
 
-    let res = state.http_client
+    let res = state
+        .http_client
         .post(&url)
         .bearer_auth(api_key)
         .multipart(form)
@@ -60,23 +73,32 @@ async fn transcribe(
         .await
         .map_err(|e| {
             tracing::error!(%e, "transcription request failed");
-            (axum::http::StatusCode::BAD_GATEWAY, "transcription request failed".to_string())
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                "transcription request failed".to_string(),
+            )
         })?;
 
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
         tracing::error!(%status, %body, "transcription API returned an error");
-        return Err((axum::http::StatusCode::BAD_GATEWAY, "transcription API error".to_string()));
+        return Err((
+            axum::http::StatusCode::BAD_GATEWAY,
+            "transcription API error".to_string(),
+        ));
     }
 
-    let result: serde_json::Value = res.json().await
-        .map_err(|e| {
-            tracing::error!(%e, "invalid transcription response");
-            (axum::http::StatusCode::BAD_GATEWAY, "invalid transcription response".to_string())
-        })?;
+    let result: serde_json::Value = res.json().await.map_err(|e| {
+        tracing::error!(%e, "invalid transcription response");
+        (
+            axum::http::StatusCode::BAD_GATEWAY,
+            "invalid transcription response".to_string(),
+        )
+    })?;
 
-    let text = result.get("text")
+    let text = result
+        .get("text")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();

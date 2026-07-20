@@ -30,7 +30,10 @@ fn push_from_directory(dir: &str, name_override: Option<&str>, client: &Client) 
         .map(String::from)
         .or_else(|| card.get("name").and_then(|n| n.as_str()).map(String::from))
         .unwrap_or_else(|| "agent".into());
-    let version = card.get("version").and_then(|v| v.as_str()).unwrap_or("latest");
+    let version = card
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("latest");
     let image_tag = format!("{agent_name}:{version}");
 
     // Build image
@@ -52,18 +55,16 @@ fn push_from_directory(dir: &str, name_override: Option<&str>, client: &Client) 
 }
 
 fn push_from_image(image: &str, name_override: Option<&str>, client: &Client) -> Result<()> {
-    let agent_name = name_override
-        .map(String::from)
-        .unwrap_or_else(|| {
-            image
-                .rsplit('/')
-                .next()
-                .unwrap_or(image)
-                .split(':')
-                .next()
-                .unwrap_or("agent")
-                .to_string()
-        });
+    let agent_name = name_override.map(String::from).unwrap_or_else(|| {
+        image
+            .rsplit('/')
+            .next()
+            .unwrap_or(image)
+            .split(':')
+            .next()
+            .unwrap_or("agent")
+            .to_string()
+    });
     let version = image.split(':').nth(1).unwrap_or("latest");
     let repo = format!("nasiko/{agent_name}");
 

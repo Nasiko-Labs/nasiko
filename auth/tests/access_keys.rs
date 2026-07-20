@@ -7,14 +7,22 @@ use nasiko_auth::{generate_access_key, generate_access_secret};
 #[test]
 fn access_key_starts_with_nask_prefix() {
     let key = generate_access_key();
-    assert!(key.starts_with("NASK_"), "key must start with 'NASK_', got: {key}");
+    assert!(
+        key.starts_with("NASK_"),
+        "key must start with 'NASK_', got: {key}"
+    );
 }
 
 #[test]
 fn access_key_total_length_is_27() {
     // "NASK_" (5) + 22 random chars = 27
     let key = generate_access_key();
-    assert_eq!(key.len(), 27, "expected NASK_(5)+22 = 27 chars, got {}: {key}", key.len());
+    assert_eq!(
+        key.len(),
+        27,
+        "expected NASK_(5)+22 = 27 chars, got {}: {key}",
+        key.len()
+    );
 }
 
 #[test]
@@ -49,7 +57,12 @@ fn access_keys_are_unique_across_many_calls() {
 #[test]
 fn access_secret_length_is_43() {
     let secret = generate_access_secret();
-    assert_eq!(secret.len(), 43, "expected 43 chars, got {}: {secret}", secret.len());
+    assert_eq!(
+        secret.len(),
+        43,
+        "expected 43 chars, got {}: {secret}",
+        secret.len()
+    );
 }
 
 #[test]
@@ -75,7 +88,11 @@ fn access_secrets_are_unique() {
 fn access_secrets_are_unique_across_many_calls() {
     use std::collections::HashSet;
     let secrets: HashSet<String> = (0..50).map(|_| generate_access_secret()).collect();
-    assert_eq!(secrets.len(), 50, "all 50 generated secrets should be unique");
+    assert_eq!(
+        secrets.len(),
+        50,
+        "all 50 generated secrets should be unique"
+    );
 }
 
 #[test]

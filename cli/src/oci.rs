@@ -101,7 +101,9 @@ pub fn docker_save(image: &str) -> Result<Vec<u8>> {
     let output = Command::new(&bin)
         .args(["save", image])
         .output()
-        .with_context(|| format!("failed to run `{bin} save` — is the container runtime running?"))?;
+        .with_context(|| {
+            format!("failed to run `{bin} save` — is the container runtime running?")
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -126,11 +128,8 @@ pub fn parse_docker_tar(tar_data: &[u8]) -> Result<DockerTarEntries> {
     let docker_manifest_bytes = files
         .get("manifest.json")
         .context("no manifest.json in docker save output")?;
-    let docker_manifests: Vec<DockerManifest> =
-        serde_json::from_slice(docker_manifest_bytes)?;
-    let dm = docker_manifests
-        .first()
-        .context("empty manifest.json")?;
+    let docker_manifests: Vec<DockerManifest> = serde_json::from_slice(docker_manifest_bytes)?;
+    let dm = docker_manifests.first().context("empty manifest.json")?;
 
     // Config
     let config = files
@@ -169,10 +168,7 @@ pub fn sha256_digest(data: &[u8]) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
-pub fn build_oci_manifest(
-    entries: &DockerTarEntries,
-    config_digest: &str,
-) -> serde_json::Value {
+pub fn build_oci_manifest(entries: &DockerTarEntries, config_digest: &str) -> serde_json::Value {
     let layers: Vec<serde_json::Value> = entries
         .layers
         .iter()

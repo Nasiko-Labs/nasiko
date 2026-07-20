@@ -71,6 +71,9 @@ fn all_variants_implement_display() {
     ];
     for v in &variants {
         let s = v.to_string();
-        assert!(!s.is_empty(), "Display should produce non-empty output for {v:?}");
+        assert!(
+            !s.is_empty(),
+            "Display should produce non-empty output for {v:?}"
+        );
     }
 }

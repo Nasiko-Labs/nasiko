@@ -195,13 +195,10 @@ fn build_payload(query: &str, file_parts: &[FilePart], context_id: &str) -> Json
     JsonRpcRequest {
         jsonrpc: "2.0",
         id: Uuid::new_v4().to_string(),
-        // gRPC-style JSON-RPC method/role names — what every example agent's
-        // installed `a2a-sdk` actually registers in its dispatch table
-        // (confirmed against a real deployed `oss/agents/translator` build).
-        method: "SendStreamingMessage",
+        method: "message/stream",
         params: MessageParams {
             message: A2AMessage {
-                role: "ROLE_USER",
+                role: "user",
                 parts,
                 message_id: Uuid::new_v4().to_string(),
             },
@@ -209,4 +206,3 @@ fn build_payload(query: &str, file_parts: &[FilePart], context_id: &str) -> Json
         },
     }
 }
-

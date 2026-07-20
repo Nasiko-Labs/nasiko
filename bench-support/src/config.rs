@@ -35,7 +35,10 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         std::env::set_var("S3_ACCESS_KEY", "nasiko");
         std::env::set_var("S3_SECRET_KEY", "nasiko123");
         std::env::set_var("S3_REGION", "us-east-1");
-        std::env::set_var("SECRETS_ENCRYPTION_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=");
+        std::env::set_var(
+            "SECRETS_ENCRYPTION_KEY",
+            "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=",
+        );
         // `oss/server/src/router/a2a_dispatch.rs::orchestrator_stream` builds
         // its `OrchestratorConfig` by reading `OPENAI_API_KEY`/`OPENAI_BASE_URL`
         // straight from process env — NOT from `Config.openai_api_key`/

@@ -2,7 +2,7 @@
 //! schemas; `execute()` dispatches a tool call against the active [`Sandbox`]. Mirrors the shape
 //! of `agents/paper/src/tools.rs` but is parameterized by the sandbox backend.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::project;
 use crate::sandbox::Sandbox;
@@ -157,7 +157,9 @@ pub async fn execute(sandbox: &dyn Sandbox, name: &str, arguments: &str) -> Stri
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
-    args[key].as_str().ok_or_else(|| format!("missing or non-string '{key}'"))
+    args[key]
+        .as_str()
+        .ok_or_else(|| format!("missing or non-string '{key}'"))
 }
 
 async fn read_file(sandbox: &dyn Sandbox, args: &Value) -> Result<String, String> {
@@ -246,7 +248,11 @@ async fn edit_file(sandbox: &dyn Sandbox, args: &Value) -> Result<String, String
     let mut content = sandbox.read_file_raw(path).await?;
 
     for (idx, (search, replace)) in edits.iter().enumerate() {
-        let label = if edits.len() > 1 { format!("edit {} ", idx + 1) } else { String::new() };
+        let label = if edits.len() > 1 {
+            format!("edit {} ", idx + 1)
+        } else {
+            String::new()
+        };
         let matches = content.matches(search.as_str()).count();
         match matches {
             0 => return Err(format!("{label}search block not found in {path}")),
@@ -321,8 +327,11 @@ mod tests {
     async fn edit_file_unique_replace() {
         let root = temp_root("edit-unique");
         let sb = LocalSandbox::new(root.to_str().unwrap()).unwrap();
-        sb.write_file("lib.rs", "fn a() {}\nfn b() {}\n").await.unwrap();
-        let args = json!({"path": "lib.rs", "search": "fn b() {}", "replace": "fn b() { add(1,2); }"});
+        sb.write_file("lib.rs", "fn a() {}\nfn b() {}\n")
+            .await
+            .unwrap();
+        let args =
+            json!({"path": "lib.rs", "search": "fn b() {}", "replace": "fn b() { add(1,2); }"});
         let out = execute(&sb, "edit_file", &args.to_string()).await;
         assert!(out.contains("Applied 1 edit"), "got: {out}");
         let raw = sb.read_file_raw("lib.rs").await.unwrap();
@@ -353,7 +362,12 @@ mod tests {
     async fn run_command_reports_exit() {
         let root = temp_root("runcmd");
         let sb = LocalSandbox::new(root.to_str().unwrap()).unwrap();
-        let out = execute(&sb, "run_command", &json!({"command": "echo hi"}).to_string()).await;
+        let out = execute(
+            &sb,
+            "run_command",
+            &json!({"command": "echo hi"}).to_string(),
+        )
+        .await;
         assert!(out.contains("exit code: 0"));
         assert!(out.contains("hi"));
     }

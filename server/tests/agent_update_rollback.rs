@@ -37,15 +37,11 @@ async fn init_admin(server: &common::TestServer) -> Value {
 
 /// Create an agent via catalog and return its JSON (synchronous, no Docker).
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str, version: &str) -> Value {
-    let res = common::as_superuser(
-        server.client.post(server.url("/api/agents")),
-        uid,
-        "admin",
-    )
-    .json(&json!({"name": name, "version": version}))
-    .send()
-    .await
-    .unwrap();
+    let res = common::as_superuser(server.client.post(server.url("/api/agents")), uid, "admin")
+        .json(&json!({"name": name, "version": version}))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 201, "create_agent failed");
     res.json::<Value>().await.unwrap()
 }
@@ -64,10 +60,15 @@ async fn do_update(
         form = form.text("version", v.to_string());
     }
     if let Some(zip) = source {
-        form = form.part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
+        form = form.part(
+            "source",
+            reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
+        );
     }
     common::as_superuser(
-        server.client.put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        server
+            .client
+            .put(server.url(&format!("/api/agents/{agent_id}/update"))),
         uid,
         "admin",
     )
@@ -85,7 +86,9 @@ async fn do_rollback(
     body: Option<Value>,
 ) -> reqwest::Response {
     let req = common::as_superuser(
-        server.client.post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
+        server
+            .client
+            .post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
         uid,
         "admin",
     );
@@ -96,14 +99,12 @@ async fn do_rollback(
 }
 
 /// Poll GET /api/builds/{build_id} until the status is terminal.
-async fn wait_for_terminal_build(
-    server: &common::TestServer,
-    uid: &str,
-    build_id: &str,
-) -> String {
+async fn wait_for_terminal_build(server: &common::TestServer, uid: &str, build_id: &str) -> String {
     for _ in 0..60 {
         let res = common::as_superuser(
-            server.client.get(server.url(&format!("/api/builds/{build_id}"))),
+            server
+                .client
+                .get(server.url(&format!("/api/builds/{build_id}"))),
             uid,
             "admin",
         )
@@ -153,8 +154,10 @@ async fn update_requires_auth() {
     let agent_id = agent["id"].as_str().unwrap();
     let zip = common::make_zip(&[NO_DOCKERFILE]);
 
-    let form = reqwest::multipart::Form::new()
-        .part("source", reqwest::multipart::Part::bytes(zip).file_name("agent.zip"));
+    let form = reqwest::multipart::Form::new().part(
+        "source",
+        reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
+    );
     let res = server
         .client
         .put(server.url(&format!("/api/agents/{agent_id}/update")))
@@ -183,7 +186,9 @@ async fn update_rejects_non_zip_extension() {
         reqwest::multipart::Part::bytes(b"fake data".to_vec()).file_name("agent.tar.gz"),
     );
     let res = common::as_superuser(
-        server.client.put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        server
+            .client
+            .put(server.url(&format!("/api/agents/{agent_id}/update"))),
         uid,
         "admin",
     )
@@ -211,7 +216,10 @@ async fn update_non_semver_agent_without_explicit_version_returns_400() {
     let res = do_update(&server, uid, agent_id, None, Some(zip)).await;
     assert_eq!(res.status(), 400);
     let text = res.text().await.unwrap();
-    assert!(text.contains("not valid semver"), "expected semver error, got: {text}");
+    assert!(
+        text.contains("not valid semver"),
+        "expected semver error, got: {text}"
+    );
 
     server.cleanup().await;
 }
@@ -277,7 +285,10 @@ async fn update_duplicate_version_in_agent_versions_returns_409() {
     let res = do_update(&server, uid, agent_id.to_string().as_str(), None, Some(zip)).await;
     assert_eq!(res.status(), 409);
     let text = res.text().await.unwrap();
-    assert!(text.contains("already exists"), "expected 'already exists' message, got: {text}");
+    assert!(
+        text.contains("already exists"),
+        "expected 'already exists' message, got: {text}"
+    );
 
     server.cleanup().await;
 }
@@ -390,7 +401,9 @@ async fn update_marks_build_failed_without_dockerfile() {
 
     // Agent version should be rolled back to the original.
     let agent_res: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/agents/{agent_id}"))),
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}"))),
         uid,
         "admin",
     )
@@ -474,7 +487,9 @@ async fn rollback_malformed_json_returns_422() {
     let agent_id = agent["id"].as_str().unwrap();
 
     let res = common::as_superuser(
-        server.client.post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
+        server
+            .client
+            .post(server.url(&format!("/api/agents/{agent_id}/rollback"))),
         uid,
         "admin",
     )
@@ -498,7 +513,13 @@ async fn rollback_specific_version_not_found_returns_404() {
     let agent = create_agent(&server, uid, "missing-ver-rollback-agent", "1.0.0").await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    let res = do_rollback(&server, uid, agent_id, Some(json!({"target_version": "9.9.9"}))).await;
+    let res = do_rollback(
+        &server,
+        uid,
+        agent_id,
+        Some(json!({"target_version": "9.9.9"})),
+    )
+    .await;
     assert_eq!(res.status(), 404);
 
     server.cleanup().await;
@@ -525,10 +546,19 @@ async fn rollback_version_not_eligible_returns_400() {
     .unwrap();
 
     let uid = admin["user_id"].as_str().unwrap();
-    let res = do_rollback(&server, uid, &agent_id.to_string(), Some(json!({"target_version": "0.9.0"}))).await;
+    let res = do_rollback(
+        &server,
+        uid,
+        &agent_id.to_string(),
+        Some(json!({"target_version": "0.9.0"})),
+    )
+    .await;
     assert_eq!(res.status(), 400);
     let text = res.text().await.unwrap();
-    assert!(text.contains("not rollback-eligible"), "expected eligibility error, got: {text}");
+    assert!(
+        text.contains("not rollback-eligible"),
+        "expected eligibility error, got: {text}"
+    );
 
     server.cleanup().await;
 }

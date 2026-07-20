@@ -139,7 +139,9 @@ fn extract_skill_from_tarball(data: &[u8], name: &str) -> Result<(SkillManifest,
         }
     }
 
-    let manifest = manifest.context(format!("skill.json not found in registry artifact '{name}'"))?;
+    let manifest = manifest.context(format!(
+        "skill.json not found in registry artifact '{name}'"
+    ))?;
 
     // Second pass to get the entrypoint file
     let decoder = flate2::read::GzDecoder::new(data);
@@ -173,9 +175,7 @@ pub fn list_available_skills() -> Vec<String> {
         .dirs()
         .filter_map(|d| {
             let name = d.path().file_name()?.to_str()?.to_string();
-            if d.get_file(format!("{name}/skill.json")).is_some()
-                || d.contains("skill.json")
-            {
+            if d.get_file(format!("{name}/skill.json")).is_some() || d.contains("skill.json") {
                 Some(name)
             } else {
                 None
@@ -185,14 +185,15 @@ pub fn list_available_skills() -> Vec<String> {
 
     // Merge in registry skills
     if let Some(client) = crate::api::RegistryClient::new()
-        && let Ok(remote_skills) = client.list_skills(None) {
-            for artifact in remote_skills {
-                let name = artifact.name.clone();
-                if !skills.contains(&name) {
-                    skills.push(name);
-                }
+        && let Ok(remote_skills) = client.list_skills(None)
+    {
+        for artifact in remote_skills {
+            let name = artifact.name.clone();
+            if !skills.contains(&name) {
+                skills.push(name);
             }
         }
+    }
 
     skills
 }
@@ -359,7 +360,12 @@ from crewai.tools import tool
 
 // ─── Injection ──────────────────────────────────────────────────────────────
 
-pub fn inject_skill(project_dir: &Path, manifest: &SkillManifest, impl_code: &str, framework: &str) -> Result<()> {
+pub fn inject_skill(
+    project_dir: &Path,
+    manifest: &SkillManifest,
+    impl_code: &str,
+    framework: &str,
+) -> Result<()> {
     let module_name = manifest.metadata.name.replace('-', "_");
 
     // 1. Generate framework-specific skill file
@@ -451,16 +457,17 @@ fn find_agent_source(project_dir: &Path, framework: &str) -> Option<std::path::P
     }
     // Try first .go or .py in cmd/
     if framework == "a2a-go"
-        && let Ok(entries) = fs::read_dir(project_dir.join("cmd")) {
-            for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    let main = entry.path().join("main.go");
-                    if main.exists() {
-                        return Some(main);
-                    }
+        && let Ok(entries) = fs::read_dir(project_dir.join("cmd"))
+    {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                let main = entry.path().join("main.go");
+                if main.exists() {
+                    return Some(main);
                 }
             }
         }
+    }
     None
 }
 
@@ -475,7 +482,13 @@ fn update_pyproject(project_dir: &Path, deps: &[String]) -> Result<()> {
     // Simple approach: find dependencies array and append if not present
     let mut new_deps = Vec::new();
     for dep in deps {
-        let pkg_name = dep.split(">=").next().unwrap_or(dep).split("==").next().unwrap_or(dep);
+        let pkg_name = dep
+            .split(">=")
+            .next()
+            .unwrap_or(dep)
+            .split("==")
+            .next()
+            .unwrap_or(dep);
         if !content.contains(pkg_name) {
             new_deps.push(dep.clone());
         }
@@ -487,16 +500,14 @@ fn update_pyproject(project_dir: &Path, deps: &[String]) -> Result<()> {
 
     // Find the closing ] of dependencies array and insert before it
     if let Some(deps_start) = content.find("dependencies = [")
-        && let Some(deps_end) = content[deps_start..].find(']') {
-            let insert_pos = deps_start + deps_end;
-            let additions: String = new_deps
-                .iter()
-                .map(|d| format!("    \"{d}\",\n"))
-                .collect();
-            let mut result = content.clone();
-            result.insert_str(insert_pos, &additions);
-            fs::write(&pyproject_path, result)?;
-        }
+        && let Some(deps_end) = content[deps_start..].find(']')
+    {
+        let insert_pos = deps_start + deps_end;
+        let additions: String = new_deps.iter().map(|d| format!("    \"{d}\",\n")).collect();
+        let mut result = content.clone();
+        result.insert_str(insert_pos, &additions);
+        fs::write(&pyproject_path, result)?;
+    }
 
     Ok(())
 }
@@ -510,15 +521,13 @@ fn update_agent_card(project_dir: &Path, manifest: &SkillManifest) -> Result<()>
     let content = fs::read_to_string(&card_path)?;
     let mut card: serde_json::Value = serde_json::from_str(&content)?;
 
-    let skills = card
-        .get_mut("skills")
-        .and_then(|s| s.as_array_mut());
+    let skills = card.get_mut("skills").and_then(|s| s.as_array_mut());
 
     if let Some(skills) = skills {
         // Don't add duplicates
-        let already = skills.iter().any(|s| {
-            s.get("id").and_then(|i| i.as_str()) == Some(&manifest.metadata.name)
-        });
+        let already = skills
+            .iter()
+            .any(|s| s.get("id").and_then(|i| i.as_str()) == Some(&manifest.metadata.name));
         if !already {
             skills.push(serde_json::json!({
                 "id": manifest.metadata.name,
@@ -542,11 +551,12 @@ pub fn detect_framework(project_dir: &Path) -> Option<String> {
     let card_path = project_dir.join("AgentCard.json");
     if card_path.exists()
         && let Ok(content) = fs::read_to_string(&card_path)
-            && let Ok(card) = serde_json::from_str::<serde_json::Value>(&content)
-                && let Some(fw) = card.get("agentFramework").and_then(|f| f.as_str())
-                    && !fw.is_empty() {
-                        return Some(fw.to_string());
-                    }
+        && let Ok(card) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(fw) = card.get("agentFramework").and_then(|f| f.as_str())
+        && !fw.is_empty()
+    {
+        return Some(fw.to_string());
+    }
 
     if project_dir.join("go.mod").exists() {
         return Some("a2a-go".into());
@@ -554,14 +564,25 @@ pub fn detect_framework(project_dir: &Path) -> Option<String> {
 
     let agent_py = project_dir.join("src/agent.py");
     if agent_py.exists()
-        && let Ok(source) = fs::read_to_string(&agent_py) {
-            let lower = source.to_lowercase();
-            if lower.contains("crewai") { return Some("crewai".into()); }
-            if lower.contains("langgraph") { return Some("langgraph".into()); }
-            if lower.contains("langchain") { return Some("langchain".into()); }
-            if lower.contains("anthropic") { return Some("claude-sdk".into()); }
-            if lower.contains("from agents import") { return Some("openai".into()); }
+        && let Ok(source) = fs::read_to_string(&agent_py)
+    {
+        let lower = source.to_lowercase();
+        if lower.contains("crewai") {
+            return Some("crewai".into());
         }
+        if lower.contains("langgraph") {
+            return Some("langgraph".into());
+        }
+        if lower.contains("langchain") {
+            return Some("langchain".into());
+        }
+        if lower.contains("anthropic") {
+            return Some("claude-sdk".into());
+        }
+        if lower.contains("from agents import") {
+            return Some("openai".into());
+        }
+    }
 
     None
 }

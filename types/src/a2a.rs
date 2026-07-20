@@ -1,8 +1,8 @@
 //! Thin wrapper around the official `a2a` crate (a2a-lf) with nasiko-specific helpers.
 
 pub use a2a::{
-    Artifact, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, Message, Part,
-    PartContent, Role, SendMessageConfiguration, SendMessageRequest, StreamResponse, Task,
+    Artifact, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, Message, Part, PartContent,
+    Role, SendMessageConfiguration, SendMessageRequest, StreamResponse, Task,
     TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent, new_artifact_id,
     new_context_id, new_message_id, new_task_id,
 };
@@ -10,11 +10,21 @@ pub use a2a::{
 // ─── Part constructors ──────────────────────────────────────────────────────
 
 pub fn text_part(s: impl Into<String>) -> Part {
-    Part { content: PartContent::Text(s.into()), filename: None, media_type: None, metadata: None }
+    Part {
+        content: PartContent::Text(s.into()),
+        filename: None,
+        media_type: None,
+        metadata: None,
+    }
 }
 
 pub fn data_part(value: serde_json::Value) -> Part {
-    Part { content: PartContent::Data(value), filename: None, media_type: None, metadata: None }
+    Part {
+        content: PartContent::Data(value),
+        filename: None,
+        media_type: None,
+        metadata: None,
+    }
 }
 
 // ─── StreamResponse constructors ────────────────────────────────────────────
@@ -50,7 +60,11 @@ pub fn working(task_id: &str, context_id: &str) -> TaskStatusUpdateEvent {
     }
 }
 
-pub fn working_with_message(task_id: &str, context_id: &str, msg: Message) -> TaskStatusUpdateEvent {
+pub fn working_with_message(
+    task_id: &str,
+    context_id: &str,
+    msg: Message,
+) -> TaskStatusUpdateEvent {
     TaskStatusUpdateEvent {
         task_id: task_id.into(),
         context_id: context_id.into(),
@@ -148,9 +162,10 @@ pub fn build_stream_request_with_metadata(
 ) -> JsonRpcRequest {
     let mut req = build_request("SendStreamingMessage", text, context_id);
     if let Some(params) = req.params.as_mut()
-        && let Some(obj) = params.as_object_mut() {
-            obj.insert("metadata".to_string(), metadata);
-        }
+        && let Some(obj) = params.as_object_mut()
+    {
+        obj.insert("metadata".to_string(), metadata);
+    }
     req
 }
 
@@ -250,7 +265,9 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
         // Bare message reply — agents without a task lifecycle (e.g. the
         // official a2a-go SDK) answer a stream request with a single
         // terminal message event.
-        out.push(SseEvent::Completed { snapshot_text: extract_text(result) });
+        out.push(SseEvent::Completed {
+            snapshot_text: extract_text(result),
+        });
         return out;
     }
     if let Some(task) = result.get("task") {
@@ -258,10 +275,14 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
         // submission echo (state=submitted/working) is not an event.
         match task_state(task) {
             SseTaskState::Completed => {
-                out.push(SseEvent::Completed { snapshot_text: extract_text(result) });
+                out.push(SseEvent::Completed {
+                    snapshot_text: extract_text(result),
+                });
             }
             SseTaskState::Failed => {
-                out.push(SseEvent::Failed { reason: failure_reason(task) });
+                out.push(SseEvent::Failed {
+                    reason: failure_reason(task),
+                });
             }
             SseTaskState::Working | SseTaskState::Other => {}
         }
@@ -279,10 +300,14 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
 fn classify_status(update: &serde_json::Value, out: &mut Vec<SseEvent>) {
     match task_state(update) {
         SseTaskState::Failed => {
-            out.push(SseEvent::Failed { reason: failure_reason(update) });
+            out.push(SseEvent::Failed {
+                reason: failure_reason(update),
+            });
         }
         SseTaskState::Completed => {
-            out.push(SseEvent::Completed { snapshot_text: None });
+            out.push(SseEvent::Completed {
+                snapshot_text: None,
+            });
         }
         SseTaskState::Working | SseTaskState::Other => {
             if let Some(parts) = update
@@ -333,12 +358,14 @@ enum SseTaskState {
 }
 
 fn task_state(v: &serde_json::Value) -> SseTaskState {
-    match v.pointer("/status/state").and_then(|s| s.as_str()).unwrap_or("") {
+    match v
+        .pointer("/status/state")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+    {
         "TASK_STATE_WORKING" | "working" => SseTaskState::Working,
         "TASK_STATE_COMPLETED" | "completed" => SseTaskState::Completed,
-        "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "failed" | "canceled" => {
-            SseTaskState::Failed
-        }
+        "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "failed" | "canceled" => SseTaskState::Failed,
         _ => SseTaskState::Other,
     }
 }
@@ -427,7 +454,11 @@ pub fn extract_transport_path(card: &serde_json::Value) -> Option<String> {
     };
 
     let trimmed = path.trim_end_matches('/');
-    Some(if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() })
+    Some(if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    })
 }
 
 #[cfg(test)]
@@ -456,7 +487,9 @@ mod sse_event_tests {
         }}});
         assert_eq!(
             classify_sse_event(&ev),
-            vec![SseEvent::Completed { snapshot_text: Some("Weather for Tokyo: sunny".into()) }]
+            vec![SseEvent::Completed {
+                snapshot_text: Some("Weather for Tokyo: sunny".into())
+            }]
         );
     }
 
@@ -495,7 +528,9 @@ mod sse_event_tests {
         }}}});
         assert_eq!(
             classify_sse_event(&ev),
-            vec![SseEvent::Failed { reason: "boom".into() }]
+            vec![SseEvent::Failed {
+                reason: "boom".into()
+            }]
         );
     }
 
@@ -507,7 +542,9 @@ mod sse_event_tests {
         }}});
         assert_eq!(
             classify_sse_event(&ev),
-            vec![SseEvent::Completed { snapshot_text: Some("Hello.".into()) }]
+            vec![SseEvent::Completed {
+                snapshot_text: Some("Hello.".into())
+            }]
         );
     }
 
@@ -527,7 +564,9 @@ mod sse_event_tests {
         let done = json!({"kind": "status-update", "status": {"state": "completed"}});
         assert_eq!(
             classify_sse_event(&done),
-            vec![SseEvent::Completed { snapshot_text: None }]
+            vec![SseEvent::Completed {
+                snapshot_text: None
+            }]
         );
     }
 }

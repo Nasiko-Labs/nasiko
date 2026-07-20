@@ -61,7 +61,9 @@ async fn create_session(server: &common::TestServer, uid: &str, title: &str) -> 
 
 async fn send_message(server: &common::TestServer, uid: &str, sid: &str, content: &str) -> Value {
     common::as_superuser(
-        server.client.post(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        server
+            .client
+            .post(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
         uid,
         "admin",
     )
@@ -76,7 +78,9 @@ async fn send_message(server: &common::TestServer, uid: &str, sid: &str, content
 
 async fn list_sessions(server: &common::TestServer, uid: &str, query: &str) -> Value {
     common::as_superuser(
-        server.client.get(server.url(&format!("/api/chat/sessions{query}"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions{query}"))),
         uid,
         "admin",
     )
@@ -88,9 +92,16 @@ async fn list_sessions(server: &common::TestServer, uid: &str, query: &str) -> V
     .unwrap()
 }
 
-async fn list_messages(server: &common::TestServer, uid: &str, sid: &str, query: &str) -> reqwest::Response {
+async fn list_messages(
+    server: &common::TestServer,
+    uid: &str,
+    sid: &str,
+    query: &str,
+) -> reqwest::Response {
     common::as_superuser(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages{query}"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages{query}"))),
         uid,
         "admin",
     )
@@ -118,19 +129,32 @@ async fn list_sessions_cursor_round_trip() {
     let data1 = page1["data"].as_array().unwrap();
     assert_eq!(data1.len(), 2, "first page should have 2 sessions");
     assert!(page1["has_more"].as_bool().unwrap());
-    assert!(page1["next_cursor"].is_string(), "next_cursor must be present");
+    assert!(
+        page1["next_cursor"].is_string(),
+        "next_cursor must be present"
+    );
 
     let next_cursor = page1["next_cursor"].as_str().unwrap();
-    let page1_ids: Vec<&str> = data1.iter().map(|s| s["session_id"].as_str().unwrap()).collect();
+    let page1_ids: Vec<&str> = data1
+        .iter()
+        .map(|s| s["session_id"].as_str().unwrap())
+        .collect();
 
     // Second page via cursor. Expect 1 row, has_more=false.
     let page2 = list_sessions(&server, uid, &format!("?limit=2&cursor={next_cursor}")).await;
     let data2 = page2["data"].as_array().unwrap();
-    assert_eq!(data2.len(), 1, "second page should have the remaining session");
+    assert_eq!(
+        data2.len(),
+        1,
+        "second page should have the remaining session"
+    );
     assert!(!page2["has_more"].as_bool().unwrap());
 
     // No overlap between pages.
-    let page2_ids: Vec<&str> = data2.iter().map(|s| s["session_id"].as_str().unwrap()).collect();
+    let page2_ids: Vec<&str> = data2
+        .iter()
+        .map(|s| s["session_id"].as_str().unwrap())
+        .collect();
     for id in &page2_ids {
         assert!(!page1_ids.contains(id), "pages must not overlap");
     }
@@ -139,7 +163,11 @@ async fn list_sessions_cursor_round_trip() {
     let mut all_ids = page1_ids.clone();
     all_ids.extend(page2_ids);
     all_ids.dedup();
-    assert_eq!(all_ids.len(), 3, "all 3 sessions should appear across both pages");
+    assert_eq!(
+        all_ids.len(),
+        3,
+        "all 3 sessions should appear across both pages"
+    );
 
     server.cleanup().await;
 }
@@ -211,7 +239,13 @@ async fn list_messages_cursor_round_trip() {
     // actually no anchor DESC: returns most recent 2 = msg-3, msg-2 reversed to ASC = msg-2, msg-3).
     // prev_cursor on page1 points before msg-2, so loading older → msg-1.
     let prev_cursor = page1["prev_cursor"].as_str().unwrap();
-    let res2 = list_messages(&server, uid, sid, &format!("?limit=2&prev_cursor={prev_cursor}")).await;
+    let res2 = list_messages(
+        &server,
+        uid,
+        sid,
+        &format!("?limit=2&prev_cursor={prev_cursor}"),
+    )
+    .await;
     assert_eq!(res2.status(), 200);
     let page2: Value = res2.json().await.unwrap();
     let data2 = page2["data"].as_array().unwrap();
@@ -279,18 +313,15 @@ async fn create_session_ignores_client_supplied_agent_url() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let agent: Value = common::as_superuser(
-        server.client.post(server.url("/api/agents")),
-        uid,
-        "admin",
-    )
-    .json(&json!({"name": "ssrf-target-agent", "version": "1.0.0"}))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
+    let agent: Value =
+        common::as_superuser(server.client.post(server.url("/api/agents")), uid, "admin")
+            .json(&json!({"name": "ssrf-target-agent", "version": "1.0.0"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
     let agent_id = agent["id"].as_str().unwrap();
 
     let session: Value = common::as_superuser(
@@ -379,14 +410,20 @@ async fn list_messages_returns_404_for_other_users_session() {
 
     // Other user tries to read admin's messages — must get 404, not the messages.
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{sid}/messages"))),
         other_id,
         "eavesdropper",
     )
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 404, "other user must not read another user's messages");
+    assert_eq!(
+        res.status(),
+        404,
+        "other user must not read another user's messages"
+    );
 
     server.cleanup().await;
 }

@@ -16,7 +16,10 @@ use super::crypto::SecretsCrypto;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/secrets", get(list_secrets).post(create_secret))
-        .route("/secrets/{name}", get(get_secret).put(update_secret).delete(delete_secret))
+        .route(
+            "/secrets/{name}",
+            get(get_secret).put(update_secret).delete(delete_secret),
+        )
 }
 
 /// Validate a secret name against the POSIX environment-variable-name
@@ -89,10 +92,7 @@ struct SecretValue {
     value: String,
 }
 
-async fn list_secrets(
-    State(state): State<AppState>,
-    claims: Claims,
-) -> impl IntoResponse {
+async fn list_secrets(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -229,13 +229,11 @@ async fn delete_secret(
         Err(e) => return e.into_response(),
     };
 
-    let result = sqlx::query(
-        "DELETE FROM user_secrets WHERE user_id = $1 AND name = $2",
-    )
-    .bind(user_id)
-    .bind(&name)
-    .execute(&state.db)
-    .await;
+    let result = sqlx::query("DELETE FROM user_secrets WHERE user_id = $1 AND name = $2")
+        .bind(user_id)
+        .bind(&name)
+        .execute(&state.db)
+        .await;
 
     match result {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),

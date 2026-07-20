@@ -7,8 +7,8 @@
 
 mod common;
 
-use serial_test::serial;
 use serde_json::{Value, json};
+use serial_test::serial;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -27,7 +27,12 @@ async fn login(server: &common::TestServer) -> Value {
         .unwrap()
 }
 
-async fn create_user(server: &common::TestServer, admin_id: &str, username: &str, email: &str) -> Value {
+async fn create_user(
+    server: &common::TestServer,
+    admin_id: &str,
+    username: &str,
+    email: &str,
+) -> Value {
     common::as_superuser(
         server.client.post(server.url("/api/users")),
         admin_id,
@@ -51,14 +56,10 @@ async fn test_server_uses_jwt_identity() {
     let admin = login(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let res = common::as_superuser(
-        server.client.get(server.url("/api/me")),
-        user_id,
-        "admin",
-    )
-    .send()
-    .await
-    .unwrap();
+    let res = common::as_superuser(server.client.get(server.url("/api/me")), user_id, "admin")
+        .send()
+        .await
+        .unwrap();
 
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -79,14 +80,10 @@ async fn test_server_uses_correct_role_from_jwt() {
     let alice = create_user(&server, admin_id, "alice", "alice@test.local").await;
     let alice_id = alice["id"].as_str().unwrap();
 
-    let res = common::as_member(
-        server.client.get(server.url("/api/me")),
-        alice_id,
-        "alice",
-    )
-    .send()
-    .await
-    .unwrap();
+    let res = common::as_member(server.client.get(server.url("/api/me")), alice_id, "alice")
+        .send()
+        .await
+        .unwrap();
 
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -120,10 +117,7 @@ async fn test_no_auth_returns_401() {
 async fn test_bearer_jwt_is_accepted() {
     let server = common::TestServer::start().await;
 
-    let token = login(&server).await["token"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let token = login(&server).await["token"].as_str().unwrap().to_owned();
 
     let res = server
         .client

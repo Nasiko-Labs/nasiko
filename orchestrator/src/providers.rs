@@ -25,33 +25,41 @@ impl LLMProvider {
     /// `ee/server/.env` has it) would otherwise double up into
     /// `.../v1/v1/chat/completions`, which 404s.
     pub fn new(client: Client, api_key: String, base_url: String) -> Self {
-        Self { client, api_key, base_url: normalize_base_url(&base_url) }
+        Self {
+            client,
+            api_key,
+            base_url: normalize_base_url(&base_url),
+        }
     }
 
     pub fn from_env(client: Client) -> Self {
         let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-        let base_url = std::env
-            ::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com".into());
+        let base_url =
+            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
         Self::new(client, api_key, base_url)
     }
 
     /// Streaming chat completion — returns a pinned stream of parsed chunks.
     pub async fn chat_completion_stream(
         &self,
-        request: &ChatCompletionRequest
+        request: &ChatCompletionRequest,
     ) -> Result<ChunkStream, ProviderError> {
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/v1/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(request)
-            .send().await
+            .send()
+            .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Api { status: status.as_u16(), body });
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         let mut byte_stream = response.bytes_stream();
@@ -107,30 +115,37 @@ impl LLMProvider {
     /// Non-streaming chat completion — returns full response with usage details.
     pub async fn chat_completion(
         &self,
-        request: &ChatCompletionRequest
+        request: &ChatCompletionRequest,
     ) -> Result<CompletionResult, ProviderError> {
         let start = Instant::now();
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/v1/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(request)
-            .send().await
+            .send()
+            .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Api { status: status.as_u16(), body });
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
         }
 
         let resp: ChatCompletionResponse = response
-            .json().await
+            .json()
+            .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         let latency_ms = start.elapsed().as_millis() as i32;
 
-        let content = resp.choices
+        let content = resp
+            .choices
             .first()
             .and_then(|c| c.message.content.clone())
             .unwrap_or_default();
@@ -169,10 +184,10 @@ pub struct CompletionResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
-    #[error("network error: {0}")] Network(String),
-    #[error("API error (HTTP {status}): {body}")] Api {
-        status: u16,
-        body: String,
-    },
-    #[error("parse error: {0}")] Parse(String),
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("API error (HTTP {status}): {body}")]
+    Api { status: u16, body: String },
+    #[error("parse error: {0}")]
+    Parse(String),
 }

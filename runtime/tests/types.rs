@@ -2,9 +2,7 @@
 
 use std::collections::HashMap;
 
-use nasiko_runtime::{
-    ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState,
-};
+use nasiko_runtime::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState};
 
 // ─── ContainerId ─────────────────────────────────────────────────────────────
 
@@ -321,14 +319,16 @@ fn deployment_spec_validate_name_invalid_chars_fails() {
 #[test]
 fn deployment_spec_validate_invalid_env_key_fails() {
     let mut spec = minimal_spec();
-    spec.env_vars.insert("KEY=WITH=EQUALS".to_owned(), "val".to_owned());
+    spec.env_vars
+        .insert("KEY=WITH=EQUALS".to_owned(), "val".to_owned());
     assert!(spec.validate().is_err());
 }
 
 #[test]
 fn deployment_spec_validate_env_value_with_control_char_fails() {
     let mut spec = minimal_spec();
-    spec.env_vars.insert("KEY".to_owned(), "val\x01ue".to_owned());
+    spec.env_vars
+        .insert("KEY".to_owned(), "val\x01ue".to_owned());
     assert!(spec.validate().is_err());
 }
 
@@ -356,10 +356,7 @@ fn deployment_status_construction() {
     };
     assert_eq!(status.state, RuntimeState::Running);
     assert_eq!(status.replicas_live, 1);
-    assert_eq!(
-        status.endpoint.as_deref(),
-        Some("http://localhost:8080")
-    );
+    assert_eq!(status.endpoint.as_deref(), Some("http://localhost:8080"));
     assert!(status.message.is_none());
 }
 
@@ -428,9 +425,5 @@ fn validate_build_inputs_invalid_tag_chars_fail() {
 fn validate_build_inputs_valid_digest_tag() {
     use nasiko_runtime::validate_build_inputs;
     // sha256 digest reference is valid
-    assert!(validate_build_inputs(
-        b"data",
-        "registry/agent@sha256:abc123def456"
-    )
-    .is_ok());
+    assert!(validate_build_inputs(b"data", "registry/agent@sha256:abc123def456").is_ok());
 }

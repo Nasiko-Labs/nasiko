@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nasiko_runtime::{ContainerId, DeploymentSpec, DockerRuntime, DockerRuntimeConfig, ResourceLimits};
+use nasiko_runtime::{
+    ContainerId, DeploymentSpec, DockerRuntime, DockerRuntimeConfig, ResourceLimits,
+};
 
 // ─── DockerRuntimeConfig pure construction ────────────────────────────────────
 
@@ -122,7 +124,8 @@ fn spec_multi_port_validates() {
 #[test]
 fn spec_env_vars_valid() {
     let mut spec = test_spec();
-    spec.env_vars.insert("API_KEY".to_owned(), "secret123".to_owned());
+    spec.env_vars
+        .insert("API_KEY".to_owned(), "secret123".to_owned());
     spec.env_vars.insert("PORT".to_owned(), "8080".to_owned());
     assert!(spec.validate().is_ok());
 }
@@ -148,7 +151,9 @@ async fn docker_runtime_list_returns_empty_or_agents() {
     use nasiko_runtime::ContainerRuntime;
 
     let cfg = DockerRuntimeConfig::default();
-    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let runtime = DockerRuntime::new(cfg)
+        .await
+        .expect("Docker must be running");
     let result = runtime.list().await;
     assert!(result.is_ok(), "list() should not fail with a live daemon");
 }
@@ -159,9 +164,14 @@ async fn docker_runtime_status_unknown_for_missing_agent() {
     use nasiko_runtime::{ContainerRuntime, RuntimeState};
 
     let cfg = DockerRuntimeConfig::default();
-    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let runtime = DockerRuntime::new(cfg)
+        .await
+        .expect("Docker must be running");
     let id = ContainerId::new("nonexistent-agent-xyz-999");
-    let status = runtime.status(&id).await.expect("status() should not error for missing agent");
+    let status = runtime
+        .status(&id)
+        .await
+        .expect("status() should not error for missing agent");
     // Per the contract: missing container → Unknown state, not an error
     assert_eq!(status.state, RuntimeState::Unknown);
     assert_eq!(status.replicas_live, 0);
@@ -174,7 +184,9 @@ async fn docker_runtime_destroy_nonexistent_is_idempotent() {
     use nasiko_runtime::ContainerRuntime;
 
     let cfg = DockerRuntimeConfig::default();
-    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let runtime = DockerRuntime::new(cfg)
+        .await
+        .expect("Docker must be running");
     let id = ContainerId::new("nonexistent-agent-destroy-test");
     // destroy() on a missing container must succeed (idempotent)
     assert!(runtime.destroy(&id).await.is_ok());
@@ -186,7 +198,9 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
     use nasiko_runtime::{ContainerRuntime, RuntimeState};
 
     let cfg = DockerRuntimeConfig::default();
-    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let runtime = DockerRuntime::new(cfg)
+        .await
+        .expect("Docker must be running");
 
     let spec = DeploymentSpec {
         container_id: ContainerId::new("test-integration-alpine"),
@@ -230,7 +244,10 @@ fn docker_container_id(name: &str) -> String {
         .args(["inspect", "--format", "{{.Id}}", name])
         .output()
         .expect("docker inspect should run");
-    String::from_utf8(out.stdout).expect("utf8").trim().to_owned()
+    String::from_utf8(out.stdout)
+        .expect("utf8")
+        .trim()
+        .to_owned()
 }
 
 fn docker_container_env(name: &str) -> Vec<String> {
@@ -247,7 +264,9 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
     use nasiko_runtime::ContainerRuntime;
 
     let cfg = DockerRuntimeConfig::default();
-    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let runtime = DockerRuntime::new(cfg)
+        .await
+        .expect("Docker must be running");
     let id = ContainerId::new("test-run10a-env-change");
     let _ = runtime.destroy(&id).await;
 
@@ -270,7 +289,10 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
 
     // Same image tag, changed env — this used to be a silent no-op (RUN-10a).
     spec.env_vars.insert("SECRET".to_owned(), "v2".to_owned());
-    runtime.deploy(&spec).await.expect("redeploy with changed env");
+    runtime
+        .deploy(&spec)
+        .await
+        .expect("redeploy with changed env");
 
     let id_after = docker_container_id(container_name);
     assert_ne!(
@@ -295,7 +317,9 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
     use nasiko_runtime::ContainerRuntime;
 
     let cfg = DockerRuntimeConfig::default();
-    let runtime = DockerRuntime::new(cfg).await.expect("Docker must be running");
+    let runtime = DockerRuntime::new(cfg)
+        .await
+        .expect("Docker must be running");
     let id = ContainerId::new("test-run10a-no-change");
     let _ = runtime.destroy(&id).await;
 
@@ -316,7 +340,10 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
     let container_name = "nasiko-agent-test-run10a-no-change";
     let id_before = docker_container_id(container_name);
 
-    runtime.deploy(&spec).await.expect("redeploy, unchanged spec");
+    runtime
+        .deploy(&spec)
+        .await
+        .expect("redeploy, unchanged spec");
     let id_after = docker_container_id(container_name);
     assert_eq!(
         id_before, id_after,

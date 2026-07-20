@@ -91,7 +91,12 @@ impl VectorStore {
         let mut embedded = Vec::with_capacity(agents.len());
 
         for agent in &agents {
-            let prompt = format!("{} {} {}", agent.name, agent.description, agent.tags.join(" "));
+            let prompt = format!(
+                "{} {} {}",
+                agent.name,
+                agent.description,
+                agent.tags.join(" ")
+            );
             let content_hash = hash_prompt(&prompt);
 
             if let Some(cached) = cache.get(&agent.id)
@@ -156,7 +161,10 @@ impl VectorStore {
         Self {
             agents: agents
                 .into_iter()
-                .map(|a| EmbeddedAgent { agent: a, embedding: vec![] })
+                .map(|a| EmbeddedAgent {
+                    agent: a,
+                    embedding: vec![],
+                })
                 .collect(),
             api_key: String::new(),
             base_url: String::new(),
@@ -272,7 +280,9 @@ async fn embed_text(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(RouterError::Embedding(format!("OpenAI embeddings returned {status}: {body}")));
+        return Err(RouterError::Embedding(format!(
+            "OpenAI embeddings returned {status}: {body}"
+        )));
     }
 
     let parsed: OpenAiEmbeddingResponse = resp

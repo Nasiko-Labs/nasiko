@@ -12,11 +12,7 @@ use crate::state::AppState;
 ///
 /// No gateway required: the server validates tokens directly via AuthService.
 /// Revocation is enforced via an O(1) indexed lookup on auth_tokens.token_hash.
-pub async fn require_auth(
-    State(state): State<AppState>,
-    mut req: Request,
-    next: Next,
-) -> Response {
+pub async fn require_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     let claims = match validate_bearer(&state, req.headers()).await {
         Ok(c) => c,
         Err((status, message)) => return (status, message).into_response(),
@@ -30,7 +26,10 @@ pub async fn require_auth(
 /// methods (e.g. the OCI registry's Basic-auth-or-bearer mount, see
 /// `lib.rs`'s `authenticate_oci_request`) can reuse it without going through
 /// the all-or-nothing `middleware::from_fn` wrapper.
-pub(crate) async fn validate_bearer(state: &AppState, headers: &axum::http::HeaderMap) -> Result<Claims, (StatusCode, &'static str)> {
+pub(crate) async fn validate_bearer(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<Claims, (StatusCode, &'static str)> {
     let Some(token) = extract_token(headers) else {
         return Err((StatusCode::UNAUTHORIZED, "missing or invalid token"));
     };

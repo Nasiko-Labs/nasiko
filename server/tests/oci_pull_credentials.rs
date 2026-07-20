@@ -12,12 +12,14 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 async fn insert_user(db: &PgPool, username: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO users (username, email, is_superuser) VALUES ($1, $2, false) RETURNING id")
-        .bind(username)
-        .bind(format!("{username}@oci-pull-test.com"))
-        .fetch_one(db)
-        .await
-        .expect("insert test user")
+    sqlx::query_scalar(
+        "INSERT INTO users (username, email, is_superuser) VALUES ($1, $2, false) RETURNING id",
+    )
+    .bind(username)
+    .bind(format!("{username}@oci-pull-test.com"))
+    .fetch_one(db)
+    .await
+    .expect("insert test user")
 }
 
 async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) -> Uuid {
@@ -46,13 +48,28 @@ async fn insert_manifest(db: &PgPool, repository: &str) {
 async fn get_or_create_mints_once_then_returns_none() {
     let server = common::TestServer::start().await;
     let owner_id = insert_user(&server.db, "pull-cred-owner").await;
-    let agent_id = insert_agent(&server.db, &format!("pull-cred-agent-{}", Uuid::new_v4()), owner_id).await;
+    let agent_id = insert_agent(
+        &server.db,
+        &format!("pull-cred-agent-{}", Uuid::new_v4()),
+        owner_id,
+    )
+    .await;
 
-    let first = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap();
-    assert!(first.is_some(), "first mint must return the plaintext credential");
+    let first = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap();
+    assert!(
+        first.is_some(),
+        "first mint must return the plaintext credential"
+    );
 
-    let second = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap();
-    assert!(second.is_none(), "a live credential already exists — nothing new to seed");
+    let second = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap();
+    assert!(
+        second.is_none(),
+        "a live credential already exists — nothing new to seed"
+    );
 
     server.cleanup().await;
 }
@@ -62,17 +79,41 @@ async fn get_or_create_mints_once_then_returns_none() {
 async fn get_or_create_remints_after_revoke() {
     let server = common::TestServer::start().await;
     let owner_id = insert_user(&server.db, "pull-cred-owner2").await;
-    let agent_id = insert_agent(&server.db, &format!("pull-cred-agent-{}", Uuid::new_v4()), owner_id).await;
+    let agent_id = insert_agent(
+        &server.db,
+        &format!("pull-cred-agent-{}", Uuid::new_v4()),
+        owner_id,
+    )
+    .await;
 
-    let first = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap().unwrap();
-    nasiko_oci::pull_credentials::revoke(&server.db, agent_id).await.unwrap();
+    let first = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
+    nasiko_oci::pull_credentials::revoke(&server.db, agent_id)
+        .await
+        .unwrap();
 
-    let reminted = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap();
-    assert!(reminted.is_some(), "a revoked credential must be treated as absent — re-mints");
-    assert_ne!(reminted.unwrap().token, first.token, "the new token must not reuse the revoked one");
+    let reminted = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap();
+    assert!(
+        reminted.is_some(),
+        "a revoked credential must be treated as absent — re-mints"
+    );
+    assert_ne!(
+        reminted.unwrap().token,
+        first.token,
+        "the new token must not reuse the revoked one"
+    );
 
     // The old token must no longer verify.
-    assert!(nasiko_oci::pull_credentials::verify(&server.db, &first.username, &first.token).await.unwrap().is_none());
+    assert!(
+        nasiko_oci::pull_credentials::verify(&server.db, &first.username, &first.token)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     server.cleanup().await;
 }
@@ -85,10 +126,15 @@ async fn tags_list_allows_matching_pull_credential() {
     let agent_name = format!("pull-cred-agent-{}", Uuid::new_v4());
     let agent_id = insert_agent(&server.db, &agent_name, owner_id).await;
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
-    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap().unwrap();
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     let resp = common::as_pull_credential(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
         &cred.username,
         &cred.token,
     )
@@ -96,7 +142,11 @@ async fn tags_list_allows_matching_pull_credential() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 200, "a pull credential must be able to read its own agent's repo");
+    assert_eq!(
+        resp.status(),
+        200,
+        "a pull credential must be able to read its own agent's repo"
+    );
 
     server.cleanup().await;
 }
@@ -111,10 +161,15 @@ async fn tags_list_denies_pull_credential_for_a_different_repo() {
     let agent_id = insert_agent(&server.db, &agent_name, owner_id).await;
     insert_agent(&server.db, &other_agent_name, owner_id).await;
     insert_manifest(&server.db, &format!("nasiko/{other_agent_name}")).await;
-    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap().unwrap();
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     let resp = common::as_pull_credential(
-        server.client.get(server.url(&format!("/v2/nasiko/{other_agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{other_agent_name}/tags/list"))),
         &cred.username,
         &cred.token,
     )
@@ -122,7 +177,11 @@ async fn tags_list_denies_pull_credential_for_a_different_repo() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 403, "a pull credential must not be able to read a different agent's repo");
+    assert_eq!(
+        resp.status(),
+        403,
+        "a pull credential must not be able to read a different agent's repo"
+    );
 
     server.cleanup().await;
 }
@@ -135,10 +194,15 @@ async fn tags_list_denies_wrong_password() {
     let agent_name = format!("pull-cred-agent-{}", Uuid::new_v4());
     let agent_id = insert_agent(&server.db, &agent_name, owner_id).await;
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
-    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap().unwrap();
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     let resp = common::as_pull_credential(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
         &cred.username,
         "wrong-token",
     )
@@ -159,11 +223,18 @@ async fn tags_list_denies_revoked_credential() {
     let agent_name = format!("pull-cred-agent-{}", Uuid::new_v4());
     let agent_id = insert_agent(&server.db, &agent_name, owner_id).await;
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
-    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap().unwrap();
-    nasiko_oci::pull_credentials::revoke(&server.db, agent_id).await.unwrap();
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
+    nasiko_oci::pull_credentials::revoke(&server.db, agent_id)
+        .await
+        .unwrap();
 
     let resp = common::as_pull_credential(
-        server.client.get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
         &cred.username,
         &cred.token,
     )
@@ -186,7 +257,10 @@ async fn pull_credential_cannot_push_a_manifest() {
     let owner_id = insert_user(&server.db, "pull-cred-owner7").await;
     let agent_name = format!("pull-cred-agent-{}", Uuid::new_v4());
     let agent_id = insert_agent(&server.db, &agent_name, owner_id).await;
-    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id).await.unwrap().unwrap();
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     let resp = common::as_pull_credential(
         server
@@ -201,7 +275,11 @@ async fn pull_credential_cannot_push_a_manifest() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 401, "a pull credential must never be able to push a manifest");
+    assert_eq!(
+        resp.status(),
+        401,
+        "a pull credential must never be able to push a manifest"
+    );
 
     server.cleanup().await;
 }

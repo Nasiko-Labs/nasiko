@@ -38,7 +38,10 @@ pub fn status() -> Result<()> {
     let client = Client::from_active_cluster()?;
     let s: GithubStatus = client.get_json("/auth/github/token")?;
     if s.success {
-        println!("GitHub connected (username: {})", s.username.as_deref().unwrap_or("unknown"));
+        println!(
+            "GitHub connected (username: {})",
+            s.username.as_deref().unwrap_or("unknown")
+        );
     } else {
         println!("GitHub is not connected.");
         println!("Run `nasiko github connect` to authenticate.");
@@ -62,7 +65,12 @@ pub fn repos() -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", Table::new(&repos).with(Style::blank()).with(Alignment::left()));
+    println!(
+        "{}",
+        Table::new(&repos)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
     println!("\n{} repo(s).", repos.len());
     Ok(())
 }
@@ -102,7 +110,12 @@ pub fn clone(repo: Option<&str>, branch: Option<&str>) -> Result<()> {
         }
         let names: Vec<String> = repos
             .iter()
-            .map(|r| r.full_name.as_deref().unwrap_or(r.name.as_str()).to_string())
+            .map(|r| {
+                r.full_name
+                    .as_deref()
+                    .unwrap_or(r.name.as_str())
+                    .to_string()
+            })
             .collect();
         let idx = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Select a repository to clone and deploy")
@@ -121,13 +134,26 @@ pub fn clone(repo: Option<&str>, branch: Option<&str>) -> Result<()> {
     )?;
     let data = result.get("data").cloned().unwrap_or(result.clone());
 
-    let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    let success = data
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if success {
-        let agent_name = data.get("agent_name").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("uploaded");
-        println!("Agent '{}' cloned and deployed (status: {}).", agent_name, status);
+        let agent_name = data
+            .get("agent_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let status = data
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("uploaded");
+        println!(
+            "Agent '{}' cloned and deployed (status: {}).",
+            agent_name, status
+        );
     } else {
-        let msg = data.get("status")
+        let msg = data
+            .get("status")
             .or_else(|| result.get("message"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown error");

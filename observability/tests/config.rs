@@ -192,9 +192,7 @@ fn telemetry_config_falls_back_to_default_ratio_on_invalid_value() {
 fn telemetry_config_reads_otlp_headers_from_env() {
     let _guard = ENV_LOCK.lock().unwrap();
     let prev = std::env::var("OTEL_EXPORTER_OTLP_HEADERS").ok();
-    unsafe {
-        std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer token")
-    };
+    unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer token") };
     let cfg = TelemetryConfig::from_env();
     match prev {
         Some(v) => unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", v) },

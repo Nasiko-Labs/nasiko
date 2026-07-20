@@ -35,41 +35,70 @@ async fn insert_user(db: &sqlx::PgPool, username: &str) -> Uuid {
 /// unlike the read-side `check_repo_access`, an unclaimed repo name does NOT
 /// grant delete access. Tests that DELETE a blob must claim the repo first.
 async fn insert_agent(db: &sqlx::PgPool, name: &str, owner_id: Uuid) {
-    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')")
-        .bind(name)
-        .bind(owner_id)
-        .execute(db)
-        .await
-        .expect("insert test agent");
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .execute(db)
+    .await
+    .expect("insert test agent");
 }
 
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    let hex_digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let hex_digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     format!("sha256:{hex_digest}")
 }
 
 /// Push a small blob via the real upload flow (POST initiate -> PUT
 /// complete, no PATCH chunks needed for a single-shot body) and return its
 /// digest.
-async fn push_blob(server: &common::TestServer, owner: &str, repo: &str, user_id: &str, username: &str, data: &[u8]) -> String {
+async fn push_blob(
+    server: &common::TestServer,
+    owner: &str,
+    repo: &str,
+    user_id: &str,
+    username: &str,
+    data: &[u8],
+) -> String {
     let digest = sha256_hex(data);
 
     let init_resp = common::as_member(
-        server.client.post(server.url(&format!("/v2/{owner}/{repo}/blobs/uploads/"))),
-        user_id, username,
+        server
+            .client
+            .post(server.url(&format!("/v2/{owner}/{repo}/blobs/uploads/"))),
+        user_id,
+        username,
     )
-    .send().await.unwrap();
+    .send()
+    .await
+    .unwrap();
     assert_eq!(init_resp.status(), 202, "initiate upload must succeed");
-    let upload_uuid = init_resp.headers().get("docker-upload-uuid").unwrap().to_str().unwrap().to_string();
+    let upload_uuid = init_resp
+        .headers()
+        .get("docker-upload-uuid")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
 
     let complete_resp = common::as_member(
-        server.client.put(server.url(&format!("/v2/{owner}/{repo}/blobs/uploads/{upload_uuid}?digest={digest}"))),
-        user_id, username,
+        server.client.put(server.url(&format!(
+            "/v2/{owner}/{repo}/blobs/uploads/{upload_uuid}?digest={digest}"
+        ))),
+        user_id,
+        username,
     )
     .body(data.to_vec())
-    .send().await.unwrap();
+    .send()
+    .await
+    .unwrap();
     assert_eq!(complete_resp.status(), 201, "complete upload must succeed");
 
     digest
@@ -78,8 +107,13 @@ async fn push_blob(server: &common::TestServer, owner: &str, repo: &str, user_id
 /// Push a manifest referencing `layer_digest`/`config_digest` via the real
 /// PUT flow, so `put_manifest`'s blob-ref extraction actually runs.
 async fn push_manifest(
-    server: &common::TestServer, repo: &str, reference: &str,
-    user_id: &str, username: &str, config_digest: &str, layer_digest: &str,
+    server: &common::TestServer,
+    repo: &str,
+    reference: &str,
+    user_id: &str,
+    username: &str,
+    config_digest: &str,
+    layer_digest: &str,
 ) -> reqwest::Response {
     let body = serde_json::json!({
         "schemaVersion": 2,
@@ -89,12 +123,17 @@ async fn push_manifest(
     });
 
     common::as_member(
-        server.client.put(server.url(&format!("/v2/nasiko/{repo}/manifests/{reference}"))),
-        user_id, username,
+        server
+            .client
+            .put(server.url(&format!("/v2/nasiko/{repo}/manifests/{reference}"))),
+        user_id,
+        username,
     )
     .header("content-type", "application/vnd.oci.image.manifest.v1+json")
     .json(&body)
-    .send().await.unwrap()
+    .send()
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -104,10 +143,35 @@ async fn manifest_push_records_blob_refs_for_config_and_layers() {
     let owner_id = insert_user(&server.db, "oci-refs-owner").await;
     let repo = format!("oci-refs-repo-{}", Uuid::new_v4());
 
-    let config_digest = push_blob(&server, "nasiko", &repo, &owner_id.to_string(), "oci-refs-owner", b"config-bytes").await;
-    let layer_digest = push_blob(&server, "nasiko", &repo, &owner_id.to_string(), "oci-refs-owner", b"layer-bytes").await;
+    let config_digest = push_blob(
+        &server,
+        "nasiko",
+        &repo,
+        &owner_id.to_string(),
+        "oci-refs-owner",
+        b"config-bytes",
+    )
+    .await;
+    let layer_digest = push_blob(
+        &server,
+        "nasiko",
+        &repo,
+        &owner_id.to_string(),
+        "oci-refs-owner",
+        b"layer-bytes",
+    )
+    .await;
 
-    let resp = push_manifest(&server, &repo, "latest", &owner_id.to_string(), "oci-refs-owner", &config_digest, &layer_digest).await;
+    let resp = push_manifest(
+        &server,
+        &repo,
+        "latest",
+        &owner_id.to_string(),
+        "oci-refs-owner",
+        &config_digest,
+        &layer_digest,
+    )
+    .await;
     assert_eq!(resp.status(), 201);
 
     let full_repo = format!("nasiko/{repo}");
@@ -119,7 +183,10 @@ async fn manifest_push_records_blob_refs_for_config_and_layers() {
     .fetch_one(&server.db)
     .await
     .unwrap();
-    assert_eq!(count, 2, "both config and layer digests must be linked to the pushing repo");
+    assert_eq!(
+        count, 2,
+        "both config and layer digests must be linked to the pushing repo"
+    );
 
     server.cleanup().await;
 }
@@ -137,39 +204,112 @@ async fn delete_blob_shared_across_repos_preserves_other_repos_copy() {
     // Both repos push a manifest referencing the IDENTICAL layer digest
     // (byte-identical layer content forces the digest collision).
     let shared_layer = b"identical-shared-layer-bytes";
-    let layer_digest = push_blob(&server, "nasiko", &repo_a, &owner_a.to_string(), "oci-shared-a", shared_layer).await;
-    push_blob(&server, "nasiko", &repo_b, &owner_b.to_string(), "oci-shared-b", shared_layer).await;
-    let config_a = push_blob(&server, "nasiko", &repo_a, &owner_a.to_string(), "oci-shared-a", b"config-a").await;
-    let config_b = push_blob(&server, "nasiko", &repo_b, &owner_b.to_string(), "oci-shared-b", b"config-b").await;
+    let layer_digest = push_blob(
+        &server,
+        "nasiko",
+        &repo_a,
+        &owner_a.to_string(),
+        "oci-shared-a",
+        shared_layer,
+    )
+    .await;
+    push_blob(
+        &server,
+        "nasiko",
+        &repo_b,
+        &owner_b.to_string(),
+        "oci-shared-b",
+        shared_layer,
+    )
+    .await;
+    let config_a = push_blob(
+        &server,
+        "nasiko",
+        &repo_a,
+        &owner_a.to_string(),
+        "oci-shared-a",
+        b"config-a",
+    )
+    .await;
+    let config_b = push_blob(
+        &server,
+        "nasiko",
+        &repo_b,
+        &owner_b.to_string(),
+        "oci-shared-b",
+        b"config-b",
+    )
+    .await;
 
-    let resp_a = push_manifest(&server, &repo_a, "latest", &owner_a.to_string(), "oci-shared-a", &config_a, &layer_digest).await;
+    let resp_a = push_manifest(
+        &server,
+        &repo_a,
+        "latest",
+        &owner_a.to_string(),
+        "oci-shared-a",
+        &config_a,
+        &layer_digest,
+    )
+    .await;
     assert_eq!(resp_a.status(), 201);
-    let resp_b = push_manifest(&server, &repo_b, "latest", &owner_b.to_string(), "oci-shared-b", &config_b, &layer_digest).await;
+    let resp_b = push_manifest(
+        &server,
+        &repo_b,
+        "latest",
+        &owner_b.to_string(),
+        "oci-shared-b",
+        &config_b,
+        &layer_digest,
+    )
+    .await;
     assert_eq!(resp_b.status(), 201);
 
     // Owner A deletes the shared layer from THEIR repo.
     let del_resp = common::as_member(
-        server.client.delete(server.url(&format!("/v2/nasiko/{repo_a}/blobs/{layer_digest}"))),
-        &owner_a.to_string(), "oci-shared-a",
+        server
+            .client
+            .delete(server.url(&format!("/v2/nasiko/{repo_a}/blobs/{layer_digest}"))),
+        &owner_a.to_string(),
+        "oci-shared-a",
     )
-    .send().await.unwrap();
+    .send()
+    .await
+    .unwrap();
     assert_eq!(del_resp.status(), 202);
 
     // Repo A can no longer read it...
     let get_a = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{repo_a}/blobs/{layer_digest}"))),
-        &owner_a.to_string(), "oci-shared-a",
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{repo_a}/blobs/{layer_digest}"))),
+        &owner_a.to_string(),
+        "oci-shared-a",
     )
-    .send().await.unwrap();
-    assert_eq!(get_a.status(), 404, "repo A deleted its own reference, so it should no longer see the blob");
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        get_a.status(),
+        404,
+        "repo A deleted its own reference, so it should no longer see the blob"
+    );
 
     // ...but repo B's copy is untouched (physical object still exists, still linked to B).
     let get_b = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{repo_b}/blobs/{layer_digest}"))),
-        &owner_b.to_string(), "oci-shared-b",
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{repo_b}/blobs/{layer_digest}"))),
+        &owner_b.to_string(),
+        "oci-shared-b",
     )
-    .send().await.unwrap();
-    assert_eq!(get_b.status(), 200, "repo B must still be able to fetch the shared layer after A deleted its own reference");
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        get_b.status(),
+        200,
+        "repo B must still be able to fetch the shared layer after A deleted its own reference"
+    );
 
     server.cleanup().await;
 }
@@ -182,16 +322,46 @@ async fn delete_blob_removes_physical_object_once_last_reference_drops() {
     let repo = format!("oci-lastref-repo-{}", Uuid::new_v4());
     insert_agent(&server.db, &repo, owner_id).await;
 
-    let layer_digest = push_blob(&server, "nasiko", &repo, &owner_id.to_string(), "oci-lastref", b"solo-layer-bytes").await;
-    let config_digest = push_blob(&server, "nasiko", &repo, &owner_id.to_string(), "oci-lastref", b"solo-config").await;
-    let resp = push_manifest(&server, &repo, "latest", &owner_id.to_string(), "oci-lastref", &config_digest, &layer_digest).await;
+    let layer_digest = push_blob(
+        &server,
+        "nasiko",
+        &repo,
+        &owner_id.to_string(),
+        "oci-lastref",
+        b"solo-layer-bytes",
+    )
+    .await;
+    let config_digest = push_blob(
+        &server,
+        "nasiko",
+        &repo,
+        &owner_id.to_string(),
+        "oci-lastref",
+        b"solo-config",
+    )
+    .await;
+    let resp = push_manifest(
+        &server,
+        &repo,
+        "latest",
+        &owner_id.to_string(),
+        "oci-lastref",
+        &config_digest,
+        &layer_digest,
+    )
+    .await;
     assert_eq!(resp.status(), 201);
 
     let del_resp = common::as_member(
-        server.client.delete(server.url(&format!("/v2/nasiko/{repo}/blobs/{layer_digest}"))),
-        &owner_id.to_string(), "oci-lastref",
+        server
+            .client
+            .delete(server.url(&format!("/v2/nasiko/{repo}/blobs/{layer_digest}"))),
+        &owner_id.to_string(),
+        "oci-lastref",
     )
-    .send().await.unwrap();
+    .send()
+    .await
+    .unwrap();
     assert_eq!(del_resp.status(), 202);
 
     let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM oci_blob_refs WHERE digest = $1")
@@ -214,33 +384,81 @@ async fn get_blob_confidentiality_denies_repo_that_never_referenced_digest() {
     let repo_b = format!("oci-confid-repo-b-{}", Uuid::new_v4());
 
     // A pushes a blob + manifest referencing it under repo A only.
-    let secret_layer = push_blob(&server, "nasiko", &repo_a, &owner_a.to_string(), "oci-confid-a", b"a-private-layer").await;
-    let config_a = push_blob(&server, "nasiko", &repo_a, &owner_a.to_string(), "oci-confid-a", b"config-a2").await;
-    let resp = push_manifest(&server, &repo_a, "latest", &owner_a.to_string(), "oci-confid-a", &config_a, &secret_layer).await;
+    let secret_layer = push_blob(
+        &server,
+        "nasiko",
+        &repo_a,
+        &owner_a.to_string(),
+        "oci-confid-a",
+        b"a-private-layer",
+    )
+    .await;
+    let config_a = push_blob(
+        &server,
+        "nasiko",
+        &repo_a,
+        &owner_a.to_string(),
+        "oci-confid-a",
+        b"config-a2",
+    )
+    .await;
+    let resp = push_manifest(
+        &server,
+        &repo_a,
+        "latest",
+        &owner_a.to_string(),
+        "oci-confid-a",
+        &config_a,
+        &secret_layer,
+    )
+    .await;
     assert_eq!(resp.status(), 201);
 
     // B owns repo_b (a real, claimed repo) but never referenced this digest.
     // A stranger who merely knows the digest must not be able to read it via B's repo.
     let get_resp = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{repo_b}/blobs/{secret_layer}"))),
-        &owner_b.to_string(), "oci-confid-b",
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{repo_b}/blobs/{secret_layer}"))),
+        &owner_b.to_string(),
+        "oci-confid-b",
     )
-    .send().await.unwrap();
-    assert_eq!(get_resp.status(), 404, "B must not read a digest only ever pushed under A's repo");
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        get_resp.status(),
+        404,
+        "B must not read a digest only ever pushed under A's repo"
+    );
 
     let head_resp = common::as_member(
-        server.client.head(server.url(&format!("/v2/nasiko/{repo_b}/blobs/{secret_layer}"))),
-        &owner_b.to_string(), "oci-confid-b",
+        server
+            .client
+            .head(server.url(&format!("/v2/nasiko/{repo_b}/blobs/{secret_layer}"))),
+        &owner_b.to_string(),
+        "oci-confid-b",
     )
-    .send().await.unwrap();
-    assert_eq!(head_resp.status(), 404, "HEAD must be gated the same as GET, not left as a size/existence oracle");
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        head_resp.status(),
+        404,
+        "HEAD must be gated the same as GET, not left as a size/existence oracle"
+    );
 
     // Sanity: A itself can still read it.
     let get_a = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{repo_a}/blobs/{secret_layer}"))),
-        &owner_a.to_string(), "oci-confid-a",
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{repo_a}/blobs/{secret_layer}"))),
+        &owner_a.to_string(),
+        "oci-confid-a",
     )
-    .send().await.unwrap();
+    .send()
+    .await
+    .unwrap();
     assert_eq!(get_a.status(), 200);
 
     server.cleanup().await;
@@ -255,32 +473,100 @@ async fn two_repos_pushing_identical_manifest_content_dont_clobber_each_other() 
     let repo_a = format!("oci-hijack-repo-a-{}", Uuid::new_v4());
     let repo_b = format!("oci-hijack-repo-b-{}", Uuid::new_v4());
 
-    let config_digest = push_blob(&server, "nasiko", &repo_a, &owner_a.to_string(), "oci-hijack-a", b"shared-config").await;
-    let layer_digest = push_blob(&server, "nasiko", &repo_a, &owner_a.to_string(), "oci-hijack-a", b"shared-layer").await;
+    let config_digest = push_blob(
+        &server,
+        "nasiko",
+        &repo_a,
+        &owner_a.to_string(),
+        "oci-hijack-a",
+        b"shared-config",
+    )
+    .await;
+    let layer_digest = push_blob(
+        &server,
+        "nasiko",
+        &repo_a,
+        &owner_a.to_string(),
+        "oci-hijack-a",
+        b"shared-layer",
+    )
+    .await;
     // Make the same blobs visible under repo B too so B's push doesn't 404 on linkage elsewhere.
-    push_blob(&server, "nasiko", &repo_b, &owner_b.to_string(), "oci-hijack-b", b"shared-config").await;
-    push_blob(&server, "nasiko", &repo_b, &owner_b.to_string(), "oci-hijack-b", b"shared-layer").await;
+    push_blob(
+        &server,
+        "nasiko",
+        &repo_b,
+        &owner_b.to_string(),
+        "oci-hijack-b",
+        b"shared-config",
+    )
+    .await;
+    push_blob(
+        &server,
+        "nasiko",
+        &repo_b,
+        &owner_b.to_string(),
+        "oci-hijack-b",
+        b"shared-layer",
+    )
+    .await;
 
     // Byte-identical manifest content pushed to two different repos under different tags.
-    let resp_a = push_manifest(&server, &repo_a, "v1", &owner_a.to_string(), "oci-hijack-a", &config_digest, &layer_digest).await;
+    let resp_a = push_manifest(
+        &server,
+        &repo_a,
+        "v1",
+        &owner_a.to_string(),
+        "oci-hijack-a",
+        &config_digest,
+        &layer_digest,
+    )
+    .await;
     assert_eq!(resp_a.status(), 201);
-    let resp_b = push_manifest(&server, &repo_b, "v2", &owner_b.to_string(), "oci-hijack-b", &config_digest, &layer_digest).await;
+    let resp_b = push_manifest(
+        &server,
+        &repo_b,
+        "v2",
+        &owner_b.to_string(),
+        "oci-hijack-b",
+        &config_digest,
+        &layer_digest,
+    )
+    .await;
     assert_eq!(resp_b.status(), 201);
 
     // Both must be independently retrievable under their OWN repo/tag.
     let get_a = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{repo_a}/manifests/v1"))),
-        &owner_a.to_string(), "oci-hijack-a",
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{repo_a}/manifests/v1"))),
+        &owner_a.to_string(),
+        "oci-hijack-a",
     )
-    .send().await.unwrap();
-    assert_eq!(get_a.status(), 200, "repo A's tag must survive repo B pushing identical content");
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        get_a.status(),
+        200,
+        "repo A's tag must survive repo B pushing identical content"
+    );
 
     let get_b = common::as_member(
-        server.client.get(server.url(&format!("/v2/nasiko/{repo_b}/manifests/v2"))),
-        &owner_b.to_string(), "oci-hijack-b",
+        server
+            .client
+            .get(server.url(&format!("/v2/nasiko/{repo_b}/manifests/v2"))),
+        &owner_b.to_string(),
+        "oci-hijack-b",
     )
-    .send().await.unwrap();
-    assert_eq!(get_b.status(), 200, "repo B's own push must be retrievable under its own tag");
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        get_b.status(),
+        200,
+        "repo B's own push must be retrievable under its own tag"
+    );
 
     server.cleanup().await;
 }
@@ -345,14 +631,19 @@ async fn backfill_sql_populates_refs_from_existing_manifest_content() {
     .await
     .unwrap();
 
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT digest FROM oci_blob_refs WHERE repository = $1 ORDER BY digest")
-        .bind(&repo)
-        .fetch_all(&server.db)
-        .await
-        .unwrap();
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT digest FROM oci_blob_refs WHERE repository = $1 ORDER BY digest")
+            .bind(&repo)
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
     let digests: Vec<&str> = rows.iter().map(|(d,)| d.as_str()).collect();
 
-    assert_eq!(digests, vec![config_digest, layer_digest], "backfill must extract both config and layer digests from pre-existing content");
+    assert_eq!(
+        digests,
+        vec![config_digest, layer_digest],
+        "backfill must extract both config and layer digests from pre-existing content"
+    );
 
     server.cleanup().await;
 }
@@ -464,13 +755,25 @@ async fn get_referrers_join_scoped_to_repository_not_just_digest() {
 
     let (owner_path, repo_path) = repo_a.split_once('/').unwrap();
     let referrers: Value = common::as_member(
-        server.client.get(server.url(&format!("/v2/{owner_path}/{repo_path}/referrers/{subject_digest}"))),
-        &owner_id.to_string(), "oci-referrers-owner",
+        server.client.get(server.url(&format!(
+            "/v2/{owner_path}/{repo_path}/referrers/{subject_digest}"
+        ))),
+        &owner_id.to_string(),
+        "oci-referrers-owner",
     )
-    .send().await.unwrap().json().await.unwrap();
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
 
     let manifests = referrers["manifests"].as_array().unwrap();
-    assert_eq!(manifests.len(), 1, "must return exactly one entry, not one per repository sharing the digest: {manifests:?}");
+    assert_eq!(
+        manifests.len(),
+        1,
+        "must return exactly one entry, not one per repository sharing the digest: {manifests:?}"
+    );
 
     server.cleanup().await;
 }

@@ -58,7 +58,10 @@ pub async fn spawn_mock_llm() -> MockLlmHandle {
         let _ = axum::serve(listener, app).await;
     });
 
-    MockLlmHandle { base_url: format!("http://{addr}"), _task: task }
+    MockLlmHandle {
+        base_url: format!("http://{addr}"),
+        _task: task,
+    }
 }
 
 const MOCK_TEXT: &str = "Mocked orchestrator response — no real LLM call was made.";

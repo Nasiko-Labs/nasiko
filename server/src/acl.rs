@@ -26,7 +26,10 @@ pub async fn can_access_agent(
     agent_id: Uuid,
 ) -> bool {
     let identity: nasiko_auth::Identity = claims.clone().into();
-    state.auth.can_access_agent(&identity, &agent_id.to_string()).await
+    state
+        .auth
+        .can_access_agent(&identity, &agent_id.to_string())
+        .await
 }
 
 /// Owner-or-superuser check for **mutating / destructive** operations (update,
@@ -86,16 +89,12 @@ pub async fn check_agent_acl(
 
 /// Fetch the set of agent IDs that `caller_agent_id` is explicitly allowed to invoke.
 /// Returns an empty Vec when the caller has no grants (all calls denied by default).
-pub async fn allowed_targets(
-    db: &PgPool,
-    caller_agent_id: Uuid,
-) -> Result<Vec<Uuid>, sqlx::Error> {
-    let targets: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT target_agent_id FROM agent_acl WHERE caller_agent_id = $1",
-    )
-    .bind(caller_agent_id)
-    .fetch_all(db)
-    .await?;
+pub async fn allowed_targets(db: &PgPool, caller_agent_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
+    let targets: Vec<(Uuid,)> =
+        sqlx::query_as("SELECT target_agent_id FROM agent_acl WHERE caller_agent_id = $1")
+            .bind(caller_agent_id)
+            .fetch_all(db)
+            .await?;
 
     Ok(targets.into_iter().map(|(id,)| id).collect())
 }
@@ -144,7 +143,10 @@ impl CallGuard for CpCallGuard {
                         "ACL check failed".to_string()
                     })?;
                 if !allowed {
-                    return Err(format!("agent ACL denied: caller cannot invoke '{}'", target));
+                    return Err(format!(
+                        "agent ACL denied: caller cannot invoke '{}'",
+                        target
+                    ));
                 }
             }
 
@@ -171,22 +173,22 @@ impl CallGuard for CpCallGuard {
             // Pop from call stack so cycle detection allows repeated calls
             self.flow_guard.record_return(&ctx).await;
             if tokens_used > 0
-                && let Err(e) = self.flow_guard.record_tokens(&ctx, tokens_used).await {
-                    warn!(%e, "flow token budget exceeded after call");
-                }
+                && let Err(e) = self.flow_guard.record_tokens(&ctx, tokens_used).await
+            {
+                warn!(%e, "flow token budget exceeded after call");
+            }
         })
     }
 }
 
 /// Resolve an agent name to its UUID.
 async fn resolve_agent_id(db: &PgPool, agent_name: &str) -> Result<Uuid, String> {
-    let id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM agents WHERE name = $1 AND status = 'running'",
-    )
-    .bind(agent_name)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| format!("db error resolving agent '{}': {}", agent_name, e))?;
+    let id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND status = 'running'")
+            .bind(agent_name)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("db error resolving agent '{}': {}", agent_name, e))?;
 
     id.ok_or_else(|| format!("agent '{}' not found or not running", agent_name))
 }

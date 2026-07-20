@@ -55,7 +55,10 @@ fn flow_rejection_cycle_display() {
 
 #[test]
 fn flow_rejection_fan_out_display() {
-    let r = FlowRejection::MaxFanOutExceeded { invocations: 21, max: 20 };
+    let r = FlowRejection::MaxFanOutExceeded {
+        invocations: 21,
+        max: 20,
+    };
     let s = r.to_string();
     assert!(s.contains("fan"), "display must mention fan-out");
     assert!(s.contains("21") && s.contains("20"));
@@ -63,16 +66,25 @@ fn flow_rejection_fan_out_display() {
 
 #[test]
 fn flow_rejection_token_budget_display() {
-    let r = FlowRejection::TokenBudgetExhausted { used: 100_001, max: 100_000 };
+    let r = FlowRejection::TokenBudgetExhausted {
+        used: 100_001,
+        max: 100_000,
+    };
     let s = r.to_string();
     assert!(s.contains("token"), "display must mention tokens");
 }
 
 #[test]
 fn flow_rejection_timeout_display() {
-    let r = FlowRejection::FlowTimeout { elapsed_secs: 130, max: 120 };
+    let r = FlowRejection::FlowTimeout {
+        elapsed_secs: 130,
+        max: 120,
+    };
     let s = r.to_string();
-    assert!(s.contains("timeout") || s.contains("time"), "display must mention timeout");
+    assert!(
+        s.contains("timeout") || s.contains("time"),
+        "display must mention timeout"
+    );
     assert!(s.contains("130"));
 }
 
@@ -80,7 +92,10 @@ fn flow_rejection_timeout_display() {
 fn flow_rejection_guard_unavailable_display() {
     let r = FlowRejection::GuardUnavailable;
     let s = r.to_string();
-    assert!(s.contains("unavailable") || s.contains("redis"), "display must explain the guard is unavailable");
+    assert!(
+        s.contains("unavailable") || s.contains("redis"),
+        "display must explain the guard is unavailable"
+    );
 }
 
 // ── FlowGuard without Redis (graceful degradation) ─────────────────────────
@@ -93,7 +108,8 @@ fn flow_rejection_guard_unavailable_display() {
 // URL to exercise that path.
 
 fn unreachable_guard() -> FlowGuard {
-    let client = redis::Client::open("redis://127.0.0.1:1/").expect("client creation always succeeds");
+    let client =
+        redis::Client::open("redis://127.0.0.1:1/").expect("client creation always succeeds");
     FlowGuard::new(client, FlowConfig::default())
 }
 
@@ -150,7 +166,10 @@ async fn guard_init_flow_without_redis_is_noop() {
 
 #[test]
 fn guard_config_accessor() {
-    let cfg = FlowConfig { max_depth: 3, ..FlowConfig::default() };
+    let cfg = FlowConfig {
+        max_depth: 3,
+        ..FlowConfig::default()
+    };
     let client = redis::Client::open("redis://127.0.0.1:1/").unwrap();
     let guard = FlowGuard::new(client, cfg);
     assert_eq!(guard.config().max_depth, 3);
@@ -166,7 +185,10 @@ fn guard_config_accessor() {
 async fn guard_enforces_depth_limit() {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
     let client = redis::Client::open(url).unwrap();
-    let config = FlowConfig { max_depth: 2, ..FlowConfig::default() };
+    let config = FlowConfig {
+        max_depth: 2,
+        ..FlowConfig::default()
+    };
     let guard = FlowGuard::new(client, config);
 
     let ctx = FlowContext::new_root();
@@ -215,7 +237,11 @@ async fn guard_enforces_fan_out_limit() {
 async fn guard_allows_within_limits() {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
     let client = redis::Client::open(url).unwrap();
-    let config = FlowConfig { max_depth: 5, max_fan_out: 10, ..FlowConfig::default() };
+    let config = FlowConfig {
+        max_depth: 5,
+        max_fan_out: 10,
+        ..FlowConfig::default()
+    };
     let guard = FlowGuard::new(client, config);
 
     let ctx = FlowContext::new_root();
@@ -254,7 +280,10 @@ async fn guard_cycle_detected_via_check() {
 async fn guard_token_budget_exhausted() {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
     let client = redis::Client::open(url).unwrap();
-    let config = FlowConfig { max_flow_tokens: 100, ..FlowConfig::default() };
+    let config = FlowConfig {
+        max_flow_tokens: 100,
+        ..FlowConfig::default()
+    };
     let guard = FlowGuard::new(client, config);
 
     let ctx = FlowContext::new_root();
@@ -276,7 +305,10 @@ async fn guard_token_budget_exhausted() {
 async fn guard_record_return_decrements_depth() {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
     let client = redis::Client::open(url).unwrap();
-    let config = FlowConfig { max_depth: 2, ..FlowConfig::default() };
+    let config = FlowConfig {
+        max_depth: 2,
+        ..FlowConfig::default()
+    };
     let guard = FlowGuard::new(client, config);
 
     let ctx = FlowContext::new_root();

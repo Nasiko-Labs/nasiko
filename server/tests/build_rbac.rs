@@ -143,8 +143,18 @@ async fn oss_any_identity_reaches_build_handler() {
     let user = create_user(&server, admin_id, "user-build").await;
     let user_id = user["id"].as_str().unwrap();
 
-    let status = try_trigger_build(&server, user_id, false, "member", &Uuid::new_v4().to_string()).await;
-    assert_ne!(status, 403, "OSS allow-all authorizer must not block any identity with a 403");
+    let status = try_trigger_build(
+        &server,
+        user_id,
+        false,
+        "member",
+        &Uuid::new_v4().to_string(),
+    )
+    .await;
+    assert_ne!(
+        status, 403,
+        "OSS allow-all authorizer must not block any identity with a 403"
+    );
 
     server.cleanup().await;
 }
@@ -161,7 +171,14 @@ async fn team_member_can_reach_build_handler() {
     let deployer = create_user(&server, admin_id, "deployer-build").await;
     let deployer_id = deployer["id"].as_str().unwrap();
 
-    let status = try_trigger_build(&server, deployer_id, false, "team_member", &Uuid::new_v4().to_string()).await;
+    let status = try_trigger_build(
+        &server,
+        deployer_id,
+        false,
+        "team_member",
+        &Uuid::new_v4().to_string(),
+    )
+    .await;
     // Handler is reached — 400 (missing source) or 404 (agent not found), never 403.
     assert_ne!(status, 403, "team_member must pass RBAC gate");
 
@@ -176,7 +193,14 @@ async fn superuser_can_trigger_build() {
     let admin = init_admin(&server).await;
     let admin_id = admin["user_id"].as_str().unwrap();
 
-    let status = try_trigger_build(&server, admin_id, true, "admin", &Uuid::new_v4().to_string()).await;
+    let status = try_trigger_build(
+        &server,
+        admin_id,
+        true,
+        "admin",
+        &Uuid::new_v4().to_string(),
+    )
+    .await;
     assert_ne!(status, 403, "superuser must not be blocked");
 
     server.cleanup().await;
@@ -195,7 +219,10 @@ async fn oss_any_identity_reaches_upload_handler() {
     let user_id = user["id"].as_str().unwrap();
 
     let status = try_upload_deploy(&server, user_id, false, "member").await;
-    assert_ne!(status, 403, "OSS allow-all authorizer must not block any identity with a 403");
+    assert_ne!(
+        status, 403,
+        "OSS allow-all authorizer must not block any identity with a 403"
+    );
 
     server.cleanup().await;
 }
@@ -212,15 +239,17 @@ async fn team_member_can_reach_upload_handler() {
 
     let status = try_upload_deploy(&server, deployer_id, false, "team_member").await;
     // Handler reached — 400 (missing source zip), never 403.
-    assert_ne!(status, 403, "team_member must pass RBAC gate for upload-and-deploy");
+    assert_ne!(
+        status, 403,
+        "team_member must pass RBAC gate for upload-and-deploy"
+    );
 
     server.cleanup().await;
 }
 
 // ─── Tests: GET /api/builds/agent/{id} (ownership) ───────────────────
 
-/// Non-owner cannot see build history for another user's agent — degrades to
-/// 200 `{"available": false}` rather than 403 (this is a GET, not a mutation).
+/// Non-owner cannot see build history for another user's agent.
 #[tokio::test]
 #[serial]
 async fn non_owner_cannot_list_builds_for_agent() {
@@ -236,17 +265,11 @@ async fn non_owner_cannot_list_builds_for_agent() {
     let other = create_user(&server, admin_id, "other-deployer").await;
     let other_id = other["id"].as_str().unwrap();
 
-    let token = common::sign_token(other_id, "u", false, "team_member");
-    let res = server
-        .client
-        .get(server.url(&format!("/api/builds/agent/{agent_id}")))
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200, "non-owner's read degrades to unavailable, not 403");
-    let body: Value = res.json().await.unwrap();
-    assert_eq!(body["available"], json!(false));
+    let status = try_list_builds(&server, other_id, false, "team_member", agent_id).await;
+    assert_eq!(
+        status, 403,
+        "non-owner must not see another agent's build history"
+    );
 
     server.cleanup().await;
 }

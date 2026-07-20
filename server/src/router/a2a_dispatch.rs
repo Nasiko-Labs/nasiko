@@ -1,11 +1,11 @@
 use axum::{
+    Json,
     extract::{Multipart, State},
     http::StatusCode,
     response::{
-        sse::{Event, Sse},
         IntoResponse, Response,
+        sse::{Event, Sse},
     },
-    Json,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -13,11 +13,11 @@ use std::convert::Infallible;
 use std::time::Instant;
 use uuid::Uuid;
 
-use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
 use nasiko_react_agent::{
     AgentInfo, AgentSkill as OrcAgentSkill, Orchestrator, OrchestratorConfig, OrchestratorEvent,
     RegistrySource,
 };
+use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
 
 use nasiko_orchestrator::{AgentSelector, SessionHistory};
 
@@ -46,7 +46,9 @@ pub async fn a2a_dispatch_handler(
     Json(req): Json<JsonRpcRequest>,
 ) -> Result<Response, A2aDispatchError> {
     let params: nasiko_types::a2a::SendMessageRequest = serde_json::from_value(
-        req.params.clone().ok_or_else(|| A2aDispatchError::InvalidRequest("missing params".into()))?,
+        req.params
+            .clone()
+            .ok_or_else(|| A2aDispatchError::InvalidRequest("missing params".into()))?,
     )
     .map_err(|e| A2aDispatchError::InvalidRequest(format!("bad params: {e}")))?;
 
@@ -74,12 +76,14 @@ pub async fn a2a_dispatch_handler(
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let agent_id = params.metadata
+    let agent_id = params
+        .metadata
         .as_ref()
         .and_then(|m| m.get("agent_id"))
         .and_then(|v| v.as_str())
         .map(String::from);
-    let session_id = params.metadata
+    let session_id = params
+        .metadata
         .as_ref()
         .and_then(|m| m.get("session_id"))
         .and_then(|v| v.as_str())
@@ -101,7 +105,15 @@ pub async fn a2a_dispatch_handler(
     let query = history.with_current_query(&text);
 
     if is_orchestrator {
-        orchestrator_stream(&state, &query, &task_id, &context_id, user_id, claims.is_superuser).await
+        orchestrator_stream(
+            &state,
+            &query,
+            &task_id,
+            &context_id,
+            user_id,
+            claims.is_superuser,
+        )
+        .await
     } else {
         let target = agent_id.as_deref().unwrap();
         // Resolve the target (UUID or name) to a concrete agent row FIRST, then
@@ -150,7 +162,11 @@ async fn orchestrator_stream(
         };
         let mut accessible = Vec::new();
         for summary in all_agents {
-            if state.auth.can_access_agent(&identity, &summary.id.to_string()).await {
+            if state
+                .auth
+                .can_access_agent(&identity, &summary.id.to_string())
+                .await
+            {
                 accessible.push(summary);
             }
         }
@@ -159,7 +175,7 @@ async fn orchestrator_stream(
 
     let mut agents: Vec<AgentInfo> = Vec::new();
     for summary in &agent_summaries {
-        let endpoint = match resolve_endpoint(state, &summary.name).await {
+        let endpoint = match resolve_endpoint(state, &summary.id.to_string(), &summary.name).await {
             Ok(url) => url,
             Err(_) => continue,
         };
@@ -187,7 +203,13 @@ async fn orchestrator_stream(
     }
 
     let config = OrchestratorConfig {
-        model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into()),
+        // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
+        // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
+        // default rather than re-reading the env var here with a placeholder
+        // fallback ("deepseek-v4-flash") that doesn't exist on a real OpenAI
+        // endpoint and silently 404s every orchestrator call when OPENAI_MODEL
+        // is unset.
+        model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         max_turns: 10,
@@ -210,19 +232,6 @@ async fn orchestrator_stream(
     .bind(query)
     .execute(&state.db)
     .await;
-
-    // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
-    // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
-    // back to this row (see derive_boundary_signals) — so compare this flow_id against the
-    // gateway's `nasiko::llm_router::boundary` log to spot a broken trace-propagation chain.
-    tracing::info!(
-        target: "nasiko::flow",
-        %flow_id,
-        context_id = %context_id,
-        task_id = %task_id,
-        %traceparent,
-        "orchestrator flow started — registered flows row; forwarding traceparent (trace_id == flow_id) to agents"
-    );
 
     let caller_uuid: Option<Uuid> = None;
     let guard = CpCallGuard::new(
@@ -253,7 +262,7 @@ async fn orchestrator_stream(
     let db = state.db.clone();
     let usage_tracker = state.usage_tracker.clone();
     let genai_metrics = state.genai_metrics.clone();
-    let orchestrator_model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
+    let orchestrator_model = state.config.openai_model.clone();
     let orchestrator_start = Instant::now();
 
     let stream = async_stream::stream! {
@@ -463,7 +472,7 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
 ) -> Result<Response, A2aDispatchError> {
-    let endpoint = resolve_endpoint(state, &agent.name)
+    let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
         .map_err(A2aDispatchError::Internal)?;
 
@@ -602,10 +611,8 @@ async fn agent_stream(
             .await
             .map_err(|e| A2aDispatchError::Internal(format!("invalid agent JSON: {e}")))?;
 
-        let text = nasiko_types::a2a::extract_text(
-            resp_body.get("result").unwrap_or(&resp_body),
-        )
-        .unwrap_or_else(|| "No response".into());
+        let text = nasiko_types::a2a::extract_text(resp_body.get("result").unwrap_or(&resp_body))
+            .unwrap_or_else(|| "No response".into());
 
         let artifact_id = Uuid::new_v4().to_string();
         let flow_id_cleanup = flow_id;
@@ -667,7 +674,10 @@ pub async fn router_stats_handler(
     .await
     .map_err(|e| {
         tracing::error!(%e, "router_stats_handler: db error");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error".to_string(),
+        )
     })?;
 
     let data: Vec<serde_json::Value> = rows
@@ -687,7 +697,9 @@ pub async fn router_stats_handler(
         })
         .collect();
 
-    Ok(axum::Json(serde_json::json!({ "data": data, "total": data.len() })))
+    Ok(axum::Json(
+        serde_json::json!({ "data": data, "total": data.len() }),
+    ))
 }
 
 #[derive(sqlx::FromRow)]
@@ -733,8 +745,9 @@ pub async fn a2a_upload_handler(
             .map_err(|e| A2aDispatchError::InvalidRequest(format!("field read error: {e}")))?;
 
         if field_name == "query" {
-            query = String::from_utf8(bytes.to_vec())
-                .map_err(|_| A2aDispatchError::InvalidRequest("query must be valid UTF-8".into()))?;
+            query = String::from_utf8(bytes.to_vec()).map_err(|_| {
+                A2aDispatchError::InvalidRequest("query must be valid UTF-8".into())
+            })?;
         } else {
             file_count += 1;
         }
@@ -760,7 +773,15 @@ pub async fn a2a_upload_handler(
         file_count
     );
 
-    orchestrator_stream(&state, &query, &task_id, &context_id, user_id, claims.is_superuser).await
+    orchestrator_stream(
+        &state,
+        &query,
+        &task_id,
+        &context_id,
+        user_id,
+        claims.is_superuser,
+    )
+    .await
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -769,27 +790,37 @@ fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
-async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, String> {
-    // One row gives us everything: the UUID (containers are UUID-keyed — see
-    // `build_agent_spec` — so a name-keyed runtime lookup always misses), the
-    // card-declared transport_path, and the deploy-time URL snapshot fallback.
-    let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, transport_path, url FROM agents WHERE name = $1 AND status = 'running'",
+async fn resolve_endpoint(
+    state: &AppState,
+    agent_id: &str,
+    agent_name: &str,
+) -> Result<String, String> {
+    // Containers are UUID-keyed (see `build_agent_spec`), so the runtime lookup
+    // below needs `agent_id`, not `agent_name` — a name-keyed lookup always
+    // misses. `agent_name` is kept only for the DB fallback query and error
+    // messages, which are keyed by name for readability.
+    let agent_id: Uuid = agent_id
+        .parse()
+        .map_err(|e| format!("invalid agent id: {e}"))?;
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT transport_path, url FROM agents WHERE id = $1 AND status = 'running'",
     )
-    .bind(agent_name)
+    .bind(agent_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| format!("db lookup: {e}"))?;
 
-    let Some((agent_id, transport_path, stored_url)) = row else {
+    let Some((transport_path, stored_url)) = row else {
         return Err(format!("no running agent named '{agent_name}'"));
     };
 
     // The A2A spec fixes no path — it must come from the agent's card, never
-    // be assumed. Rows predating transport_path get the legacy Nasiko mount.
+    // be assumed. The a2a-server-lf crate (used by the example agents) mounts
+    // its JSON-RPC handler at the container root, not `/jsonrpc` — a row with
+    // no captured transport_path must default to root, not guess a path the
+    // agent doesn't actually serve.
     let path = match transport_path.as_deref() {
-        None => "/jsonrpc",
-        Some("/") | Some("") => "",
+        None | Some("/") | Some("") => "",
         Some(p) => p,
     };
 
@@ -819,10 +850,11 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
 
     // Fall back to stored URL (e.g. external agents, K8s with stable DNS).
     if let Some(ref url) = stored_url
-        && !url.is_empty() {
-            let u = url.trim_end_matches('/');
-            return Ok(format!("{u}{path}"));
-        }
+        && !url.is_empty()
+    {
+        let u = url.trim_end_matches('/');
+        return Ok(format!("{u}{path}"));
+    }
 
     Err(format!("no endpoint found for agent '{agent_name}'"))
 }
@@ -831,14 +863,16 @@ async fn resolve_endpoint(state: &AppState, agent_name: &str) -> Result<String, 
 /// Extract the error message if this SSE event represents a TASK_STATE_FAILED status update.
 fn extract_failure_message(data: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
-    let status_update = parsed.get("statusUpdate")
+    let status_update = parsed
+        .get("statusUpdate")
         .or_else(|| parsed.get("result").and_then(|r| r.get("statusUpdate")))?;
     let state = status_update.pointer("/status/state")?.as_str()?;
     if state != "TASK_STATE_FAILED" {
         return None;
     }
     let parts = status_update.pointer("/status/message/parts")?.as_array()?;
-    let text: String = parts.iter()
+    let text: String = parts
+        .iter()
         .filter_map(|p| p.get("text")?.as_str())
         .collect::<Vec<_>>()
         .join("");
@@ -851,8 +885,10 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
     };
 
     // Already in the expected format (no JSON-RPC wrapper)
-    if parsed.get("statusUpdate").is_some() || parsed.get("artifactUpdate").is_some()
-        || parsed.get("task").is_some() || parsed.get("message").is_some()
+    if parsed.get("statusUpdate").is_some()
+        || parsed.get("artifactUpdate").is_some()
+        || parsed.get("task").is_some()
+        || parsed.get("message").is_some()
     {
         return data.to_string();
     }
@@ -866,8 +902,14 @@ fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String 
     match kind {
         "artifact-update" => {
             let artifact = result.get("artifact").cloned().unwrap_or(json!({}));
-            let append = result.get("append").and_then(|a| a.as_bool()).unwrap_or(false);
-            let last_chunk = result.get("final").and_then(|f| f.as_bool()).unwrap_or(false);
+            let append = result
+                .get("append")
+                .and_then(|a| a.as_bool())
+                .unwrap_or(false);
+            let last_chunk = result
+                .get("final")
+                .and_then(|f| f.as_bool())
+                .unwrap_or(false);
 
             let normalized = json!({
                 "artifactUpdate": {

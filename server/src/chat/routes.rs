@@ -69,7 +69,9 @@ struct ListSessionsParams {
     cursor: Option<String>,
     agent_id: Option<Uuid>,
 }
-fn default_session_limit() -> i64 { 50 }
+fn default_session_limit() -> i64 {
+    50
+}
 
 async fn list_sessions(
     State(state): State<AppState>,
@@ -88,8 +90,9 @@ async fn list_sessions(
     let cursor_anchor = params.cursor.as_deref().and_then(decode_cursor);
 
     let query_result: Result<Vec<ChatSessionView>, _> = match (cursor_anchor, params.agent_id) {
-        (None, None) => sqlx::query_as::<_, ChatSessionView>(
-            r#"SELECT cs.*,
+        (None, None) => {
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
                       a.name as agent_name,
                       lm.content as last_message
                FROM chat_sessions cs
@@ -102,14 +105,16 @@ async fn list_sessions(
                WHERE cs.user_id = $1
                ORDER BY cs.updated_at DESC, cs.session_id DESC
                LIMIT $2"#,
-        )
-        .bind(user_id)
-        .bind(fetch)
-        .fetch_all(&state.db)
-        .await,
+            )
+            .bind(user_id)
+            .bind(fetch)
+            .fetch_all(&state.db)
+            .await
+        }
 
-        (None, Some(agent_id)) => sqlx::query_as::<_, ChatSessionView>(
-            r#"SELECT cs.*,
+        (None, Some(agent_id)) => {
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
                       a.name as agent_name,
                       lm.content as last_message
                FROM chat_sessions cs
@@ -122,15 +127,17 @@ async fn list_sessions(
                WHERE cs.user_id = $1 AND cs.agent_id = $2
                ORDER BY cs.updated_at DESC, cs.session_id DESC
                LIMIT $3"#,
-        )
-        .bind(user_id)
-        .bind(agent_id)
-        .bind(fetch)
-        .fetch_all(&state.db)
-        .await,
+            )
+            .bind(user_id)
+            .bind(agent_id)
+            .bind(fetch)
+            .fetch_all(&state.db)
+            .await
+        }
 
-        (Some((cursor_ts, cursor_sid)), None) => sqlx::query_as::<_, ChatSessionView>(
-            r#"SELECT cs.*,
+        (Some((cursor_ts, cursor_sid)), None) => {
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
                       a.name as agent_name,
                       lm.content as last_message
                FROM chat_sessions cs
@@ -144,16 +151,18 @@ async fn list_sessions(
                  AND (cs.updated_at < $2 OR (cs.updated_at = $2 AND cs.session_id < $3))
                ORDER BY cs.updated_at DESC, cs.session_id DESC
                LIMIT $4"#,
-        )
-        .bind(user_id)
-        .bind(cursor_ts)
-        .bind(cursor_sid)
-        .bind(fetch)
-        .fetch_all(&state.db)
-        .await,
+            )
+            .bind(user_id)
+            .bind(cursor_ts)
+            .bind(cursor_sid)
+            .bind(fetch)
+            .fetch_all(&state.db)
+            .await
+        }
 
-        (Some((cursor_ts, cursor_sid)), Some(agent_id)) => sqlx::query_as::<_, ChatSessionView>(
-            r#"SELECT cs.*,
+        (Some((cursor_ts, cursor_sid)), Some(agent_id)) => {
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
                       a.name as agent_name,
                       lm.content as last_message
                FROM chat_sessions cs
@@ -167,14 +176,15 @@ async fn list_sessions(
                  AND (cs.updated_at < $3 OR (cs.updated_at = $3 AND cs.session_id < $4))
                ORDER BY cs.updated_at DESC, cs.session_id DESC
                LIMIT $5"#,
-        )
-        .bind(user_id)
-        .bind(agent_id)
-        .bind(cursor_ts)
-        .bind(cursor_sid)
-        .bind(fetch)
-        .fetch_all(&state.db)
-        .await,
+            )
+            .bind(user_id)
+            .bind(agent_id)
+            .bind(cursor_ts)
+            .bind(cursor_sid)
+            .bind(fetch)
+            .fetch_all(&state.db)
+            .await
+        }
     };
     let mut rows = match query_result {
         Ok(r) => r,
@@ -185,10 +195,13 @@ async fn list_sessions(
     };
 
     let has_more = rows.len() > limit as usize;
-    if has_more { rows.pop(); }
+    if has_more {
+        rows.pop();
+    }
 
     let next_cursor = if has_more {
-        rows.last().map(|r| encode_cursor(r.updated_at, &r.session_id))
+        rows.last()
+            .map(|r| encode_cursor(r.updated_at, &r.session_id))
     } else {
         None
     };
@@ -198,16 +211,13 @@ async fn list_sessions(
     // no backward-paging input at all — a value here would be dead API surface
     // implying a capability that doesn't exist. The UI doesn't read this field
     // (grepped `oss/ui` — no references), so omitting it is a pure cleanup.
-    // Always return the proxy URL derived from agent_id so clients get a
-    // consistent, externally-reachable path regardless of what was stored
-    // (old sessions may have the internal cluster URL).
-    for row in &mut rows {
-        if let Some(id) = row.agent_id {
-            row.agent_url = Some(format!("/api/agents/{id}"));
-        }
-    }
-
-    Json(CursorPage { data: rows, has_more, next_cursor, prev_cursor: None }).into_response()
+    Json(CursorPage {
+        data: rows,
+        has_more,
+        next_cursor,
+        prev_cursor: None,
+    })
+    .into_response()
 }
 
 async fn create_session(
@@ -232,15 +242,15 @@ async fn create_session(
         None => (None, None),
         Some(id_or_name) => {
             let row = if let Ok(uuid) = id_or_name.parse::<Uuid>() {
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM agents WHERE id = $1",
+                sqlx::query_as::<_, (Uuid, Option<String>)>(
+                    "SELECT id, url FROM agents WHERE id = $1",
                 )
                 .bind(uuid)
                 .fetch_optional(&state.db)
                 .await
             } else {
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM agents WHERE name = $1",
+                sqlx::query_as::<_, (Uuid, Option<String>)>(
+                    "SELECT id, url FROM agents WHERE name = $1",
                 )
                 .bind(id_or_name)
                 .fetch_optional(&state.db)
@@ -248,14 +258,11 @@ async fn create_session(
             };
 
             match row {
-                Ok(Some(id)) => {
+                Ok(Some((id, url))) => {
                     if !crate::acl::can_access_agent(&state, &claims, id).await {
                         return StatusCode::FORBIDDEN.into_response();
                     }
-                    // Store the proxy path so clients can extract the agent id
-                    // from the URL (internal cluster URLs are not accessible from outside).
-                    let proxy_url = format!("/api/agents/{id}");
-                    (Some(id), Some(proxy_url))
+                    (Some(id), url)
                 }
                 Ok(None) => {
                     return (StatusCode::BAD_REQUEST, "agent not found").into_response();
@@ -280,7 +287,7 @@ async fn create_session(
             .await;
             match existing {
                 Ok(Some(session)) if session.user_id == user_id => {
-                    return (StatusCode::OK, Json(session_response(session))).into_response();
+                    return (StatusCode::OK, Json(session)).into_response();
                 }
                 Ok(Some(_)) => {
                     return (StatusCode::CONFLICT, "session_id already in use").into_response();
@@ -310,7 +317,7 @@ async fn create_session(
     .await;
 
     match result {
-        Ok(session) => (StatusCode::CREATED, Json(session_response(session))).into_response(),
+        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
         Err(e) => {
             // A dangling user_id FK means the (gateway-verified) JWT references
             // a user that no longer exists — e.g. the DB was reseeded after the
@@ -330,88 +337,28 @@ async fn create_session(
     }
 }
 
-#[derive(serde::Serialize)]
-struct SessionData {
-    session_id: String,
-    created_at: DateTime<Utc>,
-    title: String,
-    agent_id: Option<Uuid>,
-    agent_url: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-struct SessionResponse {
-    data: SessionData,
-    status_code: u16,
-    message: String,
-}
-
-fn session_response(s: ChatSession) -> SessionResponse {
-    SessionResponse {
-        data: SessionData {
-            session_id: s.session_id,
-            created_at: s.created_at,
-            title: s.title,
-            agent_id: s.agent_id,
-            agent_url: s.agent_url,
-        },
-        status_code: 201,
-        message: String::new(),
-    }
-}
-
 async fn get_session(
     State(state): State<AppState>,
     claims: Claims,
     Path(session_id): Path<String>,
-    Query(params): Query<ListMessagesParams>,
 ) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
 
-    let owns = match sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
+    match sqlx::query_as::<_, ChatSession>(
+        "SELECT * FROM chat_sessions WHERE session_id = $1 AND user_id = $2",
     )
     .bind(&session_id)
     .bind(user_id)
-    .fetch_one(&state.db)
+    .fetch_optional(&state.db)
     .await
     {
-        Ok(v) => v,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    if !owns {
-        return StatusCode::NOT_FOUND.into_response();
+        Ok(Some(s)) => Json(s).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
-
-    let limit = params.limit.clamp(1, 500);
-
-    let messages = match sqlx::query_as::<_, ChatMessage>(
-        r#"SELECT * FROM chat_messages
-           WHERE session_id = $1
-           ORDER BY timestamp ASC, id ASC
-           LIMIT $2"#,
-    )
-    .bind(&session_id)
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await
-    {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!(%e, session_id, "get_session messages: db error");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    #[derive(serde::Serialize)]
-    struct Response {
-        data: Vec<ChatMessage>,
-    }
-    Json(Response { data: messages }).into_response()
 }
 
 async fn update_session(
@@ -531,7 +478,9 @@ struct ListMessagesParams {
     prev_cursor: Option<String>,
     next_cursor: Option<String>,
 }
-fn default_message_limit() -> i64 { 100 }
+fn default_message_limit() -> i64 {
+    100
+}
 
 async fn list_messages(
     State(state): State<AppState>,
@@ -568,11 +517,15 @@ async fn list_messages(
     // skips the ones straddling a page boundary (SRV-1). The cursor carries the id;
     // a raw before/after timestamp (no id) uses a sentinel id so the composite
     // comparison reduces to a pure `timestamp` bound (MAX for `>`, nil for `<`).
-    let before = params.prev_cursor.as_deref()
+    let before = params
+        .prev_cursor
+        .as_deref()
         .and_then(decode_cursor)
         .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
         .or(params.before.map(|ts| (ts, Uuid::nil())));
-    let after = params.next_cursor.as_deref()
+    let after = params
+        .next_cursor
+        .as_deref()
         .and_then(decode_cursor)
         .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
         .or(params.after.map(|ts| (ts, Uuid::from_u128(u128::MAX))));
@@ -632,15 +585,21 @@ async fn list_messages(
     };
 
     let has_more = rows.len() > limit as usize;
-    if has_more { rows.pop(); }
+    if has_more {
+        rows.pop();
+    }
 
     // Always present to client in ASC (chronological) order.
-    if !fetched_asc { rows.reverse(); }
+    if !fetched_asc {
+        rows.reverse();
+    }
 
-    let out_prev_cursor = rows.first()
+    let out_prev_cursor = rows
+        .first()
         .map(|r| encode_cursor(r.timestamp, &r.id.to_string()));
     let out_next_cursor = if has_more {
-        rows.last().map(|r| encode_cursor(r.timestamp, &r.id.to_string()))
+        rows.last()
+            .map(|r| encode_cursor(r.timestamp, &r.id.to_string()))
     } else {
         None
     };
@@ -699,7 +658,8 @@ async fn send_message(
     // FIX: filter out JSON null so it stores as SQL NULL, not 'null'::jsonb.
     // 'null'::jsonb IS NOT NULL in Postgres, which would defeat the AND file_parts IS NULL
     // guard in delete_file and permanently stick has_file_parts = true.
-    let file_parts_json = body.file_parts
+    let file_parts_json = body
+        .file_parts
         .filter(|v| !v.is_null())
         .map(sqlx::types::Json);
     let has_file_parts = has_files || file_parts_json.is_some();
@@ -712,8 +672,8 @@ async fn send_message(
     };
 
     let msg = match sqlx::query_as::<_, ChatMessage>(
-        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts, trace_id)
-           VALUES ($1, $2, $3, $4, $5, $6)
+        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts)
+           VALUES ($1, $2, $3, $4, $5)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -721,7 +681,6 @@ async fn send_message(
     .bind(&body.content)
     .bind(&file_parts_json)
     .bind(has_file_parts)
-    .bind(&body.trace_id)
     .fetch_one(&mut *tx)
     .await
     {
@@ -762,12 +721,10 @@ async fn send_message(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    if let Err(e) = sqlx::query(
-        "UPDATE chat_sessions SET updated_at = now() WHERE session_id = $1",
-    )
-    .bind(&session_id)
-    .execute(&state.db)
-    .await
+    if let Err(e) = sqlx::query("UPDATE chat_sessions SET updated_at = now() WHERE session_id = $1")
+        .bind(&session_id)
+        .execute(&state.db)
+        .await
     {
         tracing::warn!(session_id, %e, "failed to touch session updated_at");
     }
@@ -972,11 +929,7 @@ async fn download_file(
         .presigned_get_url(&file.storage_uri, 3600)
         .await
     {
-        Ok(url) => (
-            StatusCode::TEMPORARY_REDIRECT,
-            [(header::LOCATION, url)],
-        )
-            .into_response(),
+        Ok(url) => (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, url)]).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

@@ -14,6 +14,6 @@ pub use context::{ContextConfig, ContextManager, ContextWindow};
 pub use error::OrchestratorError;
 pub use events::OrchestratorEvent;
 pub use guard::CallGuard;
-pub use react_loop::{Orchestrator, OrchestratorConfig, OrchestrationResult, TurnTrace};
+pub use react_loop::{OrchestrationResult, Orchestrator, OrchestratorConfig, TurnTrace};
 pub use registry::{AgentInfo, AgentRegistry, AgentSkill, RegistrySource};
-pub use tool::{A2aTool, DelegationContext};
+pub use tool::A2aTool;

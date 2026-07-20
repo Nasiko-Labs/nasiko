@@ -16,9 +16,18 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/agents/{agent_id}/secrets", get(list_secrets).post(set_secret))
-        .route("/agents/{agent_id}/secrets/import", axum::routing::post(import_secrets))
-        .route("/agents/{agent_id}/secrets/{name}", axum::routing::delete(delete_secret))
+        .route(
+            "/agents/{agent_id}/secrets",
+            get(list_secrets).post(set_secret),
+        )
+        .route(
+            "/agents/{agent_id}/secrets/import",
+            axum::routing::post(import_secrets),
+        )
+        .route(
+            "/agents/{agent_id}/secrets/{name}",
+            axum::routing::delete(delete_secret),
+        )
 }
 
 #[derive(Serialize)]
@@ -42,19 +51,25 @@ async fn list_secrets(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let secrets_env: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT secrets_env FROM agents WHERE id = $1",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let secrets_env: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT secrets_env FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
 
     let names: Vec<SecretListEntry> = match secrets_env {
         Some(obj) => obj
             .as_object()
-            .map(|m| m.keys().map(|k| SecretListEntry { name: k.clone(), updated_at: None }).collect())
+            .map(|m| {
+                m.keys()
+                    .map(|k| SecretListEntry {
+                        name: k.clone(),
+                        updated_at: None,
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         None => vec![],
     };
@@ -162,14 +177,13 @@ async fn import_secrets(
 
 /// Resolve agent secrets_env into a decrypted HashMap for container deployment.
 pub async fn resolve_agent_env(db: &sqlx::PgPool, agent_id: Uuid) -> HashMap<String, String> {
-    let secrets_env: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT secrets_env FROM agents WHERE id = $1",
-    )
-    .bind(agent_id)
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten();
+    let secrets_env: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT secrets_env FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
 
     let Some(obj) = secrets_env.and_then(|v| v.as_object().cloned()) else {
         return HashMap::new();
@@ -209,7 +223,7 @@ pub async fn import_user_secrets(
     .await
     .map_err(|e| e.to_string())?;
 
-    let user_crypto  = SecretsCrypto::for_user(user_id);
+    let user_crypto = SecretsCrypto::for_user(user_id);
     let agent_crypto = SecretsCrypto::for_agent(agent_id);
 
     // Decrypt+re-encrypt each secret, then merge them all into `secrets_env` in a

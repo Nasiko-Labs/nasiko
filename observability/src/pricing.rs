@@ -119,7 +119,10 @@ pub async fn compute_cost(
         Some(p) => p,
         None => {
             if input_tokens > 0 || output_tokens > 0 {
-                tracing::warn!(model, "no pricing found for model — using default fallback price");
+                tracing::warn!(
+                    model,
+                    "no pricing found for model — using default fallback price"
+                );
             }
             DEFAULT_PRICE_PER_1M
         }
@@ -143,7 +146,10 @@ mod tests {
 
     #[test]
     fn static_lookup_matches_substring() {
-        assert_eq!(static_price_per_1m("gpt-4o-2024-11-20"), Some((2.50, 10.00)));
+        assert_eq!(
+            static_price_per_1m("gpt-4o-2024-11-20"),
+            Some((2.50, 10.00))
+        );
         assert_eq!(static_price_per_1m("GPT-4o-mini"), Some((0.15, 0.60)));
         assert_eq!(static_price_per_1m("deepseek-v4-flash"), Some((0.14, 0.28)));
         assert_eq!(static_price_per_1m("totally-unknown"), None);
@@ -153,7 +159,10 @@ mod tests {
     fn specific_names_win_over_prefixes() {
         // gpt-4.1-nano must not match the bare gpt-4.1 entry
         assert_eq!(static_price_per_1m("gpt-4.1-nano"), Some((0.10, 0.40)));
-        assert_eq!(static_price_per_1m("claude-3-5-haiku-20241022"), Some((0.80, 4.00)));
+        assert_eq!(
+            static_price_per_1m("claude-3-5-haiku-20241022"),
+            Some((0.80, 4.00))
+        );
     }
 
     #[tokio::test]
