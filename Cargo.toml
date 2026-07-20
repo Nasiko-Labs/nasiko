@@ -15,12 +15,12 @@ members = [
     "oci",
     "flow",
     "agent-proxy",
+    "mcp-gateway",
 
     "cli",
     "agents/coding",
     "github",
     "oidc",
-    "bench",
 ]
 
 [workspace.package]
@@ -33,8 +33,10 @@ nasiko-auth = { path = "auth" }
 nasiko-config = { path = "config" }
 nasiko-flow = { path = "flow" }
 nasiko-agent-proxy = { path = "agent-proxy" }
+nasiko-mcp-gateway = { path = "mcp-gateway" }
 nasiko-github = { path = "github" }
 nasiko-oidc = { path = "oidc" }
+nasiko-secrets = { path = "secrets" }
 nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }
@@ -57,7 +59,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ─── Database & state ───────────────────────────────────────────────────────
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate", "json"] }
 redis = { version = "0.27", features = ["tokio-comp", "aio"] }
 rust_decimal = { version = "1.36", features = ["serde", "db-postgres"] }
 
@@ -87,7 +89,6 @@ which = "7"
 include_dir = "0.7"
 ratatui = "0.29"
 crossterm = "0.29"
-tabled = "0.21"
 
 # ─── Observability ──────────────────────────────────────────────────────────
 tracing = "0.1"
@@ -123,7 +124,7 @@ async-stream = "0.3"
 
 # ─── Common utilities ───────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 thiserror = "2"
 anyhow = "1"
 base64 = "0.22"

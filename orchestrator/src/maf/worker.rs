@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use nasiko_observability::ObservabilityProvider;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -17,7 +20,13 @@ fn consumer_name() -> String {
     format!("maf-worker-{hostname}-{}", std::process::id())
 }
 
-pub async fn run(db: PgPool, redis: redis::Client, http_client: reqwest::Client, llm: LlmClient) {
+pub async fn run(
+    db: PgPool,
+    redis: redis::Client,
+    http_client: reqwest::Client,
+    observability: Arc<dyn ObservabilityProvider>,
+    llm: LlmClient,
+) {
     let consumer = consumer_name();
 
     let mut conn = match redis.get_multiplexed_async_connection().await {
@@ -39,7 +48,7 @@ pub async fn run(db: PgPool, redis: redis::Client, http_client: reqwest::Client,
         .await;
 
     // Reclaim messages that were in-flight when the server last crashed
-    reclaim_pending(&mut conn, &db, &http_client, &llm, &consumer).await;
+    reclaim_pending(&mut conn, &db, &http_client, observability.as_ref(), &llm, &consumer).await;
 
     info!("MAF worker started, consumer={consumer}, stream={STREAM_KEY}");
 
@@ -65,7 +74,7 @@ pub async fn run(db: PgPool, redis: redis::Client, http_client: reqwest::Client,
             Ok(val) => {
                 for (msg_id, fields) in extract_messages(val) {
                     if let Some(job) = parse_job(&fields) {
-                        process_job(job, &msg_id, &mut conn, &db, &http_client, &llm).await;
+                        process_job(job, &msg_id, &mut conn, &db, &http_client, observability.as_ref(), &llm).await;
                     } else {
                         // Malformed message — ACK to remove from PEL so it doesn't retry forever
                         warn!("MAF worker: could not parse job from message {msg_id}, discarding");
@@ -163,6 +172,7 @@ async fn process_job(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
     http_client: &reqwest::Client,
+    observability: &dyn ObservabilityProvider,
     llm: &LlmClient,
 ) {
     let execution_id = job.execution_id;
@@ -221,7 +231,7 @@ async fn process_job(
         }
     };
 
-    match executor::run_maf(http_client, db, execution_id, user_id, &maf_def, llm).await {
+    match executor::run_maf(http_client, db, observability, execution_id, user_id, &maf_def, llm).await {
         Ok(result) => {
             let step_json = serde_json::to_value(&result.step_results).unwrap_or_default();
             let step_json_str = step_json.to_string();
@@ -311,6 +321,7 @@ async fn reclaim_pending(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
     http_client: &reqwest::Client,
+    observability: &dyn ObservabilityProvider,
     llm: &LlmClient,
     consumer: &str,
 ) {
@@ -356,7 +367,7 @@ async fn reclaim_pending(
         };
         if let Some(job) = parse_job(&fields) {
             info!("Reclaiming crashed MAF execution {}", job.execution_id);
-            process_job(job, &msg_id, conn, db, http_client, llm).await;
+            process_job(job, &msg_id, conn, db, http_client, observability, llm).await;
         }
     }
 }

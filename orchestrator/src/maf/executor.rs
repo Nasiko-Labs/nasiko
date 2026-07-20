@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use nasiko_observability::ObservabilityProvider;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -9,6 +10,7 @@ use super::types::{ExecutionResult, MafDefinition, MafStep, StepResult};
 pub async fn run_maf(
     client: &reqwest::Client,
     db: &PgPool,
+    observability: &dyn ObservabilityProvider,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
@@ -57,12 +59,14 @@ pub async fn run_maf(
 
         // ── Agent call ────────────────────────────────────────────────────────
         let start = Instant::now();
+        let traceparent = build_traceparent(execution_id, step.step_index);
         let raw_response = match call_agent(
             client,
             &step.agent_endpoint,
             &execution_id.to_string(),
             &user_id.to_string(),
             &actual_prompt,
+            &traceparent,
         )
         .await
         {
@@ -102,8 +106,15 @@ pub async fn run_maf(
             }
         };
 
-        let tokens = prompt_tokens + extract_tokens;
-        total_tokens += tokens;
+        let llm_tokens = prompt_tokens + extract_tokens;
+
+        // Wait for the agent's own token usage to land in Tempo (it batches
+        // span export, so it's usually not there the instant the call
+        // returns) so the persisted step total already reflects LLM + agent
+        // cost together, not just MAF's own reasoning cost.
+        let agent_tokens = wait_for_agent_tokens(observability, execution_id, step.step_index).await;
+        let step_tokens = llm_tokens + agent_tokens;
+        total_tokens += step_tokens;
 
         let new_context = if context.is_empty() {
             format!("Step {} ({}): {}", step.step_index, step.agent_name, extracted)
@@ -114,7 +125,7 @@ pub async fn run_maf(
         step_results[i].status = "success".to_string();
         step_results[i].prompt = actual_prompt;
         step_results[i].extracted_info = Some(extracted);
-        step_results[i].tokens_used = tokens;
+        step_results[i].tokens_used = step_tokens;
         step_results[i].latency_ms = latency_ms;
         step_results[i].context = Some(new_context);
         persist_progress(db, execution_id, &step_results, total_tokens).await;
@@ -563,20 +574,69 @@ async fn generate_final_output(
 
 // ─── A2A agent call ───────────────────────────────────────────────────────────
 
+/// Builds a valid W3C `traceparent` scoped to this one step — not the whole
+/// execution — so each step's agent call lands under its own Tempo trace_id.
+/// That's what lets per-step (not just per-execution) agent token usage be
+/// looked up later without ambiguity when the same agent is used in more
+/// than one step. Deterministic (execution_id + step_index) via UUIDv5, so no
+/// new dependency and no random-id bookkeeping is needed to reconstruct it
+/// later when reading the execution back.
+fn build_traceparent(execution_id: Uuid, step_index: i32) -> String {
+    let trace_uuid = Uuid::new_v5(&execution_id, step_index.to_string().as_bytes());
+    let span_uuid = Uuid::new_v5(&execution_id, format!("{step_index}-span").as_bytes());
+    let trace_id = trace_uuid.simple().to_string();
+    let span_id = &span_uuid.simple().to_string()[..16];
+    // flags=01 (sampled) — otherwise a conforming exporter may decide not to
+    // export the span at all, and this whole mechanism would silently no-op.
+    format!("00-{trace_id}-{span_id}-01")
+}
+
+/// Polls Tempo for this step's trace (same derivation as `build_traceparent`)
+/// and returns its total `gen_ai.usage` tokens, or 0 if nothing shows up
+/// within the timeout — Tempo/the agent being unreachable never fails the
+/// step, it just means this step's persisted total is LLM-only.
+async fn wait_for_agent_tokens(
+    observability: &dyn ObservabilityProvider,
+    execution_id: Uuid,
+    step_index: i32,
+) -> i64 {
+    let trace_id = Uuid::new_v5(&execution_id, step_index.to_string().as_bytes())
+        .simple()
+        .to_string();
+
+    // Agents commonly batch-export spans every ~5s, so the trace usually
+    // isn't queryable the instant the agent call returns — poll rather than
+    // check once.
+    for _ in 0..10 {
+        if let Ok(trace) = observability.get_trace(&trace_id).await {
+            let (input, output, _model) = trace.token_totals();
+            let total = input + output;
+            if total > 0 {
+                return total as i64;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    0
+}
+
 async fn call_agent(
     client: &reqwest::Client,
     endpoint: &str,
     context_id: &str,
     user_id: &str,
     prompt: &str,
+    traceparent: &str,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "1",
-        // gRPC-style JSON-RPC method/role names — what every example agent's
-        // installed `a2a-sdk` actually registers in its dispatch table
-        // (confirmed against a real deployed `oss/agents/translator` build).
-        // Matches `oss/types::build_send_request`.
+        // Per the A2A spec (§5.3, §9.1): JSON-RPC method names are PascalCase,
+        // matching gRPC conventions exactly — "SendMessage", not "message/send"
+        // (that string is only the REST binding's URL path, a different
+        // transport). Confirmed both against the spec's own example request
+        // and empirically against a real deployed `oss/agents/translator`
+        // build. Matches `oss/types::build_send_request`.
         "method": "SendMessage",
         "params": {
             "message": {
@@ -599,6 +659,7 @@ async fn call_agent(
             .post(&url_jsonrpc)
             .header("X-User-Id", user_id)
             .header("A2A-Version", "1.0")
+            .header("traceparent", traceparent)
             .json(&body)
             .timeout(std::time::Duration::from_secs(300))
             .send()
@@ -609,6 +670,7 @@ async fn call_agent(
                 .post(&url_root)
                 .header("X-User-Id", user_id)
                 .header("A2A-Version", "1.0")
+                .header("traceparent", traceparent)
                 .json(&body)
                 .timeout(std::time::Duration::from_secs(300))
                 .send()

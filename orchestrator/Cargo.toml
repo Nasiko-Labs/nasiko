@@ -22,6 +22,7 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 nasiko-config.workspace = true
 nasiko-types.workspace = true
+nasiko-observability.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true
