@@ -108,6 +108,7 @@ class UsersPage extends HTMLElement {
     this.innerHTML = `
       <div class="users-header">
         <span class="users-header-stats" id="users-stats"></span>
+        <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 16)} Sync Azure AD Directory</app-button>
         <app-button variant="primary" size="sm" id="btn-add-user">${icons.plus('', 16)} Add User</app-button>
       </div>
 
@@ -368,6 +369,28 @@ class UsersPage extends HTMLElement {
         }
       }).catch(() => {});
     }
+
+    const syncBtn = this.querySelector('#btn-sync-azure');
+    syncBtn.addEventListener('click', async () => {
+      syncBtn.setAttribute('loading', '');
+      try {
+        const res = await window.syncAzureDirectory();
+        if (!res.ok) throw new Error(await res.text());
+        const summary = await res.json();
+        const errorCount = (summary.errors || []).length;
+        showToast(
+          `Synced: ${summary.departments_created} department(s), ${summary.teams_created} team(s), ` +
+          `${summary.users_created} new user(s) (${summary.users_skipped_existing} already in the system)` +
+          (errorCount ? ` — ${errorCount} error(s), see console` : '')
+        );
+        if (errorCount) console.warn('directory sync errors:', summary.errors);
+        table.refresh();
+      } catch (e) {
+        showToast(`Directory sync failed: ${e.message}`);
+      } finally {
+        syncBtn.removeAttribute('loading');
+      }
+    });
 
     // Create modal
     this.querySelector('#btn-add-user').addEventListener('click', () => modal.open());
