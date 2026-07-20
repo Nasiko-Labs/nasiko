@@ -9,11 +9,10 @@ pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
-pub mod maf;
-pub mod mcp;
 pub mod observability;
 pub mod pool;
 pub mod rate_limit;
+pub mod registry_a2a;
 pub mod router;
 pub mod runtime;
 pub mod secrets;
@@ -25,12 +24,15 @@ pub mod transcribe;
 pub mod usage;
 pub mod users;
 
-use std::time::Duration;
-use axum::{Json, Router, middleware, routing::{any, get, post}};
 use axum::handler::Handler;
 use axum::http::Method;
 use axum::response::IntoResponse;
+use axum::{
+    Json, Router, middleware,
+    routing::{any, get, post},
+};
 use serde::Serialize;
+use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -43,7 +45,7 @@ use crate::state::AppState;
 /// deployments (see `main.rs`'s `static_handler`), so cross-origin access is
 /// opt-in only, via `CORS_ALLOWED_ORIGINS`. An empty allowlist (the default)
 /// allows no cross-origin browser requests at all.
-pub fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
+fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
     let origins: Vec<_> = allowed_origins
         .iter()
         .filter_map(|o| o.parse().ok())
@@ -51,11 +53,16 @@ pub fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
-            "a2a-version".parse().unwrap(),
         ])
         .allow_credentials(true)
 }
@@ -74,17 +81,6 @@ impl<T: Serialize> Paginated<T> {
     }
 }
 
-/// The shared "you don't have access to this" response for read-only (GET)
-/// endpoints: 200, not 403/401 — a caller who's authenticated but lacks the
-/// specific role/ownership this endpoint needs gets a body they can render
-/// gracefully ("Not available") instead of an error state. Mutations
-/// (POST/PUT/DELETE) do NOT use this — a rejected write must still return
-/// a real error status, or a client could believe the write succeeded.
-pub fn unavailable() -> axum::response::Response {
-    use axum::response::IntoResponse;
-    Json(serde_json::json!({"available": false})).into_response()
-}
-
 /// Build the full control plane Axum application.
 /// Called by both OSS and cloud binaries. The `fallback` handler serves
 /// static UI assets — each binary provides its own with appropriate embeds.
@@ -93,9 +89,7 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
     build_app_with_user_router(state.clone(), fallback, users::router())
-        .merge(auth::login::public_router(login_limiter).with_state(state))
 }
 
 /// Build the full control plane Axum application with a custom user orchestrator.
@@ -110,74 +104,59 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    // Spawn the MAF worker — requires an OpenAI API key for prompt generation,
-    // extraction, and final output synthesis. Degrades gracefully rather than
-    // panicking: MAF routes still work (create/list/run) without a key, jobs
-    // just queue in Redis unprocessed until one is configured.
-    if let Some(api_key) = state.config.openai_api_key.clone() {
-        let llm_config = nasiko_orchestrator::maf::LlmConfig {
-            api_key,
-            base_url: state.config.openai_base_url.clone(),
-            model: state.config.openai_model.clone(),
-        };
-        nasiko_orchestrator::maf::start_worker(
-            state.db.clone(),
-            state.redis.clone(),
-            state.http_client.clone(),
-            state.observability.clone(),
-            llm_config,
-        );
-    } else {
-        tracing::warn!(
-            "OPENAI_API_KEY not set — MAF worker not started; MAF executions will queue but not run"
-        );
-    }
+    // Container lifecycle routes: deployer+ only
+    let container_routes =
+        Router::new()
+            .nest("/containers", admin::router())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::rbac::require_deployer,
+            ));
 
-    // Container lifecycle mutations (deploy/destroy/stop/start/restart/scale):
-    // deployer+ only. The read routes (list/status/logs) are split out into
-    // `degradable_routes` below — same `can_deploy` check, but inline per
-    // handler so a caller below deployer gets 200 {"available": false}
-    // instead of a blanket 403.
-    let container_routes = Router::new()
-        .nest("/containers", admin::router())
-        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
-
-    // Pool/scaling: read-only stub in OSS (EE's real scaling lives at
-    // /infra), no mutations to gate — mounted under require_auth only (via
-    // `protected`'s outer layer), no per-route role check needed.
-    let pool_routes = Router::new().nest("/pool", pool::degradable_router());
+    // Pool/scaling routes: require admin+ role
+    let pool_routes =
+        Router::new()
+            .nest("/pool", pool::router())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::rbac::require_admin,
+            ));
 
     // User management: superuser only
-    let user_routes = user_router
-        .layer(middleware::from_fn(auth::rbac::require_superuser));
+    let user_routes = user_router.layer(middleware::from_fn(auth::rbac::require_superuser));
 
-    // Agent deploy MUTATIONS (upload, restart-deployment, update/rollback):
-    // deployer+ only. Reads are in `degradable_routes` below.
-    let agent_deploy_routes = Router::new()
-        .nest("/agents", agents::router())
-        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
+    // Agent deploy routes (upload, deploy-status, deployments, ACL): deployer+ only.
+    let agent_deploy_routes =
+        Router::new()
+            .nest("/agents", agents::router())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::rbac::require_deployer,
+            ));
 
-    // Build MUTATIONS (create): deployer+ only. Reads (list/get/logs/
-    // progress) are in `degradable_routes` below.
+    // Build routes (trigger builds, view build history): deployer+ only
     let build_routes = Router::new()
         .merge(build::router())
-        .layer(middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer));
-
-    // GET routes pulled out from the require_deployer-gated groups above —
-    // each handler checks `can_deploy` (and any resource-ownership check
-    // that already existed) itself, returning `nasiko_server::unavailable()`
-    // (200) instead of relying on a blanket 403 from middleware. Mounted
-    // directly into `protected` below, so only `require_auth` applies.
-    let degradable_routes = Router::new()
-        .nest("/containers", admin::degradable_router())
-        .nest("/agents", agents::degradable_router())
-        .merge(build::degradable_router());
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::rbac::require_deployer,
+        ));
 
     // Fixed-window limiters — see rate_limit.rs for why this app has none of
     // its own otherwise (gateway removal took the last rate limiting with it).
     let a2a_limiter = RateLimiter::new(30, Duration::from_secs(60));
     let oci_limiter = RateLimiter::new(300, Duration::from_secs(60));
-    let non_login_limiter = RateLimiter::new(30, Duration::from_secs(60));
+    let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
+    let registry_limiter = RateLimiter::new(60, Duration::from_secs(60));
+
+    // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
+    // is unauthenticated; the global fixed window bounds enumeration abuse.
+    let registry_routes = Router::new()
+        .route("/a2a/v1", post(registry_a2a::registry_a2a_handler))
+        .layer(middleware::from_fn_with_state(
+            registry_limiter,
+            rate_limit::limit_globally,
+        ));
 
     let protected = Router::new()
         .route("/me", get(me))
@@ -189,38 +168,20 @@ where
         .merge(pool_routes)
         .merge(user_routes)
         .merge(build_routes)
-        .merge(degradable_routes)
         .merge(chat::router())
-        .merge(maf::router())
         .merge(secrets::router())
         .merge(settings::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
         .nest("/observability", observability::protected_router())
-        .merge(agents::upload::status_router())
         .merge(github::router())
         .merge(auth::login::protected_router())
         .merge(transcribe::router())
-        .merge(mcp::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
-        ))
-        // Unauthed MCP routes (OAuth callback, Composio webhook) — mounted
-        // under /api but outside the require_auth layer above; they
-        // authenticate via OAuth state / HMAC signature instead of a user JWT.
-        .merge(mcp::public_api_router());
-
-    // Agent-facing MCP gateway (`POST /api/mcp`) — deliberately mounted OUTSIDE
-    // `require_auth`. An agent's only credential is the short-lived delegation
-    // JWT (`agent_proxy.rs` strips the caller's real `Authorization`/`Cookie`
-    // before forwarding to a container), so this route validates that token
-    // itself via `mcp::require_delegation` instead of a user session JWT.
-    let mcp_agent_gateway = Router::new()
-        .nest("/api", mcp::agent_gateway_router())
-        .layer(middleware::from_fn(mcp::require_delegation))
-        .with_state(state.clone());
+        ));
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     let oci_pull_limiter = RateLimiter::new(300, Duration::from_secs(60));
@@ -232,8 +193,10 @@ where
         agent_credential_limiter: oci_pull_limiter,
         build_push_token_hash,
     };
-    let oci_routes = nasiko_oci::axum_routes(oci_state)
-        .layer(middleware::from_fn_with_state(oci_auth_state, authenticate_oci_request));
+    let oci_routes = nasiko_oci::axum_routes(oci_state).layer(middleware::from_fn_with_state(
+        oci_auth_state,
+        authenticate_oci_request,
+    ));
 
     let cors = cors_layer(&state.config.cors_allowed_origins);
 
@@ -251,14 +214,13 @@ where
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
-        .merge(auth::login::non_login_public_router(non_login_limiter))
+        .merge(auth::login::public_router(login_limiter))
         .merge(github::public_router())
-        .merge(mcp::composio_callback_router())
+        .merge(registry_routes)
         .nest("/api", protected)
         .nest("/api", proxy_routes)
         .with_state(state)
         .merge(oci_routes)
-        .merge(mcp_agent_gateway)
         .fallback(fallback)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -340,19 +302,29 @@ async fn authenticate_oci_request(
             && username == nasiko_oci::BUILD_SERVICE_USERNAME
             && nasiko_oci::pull_credentials::hash_token(&password) == *expected_hash
         {
-            if !auth_state.agent_credential_limiter.allow(nasiko_oci::BUILD_SERVICE_USERNAME) {
+            if !auth_state
+                .agent_credential_limiter
+                .allow(nasiko_oci::BUILD_SERVICE_USERNAME)
+            {
                 return rate_limit::too_many_requests();
             }
-            req.extensions_mut().insert(nasiko_oci::BuildServiceIdentity);
+            req.extensions_mut()
+                .insert(nasiko_oci::BuildServiceIdentity);
             return next.run(req).await;
         }
 
-        return match nasiko_oci::pull_credentials::verify(&auth_state.app.db, &username, &password).await {
+        return match nasiko_oci::pull_credentials::verify(&auth_state.app.db, &username, &password)
+            .await
+        {
             Ok(Some(agent_id)) => {
-                if !auth_state.agent_credential_limiter.allow(&agent_id.to_string()) {
+                if !auth_state
+                    .agent_credential_limiter
+                    .allow(&agent_id.to_string())
+                {
                     return rate_limit::too_many_requests();
                 }
-                req.extensions_mut().insert(nasiko_oci::PullOnlyIdentity { agent_id });
+                req.extensions_mut()
+                    .insert(nasiko_oci::PullOnlyIdentity { agent_id });
                 next.run(req).await
             }
             Ok(None) => unauthorized_with_challenge("invalid credential"),
@@ -386,9 +358,14 @@ async fn authenticate_oci_request(
 
 fn extract_basic_auth(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
     use base64::Engine;
-    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     let encoded = value.strip_prefix("Basic ")?;
-    let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
     let decoded = String::from_utf8(decoded).ok()?;
     let (username, password) = decoded.split_once(':')?;
     Some((username.to_string(), password.to_string()))

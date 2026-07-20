@@ -173,17 +173,21 @@ If no agent fits, respond with []. Do NOT delegate to yourself (Assistant)."""},
                     continue
 
                 try:
+                    # Platform agents speak A2A 1.0: method SendMessage, the
+                    # A2A-Version header, ROLE_USER, and bare {"text": ...}
+                    # parts (0.3's message/send gets -32601 Method not found).
                     resp = await client.post(
                         f"{url}/",
+                        headers={"A2A-Version": "1.0"},
                         json={
                             "jsonrpc": "2.0",
                             "id": str(uuid.uuid4()),
-                            "method": "message/send",
+                            "method": "SendMessage",
                             "params": {
                                 "message": {
                                     "messageId": str(uuid.uuid4()),
-                                    "role": "user",
-                                    "parts": [{"kind": "text", "text": sub_query}],
+                                    "role": "ROLE_USER",
+                                    "parts": [{"text": sub_query}],
                                 }
                             },
                         },
@@ -200,11 +204,18 @@ If no agent fits, respond with []. Do NOT delegate to yourself (Assistant)."""},
         result = resp.get("result")
         if not result:
             return None
-        for artifact in result.get("artifacts", []):
+        # A2A 1.0 wraps the task ({"result": {"task": {...}}}); 0.3 responses
+        # are flat ({"result": {"artifacts": ...}}). Handle both.
+        task = result.get("task", result)
+        for artifact in task.get("artifacts") or []:
             for part in artifact.get("parts", []):
                 if t := part.get("text"):
                     return t
-        for part in result.get("message", {}).get("parts", []):
+        status_message = (task.get("status") or {}).get("message", {})
+        for part in status_message.get("parts", []):
+            if t := part.get("text"):
+                return t
+        for part in task.get("message", {}).get("parts", []):
             if t := part.get("text"):
                 return t
         return None

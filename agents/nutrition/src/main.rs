@@ -273,10 +273,10 @@ async fn main() {
         InMemoryTaskStore::new(),
     ));
 
-    let agent_card_json = include_str!("../agent-card.json")
-        .replace("{{PORT}}", &port.to_string());
+    let agent_card_json =
+        include_str!("../AgentCard.json").replace("{{PORT}}", &port.to_string());
     let agent_card: AgentCard =
-        serde_json::from_str(&agent_card_json).expect("invalid embedded agent-card.json");
+        serde_json::from_str(&agent_card_json).expect("invalid embedded AgentCard.json");
 
     let card_producer = Arc::new(StaticAgentCard::new(agent_card));
 

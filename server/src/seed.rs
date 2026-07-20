@@ -55,13 +55,11 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     for image in images.split_whitespace() {
         let agent_name = extract_name(image);
 
-        let existing = sqlx::query_as::<_, Agent>(
-            "SELECT * FROM agents WHERE name = $1",
-        )
-        .bind(&agent_name)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
+        let existing = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
+            .bind(&agent_name)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
 
         let force_pull = std::env::var("SEED_FORCE_PULL").is_ok();
         let needs_deploy = match &existing {
@@ -140,7 +138,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
 
         // UUID-keyed (see agents::build_agent_spec) so a re-seed re-targets the same
         // workload rather than leaving a name-keyed orphan.
-        let spec = crate::agents::build_agent_spec(
+        let mut spec = crate::agents::build_agent_spec(
             agent.id,
             &agent_name,
             image.to_string(),
@@ -148,11 +146,21 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             env,
             None,
         );
+        crate::agents::attach_pull_credential(
+            &state.db,
+            &state.config.agent_runtime,
+            &state.config.agent_image_registry,
+            &mut spec,
+            agent.id,
+        )
+        .await;
 
         match state.runtime.deploy(&spec).await {
             Ok(status) => {
                 info!(agent = %agent_name, ?status, "seed agent deployed");
-                let agent_url = status.endpoint.clone().unwrap_or_default();
+                let agent_url =
+                    crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id)
+                        .await;
                 let _ = sqlx::query(
                     "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
                 )

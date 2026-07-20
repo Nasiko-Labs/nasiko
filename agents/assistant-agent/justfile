@@ -4,11 +4,11 @@ docker := env("DOCKER", if path_exists("/usr/bin/podman") == "true" { "podman" }
 # Build image (self-contained: per-agent pyproject.toml lives in this dir).
 # linux/amd64: the platform's agent nodes (EKS/DOKS/AKS pools) are amd64.
 build:
-    {{docker}} build --platform linux/amd64 -t {{user}}/simulated-agent -f {{justfile_directory()}}/Dockerfile {{justfile_directory()}}
+    {{docker}} build --platform linux/amd64 -t {{user}}/assistant-agent -f {{justfile_directory()}}/Dockerfile {{justfile_directory()}}
 
 # Push image
 push:
-    {{docker}} push {{user}}/simulated-agent
+    {{docker}} push {{user}}/assistant-agent
 
 # Build + push
 release: build push

@@ -1,0 +1,11 @@
+[project]
+name = "nasiko-simulated-agent"
+version = "1.0.0"
+description = "Simulated A2A agent — randomized-latency lorem responses for control-plane benchmarking"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[http-server]==1.1.0",
+    "starlette==1.2.0",
+    "uvicorn==0.48.0",
+    "click==8.4.1",
+]

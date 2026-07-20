@@ -154,13 +154,10 @@ fn resolve_error_not_found_display() {
 fn resolve_error_not_running_display() {
     let e = ResolveError::NotRunning("stopped".to_string());
     let s = e.to_string();
-    assert!(s.contains("stopped"), "display must include the status: {s}");
-}
-
-#[test]
-fn resolve_error_no_endpoint_display() {
-    let e = ResolveError::NoEndpoint;
-    assert!(e.to_string().contains("endpoint"));
+    assert!(
+        s.contains("stopped"),
+        "display must include the status: {s}"
+    );
 }
 
 // ── DB-backed resolve() tests ──────────────────────────────────────────────

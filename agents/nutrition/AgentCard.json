@@ -32,7 +32,8 @@
   "supportedInterfaces": [
     {
       "url": "http://0.0.0.0:{{PORT}}/",
-      "protocol": "JSONRPC"
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
     }
   ]
 }

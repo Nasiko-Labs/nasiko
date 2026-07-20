@@ -16,22 +16,13 @@ use nasiko_runtime::{ContainerId, DeploymentSpec};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", post(deploy))
+        .route("/", get(list))
+        .route("/{name}", get(status))
         .route("/{name}", delete(destroy))
         .route("/{name}/stop", post(stop))
         .route("/{name}/start", post(start))
         .route("/{name}/restart", post(restart))
         .route("/{name}/scale", post(scale))
-}
-
-/// Mounted separately from `router()`, under `require_auth` only — each
-/// handler checks `can_deploy` (and, for single-container lookups, agent
-/// ownership via `resolve_authorized_container`) itself and returns
-/// `crate::unavailable()` (200) instead of a blanket 403. NOT_FOUND
-/// (agent doesn't exist by that name) stays as-is either way.
-pub fn degradable_router() -> Router<AppState> {
-    Router::new()
-        .route("/", get(list))
-        .route("/{name}", get(status))
         .route("/{name}/logs", get(logs))
 }
 
@@ -97,7 +88,11 @@ async fn deploy(
         container_id,
         name: req.name.clone(),
         image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
-        ports: if req.ports.is_empty() { vec![crate::agents::DEFAULT_AGENT_PORT] } else { req.ports },
+        ports: if req.ports.is_empty() {
+            vec![crate::agents::DEFAULT_AGENT_PORT]
+        } else {
+            req.ports
+        },
         env_vars: env,
         min_replicas: req.replicas.unwrap_or(1),
         max_replicas: req.replicas.unwrap_or(1),
@@ -110,7 +105,14 @@ async fn deploy(
     // agent_id FK) — an ad-hoc, never-registered image deploy has nothing to
     // bind one to.
     if let Some(agent_id) = resolved_agent_id {
-        crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+        crate::agents::attach_pull_credential(
+            &state.db,
+            &state.config.agent_runtime,
+            &state.config.agent_image_registry,
+            &mut spec,
+            agent_id,
+        )
+        .await;
     }
 
     match state.runtime.deploy(&spec).await {
@@ -118,10 +120,16 @@ async fn deploy(
             // Update the catalog URL + record deployment (fire-and-forget).
             if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
                 let db = state.db.clone();
-                let endpoint = status.endpoint.clone();
+                // Readiness-independent (a fresh k8s Deployment is never
+                // Ready by the time deploy() returns) — same fix as the
+                // upload/update/restart paths.
+                let endpoint =
+                    crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id)
+                        .await;
                 tokio::spawn(async move {
                     // Write the live endpoint URL + running status back to the catalog.
-                    if let Some(url) = endpoint {
+                    if !endpoint.is_empty() {
+                        let url = endpoint;
                         let _ = sqlx::query(
                             "UPDATE agents SET url = $1, status = 'running', updated_at = now() WHERE id = $2",
                         )
@@ -163,10 +171,6 @@ async fn deploy(
 }
 
 async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
     let containers = match state.runtime.list().await {
         Ok(containers) => containers,
         Err(e) => {
@@ -183,11 +187,12 @@ async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoRespons
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
-    let owned_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL")
-        .bind(owner_id)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default();
+    let owned_ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL")
+            .bind(owner_id)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
 
     // Containers are UUID-keyed post-RUN-2b (see `agents::build_agent_spec`);
     // scope the list to the caller's own agents, matching the single-resource
@@ -212,16 +217,8 @@ async fn status(
     claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
     let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
-        // NOT_FOUND stays as-is (don't confirm/deny existence either way);
-        // FORBIDDEN (not the owner) degrades like every other converted
-        // read — this is a GET, not a mutation.
-        Err(resp) if resp.status() == StatusCode::FORBIDDEN => return crate::unavailable(),
         Err(resp) => return resp,
     };
     match state.runtime.status(&id).await {
@@ -320,14 +317,13 @@ async fn restart(
     // deployer restart any container on the host that merely wasn't tracked in
     // `agents` — with no owner to check an ACL against. Match the siblings: no
     // catalog row, no restart.
-    let agent: Option<(Uuid, Uuid, String)> = sqlx::query_as(
-        "SELECT id, owner_id, image FROM agents WHERE name = $1",
-    )
-    .bind(&name)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let agent: Option<(Uuid, Uuid, String)> =
+        sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE name = $1")
+            .bind(&name)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
 
     let Some((agent_id, owner_id, image)) = agent else {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
@@ -350,14 +346,22 @@ async fn restart(
     // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec). Empty
     // ports → build_agent_spec defaults to DEFAULT_AGENT_PORT.
     let mut spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
-    crate::agents::attach_pull_credential(&state.db, &state.config.agent_runtime, &state.config.agent_image_registry, &mut spec, agent_id).await;
+    crate::agents::attach_pull_credential(
+        &state.db,
+        &state.config.agent_runtime,
+        &state.config.agent_image_registry,
+        &mut spec,
+        agent_id,
+    )
+    .await;
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => {
             // The container may come back on a different host port, and a
             // rebuilt image may advertise a different card (transport_path,
             // skills) — refresh both, same as the update/upload deploy paths.
-            let agent_url = status.endpoint.clone().unwrap_or_default();
+            let agent_url =
+                crate::agents::resolve_agent_url(&state.runtime, &status, &uuid_id).await;
             let _ = sqlx::query(
                 "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
             )
@@ -409,7 +413,9 @@ struct LogsQuery {
     #[serde(default = "default_tail")]
     tail: u32,
 }
-fn default_tail() -> u32 { 100 }
+fn default_tail() -> u32 {
+    100
+}
 
 async fn logs(
     State(state): State<AppState>,
@@ -417,13 +423,8 @@ async fn logs(
     Path(name): Path<String>,
     axum::extract::Query(q): axum::extract::Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    if !state.auth.can_deploy(&identity).await {
-        return crate::unavailable();
-    }
     let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
-        Err(resp) if resp.status() == StatusCode::FORBIDDEN => return crate::unavailable(),
         Err(resp) => return resp,
     };
     match state.runtime.logs(&id, q.tail).await {
@@ -484,13 +485,12 @@ async fn resolve_full_env(
     let mut env = std::collections::HashMap::new();
 
     // 1. Vault secrets (user-level, lower precedence)
-    let vault_rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT name, encrypted_value FROM user_secrets WHERE user_id = $1",
-    )
-    .bind(owner_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let vault_rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT name, encrypted_value FROM user_secrets WHERE user_id = $1")
+            .bind(owner_id)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
 
     for (name, encrypted) in vault_rows {
         if let Ok(value) = crypto.decrypt(&encrypted) {
@@ -510,10 +510,12 @@ async fn resolve_full_env(
     // dropped it, so `nasiko restart` never picked up OPENAI_API_KEY /
     // OPENAI_BASE_URL changes made to the platform's own .env.
     if let Some(ref key) = state.config.openai_api_key {
-        env.entry("OPENAI_API_KEY".into()).or_insert_with(|| key.clone());
+        env.entry("OPENAI_API_KEY".into())
+            .or_insert_with(|| key.clone());
     }
     if let Some(ref url) = state.config.openai_base_url {
-        env.entry("OPENAI_BASE_URL".into()).or_insert_with(|| url.clone());
+        env.entry("OPENAI_BASE_URL".into())
+            .or_insert_with(|| url.clone());
     }
     env.entry("OPENAI_MODEL".into())
         .or_insert_with(|| state.config.openai_model.clone());

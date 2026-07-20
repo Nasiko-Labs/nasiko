@@ -1,0 +1,13 @@
+[project]
+name = "nasiko-assistant-agent"
+version = "1.0.0"
+description = "Orchestrating A2A agent — discovers peers via the platform registry, delegates, and synthesizes"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[http-server]==1.1.0",
+    "starlette==1.2.0",
+    "uvicorn==0.48.0",
+    "click==8.4.1",
+    "httpx==0.28.1",
+    "openai==1.82.0",
+]

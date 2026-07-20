@@ -7,10 +7,10 @@
 ///   3. Enum string values match the A2A wire format
 use nasiko_types::a2a::{
     Artifact, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, Message, Part, PartContent,
-    Role, SendMessageRequest, StreamResponse, Task, TaskArtifactUpdateEvent, TaskState,
-    TaskStatus, TaskStatusUpdateEvent, agent_message, artifact_event, build_send_request,
-    build_stream_request, completed, data_part, extract_text, failed, status_event, task_event,
-    text_chunk, text_part, to_sse_data, working, working_with_message,
+    Role, SendMessageRequest, StreamResponse, Task, TaskArtifactUpdateEvent, TaskState, TaskStatus,
+    TaskStatusUpdateEvent, agent_message, artifact_event, build_send_request, build_stream_request,
+    completed, data_part, extract_text, failed, status_event, task_event, text_chunk, text_part,
+    to_sse_data, working, working_with_message,
 };
 use nasiko_types::registry::{
     Artifact as RegistryArtifact, ArtifactResponse, PublishRequest, PublishResponse,
@@ -32,7 +32,11 @@ fn make_artifact() -> Artifact {
 }
 
 fn make_task_status(state: TaskState) -> TaskStatus {
-    TaskStatus { state, message: None, timestamp: None }
+    TaskStatus {
+        state,
+        message: None,
+        timestamp: None,
+    }
 }
 
 fn make_task() -> Task {
@@ -90,9 +94,18 @@ fn role_round_trips() {
 
 #[test]
 fn role_deserializes_from_string() {
-    assert_eq!(serde_json::from_str::<Role>(r#""ROLE_USER""#).unwrap(), Role::User);
-    assert_eq!(serde_json::from_str::<Role>(r#""ROLE_AGENT""#).unwrap(), Role::Agent);
-    assert_eq!(serde_json::from_str::<Role>(r#""ROLE_UNSPECIFIED""#).unwrap(), Role::Unspecified);
+    assert_eq!(
+        serde_json::from_str::<Role>(r#""ROLE_USER""#).unwrap(),
+        Role::User
+    );
+    assert_eq!(
+        serde_json::from_str::<Role>(r#""ROLE_AGENT""#).unwrap(),
+        Role::Agent
+    );
+    assert_eq!(
+        serde_json::from_str::<Role>(r#""ROLE_UNSPECIFIED""#).unwrap(),
+        Role::Unspecified
+    );
 }
 
 // ─── TaskState ────────────────────────────────────────────────────────────────
@@ -112,7 +125,11 @@ fn task_state_variants_serialize_to_correct_strings() {
     ];
     for (state, expected) in cases {
         let v = serde_json::to_value(&state).unwrap();
-        assert_eq!(v, json!(expected), "TaskState::{state:?} should serialize to {expected}");
+        assert_eq!(
+            v,
+            json!(expected),
+            "TaskState::{state:?} should serialize to {expected}"
+        );
     }
 }
 
@@ -193,8 +210,14 @@ fn part_media_type_serializes_as_camel_case() {
     };
     let v = serde_json::to_value(&p).unwrap();
     // The a2a spec uses camelCase: "mediaType"
-    assert!(v.get("mediaType").is_some(), "mediaType field should use camelCase in JSON");
-    assert!(v.get("media_type").is_none(), "snake_case 'media_type' should not appear");
+    assert!(
+        v.get("mediaType").is_some(),
+        "mediaType field should use camelCase in JSON"
+    );
+    assert!(
+        v.get("media_type").is_none(),
+        "snake_case 'media_type' should not appear"
+    );
 }
 
 #[test]
@@ -252,10 +275,22 @@ fn message_uses_camel_case_field_names() {
     let msg = make_message(Role::Agent);
     let v = serde_json::to_value(&msg).unwrap();
     // A2A spec uses camelCase
-    assert!(v.get("messageId").is_some(), "messageId field should be camelCase");
-    assert!(v.get("contextId").is_some(), "contextId field should be camelCase");
-    assert!(v.get("taskId").is_some(), "taskId field should be camelCase");
-    assert!(v.get("message_id").is_none(), "snake_case should not appear");
+    assert!(
+        v.get("messageId").is_some(),
+        "messageId field should be camelCase"
+    );
+    assert!(
+        v.get("contextId").is_some(),
+        "contextId field should be camelCase"
+    );
+    assert!(
+        v.get("taskId").is_some(),
+        "taskId field should be camelCase"
+    );
+    assert!(
+        v.get("message_id").is_none(),
+        "snake_case should not appear"
+    );
 }
 
 #[test]
@@ -271,9 +306,15 @@ fn message_optional_fields_omitted_when_none() {
         reference_task_ids: None,
     };
     let v = serde_json::to_value(&msg).unwrap();
-    assert!(v.get("contextId").is_none(), "None contextId should be omitted");
+    assert!(
+        v.get("contextId").is_none(),
+        "None contextId should be omitted"
+    );
     assert!(v.get("taskId").is_none(), "None taskId should be omitted");
-    assert!(v.get("metadata").is_none(), "None metadata should be omitted");
+    assert!(
+        v.get("metadata").is_none(),
+        "None metadata should be omitted"
+    );
 }
 
 // ─── TaskStatus ───────────────────────────────────────────────────────────────
@@ -295,7 +336,10 @@ fn task_status_round_trips() {
 fn task_status_none_message_is_omitted() {
     let status = make_task_status(TaskState::Working);
     let v = serde_json::to_value(&status).unwrap();
-    assert!(v.get("message").is_none(), "None message should be omitted from JSON");
+    assert!(
+        v.get("message").is_none(),
+        "None message should be omitted from JSON"
+    );
 }
 
 // ─── Task ────────────────────────────────────────────────────────────────────
@@ -314,8 +358,14 @@ fn task_round_trips() {
 fn task_uses_camel_case_field_names() {
     let task = make_task();
     let v = serde_json::to_value(&task).unwrap();
-    assert!(v.get("contextId").is_some(), "contextId field should be camelCase");
-    assert!(v.get("context_id").is_none(), "snake_case should not appear");
+    assert!(
+        v.get("contextId").is_some(),
+        "contextId field should be camelCase"
+    );
+    assert!(
+        v.get("context_id").is_none(),
+        "snake_case should not appear"
+    );
 }
 
 #[test]
@@ -344,8 +394,14 @@ fn a2a_artifact_round_trips() {
 fn a2a_artifact_uses_camel_case() {
     let art = make_artifact();
     let v = serde_json::to_value(&art).unwrap();
-    assert!(v.get("artifactId").is_some(), "artifactId field should be camelCase");
-    assert!(v.get("artifact_id").is_none(), "snake_case should not appear");
+    assert!(
+        v.get("artifactId").is_some(),
+        "artifactId field should be camelCase"
+    );
+    assert!(
+        v.get("artifact_id").is_none(),
+        "snake_case should not appear"
+    );
 }
 
 #[test]
@@ -436,7 +492,10 @@ fn task_artifact_update_event_optional_fields_omitted_when_none() {
 fn stream_response_task_serializes_with_task_key() {
     let r = task_event(make_task());
     let v = serde_json::to_value(&r).unwrap();
-    assert!(v.get("task").is_some(), "StreamResponse::Task should serialize to {{\"task\": ...}}");
+    assert!(
+        v.get("task").is_some(),
+        "StreamResponse::Task should serialize to {{\"task\": ...}}"
+    );
     assert!(v.get("statusUpdate").is_none());
     assert!(v.get("artifactUpdate").is_none());
 }
@@ -459,7 +518,10 @@ fn stream_response_status_update_serializes_with_status_update_key() {
     };
     let r = status_event(event);
     let v = serde_json::to_value(&r).unwrap();
-    assert!(v.get("statusUpdate").is_some(), "StatusUpdate should use camelCase key 'statusUpdate'");
+    assert!(
+        v.get("statusUpdate").is_some(),
+        "StatusUpdate should use camelCase key 'statusUpdate'"
+    );
     assert!(v.get("task").is_none());
 }
 
@@ -489,7 +551,10 @@ fn stream_response_artifact_update_serializes_with_artifact_update_key() {
     };
     let r = artifact_event(event);
     let v = serde_json::to_value(&r).unwrap();
-    assert!(v.get("artifactUpdate").is_some(), "ArtifactUpdate should use 'artifactUpdate' key");
+    assert!(
+        v.get("artifactUpdate").is_some(),
+        "ArtifactUpdate should use 'artifactUpdate' key"
+    );
 }
 
 #[test]
@@ -512,7 +577,10 @@ fn stream_response_artifact_update_round_trips() {
 fn stream_response_unknown_variant_fails_to_deserialize() {
     let json = r#"{"unknown": {}}"#;
     let result = serde_json::from_str::<StreamResponse>(json);
-    assert!(result.is_err(), "Unknown StreamResponse variant should fail to deserialize");
+    assert!(
+        result.is_err(),
+        "Unknown StreamResponse variant should fail to deserialize"
+    );
 }
 
 // ─── JsonRpcId ────────────────────────────────────────────────────────────────
@@ -570,7 +638,10 @@ fn jsonrpc_request_params_none_is_omitted() {
         params: None,
     };
     let v = serde_json::to_value(&req).unwrap();
-    assert!(v.get("params").is_none(), "None params should be omitted from JSON");
+    assert!(
+        v.get("params").is_none(),
+        "None params should be omitted from JSON"
+    );
 }
 
 // ─── JsonRpcResponse ─────────────────────────────────────────────────────────
@@ -592,7 +663,11 @@ fn jsonrpc_response_success_round_trips() {
 
 #[test]
 fn jsonrpc_response_error_round_trips() {
-    let err = JsonRpcError { code: -32600, message: "Invalid Request".into(), data: None };
+    let err = JsonRpcError {
+        code: -32600,
+        message: "Invalid Request".into(),
+        data: None,
+    };
     let resp = JsonRpcResponse {
         jsonrpc: "2.0".into(),
         id: JsonRpcId::Null,
@@ -624,7 +699,11 @@ fn jsonrpc_error_round_trips_with_data() {
 
 #[test]
 fn jsonrpc_error_none_data_omitted() {
-    let err = JsonRpcError { code: -32600, message: "Invalid".into(), data: None };
+    let err = JsonRpcError {
+        code: -32600,
+        message: "Invalid".into(),
+        data: None,
+    };
     let v = serde_json::to_value(&err).unwrap();
     assert!(v.get("data").is_none());
 }
@@ -635,11 +714,6 @@ fn jsonrpc_error_none_data_omitted() {
 fn build_send_request_has_correct_method_and_version() {
     let req = build_send_request("hello", Some("ctx-1"));
     assert_eq!(req.jsonrpc, "2.0");
-    // gRPC-style method name — what every example agent's installed
-    // `a2a-sdk` actually registers in its dispatch table (confirmed against
-    // a real deployed `oss/agents/translator` build; the spec name
-    // `message/send` returns -32601 Method not found unless the agent opts
-    // into `enable_v0_3_compat`, which none of them do).
     assert_eq!(req.method, "SendMessage");
     assert!(req.params.is_some());
 }
@@ -651,15 +725,17 @@ fn build_stream_request_has_correct_method() {
 }
 
 #[test]
-fn build_send_request_params_have_grpc_role_and_correct_text() {
-    // `Role`'s own (de)serialization (from the external `a2a-lf` crate) uses
-    // the gRPC-style `ROLE_USER`/`ROLE_AGENT` names — that's also what every
-    // example agent's installed `a2a-sdk` expects, so `build_request` sends
-    // it through unpatched.
+fn build_send_request_params_deserialize_as_send_message_request() {
     let req = build_send_request("test text", Some("ctx-abc"));
     let params = req.params.unwrap();
-    assert_eq!(params["message"]["role"], json!("ROLE_USER"));
-    assert_eq!(params["message"]["parts"][0]["text"], json!("test text"));
+    let smr: SendMessageRequest = serde_json::from_value(params).unwrap();
+    assert_eq!(smr.message.role, Role::User);
+    // the message should contain our text
+    assert!(!smr.message.parts.is_empty());
+    match &smr.message.parts[0].content {
+        PartContent::Text(t) => assert_eq!(t, "test text"),
+        other => panic!("Expected Text part, got {other:?}"),
+    }
 }
 
 #[test]
@@ -806,6 +882,7 @@ fn make_registry_artifact() -> RegistryArtifact {
         artifact_type: "agent".into(),
         status: "published".into(),
         description: Some("A coding agent".into()),
+        metadata: serde_json::Value::Null,
         oci_digest: Some("sha256:abc123".into()),
         size_bytes: Some(1024),
         tags: vec!["rust".into(), "coding".into()],
@@ -837,7 +914,10 @@ fn registry_artifact_score_omitted_when_none() {
     let art = make_registry_artifact();
     let v = serde_json::to_value(&art).unwrap();
     // score uses skip_serializing_if = "Option::is_none"
-    assert!(v.get("score").is_none(), "score=None should be omitted from JSON");
+    assert!(
+        v.get("score").is_none(),
+        "score=None should be omitted from JSON"
+    );
 }
 
 #[test]
@@ -877,6 +957,7 @@ fn publish_request_round_trips() {
         version: "2.0.0".into(),
         artifact_type: "agent".into(),
         description: Some("desc".into()),
+        metadata: serde_json::Value::Null,
         tags: vec!["tag1".into()],
         framework: Some("nasiko".into()),
         license: Some("Apache-2.0".into()),
@@ -937,7 +1018,9 @@ fn search_response_total_defaults_to_none() {
 
 #[test]
 fn artifact_response_round_trips() {
-    let resp = ArtifactResponse { data: make_registry_artifact() };
+    let resp = ArtifactResponse {
+        data: make_registry_artifact(),
+    };
     let json = serde_json::to_string(&resp).unwrap();
     let back: ArtifactResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(back.data.id, "reg-1");
