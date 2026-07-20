@@ -42,7 +42,8 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    DecisionCache, NoopCache, PgTierRegistry, RedisCache, StaticTierRegistry, TierRegistry,
+    CellStore, DecisionCache, InMemoryCellStore, NoopCache, PgCellStore, PgTierRegistry,
+    RedisCache, StaticTierRegistry, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -66,6 +67,10 @@ pub struct LlmRouterCtx {
     /// Tier→model registry for classified routing. [`PgTierRegistry`] (DB-backed, static
     /// seed fallback) in production; tests use [`StaticTierRegistry`].
     pub tier_registry: Arc<dyn TierRegistry>,
+    /// Learned per-provider quality cells behind Thompson-sampling tier selection.
+    /// [`PgCellStore`] (durable, cross-instance) in production; tests use
+    /// [`InMemoryCellStore`].
+    pub cell_store: Arc<dyn CellStore>,
 }
 
 impl LlmRouterCtx {
@@ -92,11 +97,18 @@ impl LlmRouterCtx {
             "llm-router: initializing with effective GatewayConfig"
         );
         log_seed_registry();
-        let cache = Arc::new(ConfigCache::new(Duration::from_secs(cfg.llm_config_cache_ttl_secs)));
+        let cache = Arc::new(ConfigCache::new(Duration::from_secs(
+            cfg.llm_config_cache_ttl_secs,
+        )));
         let tier_registry = Arc::new(PgTierRegistry::new(db.clone()));
         tracing::info!(
             target: "nasiko::llm_router::startup",
             "llm-router: tier registry = PgTierRegistry (DB model_registry table, static seeds as fallback)"
+        );
+        let cell_store = Arc::new(PgCellStore::new(db.clone()));
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            "llm-router: cell store = PgCellStore (DB router_quality_cells table; learns per-provider tier quality from feedback)"
         );
         let router_cache = build_router_cache(&cfg);
         Self {
@@ -106,6 +118,7 @@ impl LlmRouterCtx {
             cache,
             router_cache,
             tier_registry,
+            cell_store,
         }
     }
 }

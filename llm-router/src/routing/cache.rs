@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
-use super::classifier::Tier;
+use super::classifier::{RequestType, Tier};
 
 /// A cached routing decision.
 #[derive(Debug, Clone)]
@@ -24,6 +24,10 @@ pub struct CachedDecision {
     /// The tier it came from (informational; `None` for decisions not produced by
     /// classification).
     pub tier: Option<Tier>,
+    /// The request type the query was classified as — carried so a later turn's feedback can
+    /// be credited to the right learned cell. `None` for decisions not produced by
+    /// classification.
+    pub request_type: Option<RequestType>,
 }
 
 /// Process-wide store for routing decisions, keyed on `(conv_id, agent_id)`.
@@ -59,6 +63,9 @@ impl DecisionCache for NoopCache {
 struct WireDecision {
     model: String,
     tier: Option<i16>,
+    /// Persisted as the request-type string; absent on older cached entries.
+    #[serde(default)]
+    request_type: Option<String>,
 }
 
 /// Redis-backed decision cache, keyed on `(conv_id, agent_id)`, with a TTL per entry.
@@ -110,12 +117,16 @@ impl DecisionCache for RedisCache {
                 Ok(wire) => {
                     tracing::info!(
                         target: "nasiko::llm_router::decision_cache",
-                        %key, model = %wire.model, tier = ?wire.tier,
+                        %key, model = %wire.model, tier = ?wire.tier, request_type = ?wire.request_type,
                         "redis decision cache GET — hit"
                     );
                     Some(CachedDecision {
                         model: wire.model,
                         tier: wire.tier.and_then(Tier::from_level),
+                        request_type: wire
+                            .request_type
+                            .as_deref()
+                            .and_then(RequestType::from_wire),
                     })
                 }
                 Err(e) => {
@@ -142,6 +153,7 @@ impl DecisionCache for RedisCache {
         let wire = WireDecision {
             model: decision.model.clone(),
             tier: decision.tier.map(Tier::as_level),
+            request_type: decision.request_type.map(|rt| rt.as_str().to_string()),
         };
         let Ok(payload) = serde_json::to_string(&wire) else {
             return;
@@ -170,8 +182,16 @@ mod tests {
     #[tokio::test]
     async fn noop_always_misses() {
         let c = NoopCache;
-        c.put("conv", "agent", &CachedDecision { model: "m".into(), tier: Some(Tier::Tier1) })
-            .await;
+        c.put(
+            "conv",
+            "agent",
+            &CachedDecision {
+                model: "m".into(),
+                tier: Some(Tier::Tier1),
+                request_type: Some(RequestType::General),
+            },
+        )
+        .await;
         assert!(c.get("conv", "agent").await.is_none());
     }
 
@@ -185,11 +205,30 @@ mod tests {
 
     #[test]
     fn wire_decision_round_trips_tier_as_level() {
-        let wire = WireDecision { model: "m".into(), tier: Some(3) };
+        let wire = WireDecision {
+            model: "m".into(),
+            tier: Some(3),
+            request_type: Some("factual_lookup".into()),
+        };
         let json = serde_json::to_string(&wire).unwrap();
         let back: WireDecision = serde_json::from_str(&json).unwrap();
         assert_eq!(back.model, "m");
         assert_eq!(back.tier.and_then(Tier::from_level), Some(Tier::Tier3));
+        assert_eq!(
+            back.request_type
+                .as_deref()
+                .and_then(RequestType::from_wire),
+            Some(RequestType::FactualLookup)
+        );
+    }
+
+    #[test]
+    fn wire_decision_without_request_type_deserializes() {
+        // An entry cached before request_type existed must still load (as a miss of the
+        // learning target, not a parse failure).
+        let back: WireDecision = serde_json::from_str(r#"{"model":"m","tier":2}"#).unwrap();
+        assert_eq!(back.model, "m");
+        assert_eq!(back.request_type, None);
     }
 
     #[tokio::test]
@@ -197,8 +236,16 @@ mod tests {
         // Port 1 refuses immediately — get degrades to a miss, put is a no-op, neither panics.
         let client = redis::Client::open("redis://127.0.0.1:1/").unwrap();
         let c = RedisCache::new(client, 60);
-        c.put("conv", "agent", &CachedDecision { model: "m".into(), tier: Some(Tier::Tier2) })
-            .await;
+        c.put(
+            "conv",
+            "agent",
+            &CachedDecision {
+                model: "m".into(),
+                tier: Some(Tier::Tier2),
+                request_type: Some(RequestType::Writing),
+            },
+        )
+        .await;
         assert!(c.get("conv", "agent").await.is_none());
     }
 }

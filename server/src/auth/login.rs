@@ -1,11 +1,12 @@
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     http::{StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::auth::Claims;
 use crate::state::AppState;
@@ -22,25 +23,38 @@ const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 /// `rate_limit::limit_globally`'s doc comment for why that's the appropriate
 /// tradeoff here). `token_validate` is cheap (JWT decode + one indexed lookup)
 /// and not limited.
-pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
+/// Routes shared by OSS and EE: initialize-admin and token validation.
+/// Does not include /api/auth/login — each edition registers its own login
+/// handler with its own response shape.
+pub fn non_login_public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
     let credential_routes = Router::new()
-        .route("/api/auth/login", post(login))
         .route("/api/auth/initialize-admin", post(initialize_admin))
-        .layer(axum::middleware::from_fn_with_state(
-            login_limiter,
-            crate::rate_limit::limit_globally,
-        ));
+        .layer(axum::middleware::from_fn_with_state(login_limiter, crate::rate_limit::limit_globally));
 
     Router::new()
         .merge(credential_routes)
         .route("/api/auth/tokens/validate", post(token_validate))
 }
 
+/// OSS login route. `initialize-admin` and `tokens/validate` are shared across
+/// editions and registered once by [`non_login_public_router`]; each edition adds
+/// only its own login handler on top (EE registers its own in `build_ee_app`).
+pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
+    Router::new()
+        .route("/api/auth/login", post(login))
+        .layer(axum::middleware::from_fn_with_state(
+            login_limiter,
+            crate::rate_limit::limit_globally,
+        ))
+}
+
+
 /// Protected auth routes — require X-User-* headers from the gateway.
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/auth/logout", post(logout))
         .route("/auth/system/users-for-search", get(users_for_search))
+        .route("/auth/users/{id}", get(get_user_profile))
 }
 
 /// Accepts either `{username, password}` or `{access_key, access_secret}`.
@@ -81,7 +95,7 @@ pub fn request_is_https(headers: &axum::http::HeaderMap) -> bool {
         .is_some_and(|p| p.eq_ignore_ascii_case("https"))
 }
 
-fn set_token_cookie(token: &str, secure: bool) -> header::HeaderValue {
+pub fn set_token_cookie(token: &str, secure: bool) -> header::HeaderValue {
     let secure_attr = if secure { " Secure;" } else { "" };
     header::HeaderValue::from_str(&format!(
         "access_token={}; HttpOnly;{} Path=/; SameSite=Strict; Max-Age={}",
@@ -315,17 +329,45 @@ async fn initialize_admin_inner(
         .into_response())
 }
 
-#[derive(Deserialize)]
-struct ValidateRequest {
-    token: String,
+fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t.to_string())
+}
+
+fn extract_cookie_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                let c = c.trim();
+                c.strip_prefix("access_token=").map(|t| t.to_string())
+            })
+        })
 }
 
 async fn token_validate(
     State(state): State<AppState>,
-    Json(req): Json<ValidateRequest>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
+    // Extract token from Authorization: Bearer <token> or the access_token cookie.
+    let token = extract_bearer_token(&headers).or_else(|| extract_cookie_token(&headers));
+    let token = match token {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"valid": false, "error": "no token provided"})),
+            )
+                .into_response();
+        }
+    };
+
     // Step 1: verify signature + expiry
-    let identity = match state.auth.validate_token(&req.token).await {
+    let identity = match state.auth.validate_token(&token).await {
         Ok(id) => id,
         Err(nasiko_auth::AuthError::Expired) => {
             return (
@@ -346,7 +388,7 @@ async fn token_validate(
     // Step 2: check revocation — same logic as require_auth so validate is consistent.
     // Fail CLOSED (AUTH-5): if the lookup errors we cannot prove the token is
     // still valid, so we deny rather than let a possibly-revoked token through.
-    if let Some(jti) = nasiko_auth::jwt::extract_jti(&req.token) {
+    if let Some(jti) = nasiko_auth::jwt::extract_jti(&token) {
         let hash = nasiko_auth::jwt::hash_jti(&jti);
         let revoked: bool = match sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM auth_tokens WHERE token_hash = $1 AND revoked_at IS NOT NULL)",
@@ -375,8 +417,28 @@ async fn token_validate(
         }
     }
 
+    // Fetch the user's actual role from the DB so the Flutter sidebar can
+    // gate admin-only tabs (access control) correctly. Fall back to
+    // is_superuser-derived role on any error (user deleted, DB unavailable).
+    let role: String = sqlx::query_scalar(
+        "SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(identity.user_id.parse::<uuid::Uuid>().unwrap_or_default())
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| {
+        if identity.is_superuser { "admin".into() } else { "member".into() }
+    });
+
     Json(serde_json::json!({
         "valid": true,
+        // subject_id / subject_type are the fields the Flutter client reads.
+        "subject_id": identity.user_id,
+        "subject_type": "user",
+        "role": role,
+        // Keep legacy fields so any existing integrations aren't broken.
         "user_id": identity.user_id,
         "username": identity.username,
         "is_superuser": identity.is_superuser,
@@ -445,6 +507,52 @@ async fn users_for_search(State(state): State<AppState>, claims: Claims) -> impl
                 Json(serde_json::json!({"error": "internal error"})),
             )
                 .into_response()
+        }
+    }
+}
+
+async fn get_user_profile(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    // Non-superusers may only fetch their own profile.
+    let caller: Uuid = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    if !claims.is_superuser && caller != id {
+        return (StatusCode::FORBIDDEN, "access denied").into_response();
+    }
+
+    #[derive(serde::Serialize, sqlx::FromRow)]
+    struct ProfileRow {
+        id: Uuid,
+        username: String,
+        email: String,
+        display_name: Option<String>,
+        is_superuser: bool,
+        is_active: bool,
+        role: Option<String>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        last_login: Option<chrono::DateTime<chrono::Utc>>,
+    }
+
+    let result: Result<Option<ProfileRow>, _> = sqlx::query_as(
+        "SELECT id, username, email, display_name, is_superuser, is_active,
+                role::text as role, created_at, last_login
+         FROM users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match result {
+        Ok(Some(row)) => Json(row).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "user not found").into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "get_user_profile: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
 }

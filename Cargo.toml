@@ -15,13 +15,12 @@ members = [
     "oci",
     "flow",
     "agent-proxy",
-
+    "llm-router",
+    "mcp-gateway",
     "cli",
     "agents/coding",
     "github",
     "oidc",
-    "bench",
-    "bench-support",
 ]
 
 [workspace.package]
@@ -34,17 +33,18 @@ nasiko-auth = { path = "auth" }
 nasiko-config = { path = "config" }
 nasiko-flow = { path = "flow" }
 nasiko-agent-proxy = { path = "agent-proxy" }
+nasiko-mcp-gateway = { path = "mcp-gateway" }
 nasiko-github = { path = "github" }
 nasiko-oidc = { path = "oidc" }
+nasiko-secrets = { path = "secrets" }
 nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }
 nasiko-orchestrator = { path = "orchestrator" }
 nasiko-types = { path = "types" }
 nasiko-utils = { path = "utils" }
-nasiko-server = { path = "server" }
 nasiko-oci = { path = "oci" }
-nasiko-bench-support = { path = "bench-support" }
+nasiko-llm-router = { path = "llm-router" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
@@ -59,8 +59,11 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# ─── Text / patterns ────────────────────────────────────────────────────────
+regex = "1"
+
 # ─── Database & state ───────────────────────────────────────────────────────
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate", "json"] }
 redis = { version = "0.27", features = ["tokio-comp", "aio"] }
 rust_decimal = { version = "1.36", features = ["serde", "db-postgres"] }
 
@@ -90,7 +93,6 @@ which = "7"
 include_dir = "0.7"
 ratatui = "0.29"
 crossterm = "0.29"
-tabled = "0.21"
 
 # ─── Observability ──────────────────────────────────────────────────────────
 tracing = "0.1"
@@ -106,6 +108,7 @@ hkdf = "0.12"
 hmac = "0.12"
 hex = "0.4"
 rand = "0.9"
+rand_distr = "0.5"
 
 # ─── Temp filesystem ────────────────────────────────────────────────────────
 tempfile = "3"
@@ -137,9 +140,6 @@ rust-embed = { version = "8", features = ["mime-guess", "include-exclude"] }
 mime_guess = "2"
 
 mockito = "1"
-
-# ─── Benchmarking ───────────────────────────────────────────────────────────
-criterion = { version = "0.5", features = ["async_tokio"] }
 
 [profile.release]
 strip = true

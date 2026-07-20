@@ -25,6 +25,11 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Query classifier — regex categories + Thompson-sampling tier selection
+regex = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+
 # Storage & outbound HTTP (the crate owns these via LlmRouterCtx — no nasiko-server dep)
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }

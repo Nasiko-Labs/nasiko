@@ -10,18 +10,21 @@
 //! query + provider ──► classify() ──► Tier ──► registry::model_for(provider, Tier) ──► model
 //! ```
 //!
-//! The [classifier](classifier::classify) body is a placeholder for now — this module is
-//! the machinery around the agreed signature (S1), built and tested end-to-end before the
-//! real classification logic lands.
+//! The [classifier](classifier::classify) buckets the query into a request type and
+//! Thompson-samples a [`Tier`] over the provider's learned quality [cells](cells); feedback
+//! from the user's next turn ([`classifier::signal`]) is folded back into those cells, so the
+//! router learns which tier suffices for which kind of query. See [`route_model`].
 
 pub mod boundary;
 pub mod cache;
+pub mod cells;
 pub mod classifier;
 pub mod registry;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
-pub use classifier::{Tier, classify};
+pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
+pub use classifier::{RequestType, Tier, classify, signal};
 pub use registry::{PgTierRegistry, StaticTierRegistry, TierRegistry};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
@@ -79,15 +82,24 @@ pub struct RouteDecision {
 /// 1. **Pinned** (`pinned_model` set) → return it directly. No classify, no cache write.
 ///    Compliance-locked agents.
 /// 2. **Cache hit** on `(conv_id, agent_id)` → the sticky decision for this conversation.
+///    Before returning it, the current turn's message is checked for a feedback
+///    [`signal`](classifier::signal); if present it is credited to the cached decision's
+///    `(tier, request_type)` via [`CellStore::observe`] — this is the learning write.
 /// 3. **Classify** — only at a fireable boundary (`switch`/`cold_start` + `free_flowing`)
-///    with a query present and a registry entry for `(provider, tier)`. Write-through to
-///    the cache so the next turn short-circuits at Level 2.
+///    with a query present and a registry entry for `(provider, tier)`. Loads the provider's
+///    learned cells, Thompson-samples a tier, and writes the decision (incl. request type)
+///    through to the cache so the next turn short-circuits at Level 2.
 /// 4. **Config** — the agent's configured model (`has_llm_config`).
 /// 5. **Default** — no `llm_config`: the resolver's `fallback_model`, which is the request's
 ///    own provider/model (passthrough) or the platform default as the last-resort safety net.
+///
+/// Learning happens *across* conversations, not within one: a conversation stays sticky to
+/// its first-turn tier (Level 2), while the reward it generates updates the shared
+/// provider-scoped cells that shape *future* conversations' cold-start picks.
 pub async fn route_model(
     cache: &dyn DecisionCache,
     registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -138,6 +150,11 @@ pub async fn route_model(
             "route_model: LEVEL 2 (CacheHit) — looking up sticky decision for (conv_id, agent_id)"
         );
         if let Some(hit) = cache.get(conv_id, inputs.agent_id).await {
+            // Learning write: this turn's user message is the verdict on the previous turn's
+            // answer, which the cached decision identifies. Credit it to that (tier,
+            // request_type). `signal` is conservative, so a genuine new question scores None
+            // and earns no false credit.
+            maybe_learn(cell_store, inputs, hit.tier, hit.request_type).await;
             tracing::info!(
                 target: "nasiko::llm_router::routing",
                 agent_id = %inputs.agent_id, %conv_id,
@@ -168,12 +185,21 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            let tier = classify(query, inputs.provider);
+            // Load the provider's learned quality, then Thompson-sample a tier. Production
+            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
+            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
+            // handler future must stay `Send`.
+            let learned = cell_store.load(inputs.provider).await;
+            let (tier, request_type) = {
+                let mut rng = rand::rng();
+                classify(query, inputs.provider, &learned, &mut rng)
+            };
             match registry.model_for(inputs.provider, tier).await {
                 Some(model) => {
                     let decision = CachedDecision {
                         model,
                         tier: Some(tier),
+                        request_type: Some(request_type),
                     };
                     // Write-through so continuation turns read the cache (Level 2).
                     cache.put(conv_id, inputs.agent_id, &decision).await;
@@ -184,6 +210,7 @@ pub async fn route_model(
                         source = ?RouteSource::Classified,
                         provider = %inputs.provider,
                         tier = ?tier,
+                        request_type = %request_type.as_str(),
                         model = %decision.model,
                         "route_model: LEVEL 3 (Classified) — registry resolved (provider, tier) → model; wrote decision to cache for continuation turns"
                     );
@@ -244,6 +271,38 @@ pub async fn route_model(
     }
 }
 
+/// Credit the current turn's feedback to a prior decision, if there is any to credit.
+///
+/// The current user message (`inputs.query`) is the verdict on the answer the cached
+/// `(tier, request_type)` produced last turn. A message with a clear
+/// [`signal`](classifier::signal) folds a reward into that provider-scoped cell; anything
+/// ambiguous (the usual case) is a no-op. Best-effort — a store failure is swallowed.
+async fn maybe_learn(
+    cell_store: &dyn CellStore,
+    inputs: &RouteInputs<'_>,
+    tier: Option<Tier>,
+    request_type: Option<RequestType>,
+) {
+    let (Some(query), Some(tier), Some(rt)) = (inputs.query, tier, request_type) else {
+        return;
+    };
+    let Some(observation) = signal(query) else {
+        return;
+    };
+    tracing::info!(
+        target: "nasiko::llm_router::routing",
+        agent_id = %inputs.agent_id,
+        provider = %inputs.provider,
+        ?tier,
+        request_type = %rt.as_str(),
+        observation,
+        "route_model: feedback signal detected in this turn — crediting the prior sticky decision's learned cell"
+    );
+    cell_store
+        .observe(inputs.provider, tier, rt, observation)
+        .await;
+}
+
 /// Best-effort plain text of the latest `user` message — the classifier's `query` input.
 /// Walks messages in reverse so the most recent user turn wins; `None` if there is none.
 pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
@@ -269,11 +328,18 @@ mod tests {
     }
     impl FakeCache {
         fn empty() -> Self {
-            Self { hit: None, puts: Mutex::new(vec![]) }
+            Self {
+                hit: None,
+                puts: Mutex::new(vec![]),
+            }
         }
         fn with_hit(model: &str) -> Self {
             Self {
-                hit: Some(CachedDecision { model: model.into(), tier: Some(Tier::Tier1) }),
+                hit: Some(CachedDecision {
+                    model: model.into(),
+                    tier: Some(Tier::Tier1),
+                    request_type: Some(RequestType::CodeGeneration),
+                }),
                 puts: Mutex::new(vec![]),
             }
         }
@@ -293,7 +359,11 @@ mod tests {
     }
 
     fn signals(conv_id: Option<&str>, phase: Phase, mode: Mode) -> BoundarySignals {
-        BoundarySignals { conv_id: conv_id.map(str::to_string), phase, mode }
+        BoundarySignals {
+            conv_id: conv_id.map(str::to_string),
+            phase,
+            mode,
+        }
     }
 
     fn inputs<'a>(
@@ -318,7 +388,13 @@ mod tests {
         // writes the cache.
         let cache = FakeCache::with_hit("cached");
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(&cache, &StaticTierRegistry, &inputs("anthropic", &s, Some("pinned-model"))).await;
+        let d = route_model(
+            &cache,
+            &StaticTierRegistry,
+            &InMemoryCellStore::new(),
+            &inputs("anthropic", &s, Some("pinned-model")),
+        )
+        .await;
         assert_eq!(d.source, RouteSource::Pinned);
         assert_eq!(d.model, "pinned-model");
         assert!(cache.puts.lock().unwrap().is_empty());
@@ -328,23 +404,79 @@ mod tests {
     async fn level2_cache_hit_short_circuits_before_classify() {
         let cache = FakeCache::with_hit("cached-model");
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(&cache, &StaticTierRegistry, &inputs("anthropic", &s, None)).await;
+        let d = route_model(
+            &cache,
+            &StaticTierRegistry,
+            &InMemoryCellStore::new(),
+            &inputs("anthropic", &s, None),
+        )
+        .await;
         assert_eq!(d.source, RouteSource::CacheHit);
         assert_eq!(d.model, "cached-model");
     }
 
     #[tokio::test]
     async fn level3_classifies_at_boundary_and_writes_cache() {
-        // Placeholder classifier returns Tier2 ⇒ anthropic Tier2 = claude-sonnet-4-6.
+        // The classifier now Thompson-samples a tier, so the exact tier is stochastic — but
+        // it must resolve to one of anthropic's seeded models and write that decision through
+        // to the cache exactly once.
         let cache = FakeCache::empty();
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(&cache, &StaticTierRegistry, &inputs("anthropic", &s, None)).await;
+        let d = route_model(
+            &cache,
+            &StaticTierRegistry,
+            &InMemoryCellStore::new(),
+            &inputs("anthropic", &s, None),
+        )
+        .await;
         assert_eq!(d.source, RouteSource::Classified);
-        assert_eq!(d.model, "claude-sonnet-4-6");
-        assert_eq!(d.tier, Some(Tier::Tier2));
+        assert!(d.tier.is_some());
+        let expected_models = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
+        assert!(
+            expected_models.contains(&d.model.as_str()),
+            "unexpected model: {}",
+            d.model
+        );
         let puts = cache.puts.lock().unwrap();
         assert_eq!(puts.len(), 1);
-        assert_eq!(puts[0], ("c1".into(), "agent-1".into(), "claude-sonnet-4-6".into()));
+        assert_eq!(puts[0].0, "c1");
+        assert_eq!(puts[0].1, "agent-1");
+        assert_eq!(puts[0].2, d.model);
+    }
+
+    #[tokio::test]
+    async fn cache_hit_with_positive_feedback_learns_and_stays_sticky() {
+        // A continuation turn whose message approves the prior answer: the router returns the
+        // sticky cached model (Level 2) AND folds a positive reward into the cached decision's
+        // (tier, request_type) cell for this provider.
+        let cache = FakeCache::with_hit("claude-opus-4-8"); // hit tier=Tier1, rt=CodeGeneration
+        let cells = InMemoryCellStore::new();
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some("perfect, that worked. thanks!");
+        let d = route_model(&cache, &StaticTierRegistry, &cells, &i).await;
+        assert_eq!(d.source, RouteSource::CacheHit);
+        assert_eq!(d.model, "claude-opus-4-8");
+        let learned = cells.load("anthropic").await;
+        let cell = learned
+            .get(&(Tier::Tier1, RequestType::CodeGeneration))
+            .expect("positive feedback should have created a learned cell");
+        assert_eq!(cell.quality_mean, 1.0);
+        assert_eq!(cell.samples, 1);
+    }
+
+    #[tokio::test]
+    async fn cache_hit_without_signal_does_not_learn() {
+        // A neutral continuation turn (a plain follow-up question) carries no verdict ⇒ no
+        // cell is written, but the sticky model is still served.
+        let cache = FakeCache::with_hit("claude-opus-4-8");
+        let cells = InMemoryCellStore::new();
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some("now also handle the empty-input case");
+        let d = route_model(&cache, &StaticTierRegistry, &cells, &i).await;
+        assert_eq!(d.source, RouteSource::CacheHit);
+        assert!(cells.load("anthropic").await.is_empty());
     }
 
     #[tokio::test]
@@ -352,7 +484,13 @@ mod tests {
         // gemini has no seeded tiers ⇒ classification can't resolve a model ⇒ Level 4.
         let cache = FakeCache::empty();
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(&cache, &StaticTierRegistry, &inputs("gemini", &s, None)).await;
+        let d = route_model(
+            &cache,
+            &StaticTierRegistry,
+            &InMemoryCellStore::new(),
+            &inputs("gemini", &s, None),
+        )
+        .await;
         assert_eq!(d.source, RouteSource::Config);
         assert_eq!(d.model, "cfg-model");
         assert!(cache.puts.lock().unwrap().is_empty());
@@ -363,7 +501,13 @@ mod tests {
         // A tool-loop turn (phase=continue) with a cache miss falls to config, never classifies.
         let cache = FakeCache::empty();
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
-        let d = route_model(&cache, &StaticTierRegistry, &inputs("anthropic", &s, None)).await;
+        let d = route_model(
+            &cache,
+            &StaticTierRegistry,
+            &InMemoryCellStore::new(),
+            &inputs("anthropic", &s, None),
+        )
+        .await;
         assert_eq!(d.source, RouteSource::Config);
         assert_eq!(d.model, "cfg-model");
     }
@@ -372,7 +516,13 @@ mod tests {
     async fn pinned_flow_at_switch_does_not_classify() {
         let cache = FakeCache::empty();
         let s = signals(Some("c1"), Phase::Switch, Mode::PinnedFlow);
-        let d = route_model(&cache, &StaticTierRegistry, &inputs("anthropic", &s, None)).await;
+        let d = route_model(
+            &cache,
+            &StaticTierRegistry,
+            &InMemoryCellStore::new(),
+            &inputs("anthropic", &s, None),
+        )
+        .await;
         assert_eq!(d.source, RouteSource::Config);
     }
 
@@ -383,7 +533,13 @@ mod tests {
         // and never read or write the cache.
         let cache = FakeCache::with_hit("should-not-be-read");
         let s = signals(None, Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(&cache, &StaticTierRegistry, &inputs("anthropic", &s, None)).await;
+        let d = route_model(
+            &cache,
+            &StaticTierRegistry,
+            &InMemoryCellStore::new(),
+            &inputs("anthropic", &s, None),
+        )
+        .await;
         assert_eq!(d.source, RouteSource::Config);
         assert_eq!(d.model, "cfg-model");
         assert!(cache.puts.lock().unwrap().is_empty());
@@ -395,7 +551,7 @@ mod tests {
         let s = signals(None, Phase::Continue, Mode::FreeFlowing);
         let mut i = inputs("anthropic", &s, None);
         i.has_llm_config = false;
-        let d = route_model(&cache, &StaticTierRegistry, &i).await;
+        let d = route_model(&cache, &StaticTierRegistry, &InMemoryCellStore::new(), &i).await;
         assert_eq!(d.source, RouteSource::Default);
         assert_eq!(d.model, "cfg-model");
     }

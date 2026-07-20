@@ -121,6 +121,7 @@ mod tests {
             cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
             router_cache: Arc::new(crate::routing::NoopCache),
             tier_registry: Arc::new(crate::routing::StaticTierRegistry),
+            cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
         }
     }
 

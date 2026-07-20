@@ -122,6 +122,7 @@ async fn chat_core(
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
+        ctx.cell_store.as_ref(),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -426,6 +427,7 @@ mod tests {
             cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
             router_cache: Arc::new(crate::routing::NoopCache),
             tier_registry: Arc::new(crate::routing::StaticTierRegistry),
+            cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
         }
     }
 
