@@ -89,7 +89,10 @@ fn deploy_from_directory(
     let image_tag = format!("{agent_name}:{version}");
 
     // Auto-build before pushing
-    super::build::build(dir, Some(&image_tag), None)?;
+    // Cluster nodes are amd64 on every supported provider — build for the
+    // deployment target, not the host arch, or Apple Silicon builds
+    // CrashLoop on the cluster with "exec format error".
+    super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
 
     // Push image to OCI
     let repo = format!("nasiko/{agent_name}");
@@ -102,10 +105,23 @@ fn deploy_from_directory(
     let agent_file = root.join(AGENT_FILE);
     let existing_id = load_agent_id(&agent_file);
 
-    let agent_id = match existing_id {
-        Some(id) => {
+    // Resolve the cached binding, tolerating a stale one: if the cached agent no
+    // longer exists server-side (e.g. after a DB reset), `get_json_optional`
+    // returns None and we fall through to registering a fresh agent instead of
+    // failing with a 404.
+    let existing = match &existing_id {
+        Some(id) => client
+            .get_json_optional::<serde_json::Value>(&format!("/agents/{id}"))?
+            .map(|current| (id.clone(), current)),
+        None => None,
+    };
+    if existing_id.is_some() && existing.is_none() {
+        println!("  ! Cached agent binding is stale — registering a new agent");
+    }
+
+    let agent_id = match existing {
+        Some((id, current)) => {
             // Update existing agent
-            let current: serde_json::Value = client.get_json(&format!("/agents/{id}"))?;
             let current_version = current
                 .get("version")
                 .and_then(|v| v.as_str())

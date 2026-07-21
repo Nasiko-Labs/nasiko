@@ -37,7 +37,10 @@ fn push_from_directory(dir: &str, name_override: Option<&str>, client: &Client) 
     let image_tag = format!("{agent_name}:{version}");
 
     // Build image
-    super::build::build(dir, Some(&image_tag), None)?;
+    // Cluster nodes are amd64 on every supported provider — build for the
+    // deployment target, not the host arch, or Apple Silicon builds
+    // CrashLoop on the cluster with "exec format error".
+    super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
 
     // Push to OCI
     let repo = format!("nasiko/{agent_name}");
