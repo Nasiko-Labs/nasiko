@@ -2,7 +2,7 @@ use std::io::{BufRead, Write as _};
 
 use anyhow::{Context, Result, bail};
 
-use crate::commands::tui::session::{self as cp, CpSession};
+use crate::commands::tui::session::{self as cp};
 use crate::config;
 use nasiko_utils::term as status;
 
@@ -67,76 +67,15 @@ impl Spinner {
     }
 }
 
-/// Resolved CP session info used to persist messages.
-struct CpCtx {
-    base_url: String,
-    token: String,
-    session_id: String,
-}
-
-/// Resolve (or create) a CP session for the given endpoint. When an existing
-/// `session_id` is passed in (continuing a prior chat), also fetch its prior
-/// turns — otherwise `nasiko chat --session-id <id>` starts blank even though
-/// the session already has history on the server.
-/// Returns None when the endpoint does not belong to the active cluster.
-fn resolve_cp_ctx(
-    endpoint: &str,
-    session_id: Option<&str>,
-    target_label: &str,
-    message: Option<&str>,
-) -> Option<(CpCtx, Vec<cp::CpMessage>)> {
-    let (base_url, token) = cp::cp_credentials(endpoint)?;
-    // `target_label` is the catalog agent's name/UUID as the user typed it —
-    // empty for the orchestrator, or a raw URL when the user passed one
-    // directly, neither of which the server can resolve to an agent row.
-    let agent_id = (!target_label.is_empty()
-        && !target_label.starts_with("http://")
-        && !target_label.starts_with("https://"))
-    .then_some(target_label);
-    let (sid, history) = match session_id {
-        Some(s) => {
-            let history = cp::fetch_cp_messages(&base_url, &token, s).unwrap_or_default();
-            (s.to_string(), history)
-        }
-        None => {
-            // One-shot mode already knows the first message — use it as the
-            // title (same convention agent_proxy.rs falls back to) instead of
-            // a placeholder. Interactive mode has no message yet at session
-            // creation, so "New chat" stands until the first turn is typed.
-            let title = message
-                .map(derive_title)
-                .unwrap_or_else(|| "New chat".to_string());
-            let sess: CpSession =
-                cp::create_cp_session(&base_url, &token, agent_id, &title).ok()?;
-            (sess.session_id, Vec::new())
-        }
+/// Prior turns of a resumed CP session. Sessions themselves are owned by the
+/// server: the agent proxy / orchestrator mint a `ses_*` id on the first
+/// message and echo it back as the A2A `contextId` — the CLI never creates
+/// one, it only reuses an id (from `--session-id` or a previous turn's echo).
+fn fetch_cp_history(endpoint: &str, session_id: &str) -> Vec<cp::CpMessage> {
+    let Some((base_url, token)) = cp::cp_credentials(endpoint) else {
+        return Vec::new();
     };
-    Some((
-        CpCtx {
-            base_url,
-            token,
-            session_id: sid,
-        },
-        history,
-    ))
-}
-
-/// Collapse a message to one line and truncate to 60 chars for use as a
-/// session title — mirrors the fallback in `agent_proxy.rs`.
-fn derive_title(text: &str) -> String {
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.is_empty() {
-        return "New chat".to_string();
-    }
-    if one_line.len() > 60 {
-        let mut n = 60;
-        while !one_line.is_char_boundary(n) {
-            n -= 1;
-        }
-        format!("{}…", &one_line[..n])
-    } else {
-        one_line
-    }
+    cp::fetch_cp_messages(&base_url, &token, session_id).unwrap_or_default()
 }
 
 /// Print a session's prior turns before resuming it, in the same visual
@@ -174,9 +113,13 @@ pub fn chat(
     use std::io::IsTerminal;
 
     let endpoint = url.trim_end_matches('/').to_string();
-    let (cp_ctx, history) = match resolve_cp_ctx(&endpoint, session_id, target_label, message) {
-        Some((ctx, history)) => (Some(ctx), history),
-        None => (None, Vec::new()),
+    let is_cp = cp::cp_credentials(&endpoint).is_some();
+    // The session id, once known: passed in via --session-id, or adopted from
+    // the server's echo after the first turn (see `fetch_cp_history`'s doc).
+    let mut session: Option<String> = session_id.map(str::to_string);
+    let history = match session.as_deref() {
+        Some(sid) if is_cp => fetch_cp_history(&endpoint, sid),
+        _ => Vec::new(),
     };
 
     // At a terminal, a message argument is just the first turn of a
@@ -186,17 +129,19 @@ pub fn chat(
 
     if let Some(msg) = message {
         print_history(&history);
-        send_message(&endpoint, msg, cp_ctx.as_ref())?;
+        if let Some(sid) = send_message(&endpoint, msg, session.as_deref())? {
+            session = Some(sid);
+        }
         println!();
         if !interactive {
-            print_resume_hint(cp_ctx.as_ref(), target_label);
+            print_resume_hint(is_cp, session.as_deref(), target_label);
             return Ok(());
         }
         println!();
     } else {
-        let session_note = cp_ctx
+        let session_note = session
             .as_ref()
-            .map(|ctx| format!(" \x1b[2m· session {}\x1b[0m", &ctx.session_id[..8]))
+            .map(|sid| format!(" \x1b[2m· session {sid}\x1b[0m"))
             .unwrap_or_default();
         println!("\x1b[1mnasiko chat\x1b[0m \x1b[2m·\x1b[0m {endpoint}{session_note}");
         println!("\x1b[2mtype /quit to exit\x1b[0m\n");
@@ -216,55 +161,67 @@ pub fn chat(
             break;
         }
         println!();
-        match send_message(&endpoint, &input, cp_ctx.as_ref()) {
-            Ok(_) => println!("\n"),
+        match send_message(&endpoint, &input, session.as_deref()) {
+            Ok(sid) => {
+                if let Some(sid) = sid {
+                    session = Some(sid);
+                }
+                println!("\n");
+            }
             Err(e) => eprintln!("  \x1b[31merror:\x1b[0m {e}\n"),
         }
     }
-    print_resume_hint(cp_ctx.as_ref(), target_label);
+    print_resume_hint(is_cp, session.as_deref(), target_label);
     Ok(())
 }
 
 /// Tell the user which session this chat belongs to and how to pick it back
-/// up. Goes to stderr so piped/scripted stdout stays clean.
-fn print_resume_hint(cp_ctx: Option<&CpCtx>, target_label: &str) {
-    let Some(ctx) = cp_ctx else { return };
+/// up. Goes to stderr so piped/scripted stdout stays clean. Only meaningful
+/// for CP endpoints — the server is what stores and resumes sessions.
+fn print_resume_hint(is_cp: bool, session: Option<&str>, target_label: &str) {
+    let Some(sid) = session.filter(|_| is_cp) else {
+        return;
+    };
     let target = if target_label.is_empty() {
         String::new()
     } else {
         format!("{target_label} ")
     };
     eprintln!(
-        "\x1b[2msession: {} — continue with: nasiko chat {}--session-id {}\x1b[0m",
-        ctx.session_id, target, ctx.session_id
+        "\x1b[2msession: {sid} — continue with: nasiko chat {target}--session-id {sid}\x1b[0m"
     );
 }
 
-/// Send an A2A streaming request and handle the response.
-fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()> {
-    // Use CP session_id as A2A contextId when available
-    let context_id = cp_ctx
-        .map(|c| c.session_id.clone())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
+/// Send an A2A streaming request and handle the response. Returns the session
+/// id this turn belongs to: the one passed in, or — on a first turn — the id
+/// the server minted and echoed back as the response's `contextId`.
+fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<Option<String>> {
     let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
+        // gRPC-style JSON-RPC method/role names — what every example agent's
+        // installed `a2a-sdk` actually registers in its dispatch table
+        // (confirmed against a real deployed `oss/agents/translator` build).
+        // The CP orchestrator route ignores `method` entirely, but this body
+        // is also sent straight through to an agent via the CP agent-proxy
+        // or a direct agent endpoint, where it does matter.
         "method": "SendStreamingMessage",
         "params": {
             "message": {
                 "messageId": uuid::Uuid::new_v4().to_string(),
                 "role": "ROLE_USER",
-                "parts": [{"text": text}],
-                "contextId": context_id
+                "parts": [{"text": text}]
             }
         }
     });
-    // Name the session explicitly so the server loads prior turns as
-    // conversation history (it also falls back to contextId, but the
-    // metadata field is the documented contract the web UI uses).
-    if let Some(ctx) = cp_ctx {
-        body["params"]["metadata"] = serde_json::json!({ "session_id": ctx.session_id });
+    // A known session rides as the A2A contextId; a first turn sends none and
+    // the server (agent proxy / orchestrator) mints and echoes one. The
+    // metadata field additionally names the session explicitly so the server
+    // loads prior turns as conversation history (it also falls back to
+    // contextId, but metadata is the documented contract the web UI uses).
+    if let Some(sid) = session_id {
+        body["params"]["message"]["contextId"] = serde_json::Value::String(sid.to_string());
+        body["params"]["metadata"] = serde_json::json!({ "session_id": sid });
     }
 
     let http = ureq::Agent::new_with_config(
@@ -294,11 +251,6 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
     let trace_id = uuid::Uuid::new_v4().to_string().replace('-', "");
     let span_id = &trace_id[..16];
     let traceparent = format!("00-{trace_id}-{span_id}-01");
-
-    // Persist user message to CP before sending
-    if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(&ctx.base_url, &ctx.token, &ctx.session_id, "user", text);
-    }
 
     let mut req = http
         .post(endpoint)
@@ -351,9 +303,10 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         .unwrap_or("")
         .to_string();
 
-    let agent_text = if content_type.contains("text/event-stream") {
+    let observed_session = if content_type.contains("text/event-stream") {
         spin.set("thinking");
-        handle_sse_stream(resp, &mut spin)?
+        let (_agent_text, observed) = handle_sse_stream(resp, &mut spin)?;
+        observed
     } else {
         spin.set("thinking");
         let resp_json: serde_json::Value = resp
@@ -366,35 +319,44 @@ fn send_message(endpoint: &str, text: &str, cp_ctx: Option<&CpCtx>) -> Result<()
         if let Some(t) = nasiko_types::a2a::extract_text(result) {
             print!("{t}");
             std::io::stdout().flush().ok();
-            t
         } else if let Some(err) = resp_json.get("error") {
             bail!("A2A error: {}", err);
         } else {
             bail!("unexpected response: {}", resp_json);
         }
+        event_context_id(result)
     };
 
-    // Persist agent reply to CP
-    if let Some(ctx) = cp_ctx {
-        let _ = cp::post_cp_message(
-            &ctx.base_url,
-            &ctx.token,
-            &ctx.session_id,
-            "assistant",
-            &agent_text,
-        );
-    }
+    Ok(session_id.map(str::to_string).or(observed_session))
+}
 
-    Ok(())
+/// The session id a response event carries, across the A2A response shapes
+/// (task-wrapped, status/artifact update events, bare message replies).
+fn event_context_id(result: &serde_json::Value) -> Option<String> {
+    [
+        "/contextId",
+        "/task/contextId",
+        "/statusUpdate/contextId",
+        "/artifactUpdate/contextId",
+        "/message/contextId",
+    ]
+    .iter()
+    .find_map(|p| result.pointer(p).and_then(|v| v.as_str()))
+    .filter(|s| !s.is_empty())
+    .map(str::to_string)
 }
 
 /// Parse SSE stream, render events to the terminal, and return the full agent text.
 /// The spinner animates whenever the stream is quiet; every print pauses it
 /// first so output never collides with an animation frame.
-fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner) -> Result<String> {
+fn handle_sse_stream(
+    resp: ureq::http::Response<ureq::Body>,
+    spin: &mut Spinner,
+) -> Result<(String, Option<String>)> {
     let (_parts, body) = resp.into_parts();
     let buf = std::io::BufReader::new(body.into_reader());
     let mut collected = String::new();
+    let mut observed_session: Option<String> = None;
 
     for line in buf.lines() {
         let line = line.context("reading SSE stream")?;
@@ -414,6 +376,10 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
         // v1.0 JSONRPC SSE: {"jsonrpc":"2.0","result":{"statusUpdate":...}} or {"result":{"artifactUpdate":...}}
         // Also supports top-level {"statusUpdate":...} for REST/proto format
         let result = event.get("result").unwrap_or(&event);
+
+        if observed_session.is_none() {
+            observed_session = event_context_id(result);
+        }
 
         let mut is_terminal = false;
 
@@ -485,7 +451,7 @@ fn handle_sse_stream(resp: ureq::http::Response<ureq::Body>, spin: &mut Spinner)
 
     spin.pause();
     spin.close_sub();
-    Ok(collected)
+    Ok((collected, observed_session))
 }
 
 fn handle_task_result(task: &serde_json::Value) -> Option<String> {
