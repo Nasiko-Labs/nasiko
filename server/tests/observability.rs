@@ -3,20 +3,19 @@
 //! Covers:
 //!   GET  /api/observability/agents/{agent_ref}/logs
 //!   GET  /api/observability/agents/{agent_ref}/logs/stream
-//!   GET  /api/observability/agents/{agent_ref}/stats
-//!   GET  /api/observability/traces
-//!   GET  /api/observability/traces/{trace_id}
-//!   GET  /api/observability/finops
+//!   GET  /api/observability/agent/{agent_ref}/stats
+//!   GET  /api/observability/session/list
+//!   GET  /api/observability/trace/{trace_id}
+//!   GET  /api/observability/finops/dashboard
 //!
-//! In tests the Tempo/Loki env vars are not set so `state.observability` is
-//! `None`.  This means:
-//!   • traces / finops → 503 SERVICE_UNAVAILABLE
-//!   • stats           → 200 (proxy_logs DB fallback, `source: "proxy_logs"`)
-//!   • logs            → 200 (proxy_logs + container logs merged)
+//! The read path is provider-backed (Tempo/Loki HTTP clients). Per-agent
+//! backend failures degrade soft: session/list and finops return zeroed 200
+//! responses rather than 5xx. Stats queries Tempo directly (zeroed 200 when
+//! Tempo has no data). Logs merge proxy_logs (DB) with container logs.
 //!
-//! All routes are under `/api` and require the X-User-Id gateway header.
+//! All routes are under `/api` and require authentication.
 //!
-//! Requires infra (Postgres :5432, Redis, MinIO):
+//! Requires infra (Postgres :5432, Redis, MinIO, Tempo, Loki):
 //!   cargo test -p nasiko-server --test observability -- --test-threads=1
 
 mod common;
@@ -102,9 +101,10 @@ async fn observe_logs_requires_auth() {
 async fn observe_stats_requires_auth() {
     let server = common::TestServer::start().await;
 
+    // Stats moved to the singular /agent/{ref}/stats route (routes.rs).
     let res = server
         .client
-        .get(server.url("/api/observability/agents/some-agent/stats"))
+        .get(server.url("/api/observability/agent/some-agent/stats"))
         .send()
         .await
         .unwrap();
@@ -118,14 +118,14 @@ async fn observe_stats_requires_auth() {
 async fn observe_traces_requires_auth() {
     let server = common::TestServer::start().await;
 
-    let res = server
-        .client
-        .get(server.url("/api/observability/traces"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), 401);
+    // The old /traces list was replaced by /session/list + /trace/{id}.
+    for path in [
+        "/api/observability/session/list",
+        "/api/observability/trace/abc123def456",
+    ] {
+        let res = server.client.get(server.url(path)).send().await.unwrap();
+        assert_eq!(res.status(), 401, "{path} must require auth");
+    }
     server.cleanup().await;
 }
 
@@ -134,9 +134,10 @@ async fn observe_traces_requires_auth() {
 async fn observe_finops_requires_auth() {
     let server = common::TestServer::start().await;
 
+    // Finops moved to /finops/dashboard.
     let res = server
         .client
-        .get(server.url("/api/observability/finops"))
+        .get(server.url("/api/observability/finops/dashboard"))
         .send()
         .await
         .unwrap();
@@ -145,68 +146,80 @@ async fn observe_finops_requires_auth() {
     server.cleanup().await;
 }
 
-// ─── 503 when no observability backend ───────────────────────────────────────
+// ─── provider-backed list/detail endpoints ───────────────────────────────────
+//
+// The pre-refactor API returned 503 when no Tempo backend was configured; the
+// provider-backed replacements degrade soft instead (zeroed/empty 200s, with
+// per-agent Tempo failures logged and skipped).
 
 #[tokio::test]
 #[serial]
-async fn observe_traces_returns_503_without_backend() {
+async fn observe_session_list_returns_envelope_with_no_sessions() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
     let res = server
         .client
-        .get(server.url("/api/observability/traces"))
+        .get(server.url("/api/observability/session/list"))
         .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(res.status(), 503, "traces needs Tempo backend");
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn observe_trace_by_id_returns_503_without_backend() {
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let uid = admin["user_id"].as_str().unwrap();
-
-    let res = server
-        .client
-        .get(server.url("/api/observability/traces/abc123def456"))
-        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(
-        res.status(),
-        404,
-        "get_trace returns 404 when trace not found in DB fallback"
+    assert_eq!(res.status(), 200, "session/list degrades soft, never 503");
+    let body: Value = res.json().await.unwrap();
+    assert!(
+        body["data"]["sessions"].is_array(),
+        "sessions array expected: {body}"
     );
+    assert_eq!(body["data"]["sessions"].as_array().unwrap().len(), 0);
 
     server.cleanup().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn observe_finops_returns_503_without_backend() {
+async fn observe_trace_by_id_returns_404_for_unknown_trace() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
     let res = server
         .client
-        .get(server.url("/api/observability/finops"))
+        .get(server.url("/api/observability/trace/abc123def456"))
         .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(res.status(), 503, "finops needs Tempo backend");
+    assert_eq!(res.status(), 404, "unknown trace id must 404");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn observe_finops_dashboard_returns_zeroed_summary() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    create_agent(&server, uid, "finops-zero-agent").await;
+
+    let res = server
+        .client
+        .get(server.url("/api/observability/finops/dashboard"))
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), 200, "finops degrades soft, never 503");
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["data"]["summary"]["total_operations"], 0);
+    assert_eq!(body["data"]["summary"]["total_agents"], 1);
+    assert!(body["data"]["agents"].is_array());
 
     server.cleanup().await;
 }
@@ -548,20 +561,24 @@ async fn agent_logs_search_filter_returns_only_matching_messages() {
 }
 
 // ─── stats endpoint ───────────────────────────────────────────────────────────
+//
+// Stats moved to /agent/{ref}/stats and are provider-backed (Tempo): the
+// response is a { data: { project: { id: <agent name>, trace_count, ... } } }
+// envelope (get_agent_stats in oss/server/src/observability/handler.rs). The
+// old proxy_logs fallback (source/total_requests/error_rate) no longer exists.
 
 #[tokio::test]
 #[serial]
-async fn agent_stats_returns_proxy_logs_source_without_tempo() {
+async fn agent_stats_resolves_by_name() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    let agent = create_agent(&server, uid, "stats-source-agent").await;
-    let agent_id_str = agent["id"].as_str().unwrap();
+    create_agent(&server, uid, "stats-source-agent").await;
 
     let res = server
         .client
-        .get(server.url("/api/observability/agents/stats-source-agent/stats"))
+        .get(server.url("/api/observability/agent/stats-source-agent/stats"))
         .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
@@ -570,65 +587,10 @@ async fn agent_stats_returns_proxy_logs_source_without_tempo() {
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
 
-    // When Tempo is not configured, source should be "proxy_logs"
-    assert_eq!(
-        body["source"].as_str(),
-        Some("proxy_logs"),
-        "should fall back to proxy_logs: {body}"
-    );
-    assert_eq!(body["agent_id"].as_str(), Some(agent_id_str));
-    assert!(
-        body["period_start"].is_string(),
-        "period_start should be set"
-    );
-    assert_eq!(body["total_input_tokens"], 0, "no token data without Tempo");
-    assert_eq!(
-        body["total_output_tokens"], 0,
-        "no token data without Tempo"
-    );
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn agent_stats_counts_proxy_log_requests_correctly() {
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let uid = admin["user_id"].as_str().unwrap();
-    let user_id: Uuid = Uuid::parse_str(uid).unwrap();
-
-    let agent = create_agent(&server, uid, "stats-count-agent").await;
-    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
-
-    // 4 total: 1 error (500), 3 success (200)
-    seed_proxy_log(&server, user_id, agent_id, 200, 10, None).await;
-    seed_proxy_log(&server, user_id, agent_id, 200, 20, None).await;
-    seed_proxy_log(&server, user_id, agent_id, 200, 30, None).await;
-    seed_proxy_log(&server, user_id, agent_id, 500, 80, Some("server error")).await;
-
-    let res = server
-        .client
-        .get(server.url("/api/observability/agents/stats-count-agent/stats"))
-        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), 200);
-    let body: Value = res.json().await.unwrap();
-
-    assert_eq!(body["source"].as_str(), Some("proxy_logs"));
-    assert_eq!(body["total_requests"].as_u64(), Some(4), "4 proxy_log rows");
-
-    let error_rate = body["error_rate"].as_f64().unwrap_or(-1.0);
-    assert!(
-        (error_rate - 0.25).abs() < 0.001,
-        "error rate should be 0.25 (1/4), got {error_rate}"
-    );
-
-    let avg_ms = body["avg_latency_ms"].as_f64().unwrap_or(-1.0);
-    assert!(avg_ms > 0.0, "avg latency should be positive, got {avg_ms}");
+    let project = &body["data"]["project"];
+    assert_eq!(project["id"].as_str(), Some("stats-source-agent"));
+    assert_eq!(project["trace_count"], 0, "no traces yet");
+    assert!(project["cost_summary"]["total"]["cost"].is_number());
 
     server.cleanup().await;
 }
@@ -645,7 +607,7 @@ async fn agent_stats_resolves_by_uuid() {
 
     let res = server
         .client
-        .get(server.url(&format!("/api/observability/agents/{agent_id}/stats")))
+        .get(server.url(&format!("/api/observability/agent/{agent_id}/stats")))
         .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
@@ -653,7 +615,12 @@ async fn agent_stats_resolves_by_uuid() {
 
     assert_eq!(res.status(), 200, "stats should resolve by UUID");
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["agent_id"].as_str(), Some(agent_id));
+    // The project id is the agent NAME (Tempo's service.name), resolved from
+    // the UUID server-side.
+    assert_eq!(
+        body["data"]["project"]["id"].as_str(),
+        Some("stats-uuid-agent")
+    );
 
     server.cleanup().await;
 }
@@ -804,7 +771,7 @@ async fn agent_stats_returns_zero_counts_for_new_agent() {
 
     let res = server
         .client
-        .get(server.url("/api/observability/agents/zero-stats-agent/stats"))
+        .get(server.url("/api/observability/agent/zero-stats-agent/stats"))
         .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
         .send()
         .await
@@ -813,10 +780,12 @@ async fn agent_stats_returns_zero_counts_for_new_agent() {
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
 
-    assert_eq!(body["total_requests"].as_u64(), Some(0), "no requests yet");
-    assert_eq!(body["total_input_tokens"].as_u64(), Some(0));
-    assert_eq!(body["total_output_tokens"].as_u64(), Some(0));
-    assert_eq!(body["source"].as_str(), Some("proxy_logs"));
+    // Provider-backed zeroed response — the proxy_logs fallback is gone.
+    let project = &body["data"]["project"];
+    assert_eq!(project["trace_count"], 0, "no traces yet");
+    assert_eq!(project["cost_summary"]["total"]["cost"], 0.0);
+    assert_eq!(project["cost_summary"]["prompt"]["cost"], 0.0);
+    assert_eq!(project["cost_summary"]["completion"]["cost"], 0.0);
 
     server.cleanup().await;
 }
