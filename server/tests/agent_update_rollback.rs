@@ -413,8 +413,10 @@ async fn update_marks_build_failed_without_dockerfile() {
     .json()
     .await
     .unwrap();
+    // GET /api/agents/{id} wraps the agent in a { data, status_code, message }
+    // envelope (SingleResponse in oss/server/src/catalog/routes.rs).
     assert_eq!(
-        agent_res["version"].as_str().unwrap(),
+        agent_res["data"]["version"].as_str().unwrap(),
         "1.0.0",
         "version should be rolled back after failed build"
     );
