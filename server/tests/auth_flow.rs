@@ -269,9 +269,13 @@ async fn test_login_sets_secure_cookie() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
 
+    // `Secure` is only set when the request arrived over HTTPS — the server
+    // never terminates TLS itself, so that means a reverse proxy advertising
+    // `X-Forwarded-Proto: https` (request_is_https in oss/server/src/auth/login.rs).
     let res = server
         .client
         .post(server.url("/api/auth/login"))
+        .header("x-forwarded-proto", "https")
         .json(&json!({
             "username": admin["access_key"].as_str().unwrap(),
             "password": admin["access_secret"].as_str().unwrap(),
@@ -293,6 +297,30 @@ async fn test_login_sets_secure_cookie() {
     );
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Strict"));
+
+    // Plain-HTTP deployments must NOT get Secure, or browsers silently drop
+    // the cookie and every login "succeeds" into a 401 loop.
+    let res = server
+        .client
+        .post(server.url("/api/auth/login"))
+        .json(&json!({
+            "username": admin["access_key"].as_str().unwrap(),
+            "password": admin["access_secret"].as_str().unwrap(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    let cookie = res
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        !cookie.contains("Secure"),
+        "plain-HTTP login must not set Secure: {cookie}"
+    );
 
     server.cleanup().await;
 }
@@ -459,8 +487,8 @@ async fn test_logout_succeeds_with_jwt() {
     server.cleanup().await;
 }
 
-// token_validate is a PUBLIC endpoint — callers supply the token in the body.
-// No auth headers are required or expected.
+// token_validate is a PUBLIC endpoint — the handler reads the token from the
+// Authorization: Bearer header (or the access_token cookie), not the body.
 #[tokio::test]
 #[serial]
 async fn test_tokens_validate_works_with_bearer_only() {
@@ -477,11 +505,10 @@ async fn test_tokens_validate_works_with_bearer_only() {
         .unwrap()
         .to_owned();
 
-    // No auth headers required — this is a public endpoint
     let body: Value = server
         .client
         .post(server.url("/api/auth/tokens/validate"))
-        .json(&json!({"token": token}))
+        .bearer_auth(&token)
         .send()
         .await
         .unwrap()
@@ -501,10 +528,12 @@ async fn test_tokens_validate_rejects_invalid_token() {
     let server = common::TestServer::start().await;
     let _admin = init_admin(&server).await;
 
+    // Token travels in the Authorization header (the handler no longer reads
+    // the body).
     let res = server
         .client
         .post(server.url("/api/auth/tokens/validate"))
-        .json(&json!({"token": "not.a.valid.jwt"}))
+        .bearer_auth("not.a.valid.jwt")
         .send()
         .await
         .unwrap();
@@ -1122,11 +1151,12 @@ async fn test_login_records_token_and_logout_revokes_it() {
     let token = login_resp["token"].as_str().unwrap().to_owned();
     assert!(!token.is_empty());
 
-    // Token is valid before logout
+    // Token is valid before logout (the handler reads it from the
+    // Authorization header, not the body).
     let validate_before: Value = server
         .client
         .post(server.url("/api/auth/tokens/validate"))
-        .json(&json!({"token": token}))
+        .bearer_auth(&token)
         .send()
         .await
         .unwrap()
