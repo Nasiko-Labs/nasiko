@@ -45,7 +45,7 @@ async fn create_user(server: &common::TestServer, admin_id: &str, username: &str
 }
 
 async fn create_session(server: &common::TestServer, uid: &str, title: &str) -> Value {
-    common::as_superuser(
+    let body = common::as_superuser(
         server.client.post(server.url("/api/chat/sessions")),
         uid,
         "admin",
@@ -56,7 +56,10 @@ async fn create_session(server: &common::TestServer, uid: &str, title: &str) -> 
     .unwrap()
     .json::<Value>()
     .await
-    .unwrap()
+    .unwrap();
+    // The handler wraps the session in a `{ data, status_code, message }`
+    // envelope (session_response); return the inner session object.
+    body["data"].clone()
 }
 
 async fn send_message(server: &common::TestServer, uid: &str, sid: &str, content: &str) -> Value {
@@ -324,7 +327,7 @@ async fn create_session_ignores_client_supplied_agent_url() {
             .unwrap();
     let agent_id = agent["id"].as_str().unwrap();
 
-    let session: Value = common::as_superuser(
+    let body: Value = common::as_superuser(
         server.client.post(server.url("/api/chat/sessions")),
         uid,
         "admin",
@@ -340,6 +343,8 @@ async fn create_session_ignores_client_supplied_agent_url() {
     .json()
     .await
     .unwrap();
+    // The session is wrapped in the { data, status_code, message } envelope.
+    let session = &body["data"];
 
     assert_eq!(session["agent_id"], agent_id);
     assert_ne!(
