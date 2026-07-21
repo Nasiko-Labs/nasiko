@@ -19,7 +19,6 @@ pub struct Config {
     /// Registry prefix prepended to agent image tags at build time.
     /// e.g. `"host.docker.internal:5001"` for local K8s dev.
     /// Empty string → no prefix (Docker local mode).
-    /// TODO: this needs to be removed.
     pub agent_image_registry: String,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
@@ -43,6 +42,13 @@ pub struct Config {
     pub otel_capture_content: bool,
     pub tempo_url: String,
     pub loki_url: String,
+    /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
+    /// source of truth for "is observability configured". True iff both
+    /// `TEMPO_URL` and `LOKI_URL` were explicitly set in the environment
+    /// (the URLs above always carry a default, so their presence alone can't
+    /// answer this). Everything that gates on observability reads this flag
+    /// rather than re-inspecting env, so no two code paths can disagree.
+    pub observability_enabled: bool,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -58,6 +64,14 @@ pub struct Config {
     /// Must exactly match the redirect URI registered with the IdP, e.g.
     /// `https://<host>/api/auth/oidc/callback`.
     pub oidc_redirect_uri: Option<String>,
+    /// Full origins (`scheme://host[:port]`) a post-login OIDC `redirect`
+    /// target is allowed to point at, in addition to a same-origin relative
+    /// path — needed when the frontend is a separate deployment on its own
+    /// domain rather than this binary's embedded UI (comma-separated, e.g.
+    /// `"https://app.example.com,http://localhost:5173"`). Empty (the
+    /// default) means only same-origin relative paths are accepted; see
+    /// `ee/server/src/auth.rs::is_safe_redirect_target`.
+    pub oidc_allowed_redirect_origins: Vec<String>,
     pub oidc_scopes: String,
     /// Stored as `user_identities.provider` for OIDC-authenticated users.
     /// Override if fronting a non-Entra OIDC provider.
@@ -70,6 +84,10 @@ pub struct Config {
     pub embedding_model: String,
     pub router_agent_timeout_secs: u64,
     pub github_callback_url: Option<String>,
+    /// Base URL to redirect to after a successful OAuth login. In production
+    /// this is the same origin as the server. Override via `APP_BASE_URL` in
+    /// dev when the server and app run on different ports.
+    pub app_base_url: String,
     pub git_clone_allowed_hosts: Vec<String>,
     /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
     /// Comma-separated.  Empty = reject all registry imports (safest default for
@@ -91,6 +109,25 @@ pub struct Config {
     /// When set, the Docker runtime pulls images from this registry before creating containers.
     /// Maps to env var `OCI_REGISTRY_HOST`.
     pub oci_registry_host: Option<String>,
+
+    // ─── MCP Gateway ────────────────────────────────────────────────────────
+    /// Composio platform API key. When unset, Composio integration is disabled
+    /// (generic MCP servers still work).
+    pub composio_api_key: Option<String>,
+    /// Composio v3 HTTP API base URL.
+    pub composio_base_url: String,
+    /// HMAC secret used to verify inbound Composio webhooks. When unset,
+    /// signature verification is skipped (dev only).
+    pub composio_webhook_secret: Option<String>,
+    /// Public URL of the MCP gateway, injected into every deployed agent as
+    /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
+    pub mcp_gateway_public_url: Option<String>,
+    /// TTL (seconds) for the Redis-cached resolved backend/session list.
+    pub mcp_session_ttl_seconds: u64,
+    /// TTL (seconds) for the Redis-cached per-agent permission context.
+    pub mcp_perm_cache_ttl_seconds: u64,
+    /// TTL (seconds) for the Redis-cached aggregated tool manifest.
+    pub mcp_manifest_ttl_seconds: u64,
 }
 
 impl Config {
@@ -141,6 +178,11 @@ impl Config {
                 "LOKI_URL",
                 "http://loki.nasiko-infra.svc.cluster.local:3100",
             ),
+            // Enabled only when BOTH backends are explicitly configured; a
+            // partial config is treated as disabled. Computed here, the one place
+            // env is read, so every consumer agrees on whether it's enabled.
+            observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
+                && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
@@ -159,6 +201,12 @@ impl Config {
             oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            oidc_allowed_redirect_origins: std::env::var("OIDC_ALLOWED_REDIRECT_ORIGINS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
@@ -167,6 +215,7 @@ impl Config {
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
+            app_base_url: env_or("APP_BASE_URL", ""),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -193,6 +242,20 @@ impl Config {
                 .collect(),
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
+
+            composio_api_key: std::env::var("COMPOSIO_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            composio_base_url: env_or("COMPOSIO_BASE_URL", "https://backend.composio.dev"),
+            composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
+            mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
+            mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
         })
     }
 

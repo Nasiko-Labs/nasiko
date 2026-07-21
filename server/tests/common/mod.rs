@@ -85,18 +85,8 @@ impl ContainerRuntime for FakeRuntime {
         Ok(self.containers.lock().unwrap().values().cloned().collect())
     }
 
-    async fn endpoint(&self, container_id: &ContainerId) -> RuntimeResult<String> {
-        // Mirror a real runtime: a container that was never deployed can't
-        // resolve. The agent proxy prefers this live lookup and only falls
-        // back to the stored `agents.url` when it errors, so tests that seed
-        // `agents.url` directly (no runtime deploy) rely on this failing.
-        if self.containers.lock().unwrap().contains_key(container_id) {
-            Ok("http://localhost:8000".into())
-        } else {
-            Err(nasiko_runtime::RuntimeError::ContainerNotFound(
-                container_id.clone(),
-            ))
-        }
+    async fn endpoint(&self, _container_id: &ContainerId) -> RuntimeResult<String> {
+        Ok("http://localhost:8000".into())
     }
 
     async fn logs(&self, _container_id: &ContainerId, _tail: u32) -> RuntimeResult<Vec<String>> {
@@ -292,6 +282,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oidc_client_id: None,
         oidc_client_secret: None,
         oidc_redirect_uri: None,
+        oidc_allowed_redirect_origins: vec![],
         oidc_scopes: "openid profile email".into(),
         oidc_provider_label: "microsoft_entra".into(),
         router_shortlist_threshold: 15,
