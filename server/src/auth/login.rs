@@ -13,38 +13,23 @@ use crate::state::AppState;
 
 const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 
-/// Public routes — no auth required (merged outside the protected orchestrator).
-/// token_validate is here because callers supply the token in the request body;
-/// there is no authenticated "caller" to require.
-///
-/// `login_limiter` bounds bcrypt-cost-12 CPU burn from a runaway loop against
-/// `login`/`initialize_admin` — there's no caller identity yet to key on
-/// individually, so this is one shared, global bucket (see
-/// `rate_limit::limit_globally`'s doc comment for why that's the appropriate
-/// tradeoff here). `token_validate` is cheap (JWT decode + one indexed lookup)
-/// and not limited.
 /// Routes shared by OSS and EE: initialize-admin and token validation.
 /// Does not include /api/auth/login — each edition registers its own login
-/// handler with its own response shape.
+/// handler via `public_router`.
+///
+/// `login_limiter` bounds bcrypt cost from `initialize_admin`. `token_validate`
+/// is cheap (JWT decode + one indexed lookup) and is not rate-limited.
 pub fn non_login_public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
     let credential_routes = Router::new()
         .route("/api/auth/initialize-admin", post(initialize_admin))
-        .layer(axum::middleware::from_fn_with_state(
-            login_limiter,
-            crate::rate_limit::limit_globally,
-        ));
+        .layer(axum::middleware::from_fn_with_state(login_limiter, crate::rate_limit::limit_globally));
 
     Router::new()
         .merge(credential_routes)
         .route("/api/auth/tokens/validate", post(token_validate))
 }
 
-/// The OSS login route, and nothing else: `build_app` layers this on top of
-/// `build_app_with_user_router`, which already mounts the edition-shared
-/// public auth routes (initialize-admin, tokens/validate) via
-/// `non_login_public_router` — registering those here too makes axum panic at
-/// startup with "Overlapping method route", taking the whole OSS binary down.
-pub fn login_only_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
+pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", post(login))
         .layer(axum::middleware::from_fn_with_state(
@@ -52,6 +37,7 @@ pub fn login_only_router(login_limiter: crate::rate_limit::RateLimiter) -> Route
             crate::rate_limit::limit_globally,
         ))
 }
+
 
 /// Protected auth routes — require X-User-* headers from the gateway.
 pub fn protected_router() -> Router<AppState> {
@@ -424,20 +410,17 @@ async fn token_validate(
     // Fetch the user's actual role from the DB so the Flutter sidebar can
     // gate admin-only tabs (access control) correctly. Fall back to
     // is_superuser-derived role on any error (user deleted, DB unavailable).
-    let role: String =
-        sqlx::query_scalar("SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL")
-            .bind(identity.user_id.parse::<uuid::Uuid>().unwrap_or_default())
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                if identity.is_superuser {
-                    "admin".into()
-                } else {
-                    "member".into()
-                }
-            });
+    let role: String = sqlx::query_scalar(
+        "SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(identity.user_id.parse::<uuid::Uuid>().unwrap_or_default())
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| {
+        if identity.is_superuser { "admin".into() } else { "member".into() }
+    });
 
     Json(serde_json::json!({
         "valid": true,
