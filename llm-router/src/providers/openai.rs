@@ -168,6 +168,35 @@ impl ProviderClient for OpenAiProvider {
         parsed.model = cfg.model.clone();
         Ok(parsed)
     }
+
+    /// OpenAI reports a model/parameter mismatch as a 400 whose body names the offending
+    /// field: `{"error":{"param":"temperature","code":"unsupported_value",...}}`. When
+    /// that's the shape, return the param so the executor can drop it and retry the same
+    /// model (dropping a param makes OpenAI apply its default — e.g. temperature → 1).
+    /// This is general: any param OpenAI rejects this way is handled without special-casing.
+    fn droppable_param(&self, err: &ProviderError) -> Option<String> {
+        let ProviderError::Status {
+            status, message, ..
+        } = err
+        else {
+            return None;
+        };
+        if *status != 400 {
+            return None;
+        }
+        let body: serde_json::Value = serde_json::from_str(message).ok()?;
+        let error = body.get("error")?;
+        let code = error
+            .get("code")
+            .and_then(|c| c.as_str())
+            .unwrap_or_default();
+        // Only these codes mean "this param/value isn't accepted here" — safe to drop.
+        if !matches!(code, "unsupported_value" | "unsupported_parameter") {
+            return None;
+        }
+        let param = error.get("param").and_then(|p| p.as_str())?;
+        Some(param.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +216,60 @@ mod tests {
             has_llm_config: false,
             pinned_model: None,
         }
+    }
+
+    #[test]
+    fn droppable_param_extracts_offending_field_from_openai_400() {
+        let provider = OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
+        // The exact error shape gpt-5.5 returns for a non-default temperature.
+        let unsupported = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": {
+                    "message": "Unsupported value: 'temperature' does not support 0.1 with this model. Only the default (1) value is supported.",
+                    "type": "invalid_request_error",
+                    "param": "temperature",
+                    "code": "unsupported_value"
+                }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            provider.droppable_param(&unsupported).as_deref(),
+            Some("temperature")
+        );
+
+        // A different code (bad key, model not found, quota) is not a droppable param.
+        let other_400 = ProviderError::Status {
+            status: 400,
+            message: json!({ "error": { "code": "invalid_api_key", "param": "temperature" } })
+                .to_string(),
+            retryable: false,
+        };
+        assert_eq!(provider.droppable_param(&other_400), None);
+
+        // 5xx / transport / unparseable bodies are never a droppable param.
+        assert_eq!(
+            provider.droppable_param(&ProviderError::Status {
+                status: 500,
+                message: "boom".into(),
+                retryable: true
+            }),
+            None
+        );
+        assert_eq!(
+            provider.droppable_param(&ProviderError::Transport("timeout".into())),
+            None
+        );
+        assert_eq!(
+            provider.droppable_param(&ProviderError::Status {
+                status: 400,
+                message: "not json".into(),
+                retryable: false
+            }),
+            None
+        );
     }
 
     #[tokio::test]

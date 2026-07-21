@@ -227,6 +227,45 @@ impl ProviderClient for AnthropicProvider {
             retryable: false,
         })
     }
+
+    /// Anthropic reports a model/parameter mismatch as a 400 whose `error.message`
+    /// names the field in backticks, e.g. ``` `temperature` is deprecated for this
+    /// model. ``` — there's no structured `param` field like OpenAI. So we gate on the
+    /// message clearly meaning "this param isn't accepted" (deprecated / unsupported /
+    /// not supported) and extract the backtick-quoted name for the executor to drop and
+    /// retry. The gate keeps us from stripping fields on structural 400s (missing
+    /// `messages`, bad `max_tokens` value, …).
+    fn droppable_param(&self, err: &ProviderError) -> Option<String> {
+        let ProviderError::Status {
+            status, message, ..
+        } = err
+        else {
+            return None;
+        };
+        if *status != 400 {
+            return None;
+        }
+        let body: serde_json::Value = serde_json::from_str(message).ok()?;
+        let detail = body.get("error")?.get("message")?.as_str()?;
+        let lower = detail.to_ascii_lowercase();
+        // Only "this param isn't accepted here" phrasings — not value/shape errors.
+        if ![
+            "deprecated",
+            "unsupported",
+            "not supported",
+            "does not support",
+        ]
+        .iter()
+        .any(|p| lower.contains(p))
+        {
+            return None;
+        }
+        // The offending field is the first backtick-quoted token in the message.
+        let start = detail.find('`')? + 1;
+        let end = start + detail[start..].find('`')?;
+        let param = detail[start..end].trim();
+        (!param.is_empty()).then(|| param.to_string())
+    }
 }
 
 // ── OpenAI → Anthropic (request) ─────────────────────────────────────────────
@@ -451,6 +490,68 @@ mod tests {
             has_llm_config: false,
             pinned_model: None,
         }
+    }
+
+    #[test]
+    fn droppable_param_extracts_backticked_field_from_anthropic_400() {
+        let provider = AnthropicProvider::new(reqwest::Client::new(), "http://x".into());
+        // The exact error shape claude-opus-4-8 returns for a deprecated temperature.
+        let deprecated = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "`temperature` is deprecated for this model."
+                }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            provider.droppable_param(&deprecated).as_deref(),
+            Some("temperature")
+        );
+
+        // An "unsupported" phrasing is also droppable.
+        let unsupported = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": { "message": "`top_p` is not supported for this model." }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            provider.droppable_param(&unsupported).as_deref(),
+            Some("top_p")
+        );
+
+        // A structural 400 (no "deprecated/unsupported" wording) must NOT be treated as a
+        // droppable param, even though it mentions a field in backticks.
+        let structural = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": { "message": "`max_tokens`: must be greater than 0" }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        assert_eq!(provider.droppable_param(&structural), None);
+
+        // 5xx / transport / unparseable bodies are never droppable.
+        assert_eq!(
+            provider.droppable_param(&ProviderError::Status {
+                status: 529,
+                message: "overloaded".into(),
+                retryable: true
+            }),
+            None
+        );
+        assert_eq!(
+            provider.droppable_param(&ProviderError::Transport("timeout".into())),
+            None
+        );
     }
 
     #[test]

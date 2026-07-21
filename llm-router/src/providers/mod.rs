@@ -164,6 +164,18 @@ pub trait ProviderClient: Send + Sync {
         req: &EmbeddingsRequest,
         cfg: &ResolvedConfig,
     ) -> Result<EmbeddingsResponse, ProviderError>;
+
+    /// If `err` is a "this model doesn't accept parameter X" rejection, return the IR
+    /// parameter to drop so the executor can retry the *same* model without it. Returns
+    /// `None` for any other error (transport, auth, quota, genuine bad request).
+    ///
+    /// This is the general seam for model/parameter capability mismatches: rather than
+    /// maintaining a per-model table of unsupported params, we let the provider report
+    /// the offending field from its own error body. Default: never droppable — providers
+    /// that can recognize their param-rejection shape override this.
+    fn droppable_param(&self, _err: &ProviderError) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]

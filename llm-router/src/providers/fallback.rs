@@ -11,7 +11,7 @@
 
 use futures::stream::BoxStream;
 
-use super::{ProviderError, provider_for};
+use super::{ProviderClient, ProviderError, provider_for};
 use crate::config::GatewayConfig;
 use crate::error::GatewayError;
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
@@ -19,6 +19,11 @@ use crate::resolver::ResolvedConfig;
 
 /// The provider/model actually used for a call.
 type Effective = (String, String);
+
+/// Cap on how many distinct parameters we'll drop-and-retry against one model before
+/// giving up on it. A backstop against a provider that keeps rejecting params; real
+/// mismatches resolve in one or two drops.
+const MAX_PARAM_DROPS: usize = 4;
 
 /// Run a non-streaming chat with ordered fallbacks. Returns the response and the
 /// effective `(provider, model)`.
@@ -33,18 +38,33 @@ pub async fn execute_chat(
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat", attempt, i, total);
-        match provider_for(&attempt.provider, http, cfg) {
-            Err(e) => last = Some(e),
-            Ok(provider) => match provider.chat(req, attempt).await {
+        let provider = match provider_for(&attempt.provider, http, cfg) {
+            Ok(p) => p,
+            Err(e) => {
+                last = Some(e);
+                continue;
+            }
+        };
+        // Working copies so a parameter-drop retry can mutate the request + config.
+        let mut work_req = req.clone();
+        let mut work_cfg = attempt.clone();
+        let mut dropped: Vec<String> = Vec::new();
+        loop {
+            match provider.chat(&work_req, &work_cfg).await {
                 Ok(resp) => {
                     log_response("chat", attempt, &resp);
                     return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
+                    if try_drop_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut dropped) {
+                        log_param_drop(attempt, dropped.last().unwrap(), &e);
+                        continue;
+                    }
                     warn_attempt(attempt, &e, i, total);
                     last = Some(e.into());
+                    break;
                 }
-            },
+            }
         }
     }
     Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
@@ -64,9 +84,20 @@ pub async fn execute_chat_stream(
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat_stream", attempt, i, total);
-        match provider_for(&attempt.provider, http, cfg) {
-            Err(e) => last = Some(e),
-            Ok(provider) => match provider.chat_stream(req, attempt).await {
+        let provider = match provider_for(&attempt.provider, http, cfg) {
+            Ok(p) => p,
+            Err(e) => {
+                last = Some(e);
+                continue;
+            }
+        };
+        // The initial connect (status check) happens before any chunk flows, so a
+        // parameter-rejection surfaces here and is safe to drop-and-retry — same as `chat`.
+        let mut work_req = req.clone();
+        let mut work_cfg = attempt.clone();
+        let mut dropped: Vec<String> = Vec::new();
+        loop {
+            match provider.chat_stream(&work_req, &work_cfg).await {
                 Ok(stream) => {
                     tracing::info!(
                         target: "nasiko::llm_router::provider",
@@ -77,10 +108,15 @@ pub async fn execute_chat_stream(
                     return Ok((stream, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
+                    if try_drop_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut dropped) {
+                        log_param_drop(attempt, dropped.last().unwrap(), &e);
+                        continue;
+                    }
                     warn_attempt(attempt, &e, i, total);
                     last = Some(e.into());
+                    break;
                 }
-            },
+            }
         }
     }
     Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
@@ -151,6 +187,62 @@ fn warn_attempt(attempt: &ResolvedConfig, err: &ProviderError, i: usize, total: 
     tracing::warn!(
         provider = %attempt.provider, model = %attempt.model, error = %err,
         "llm attempt failed{}", if more { "; trying fallback" } else { "; exhausted" }
+    );
+}
+
+/// Try to recover from `err` by dropping a rejected parameter and retrying the *same*
+/// model. Asks the provider whether `err` names a droppable param; if so and it isn't
+/// one we've already dropped (and we're under the cap), strips it from the working
+/// request + config and records it. Returns `true` when the caller should retry.
+fn try_drop_param(
+    provider: &dyn ProviderClient,
+    err: &ProviderError,
+    req: &mut ChatRequest,
+    cfg: &mut ResolvedConfig,
+    dropped: &mut Vec<String>,
+) -> bool {
+    if dropped.len() >= MAX_PARAM_DROPS {
+        return false;
+    }
+    let Some(param) = provider.droppable_param(err) else {
+        return false;
+    };
+    // Guard against a provider that re-reports the same param: if we already dropped it
+    // (or stripping removes nothing), retrying would just fail identically — give up.
+    if dropped.iter().any(|d| d == &param) || !strip_param(req, cfg, &param) {
+        return false;
+    }
+    dropped.push(param);
+    true
+}
+
+/// Remove `param` from both the request and the resolved config so the retry omits it.
+/// Named params (`temperature`, `max_tokens`) live on both structs; anything else is a
+/// passthrough field in the request's `extra` map. `max_completion_tokens` is the wire
+/// alias OpenAI uses for `max_tokens`. Returns whether anything was actually removed.
+fn strip_param(req: &mut ChatRequest, cfg: &mut ResolvedConfig, param: &str) -> bool {
+    match param {
+        "temperature" => {
+            let had = req.temperature.is_some() || cfg.temperature.is_some();
+            req.temperature = None;
+            cfg.temperature = None;
+            had
+        }
+        "max_tokens" | "max_completion_tokens" => {
+            let had = req.max_tokens.is_some() || cfg.max_tokens.is_some();
+            req.max_tokens = None;
+            cfg.max_tokens = None;
+            had
+        }
+        other => req.extra.remove(other).is_some(),
+    }
+}
+
+fn log_param_drop(attempt: &ResolvedConfig, param: &str, err: &ProviderError) {
+    tracing::warn!(
+        target: "nasiko::llm_router::provider",
+        provider = %attempt.provider, model = %attempt.model, param, error = %err,
+        "upstream rejected parameter; dropping it and retrying the same model"
     );
 }
 
@@ -350,6 +442,152 @@ mod tests {
         assert_eq!(provider, "openai"); // effective = the fallback
         assert_eq!(model, "text-embedding-3-small");
         assert_eq!(resp.data.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn param_rejection_is_dropped_and_retried_on_same_model() {
+        // gpt-5.5 rejects a non-default temperature with a 400 naming the param. The
+        // executor must drop `temperature` and retry the SAME model (no fallback needed).
+        let mut openai = mockito::Server::new_async().await;
+        // First call carries temperature → 400 param rejection.
+        let rejected = openai
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({ "temperature": 0.1 })))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "error": {
+                        "message": "Unsupported value: 'temperature' does not support 0.1 with this model. Only the default (1) value is supported.",
+                        "type": "invalid_request_error",
+                        "param": "temperature",
+                        "code": "unsupported_value"
+                    }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        // Retry without temperature → 200. (mockito matches the first mock whose body
+        // matcher matches; the retry omits temperature so it falls through to this one.)
+        let ok = openai
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-1", "object": "chat.completion", "model": "gpt-5.5",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        // Temperature comes from the resolved config (as tier routing sets it); no fallbacks.
+        let primary = ResolvedConfig {
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            litellm_model: "openai/gpt-5.5".into(),
+            api_key: "sk-x".into(),
+            fallback_models: vec![],
+            temperature: Some(0.1),
+            max_tokens: None,
+            has_llm_config: false,
+            pinned_model: None,
+        };
+        let req: ChatRequest =
+            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
+                .unwrap();
+
+        let (resp, (provider, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap();
+        rejected.assert_async().await;
+        ok.assert_async().await;
+        assert_eq!(provider, "openai"); // recovered on the same model, no fallback
+        assert_eq!(model, "gpt-5.5");
+        assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_deprecated_param_is_dropped_and_retried_on_same_model() {
+        // claude-opus-4-8 rejects `temperature` with a 400 naming it in the message text
+        // (Anthropic's shape). Temperature comes from the request, the agent is pinned
+        // (no fallbacks) — the executor must still drop it and retry the SAME model.
+        let mut anthropic = mockito::Server::new_async().await;
+        let rejected = anthropic
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(json!({ "temperature": 0.7 })))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "`temperature` is deprecated for this model."
+                    }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = anthropic
+            .mock("POST", "/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "msg_01", "type": "message", "role": "assistant",
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 5, "output_tokens": 1 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let cfg = GatewayConfig {
+            anthropic_api_base: anthropic.url(),
+            ..Default::default()
+        };
+        let primary = ResolvedConfig {
+            provider: "anthropic".into(),
+            model: "claude-opus-4-8".into(),
+            litellm_model: "anthropic/claude-opus-4-8".into(),
+            api_key: "sk-ant".into(),
+            fallback_models: vec![], // pinned → no fallbacks
+            temperature: None,       // config sets none; the request carries it
+            max_tokens: None,
+            has_llm_config: true,
+            pinned_model: Some("claude-opus-4-8".into()),
+        };
+        let req: ChatRequest = serde_json::from_value(json!({
+            "temperature": 0.7,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .unwrap();
+
+        let (resp, (provider, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap();
+        rejected.assert_async().await;
+        ok.assert_async().await;
+        assert_eq!(provider, "anthropic"); // recovered on the same pinned model
+        assert_eq!(model, "claude-opus-4-8");
+        assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
     }
 
     #[tokio::test]
