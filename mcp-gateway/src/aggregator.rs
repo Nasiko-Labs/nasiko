@@ -144,13 +144,11 @@ mod tests {
             url: url.into(),
             headers: HashMap::new(),
             transport: "streamable_http".into(),
-            trusted: false,
         }
     }
 
     fn empty_perms() -> PermissionContext {
         PermissionContext {
-            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
             disabled_connectors: Default::default(),
             rules: vec![],
@@ -186,12 +184,8 @@ mod tests {
                 manifest_ttl_seconds: 60,
                 oauth_state_signing_key: "test".to_string(),
             },
-            providers: Providers {
-                composio: None,
-                mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
-            },
+            providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
-            endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
         }
     }
 
@@ -344,7 +338,6 @@ mod tests {
         // `get_stance()` is ever consulted for this backend's tools, so the
         // rule is irrelevant: the whole connector's tools are dropped.
         let perms = PermissionContext {
-            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
             disabled_connectors: [id].into_iter().collect(),
             rules: vec![PermissionRule { connector_id: id, tool_pattern: "*".into(), stance: Stance::Allow }],
@@ -368,7 +361,6 @@ mod tests {
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
         let perms = PermissionContext {
-            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
             disabled_connectors: Default::default(),
             rules: vec![PermissionRule { connector_id: id, tool_pattern: "send_*".into(), stance: Stance::Block }],

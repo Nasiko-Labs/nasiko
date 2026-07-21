@@ -190,8 +190,6 @@ pub async fn register_connector(
             credential_header_name: input.credential_header_name,
             headers: headers_json,
             is_active: Some(true),
-            source_kind: repo::SourceKind::ExternalUrl,
-            build_status: None,
             ..Default::default()
         },
     )
@@ -307,10 +305,10 @@ pub async fn get_connector_for_deletion(state: &McpState, id: Uuid) -> Result<Mc
 /// Delete a connector (already authorized) + invalidate affected permission caches.
 /// CASCADE removes its grants, tools, connections, and access rows.
 pub async fn delete_connector(state: &McpState, connector: &McpConnector) -> Result<()> {
-    let pairs = repo::get_agent_pairs_for_connector(&state.db, connector.id).await?;
+    let agent_ids = repo::get_agents_for_connector(&state.db, connector.id).await?;
     repo::delete_connector(&state.db, connector.id).await?;
-    for (uid, aid) in pairs {
-        permissions::invalidate_permission_cache(state, uid, aid).await;
+    for aid in agent_ids {
+        permissions::invalidate_permission_cache(state, aid).await;
     }
     tracing::info!(name = %connector.name, "deleted mcp connector");
     Ok(())
@@ -375,8 +373,8 @@ pub async fn revoke_share_grant(
     if !removed {
         return Err(McpError::NotFound("no matching share to revoke".into()));
     }
-    for (uid, aid) in repo::get_agent_pairs_for_connector(&state.db, connector.id).await? {
-        permissions::invalidate_permission_cache(state, uid, aid).await;
+    for aid in repo::get_agents_for_connector(&state.db, connector.id).await? {
+        permissions::invalidate_permission_cache(state, aid).await;
     }
     tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "revoked share");
     Ok(())

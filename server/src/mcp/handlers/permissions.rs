@@ -60,8 +60,7 @@ pub async fn list_tool_rules(
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
-    let user_id = parse_user(&claims)?;
-    Ok(Json(service::permissions::list_tool_rules(&state, user_id, agent_id).await?))
+    Ok(Json(service::permissions::list_tool_rules(&state, agent_id).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,7 +103,7 @@ pub async fn reset(
     Path(agent_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
-    let user_id = parse_user(&claims)?;
-    let deleted = service::permissions::reset(&state, user_id, agent_id).await?;
+    tracing::info!(%agent_id, caller = %claims.sub, "resetting agent tool permissions");
+    let deleted = service::permissions::reset(&state, agent_id).await?;
     Ok((StatusCode::OK, Json(json!({ "rows_deleted": deleted }))))
 }

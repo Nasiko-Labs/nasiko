@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::aggregator;
-use crate::error::McpError;
 use crate::permissions::{self, PermissionContext, ToolAccess, toolkit_from_composio_slug};
 use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
@@ -59,7 +58,7 @@ pub async fn handle_request(
         _ => {}
     }
 
-    let perms = match permissions::load_permission_context(state, user_id, agent_id).await {
+    let perms = match permissions::load_permission_context(state, agent_id).await {
         Ok(p) => p,
         Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
     };
@@ -70,11 +69,12 @@ pub async fn handle_request(
 
     let result = match method {
         "tools/list" => {
-            handle_tools_list(state, &req_id, &resolved.servers, &resolved.connected_toolkits, &perms, traceparent).await
+            handle_tools_list(state, user_id, &req_id, &resolved.servers, &resolved.connected_toolkits, &perms, traceparent)
+                .await
         }
         "tools/call" => {
             let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
-            handle_tools_call(state, &req_id, &params, &resolved, &perms, traceparent).await
+            handle_tools_call(state, user_id, &req_id, &params, &resolved, &perms, traceparent).await
         }
         other => err(&req_id, codes::METHOD_NOT_FOUND, format!("Method not found: {other}")),
     };
@@ -96,13 +96,14 @@ pub fn handle_initialize(req_id: &Value) -> Value {
 /// `tools/list` — aggregate, namespace, permission-filter, merge.
 pub async fn handle_tools_list(
     state: &McpState,
+    user_id: Uuid,
     req_id: &Value,
     servers: &[MCPServerConfig],
     connected_toolkits: &[String],
     perms: &PermissionContext,
     traceparent: Option<&str>,
 ) -> Value {
-    match aggregator::aggregate_tools(state, perms.user_id, servers, connected_toolkits, perms, traceparent).await {
+    match aggregator::aggregate_tools(state, user_id, servers, connected_toolkits, perms, traceparent).await {
         Ok(tools) => ok(req_id, json!({ "tools": tools })),
         Err(e) => err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
     }
@@ -111,6 +112,7 @@ pub async fn handle_tools_list(
 /// `tools/call` — route, enforce two-layer permissions, forward to the backend.
 pub async fn handle_tools_call(
     state: &McpState,
+    user_id: Uuid,
     req_id: &Value,
     params: &Value,
     resolved: &ResolvedSession,
@@ -127,7 +129,7 @@ pub async fn handle_tools_call(
 
     // ── Generic MCP tool: Layer 1 (reachability) then Layer 2 (decide) ─────
     if server.kind == ServerType::Mcp {
-        match state.authorizer.can_access_connector(&state.db, perms.user_id, server.connector_id).await {
+        match state.authorizer.can_access_connector(&state.db, user_id, server.connector_id).await {
             Ok(true) => {}
             Ok(false) => {
                 return err(req_id, codes::TOOL_BLOCKED, format!("Connector for '{tool_name}' is not available."));
@@ -244,7 +246,7 @@ pub async fn handle_tools_call(
             );
         }
         if !blocked_slugs.is_empty() || !ask_slugs.is_empty() {
-            tracing::info!(user = %perms.user_id, agent = %perms.agent_id, ?blocked_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
+            tracing::info!(user = %user_id, agent = %perms.agent_id, ?blocked_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
             arguments["tools"] = json!(allowed);
         }
     }
@@ -259,45 +261,10 @@ pub async fn handle_tools_call(
     {
         Ok(response) => response,
         Err(e) => {
-            // Self-heal: an uploaded_build connector's container can move
-            // (restart/redeploy/reboot) between build time and this call. On
-            // a connection-level failure (not an application-level MCP
-            // error), ask the refresher for the container's current live
-            // address and retry exactly once before giving up — mirrors this
-            // gateway's own existing precedent for the structurally
-            // identical Composio-connection staleness problem (refresh only
-            // on-demand, never on every request).
-            if server.trusted && is_connection_level_failure(&e)
-                && let Some(new_url) = state.endpoint_refresher.refresh(server.connector_id).await
-            {
-                tracing::info!(server = %server.name, connector_id = %server.connector_id, "endpoint stale — retrying tool call against refreshed address");
-                let mut refreshed = server.clone();
-                refreshed.url = new_url;
-                match state
-                    .providers
-                    .mcp
-                    .call_tool(&refreshed, req_id, &original, &arguments, DEFAULT_CALL_TIMEOUT, traceparent)
-                    .await
-                {
-                    Ok(response) => return response,
-                    Err(e2) => {
-                        tracing::warn!(server = %server.name, tool = %original, error = %e2, "backend tool call failed again after endpoint refresh");
-                        return err(req_id, codes::INTERNAL_ERROR, format!("Backend '{}' failed to execute '{}'", server.name, original));
-                    }
-                }
-            }
             tracing::warn!(server = %server.name, tool = %original, error = %e, "backend tool call failed");
             err(req_id, codes::INTERNAL_ERROR, format!("Backend '{}' failed to execute '{}'", server.name, original))
         }
     }
-}
-
-/// A connection-level failure (refused/timeout/DNS) — as opposed to an
-/// application-level MCP error (a well-formed error response from a live
-/// server) — is the only case worth refreshing the endpoint for; nothing else
-/// indicates the address itself is stale.
-fn is_connection_level_failure(e: &McpError) -> bool {
-    matches!(e, McpError::Http(re) if re.is_connect() || re.is_timeout())
 }
 
 /// True when a Composio toolkit maps to a connector that is disabled for the agent.
@@ -338,12 +305,8 @@ mod tests {
                 manifest_ttl_seconds: 60,
                 oauth_state_signing_key: "test".to_string(),
             },
-            providers: Providers {
-                composio: None,
-                mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
-            },
+            providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
-            endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
         }
     }
 
@@ -358,7 +321,6 @@ mod tests {
                 url: url.into(),
                 headers: HashMap::new(),
                 transport: "streamable_http".into(),
-                trusted: false,
             }],
             connected_toolkits: vec!["gmail".into()],
             toolkit_to_connector: HashMap::from([("gmail".to_string(), cid)]),
@@ -367,7 +329,6 @@ mod tests {
 
     fn perms(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
         PermissionContext {
-            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
             disabled_connectors: disabled.iter().copied().collect(),
             rules,
@@ -377,121 +338,6 @@ mod tests {
 
     fn rule(cid: Uuid, pat: &str, stance: Stance) -> PermissionRule {
         PermissionRule { connector_id: cid, tool_pattern: pat.into(), stance }
-    }
-
-    /// Layer-1 stub that always allows — the real `OssConnectorAuthorizer`
-    /// hits `state.db`, which `test_state()`'s lazily-connected pool can't
-    /// actually reach; tests exercising the generic-MCP (`ServerType::Mcp`)
-    /// path need this instead.
-    struct AllowAllAuthorizer;
-    #[async_trait::async_trait]
-    impl crate::authorizer::ConnectorAuthorizer for AllowAllAuthorizer {
-        async fn can_access_connector(&self, _db: &sqlx::PgPool, _user_id: Uuid, _connector_id: Uuid) -> crate::error::Result<bool> {
-            Ok(true)
-        }
-        async fn list_accessible_connectors(&self, _db: &sqlx::PgPool, _user_id: Uuid) -> crate::error::Result<Vec<crate::repo::McpConnector>> {
-            Ok(vec![])
-        }
-        async fn list_accessible_mcp_connectors(
-            &self,
-            _db: &sqlx::PgPool,
-            _user_id: Uuid,
-        ) -> crate::error::Result<Vec<crate::repo::McpConnector>> {
-            Ok(vec![])
-        }
-    }
-
-    /// Always refreshes to a fixed URL — a fake
-    /// [`crate::endpoint_refresh::EndpointRefresher`] standing in for the
-    /// real `ContainerRuntime`-backed one (`oss/server`'s
-    /// `RuntimeEndpointRefresher`, not constructible from this crate).
-    struct FakeRefresher(String);
-    #[async_trait::async_trait]
-    impl crate::endpoint_refresh::EndpointRefresher for FakeRefresher {
-        async fn refresh(&self, _connector_id: Uuid) -> Option<String> {
-            Some(self.0.clone())
-        }
-    }
-
-    /// A resolved session with one generic MCP backend (`ServerType::Mcp`,
-    /// `trusted`) at `url`, namespaced under `cid`'s connector prefix.
-    fn mcp_session(url: &str, cid: Uuid, trusted: bool) -> ResolvedSession {
-        ResolvedSession {
-            servers: vec![MCPServerConfig {
-                connector_id: cid,
-                kind: ServerType::Mcp,
-                name: "uploaded-server".into(),
-                url: url.into(),
-                headers: HashMap::new(),
-                transport: "streamable_http".into(),
-                trusted,
-            }],
-            connected_toolkits: vec![],
-            toolkit_to_connector: HashMap::new(),
-        }
-    }
-
-    /// A mockito server answering `POST /mcp` with a successful JSON-RPC
-    /// response — the "refreshed, now-reachable" address a retry lands on.
-    /// Uses a `localhost`-hostname URL, not mockito's raw `127.0.0.1` form,
-    /// per Step 7's own established gotcha (the first attempt to fail
-    /// against a loopback URL): reqwest/hyper's normal request path handles
-    /// both equally for a real request (unlike the SSRF guard's custom
-    /// `Resolve` trait, which only fires for hostnames) — matching that
-    /// convention here regardless, for consistency with this crate's other
-    /// tests.
-    async fn spawn_ok_backend() -> (mockito::ServerGuard, String) {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/mcp")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#)
-            .create_async()
-            .await;
-        let url = format!("http://localhost:{}/mcp", server.socket_address().port());
-        (server, url)
-    }
-
-    // ── Step 13: endpoint self-heal on connection failure ────────────────────
-
-    #[tokio::test]
-    async fn trusted_backend_connection_failure_retries_against_refreshed_endpoint() {
-        let (_guard, fresh_url) = spawn_ok_backend().await;
-        let mut state = test_state();
-        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
-        state.endpoint_refresher = std::sync::Arc::new(FakeRefresher(fresh_url));
-
-        let cid = Uuid::new_v4();
-        // Port 1 is a well-known refused-connection target — this is a
-        // genuine connection-level failure, not an application error.
-        let resolved = mcp_session("http://127.0.0.1:1/mcp", cid, true);
-        let p = perms(vec![], &[]);
-        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
-
-        let res = handle_tools_call(&state, &json!(1), &json!({ "name": tool, "arguments": {} }), &resolved, &p, None).await;
-
-        assert_eq!(res["result"]["ok"], json!(true), "must succeed after retrying against the refreshed endpoint: {res}");
-    }
-
-    #[tokio::test]
-    async fn untrusted_backend_connection_failure_never_retries() {
-        // An external_url connector (trusted=false) must never trigger a
-        // refresh, even if the refresher would happily hand back a working
-        // URL — refresh only ever applies to uploaded_build connectors.
-        let (_guard, fresh_url) = spawn_ok_backend().await;
-        let mut state = test_state();
-        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
-        state.endpoint_refresher = std::sync::Arc::new(FakeRefresher(fresh_url));
-
-        let cid = Uuid::new_v4();
-        let resolved = mcp_session("http://127.0.0.1:1/mcp", cid, false);
-        let p = perms(vec![], &[]);
-        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
-
-        let res = handle_tools_call(&state, &json!(1), &json!({ "name": tool, "arguments": {} }), &resolved, &p, None).await;
-
-        assert_eq!(res["error"]["code"], json!(codes::INTERNAL_ERROR), "must surface the original failure, never retry: {res}");
     }
 
     // ── Round 3: direct Composio tool calls must be permission-enforced ──────
@@ -505,6 +351,7 @@ mod tests {
         let p = perms(vec![rule(cid, "GMAIL_SEND_*", Stance::Block)], &[]);
         let res = handle_tools_call(
             &test_state(),
+            Uuid::new_v4(),
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
@@ -522,6 +369,7 @@ mod tests {
         let p = perms(vec![], &[cid]); // whole connector disabled for the agent
         let res = handle_tools_call(
             &test_state(),
+            Uuid::new_v4(),
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
@@ -539,6 +387,7 @@ mod tests {
         let p = perms(vec![rule(cid, "*", Stance::Ask)], &[]);
         let res = handle_tools_call(
             &test_state(),
+            Uuid::new_v4(),
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
@@ -566,6 +415,7 @@ mod tests {
         let p = perms(vec![], &[]); // default allow
         let res = handle_tools_call(
             &test_state(),
+            Uuid::new_v4(),
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
@@ -598,6 +448,7 @@ mod tests {
         let p = perms(vec![], &[cid]); // gmail disabled — irrelevant to a meta-tool
         let res = handle_tools_call(
             &test_state(),
+            Uuid::new_v4(),
             &json!(1),
             &json!({ "name": "COMPOSIO_SEARCH_TOOLS", "arguments": {} }),
             &resolved,

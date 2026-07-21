@@ -813,3 +813,151 @@ async fn matrix_rule_scoped_to_different_connector_does_not_leak() {
 
     server.cleanup().await;
 }
+
+// ─── Agent-scoped (not caller-scoped) permissions ───────────────────────────
+//
+// `mcp_agent_connector_access` used to be keyed `(user_id, agent_id,
+// connector_id)`: two different people who can manage the same agent (e.g.
+// its owner and a superuser) got independent Allow/Block state. If the owner
+// blocked a tool, a superuser managing the same agent was unaffected. These
+// tests prove the fix: exactly one row per `(agent_id, connector_id)`, shared
+// by every caller who manages the agent.
+
+#[tokio::test]
+#[serial]
+async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
+    let server = common::TestServer::start().await;
+    let (admin_id, _) = init_admin(&server).await;
+    let owner = common::as_superuser(server.client.post(server.url("/api/users")), &admin_id, "admin")
+        .json(&json!({"username": "shared-owner", "email": "shared-owner@test.local"}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let owner_id = owner["id"].as_str().unwrap();
+    let owner_uuid = Uuid::parse_str(owner_id).unwrap();
+
+    // Agent owned by the member — both the owner AND the admin (superuser
+    // bypass in `can_manage_agent`) can manage it; two distinct callers.
+    let agent_id = seed_agent(&server, owner_uuid, "shared-agent").await;
+
+    allow_private_urls();
+    let (backend_url, _calls) = start_stub_backend().await;
+    let res = common::as_member(server.client.post(server.url("/api/mcp/connectors")), owner_id, "shared-owner")
+        .json(&json!({"name": "shared-tool", "url": backend_url}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let cid = Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    disallow_private_urls();
+
+    // Share publicly so the admin — a different manager who doesn't own this
+    // connector — also passes the Layer-1 reachability check.
+    let res = common::as_member(
+        server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        owner_id,
+        "shared-owner",
+    )
+    .json(&json!({"public": true}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    // Caller #1 (the owner) blocks a tool.
+    let res = common::as_member(
+        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        owner_id,
+        "shared-owner",
+    )
+    .json(&json!({"rules": [{"connector_id": cid, "tool_pattern": "SEND_*", "stance": "block"}]}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    // Caller #2 (a different manager — the admin) must see the SAME
+    // restriction, not a fresh default-allow row scoped to their own identity.
+    let body: Value = common::as_superuser(
+        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        &admin_id,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let tools = body["data"].as_array().unwrap();
+    let send_tool = tools.iter().find(|t| t["name"] == TOOL_SEND).expect("stub tool list includes SEND_EMAIL");
+    assert_eq!(send_tool["stance"], "block", "a different manager must see the same shared stance: {body:?}");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
+    let server = common::TestServer::start().await;
+    let (admin_id, _) = init_admin(&server).await;
+    let owner = common::as_superuser(server.client.post(server.url("/api/users")), &admin_id, "admin")
+        .json(&json!({"username": "shared-owner2", "email": "shared-owner2@test.local"}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let owner_id = owner["id"].as_str().unwrap();
+    let owner_uuid = Uuid::parse_str(owner_id).unwrap();
+
+    let cid = seed_connector(&server, owner_uuid, "shared-tool2").await;
+    let agent_id = seed_agent(&server, owner_uuid, "shared-agent2").await;
+
+    // Share publicly so the admin — a different manager who doesn't own this
+    // connector — also passes the Layer-1 reachability check.
+    let res = common::as_member(
+        server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        owner_id,
+        "shared-owner2",
+    )
+    .json(&json!({"public": true}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    // Caller #1 (admin) disables the connector for the agent.
+    let res = common::as_superuser(
+        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"enabled": false}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    // Caller #2 (the owner) must see it disabled too — not their own,
+    // independent default-enabled row.
+    let body: Value = common::as_member(
+        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        owner_id,
+        "shared-owner2",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let entry = body["data"].as_array().unwrap().iter().find(|c| c["connector_id"] == json!(cid)).unwrap();
+    assert_eq!(entry["enabled"], false, "a different manager must see the shared disabled state: {body:?}");
+
+    server.cleanup().await;
+}

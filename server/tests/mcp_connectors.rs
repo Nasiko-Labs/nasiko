@@ -466,9 +466,8 @@ async fn delete_connector_cleans_up_agent_access() {
     let cid = seed_custom_connector(&server, owner_uuid, "cleanup-tool", "none").await;
     let agent_id = seed_agent(&server, owner_uuid, "cleanup-agent").await;
     sqlx::query(
-        "INSERT INTO mcp_agent_connector_access (user_id, agent_id, connector_id, enabled) VALUES ($1, $2, $3, false)",
+        "INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled) VALUES ($1, $2, false)",
     )
-    .bind(owner_uuid)
     .bind(agent_id)
     .bind(cid)
     .execute(&server.db)

@@ -107,15 +107,6 @@ pub mod connectors {
         if !is_admin && c.owner_id != Some(caller) {
             return Err(McpError::Forbidden("this connector does not belong to you".into()));
         }
-        // An uploaded_build connector owns a real container — destroy it
-        // before the DB row disappears, or it leaks forever (its only
-        // pointer, the connector id, is gone the moment the row is deleted).
-        // Runs here, not in the pure gateway crate, since it needs
-        // `ContainerRuntime` (the crate's "no ContainerRuntime dependency"
-        // boundary stays intact — see `mcp::build`'s own module doc).
-        if c.source_kind == nasiko_mcp_gateway::repo::SourceKind::UploadedBuild {
-            crate::mcp::build::destroy_uploaded_connector_container(&s.runtime, id).await;
-        }
         connectors::delete_connector(&s.mcp, &c).await
     }
     pub async fn share(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid, target: ShareTarget) -> R<Value> {
@@ -211,14 +202,14 @@ pub mod permissions {
     pub async fn list_connector_tools(s: &AppState, user: Uuid, agent: Uuid, connector: Uuid) -> R<Value> {
         permissions::list_connector_tools_view(&s.mcp, user, agent, connector).await
     }
-    pub async fn list_tool_rules(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
-        permissions::list_tool_rules_view(&s.mcp, user, agent).await
+    pub async fn list_tool_rules(s: &AppState, agent: Uuid) -> R<Value> {
+        permissions::list_tool_rules_view(&s.mcp, agent).await
     }
     pub async fn bulk_update_tools(s: &AppState, user: Uuid, agent: Uuid, rules: &[ToolRuleInput]) -> R<Value> {
         permissions::bulk_update_tools(&s.mcp, user, agent, rules).await
     }
-    pub async fn reset(s: &AppState, user: Uuid, agent: Uuid) -> R<u64> {
-        permissions::reset(&s.mcp, user, agent).await
+    pub async fn reset(s: &AppState, agent: Uuid) -> R<u64> {
+        permissions::reset(&s.mcp, agent).await
     }
 }
 

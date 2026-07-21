@@ -227,8 +227,7 @@ async fn revoked_grant_denies_despite_stale_access_row() {
     .fetch_one(&server.db)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO mcp_agent_connector_access (user_id, agent_id, connector_id, enabled) VALUES ($1, $2, $3, true)")
-        .bind(grantee_uuid)
+    sqlx::query("INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled) VALUES ($1, $2, true)")
         .bind(agent_id)
         .bind(cid)
         .execute(&server.db)
