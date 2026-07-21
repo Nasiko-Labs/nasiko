@@ -13,7 +13,7 @@ const MAX_ATTEMPTS: i32 = 3;
 const STUCK_JOB_MINS: i64 = 60;
 
 use super::update::{AgentVersionRow, execute_agent_rollback, execute_agent_update};
-use super::upload::{BuildJobPayload, execute_upload_and_deploy};
+use super::upload::{BuildJobPayload, execute_clone_and_deploy, execute_github_clone_and_deploy, execute_upload_and_deploy};
 use crate::build::routes::execute_build;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -40,7 +40,8 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 
     // First tick fires after the interval, not immediately — startup already ran recovery.
     let recovery_start = tokio::time::Instant::now() + Duration::from_secs(10 * 60);
-    let mut recovery_tick = tokio::time::interval_at(recovery_start, Duration::from_secs(10 * 60));
+    let mut recovery_tick =
+        tokio::time::interval_at(recovery_start, Duration::from_secs(10 * 60));
     recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     tracing::info!("build worker: started");
@@ -68,14 +69,8 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             // Phase 1: claim (no panic risk — just DB reads/writes)
             let job = match claim_next_job(&state).await {
                 Ok(Some(j)) => j,
-                Ok(None) => {
-                    tracing::debug!("build worker: queue empty");
-                    break;
-                }
-                Err(e) => {
-                    tracing::error!(%e, "build worker: claim error");
-                    break;
-                }
+                Ok(None) => { tracing::debug!("build worker: queue empty"); break; }
+                Err(e) => { tracing::error!(%e, "build worker: claim error"); break; }
             };
 
             let job_id = job.id;
@@ -96,9 +91,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 
             // Phase 2: execute in a spawned task (panic-isolated)
             let state_clone = state.clone();
-            match tokio::task::spawn(async move { execute_claimed_job(state_clone, job).await })
-                .await
-            {
+            match tokio::task::spawn(async move { execute_claimed_job(state_clone, job).await }).await {
                 Ok(()) => {} // job finished (success or failure recorded in DB by execute_claimed_job)
                 Err(ref e) if e.is_panic() => {
                     tracing::error!(job_id = %job_id, "build worker: job panicked — resetting immediately");
@@ -273,13 +266,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                     Ok(data) => Some(data),
                     Err(e) => {
                         tracing::error!(job_id = %job.id, %path, %e, "build worker: cannot read update zip");
-                        mark_job(
-                            &state.db,
-                            job.id,
-                            "failed",
-                            Some("failed to read update source"),
-                        )
-                        .await;
+                        mark_job(&state.db, job.id, "failed", Some("failed to read update source")).await;
                         return;
                     }
                 },
@@ -315,14 +302,67 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 image_tag: target_image_tag,
                 can_rollback: true,
             };
-            execute_agent_rollback(
+            execute_agent_rollback(state.clone(), build_id, agent_id, caller_id, agent_name, target, reason).await;
+        }
+
+        BuildJobPayload::Clone {
+            build_id: _,
+            agent_id,
+            owner_id,
+            upload_id,
+            name,
+            tar_gz_path,
+            image_tag,
+            ports,
+            env,
+        } => {
+            let mut platform_env = state.agent_env(agent_id).await;
+            platform_env.extend(env);
+            execute_clone_and_deploy(
+                state.runtime.clone(),
+                state.db.clone(),
+                state.http_client.clone(),
+                build_id,
+                agent_id,
+                owner_id,
+                upload_id,
+                name,
+                std::path::PathBuf::from(&tar_gz_path),
+                image_tag,
+                ports,
+                platform_env,
+                state.config.openai_api_key.clone(),
+                state.config.openai_base_url.clone(),
+                state.config.agent_runtime.clone(),
+                state.config.agent_image_registry.clone(),
+            )
+            .await;
+        }
+
+        BuildJobPayload::GithubClone {
+            build_id: _,
+            agent_id,
+            owner_id,
+            upload_id,
+            name,
+            repo_full_name,
+            branch,
+            image_tag,
+            ports,
+            env,
+        } => {
+            execute_github_clone_and_deploy(
                 state.clone(),
                 build_id,
                 agent_id,
-                caller_id,
-                agent_name,
-                target,
-                reason,
+                owner_id,
+                upload_id,
+                name,
+                repo_full_name,
+                branch,
+                image_tag,
+                ports,
+                env,
             )
             .await;
         }
@@ -353,13 +393,14 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
     }
 
     // Infer success/failure from the agent_builds status written by the execute function.
-    let build_status: Option<String> =
-        sqlx::query_scalar("SELECT status::text FROM agent_builds WHERE id = $1")
-            .bind(build_id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+    let build_status: Option<String> = sqlx::query_scalar(
+        "SELECT status::text FROM agent_builds WHERE id = $1",
+    )
+    .bind(build_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
 
     let (status, err) = match build_status.as_deref() {
         Some("success") => {
@@ -373,10 +414,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
         }
         _ => {
             tracing::error!(job_id = %job.id, agent_id = %job.agent_id, "build worker: job failed");
-            (
-                "failed",
-                Some("build or deploy step failed — see agent_builds for details".to_string()),
-            )
+            ("failed", Some("build or deploy step failed — see agent_builds for details".to_string()))
         }
     };
 
@@ -394,19 +432,21 @@ async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
     if old_attempt >= MAX_ATTEMPTS {
         mark_job(db, job_id, "failed", Some("job panicked during execution")).await;
         // Also terminalize the agent/build so the deploy SSE stops waiting (RUN-4).
-        if let Ok(Some((agent_id,))) =
-            sqlx::query_as::<_, (Uuid,)>("SELECT agent_id FROM build_jobs WHERE id = $1")
-                .bind(job_id)
-                .fetch_optional(db)
-                .await
+        if let Ok(Some((agent_id,))) = sqlx::query_as::<_, (Uuid,)>(
+            "SELECT agent_id FROM build_jobs WHERE id = $1",
+        )
+        .bind(job_id)
+        .fetch_optional(db)
+        .await
         {
             fail_agent_terminal(db, agent_id).await;
         }
-    } else if let Err(e) =
-        sqlx::query("UPDATE build_jobs SET status = 'pending', picked_at = NULL WHERE id = $1")
-            .bind(job_id)
-            .execute(db)
-            .await
+    } else if let Err(e) = sqlx::query(
+        "UPDATE build_jobs SET status = 'pending', picked_at = NULL WHERE id = $1",
+    )
+    .bind(job_id)
+    .execute(db)
+    .await
     {
         tracing::error!(job_id = %job_id, %e, "build worker: failed to reset panicked job — will recover via periodic sweep");
     } else {

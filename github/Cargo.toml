@@ -17,7 +17,6 @@ hex          = { workspace = true }
 thiserror    = { workspace = true }
 anyhow       = { workspace = true }
 tracing      = { workspace = true }
-tempfile     = { workspace = true }
 tar          = { workspace = true }
 flate2       = { workspace = true }
 chrono       = { workspace = true }

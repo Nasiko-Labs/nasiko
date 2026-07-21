@@ -1,13 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use tempfile::TempDir;
-use tokio::process::Command;
-use tracing::{info, instrument, warn};
+use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::config::GitHubConfig;
@@ -50,7 +47,11 @@ impl GitHubService {
     }
 
     /// Construct with overridable base URLs (used in tests with `mockito`).
-    pub fn with_base_urls(cfg: GitHubConfig, github_base: &str, api_base: &str) -> Result<Self> {
+    pub fn with_base_urls(
+        cfg: GitHubConfig,
+        github_base: &str,
+        api_base: &str,
+    ) -> Result<Self> {
         Ok(Self {
             github_client: HttpClient::new(github_base)?,
             api_client: HttpClient::new(api_base)?,
@@ -84,10 +85,7 @@ impl GitHubService {
         payload.insert("user_id", serde_json::Value::String(user_id.into()));
 
         if let Some(ref cb) = self.cfg.central_callback_url {
-            payload.insert(
-                "gateway_callback_url",
-                serde_json::Value::String(cb.clone()),
-            );
+            payload.insert("gateway_callback_url", serde_json::Value::String(cb.clone()));
         }
 
         let serialized = serde_json::to_string(&payload)?;
@@ -121,7 +119,8 @@ impl GitHubService {
         }
 
         // Constant-time HMAC verification.
-        let sig_bytes = hex::decode(hex_sig).map_err(|_| invalid("signature is not valid hex"))?;
+        let sig_bytes =
+            hex::decode(hex_sig).map_err(|_| invalid("signature is not valid hex"))?;
         let mut mac = HmacSha256::new_from_slice(self.cfg.oauth_state_secret.as_bytes())
             .map_err(|_| invalid("invalid signing key"))?;
         mac.update(encoded_payload.as_bytes());
@@ -152,10 +151,12 @@ impl GitHubService {
             .ok_or_else(|| invalid("missing 'user_id' in state payload"))?
             .to_string();
 
-        Ok(OAuthStateClaims {
-            user_id,
-            issued_at: iat,
-        })
+        let flow = payload
+            .get("flow")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(OAuthStateClaims { user_id, issued_at: iat, flow })
     }
 
     // ── Authorization URL ────────────────────────────────────────────────────
@@ -186,6 +187,54 @@ impl GitHubService {
         .map_err(|e| Error::GitHubOAuth(format!("failed to build authorization URL: {e}")))?;
 
         info!(user_id, "generated GitHub authorization URL");
+        Ok(url.to_string())
+    }
+
+    /// Build the GitHub consent-page URL for the **login** flow (unauthenticated).
+    ///
+    /// Unlike [`authorization_url`](Self::authorization_url), there is no
+    /// existing user — a random UUID nonce is used in `user_id` purely to
+    /// satisfy the state format.  The callback detects `flow = "login"` and
+    /// uses the GitHub identity to find or create the user instead.
+    #[instrument(skip(self))]
+    pub fn login_authorization_url(&self) -> Result<String> {
+        let nonce = Uuid::new_v4().to_string();
+        let iat = unix_now();
+        let session_nonce = Uuid::new_v4().to_string();
+
+        let mut payload: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+        payload.insert("flow", serde_json::Value::String("login".into()));
+        payload.insert("iat", serde_json::Value::Number(iat.into()));
+        payload.insert("nonce", serde_json::Value::String(nonce));
+        payload.insert("user_id", serde_json::Value::String(session_nonce));
+
+        if let Some(ref cb) = self.cfg.central_callback_url {
+            payload.insert("gateway_callback_url", serde_json::Value::String(cb.clone()));
+        }
+
+        let serialized = serde_json::to_string(&payload)?;
+        let encoded = URL_SAFE_NO_PAD.encode(serialized.as_bytes());
+        let signature = self.sign_payload(&encoded);
+        let state = format!("{OAUTH_STATE_VERSION}.{encoded}.{signature}");
+
+        let redirect_uri = self
+            .cfg
+            .central_callback_url
+            .as_deref()
+            .unwrap_or(&self.cfg.callback_url);
+
+        let url = reqwest::Url::parse_with_params(
+            "https://github.com/login/oauth/authorize",
+            &[
+                ("client_id", self.cfg.client_id.as_str()),
+                ("redirect_uri", redirect_uri),
+                ("scope", "user:email"),
+                ("state", state.as_str()),
+            ],
+        )
+        .map_err(|e| Error::GitHubOAuth(format!("failed to build login authorization URL: {e}")))?;
+
+        info!("generated GitHub login authorization URL");
         Ok(url.to_string())
     }
 
@@ -220,11 +269,10 @@ impl GitHubService {
 
         let token = match token_resp {
             GitHubTokenResponse::Token(t) => t,
-            GitHubTokenResponse::Error {
-                error,
-                error_description,
-            } => {
-                return Err(Error::GitHubOAuth(error_description.unwrap_or(error)));
+            GitHubTokenResponse::Error { error, error_description } => {
+                return Err(Error::GitHubOAuth(
+                    error_description.unwrap_or(error),
+                ));
             }
         };
 
@@ -235,13 +283,10 @@ impl GitHubService {
             .map_err(|e| match e {
                 // A 401/403 after a successful token exchange means the OAuth
                 // flow itself is broken — surface as GitHubOAuth, not GitHubApi.
-                Error::Auth(_) => {
-                    Error::GitHubOAuth("GitHub rejected the newly issued token on /user".into())
-                }
-                Error::HttpStatus { status, body } => Error::GitHubApi {
-                    status,
-                    message: body,
-                },
+                Error::Auth(_) => Error::GitHubOAuth(
+                    "GitHub rejected the newly issued token on /user".into(),
+                ),
+                Error::HttpStatus { status, body } => Error::GitHubApi { status, message: body },
                 other => other,
             })?;
 
@@ -264,10 +309,7 @@ impl GitHubService {
             401 | 403 => Ok(false),
             code => {
                 let body = resp.text().await.unwrap_or_default();
-                Err(Error::GitHubApi {
-                    status: code,
-                    message: body,
-                })
+                Err(Error::GitHubApi { status: code, message: body })
             }
         }
     }
@@ -286,11 +328,7 @@ impl GitHubService {
             .get_authed_params(
                 "/user/repos",
                 token,
-                &[
-                    ("sort", "updated"),
-                    ("direction", "desc"),
-                    ("per_page", "100"),
-                ],
+                &[("sort", "updated"), ("direction", "desc"), ("per_page", "100")],
             )
             .await
             .map_err(|e| match e {
@@ -304,10 +342,7 @@ impl GitHubService {
                 other => other,
             })?;
 
-        info!(
-            count = repos.len(),
-            "fetched GitHub repositories (capped at 100)"
-        );
+        info!(count = repos.len(), "fetched GitHub repositories (capped at 100)");
         Ok(repos)
     }
 
@@ -341,6 +376,27 @@ impl GitHubService {
     /// # Limits
     /// - Timeout: `cfg.clone_timeout_secs` (default 300 s).
     /// - Size cap: `cfg.clone_max_size_bytes` (default 500 MB).
+    /// Download a repository via the GitHub tarball API and return an in-memory
+    /// `tar.gz` archive with a flat layout (files at root, no prefix directory).
+    ///
+    /// This replaces the previous `git clone` subprocess approach, which required
+    /// a `git` binary that is not present in minimal server images (`FROM scratch`).
+    ///
+    /// # How it works
+    ///
+    /// `GET /repos/{owner}/{repo}/tarball/{branch}` returns HTTP 302 to a CDN URL.
+    /// `reqwest` follows the redirect automatically, stripping the `Authorization`
+    /// header on the cross-origin hop (the CDN URL is pre-signed by GitHub).
+    ///
+    /// GitHub tarballs contain a single top-level prefix directory
+    /// (`{owner}-{repo}-{sha}/`).  We strip that prefix while repacking so the
+    /// caller receives a flat archive — consistent with the previous `git clone`
+    /// output and with what `execute_clone_and_deploy` expects (Dockerfile at root).
+    ///
+    /// # Security
+    ///
+    /// - Token is sent only to `api.github.com`; the CDN redirect strips auth.
+    /// - The repacking step applies the same path-traversal guards as `extract_tar_gzip`.
     #[instrument(skip(self, token), fields(repo = %repo_full_name, branch = %branch))]
     pub async fn clone_to_archive(
         &self,
@@ -351,152 +407,42 @@ impl GitHubService {
         validate_repo_full_name(repo_full_name)?;
         validate_branch_name(branch)?;
 
-        let tmp = TempDir::new().map_err(Error::Io)?;
-        let target = tmp.path().join("repo");
+        let path = format!("/repos/{repo_full_name}/tarball/{branch}");
+        let resp = self
+            .api_client
+            .send_raw(self.api_client.get_req(&path).bearer_auth(token))
+            .await?;
 
-        let clone_url = format!("https://github.com/{repo_full_name}.git");
-
-        // ── Authentication strategy ──────────────────────────────────────────
-        //
-        // GitHub exposes TWO distinct services that require different auth formats:
-        //
-        //   REST API  (api.github.com)      → accepts `Authorization: Bearer TOKEN`
-        //   git smart HTTP (github.com/*.git) → expects `Authorization: Basic base64("user:TOKEN")`
-        //
-        // The git smart HTTP protocol is NOT a REST API.  When git contacts
-        // `https://github.com/owner/repo.git/info/refs`, GitHub responds with
-        // `401 WWW-Authenticate: Basic realm="GitHub"` if credentials are wrong or
-        // absent.  Sending `Authorization: Bearer TOKEN` on this endpoint does NOT
-        // satisfy the Basic challenge — GitHub still returns 401.
-        //
-        // That 401 triggers git's credential resolution system.  With no helper,
-        // no ASKPASS, and GIT_TERMINAL_PROMPT=0, git has no path to credentials:
-        //
-        //   fatal: could not read Username for 'https://github.com':
-        //          terminal prompts disabled
-        //
-        // Fix: use Basic auth with "x-access-token" as the username (the
-        // conventional placeholder for PAT auth; any non-empty string works).
-        // GitHub's git endpoint accepts this on the FIRST request → 200, so git
-        // never triggers credential resolution at all.
-        //
-        // Security properties preserved:
-        // - Token is NOT embedded in the clone URL (no reflog / ps / audit leakage).
-        // - Token is in argv briefly as part of `-c http.extraHeader=…` (same
-        //   exposure window as before, unavoidable without an external askpass file).
-        // - BOTH the raw token AND its base64-encoded form are scrubbed from any
-        //   error text before surfacing in Error::GitClone.
-        let b64_credentials = {
-            use base64::engine::general_purpose::STANDARD;
-            STANDARD.encode(format!("x-access-token:{token}").as_bytes())
-        };
-        let auth_header = format!("http.extraHeader=Authorization: Basic {b64_credentials}");
-
-        // ── Defence against credential helper interference ───────────────────
-        //
-        // 1. `-c credential.helper=` (empty) — disables osxkeychain, libsecret,
-        //    GCM, etc. — belt.
-        // 2. `env_remove("GIT_ASKPASS")` — IDEs (VS Code, IntelliJ) inject
-        //    GIT_ASKPASS pointing to a Node.js/GUI helper on a socket that our
-        //    subprocess cannot reach; stripping it prevents ECONNREFUSED errors —
-        //    suspenders.
-        // 3. `-c` BEFORE `clone` — global git options must precede the subcommand
-        //    so the HTTP transport sees them on the first request.
-        // 4. `GIT_CONFIG_NOSYSTEM=1` — skip /etc/gitconfig which may carry its
-        //    own credential.helper.
-        // 5. `GIT_TERMINAL_PROMPT=0` — hard fail rather than hang on any prompt
-        //    that slips through.
-        // `kill_on_drop(true)` ensures that when the timeout fires and the
-        // future is dropped, Tokio kills the child process immediately rather
-        // than leaving it running (writing to the now-deleted TempDir and
-        // consuming CPU until it happens to notice the path is gone).
-        let result = tokio::time::timeout(
-            Duration::from_secs(self.cfg.clone_timeout_secs),
-            Command::new("git")
-                .kill_on_drop(true)
-                .arg("-c")
-                .arg("credential.helper=")
-                .arg("-c")
-                .arg(&auth_header)
-                .arg("clone")
-                .arg("--depth")
-                .arg("1")
-                .arg("--single-branch")
-                .arg("--branch")
-                .arg(branch)
-                .arg(&clone_url)
-                .arg(&target)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env_remove("GIT_ASKPASS")
-                .env_remove("GIT_SSH_COMMAND")
-                .output(),
-        )
-        .await;
-
-        let output = match result {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(Error::GitClone(format!("failed to spawn git: {e}"))),
-            Err(_) => {
-                return Err(Error::GitClone(format!(
-                    "clone timed out after {}s",
-                    self.cfg.clone_timeout_secs
-                )));
-            }
-        };
-
-        if !output.status.success() {
-            let raw_stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            // Scrub both the raw token and its base64-encoded form from error text.
-            let scrubbed = scrub_token(&scrub_token(&raw_stderr, token), &b64_credentials);
-            return Err(Error::GitClone(scrubbed));
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(match status.as_u16() {
+                401 | 403 => Error::Auth(body),
+                404 => Error::NotFound(body),
+                code => Error::GitHubApi { status: code, message: body },
+            });
         }
 
-        // Strip the .git directory.
-        let git_dir = target.join(".git");
-        if git_dir.exists() {
-            tokio::fs::remove_dir_all(&git_dir)
-                .await
-                .map_err(Error::Io)?;
-        }
-
-        // Both `dir_size_bytes` and `pack_tar_gz` perform synchronous recursive
-        // filesystem I/O.  Running them on the Tokio executor thread would block
-        // it for the full duration of a walk + tar/gzip pass (potentially seconds
-        // on repos approaching the 500 MB cap).  Offload both to the blocking
-        // thread pool.
+        let raw_bytes = resp.bytes().await.map_err(Error::Http)?.to_vec();
         let cap = self.cfg.clone_max_size_bytes;
-        let size_path = target.clone();
-        let size = tokio::task::spawn_blocking(move || dir_size_bytes(&size_path))
-            .await
-            .map_err(|e| Error::Io(std::io::Error::other(e)))?;
 
-        if size > cap {
-            return Err(Error::GitClone(format!(
-                "repo exceeds size cap: {} MB (max {} MB)",
-                size / 1024 / 1024,
-                cap / 1024 / 1024,
-            )));
-        }
+        // Repacking involves synchronous CPU + I/O work; offload to the blocking pool.
+        let archive_bytes = tokio::task::spawn_blocking(move || {
+            strip_prefix_and_repack(&raw_bytes, cap)
+        })
+        .await
+        .map_err(|e| Error::Io(std::io::Error::other(e)))??;
 
-        let tar_path = target.clone();
-        let archive_bytes = tokio::task::spawn_blocking(move || pack_tar_gz(&tar_path))
-            .await
-            .map_err(|e| Error::Io(std::io::Error::other(e)))?  // JoinError → Io
-            ?; // inner Result<Vec<u8>, Error>
         let s3_key = format!("github/{repo_full_name}/{branch}.tar.gz");
 
         info!(
             repo = repo_full_name,
             branch,
             archive_bytes = archive_bytes.len(),
-            "repository cloned and archived"
+            "repository downloaded and archived"
         );
 
-        Ok(CloneArchive {
-            archive_bytes,
-            s3_key,
-        })
+        Ok(CloneArchive { archive_bytes, s3_key })
     }
 
     // ── Input validation (lightweight, no network) ───────────────────────────
@@ -534,50 +480,100 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-/// Recursively sum the size of all files under `dir` in bytes.
-fn dir_size_bytes(dir: &Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                total += dir_size_bytes(&path);
-            } else if let Ok(meta) = entry.metadata() {
-                total += meta.len();
-            }
+/// Repack a GitHub tarball, stripping the top-level prefix directory.
+///
+/// GitHub tarballs have a single top-level directory `{owner}-{repo}-{sha}/`.
+/// Stripping it produces a flat archive where the `Dockerfile` and source files
+/// are at the root — matching what the build pipeline (`execute_clone_and_deploy`)
+/// expects.
+///
+/// Also applies path-traversal guards and the size cap check.
+fn strip_prefix_and_repack(raw: &[u8], size_cap: u64) -> Result<Vec<u8>> {
+    use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+    use std::io::Read;
+    use tar::Archive;
+
+    const MAX_FILES: usize = 1_000;
+
+    let mut archive = Archive::new(GzDecoder::new(std::io::Cursor::new(raw)));
+    let out = Vec::new();
+    let enc = GzEncoder::new(out, Compression::default());
+    let mut builder = tar::Builder::new(enc);
+
+    let mut count: usize = 0;
+    let mut total: u64 = 0;
+
+    for entry in archive.entries().map_err(Error::Io)? {
+        let mut entry = entry.map_err(Error::Io)?;
+        let etype = entry.header().entry_type();
+
+        // Skip links — extracting them could allow an archive to escape `dest`
+        // via a symlink/hardlink planted in a prior entry.
+        if etype.is_symlink() || etype.is_hard_link() {
+            continue;
         }
+
+        // Strip the top-level GitHub prefix directory (`owner-repo-sha/`).
+        let rel = entry.path().map_err(Error::Io)?.into_owned();
+        let stripped: std::path::PathBuf = rel.components().skip(1).collect();
+
+        // The prefix directory entry itself becomes empty after stripping — skip it.
+        if stripped.as_os_str().is_empty() {
+            continue;
+        }
+
+        // Path-traversal guard.
+        if stripped.is_absolute()
+            || stripped
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(Error::GitClone(format!(
+                "tar traversal attempt: {}",
+                stripped.display()
+            )));
+        }
+
+        count += 1;
+        if count > MAX_FILES {
+            return Err(Error::GitClone(format!(
+                "archive exceeds {MAX_FILES} entry limit"
+            )));
+        }
+
+        if etype.is_dir() {
+            let mut header = entry.header().clone();
+            header.set_path(&stripped).map_err(Error::Io)?;
+            header.set_cksum();
+            builder
+                .append(&header, std::io::empty())
+                .map_err(Error::Io)?;
+            continue;
+        }
+
+        let size = entry.header().size().unwrap_or(0);
+        total += size;
+        if total > size_cap {
+            return Err(Error::GitClone(format!(
+                "repo exceeds size cap (max {} MB)",
+                size_cap / 1024 / 1024
+            )));
+        }
+
+        let mut data = Vec::with_capacity(size as usize);
+        entry.read_to_end(&mut data).map_err(Error::Io)?;
+
+        let mut header = entry.header().clone();
+        header.set_path(&stripped).map_err(Error::Io)?;
+        header.set_size(data.len() as u64);
+        header.set_cksum();
+        builder
+            .append(&header, std::io::Cursor::new(data))
+            .map_err(Error::Io)?;
     }
-    total
-}
 
-/// Build a `tar.gz` archive of `dir` in memory.
-///
-/// The archive root is `.` so that extraction produces the repository files
-/// directly (no enclosing directory wrapper).
-fn pack_tar_gz(dir: &Path) -> Result<Vec<u8>> {
-    use flate2::{Compression, write::GzEncoder};
-    use tar::Builder;
-
-    let mut buf = Vec::new();
-    let enc = GzEncoder::new(&mut buf, Compression::default());
-    let mut archive = Builder::new(enc);
-
-    archive.append_dir_all(".", dir).map_err(Error::Io)?;
-
-    let enc = archive.into_inner().map_err(Error::Io)?;
-    enc.finish().map_err(Error::Io)?;
-
-    Ok(buf)
-}
-
-/// Replace all occurrences of `token` inside `text` with `[REDACTED]`.
-///
-/// Prevents leaked credentials in `Error::GitClone` messages and tracing spans.
-fn scrub_token(text: &str, token: &str) -> String {
-    if token.is_empty() {
-        return text.to_string();
-    }
-    text.replace(token, "[REDACTED]")
+    let enc = builder.into_inner().map_err(Error::Io)?;
+    enc.finish().map_err(Error::Io)
 }
 
 /// Reject `repo_full_name` values that are not exactly `owner/repo` shaped.
@@ -644,12 +640,74 @@ mod tests {
     }
 
     fn standalone_svc() -> GitHubService {
-        GitHubService::with_base_urls(
-            test_config(),
-            "https://github.com",
-            "https://api.github.com",
-        )
-        .unwrap()
+        GitHubService::with_base_urls(test_config(), "https://github.com", "https://api.github.com").unwrap()
+    }
+
+    // ── strip_prefix_and_repack ────────────────────────────────────────────
+
+    /// Build a minimal GitHub-style tarball: one top-level prefix dir
+    /// (`prefix/`) containing a file (`prefix/Dockerfile`) and a subdir
+    /// (`prefix/src/`).  Returns the raw gzip+tar bytes.
+    fn make_github_tarball(prefix: &str) -> Vec<u8> {
+        use flate2::{Compression, write::GzEncoder};
+        use tar::Builder;
+
+        let mut buf = Vec::new();
+        {
+            let enc = GzEncoder::new(&mut buf, Compression::default());
+            let mut ar = Builder::new(enc);
+
+            // prefix dir
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_path(format!("{prefix}/")).unwrap();
+            h.set_size(0);
+            h.set_mode(0o755);
+            h.set_cksum();
+            ar.append(&h, std::io::empty()).unwrap();
+
+            // prefix/src/ subdir
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_path(format!("{prefix}/src/")).unwrap();
+            h.set_size(0);
+            h.set_mode(0o755);
+            h.set_cksum();
+            ar.append(&h, std::io::empty()).unwrap();
+
+            // prefix/Dockerfile file
+            let content = b"FROM python:3.11\nCOPY . .\n";
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_path(format!("{prefix}/Dockerfile")).unwrap();
+            h.set_size(content.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            ar.append(&h, content.as_slice()).unwrap();
+
+            ar.into_inner().unwrap().finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn strip_prefix_produces_valid_tar_with_dirs() {
+        let raw = make_github_tarball("owner-repo-abc123");
+        let repacked = strip_prefix_and_repack(&raw, 500 * 1024 * 1024).unwrap();
+
+        // The repacked archive must be readable without a checksum error.
+        use flate2::read::GzDecoder;
+        use tar::Archive;
+        let mut ar = Archive::new(GzDecoder::new(std::io::Cursor::new(&repacked)));
+        let entries: Vec<_> = ar.entries().unwrap().map(|e| {
+            let e = e.expect("entry must be valid — checksum mismatch would panic here");
+            e.path().unwrap().into_owned()
+        }).collect();
+
+        // Prefix must be gone; Dockerfile and src/ must be at root.
+        assert!(entries.iter().any(|p| p == std::path::Path::new("Dockerfile")), "Dockerfile missing: {entries:?}");
+        assert!(entries.iter().any(|p| p == std::path::Path::new("src/")), "src/ dir missing: {entries:?}");
+        assert!(!entries.iter().any(|p| p.starts_with("owner-repo-abc123")), "prefix not stripped: {entries:?}");
     }
 
     // ── OAuth state crypto ─────────────────────────────────────────────────
@@ -687,8 +745,8 @@ mod tests {
 
     #[test]
     fn state_expired_rejected() {
-        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         use std::collections::BTreeMap;
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
         let svc = standalone_svc();
         // Build a state with iat far in the past.
@@ -710,35 +768,8 @@ mod tests {
     fn authorization_url_contains_client_id() {
         let svc = standalone_svc();
         let url = svc.authorization_url("user-abc").unwrap();
-        assert!(
-            url.contains("client_id=test-client-id"),
-            "URL should contain client_id"
-        );
-        assert!(
-            url.starts_with("https://github.com/login/oauth/authorize"),
-            "Wrong base URL"
-        );
-    }
-
-    // ── Scrub helper ───────────────────────────────────────────────────────
-
-    #[test]
-    fn scrub_token_replaces_all_occurrences() {
-        let scrubbed = scrub_token(
-            "fatal: could not read Username for 'https://mytoken@github.com': terminal prompts disabled\nmytoken",
-            "mytoken",
-        );
-        assert!(
-            !scrubbed.contains("mytoken"),
-            "token must be scrubbed from error text"
-        );
-        assert!(scrubbed.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn scrub_empty_token_is_noop() {
-        let text = "no token here";
-        assert_eq!(scrub_token(text, ""), text);
+        assert!(url.contains("client_id=test-client-id"), "URL should contain client_id");
+        assert!(url.starts_with("https://github.com/login/oauth/authorize"), "Wrong base URL");
     }
 
     // ── Validation helpers ─────────────────────────────────────────────────
@@ -776,12 +807,7 @@ mod tests {
     #[tokio::test]
     async fn verify_token_returns_true_on_200() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("GET", "/user")
-            .with_status(200)
-            .with_body("{}")
-            .create_async()
-            .await;
+        let mock = server.mock("GET", "/user").with_status(200).with_body("{}").create_async().await;
 
         let svc = test_svc("https://github.com", &server.url());
         assert!(svc.verify_token("valid-token").await.unwrap());
@@ -791,12 +817,7 @@ mod tests {
     #[tokio::test]
     async fn verify_token_returns_false_on_401() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("GET", "/user")
-            .with_status(401)
-            .with_body("{}")
-            .create_async()
-            .await;
+        let mock = server.mock("GET", "/user").with_status(401).with_body("{}").create_async().await;
 
         let svc = test_svc("https://github.com", &server.url());
         assert!(!svc.verify_token("expired-token").await.unwrap());
@@ -899,14 +920,8 @@ mod tests {
     #[test]
     fn state_too_few_segments_rejected() {
         let svc = standalone_svc();
-        assert!(
-            svc.verify_state("v1.onlytwo").is_err(),
-            "two segments should fail"
-        );
-        assert!(
-            svc.verify_state("noseparatorsatall").is_err(),
-            "no separators should fail"
-        );
+        assert!(svc.verify_state("v1.onlytwo").is_err(), "two segments should fail");
+        assert!(svc.verify_state("noseparatorsatall").is_err(), "no separators should fail");
     }
 
     #[test]
@@ -1015,14 +1030,8 @@ mod tests {
             .map(|(_, v)| v.to_string())
             .unwrap_or_default();
 
-        assert!(
-            scope.contains("repo"),
-            "scope must include 'repo', got: {scope}"
-        );
-        assert!(
-            scope.contains("user"),
-            "scope must include 'user', got: {scope}"
-        );
+        assert!(scope.contains("repo"), "scope must include 'repo', got: {scope}");
+        assert!(scope.contains("user"), "scope must include 'user', got: {scope}");
     }
 
     #[test]
@@ -1048,9 +1057,12 @@ mod tests {
             central_callback_url: Some("https://central.example.com/github/callback".into()),
             ..test_config()
         };
-        let svc =
-            GitHubService::with_base_urls(cfg, "https://github.com", "https://api.github.com")
-                .unwrap();
+        let svc = GitHubService::with_base_urls(
+            cfg,
+            "https://github.com",
+            "https://api.github.com",
+        )
+        .unwrap();
 
         let url = svc.authorization_url("user-1").unwrap();
         let parsed = reqwest::Url::parse(&url).unwrap();
@@ -1071,31 +1083,18 @@ mod tests {
     #[tokio::test]
     async fn verify_token_returns_false_on_403() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("GET", "/user")
-            .with_status(403)
-            .with_body("{}")
-            .create_async()
-            .await;
+        let mock = server.mock("GET", "/user").with_status(403).with_body("{}").create_async().await;
 
         let svc = test_svc("https://github.com", &server.url());
         let result = svc.verify_token("insufficient-scope-token").await.unwrap();
-        assert!(
-            !result,
-            "403 Forbidden must be treated as an invalid/insufficient token"
-        );
+        assert!(!result, "403 Forbidden must be treated as an invalid/insufficient token");
         mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn verify_token_returns_err_on_server_error() {
         let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("GET", "/user")
-            .with_status(500)
-            .with_body("Internal Server Error")
-            .create_async()
-            .await;
+        let mock = server.mock("GET", "/user").with_status(500).with_body("Internal Server Error").create_async().await;
 
         let svc = test_svc("https://github.com", &server.url());
         let result = svc.verify_token("any-token").await;
@@ -1119,10 +1118,7 @@ mod tests {
 
         let svc = test_svc("https://github.com", &server.url());
         let repos = svc.list_repos("token").await.unwrap();
-        assert!(
-            repos.is_empty(),
-            "empty array response must yield empty Vec"
-        );
+        assert!(repos.is_empty(), "empty array response must yield empty Vec");
         mock.assert_async().await;
     }
 
@@ -1241,10 +1237,7 @@ mod tests {
         // Point the github client at a port nothing is listening on.
         let svc = test_svc("http://127.0.0.1:1", "http://127.0.0.1:1");
         let err = svc.exchange_code("code").await.unwrap_err();
-        assert!(
-            matches!(err, Error::Http(_)),
-            "connection refused must be Error::Http"
-        );
+        assert!(matches!(err, Error::Http(_)), "connection refused must be Error::Http");
     }
 
     #[tokio::test]
@@ -1266,8 +1259,7 @@ mod tests {
 
     #[tokio::test]
     async fn exchange_code_success() {
-        let token_body =
-            r#"{"access_token":"gho_abc123","token_type":"bearer","scope":"repo,user:email"}"#;
+        let token_body = r#"{"access_token":"gho_abc123","token_type":"bearer","scope":"repo,user:email"}"#;
         let user_body = r#"{"id":42,"login":"octocat","name":"The Octocat","email":"octocat@github.com","avatar_url":"https://avatars.githubusercontent.com/u/583231"}"#;
 
         let mut gh_server = mockito::Server::new_async().await;

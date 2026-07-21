@@ -30,11 +30,10 @@ pub(crate) async fn fetch_and_apply_agent_card(
     for url in &urls {
         if let Ok(resp) = http.get(url).send().await
             && resp.status().is_success()
-            && let Ok(v) = resp.json::<serde_json::Value>().await
-        {
-            card = Some(v);
-            break;
-        }
+                && let Ok(v) = resp.json::<serde_json::Value>().await {
+                    card = Some(v);
+                    break;
+                }
     }
 
     let card = match card {
@@ -59,11 +58,7 @@ pub(crate) async fn fetch_and_apply_agent_card(
         let mut tags: Vec<String> = card
             .get("tags")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
         if let Some(skills) = card.get("skills").and_then(|v| v.as_array()) {
             for skill in skills {
@@ -119,7 +114,7 @@ pub(crate) async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: 
     }
 }
 
-pub(super) async fn set_upload_status(
+pub(crate) async fn set_upload_status(
     db: &sqlx::PgPool,
     upload_id: &str,
     agent_name: &str,
