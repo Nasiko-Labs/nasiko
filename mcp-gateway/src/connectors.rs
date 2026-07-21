@@ -431,7 +431,15 @@ pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, co
     let grants = repo::list_grants_for_connector(&state.db, connector.id).await?;
     let data: Vec<Value> = grants
         .into_iter()
-        .map(|g| json!({ "grant_id": g.id, "grant_type": g.grant_type, "grantee_id": g.grantee_id, "created_at": g.created_at }))
+        .map(|g| {
+            json!({
+                "grant_id": g.id,
+                "grant_type": g.grant_type,
+                "grantee_id": g.grantee_id,
+                "granted_by": g.granted_by,
+                "created_at": g.created_at,
+            })
+        })
         .collect();
     Ok(json!({ "data": data }))
 }

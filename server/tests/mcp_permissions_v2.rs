@@ -478,6 +478,10 @@ async fn list_connector_tools_syncs_and_shows_default_allow_stance() {
         "with no access row and no tool_rules, every tool must default to 'allow': {data:?}"
     );
     assert!(data.iter().any(|t| t["name"] == TOOL_SEND));
+    assert!(
+        data.iter().all(|t| !t["last_synced_at"].is_null()),
+        "a freshly synced tool must carry its last_synced_at timestamp: {data:?}"
+    );
 
     server.cleanup().await;
 }

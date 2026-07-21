@@ -284,3 +284,34 @@ async fn deleting_owner_is_restricted_not_cascaded() {
 
     server.cleanup().await;
 }
+
+#[tokio::test]
+#[serial]
+async fn list_shares_includes_granted_by() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "gb-owner").await;
+    let owner_uuid_str = owner_uuid.to_string();
+    create_user(&server, &admin, "gb-grantee").await;
+    let cid = seed_connector(&server, owner_uuid, "gb-tool").await;
+
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "gb-owner")
+        .json(&json!({"username": "gb-grantee"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let body: Value = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "gb-owner")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grants = body["data"].as_array().unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0]["granted_by"], owner_uuid_str, "the grant response must include who created it: {grants:?}");
+
+    server.cleanup().await;
+}

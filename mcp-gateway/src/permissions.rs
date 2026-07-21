@@ -308,7 +308,12 @@ pub async fn list_connector_tools_view(
         .into_iter()
         .map(|t| {
             let stance = perms.get_stance(connector_id, &t.tool_name);
-            json!({ "name": t.tool_name, "description": t.description, "stance": stance.as_str() })
+            json!({
+                "name": t.tool_name,
+                "description": t.description,
+                "stance": stance.as_str(),
+                "last_synced_at": t.last_synced_at,
+            })
         })
         .collect();
     Ok(json!({ "data": out }))
