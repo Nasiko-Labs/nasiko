@@ -16,13 +16,22 @@ use nasiko_runtime::{ContainerId, DeploymentSpec};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", post(deploy))
-        .route("/", get(list))
-        .route("/{name}", get(status))
         .route("/{name}", delete(destroy))
         .route("/{name}/stop", post(stop))
         .route("/{name}/start", post(start))
         .route("/{name}/restart", post(restart))
         .route("/{name}/scale", post(scale))
+}
+
+/// Mounted separately from `router()`, under `require_auth` only — each
+/// handler checks `can_deploy` (and, for single-container lookups, agent
+/// ownership via `resolve_authorized_container`) itself and returns
+/// `crate::unavailable()` (200) instead of a blanket 403. NOT_FOUND
+/// (agent doesn't exist by that name) stays as-is either way.
+pub fn degradable_router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list))
+        .route("/{name}", get(status))
         .route("/{name}/logs", get(logs))
 }
 
@@ -177,6 +186,10 @@ async fn deploy(
 }
 
 async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let containers = match state.runtime.list().await {
         Ok(containers) => containers,
         Err(e) => {
@@ -223,8 +236,16 @@ async fn status(
     claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
+        // NOT_FOUND stays as-is (don't confirm/deny existence either way);
+        // FORBIDDEN (not the owner) degrades like every other converted
+        // read — this is a GET, not a mutation.
+        Err(resp) if resp.status() == StatusCode::FORBIDDEN => return crate::unavailable(),
         Err(resp) => return resp,
     };
     match state.runtime.status(&id).await {
@@ -323,7 +344,11 @@ async fn restart(
     // deployer restart any container on the host that merely wasn't tracked in
     // `agents` — with no owner to check an ACL against. Match the siblings: no
     // catalog row, no restart.
-    let agent: Option<(Uuid, Uuid, String)> =
+    // `image` must decode as Option: registry-pushed agents (`nasiko deploy`)
+    // record their image on the deployment row (`spec_image`), leaving the
+    // catalog column NULL — decoding it as String made this query error out
+    // and masked every such agent as a 404 "agent not found".
+    let agent: Option<(Uuid, Uuid, Option<String>)> =
         sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE name = $1")
             .bind(&name)
             .fetch_optional(&state.db)
@@ -338,6 +363,32 @@ async fn restart(
     if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
+
+    let image = match image {
+        Some(image) => image,
+        None => {
+            let fallback: Option<String> = sqlx::query_scalar(
+                "SELECT spec_image FROM agent_deployments \
+                 WHERE agent_id = $1 AND spec_image IS NOT NULL \
+                 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+            match fallback {
+                Some(image) => image,
+                None => {
+                    return (
+                        StatusCode::CONFLICT,
+                        "agent has no recorded image to redeploy",
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
 
     // Resolve env: vault (base) + agent secrets (override)
     let env = resolve_full_env(&state, owner_id, agent_id).await;
@@ -429,8 +480,13 @@ async fn logs(
     Path(name): Path<String>,
     axum::extract::Query(q): axum::extract::Query<LogsQuery>,
 ) -> impl IntoResponse {
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    if !state.auth.can_deploy(&identity).await {
+        return crate::unavailable();
+    }
     let id = match resolve_authorized_container(&state, &claims, &name).await {
         Ok(id) => id,
+        Err(resp) if resp.status() == StatusCode::FORBIDDEN => return crate::unavailable(),
         Err(resp) => return resp,
     };
     match state.runtime.logs(&id, q.tail).await {
