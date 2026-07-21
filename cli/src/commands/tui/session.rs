@@ -14,16 +14,21 @@ use crate::config;
 pub struct CpSession {
     #[tabled(rename = "ID")]
     pub session_id: String,
+    #[serde(default)]
     #[tabled(skip)]
     pub agent_url: Option<String>,
+    #[serde(default)]
     #[tabled(rename = "AGENT", display("opt_or", "orchestrator"))]
     pub agent_name: Option<String>,
+    // Absent from POST /api/chat/sessions responses (only lists carry it).
+    #[serde(default)]
     #[tabled(rename = "UPDATED", display("trunc", 19))]
     pub updated_at: String,
     #[tabled(rename = "TITLE")]
     pub title: String,
     #[tabled(skip)]
     pub created_at: String,
+    #[serde(default)]
     #[tabled(skip)]
     pub last_message: Option<String>,
 }
@@ -224,10 +229,19 @@ pub fn create_cp_session_with_id(
         .header("Content-Type", "application/json")
         .send_json(&body)
         .context("failed to create CP session")?;
-    let session: CpSession = resp
+    // The server wraps the created session in a `{ "data": ... }` envelope
+    // (chat::routes::session_response). Parsing the body flat made this fail
+    // silently, and callers that `.ok()` the error fell back to sessionless
+    // mode — every CLI chat then split into a second, orphaned session.
+    let mut raw: serde_json::Value = resp
         .body_mut()
         .read_json()
         .context("invalid session JSON")?;
+    let payload = match raw.get_mut("data") {
+        Some(data) => data.take(),
+        None => raw,
+    };
+    let session: CpSession = serde_json::from_value(payload).context("invalid session JSON")?;
     Ok(session)
 }
 
