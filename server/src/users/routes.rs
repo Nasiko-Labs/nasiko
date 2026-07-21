@@ -109,6 +109,10 @@ struct UserRow {
     is_superuser: bool,
     is_active: bool,
     role: Option<String>,
+    #[sqlx(default)]
+    department_id: Option<Uuid>,
+    #[sqlx(default)]
+    team_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     last_login: Option<DateTime<Utc>>,
 }
@@ -296,17 +300,15 @@ async fn create_user(
     }
 }
 
-/// `pub` (fields included) so EE's `ee_update_user` can construct one directly
-/// and delegate to `update_user` for the fields both editions share, then layer
-/// its own `department_id`/`team_id` handling on top — see
-/// `ee/server/src/users.rs::ee_update_user`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct UpdateUser {
     pub username: Option<String>,
     pub email: Option<String>,
     pub display_name: Option<String>,
     pub password: Option<String>,
     pub is_active: Option<bool>,
+    /// Basic role update without cascade (use /role for leadership promotions).
+    pub role: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -370,29 +372,55 @@ pub async fn update_user(
         None => None,
     };
 
-    // Single UPDATE with COALESCE — only provided fields change
-    let result = sqlx::query(
+    // Validate role if provided.
+    if let Some(ref r) = body.role {
+        let valid = [
+            "admin",
+            "member",
+            "team_member",
+            "team_lead",
+            "department_manager",
+        ];
+        if !valid.contains(&r.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("invalid role '{r}'")})),
+            )
+                .into_response();
+        }
+    }
+
+    // Shared (edition-agnostic) columns only. department_id/team_id are
+    // EE-only columns (created by ee/migrations/1002) — naming them here made
+    // this statement fail on every pure-OSS database, 500ing all user
+    // updates. Org placement is layered on by `ee_update_user`
+    // (ee/server/src/users.rs), which delegates the shared fields here first.
+    // UserRow's #[sqlx(default)] covers the columns RETURNING no longer names.
+    let result = sqlx::query_as::<_, UserRow>(
         r#"UPDATE users SET
-             username = COALESCE($2, username),
-             email = COALESCE($3, email),
+             username     = COALESCE($2, username),
+             email        = COALESCE($3, email),
              display_name = COALESCE($4, display_name),
-             is_active = COALESCE($5, is_active),
-             updated_at = now()
-           WHERE id = $1"#,
+             is_active    = COALESCE($5, is_active),
+             role         = COALESCE($6::user_role, role),
+             updated_at   = now()
+           WHERE id = $1 AND deleted_at IS NULL
+           RETURNING id, username, email, display_name, is_superuser,
+                     is_active, role::text AS role,
+                     created_at, last_login"#,
     )
     .bind(id)
     .bind(&body.username)
     .bind(&body.email)
     .bind(&body.display_name)
     .bind(body.is_active)
-    .execute(&state.db)
+    .bind(body.role.as_deref())
+    .fetch_optional(&state.db)
     .await;
 
     match result {
-        Ok(r) if r.rows_affected() == 0 => {
-            (StatusCode::NOT_FOUND, "user not found").into_response()
-        }
-        Ok(_) => {
+        Ok(None) => (StatusCode::NOT_FOUND, "user not found").into_response(),
+        Ok(Some(updated)) => {
             if let Some(hash) = access_secret_hash {
                 match sqlx::query(
                     "UPDATE user_credentials SET access_secret_hash = $2, updated_at = now() WHERE user_id = $1",
@@ -415,14 +443,10 @@ pub async fn update_user(
                     }
                 }
             }
-
-            // Mirror deactivate's token revocation: stale JWTs must stop working
-            // immediately, not linger until natural expiry.
             if body.is_active == Some(false) {
                 let _ = state.auth.revoke_tokens_for_user(&id.to_string()).await;
             }
-
-            StatusCode::NO_CONTENT.into_response()
+            Json(updated).into_response()
         }
         Err(e) => {
             if e.to_string().contains("duplicate key") {

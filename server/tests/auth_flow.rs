@@ -996,7 +996,7 @@ async fn test_update_user_deactivate_blocks_login() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     // Deactivated via update_user — same effect as /deactivate: cannot login.
     let res = server
@@ -1075,7 +1075,7 @@ async fn test_update_user_can_redeactivate_already_inactive_admin_with_other_act
 
     assert_eq!(
         res.status(),
-        204,
+        200,
         "deactivating an already-inactive admin with another active admin present must not be blocked"
     );
 
@@ -1110,7 +1110,7 @@ async fn test_update_user_password_change_takes_effect_on_login() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     // New password works.
     let body = login(&server, &alice_key, "brand-new-password123").await;
