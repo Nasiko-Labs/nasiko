@@ -189,12 +189,14 @@ async fn upload_persists_agent_and_build_record() {
     .await;
 
     assert_eq!(res.status(), 202);
+    // The handler wraps the payload in a `{ data, status_code, message }`
+    // envelope (UploadAndDeployResponse).
     let body: Value = res.json().await.unwrap();
-    let agent_id = body["agent_id"].as_str().unwrap();
-    let build_id = body["build_id"].as_str().unwrap();
+    let agent_id = body["data"]["agent_id"].as_str().unwrap();
+    let build_id = body["data"]["build_id"].as_str().unwrap();
     assert!(uuid::Uuid::parse_str(agent_id).is_ok());
     assert!(uuid::Uuid::parse_str(build_id).is_ok());
-    assert_eq!(body["status"], "queued");
+    assert_eq!(body["data"]["status"], "queued");
 
     // Agent persisted in the catalog.
     let agents: Value =
@@ -253,7 +255,8 @@ async fn upload_persists_build_job_atomically_with_agent_and_build() {
 
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
-    let agent_id: uuid::Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
+    // agent_id sits inside the { data, ... } response envelope.
+    let agent_id: uuid::Uuid = body["data"]["agent_id"].as_str().unwrap().parse().unwrap();
 
     let job_count: i64 = sqlx::query_scalar("SELECT count(*) FROM build_jobs WHERE agent_id = $1")
         .bind(agent_id)
@@ -298,8 +301,10 @@ async fn upload_reuses_agent_on_repeat_name() {
     .unwrap();
 
     // Same agent reused (owner-scoped upsert), distinct build records.
-    assert_eq!(first["agent_id"], second["agent_id"]);
-    assert_ne!(first["build_id"], second["build_id"]);
+    // Both payloads sit inside the { data, ... } response envelope.
+    assert_eq!(first["data"]["agent_id"], second["data"]["agent_id"]);
+    assert_ne!(first["data"]["build_id"], second["data"]["build_id"]);
+    assert!(first["data"]["agent_id"].is_string());
 
     server.cleanup().await;
 }
