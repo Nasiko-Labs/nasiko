@@ -62,6 +62,17 @@ impl SecretsCrypto {
         Self::derive(user_id.as_bytes())
     }
 
+    /// Derive a connector-scoped key from the master key.
+    ///
+    /// Use this for every read/write to `mcp_connectors.build_secrets_env` — the
+    /// connector-identity analog of `agents.secrets_env`, mirrored exactly
+    /// (`for_agent`'s scope is the container identity; here the container
+    /// identity is the connector id, since `ContainerId::from_uuid(connector_id)`
+    /// is what the uploaded server actually deploys as).
+    pub fn for_connector(connector_id: Uuid) -> Self {
+        Self::derive(connector_id.as_bytes())
+    }
+
     /// Derive the key for singleton platform-wide settings (e.g.
     /// `settings.oidc_client_secret_encrypted`) — there's exactly one such
     /// row, so the scope is a fixed label rather than a per-entity UUID.

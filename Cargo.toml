@@ -21,6 +21,8 @@ members = [
     "agents/coding",
     "github",
     "oidc",
+    "bench",
+    "bench-support",
 ]
 
 [workspace.package]
@@ -43,7 +45,9 @@ nasiko-react-agent = { path = "react-agent" }
 nasiko-orchestrator = { path = "orchestrator" }
 nasiko-types = { path = "types" }
 nasiko-utils = { path = "utils" }
+nasiko-server = { path = "server" }
 nasiko-oci = { path = "oci" }
+nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
@@ -89,6 +93,7 @@ which = "7"
 include_dir = "0.7"
 ratatui = "0.29"
 crossterm = "0.29"
+tabled = "0.21"
 
 # ─── Observability ──────────────────────────────────────────────────────────
 tracing = "0.1"
@@ -104,6 +109,12 @@ hkdf = "0.12"
 hmac = "0.12"
 hex = "0.4"
 rand = "0.9"
+
+# ─── Temp filesystem ────────────────────────────────────────────────────────
+tempfile = "3"
+
+# ─── Archive ────────────────────────────────────────────────────────────────
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # ─── Versioning ─────────────────────────────────────────────────────────────
 semver = "1"
@@ -132,6 +143,9 @@ rust-embed = { version = "8", features = ["mime-guess", "include-exclude"] }
 mime_guess = "2"
 
 mockito = "1"
+
+# ─── Benchmarking ───────────────────────────────────────────────────────────
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 [profile.release]
 strip = true

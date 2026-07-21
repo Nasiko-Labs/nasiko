@@ -1,3 +1,4 @@
+
 use std::sync::Arc;
 
 use nasiko_auth::AuthService;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
+    pub mcp: nasiko_mcp_gateway::McpState,
     pub flow_guard: FlowGuard,
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
@@ -177,6 +179,14 @@ impl AppState {
 
         let (build_tx, build_rx) = mpsc::channel(64);
 
+        // MCP gateway state: reuses the same pool, redis client, and pooled
+        // HTTP client — no duplicated infrastructure.
+        let mut mcp = nasiko_mcp_gateway::McpState::new(db.clone(), redis.clone(), http_client.clone(), &config);
+        // Swap in the real, ContainerRuntime-backed endpoint refresher (Step
+        // 13) — the gateway crate's own default is a no-op, since it has no
+        // ContainerRuntime dependency by design.
+        mcp.endpoint_refresher = Arc::new(crate::mcp::build::RuntimeEndpointRefresher::new(runtime.clone(), db.clone()));
+
         let state = Self {
             runtime,
             db,
@@ -185,6 +195,7 @@ impl AppState {
             usage_tracker,
             http_client,
             auth,
+            mcp,
             flow_guard,
             flow_events,
             genai_metrics,
@@ -262,6 +273,31 @@ impl AppState {
                 .clone()
                 .map(|svc| (svc, self.config.oidc_provider_label.clone())),
         }
+    }
+
+    /// Same resolution order as [`resolve_oidc_client`](Self::resolve_oidc_client)
+    /// (DB `settings` row, falling back to env config) but returns the raw
+    /// `OidcConfig` fields instead of a built `OidcClient` — for callers that
+    /// need `client_id`/`client_secret`/`issuer_url` directly for a different
+    /// OAuth2 flow (e.g. EE's Azure AD directory sync uses Graph API's
+    /// client-credentials flow, not the login authorization-code flow
+    /// `OidcClient` is built for). Critically, the returned label is the same
+    /// one `resolve_oidc_client`'s caller writes to `user_identities.provider`
+    /// at login — any caller minting `user_identities` rows ahead of time
+    /// (like directory sync) must reuse this exact label or a later real
+    /// login's `(provider, provider_id)` lookup will never match.
+    pub async fn resolve_raw_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {
+        if let Some(db_config) = self.fetch_db_oidc_config().await {
+            return Some(db_config);
+        }
+        let config = nasiko_oidc::OidcConfig {
+            issuer_url: self.config.oidc_issuer_url.clone()?,
+            client_id: self.config.oidc_client_id.clone()?,
+            client_secret: self.config.oidc_client_secret.clone()?,
+            redirect_uri: self.config.oidc_redirect_uri.clone()?,
+            scopes: self.config.oidc_scopes.clone(),
+        };
+        Some((config, self.config.oidc_provider_label.clone()))
     }
 
     async fn fetch_db_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {

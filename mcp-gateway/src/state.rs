@@ -13,6 +13,7 @@ use sqlx::PgPool;
 
 use crate::authorizer::{ConnectorAuthorizer, OssConnectorAuthorizer};
 use crate::config::McpConfig;
+use crate::endpoint_refresh::{EndpointRefresher, NoopEndpointRefresher};
 use crate::provider::Providers;
 
 #[derive(Clone)]
@@ -31,6 +32,12 @@ pub struct McpState {
     /// Layer-1 connector reachability. Default = owner ∪ user/public grant; an
     /// edition can swap a richer impl at startup.
     pub authorizer: Arc<dyn ConnectorAuthorizer>,
+    /// Self-heal for `uploaded_build` connectors whose live container address
+    /// drifted (restart/redeploy/reboot) — see `endpoint_refresh`'s module
+    /// doc. Default is a no-op; `oss/server` swaps in a real,
+    /// `ContainerRuntime`-backed impl at `AppState` construction, same swap
+    /// pattern as `authorizer` above.
+    pub endpoint_refresher: Arc<dyn EndpointRefresher>,
 }
 
 impl McpState {
@@ -51,6 +58,7 @@ impl McpState {
             config: mcp_config,
             providers,
             authorizer: Arc::new(OssConnectorAuthorizer),
+            endpoint_refresher: Arc::new(NoopEndpointRefresher),
         }
     }
 }

@@ -85,8 +85,18 @@ impl ContainerRuntime for FakeRuntime {
         Ok(self.containers.lock().unwrap().values().cloned().collect())
     }
 
-    async fn endpoint(&self, _container_id: &ContainerId) -> RuntimeResult<String> {
-        Ok("http://localhost:8000".into())
+    async fn endpoint(&self, container_id: &ContainerId) -> RuntimeResult<String> {
+        // Mirror a real runtime: a container that was never deployed can't
+        // resolve. The agent proxy prefers this live lookup and only falls
+        // back to the stored `agents.url` when it errors, so tests that seed
+        // `agents.url` directly (no runtime deploy) rely on this failing.
+        if self.containers.lock().unwrap().contains_key(container_id) {
+            Ok("http://localhost:8000".into())
+        } else {
+            Err(nasiko_runtime::RuntimeError::ContainerNotFound(
+                container_id.clone(),
+            ))
+        }
     }
 
     async fn logs(&self, _container_id: &ContainerId, _tail: u32) -> RuntimeResult<Vec<String>> {
@@ -128,6 +138,7 @@ fn minimal_pool_opts() -> PgPoolOptions {
 }
 
 impl TestServer {
+    #[allow(dead_code)]
     pub async fn start() -> Self {
         Self::start_with(|_| {}).await
     }
@@ -138,6 +149,21 @@ impl TestServer {
     /// path, which `test_config()` otherwise always leaves empty.
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
+        Self::start_with_runtime(configure, Arc::new(FakeRuntime::default())).await
+    }
+
+    /// Same as [`start_with`](Self::start_with), but lets the caller supply a
+    /// real `ContainerRuntime` (e.g. a real `DockerRuntime`) instead of
+    /// `FakeRuntime` — needed by tests that must observe a real container's
+    /// lifecycle through the actual HTTP route (not by calling orchestration
+    /// functions directly), such as confirming `DELETE
+    /// /api/mcp/connectors/{id}` really destroys an uploaded connector's
+    /// container.
+    #[allow(dead_code)]
+    pub async fn start_with_runtime(
+        configure: impl FnOnce(&mut Config),
+        runtime: Arc<dyn ContainerRuntime>,
+    ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
@@ -175,8 +201,6 @@ impl TestServer {
         let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
-
-        let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime::default());
 
         let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
@@ -282,7 +306,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oidc_client_id: None,
         oidc_client_secret: None,
         oidc_redirect_uri: None,
-        oidc_allowed_redirect_origins: vec![],
         oidc_scopes: "openid profile email".into(),
         oidc_provider_label: "microsoft_entra".into(),
         router_shortlist_threshold: 15,
@@ -325,6 +348,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
+        mcp_upload_max_bytes: 50 * 1024 * 1024,
+        mcp_upload_default_port: 8080,
+        mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         app_base_url: "".to_string(),
     }
 }

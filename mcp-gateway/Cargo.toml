@@ -43,3 +43,4 @@ nasiko-observability.workspace = true
 [dev-dependencies]
 # HTTP mocking for provider (generic MCP + Composio) tests.
 mockito = { workspace = true }
+tempfile.workspace = true

@@ -223,6 +223,14 @@ pub struct MCPServerConfig {
     pub headers: HashMap<String, String>,
     #[serde(default = "default_transport")]
     pub transport: String,
+    /// True only for `source_kind = UploadedBuild` connectors, whose `url` was
+    /// resolved by `ContainerRuntime::endpoint()` and never typed by a user —
+    /// the SSRF guard (`net.rs`) exists specifically to stop a *user* pointing
+    /// the gateway at an internal address, so it doesn't apply here. Set
+    /// exactly once, in `credentials::build_generic_servers` — never derived or
+    /// overridden anywhere else, and never accepted from external input.
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 fn default_transport() -> String {

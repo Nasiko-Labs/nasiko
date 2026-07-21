@@ -262,6 +262,20 @@ pub struct DeploymentSpec {
     /// needs to reference it by name, never recreate it. Ignored by
     /// `DockerRuntime`.
     pub image_pull_credential_seed: Option<(String, String, String)>,
+    /// Applies OS-level hardening to the created container: run as a fixed
+    /// non-root uid, read-only root filesystem (with a small writable `/tmp`
+    /// tmpfs), all Linux capabilities dropped, no-new-privileges. Defaults to
+    /// `false` for every existing agent deploy — only the MCP-server-upload
+    /// build path (the first case of the platform running arbitrary
+    /// third-party code that isn't a curated example agent) sets this `true`.
+    /// Ignored by `KubeRuntime`, which already hardens every pod unconditionally.
+    pub harden: bool,
+    /// Overrides the runtime's default network for this one deployment. `None`
+    /// (the default) uses whatever network every other container already
+    /// uses. Only the MCP-server-upload build path sets this, to isolate
+    /// uploaded servers onto a dedicated network. Ignored by `KubeRuntime`
+    /// (namespace-based isolation already applies).
+    pub network_override: Option<String>,
 }
 
 impl DeploymentSpec {

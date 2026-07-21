@@ -19,6 +19,7 @@ pub struct Config {
     /// Registry prefix prepended to agent image tags at build time.
     /// e.g. `"host.docker.internal:5001"` for local K8s dev.
     /// Empty string → no prefix (Docker local mode).
+    /// TODO: this needs to be removed.
     pub agent_image_registry: String,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
@@ -64,14 +65,6 @@ pub struct Config {
     /// Must exactly match the redirect URI registered with the IdP, e.g.
     /// `https://<host>/api/auth/oidc/callback`.
     pub oidc_redirect_uri: Option<String>,
-    /// Full origins (`scheme://host[:port]`) a post-login OIDC `redirect`
-    /// target is allowed to point at, in addition to a same-origin relative
-    /// path — needed when the frontend is a separate deployment on its own
-    /// domain rather than this binary's embedded UI (comma-separated, e.g.
-    /// `"https://app.example.com,http://localhost:5173"`). Empty (the
-    /// default) means only same-origin relative paths are accepted; see
-    /// `ee/server/src/auth.rs::is_safe_redirect_target`.
-    pub oidc_allowed_redirect_origins: Vec<String>,
     pub oidc_scopes: String,
     /// Stored as `user_identities.provider` for OIDC-authenticated users.
     /// Override if fronting a non-Entra OIDC provider.
@@ -128,6 +121,18 @@ pub struct Config {
     pub mcp_perm_cache_ttl_seconds: u64,
     /// TTL (seconds) for the Redis-cached aggregated tool manifest.
     pub mcp_manifest_ttl_seconds: u64,
+    /// Max upload size for a user's own MCP server zip. MCP_UPLOAD_MAX_BYTES,
+    /// default 50 MiB — deliberately smaller than agents' 100 MiB default,
+    /// since MCP servers are typically much smaller than full agent codebases.
+    pub mcp_upload_max_bytes: u64,
+    /// Port an uploaded MCP server container is expected to bind via `$PORT`.
+    /// MCP_UPLOAD_DEFAULT_PORT, default 8080.
+    pub mcp_upload_default_port: u16,
+    /// Docker network uploaded MCP server containers are deployed onto,
+    /// isolated from the default network (DB/Redis/agents). MCP_SERVERS_NETWORK,
+    /// default "nasiko-mcp-servers-net" (the server's own compose config must
+    /// also join this network — see docker-compose.infra.yml).
+    pub mcp_servers_network: String,
 }
 
 impl Config {
@@ -201,12 +206,6 @@ impl Config {
             oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            oidc_allowed_redirect_origins: std::env::var("OIDC_ALLOWED_REDIRECT_ORIGINS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
@@ -256,6 +255,9 @@ impl Config {
             mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
             mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
             mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
+            mcp_upload_max_bytes: env_parse("MCP_UPLOAD_MAX_BYTES", 50 * 1024 * 1024),
+            mcp_upload_default_port: env_parse("MCP_UPLOAD_DEFAULT_PORT", 8080),
+            mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
         })
     }
 

@@ -15,6 +15,22 @@ use crate::types::PUBLIC_GRANTEE;
 
 // ─── Row types ──────────────────────────────────────────────────────────────
 
+/// Where a `mcp_server`-provider connector's `url` came from. Backed by the
+/// Postgres enum `mcp_connector_source_kind` (026_mcp_connector_uploads.sql) —
+/// a real enum type, unlike `provider_type`/`auth_type` (plain TEXT + CHECK),
+/// so it needs `sqlx::Type` for `SELECT *` to decode it automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, sqlx::Type)]
+#[sqlx(type_name = "mcp_connector_source_kind", rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A user typed in the URL of a server already running somewhere else.
+    /// The default for every pre-existing row and every Composio row.
+    #[default]
+    ExternalUrl,
+    /// The platform built this connector's container from uploaded source; its
+    /// `url` was resolved via `ContainerRuntime::endpoint()`, never user-typed.
+    UploadedBuild,
+}
+
 /// One connector — either a Composio toolkit or a custom MCP server.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct McpConnector {
@@ -41,6 +57,10 @@ pub struct McpConnector {
     pub oauth_token_endpoint: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
+    pub source_kind: SourceKind,
+    // uploaded_build-only
+    pub build_status: Option<String>,
+    pub container_image_tag: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -61,6 +81,12 @@ impl McpConnector {
         self.oauth_authorization_endpoint.is_some()
             && self.oauth_token_endpoint.is_some()
             && self.oauth_client_id.is_some()
+    }
+    /// True only for a platform-built-and-deployed MCP server — see
+    /// `SourceKind::UploadedBuild`'s doc comment. Drives the SSRF-guard
+    /// `trusted` split (credentials.rs) and the delete/destroy-container fix.
+    pub fn is_uploaded_build(&self) -> bool {
+        self.source_kind == SourceKind::UploadedBuild
     }
 }
 
@@ -83,6 +109,14 @@ pub struct NewConnector {
     pub credential_header_name: Option<String>,
     pub headers: Option<Value>,
     pub is_active: Option<bool>,
+    /// Defaults to `ExternalUrl` (matches the column's own DB default) — every
+    /// pre-existing caller (`register_connector`) sets this explicitly rather
+    /// than relying on the derived `Default`, so it's never ambiguous at a
+    /// call site which kind of row is being created.
+    pub source_kind: SourceKind,
+    /// `Some("pending")` for a freshly queued `uploaded_build` connector;
+    /// `None` for every `external_url`/composio row (column is nullable).
+    pub build_status: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -159,8 +193,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
              (provider_type, owner_id, name, display_name, logo_url, description,
               auth_config_id, auth_scheme, use_composio_managed,
               url, transport, auth_type, url_param_name, credential_header_name,
-              headers, is_active)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+              headers, is_active, source_kind, build_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
            RETURNING *"#,
     )
     .bind(&c.provider_type)
@@ -179,6 +213,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
     .bind(&c.credential_header_name)
     .bind(&c.headers)
     .bind(c.is_active)
+    .bind(c.source_kind)
+    .bind(&c.build_status)
     .fetch_one(db)
     .await?;
     Ok(row)

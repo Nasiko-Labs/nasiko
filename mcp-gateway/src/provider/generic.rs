@@ -63,7 +63,14 @@ enum Attempt {
 
 #[derive(Clone)]
 pub struct GenericMcpProvider {
-    http: reqwest::Client,
+    /// SSRF/DNS-rebinding-guarded client — used for every backend whose URL a
+    /// user typed in (`server.trusted == false`, the default).
+    guarded: reqwest::Client,
+    /// The platform's own shared client — used only for `server.trusted ==
+    /// true` (an uploaded-build connector's URL, resolved by
+    /// `ContainerRuntime::endpoint()`, never user-typed). See `net.rs`'s
+    /// top-of-file doc comment for why both coexist.
+    plain: reqwest::Client,
     /// Negotiated `Mcp-Session-Id` per backend URL. In-process (not Redis): an
     /// MCP session is bound to the node that initialized it, so sharing it across
     /// horizontally-scaled nodes would be wrong — each node negotiates its own,
@@ -72,8 +79,15 @@ pub struct GenericMcpProvider {
 }
 
 impl GenericMcpProvider {
-    pub fn new(http: reqwest::Client) -> Self {
-        Self { http, sessions: Arc::new(Mutex::new(HashMap::new())) }
+    /// `guarded` is used for every backend by default; `plain` only for
+    /// `server.trusted == true` (see the struct's field docs).
+    pub fn new(guarded: reqwest::Client, plain: reqwest::Client) -> Self {
+        Self { guarded, plain, sessions: Arc::new(Mutex::new(HashMap::new())) }
+    }
+
+    /// The client to use for one backend, per its `trusted` flag.
+    fn client_for(&self, server: &MCPServerConfig) -> &reqwest::Client {
+        if server.trusted { &self.plain } else { &self.guarded }
     }
 
     /// POST a JSON-RPC request to an MCP backend and return the parsed response.
@@ -129,7 +143,7 @@ impl GenericMcpProvider {
         // `.json()` sets the body and Content-Type. We add Accept for both
         // response encodings, then layer the per-server auth headers on top.
         let mut req = self
-            .http
+            .client_for(server)
             .post(&server.url)
             .timeout(timeout)
             .header("Accept", "application/json, text/event-stream")
@@ -196,7 +210,7 @@ impl GenericMcpProvider {
         });
 
         let mut req = self
-            .http
+            .client_for(server)
             .post(&server.url)
             .timeout(timeout)
             .header("Accept", "application/json, text/event-stream")
@@ -231,7 +245,7 @@ impl GenericMcpProvider {
         if let Some(sid) = &session_id {
             let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
             let mut n = self
-                .http
+                .client_for(server)
                 .post(&server.url)
                 .timeout(timeout)
                 .header("Accept", "application/json, text/event-stream")

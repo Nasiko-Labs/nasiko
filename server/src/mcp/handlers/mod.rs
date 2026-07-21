@@ -9,4 +9,5 @@ pub mod gateway;
 pub mod oauth;
 pub mod permissions;
 pub mod sharing;
+pub mod upload;
 pub mod webhooks;

@@ -9,6 +9,8 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 crossterm.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 serial_test = { workspace = true }
+tempfile.workspace = true

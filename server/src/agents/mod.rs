@@ -173,6 +173,8 @@ pub(crate) fn build_agent_spec(
         resources,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
+        harden: false,
+        network_override: None,
     }
 }
 
@@ -187,6 +189,14 @@ pub fn router() -> Router<AppState> {
     // registration conflicts. This OSS-tier grants module has no CLI/UI/test
     // consumer yet — wire it up (and reconcile it with EE's implementation)
     // in a dedicated pass rather than mounting two incompatible APIs.
+}
+
+/// GET routes pulled out from under `router()`'s `require_deployer` gate —
+/// mounted separately under `require_auth` only, each handler checks
+/// `can_deploy` itself. See `upload::degradable_router`/
+/// `deployments::degradable_router`.
+pub fn degradable_router() -> Router<AppState> {
+    upload::degradable_router().merge(deployments::degradable_router())
 }
 
 pub fn user_routes() -> Router<AppState> {

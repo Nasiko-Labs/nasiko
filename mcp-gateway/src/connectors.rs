@@ -190,6 +190,8 @@ pub async fn register_connector(
             credential_header_name: input.credential_header_name,
             headers: headers_json,
             is_active: Some(true),
+            source_kind: repo::SourceKind::ExternalUrl,
+            build_status: None,
             ..Default::default()
         },
     )

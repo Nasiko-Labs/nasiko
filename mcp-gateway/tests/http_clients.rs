@@ -19,6 +19,7 @@ fn cfg(url: String) -> MCPServerConfig {
         url,
         headers: HashMap::new(),
         transport: "streamable_http".into(),
+        trusted: false,
     }
 }
 
@@ -35,7 +36,7 @@ async fn generic_parses_application_json() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     let tools = provider
         .list_tools(&cfg(format!("{}/mcp", srv.url())), std::time::Duration::from_secs(5), None)
         .await
@@ -55,7 +56,7 @@ async fn generic_parses_event_stream() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping","params":{}});
     let resp = provider
         .request(&cfg(format!("{}/mcp", srv.url())), &body, std::time::Duration::from_secs(5), None)
@@ -69,7 +70,7 @@ async fn generic_non_2xx_is_error() {
     let mut srv = mockito::Server::new_async().await;
     srv.mock("POST", "/mcp").with_status(500).with_body("boom").create_async().await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
     assert!(
         provider
@@ -91,7 +92,7 @@ async fn generic_injects_auth_headers() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     let mut headers = HashMap::new();
     headers.insert("Authorization".to_string(), "Bearer sk-xyz".to_string());
     let server = MCPServerConfig {
@@ -101,6 +102,7 @@ async fn generic_injects_auth_headers() {
         url: format!("{}/mcp", srv.url()),
         headers,
         transport: "streamable_http".into(),
+        trusted: false,
     };
     provider.list_tools(&server, std::time::Duration::from_secs(5), None).await.unwrap();
     m.assert_async().await; // fails if the auth header wasn't sent
@@ -118,7 +120,7 @@ async fn generic_propagates_traceparent_when_provided() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     provider
         .list_tools(
             &cfg(format!("{}/mcp", srv.url())),
@@ -142,7 +144,7 @@ async fn generic_omits_traceparent_when_absent() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     provider
         .list_tools(&cfg(format!("{}/mcp", srv.url())), std::time::Duration::from_secs(5), None)
         .await
@@ -196,7 +198,7 @@ async fn generic_stateful_backend_negotiates_session() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     let tools = provider
         .list_tools(&cfg(format!("{}/mcp", srv.url())), std::time::Duration::from_secs(5), None)
         .await
@@ -220,7 +222,7 @@ async fn generic_non_session_400_stays_error() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
     assert!(
         provider
@@ -467,4 +469,92 @@ async fn composio_patch_and_revoke_status_semantics() {
     let p2 = composio(srv2.url());
     assert!(!p2.patch_session("s2", &accounts).await.unwrap());
     assert!(!p2.revoke_connection("ca_2").await.unwrap());
+}
+
+// ─── SSRF-guard `trusted` split (Step 7) ─────────────────────────────────────
+//
+// The single most important test in the whole MCP-server-upload plan: proves
+// `trusted: true` configs route around the SSRF guard (as an uploaded-build
+// connector's platform-resolved container address must), while `trusted: false`
+// configs are still rejected exactly as before. Deliberately targets the mock
+// server via the *hostname* "localhost", not the literal IP "127.0.0.1" —
+// reqwest/hyper only invoke a custom DNS `Resolve` implementation (which is
+// where `GuardedResolver` lives) for hostnames; a literal IP in the URL bypasses
+// resolution entirely, which would make this test pass regardless of whether
+// the guard actually works.
+
+fn loopback_cfg(port: u16, trusted: bool) -> MCPServerConfig {
+    MCPServerConfig {
+        connector_id: Uuid::new_v4(),
+        kind: ServerType::Mcp,
+        name: "loopback-test".into(),
+        url: format!("http://localhost:{port}/mcp"),
+        headers: HashMap::new(),
+        transport: "streamable_http".into(),
+        trusted,
+    }
+}
+
+#[tokio::test]
+async fn trusted_config_bypasses_ssrf_guard_against_loopback() {
+    let mut srv = mockito::Server::new_async().await;
+    let port = srv.socket_address().port();
+    let m = srv
+        .mock("POST", "/mcp")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#)
+        .create_async()
+        .await;
+
+    let provider = GenericMcpProvider::new(
+        nasiko_mcp_gateway::net::guarded_http_client(),
+        reqwest::Client::new(),
+    );
+    let server = loopback_cfg(port, true);
+    provider
+        .list_tools(&server, std::time::Duration::from_secs(5), None)
+        .await
+        .expect("trusted=true must reach a loopback backend via the plain client");
+    m.assert_async().await;
+}
+
+#[tokio::test]
+async fn untrusted_config_is_still_rejected_by_ssrf_guard_against_loopback() {
+    let mut srv = mockito::Server::new_async().await;
+    let port = srv.socket_address().port();
+    // No mock registered — if the guard fails to reject, the request would 404,
+    // which would also fail the assertion below, but for the wrong reason. The
+    // guard must fail at DNS-resolution time, before any HTTP request is sent.
+    let _never_called = srv
+        .mock("POST", "/mcp")
+        .expect(0)
+        .with_status(200)
+        .create_async()
+        .await;
+
+    let provider = GenericMcpProvider::new(
+        nasiko_mcp_gateway::net::guarded_http_client(),
+        reqwest::Client::new(),
+    );
+    let server = loopback_cfg(port, false);
+    let err = provider
+        .list_tools(&server, std::time::Duration::from_secs(5), None)
+        .await
+        .expect_err("trusted=false must be rejected by the SSRF guard for a loopback address");
+    // reqwest wraps the resolver's error ("http error: error sending request...")
+    // so the guard's own message lives in the `source()` chain, not top-level
+    // Display — walk it to confirm this is genuinely GuardedResolver's rejection
+    // and not some other transport failure.
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(&err);
+    let mut found = false;
+    while let Some(e) = cause {
+        if e.to_string().contains("did not resolve to any allowed") {
+            found = true;
+            break;
+        }
+        cause = e.source();
+    }
+    assert!(found, "expected the GuardedResolver's rejection in the error chain, got: {err}");
+    _never_called.assert_async().await;
 }

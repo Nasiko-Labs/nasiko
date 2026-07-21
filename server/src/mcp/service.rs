@@ -107,6 +107,15 @@ pub mod connectors {
         if !is_admin && c.owner_id != Some(caller) {
             return Err(McpError::Forbidden("this connector does not belong to you".into()));
         }
+        // An uploaded_build connector owns a real container — destroy it
+        // before the DB row disappears, or it leaks forever (its only
+        // pointer, the connector id, is gone the moment the row is deleted).
+        // Runs here, not in the pure gateway crate, since it needs
+        // `ContainerRuntime` (the crate's "no ContainerRuntime dependency"
+        // boundary stays intact — see `mcp::build`'s own module doc).
+        if c.source_kind == nasiko_mcp_gateway::repo::SourceKind::UploadedBuild {
+            crate::mcp::build::destroy_uploaded_connector_container(&s.runtime, id).await;
+        }
         connectors::delete_connector(&s.mcp, &c).await
     }
     pub async fn share(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid, target: ShareTarget) -> R<Value> {

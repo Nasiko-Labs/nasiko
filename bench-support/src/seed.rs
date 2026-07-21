@@ -113,6 +113,8 @@ pub async fn seed(
             resources: None,
             image_pull_secret_name: None,
             image_pull_credential_seed: None,
+            harden: false,
+            network_override: None,
         };
         runtime
             .deploy(&spec)

@@ -209,6 +209,8 @@ fn minimal_spec() -> DeploymentSpec {
         resources: None,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
+        harden: false,
+        network_override: None,
     }
 }
 
@@ -245,6 +247,8 @@ fn deployment_spec_with_all_fields() {
         }),
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
+        harden: false,
+        network_override: None,
     };
 
     assert_eq!(spec.min_replicas, 2);

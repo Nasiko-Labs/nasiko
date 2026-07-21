@@ -87,6 +87,10 @@ pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Ve
             url,
             headers,
             transport: connector.transport.clone().unwrap_or_else(|| "streamable_http".to_string()),
+            // The ONLY place `trusted` is ever computed — see MCPServerConfig's
+            // doc comment. Read straight off the already-joined connector row,
+            // no new query.
+            trusted: connector.source_kind == repo::SourceKind::UploadedBuild,
         });
     }
 
@@ -235,6 +239,9 @@ mod tests {
             oauth_token_endpoint: None,
             oauth_client_id: None,
             oauth_client_secret: None,
+            source_kind: crate::repo::SourceKind::ExternalUrl,
+            build_status: None,
+            container_image_tag: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

@@ -190,6 +190,7 @@ fn composio_config(
         url,
         headers,
         transport: "streamable_http".to_string(),
+        trusted: false, // Composio's session URL is never an uploaded_build connector
     }
 }
 

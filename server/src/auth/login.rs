@@ -29,6 +29,9 @@ pub fn non_login_public_router(login_limiter: crate::rate_limit::RateLimiter) ->
         .route("/api/auth/tokens/validate", post(token_validate))
 }
 
+/// OSS-only login route. `initialize-admin` and token validation are already
+/// covered by `non_login_public_router` (merged once, shared by OSS and EE);
+/// this must not re-register them or axum panics on the duplicate route.
 pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", post(login))

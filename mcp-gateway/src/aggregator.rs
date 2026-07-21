@@ -144,6 +144,7 @@ mod tests {
             url: url.into(),
             headers: HashMap::new(),
             transport: "streamable_http".into(),
+            trusted: false,
         }
     }
 
@@ -185,8 +186,12 @@ mod tests {
                 manifest_ttl_seconds: 60,
                 oauth_state_signing_key: "test".to_string(),
             },
-            providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
+            providers: Providers {
+                composio: None,
+                mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
+            },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
+            endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
         }
     }
 

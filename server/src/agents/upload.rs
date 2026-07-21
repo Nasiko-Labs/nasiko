@@ -142,36 +142,28 @@ pub enum BuildJobPayload {
         source_key: Option<String>,
         version_tag: String,
     },
-    /// GitHub clone-and-deploy (POST /api/github/clone).
-    Clone {
+    /// MCP-server-upload build+deploy (POST /api/mcp/connectors/upload or
+    /// /upload-github). `env` is encrypted (owner-scoped) at rest in this
+    /// JSONB payload — see `build_worker::decrypt_build_secrets`, which
+    /// decrypts it immediately before use and never persists the plaintext.
+    McpServerUpload {
         build_id: Uuid,
-        agent_id: Uuid,
+        connector_id: Uuid,
         owner_id: Uuid,
-        upload_id: String,
         name: String,
-        /// Absolute path to the `.tar.gz` archive on disk.
-        tar_gz_path: String,
+        source: McpBuildSourcePayload,
         image_tag: String,
-        ports: Vec<u16>,
         env: HashMap<String, String>,
     },
-    /// GitHub clone-and-deploy via build worker (POST /api/github/clone).
-    ///
-    /// Unlike `Clone`, the git clone runs inside the build worker rather than the
-    /// HTTP handler — the handler returns 202 immediately and the worker retries
-    /// on transient failures.
-    GithubClone {
-        build_id: Uuid,
-        agent_id: Uuid,
-        owner_id: Uuid,
-        upload_id: String,
-        name: String,
-        repo_full_name: String,
-        branch: String,
-        image_tag: String,
-        ports: Vec<u16>,
-        env: HashMap<String, String>,
-    },
+}
+
+/// Source payload for `BuildJobPayload::McpServerUpload` — mirrors
+/// `crate::mcp::build::BuildSource`, but serializable (that type is
+/// constructed fresh per build and never itself persisted).
+#[derive(Debug, Serialize, Deserialize)]
+pub enum McpBuildSourcePayload {
+    Zip { zip_path: String },
+    Github { url: String },
 }
 
 impl BuildJobPayload {
@@ -180,18 +172,14 @@ impl BuildJobPayload {
             Self::Upload { build_id, .. }
             | Self::Update { build_id, .. }
             | Self::StandaloneBuild { build_id, .. }
-            | Self::Clone { build_id, .. }
-            | Self::GithubClone { build_id, .. } => *build_id,
+            | Self::McpServerUpload { build_id, .. } => *build_id,
             Self::Rollback { rollback_build_id, .. } => *rollback_build_id,
         }
     }
 
     pub fn label(&self) -> &str {
         match self {
-            Self::Upload { name, .. }
-            | Self::Update { name, .. }
-            | Self::Clone { name, .. }
-            | Self::GithubClone { name, .. } => name,
+            Self::Upload { name, .. } | Self::Update { name, .. } | Self::McpServerUpload { name, .. } => name,
             Self::Rollback { agent_name, .. } | Self::StandaloneBuild { agent_name, .. } => agent_name,
         }
     }
@@ -217,59 +205,27 @@ async fn upload_and_deploy(
     let mut ports: Vec<u16> = vec![];
     let mut env: HashMap<String, String> = HashMap::new();
 
-    // Build a temporary directory early so we have a path to stream into.
-    // The worker cleans this up after the job completes.
-    let tmp_base = std::env::temp_dir();
-
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
             "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "source" | "file" => {
-                // Stream zip to disk rather than buffering it all in RAM. Key the
-                // temp dir on a fresh UUID, never the agent name (RUN-10) — two
-                // concurrent uploads of the same name previously shared one dir and
-                // each other's cleanup deleted the peer's source.
-                let upload_dir = tmp_base.join(format!("nasiko-upload-{}", uuid::Uuid::new_v4()));
-                if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
-                    tracing::error!(%e, "upload: create upload dir failed");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-                }
-                let path = upload_dir.join("upload.zip");
-
-                let mut f = match tokio::fs::File::create(&path).await {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::error!(%e, "upload: create zip file failed");
+                use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
+                match stream_field_to_fresh_temp_file("nasiko-upload", "upload.zip", field, MAX_UPLOAD_BYTES).await {
+                    Ok(path) => zip_path = Some(path),
+                    Err(StreamUploadError::TooLarge) => {
+                        tracing::warn!(limit = MAX_UPLOAD_BYTES, "upload rejected: size limit exceeded");
+                        return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 100 MiB").into_response();
+                    }
+                    Err(StreamUploadError::ReadFailed(e)) => {
+                        tracing::warn!(%e, "upload: read multipart chunk failed");
+                        return (StatusCode::BAD_REQUEST, "failed to read upload stream").into_response();
+                    }
+                    Err(StreamUploadError::Io(e)) => {
+                        tracing::error!(%e, "upload: stream to disk failed");
                         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
                     }
-                };
-
-                let mut total_bytes: u64 = 0;
-                let mut chunk_stream = field;
-                loop {
-                    match chunk_stream.chunk().await {
-                        Ok(Some(chunk)) => {
-                            total_bytes += chunk.len() as u64;
-                            if total_bytes > MAX_UPLOAD_BYTES {
-                                tracing::warn!(total_bytes, limit = MAX_UPLOAD_BYTES, "upload rejected: size limit exceeded");
-                                let _ = tokio::fs::remove_dir_all(&upload_dir).await;
-                                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 100 MiB").into_response();
-                            }
-                            use tokio::io::AsyncWriteExt;
-                            if let Err(e) = f.write_all(&chunk).await {
-                                tracing::error!(%e, "upload: write chunk failed");
-                                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(e) => {
-                            tracing::warn!(%e, "upload: read multipart chunk failed");
-                            return (StatusCode::BAD_REQUEST, "failed to read upload stream").into_response();
-                        }
-                    }
                 }
-                zip_path = Some(path);
             }
             "ports" => {
                 if let Ok(text) = field.text().await {
@@ -680,285 +636,6 @@ pub async fn execute_upload_and_deploy(
             tracing::error!(build_id = %build_id, %e, "upload-and-deploy failed");
         }
     }
-}
-
-/// Execute the full clone-and-deploy pipeline: extract tar.gz, OTel patch, docker build, deploy.
-/// Called by the build worker for `BuildJobPayload::Clone` jobs.
-#[allow(clippy::too_many_arguments)]
-pub async fn execute_clone_and_deploy(
-    runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
-    db: sqlx::PgPool,
-    http: reqwest::Client,
-    build_id: Uuid,
-    agent_id: Uuid,
-    owner_id: Uuid,
-    upload_id: String,
-    name: String,
-    tar_gz_path: PathBuf,
-    image_tag: String,
-    ports: Vec<u16>,
-    mut env: HashMap<String, String>,
-    openai_api_key: Option<String>,
-    openai_base_url: Option<String>,
-    agent_runtime: String,
-    agent_image_registry: String,
-) {
-    if let Some(key) = openai_api_key {
-        env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
-    }
-    if let Some(url) = openai_base_url {
-        env.entry("OPENAI_BASE_URL".to_owned()).or_insert(url);
-    }
-    set_build_status(&db, build_id, BuildStatus::Building).await;
-    set_upload_status(&db, &upload_id, &name, owner_id, "initiated", None, None).await;
-
-    let tmp_dir = std::env::temp_dir().join(format!("nasiko-clone-{build_id}"));
-
-    let result: Result<DeploymentStatus, String> = async {
-        // Read tar.gz bytes then extract on the blocking pool.
-        let tp = tar_gz_path.clone();
-        let td = tmp_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            let bytes = std::fs::read(&tp).map_err(|e| format!("read tar.gz: {e}"))?;
-            build::extract_tar_gzip(&bytes, &td)
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking extract: {e}"))??;
-
-        set_upload_status(&db, &upload_id, &name, owner_id, "processing", None, None).await;
-
-        let dockerfile_path = tmp_dir.join("Dockerfile");
-        if !dockerfile_path.exists() {
-            return Err("no Dockerfile found in cloned repository".into());
-        }
-
-        // Patch Dockerfile to inject OTel auto-instrumentation.
-        let original = tokio::fs::read_to_string(&dockerfile_path)
-            .await
-            .map_err(|e| format!("read Dockerfile: {e}"))?;
-        let patched = nasiko_observability::patch_dockerfile_for_otel(&original);
-        if patched != original {
-            tokio::fs::write(&dockerfile_path, &patched)
-                .await
-                .map_err(|e| format!("write Dockerfile: {e}"))?;
-            tracing::info!(build_id = %build_id, "patched Dockerfile with OTel instrumentation");
-
-            nasiko_observability::write_otel_patch_file(&tmp_dir)
-                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
-            tracing::info!(build_id = %build_id, "wrote .nasiko_otel_patch.py to build context");
-        }
-
-        // Build Docker image.
-        let tar_bytes = build::tar_directory(&tmp_dir)
-            .map_err(|e| format!("tar source: {e}"))?;
-        runtime
-            .build(&tar_bytes, &image_tag)
-            .await
-            .map_err(|e| format!("docker build: {e}"))?;
-
-        set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
-
-        // Deploy container keyed on agent UUID.
-        let mut spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
-        crate::agents::attach_pull_credential(&db, &agent_runtime, &agent_image_registry, &mut spec, agent_id).await;
-        let deploy_status = runtime
-            .deploy(&spec)
-            .await
-            .map_err(|e| format!("deploy: {e}"))?;
-
-        set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
-
-        Ok(deploy_status)
-    }
-    .await;
-
-    // Clean up extracted dir and the tar.gz file.
-    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-    if let Some(tar_dir) = tar_gz_path.parent() {
-        let _ = tokio::fs::remove_dir_all(tar_dir).await;
-    }
-
-    match result {
-        Ok(deploy_status) => {
-            set_build_status(&db, build_id, BuildStatus::Success).await;
-            set_upload_status(&db, &upload_id, &name, owner_id, "completed", Some(agent_id), None).await;
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
-                 SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
-                 ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag",
-            )
-            .bind(build_id)
-            .execute(&db)
-            .await;
-            let agent_url = crate::agents::resolve_agent_url(
-                &runtime,
-                &deploy_status,
-                &nasiko_runtime::ContainerId::from_uuid(agent_id),
-            )
-            .await;
-            let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
-                .bind(agent_id)
-                .bind(&agent_url)
-                .execute(&db)
-                .await;
-            tokio::spawn(super::utils::fetch_agent_card_with_retry(
-                db.clone(),
-                http,
-                agent_id,
-                agent_url.clone(),
-            ));
-            let _ = sqlx::query(
-                "INSERT INTO agent_deployments (agent_id, build_id, owner_id, status, k8s_deployment_name) \
-                 VALUES ($1, $2, $3, 'running', $4)",
-            )
-            .bind(agent_id)
-            .bind(build_id)
-            .bind(owner_id)
-            .bind(agent_id.to_string())
-            .execute(&db)
-            .await;
-            tracing::info!(build_id = %build_id, agent_id = %agent_id, "clone-and-deploy succeeded");
-        }
-        Err(e) => {
-            set_build_status(&db, build_id, BuildStatus::Failed).await;
-            set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some("clone and deploy failed")).await;
-            let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
-                .bind(agent_id)
-                .execute(&db)
-                .await;
-            tracing::error!(build_id = %build_id, %e, "clone-and-deploy failed");
-        }
-    }
-}
-
-/// Execute the GitHub clone-and-deploy pipeline from inside the build worker.
-///
-/// Loads the owner's stored GitHub token, runs `git clone` via `GitHubService`,
-/// writes the resulting archive to disk, then hands off to [`execute_clone_and_deploy`].
-/// Because this runs in the build worker (not the HTTP handler), transient failures
-/// are automatically retried up to `MAX_ATTEMPTS` times and the caller sees an
-/// async 202 rather than a 502.
-#[allow(clippy::too_many_arguments)]
-pub async fn execute_github_clone_and_deploy(
-    state: crate::state::AppState,
-    build_id: Uuid,
-    agent_id: Uuid,
-    owner_id: Uuid,
-    upload_id: String,
-    name: String,
-    repo_full_name: String,
-    branch: String,
-    image_tag: String,
-    ports: Vec<u16>,
-    env: HashMap<String, String>,
-) {
-    // GitHub service must be configured for cloning to work.
-    let github_svc = match state.github_svc.as_ref() {
-        Some(svc) => svc.clone(),
-        None => {
-            tracing::error!(%build_id, "github_clone_and_deploy: GitHub OAuth not configured");
-            fail_github_clone_terminal(&state.db, build_id, agent_id, &upload_id, &name, owner_id, "GitHub OAuth not configured").await;
-            return;
-        }
-    };
-
-    // Load the owner's GitHub access token from the DB.
-    let token: Option<String> = {
-        use crate::secrets::crypto::SecretsCrypto;
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(
-            "SELECT provider_metadata FROM user_identities \
-             WHERE user_id = $1 AND provider = 'github'",
-        )
-        .bind(owner_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-
-        row.and_then(|(meta,)| {
-            meta.get("access_token")
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string())
-        })
-        .and_then(|encrypted| {
-            SecretsCrypto::for_user(owner_id).decrypt(&encrypted).ok()
-        })
-    };
-
-    let token = match token {
-        Some(t) => t,
-        None => {
-            tracing::error!(%build_id, %owner_id, "github_clone_and_deploy: no GitHub token for owner");
-            fail_github_clone_terminal(&state.db, build_id, agent_id, &upload_id, &name, owner_id, "GitHub not connected").await;
-            return;
-        }
-    };
-
-    // Shallow-clone the repository into an in-memory tar.gz archive.
-    let archive = match github_svc.clone_to_archive(&token, &repo_full_name, &branch).await {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::error!(%build_id, %e, repo = %repo_full_name, "github_clone_and_deploy: git clone failed");
-            fail_github_clone_terminal(&state.db, build_id, agent_id, &upload_id, &name, owner_id, "git clone failed").await;
-            return;
-        }
-    };
-
-    // Persist the archive to disk so execute_clone_and_deploy can read it.
-    let tar_dir = std::env::temp_dir().join(format!("nasiko-ghclone-src-{build_id}"));
-    let tar_gz_path = tar_dir.join("source.tar.gz");
-    let write_ok = tokio::fs::create_dir_all(&tar_dir)
-        .await
-        .and(tokio::fs::write(&tar_gz_path, &archive.archive_bytes).await);
-
-    if let Err(e) = write_ok {
-        tracing::error!(%build_id, %e, "github_clone_and_deploy: write archive failed");
-        let _ = tokio::fs::remove_dir_all(&tar_dir).await;
-        fail_github_clone_terminal(&state.db, build_id, agent_id, &upload_id, &name, owner_id, "internal error saving archive").await;
-        return;
-    }
-
-    let mut platform_env = state.agent_env(agent_id).await;
-    platform_env.extend(env);
-    execute_clone_and_deploy(
-        state.runtime.clone(),
-        state.db.clone(),
-        state.http_client.clone(),
-        build_id,
-        agent_id,
-        owner_id,
-        upload_id,
-        name,
-        tar_gz_path,
-        image_tag,
-        ports,
-        platform_env,
-        state.config.openai_api_key.clone(),
-        state.config.openai_base_url.clone(),
-        state.config.agent_runtime.clone(),
-        state.config.agent_image_registry.clone(),
-    )
-    .await;
-}
-
-/// Drive the agent and build to a terminal failed state when the clone step
-/// fails before `execute_clone_and_deploy` can take over status management.
-async fn fail_github_clone_terminal(
-    db: &sqlx::PgPool,
-    build_id: Uuid,
-    agent_id: Uuid,
-    upload_id: &str,
-    name: &str,
-    owner_id: Uuid,
-    reason: &str,
-) {
-    set_build_status(db, build_id, BuildStatus::Failed).await;
-    set_upload_status(db, upload_id, name, owner_id, "failed", None, Some(reason)).await;
-    let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
-        .bind(agent_id)
-        .execute(db)
-        .await;
 }
 
 // ─── GET /deploy-status/{build_id} (SSE) ─────────────────────────────────────
