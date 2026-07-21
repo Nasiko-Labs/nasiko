@@ -378,7 +378,11 @@ async fn restart(
             .ok()
             .flatten();
             match fallback {
-                Some(image) => image,
+                // spec_image is registry-relative (`nasiko/{name}:{tag}`) —
+                // qualify it exactly as the ad-hoc deploy path does.
+                Some(image) => {
+                    crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &image)
+                }
                 None => {
                     return (
                         StatusCode::CONFLICT,
