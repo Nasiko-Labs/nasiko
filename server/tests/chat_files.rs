@@ -50,7 +50,7 @@ async fn create_user(server: &common::TestServer, admin_id: &str, username: &str
 
 async fn create_session(server: &common::TestServer, user_id: &str, is_super: bool) -> Value {
     let rb = server.client.post(server.url("/api/chat/sessions"));
-    if is_super {
+    let body = if is_super {
         common::as_superuser(rb, user_id, "u")
     } else {
         common::as_member(rb, user_id, "u")
@@ -61,7 +61,10 @@ async fn create_session(server: &common::TestServer, user_id: &str, is_super: bo
     .unwrap()
     .json::<Value>()
     .await
-    .unwrap()
+    .unwrap();
+    // The handler wraps the session in a `{ data, status_code, message }`
+    // envelope (session_response); return the inner session object.
+    body["data"].clone()
 }
 
 /// Upload a single small text file; returns the file record.
