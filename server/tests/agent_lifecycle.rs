@@ -324,9 +324,11 @@ async fn list_upload_agents_returns_empty_initially() {
 
     let res = get_as_superuser(&server, uid, "/api/agents/my-uploads").await;
     assert_eq!(res.status(), 200);
+    // The handler wraps the list in a `{ data, status_code, message }`
+    // envelope (UploadAgentsListResponse).
     let body: Value = res.json().await.unwrap();
-    assert!(body.is_array());
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert!(body["data"].is_array());
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
 
     server.cleanup().await;
 }
@@ -375,7 +377,7 @@ async fn list_upload_agents_scoped_to_owner() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    let records = body.as_array().unwrap();
+    let records = body["data"].as_array().unwrap();
     assert_eq!(
         records.len(),
         1,
@@ -387,7 +389,7 @@ async fn list_upload_agents_scoped_to_owner() {
     let res = get_as_superuser(&server, uid, "/api/agents/my-uploads").await;
     let body: Value = res.json().await.unwrap();
     assert_eq!(
-        body.as_array().unwrap().len(),
+        body["data"].as_array().unwrap().len(),
         2,
         "superuser should see all uploads"
     );
