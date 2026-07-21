@@ -403,17 +403,25 @@ pub fn run(path: &str, port: u16) -> Result<()> {
 
     let _ = Command::new(&bin).args(["rm", "-f", name]).output();
     println!("Running {name} on port {port}...");
-    let run = Command::new(&bin)
-        .args([
-            "run",
-            "-d",
-            "--name",
-            name,
-            "-p",
-            &format!("{port}:{port}"),
-            &image,
-        ])
-        .status()?;
+    // Agent images serve on the canonical container port 8000 (the server's
+    // DEFAULT_AGENT_PORT); `--port` only picks the host-side port. Pass the
+    // project's .env so locally-run agents get their credentials, matching
+    // what the scaffold's README and .env.example set up.
+    let mut run_args: Vec<String> = vec![
+        "run".into(),
+        "-d".into(),
+        "--name".into(),
+        name.into(),
+        "-p".into(),
+        format!("{port}:8000"),
+    ];
+    let env_file = agent_dir.join(".env");
+    if env_file.exists() {
+        run_args.push("--env-file".into());
+        run_args.push(env_file.to_string_lossy().into_owned());
+    }
+    run_args.push(image.clone());
+    let run = Command::new(&bin).args(&run_args).status()?;
     if !run.success() {
         bail!("{bin} run failed");
     }
