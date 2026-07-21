@@ -7,6 +7,12 @@ pub struct Artifact {
     pub name: String,
     pub version: String,
     pub artifact_type: String,
+    /// Packaging format: source | open_standard | dockerfile | compose |
+    /// docker_image | external_card. Defaults to `source` for artifacts
+    /// published (or peers running an older version) before this field
+    /// existed, so old clients/servers stay wire-compatible.
+    #[serde(default = "default_format")]
+    pub format: String,
     pub status: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -29,6 +35,10 @@ pub struct Artifact {
     /// Semantic relevance score (cosine similarity, 0..1) on discovery results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+}
+
+fn default_format() -> String {
+    "source".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
