@@ -285,9 +285,11 @@ async fn upload_valid_agent_returns_202() {
 
     assert_eq!(res.status(), 202, "expected 202 Accepted for valid zip");
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["status"], "queued");
-    assert!(Uuid::parse_str(body["build_id"].as_str().unwrap_or("")).is_ok());
-    assert!(Uuid::parse_str(body["agent_id"].as_str().unwrap_or("")).is_ok());
+    // The handler wraps the payload in a { data, status_code, message }
+    // envelope (UploadAndDeployResponse).
+    assert_eq!(body["data"]["status"], "queued");
+    assert!(Uuid::parse_str(body["data"]["build_id"].as_str().unwrap_or("")).is_ok());
+    assert!(Uuid::parse_str(body["data"]["agent_id"].as_str().unwrap_or("")).is_ok());
 
     server.cleanup().await;
 }
@@ -310,7 +312,8 @@ async fn upload_creates_build_job_in_db() {
     .await;
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
-    let agent_id: Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
+    // agent_id sits inside the { data, ... } upload response envelope.
+    let agent_id: Uuid = body["data"]["agent_id"].as_str().unwrap().parse().unwrap();
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM build_jobs WHERE agent_id = $1")
         .bind(agent_id)
@@ -455,7 +458,8 @@ async fn upload_build_job_payload_contains_ports() {
     .await;
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
-    let agent_id: Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
+    // agent_id sits inside the { data, ... } upload response envelope.
+    let agent_id: Uuid = body["data"]["agent_id"].as_str().unwrap().parse().unwrap();
 
     let payload: Value =
         sqlx::query_scalar("SELECT payload FROM build_jobs WHERE agent_id = $1 LIMIT 1")
@@ -1057,7 +1061,8 @@ async fn build_worker_transitions_job_to_terminal_state() {
     .await;
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
-    let agent_id: Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
+    // agent_id sits inside the { data, ... } upload response envelope.
+    let agent_id: Uuid = body["data"]["agent_id"].as_str().unwrap().parse().unwrap();
 
     // Poll up to 60 s for a terminal state. Docker image-not-found fails in ~1 s;
     // the generous ceiling handles slow daemons or cold CI environments.
@@ -1340,7 +1345,8 @@ async fn build_job_has_correct_initial_status() {
     .await;
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
-    let agent_id: Uuid = body["agent_id"].as_str().unwrap().parse().unwrap();
+    // agent_id sits inside the { data, ... } upload response envelope.
+    let agent_id: Uuid = body["data"]["agent_id"].as_str().unwrap().parse().unwrap();
 
     // Check status immediately — the worker may have already picked it up, so accept
     // any of the valid lifecycle states.
