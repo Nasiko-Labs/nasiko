@@ -132,8 +132,29 @@ pub async fn agent_proxy(
 
     // Every message send must belong to a persisted session (may inject a
     // generated contextId into the body — see `ensure_chat_session`).
-    let body_bytes =
+    let (body_bytes, persist_info) =
         ensure_chat_session(&state, &claims, agent_id, &agent_base, body_bytes).await?;
+
+    // Persist the user message to chat_messages (fire-and-forget, mirrors CLI
+    // behaviour). No trace_id column: session_traces (below) is the
+    // authoritative session↔trace mapping now.
+    if let Some(ref info) = persist_info
+        && !info.user_text.is_empty()
+    {
+        let db = state.db.clone();
+        let session_id = info.session_id.clone();
+        let user_text = info.user_text.clone();
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+            )
+            .bind(&session_id)
+            .bind("user")
+            .bind(&user_text)
+            .execute(&db)
+            .await;
+        });
+    }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
     // anything not named here is dropped rather than forwarded by default.
@@ -168,6 +189,17 @@ pub async fn agent_proxy(
             "x-is-superuser",
             if claims.is_superuser { "true" } else { "false" },
         );
+
+    // Mint a short-lived MCP delegation token so the agent can call back into
+    // /api/mcp on this user's behalf (the agent forwards this inbound header to
+    // MCP_GATEWAY_URL). Mirrors the orchestrator path (a2a_dispatch → A2aTool);
+    // best-effort — skipped if JWT_SECRET is unset rather than failing the proxy.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+        && let Ok(token) =
+            nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &claims.sub, &agent_id_str)
+    {
+        forwarded = forwarded.header("x-nasiko-agent-token", token);
+    }
 
     // Best-effort: record the session ↔ trace correlation so observability
     // can map Tempo traces back to chat sessions for agents that don't set
@@ -217,7 +249,72 @@ pub async fn agent_proxy(
 
     state.flow_guard.record_return(&flow_ctx).await;
 
-    to_axum_response(response, agent_id).await
+    // Build the response. For non-streaming replies we read the bytes once,
+    // which lets us persist the agent message to chat_messages before sending.
+    let status = response.status();
+    let resp_headers = response.headers().clone();
+    let is_stream = resp_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("text/event-stream"));
+
+    let mut builder = Response::builder().status(status.as_u16());
+    for (name, value) in resp_headers.iter() {
+        builder = builder.header(name, value);
+    }
+
+    if is_stream {
+        use futures::StreamExt as _;
+        let stream = response.bytes_stream();
+        // Streamed replies never pass through `extract_agent_reply_text`
+        // below, so tap the SSE chunks on their way to the client and persist
+        // the collected assistant text when the stream ends (Drop also covers
+        // a client disconnect mid-stream).
+        let body = match persist_info {
+            Some(ref info) => {
+                let mut tap = SseReplyTap::new(state.db.clone(), info.session_id.clone());
+                Body::from_stream(stream.inspect(move |chunk| {
+                    if let Ok(bytes) = chunk {
+                        tap.collector.feed(bytes);
+                    }
+                }))
+            }
+            None => Body::from_stream(stream),
+        };
+        return builder.body(body).map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
+            StatusCode::INTERNAL_SERVER_ERROR
+        });
+    }
+
+    let bytes = response.bytes().await.map_err(|e| {
+        tracing::error!(error = %e, %agent_id, "agent proxy: failed to read agent response body");
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    // Persist agent reply fire-and-forget.
+    if let Some(ref info) = persist_info
+        && let Ok(rpc_val) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(agent_text) = extract_agent_reply_text(&rpc_val)
+    {
+        let db = state.db.clone();
+        let session_id = info.session_id.clone();
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+            )
+            .bind(&session_id)
+            .bind("assistant")
+            .bind(&agent_text)
+            .execute(&db)
+            .await;
+        });
+    }
+
+    builder.body(Body::from(bytes)).map_err(|e| {
+        tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 /// A2A JSON-RPC methods that carry a user message and therefore must be bound
@@ -230,6 +327,14 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
     "message/stream",
 ];
 
+/// Session and user-message info extracted during `ensure_chat_session` so the
+/// proxy can persist both user and agent messages to `chat_messages` without
+/// re-parsing the request body a second time.
+struct PersistInfo {
+    session_id: String,
+    user_text: String,
+}
+
 /// Guarantee every agent chat happens inside a persisted `chat_sessions` row.
 ///
 /// A message that arrives with a `contextId` gets that id upserted as a
@@ -240,27 +345,29 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
 /// client, which can then resume with it.
 ///
 /// Non-message traffic (GetTask, card fetches, …) passes through untouched.
+/// Returns `(body_bytes, Some(PersistInfo))` for message-send requests so the
+/// caller can persist user + agent messages to `chat_messages`.
 async fn ensure_chat_session(
     state: &AppState,
     claims: &Claims,
     agent_id: Uuid,
-    agent_base_url: &str,
+    _agent_base_url: &str,
     body_bytes: axum::body::Bytes,
-) -> Result<axum::body::Bytes, StatusCode> {
+) -> Result<(axum::body::Bytes, Option<PersistInfo>), StatusCode> {
     // Not JSON, or not a message send → pass through; the agent is the
     // authority on whether the payload is valid A2A.
     let Ok(mut rpc) = serde_json::from_slice::<serde_json::Value>(&body_bytes) else {
-        return Ok(body_bytes);
+        return Ok((body_bytes, None));
     };
     let is_send = rpc
         .get("method")
         .and_then(|m| m.as_str())
         .is_some_and(|m| MESSAGE_SEND_METHODS.contains(&m));
     if !is_send {
-        return Ok(body_bytes);
+        return Ok((body_bytes, None));
     }
     let Some(message) = rpc.pointer_mut("/params/message") else {
-        return Ok(body_bytes);
+        return Ok((body_bytes, None));
     };
 
     let user_id: Uuid = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -276,8 +383,9 @@ async fn ensure_chat_session(
     };
 
     // First user message doubles as the session title (same convention the
-    // web UI uses when it titles a fresh session).
-    let title = message
+    // web UI uses when it titles a fresh session). Also captured for
+    // message persistence in `chat_messages`.
+    let user_text: String = message
         .get("parts")
         .and_then(|p| p.as_array())
         .and_then(|parts| {
@@ -285,21 +393,24 @@ async fn ensure_chat_session(
                 .iter()
                 .find_map(|p| p.get("text").and_then(|t| t.as_str()))
         })
-        .map(|t| {
-            let t = t.trim();
-            if t.len() > 60 {
-                let mut n = 60;
-                while !t.is_char_boundary(n) {
-                    n -= 1;
-                }
-                format!("{}…", &t[..n])
-            } else {
-                t.to_string()
+        .unwrap_or("")
+        .to_string();
+    let title = {
+        let t = user_text.trim();
+        if t.is_empty() {
+            "New chat".to_string()
+        } else if t.len() > 60 {
+            let mut n = 60;
+            while !t.is_char_boundary(n) {
+                n -= 1;
             }
-        })
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "New chat".into());
+            format!("{}…", &t[..n])
+        } else {
+            t.to_string()
+        }
+    };
 
+    let proxy_url = format!("/api/agents/{agent_id}");
     let inserted = sqlx::query(
         "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title)
          VALUES ($1, $2, $3, $4, $5)
@@ -308,7 +419,7 @@ async fn ensure_chat_session(
     .bind(&session_id)
     .bind(user_id)
     .bind(agent_id)
-    .bind(agent_base_url)
+    .bind(&proxy_url)
     .bind(&title)
     .execute(&state.db)
     .await
@@ -343,49 +454,222 @@ async fn ensure_chat_session(
         }
     }
 
+    let persist_info = Some(PersistInfo {
+        session_id: session_id.clone(),
+        user_text,
+    });
+
     if injected {
         message["contextId"] = serde_json::Value::String(session_id);
         let rewritten = serde_json::to_vec(&rpc).map_err(|e| {
             tracing::error!(error = %e, "agent proxy: failed to re-serialize body after contextId injection");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        return Ok(rewritten.into());
+        return Ok((rewritten.into(), persist_info));
     }
-    Ok(body_bytes)
+    Ok((body_bytes, persist_info))
 }
 
-async fn to_axum_response(
-    response: reqwest::Response,
-    agent_id: Uuid,
-) -> Result<Response, StatusCode> {
-    let status = response.status();
-    let resp_headers = response.headers().clone();
-    let is_stream = resp_headers
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.contains("text/event-stream"));
+/// Extract the agent's reply text from a JSON-RPC response for persistence.
+///
+/// Handles both the wrapped `result.task` format (older a2a-sdk) and the flat
+/// `result` format, preferring `artifacts[0].parts[].text` then falling back
+/// to `status.message.parts[].text`.
+fn extract_agent_reply_text(rpc: &serde_json::Value) -> Option<String> {
+    task_reply_text(rpc.get("result")?)
+}
 
-    let mut builder = Response::builder().status(status.as_u16());
-    for (name, value) in resp_headers.iter() {
-        builder = builder.header(name, value);
+/// Reply text of a (possibly task-wrapped) A2A result value: the final
+/// artifact text, or the terminal status message as a fallback.
+fn task_reply_text(result: &serde_json::Value) -> Option<String> {
+    // Older a2a-sdk wraps the Task under result.task
+    let task = result.get("task").unwrap_or(result);
+
+    // Prefer the final artifact text
+    if let Some(text) = task
+        .get("artifacts")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|artifact| artifact.get("parts"))
+        .and_then(|p| p.as_array())
+        .and_then(|parts| {
+            parts
+                .iter()
+                .find_map(|p| p.get("text").and_then(|t| t.as_str()))
+        })
+        .filter(|s| !s.is_empty())
+    {
+        return Some(text.to_string());
     }
 
-    if is_stream {
-        let stream = response.bytes_stream();
-        builder
-            .body(Body::from_stream(stream))
-            .map_err(|e| {
-                tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })
-    } else {
-        let bytes = response.bytes().await.map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "agent proxy: failed to read agent response body");
-            StatusCode::BAD_GATEWAY
-        })?;
-        builder.body(Body::from(bytes)).map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
-            StatusCode::INTERNAL_SERVER_ERROR
+    // Fall back to status.message.parts[].text
+    task.pointer("/status/message/parts")
+        .and_then(|p| p.as_array())
+        .and_then(|parts| {
+            parts
+                .iter()
+                .find_map(|p| p.get("text").and_then(|t| t.as_str()))
         })
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Assembles the assistant's reply text out of an SSE event stream.
+///
+/// Chunked answers arrive as consecutive `artifactUpdate` (gRPC-style) or
+/// `kind: "artifact-update"` (0.3-style) events and are concatenated; a
+/// terminal task/status/message event carrying full text is kept only as a
+/// fallback, since agents that stream artifact chunks do not repeat the text
+/// there — preferring the chunks avoids persisting the answer twice.
+#[derive(Default)]
+struct SseReplyText {
+    line_buf: Vec<u8>,
+    artifact_text: String,
+    terminal_text: Option<String>,
+}
+
+impl SseReplyText {
+    fn feed(&mut self, chunk: &[u8]) {
+        self.line_buf.extend_from_slice(chunk);
+        while let Some(pos) = self.line_buf.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.line_buf.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line);
+            let Some(data) = line.trim().strip_prefix("data:") else {
+                continue;
+            };
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+                continue;
+            };
+            let result = event.get("result").unwrap_or(&event);
+            if let Some(text) = artifact_chunk_text(result) {
+                self.artifact_text.push_str(&text);
+            } else if let Some(text) =
+                task_reply_text(result).or_else(|| message_parts_text(result))
+            {
+                self.terminal_text = Some(text);
+            }
+        }
+    }
+
+    fn finish(&mut self) -> Option<String> {
+        if !self.artifact_text.is_empty() {
+            return Some(std::mem::take(&mut self.artifact_text));
+        }
+        self.terminal_text.take()
+    }
+}
+
+/// Artifact chunk text of one SSE event, in either event dialect.
+fn artifact_chunk_text(result: &serde_json::Value) -> Option<String> {
+    let artifact = result.pointer("/artifactUpdate/artifact").or_else(|| {
+        (result.get("kind").and_then(|k| k.as_str()) == Some("artifact-update"))
+            .then(|| result.get("artifact"))
+            .flatten()
+    })?;
+    let parts = artifact.get("parts")?.as_array()?;
+    let text: String = parts
+        .iter()
+        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+        .collect();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Text of a bare message event (`{"message": {"parts": [...]}}`).
+fn message_parts_text(result: &serde_json::Value) -> Option<String> {
+    let parts = result.pointer("/message/parts")?.as_array()?;
+    let text: String = parts
+        .iter()
+        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+        .collect();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Persists the collected streamed reply as the session's assistant message
+/// when dropped — which happens when the response stream ends, whether the
+/// stream completed or the client disconnected.
+struct SseReplyTap {
+    db: sqlx::PgPool,
+    session_id: String,
+    collector: SseReplyText,
+}
+
+impl SseReplyTap {
+    fn new(db: sqlx::PgPool, session_id: String) -> Self {
+        Self {
+            db,
+            session_id,
+            collector: SseReplyText::default(),
+        }
+    }
+}
+
+impl Drop for SseReplyTap {
+    fn drop(&mut self) {
+        let Some(text) = self.collector.finish() else {
+            return;
+        };
+        // Drop can run during runtime shutdown, where spawn would panic.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let db = self.db.clone();
+        let session_id = std::mem::take(&mut self.session_id);
+        handle.spawn(async move {
+            let _ = sqlx::query(
+                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+            )
+            .bind(&session_id)
+            .bind("assistant")
+            .bind(&text)
+            .execute(&db)
+            .await;
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SseReplyText;
+
+    #[test]
+    fn collects_artifact_chunks_across_split_sse_frames() {
+        let mut c = SseReplyText::default();
+        // One event split across two network chunks, then a terminal status
+        // event that must NOT override the assembled chunks.
+        c.feed(br#"data: {"result":{"artifactUpdate":{"artifact":{"parts":[{"text":"Hel"#);
+        c.feed("lo\"}]}}}}\n".as_bytes());
+        c.feed(
+            br#"data: {"result":{"artifactUpdate":{"artifact":{"parts":[{"text":" world"}]}}}}
+data: {"result":{"statusUpdate":{"status":{"state":"TASK_STATE_COMPLETED"}}}}
+"#,
+        );
+        assert_eq!(c.finish().as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn falls_back_to_terminal_task_text_when_nothing_streamed() {
+        let mut c = SseReplyText::default();
+        c.feed(
+            br#"data: {"result":{"task":{"artifacts":[{"parts":[{"text":"final answer"}]}],"status":{"state":"TASK_STATE_COMPLETED"}}}}
+"#,
+        );
+        assert_eq!(c.finish().as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn zero_three_style_artifact_update_events_are_understood() {
+        let mut c = SseReplyText::default();
+        c.feed(
+            br#"data: {"result":{"kind":"artifact-update","artifact":{"parts":[{"text":"pong"}]}}}
+"#,
+        );
+        assert_eq!(c.finish().as_deref(), Some("pong"));
+    }
+
+    #[test]
+    fn non_reply_streams_persist_nothing() {
+        let mut c = SseReplyText::default();
+        c.feed(b": keepalive\n\ndata: not-json\n");
+        assert_eq!(c.finish(), None);
     }
 }
