@@ -378,11 +378,7 @@ async fn restart(
             .ok()
             .flatten();
             match fallback {
-                // spec_image is registry-relative (`nasiko/{name}:{tag}`) —
-                // qualify it exactly as the ad-hoc deploy path does.
-                Some(image) => {
-                    crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &image)
-                }
+                Some(image) => image,
                 None => {
                     return (
                         StatusCode::CONFLICT,
@@ -393,6 +389,11 @@ async fn restart(
             }
         }
     };
+    // Both sources store what the deploy request carried — for OCI-push
+    // deploys that's the registry-relative `nasiko/{name}:{tag}`, which pulls
+    // from docker.io if applied as-is. Qualify exactly as the ad-hoc deploy
+    // path does (no-op for refs outside the `nasiko/` convention).
+    let image = crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &image);
 
     // Resolve env: vault (base) + agent secrets (override)
     let env = resolve_full_env(&state, owner_id, agent_id).await;
