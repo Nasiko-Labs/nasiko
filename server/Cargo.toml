@@ -2,6 +2,9 @@
 name = "nasiko-server"
 edition.workspace = true
 version.workspace = true
+# `src/bin/bench_seed.rs` is auto-discovered as a second binary, so
+# `cargo run -p nasiko-server` is ambiguous without naming the default.
+default-run = "nasiko-server"
 
 [lib]
 path = "src/lib.rs"
@@ -15,6 +18,8 @@ dotenvy.workspace = true
 nasiko-agent-proxy.workspace = true
 nasiko-auth.workspace = true
 nasiko-flow.workspace = true
+nasiko-mcp-gateway.workspace = true
+nasiko-secrets.workspace = true
 nasiko-github = { workspace = true }
 nasiko-oidc = { workspace = true }
 nasiko-oci.workspace = true
@@ -24,6 +29,7 @@ nasiko-orchestrator.workspace = true
 nasiko-types.workspace = true
 nasiko-config.workspace = true
 nasiko-observability.workspace = true
+nasiko-llm-router.workspace = true
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -73,6 +79,10 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+mockito = { workspace = true }
 criterion = { workspace = true }
 nasiko-bench-support = { workspace = true }
 
