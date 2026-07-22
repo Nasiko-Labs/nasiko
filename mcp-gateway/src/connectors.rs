@@ -479,6 +479,39 @@ pub async fn search_share_targets_view(state: &McpState, q: &str) -> Result<Valu
     Ok(json!({ "data": data }))
 }
 
+/// `GET /api/mcp/connectors/{id}/consumers` — which agents use this connector,
+/// plus aggregate connection/user counts. Owner/admin-gated, same as sharing —
+/// this is a management view. Reuses `list_access_reasons` (the EE-aware
+/// authorizer seam) for the reachable-user set, so a single query joins
+/// `agents` against it instead of checking `can_access_connector` per agent.
+pub async fn list_consumers_view(state: &McpState, caller: Uuid, is_admin: bool, connector_id: Uuid) -> Result<Value> {
+    let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
+    let reasons = state.authorizer.list_access_reasons(&state.db, &connector).await?;
+    let reachable_ids: Vec<Uuid> = reasons.iter().map(|r| r.user_id).collect();
+
+    let agents = repo::list_agents_for_connector_consumers(&state.db, &reachable_ids, connector.id).await?;
+    let (connections, distinct_users) = repo::connector_connection_counts(&state.db, connector.id).await?;
+
+    let agents_json: Vec<Value> = agents
+        .into_iter()
+        .map(|a| {
+            json!({
+                "agent_id": a.agent_id,
+                "agent_name": a.agent_name,
+                "agent_owner_id": a.agent_owner_id,
+                "enabled": a.enabled.unwrap_or(true),
+                "tool_rules": a.tool_rules.unwrap_or_else(|| json!([])),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "agents": agents_json,
+        "connections": connections,
+        "distinct_users": distinct_users,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -556,6 +556,59 @@ pub async fn list_active_composio_connections(
     Ok(rows)
 }
 
+/// One agent that can reach a connector (owned by a reachable user), with its
+/// per-agent override if it has one. `enabled`/`tool_rules` are `None` when no
+/// override row exists (the agent is under default full access).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AgentConsumer {
+    pub agent_id: Uuid,
+    pub agent_name: String,
+    pub agent_owner_id: Uuid,
+    pub enabled: Option<bool>,
+    pub tool_rules: Option<Value>,
+}
+
+/// Every non-deleted agent owned by one of `reachable_user_ids`, left-joined
+/// against this connector's per-agent override (if any). Only an agent's OWNER
+/// can manage its MCP permissions (`ensure_can_manage_agent`), so ownership is
+/// the right join key here — an `agent_grants` *invoke* grant doesn't confer
+/// the ability to configure this connector for that agent.
+pub async fn list_agents_for_connector_consumers(
+    db: &PgPool,
+    reachable_user_ids: &[Uuid],
+    connector_id: Uuid,
+) -> Result<Vec<AgentConsumer>> {
+    if reachable_user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, AgentConsumer>(
+        r#"SELECT a.id AS agent_id, a.name AS agent_name, a.owner_id AS agent_owner_id,
+                  acc.enabled, acc.tool_rules
+           FROM agents a
+           LEFT JOIN mcp_agent_connector_access acc
+             ON acc.agent_id = a.id AND acc.connector_id = $2
+           WHERE a.owner_id = ANY($1) AND a.deleted_at IS NULL
+           ORDER BY a.name"#,
+    )
+    .bind(reachable_user_ids)
+    .bind(connector_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// `(connections, distinct_users)` for a connector — a trivial grouped count,
+/// no N+1 risk.
+pub async fn connector_connection_counts(db: &PgPool, connector_id: Uuid) -> Result<(i64, i64)> {
+    let row = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COUNT(DISTINCT user_id) FROM mcp_user_connections WHERE connector_id = $1",
+    )
+    .bind(connector_id)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
 /// Store a bearer/basic/url_param credential (status → ACTIVE).
 pub async fn upsert_connection_credential(
     db: &PgPool,

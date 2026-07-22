@@ -124,6 +124,9 @@ pub mod connectors {
     pub async fn search_share_targets(s: &AppState, q: &str) -> R<Value> {
         connectors::search_share_targets_view(&s.mcp, q).await
     }
+    pub async fn list_consumers(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
+        connectors::list_consumers_view(&s.mcp, caller, is_admin, id).await
+    }
 }
 
 pub mod credentials {

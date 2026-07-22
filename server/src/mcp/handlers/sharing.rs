@@ -87,3 +87,14 @@ pub async fn search_targets(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(service::connectors::search_share_targets(&state, &query.q).await?))
 }
+
+/// `GET /api/mcp/connectors/{id}/consumers` — agents using this connector,
+/// plus connection/user counts. Owner/admin-gated management view.
+pub async fn consumers(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = parse_user(&claims)?;
+    Ok(Json(service::connectors::list_consumers(&state, caller, claims.is_superuser, id).await?))
+}

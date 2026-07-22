@@ -69,6 +69,17 @@ fn catalog_has(body: &Value, name: &str) -> bool {
     body["services"].as_array().unwrap().iter().any(|s| s["name"] == name)
 }
 
+async fn seed_agent(server: &common::TestServer, owner: Uuid, name: &str) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO agents (name, owner_id, image, status, is_public) VALUES ($1, $2, 'x:1', 'stopped', false) RETURNING id",
+    )
+    .bind(name)
+    .bind(owner)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 #[serial]
 async fn share_by_username_grants_visibility() {
@@ -397,6 +408,57 @@ async fn share_target_search_works_for_any_authenticated_user_and_validates_quer
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn consumers_lists_owner_and_grantee_agents_not_a_strangers() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "cons-owner").await;
+    let (grantee_id, grantee_uuid) = create_user(&server, &admin, "cons-grantee").await;
+    let (_stranger_id, stranger_uuid) = create_user(&server, &admin, "cons-stranger").await;
+
+    let cid = seed_connector(&server, owner_uuid, "cons-tool").await;
+    let owner_agent = seed_agent(&server, owner_uuid, "cons-owner-agent").await;
+    let grantee_agent = seed_agent(&server, grantee_uuid, "cons-grantee-agent").await;
+    let _stranger_agent = seed_agent(&server, stranger_uuid, "cons-stranger-agent").await;
+
+    // Share directly with the grantee, and record a couple of live connections
+    // (one per user) so the counts have something real to report.
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "cons-owner")
+        .json(&json!({"username": "cons-grantee"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    seed_connection(&server, owner_uuid, cid).await;
+    seed_connection(&server, grantee_uuid, cid).await;
+
+    let body: Value = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/consumers"))), &owner_id, "cons-owner")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let agent_ids: Vec<&str> = body["agents"].as_array().unwrap().iter().map(|a| a["agent_id"].as_str().unwrap()).collect();
+    assert!(agent_ids.contains(&owner_agent.to_string().as_str()), "{agent_ids:?}");
+    assert!(agent_ids.contains(&grantee_agent.to_string().as_str()), "{agent_ids:?}");
+    assert_eq!(agent_ids.len(), 2, "the stranger's agent must not appear: {agent_ids:?}");
+
+    assert_eq!(body["connections"], 2);
+    assert_eq!(body["distinct_users"], 2);
+
+    // A non-owner, non-admin caller must not be able to view consumers.
+    let res = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/consumers"))), &grantee_id, "cons-grantee")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
 
     server.cleanup().await;
 }

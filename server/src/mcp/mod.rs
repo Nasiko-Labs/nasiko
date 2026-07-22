@@ -55,6 +55,7 @@ pub fn router() -> Router<AppState> {
             get(handlers::sharing::list).post(handlers::sharing::share).delete(handlers::sharing::revoke),
         )
         .route("/mcp/share-targets", get(handlers::sharing::search_targets))
+        .route("/mcp/connectors/{id}/consumers", get(handlers::sharing::consumers))
         // Per-user credentials (write-only).
         .route(
             "/mcp/connectors/{id}/credential",
