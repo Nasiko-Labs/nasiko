@@ -4,7 +4,6 @@
 //! extraction + ACL; `service/` wraps the `nasiko-mcp-gateway` crate (all logic +
 //! SQL live in the crate, so `ee/` reuses it via the same routers).
 
-pub mod build;
 mod handlers;
 mod service;
 
@@ -30,33 +29,9 @@ pub fn agent_gateway_router() -> Router<AppState> {
     Router::new().route("/mcp", post(handlers::gateway::mcp_gateway))
 }
 
-/// MCP-server-upload MUTATION routes (build a container from user-supplied
-/// source) — deployer+ only, gated the same way agent-build/upload mutations
-/// are in `lib.rs::build_app_with_user_router` (building a container is the
-/// same class of privileged, resource-consuming operation). Kept as its own
-/// router, separate from [`router`], so that gate can be layered on
-/// specifically these two routes without affecting the rest of the MCP
-/// management surface.
-///
-/// `mcp_upload_max_bytes` sizes the body-limit layer scoped to the zip-upload
-/// route only (mirrors `agents::upload::router()`'s own `DefaultBodyLimit`,
-/// but this one's limit is config-driven, not a hardcoded constant, so it's a
-/// parameter here rather than baked into the router).
-pub fn upload_mutation_router(mcp_upload_max_bytes: u64) -> Router<AppState> {
-    let upload_zip_route = Router::new()
-        .route("/mcp/connectors/upload", post(handlers::upload::upload_zip))
-        .layer(axum::extract::DefaultBodyLimit::max(mcp_upload_max_bytes as usize));
-
-    Router::new()
-        .merge(upload_zip_route)
-        .route("/mcp/connectors/upload-github", post(handlers::upload::upload_github))
-}
-
 /// Authed MCP management routes (inherit `require_auth`).
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/mcp/connectors/{id}/build-status", get(handlers::upload::build_status))
-        .route("/mcp/connectors/{id}/build-logs", get(handlers::upload::build_logs))
         // Catalog + platform Composio connector registration.
         .route("/mcp/catalog", get(handlers::catalog::get_catalog))
         .route("/mcp/auth-configs", get(handlers::catalog::list_auth_configs).post(handlers::catalog::create_auth_config))
@@ -71,7 +46,10 @@ pub fn router() -> Router<AppState> {
         // Custom MCP connector registration + probe + sharing.
         .route("/mcp/connectors", get(handlers::connectors::list).post(handlers::connectors::create))
         .route("/mcp/connectors/probe", post(handlers::connectors::probe))
-        .route("/mcp/connectors/{id}", patch(handlers::connectors::update).delete(handlers::connectors::delete))
+        .route(
+            "/mcp/connectors/{id}",
+            get(handlers::connectors::get).patch(handlers::connectors::update).delete(handlers::connectors::delete),
+        )
         .route(
             "/mcp/connectors/{id}/share",
             get(handlers::sharing::list).post(handlers::sharing::share).delete(handlers::sharing::revoke),

@@ -295,6 +295,20 @@ pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Val
     Ok(json!({ "data": data, "total": total }))
 }
 
+/// `GET /api/mcp/connectors/{id}` — a single connector. 404s (not 403) when the
+/// caller can't reach it, so the response never leaks whether the id exists.
+pub async fn get_connector_view(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<Value> {
+    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
+        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+    }
+    let connector = repo::get_connector_by_id(&state.db, connector_id)
+        .await?
+        .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
+    let mut dto = connector_dto(&connector);
+    dto["is_owner"] = json!(connector.owner_id == Some(user_id));
+    Ok(dto)
+}
+
 /// Load a connector for a pending delete (authorization done by the caller).
 pub async fn get_connector_for_deletion(state: &McpState, id: Uuid) -> Result<McpConnector> {
     repo::get_connector_by_id(&state.db, id)

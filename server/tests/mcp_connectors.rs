@@ -417,6 +417,48 @@ async fn list_connectors_shows_own_not_others() {
 
 #[tokio::test]
 #[serial]
+async fn get_single_connector_by_id_and_404_when_unreachable() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let alice = create_user(&server, uid, "gs-alice").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let alice_uuid = Uuid::parse_str(alice_id).unwrap();
+    let bob = create_user(&server, uid, "gs-bob").await;
+    let bob_uuid = Uuid::parse_str(bob["id"].as_str().unwrap()).unwrap();
+
+    let alice_cid = seed_custom_connector(&server, alice_uuid, "gs-alice-tool", "none").await;
+    let bob_cid = seed_custom_connector(&server, bob_uuid, "gs-bob-tool", "none").await;
+
+    // Owner can fetch their own connector directly.
+    let res = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{alice_cid}"))), alice_id, "gs-alice")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["name"], "gs-alice-tool");
+    assert_eq!(body["is_owner"], true);
+
+    // A non-owner with no grant gets 404 (not 403) — existence isn't leaked.
+    let res = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{bob_cid}"))), alice_id, "gs-alice")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+
+    // A random unknown id also 404s, indistinguishably.
+    let res = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{}", Uuid::new_v4()))), alice_id, "gs-alice")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn delete_connector_owner_and_non_owner() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

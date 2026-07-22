@@ -113,6 +113,12 @@ pub async fn list(State(state): State<AppState>, claims: Claims) -> Result<Json<
     Ok(Json(service::connectors::list(&state, user_id).await?))
 }
 
+/// `GET /api/mcp/connectors/{id}` — a single connector, 404 if not reachable.
+pub async fn get(State(state): State<AppState>, claims: Claims, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
+    let user_id = parse_user(&claims)?;
+    Ok(Json(service::connectors::get(&state, user_id, id).await?))
+}
+
 /// `DELETE /api/mcp/connectors/{id}` — delete an owned connector (or any, if admin).
 pub async fn delete(
     State(state): State<AppState>,

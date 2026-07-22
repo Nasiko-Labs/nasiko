@@ -91,6 +91,9 @@ pub mod connectors {
     pub async fn list(s: &AppState, user: Uuid) -> R<Value> {
         connectors::list_connectors_view(&s.mcp, user).await
     }
+    pub async fn get(s: &AppState, user: Uuid, id: Uuid) -> R<Value> {
+        connectors::get_connector_view(&s.mcp, user, id).await
+    }
     pub async fn create(s: &AppState, owner: Uuid, input: NewConnectorInput) -> R<Value> {
         let c = connectors::register_connector(&s.mcp, owner, input).await?;
         Ok(connectors::connector_dto(&c))
