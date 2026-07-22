@@ -33,6 +33,8 @@ pub fn connector_dto(c: &McpConnector) -> Value {
         "logo_url": c.logo_url,
         "is_active": c.active(),
         "oauth_configured": c.oauth_configured(),
+        "setup_status": c.setup_status,
+        "setup_error": c.setup_error,
         "created_at": c.created_at,
         "updated_at": c.updated_at,
     })
@@ -164,6 +166,11 @@ pub async fn register_connector(
         return Err(McpError::Conflict(format!("you already have a connector named '{}'", input.name)));
     }
 
+    // `none` needs nothing further; every other auth_type still needs a
+    // credential registered (bearer/basic/url_param) or a browser OAuth
+    // round-trip (oauth2) before the connector is actually usable.
+    let initial_setup_status = if input.auth_type == "none" { "active" } else { "pending" };
+
     // For basic auth, precompute the Authorization: Basic header into static headers.
     let mut headers = input.headers.clone().unwrap_or_default();
     if input.auth_type == "basic"
@@ -194,8 +201,9 @@ pub async fn register_connector(
         },
     )
     .await?;
+    repo::set_connector_setup_status(&state.db, connector.id, initial_setup_status, None).await?;
     tracing::info!(name = %connector.name, %owner_id, "registered mcp connector");
-    Ok(connector)
+    Ok(McpConnector { setup_status: Some(initial_setup_status.to_string()), ..connector })
 }
 
 /// Partial-update input for [`update_connector`]. `None` fields are unchanged.

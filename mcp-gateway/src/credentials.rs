@@ -87,10 +87,6 @@ pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Ve
             url,
             headers,
             transport: connector.transport.clone().unwrap_or_else(|| "streamable_http".to_string()),
-            // The ONLY place `trusted` is ever computed — see MCPServerConfig's
-            // doc comment. Read straight off the already-joined connector row,
-            // no new query.
-            trusted: connector.source_kind == repo::SourceKind::UploadedBuild,
         });
     }
 
@@ -180,6 +176,7 @@ pub async fn register_credential(
         .encrypt(&value)
         .map_err(|e| McpError::Internal(format!("encrypt credential: {e}")))?;
     repo::upsert_connection_credential(&state.db, user_id, connector.id, &encrypted).await?;
+    repo::set_connector_setup_status(&state.db, connector.id, "active", None).await?;
     crate::session::invalidate_session_cache(state, user_id).await;
     tracing::info!(connector = %connector.name, %user_id, "registered user credential");
     Ok(())
@@ -239,9 +236,8 @@ mod tests {
             oauth_token_endpoint: None,
             oauth_client_id: None,
             oauth_client_secret: None,
-            source_kind: crate::repo::SourceKind::ExternalUrl,
-            build_status: None,
-            container_image_tag: None,
+            setup_status: None,
+            setup_error: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

@@ -43,6 +43,11 @@ pub struct McpConnector {
     pub oauth_token_endpoint: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
+    // mcp_server-only — connector-level setup progress for the URL-connect
+    // flow (`None` for composio, and for mcp_server rows created before this
+    // column existed).
+    pub setup_status: Option<String>,
+    pub setup_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -353,6 +358,25 @@ pub async fn update_connector(db: &PgPool, id: Uuid, u: &UpdateConnector) -> Res
     .fetch_one(db)
     .await?;
     Ok(row)
+}
+
+/// Set a connector's setup progress for the URL-connect flow (`register_connector`
+/// on creation, `credentials::register_credential`/`oauth::handle_callback` on
+/// completion or failure). Never touches `build_status` — that's the separate
+/// upload-flow column.
+pub async fn set_connector_setup_status(
+    db: &PgPool,
+    connector_id: Uuid,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    sqlx::query("UPDATE mcp_connectors SET setup_status = $2, setup_error = $3 WHERE id = $1")
+        .bind(connector_id)
+        .bind(status)
+        .bind(error)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 pub async fn update_connector_oauth_config(

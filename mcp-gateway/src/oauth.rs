@@ -517,6 +517,7 @@ pub async fn handle_callback(
         // Do not echo the token-endpoint response body back to the browser.
         Err(e) => {
             tracing::warn!(error = %e, "oauth token exchange failed");
+            let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("token exchange failed")).await;
             return CallbackOutcome::Message("Token exchange failed — please restart the authorization flow.".to_string());
         }
     };
@@ -525,11 +526,17 @@ pub async fn handle_callback(
     let expires_at = tokens.expires_in.map(|secs| Utc::now() + ChronoDuration::seconds(secs));
     let access_enc = match crypto.encrypt(&tokens.access_token) {
         Ok(enc) => enc,
-        Err(e) => return CallbackOutcome::Message(format!("Failed to encrypt token: {e}")),
+        Err(e) => {
+            let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("failed to encrypt token")).await;
+            return CallbackOutcome::Message(format!("Failed to encrypt token: {e}"));
+        }
     };
     let refresh_enc = match tokens.refresh_token.as_ref().map(|r| crypto.encrypt(r)).transpose() {
         Ok(enc) => enc,
-        Err(e) => return CallbackOutcome::Message(format!("Failed to encrypt token: {e}")),
+        Err(e) => {
+            let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("failed to encrypt token")).await;
+            return CallbackOutcome::Message(format!("Failed to encrypt token: {e}"));
+        }
     };
     if let Err(e) = repo::upsert_connection_oauth_token(
         &state.db,
@@ -542,9 +549,11 @@ pub async fn handle_callback(
     )
     .await
     {
+        let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("failed to store token")).await;
         return CallbackOutcome::Message(format!("Failed to store token: {e}"));
     }
 
+    let _ = repo::set_connector_setup_status(&state.db, connector.id, "active", None).await;
     crate::session::invalidate_session_cache(state, oauth_state.user_id).await;
     tracing::info!(connector = %connector.name, user_id = %oauth_state.user_id, "stored mcp oauth token");
     let dest = oauth_state.redirect_url.unwrap_or_else(|| "/".to_string());

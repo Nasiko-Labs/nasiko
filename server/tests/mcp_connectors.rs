@@ -322,6 +322,61 @@ async fn register_connector_is_owned_by_caller() {
 
 #[tokio::test]
 #[serial]
+async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    // auth_type='none' (the default) needs nothing further — active immediately.
+    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), uid, "admin")
+        .json(&json!({"name": "ss-none-tool", "url": "https://example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["setup_status"], "active");
+    assert!(body["setup_error"].is_null());
+
+    // auth_type='bearer' needs a credential — pending until one is registered.
+    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), uid, "admin")
+        .json(&json!({"name": "ss-bearer-tool", "url": "https://example.com", "auth_type": "bearer"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["setup_status"], "pending");
+    let cid = body["connector_id"].as_str().unwrap();
+
+    let res = common::as_superuser(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}"))), uid, "admin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.json::<Value>().await.unwrap()["setup_status"], "pending");
+
+    // Register a credential — the connector flips to active.
+    let res = common::as_superuser(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/credential"))), uid, "admin")
+        .json(&json!({"value": "sk-test"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let body: Value = common::as_superuser(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}"))), uid, "admin")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["setup_status"], "active", "registering a credential must flip setup_status to active: {body:?}");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn register_connector_duplicate_name_conflicts() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
