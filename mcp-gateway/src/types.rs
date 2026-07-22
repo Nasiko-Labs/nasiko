@@ -206,6 +206,20 @@ impl GrantType {
 /// Sentinel `grantee_id` for a public ("everyone") grant.
 pub const PUBLIC_GRANTEE: &str = "*";
 
+/// One person with access to a connector, and why. `via` is one of
+/// `"owner" | "direct" | "public" | "team" | "department"` — the last two are
+/// EE-only (`via_label` carries the team/department name in that case).
+/// Someone reachable through more than one path is still listed once, with
+/// the most specific reason (owner > direct > team/department > public).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessReason {
+    pub user_id: Uuid,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub via: String,
+    pub via_label: Option<String>,
+}
+
 /// A resolved backend the gateway will fan out to. The Composio session (when
 /// present) is entry `[0]` with `kind = Composio`; generic servers follow with
 /// per-user credentials already injected into `headers` / `url`. `connector_id`
@@ -223,14 +237,6 @@ pub struct MCPServerConfig {
     pub headers: HashMap<String, String>,
     #[serde(default = "default_transport")]
     pub transport: String,
-    /// True only for `source_kind = UploadedBuild` connectors, whose `url` was
-    /// resolved by `ContainerRuntime::endpoint()` and never typed by a user —
-    /// the SSRF guard (`net.rs`) exists specifically to stop a *user* pointing
-    /// the gateway at an internal address, so it doesn't apply here. Set
-    /// exactly once, in `credentials::build_generic_servers` — never derived or
-    /// overridden anywhere else, and never accepted from external input.
-    #[serde(default)]
-    pub trusted: bool,
 }
 
 fn default_transport() -> String {

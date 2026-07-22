@@ -315,3 +315,55 @@ async fn list_shares_includes_granted_by() {
 
     server.cleanup().await;
 }
+
+#[tokio::test]
+#[serial]
+async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "ar-owner").await;
+    let (_grantee_id, grantee_uuid) = create_user(&server, &admin, "ar-grantee").await;
+    let (_stranger_id, _) = create_user(&server, &admin, "ar-stranger").await;
+    let cid = seed_connector(&server, owner_uuid, "ar-tool").await;
+
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "ar-owner")
+        .json(&json!({"username": "ar-grantee"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let body: Value = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "ar-owner")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["is_public"], false);
+    let reasons = body["access_reasons"].as_array().unwrap();
+    assert_eq!(reasons.len(), 2, "owner + one direct grantee, no public row: {reasons:?}");
+    assert!(reasons.iter().any(|r| r["user_id"] == owner_uuid.to_string() && r["via"] == "owner"));
+    assert!(reasons.iter().any(|r| r["user_id"] == grantee_uuid.to_string() && r["via"] == "direct"));
+
+    // Make it public too — access_reasons must stay exactly the same two
+    // people (public is a flag, not a third "everyone" reason).
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "ar-owner")
+        .json(&json!({"public": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let body: Value = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "ar-owner")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["is_public"], true);
+    assert_eq!(body["access_reasons"].as_array().unwrap().len(), 2, "public must not add a per-person reason row");
+
+    server.cleanup().await;
+}

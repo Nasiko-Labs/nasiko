@@ -5,6 +5,8 @@
 //! strings (already encrypted by the caller). Row structs deliberately do NOT
 //! derive `Serialize`, so a route can never accidentally serialize a secret.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -427,6 +429,24 @@ pub async fn resolve_username_to_user_id(db: &PgPool, username: &str) -> Result<
     .fetch_optional(db)
     .await?;
     Ok(id)
+}
+
+/// Batched `(username, display_name)` lookup for a set of user ids — so a
+/// "who has access" view doesn't need one follow-up query per grantee.
+pub async fn resolve_user_labels(
+    db: &PgPool,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, (String, Option<String>)>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, username, display_name FROM users WHERE id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(id, username, display_name)| (id, (username, display_name))).collect())
 }
 
 /// Revoke a grant AND delete the grantee's connection row for the connector, in

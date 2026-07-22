@@ -439,10 +439,14 @@ pub async fn revoke_share(
     Ok(())
 }
 
-/// `GET /api/mcp/connectors/{id}/share` — list a connector's grants.
+/// `GET /api/mcp/connectors/{id}/share` — list a connector's grants, plus who
+/// has access and why (`access_reasons`, EE-aware via the authorizer seam)
+/// and whether it's public (a flag, not a per-person reason).
 pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, connector_id: Uuid) -> Result<Value> {
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
     let grants = repo::list_grants_for_connector(&state.db, connector.id).await?;
+    let is_public = grants.iter().any(|g| g.grant_type == "public");
+    let access_reasons = state.authorizer.list_access_reasons(&state.db, &connector).await?;
     let data: Vec<Value> = grants
         .into_iter()
         .map(|g| {
@@ -455,7 +459,7 @@ pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, co
             })
         })
         .collect();
-    Ok(json!({ "data": data }))
+    Ok(json!({ "data": data, "is_public": is_public, "access_reasons": access_reasons }))
 }
 
 #[cfg(test)]
