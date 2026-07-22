@@ -462,6 +462,23 @@ pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, co
     Ok(json!({ "data": data, "is_public": is_public, "access_reasons": access_reasons }))
 }
 
+/// `GET /api/mcp/share-targets?q=` — search users to share a connector with.
+/// Open to any authenticated user (any owner may need to share), NOT admin-gated
+/// like the platform's general user directory — capped and username-only so
+/// that openness doesn't become a directory-enumeration/email-leak risk.
+pub async fn search_share_targets_view(state: &McpState, q: &str) -> Result<Value> {
+    let q = q.trim();
+    if q.len() < 2 {
+        return Err(McpError::BadRequest("q must be at least 2 characters".into()));
+    }
+    let rows = repo::search_users_for_share(&state.db, q, 20).await?;
+    let data: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, username, display_name)| json!({ "user_id": id, "username": username, "display_name": display_name }))
+        .collect();
+    Ok(json!({ "data": data }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

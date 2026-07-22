@@ -449,6 +449,28 @@ pub async fn resolve_user_labels(
     Ok(rows.into_iter().map(|(id, username, display_name)| (id, (username, display_name))).collect())
 }
 
+/// Search users by username prefix/substring, for the "who do I share this
+/// with" picker. Username only (never email) — this is intentionally open to
+/// any authenticated caller, not just admins, so it must never leak more than
+/// a public-facing identity.
+pub async fn search_users_for_share(
+    db: &PgPool,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<(Uuid, String, Option<String>)>> {
+    let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
+        "SELECT id, username, display_name FROM users
+         WHERE deleted_at IS NULL AND username ILIKE '%' || $1 || '%'
+         ORDER BY username
+         LIMIT $2",
+    )
+    .bind(q)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
 /// Revoke a grant AND delete the grantee's connection row for the connector, in
 /// one transaction (audited fix #2). Returns true if a grant row was removed.
 pub async fn revoke_grant_and_connection(

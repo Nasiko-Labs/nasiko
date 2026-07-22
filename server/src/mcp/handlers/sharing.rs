@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -71,4 +71,19 @@ pub async fn revoke(
     let target = body.into_target()?;
     service::connectors::revoke(&state, caller, claims.is_superuser, id, target).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchShareTargetsQuery {
+    pub q: String,
+}
+
+/// `GET /api/mcp/share-targets?q=` — search users to share a connector with.
+/// Open to any authenticated user, not admin-gated (any owner may need this).
+pub async fn search_targets(
+    State(state): State<AppState>,
+    _claims: Claims,
+    Query(query): Query<SearchShareTargetsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(service::connectors::search_share_targets(&state, &query.q).await?))
 }

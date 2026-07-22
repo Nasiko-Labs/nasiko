@@ -367,3 +367,36 @@ async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
 
     server.cleanup().await;
 }
+
+#[tokio::test]
+#[serial]
+async fn share_target_search_works_for_any_authenticated_user_and_validates_query() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    // Not an admin/superuser — proves the endpoint isn't admin-gated like the
+    // platform's general `/users?q=` directory.
+    let (caller_id, _) = create_user(&server, &admin, "sts-caller").await;
+    create_user(&server, &admin, "sts-target-alice").await;
+    create_user(&server, &admin, "sts-target-bob").await;
+    create_user(&server, &admin, "sts-other").await;
+
+    let res = common::as_member(server.client.get(server.url("/api/mcp/share-targets?q=sts-target")), &caller_id, "sts-caller")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let names: Vec<&str> = body["data"].as_array().unwrap().iter().map(|u| u["username"].as_str().unwrap()).collect();
+    assert!(names.contains(&"sts-target-alice"), "{names:?}");
+    assert!(names.contains(&"sts-target-bob"), "{names:?}");
+    assert!(!names.contains(&"sts-other"), "must not match an unrelated username: {names:?}");
+
+    // Query too short is rejected (prevents a full-directory dump via q=).
+    let res = common::as_member(server.client.get(server.url("/api/mcp/share-targets?q=s")), &caller_id, "sts-caller")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+
+    server.cleanup().await;
+}
