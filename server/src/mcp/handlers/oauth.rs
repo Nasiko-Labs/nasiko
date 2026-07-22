@@ -3,16 +3,14 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
-use serde_json::Value;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, parse_user, service};
+use super::super::{ApiError, ApiResponse, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -28,10 +26,10 @@ pub async fn authorize(
     claims: Claims,
     Path(connector_id): Path<Uuid>,
     body: Option<Json<AuthorizeRequest>>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::oauth::authorize(
             &state,
             user_id,
@@ -40,6 +38,7 @@ pub async fn authorize(
             body.redirect_url,
         )
         .await?,
+        "OAuth authorization URL generated successfully",
     ))
 }
 
@@ -51,7 +50,7 @@ pub struct CallbackQuery {
     pub error_description: Option<String>,
 }
 
-/// `GET /api/mcp/oauth/callback` — public browser redirect target.
+/// `GET /api/mcp/oauth/callback` — public browser redirect target (HTML, not JSON).
 pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>) -> Response {
     match service::oauth::callback(&state, q.code, q.state, q.error, q.error_description).await {
         CallbackOutcome::Redirect(dest) => Redirect::to(&dest).into_response(),
@@ -64,10 +63,11 @@ pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
     Path(connector_id): Path<Uuid>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::oauth::status(&state, user_id, connector_id).await?,
+        "OAuth status retrieved successfully",
     ))
 }
 
@@ -76,10 +76,10 @@ pub async fn revoke(
     State(state): State<AppState>,
     claims: Claims,
     Path(connector_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::oauth::revoke(&state, user_id, connector_id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(ApiResponse::ok(serde_json::Value::Null, "OAuth token revoked successfully"))
 }
 
 fn error_page(message: &str) -> String {

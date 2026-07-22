@@ -1,16 +1,10 @@
 //! Per-user bearer/basic/url_param credentials for MCP connectors (write-only).
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::{Path, State}};
 use serde::Deserialize;
-use serde_json::Value;
 use uuid::Uuid;
 
-use super::super::{ApiError, parse_user, service};
+use super::super::{ApiError, ApiResponse, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -25,10 +19,11 @@ pub async fn register(
     claims: Claims,
     Path(connector_id): Path<Uuid>,
     Json(body): Json<RegisterCredential>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    let view = service::credentials::register(&state, user_id, connector_id, &body.value).await?;
-    Ok((StatusCode::CREATED, Json(view)))
+    let view =
+        service::credentials::register(&state, user_id, connector_id, &body.value).await?;
+    Ok(ApiResponse::created(view, "Credential registered successfully"))
 }
 
 /// `GET /api/mcp/connectors/{id}/credential/status` — whether a credential exists.
@@ -36,10 +31,11 @@ pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
     Path(connector_id): Path<Uuid>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::credentials::status(&state, user_id, connector_id).await?,
+        "Credential status retrieved successfully",
     ))
 }
 
@@ -48,8 +44,8 @@ pub async fn delete(
     State(state): State<AppState>,
     claims: Claims,
     Path(connector_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::credentials::delete(&state, user_id, connector_id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(ApiResponse::ok(serde_json::Value::Null, "Credential deleted successfully"))
 }

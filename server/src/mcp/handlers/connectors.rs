@@ -1,16 +1,10 @@
 //! Custom MCP connector registration + probe.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::{Path, State}};
 use serde::Deserialize;
-use serde_json::Value;
 use uuid::Uuid;
 
-use super::super::{ApiError, parse_user, service};
+use super::super::{ApiError, ApiResponse, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -44,7 +38,7 @@ pub async fn create(
     State(state): State<AppState>,
     claims: Claims,
     Json(body): Json<CreateConnector>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let owner = parse_user(&claims)?;
     let view = service::connectors::create(
         &state,
@@ -65,7 +59,7 @@ pub async fn create(
         },
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(view)))
+    Ok(ApiResponse::created(view, "Connector created successfully"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,13 +77,13 @@ pub struct UpdateConnector {
     pub is_active: Option<bool>,
 }
 
-/// `PATCH /api/mcp/connectors/{id}` — update an owned connector (no delete+recreate).
+/// `PATCH /api/mcp/connectors/{id}` — update an owned connector.
 pub async fn update(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateConnector>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     let input = service::connectors::UpdateConnectorInput {
         name: body.name,
@@ -104,15 +98,19 @@ pub async fn update(
         logo_url: body.logo_url,
         is_active: body.is_active,
     };
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::connectors::update(&state, caller, claims.is_superuser, id, input).await?,
+        "Connector updated successfully",
     ))
 }
 
 /// `GET /api/mcp/connectors` — custom connectors visible to the caller.
-pub async fn list(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+pub async fn list(State(state): State<AppState>, claims: Claims) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::connectors::list(&state, user_id).await?))
+    Ok(ApiResponse::ok(
+        service::connectors::list(&state, user_id).await?,
+        "Connectors retrieved successfully",
+    ))
 }
 
 /// `GET /api/mcp/connectors/{id}` — a single connector, 404 if not reachable.
@@ -120,9 +118,12 @@ pub async fn get(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::connectors::get(&state, user_id, id).await?))
+    Ok(ApiResponse::ok(
+        service::connectors::get(&state, user_id, id).await?,
+        "Connector retrieved successfully",
+    ))
 }
 
 /// `DELETE /api/mcp/connectors/{id}` — delete an owned connector (or any, if admin).
@@ -130,10 +131,10 @@ pub async fn delete(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     service::connectors::delete(&state, caller, claims.is_superuser, id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(ApiResponse::ok(serde_json::Value::Null, "Connector deleted successfully"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,8 +147,11 @@ pub async fn probe(
     State(state): State<AppState>,
     _claims: Claims,
     Json(body): Json<ProbeRequest>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(service::connectors::probe(&state, &body.url).await?))
+) -> Result<ApiResponse, ApiError> {
+    Ok(ApiResponse::ok(
+        service::connectors::probe(&state, &body.url).await?,
+        "Connector probed successfully",
+    ))
 }
 
 /// `POST /api/mcp/connectors/{id}/pin` — pin for quick access.
@@ -155,10 +159,10 @@ pub async fn pin(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::connectors::pin(&state, user_id, id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(ApiResponse::ok(serde_json::Value::Null, "Connector pinned successfully"))
 }
 
 /// `DELETE /api/mcp/connectors/{id}/pin` — unpin.
@@ -166,20 +170,21 @@ pub async fn unpin(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::connectors::unpin(&state, user_id, id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(ApiResponse::ok(serde_json::Value::Null, "Connector unpinned successfully"))
 }
 
 /// `GET /api/mcp/connectors/pinned` — the caller's pinned connectors.
 pub async fn pinned(
     State(state): State<AppState>,
     claims: Claims,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::connectors::list_pinned(&state, user_id).await?,
+        "Pinned connectors retrieved successfully",
     ))
 }
 
@@ -187,9 +192,10 @@ pub async fn pinned(
 pub async fn recent(
     State(state): State<AppState>,
     claims: Claims,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::connectors::list_recent(&state, user_id).await?,
+        "Recent connectors retrieved successfully",
     ))
 }

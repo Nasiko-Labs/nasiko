@@ -4,16 +4,15 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, parse_user, service};
+use super::super::{ApiError, ApiResponse, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -37,7 +36,7 @@ pub async fn connect_service(
     State(state): State<AppState>,
     claims: Claims,
     Json(body): Json<ConnectRequest>,
-) -> Result<Response, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     use service::connect::{ConnectInput, ConnectOutcome};
     let user_id = parse_user(&claims)?;
     let outcome = service::connect::connect(
@@ -54,23 +53,18 @@ pub async fn connect_service(
     .await?;
 
     Ok(match outcome {
-        ConnectOutcome::Connected { connector_id, name } => (
-            StatusCode::OK,
-            Json(json!({ "status": "connected", "connector_id": connector_id, "name": name })),
-        )
-            .into_response(),
-        ConnectOutcome::Initiated { connector_id, name, oauth_url } => (
-            StatusCode::CREATED,
-            Json(json!({ "status": "initiated", "connector_id": connector_id, "name": name, "oauth_url": oauth_url })),
-        )
-            .into_response(),
-        ConnectOutcome::OAuthRequired { connector_id, name, authorization_url } => Json(json!({
-            "status": "oauth_required",
-            "connector_id": connector_id,
-            "name": name,
-            "authorization_url": authorization_url,
-        }))
-        .into_response(),
+        ConnectOutcome::Connected { connector_id, name } => ApiResponse::ok(
+            json!({ "status": "connected", "connector_id": connector_id, "name": name }),
+            "Service connected successfully",
+        ),
+        ConnectOutcome::Initiated { connector_id, name, oauth_url } => ApiResponse::created(
+            json!({ "status": "initiated", "connector_id": connector_id, "name": name, "oauth_url": oauth_url }),
+            "OAuth flow initiated",
+        ),
+        ConnectOutcome::OAuthRequired { connector_id, name, authorization_url } => ApiResponse::ok(
+            json!({ "status": "oauth_required", "connector_id": connector_id, "name": name, "authorization_url": authorization_url }),
+            "OAuth authorization required",
+        ),
     })
 }
 
@@ -78,10 +72,11 @@ pub async fn connect_service(
 pub async fn list_connections(
     State(state): State<AppState>,
     claims: Claims,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::connect::list_connections(&state, user_id).await?,
+        "Connections retrieved successfully",
     ))
 }
 
@@ -90,14 +85,17 @@ pub async fn disconnect(
     State(state): State<AppState>,
     claims: Claims,
     Path(connector_id): Path<Uuid>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     let outcome = service::connect::disconnect(&state, user_id, connector_id).await?;
-    Ok(Json(json!({
-        "message": outcome.message,
-        "connector_id": outcome.connector_id,
-        "composio_revoked": outcome.composio_revoked,
-    })))
+    Ok(ApiResponse::ok(
+        json!({
+            "message": outcome.message,
+            "connector_id": outcome.connector_id,
+            "composio_revoked": outcome.composio_revoked,
+        }),
+        "Disconnected successfully",
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,7 +105,7 @@ pub struct ComposioCallbackQuery {
     pub success_url: Option<String>,
 }
 
-/// `GET /oauth/callback` — public Composio redirect target.
+/// `GET /oauth/callback` — public Composio redirect target (browser flow, not JSON).
 pub async fn oauth_callback(
     State(state): State<AppState>,
     Query(q): Query<ComposioCallbackQuery>,

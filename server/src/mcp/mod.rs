@@ -143,6 +143,38 @@ pub fn composio_callback_router() -> Router<AppState> {
 
 // ─── Shared error + auth helpers ────────────────────────────────────────────
 
+/// Standard API envelope: `{"data": …, "status_code": N, "message": "…"}`.
+pub(crate) struct ApiResponse {
+    status: StatusCode,
+    data: serde_json::Value,
+    message: &'static str,
+}
+
+impl ApiResponse {
+    pub fn ok(data: serde_json::Value, message: &'static str) -> Self {
+        Self { status: StatusCode::OK, data, message }
+    }
+
+    pub fn created(data: serde_json::Value, message: &'static str) -> Self {
+        Self { status: StatusCode::CREATED, data, message }
+    }
+}
+
+impl IntoResponse for ApiResponse {
+    fn into_response(self) -> Response {
+        let code = self.status.as_u16();
+        (
+            self.status,
+            Json(json!({
+                "data": self.data,
+                "status_code": code,
+                "message": self.message,
+            })),
+        )
+            .into_response()
+    }
+}
+
 /// Wraps [`McpError`] as an HTTP response for the management routes.
 pub(crate) struct ApiError(pub McpError);
 
@@ -150,7 +182,16 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(json!({ "error": self.0.client_message() }))).into_response()
+        let code = status.as_u16();
+        (
+            status,
+            Json(json!({
+                "data": serde_json::Value::Null,
+                "status_code": code,
+                "message": self.0.client_message(),
+            })),
+        )
+            .into_response()
     }
 }
 

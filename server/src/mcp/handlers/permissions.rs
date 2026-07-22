@@ -1,16 +1,11 @@
 //! Per-agent connector access + tool rules. Gated by `ensure_can_manage_agent`.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::{Path, State}};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 
-use super::super::{ApiError, ensure_can_manage_agent, parse_user, service};
+use super::super::{ApiError, ApiResponse, ensure_can_manage_agent, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -19,11 +14,12 @@ pub async fn list_connectors(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::permissions::list_connectors(&state, user_id, agent_id).await?,
+        "Agent connectors retrieved successfully",
     ))
 }
 
@@ -38,18 +34,15 @@ pub async fn set_connector_access(
     claims: Claims,
     Path((agent_id, connector_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<SetConnectorAccess>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::permissions::set_connector_access(
-            &state,
-            user_id,
-            agent_id,
-            connector_id,
-            body.enabled,
+            &state, user_id, agent_id, connector_id, body.enabled,
         )
         .await?,
+        "Connector access updated successfully",
     ))
 }
 
@@ -58,11 +51,13 @@ pub async fn list_connector_tools(
     State(state): State<AppState>,
     claims: Claims,
     Path((agent_id, connector_id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(
-        service::permissions::list_connector_tools(&state, user_id, agent_id, connector_id).await?,
+    Ok(ApiResponse::ok(
+        service::permissions::list_connector_tools(&state, user_id, agent_id, connector_id)
+            .await?,
+        "Connector tools retrieved successfully",
     ))
 }
 
@@ -71,10 +66,11 @@ pub async fn list_tool_rules(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::permissions::list_tool_rules(&state, agent_id).await?,
+        "Tool rules retrieved successfully",
     ))
 }
 
@@ -96,7 +92,7 @@ pub async fn bulk_update_tools(
     claims: Claims,
     Path(agent_id): Path<Uuid>,
     Json(body): Json<BulkToolUpdate>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
     let rules: Vec<service::permissions::ToolRuleInput> = body
@@ -108,8 +104,9 @@ pub async fn bulk_update_tools(
             stance: r.stance,
         })
         .collect();
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::permissions::bulk_update_tools(&state, user_id, agent_id, &rules).await?,
+        "Tool rules updated successfully",
     ))
 }
 
@@ -118,9 +115,12 @@ pub async fn reset(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     tracing::info!(%agent_id, caller = %claims.sub, "resetting agent tool permissions");
     let deleted = service::permissions::reset(&state, agent_id).await?;
-    Ok((StatusCode::OK, Json(json!({ "rows_deleted": deleted }))))
+    Ok(ApiResponse::ok(
+        json!({ "rows_deleted": deleted }),
+        "Agent permissions reset successfully",
+    ))
 }
