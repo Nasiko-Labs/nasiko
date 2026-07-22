@@ -161,6 +161,9 @@ async fn catalog_merges_composio_and_owned_connectors() {
     let serpapi = services.iter().find(|s| s["name"] == "serpapi").unwrap();
     assert_eq!(serpapi["type"], "mcp_server");
     assert_eq!(serpapi["auth_flow"], "api_key");
+    // A custom mcp_server can't report a tool count before you connect —
+    // `null` means "unknown until connected", never 0.
+    assert!(serpapi["tool_count"].is_null(), "mcp_server tool_count must be null pre-connect: {}", serpapi["tool_count"]);
 
     server.cleanup().await;
 }

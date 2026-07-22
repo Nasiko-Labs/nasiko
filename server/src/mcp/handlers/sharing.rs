@@ -79,17 +79,18 @@ pub struct SearchShareTargetsQuery {
 }
 
 /// `GET /api/mcp/share-targets?q=` — search users to share a connector with.
-/// Open to any authenticated user, not admin-gated (any owner may need this).
+/// Open to any authenticated user, not admin-gated (any owner may need this);
+/// EE scopes the result to the caller's org visibility (see the service layer).
 pub async fn search_targets(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Query(query): Query<SearchShareTargetsQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(Json(service::connectors::search_share_targets(&state, &query.q).await?))
+    Ok(Json(service::connectors::search_share_targets(&state, claims, &query.q).await?))
 }
 
-/// `GET /api/mcp/connectors/{id}/consumers` — agents using this connector,
-/// plus connection/user counts. Owner/admin-gated management view.
+/// `GET /api/mcp/connectors/{id}/consumers` — agents that have this connector
+/// configured. Owner/admin-gated management view.
 pub async fn consumers(
     State(state): State<AppState>,
     claims: Claims,

@@ -473,26 +473,52 @@ pub async fn resolve_user_labels(
     Ok(rows.into_iter().map(|(id, username, display_name)| (id, (username, display_name))).collect())
 }
 
-/// Search users by username prefix/substring, for the "who do I share this
-/// with" picker. Username only (never email) — this is intentionally open to
-/// any authenticated caller, not just admins, so it must never leak more than
-/// a public-facing identity.
+/// Search users by username substring, for the "who do I share this with"
+/// picker. Username only (never email) — intentionally open to any
+/// authenticated caller, not just admins, so it must never leak more than a
+/// public-facing identity. `visible_ids` is the optional org-visibility
+/// allowlist (`None` = unscoped; `Some(ids)` = restrict to those users;
+/// `Some(empty)` = no one). Query wildcards in `q` are escaped so a `%`/`_`
+/// can't widen the match.
 pub async fn search_users_for_share(
     db: &PgPool,
     q: &str,
     limit: i64,
+    visible_ids: Option<&[Uuid]>,
 ) -> Result<Vec<(Uuid, String, Option<String>)>> {
-    let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
-        "SELECT id, username, display_name FROM users
-         WHERE deleted_at IS NULL AND username ILIKE '%' || $1 || '%'
-         ORDER BY username
-         LIMIT $2",
-    )
-    .bind(q)
-    .bind(limit)
-    .fetch_all(db)
-    .await?;
-    Ok(rows)
+    let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    match visible_ids {
+        Some([]) => Ok(Vec::new()),
+        Some(ids) => {
+            let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
+                r#"SELECT id, username, display_name FROM users
+                   WHERE deleted_at IS NULL AND id = ANY($3)
+                     AND username ILIKE '%' || $1 || '%' ESCAPE '\'
+                   ORDER BY username
+                   LIMIT $2"#,
+            )
+            .bind(&escaped)
+            .bind(limit)
+            .bind(ids)
+            .fetch_all(db)
+            .await?;
+            Ok(rows)
+        }
+        None => {
+            let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
+                r#"SELECT id, username, display_name FROM users
+                   WHERE deleted_at IS NULL
+                     AND username ILIKE '%' || $1 || '%' ESCAPE '\'
+                   ORDER BY username
+                   LIMIT $2"#,
+            )
+            .bind(&escaped)
+            .bind(limit)
+            .fetch_all(db)
+            .await?;
+            Ok(rows)
+        }
+    }
 }
 
 /// Revoke a grant AND delete the grantee's connection row for the connector, in
@@ -580,57 +606,38 @@ pub async fn list_active_composio_connections(
     Ok(rows)
 }
 
-/// One agent that can reach a connector (owned by a reachable user), with its
-/// per-agent override if it has one. `enabled`/`tool_rules` are `None` when no
-/// override row exists (the agent is under default full access).
+/// One agent that has an explicit per-agent override row for a connector — an
+/// agent someone has actively configured this connector for. `enabled`/
+/// `tool_rules` come straight from the (always-present) override row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AgentConsumer {
     pub agent_id: Uuid,
     pub agent_name: String,
     pub agent_owner_id: Uuid,
-    pub enabled: Option<bool>,
-    pub tool_rules: Option<Value>,
+    pub enabled: bool,
+    pub tool_rules: Value,
 }
 
-/// Every non-deleted agent owned by one of `reachable_user_ids`, left-joined
-/// against this connector's per-agent override (if any). Only an agent's OWNER
-/// can manage its MCP permissions (`ensure_can_manage_agent`), so ownership is
-/// the right join key here — an `agent_grants` *invoke* grant doesn't confer
-/// the ability to configure this connector for that agent.
-pub async fn list_agents_for_connector_consumers(
-    db: &PgPool,
-    reachable_user_ids: &[Uuid],
-    connector_id: Uuid,
-) -> Result<Vec<AgentConsumer>> {
-    if reachable_user_ids.is_empty() {
-        return Ok(Vec::new());
-    }
+/// Every non-deleted agent with an explicit per-agent override row for this
+/// connector, i.e. an agent someone has actively configured it for (agents
+/// using it under default — NO ROW — are intentionally not "consumers"). We
+/// join on the override row, NOT on owner reachability: that keeps the list
+/// bounded AND correct for a public connector, where an agent owned by a
+/// public-only user still appears if it has a row. Only an agent's OWNER can
+/// create such a row (`ensure_can_manage_agent`).
+pub async fn list_configured_agent_consumers(db: &PgPool, connector_id: Uuid) -> Result<Vec<AgentConsumer>> {
     let rows = sqlx::query_as::<_, AgentConsumer>(
         r#"SELECT a.id AS agent_id, a.name AS agent_name, a.owner_id AS agent_owner_id,
                   acc.enabled, acc.tool_rules
-           FROM agents a
-           LEFT JOIN mcp_agent_connector_access acc
-             ON acc.agent_id = a.id AND acc.connector_id = $2
-           WHERE a.owner_id = ANY($1) AND a.deleted_at IS NULL
+           FROM mcp_agent_connector_access acc
+           JOIN agents a ON a.id = acc.agent_id AND a.deleted_at IS NULL
+           WHERE acc.connector_id = $1
            ORDER BY a.name"#,
     )
-    .bind(reachable_user_ids)
     .bind(connector_id)
     .fetch_all(db)
     .await?;
     Ok(rows)
-}
-
-/// `(connections, distinct_users)` for a connector — a trivial grouped count,
-/// no N+1 risk.
-pub async fn connector_connection_counts(db: &PgPool, connector_id: Uuid) -> Result<(i64, i64)> {
-    let row = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*), COUNT(DISTINCT user_id) FROM mcp_user_connections WHERE connector_id = $1",
-    )
-    .bind(connector_id)
-    .fetch_one(db)
-    .await?;
-    Ok(row)
 }
 
 /// Store a bearer/basic/url_param credential (status → ACTIVE).

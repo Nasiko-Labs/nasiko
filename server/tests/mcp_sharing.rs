@@ -402,6 +402,21 @@ async fn share_target_search_works_for_any_authenticated_user_and_validates_quer
     assert!(names.contains(&"sts-target-bob"), "{names:?}");
     assert!(!names.contains(&"sts-other"), "must not match an unrelated username: {names:?}");
 
+    // A soft-deleted user must never surface as a share target.
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE username = $1")
+        .bind("sts-target-bob")
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let res = common::as_member(server.client.get(server.url("/api/mcp/share-targets?q=sts-target")), &caller_id, "sts-caller")
+        .send()
+        .await
+        .unwrap();
+    let body: Value = res.json().await.unwrap();
+    let names: Vec<&str> = body["data"].as_array().unwrap().iter().map(|u| u["username"].as_str().unwrap()).collect();
+    assert!(names.contains(&"sts-target-alice"), "live user still matches: {names:?}");
+    assert!(!names.contains(&"sts-target-bob"), "soft-deleted user must be excluded: {names:?}");
+
     // Query too short is rejected (prevents a full-directory dump via q=).
     let res = common::as_member(server.client.get(server.url("/api/mcp/share-targets?q=s")), &caller_id, "sts-caller")
         .send()
@@ -412,30 +427,62 @@ async fn share_target_search_works_for_any_authenticated_user_and_validates_quer
     server.cleanup().await;
 }
 
+/// Configure `agent`'s override row for `cid` (as `member`), which is what makes
+/// an agent a "consumer" of the connector.
+async fn configure_agent_connector(server: &common::TestServer, member_id: &str, member_name: &str, agent: Uuid, cid: Uuid) {
+    let res = common::as_member(
+        server.client.put(server.url(&format!("/api/mcp/agents/{agent}/connectors/{cid}"))),
+        member_id,
+        member_name,
+    )
+    .json(&json!({"enabled": false}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200, "configure {member_name}'s agent for the connector");
+}
+
+/// Consumers = agents that have actually CONFIGURED this connector (have an
+/// override row), regardless of how the owner reaches it. Crucially this stays
+/// correct for a PUBLIC connector: a public-only user's configured agent still
+/// appears (regression guard for the access_reasons-driven gap).
 #[tokio::test]
 #[serial]
-async fn consumers_lists_owner_and_grantee_agents_not_a_strangers() {
+async fn consumers_lists_only_agents_that_configured_the_connector() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let (owner_id, owner_uuid) = create_user(&server, &admin, "cons-owner").await;
     let (grantee_id, grantee_uuid) = create_user(&server, &admin, "cons-grantee").await;
     let (_stranger_id, stranger_uuid) = create_user(&server, &admin, "cons-stranger").await;
+    let (public_id, public_uuid) = create_user(&server, &admin, "cons-public").await;
 
     let cid = seed_connector(&server, owner_uuid, "cons-tool").await;
     let owner_agent = seed_agent(&server, owner_uuid, "cons-owner-agent").await;
     let grantee_agent = seed_agent(&server, grantee_uuid, "cons-grantee-agent").await;
     let _stranger_agent = seed_agent(&server, stranger_uuid, "cons-stranger-agent").await;
+    let public_agent = seed_agent(&server, public_uuid, "cons-public-agent").await;
 
-    // Share directly with the grantee, and record a couple of live connections
-    // (one per user) so the counts have something real to report.
+    // Owner configures their own agent → a consumer.
+    configure_agent_connector(&server, &owner_id, "cons-owner", owner_agent, cid).await;
+
+    // Share directly with the grantee, who then configures their agent.
     let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "cons-owner")
         .json(&json!({"username": "cons-grantee"}))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 201);
-    seed_connection(&server, owner_uuid, cid).await;
-    seed_connection(&server, grantee_uuid, cid).await;
+    configure_agent_connector(&server, &grantee_id, "cons-grantee", grantee_agent, cid).await;
+
+    // Make the connector public; a public-ONLY user (no direct grant) configures
+    // their agent — this is the case the old access_reasons path silently dropped.
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))), &owner_id, "cons-owner")
+        .json(&json!({"public": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    configure_agent_connector(&server, &public_id, "cons-public", public_agent, cid).await;
 
     let body: Value = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/consumers"))), &owner_id, "cons-owner")
         .send()
@@ -448,10 +495,8 @@ async fn consumers_lists_owner_and_grantee_agents_not_a_strangers() {
     let agent_ids: Vec<&str> = body["agents"].as_array().unwrap().iter().map(|a| a["agent_id"].as_str().unwrap()).collect();
     assert!(agent_ids.contains(&owner_agent.to_string().as_str()), "{agent_ids:?}");
     assert!(agent_ids.contains(&grantee_agent.to_string().as_str()), "{agent_ids:?}");
-    assert_eq!(agent_ids.len(), 2, "the stranger's agent must not appear: {agent_ids:?}");
-
-    assert_eq!(body["connections"], 2);
-    assert_eq!(body["distinct_users"], 2);
+    assert!(agent_ids.contains(&public_agent.to_string().as_str()), "public-only user's configured agent must appear: {agent_ids:?}");
+    assert_eq!(agent_ids.len(), 3, "the unconfigured stranger agent must not appear: {agent_ids:?}");
 
     // A non-owner, non-admin caller must not be able to view consumers.
     let res = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/consumers"))), &grantee_id, "cons-grantee")

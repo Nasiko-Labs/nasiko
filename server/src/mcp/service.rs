@@ -106,11 +106,7 @@ pub mod connectors {
         connectors::probe_connector_view(&s.mcp, url).await
     }
     pub async fn delete(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<()> {
-        let c = connectors::get_connector_for_deletion(&s.mcp, id).await?;
-        if !is_admin && c.owner_id != Some(caller) {
-            return Err(McpError::Forbidden("this connector does not belong to you".into()));
-        }
-        connectors::delete_connector(&s.mcp, &c).await
+        connectors::delete_connector_authorized(&s.mcp, caller, is_admin, id).await
     }
     pub async fn share(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid, target: ShareTarget) -> R<Value> {
         connectors::share_connector(&s.mcp, caller, is_admin, id, target).await
@@ -121,8 +117,18 @@ pub mod connectors {
     pub async fn list_shares(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
         connectors::list_shares_view(&s.mcp, caller, is_admin, id).await
     }
-    pub async fn search_share_targets(s: &AppState, q: &str) -> R<Value> {
-        connectors::search_share_targets_view(&s.mcp, q).await
+    pub async fn search_share_targets(s: &AppState, claims: crate::auth::Claims, q: &str) -> R<Value> {
+        // OSS: `org_visible_user_ids` defaults to `None` → unscoped. EE: members
+        // are restricted to their own team/department, so the share picker can't
+        // enumerate usernames across org boundaries (matches the platform's own
+        // user directory). Non-uuid ids (shouldn't happen) are dropped.
+        let identity: nasiko_auth::Identity = claims.into();
+        let visible_ids = s
+            .auth
+            .org_visible_user_ids(&identity)
+            .await
+            .map(|ids| ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect::<Vec<_>>());
+        connectors::search_share_targets_view(&s.mcp, q, visible_ids).await
     }
     pub async fn list_consumers(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
         connectors::list_consumers_view(&s.mcp, caller, is_admin, id).await

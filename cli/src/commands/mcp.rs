@@ -57,20 +57,6 @@ fn parse_headers(raw: &[String]) -> Result<HashMap<String, String>> {
     Ok(out)
 }
 
-/// Parse repeatable `--env "KEY=VALUE"` flags into a map — same format as
-/// `nasiko upload --env`/`nasiko deploy --env` (`commands::upload::parse_env`,
-/// `commands::deploy::parse_env`), but without their `--env-file` support: an
-/// uploaded MCP server's secrets are few enough that inline flags are enough,
-/// and this keeps the upload/upload-github command surface small.
-fn parse_kv_env(raw: &[String]) -> Result<HashMap<String, String>> {
-    let mut out = HashMap::new();
-    for arg in raw {
-        let (k, v) = arg.split_once('=').ok_or_else(|| anyhow::anyhow!("invalid --env '{arg}' — expected KEY=VALUE"))?;
-        out.insert(k.to_string(), v.to_string());
-    }
-    Ok(out)
-}
-
 fn confirm(prompt: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(true);
@@ -471,7 +457,7 @@ pub fn share_list(connector_id: &str, json: bool) -> Result<()> {
         for g in &data {
             let grantee = s(g, "grantee_id");
             let grantee = if grantee == "*" { "everyone" } else { grantee };
-            println!("{:<36} {:<8} {:<36} {}", s(g, "grant_id"), s(g, "grant_type"), grantee, s(g, "created_at"));
+            println!("{:<36} {:<8} {:<36} {}", s(g, "id"), s(g, "grant_type"), grantee, s(g, "created_at"));
         }
         println!("\n{} grant(s).", data.len());
     })
@@ -731,115 +717,6 @@ pub fn agent_tools_reset(agent: &str, yes: bool) -> Result<()> {
         "Reset agent '{agent}' to full default-allow ({} rule row(s) removed).",
         resp.get("rows_deleted").and_then(|v| v.as_u64()).unwrap_or(0)
     );
-    Ok(())
-}
-
-// ─── Upload-your-own-MCP-server (docs/MCP_UPLOAD_ITERATION_PLAN.md, Step 14) ─
-
-/// Upload a local .zip of your own MCP server's source. The server validates
-/// it (loosely — see `nasiko_mcp_gateway::validation`), builds it into a
-/// hardened container on an isolated network, deploys it, and runs a live
-/// `initialize`+`tools/list` handshake before marking the connector active —
-/// mirrors `nasiko upload`'s agent flow exactly, just for MCP connectors.
-pub fn connector_upload(zip_path: &std::path::Path, name: &str, version_tag: &str, env: &[String]) -> Result<()> {
-    if !zip_path.exists() {
-        bail!("'{}' does not exist", zip_path.display());
-    }
-    let env = parse_kv_env(env)?;
-    let client = Client::from_active_cluster()?;
-    connector_upload_with(&client, zip_path, name, version_tag, &env)
-}
-
-fn connector_upload_with(
-    client: &Client,
-    zip_path: &std::path::Path,
-    name: &str,
-    version_tag: &str,
-    env: &HashMap<String, String>,
-) -> Result<()> {
-    println!("Uploading '{}' as connector '{name}' ({version_tag})...", zip_path.display());
-    let queued = client.upload_mcp_connector_zip(zip_path, name, version_tag, env)?;
-    println!("Queued: connector_id={} build_id={}", queued.connector_id, queued.build_id);
-    println!("Waiting for the server to build and deploy... (this can take a few minutes)");
-    client.poll_mcp_build_status(&queued.connector_id)?;
-    println!("\nConnector '{name}' is live ({}).", queued.connector_id);
-    println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
-    Ok(())
-}
-
-/// Same as [`connector_upload`], but the server clones a GitHub repo instead
-/// of receiving a file — same validation/build/deploy pipeline downstream of
-/// that, just a different source. Reuses the server's own
-/// `validate_github_url` (HTTPS-only + host allowlist), same as `nasiko
-/// deploy`'s GitHub source.
-pub fn connector_upload_github(name: &str, version_tag: &str, github_url: &str, env: &[String]) -> Result<()> {
-    let env = parse_kv_env(env)?;
-    let client = Client::from_active_cluster()?;
-    connector_upload_github_with(&client, name, version_tag, github_url, &env)
-}
-
-fn connector_upload_github_with(
-    client: &Client,
-    name: &str,
-    version_tag: &str,
-    github_url: &str,
-    env: &HashMap<String, String>,
-) -> Result<()> {
-    let body = serde_json::json!({
-        "name": name,
-        "version_tag": version_tag,
-        "github_url": github_url,
-        "env": env,
-    });
-    println!("Queuing build of '{github_url}' as connector '{name}' ({version_tag})...");
-    let queued: crate::api::McpUploadQueued = client.post_json("/mcp/connectors/upload-github", &body)?;
-    println!("Queued: connector_id={} build_id={}", queued.connector_id, queued.build_id);
-    println!("Waiting for the server to clone, build, and deploy... (this can take a few minutes)");
-    client.poll_mcp_build_status(&queued.connector_id)?;
-    println!("\nConnector '{name}' is live ({}).", queued.connector_id);
-    println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
-    Ok(())
-}
-
-/// One-shot build status check (no polling loop — `upload`/`upload-github`
-/// already poll to completion; this is for checking back on a build later,
-/// or after closing the terminal a poll was running in).
-pub fn connector_build_status(connector_id: &str, json: bool) -> Result<()> {
-    let client = Client::from_active_cluster()?;
-    connector_build_status_with(&client, connector_id, json)
-}
-
-fn connector_build_status_with(client: &Client, connector_id: &str, json: bool) -> Result<()> {
-    let status: crate::api::McpBuildStatus = client.get_json(&format!("/mcp/connectors/{connector_id}/build-status"))?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&status)?);
-    } else {
-        println!("build_status: {}", status.build_status.as_deref().unwrap_or("-"));
-        println!("image_tag:    {}", status.image_tag.as_deref().unwrap_or("-"));
-        if let Some(err) = &status.error_msg {
-            println!("error:        {err}");
-        }
-    }
-    Ok(())
-}
-
-/// Fetch an uploaded connector's container logs (stdout/stderr) — the same
-/// `ContainerRuntime::logs` call the agent logs route already exposes,
-/// scoped to this connector's container.
-pub fn connector_logs(connector_id: &str, tail: u32) -> Result<()> {
-    let client = Client::from_active_cluster()?;
-    connector_logs_with(&client, connector_id, tail)
-}
-
-fn connector_logs_with(client: &Client, connector_id: &str, tail: u32) -> Result<()> {
-    let lines: Vec<String> = client.get_json(&format!("/mcp/connectors/{connector_id}/build-logs?tail={tail}"))?;
-    if lines.is_empty() {
-        println!("(no log output)");
-        return Ok(());
-    }
-    for line in &lines {
-        println!("{line}");
-    }
     Ok(())
 }
 
@@ -1289,109 +1166,5 @@ mod tests {
             .create();
         let client = Client::for_test(&server.url(), None);
         credential_status_with(&client, "conn-a", false).unwrap();
-    }
-
-    // ─── parse_kv_env ───────────────────────────────────────────────────────
-
-    #[test]
-    fn parse_kv_env_parses_repeated_key_value_flags() {
-        let out = parse_kv_env(&["STRIPE_KEY=sk_test".to_string(), "DEBUG=true".to_string()]).unwrap();
-        assert_eq!(out.get("STRIPE_KEY").map(String::as_str), Some("sk_test"));
-        assert_eq!(out.get("DEBUG").map(String::as_str), Some("true"));
-    }
-
-    #[test]
-    fn parse_kv_env_rejects_missing_equals_sign() {
-        let err = parse_kv_env(&["NOVALUE".to_string()]).unwrap_err();
-        assert!(err.to_string().contains("NOVALUE"), "got: {err}");
-    }
-
-    // ─── upload / upload-github / build-status / logs (Step 14) ───────────────
-
-    fn write_temp_zip(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(name);
-        std::fs::write(&path, b"not a real zip, just bytes for the multipart body").unwrap();
-        path
-    }
-
-    #[test]
-    fn connector_upload_with_queues_then_polls_to_running() {
-        let zip_path = write_temp_zip("nasiko-cli-mcp-test-upload.zip");
-        let mut server = mockito::Server::new();
-        server
-            .mock("POST", "/api/mcp/connectors/upload")
-            .with_status(202)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"connector_id":"c-1","build_id":"b-1"}"#)
-            .create();
-        server
-            .mock("GET", "/api/mcp/connectors/c-1/build-status")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"build_status":"running"}"#)
-            .create();
-        let client = Client::for_test(&server.url(), None);
-        connector_upload_with(&client, &zip_path, "my-server", "v1", &HashMap::new()).unwrap();
-        let _ = std::fs::remove_file(&zip_path);
-    }
-
-    #[test]
-    fn connector_upload_github_with_sends_the_expected_body_then_polls_to_running() {
-        let mut server = mockito::Server::new();
-        server
-            .mock("POST", "/api/mcp/connectors/upload-github")
-            .match_body(Matcher::Json(serde_json::json!({
-                "name": "my-server",
-                "version_tag": "v1",
-                "github_url": "https://github.com/me/my-mcp-server",
-                "env": {},
-            })))
-            .with_status(202)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"connector_id":"c-2","build_id":"b-2"}"#)
-            .create();
-        server
-            .mock("GET", "/api/mcp/connectors/c-2/build-status")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"build_status":"running"}"#)
-            .create();
-        let client = Client::for_test(&server.url(), None);
-        connector_upload_github_with(
-            &client,
-            "my-server",
-            "v1",
-            "https://github.com/me/my-mcp-server",
-            &HashMap::new(),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn connector_build_status_with_reports_a_failed_build_with_its_error_message() {
-        let mut server = mockito::Server::new();
-        server
-            .mock("GET", "/api/mcp/connectors/c-3/build-status")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"build_status":"failed","error_msg":"no Dockerfile found"}"#)
-            .create();
-        let client = Client::for_test(&server.url(), None);
-        // Human-readable path just prints; only asserting it doesn't error.
-        connector_build_status_with(&client, "c-3", false).unwrap();
-        connector_build_status_with(&client, "c-3", true).unwrap();
-    }
-
-    #[test]
-    fn connector_logs_with_prints_every_line_returned() {
-        let mut server = mockito::Server::new();
-        server
-            .mock("GET", "/api/mcp/connectors/c-4/build-logs?tail=200")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"["INFO starting up", "INFO ready on :8080"]"#)
-            .create();
-        let client = Client::for_test(&server.url(), None);
-        connector_logs_with(&client, "c-4", 200).unwrap();
     }
 }

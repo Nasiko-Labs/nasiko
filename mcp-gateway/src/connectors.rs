@@ -324,6 +324,17 @@ pub async fn get_connector_for_deletion(state: &McpState, id: Uuid) -> Result<Mc
         .ok_or_else(|| McpError::NotFound(format!("connector '{id}' not found")))
 }
 
+/// `DELETE /api/mcp/connectors/{id}` — owner/admin-gated delete. Ownership is
+/// enforced here (in the crate) alongside the delete itself, so the server
+/// layer stays a thin forwarder — matching `update_connector`/`owned_shareable`.
+pub async fn delete_connector_authorized(state: &McpState, caller: Uuid, is_admin: bool, id: Uuid) -> Result<()> {
+    let connector = get_connector_for_deletion(state, id).await?;
+    if !is_admin && connector.owner_id != Some(caller) {
+        return Err(McpError::Forbidden("this connector does not belong to you".into()));
+    }
+    delete_connector(state, &connector).await
+}
+
 /// Delete a connector (already authorized) + invalidate affected permission caches.
 /// CASCADE removes its grants, tools, connections, and access rows.
 pub async fn delete_connector(state: &McpState, connector: &McpConnector) -> Result<()> {
@@ -374,7 +385,7 @@ pub async fn create_share_grant(
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
     let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
     tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "shared connector");
-    Ok(json!({ "grant_id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
+    Ok(json!({ "id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
 }
 
 /// Owner/admin-gated grant revoke — deletes the grant AND the grantee's
@@ -459,7 +470,7 @@ pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, co
         .into_iter()
         .map(|g| {
             json!({
-                "grant_id": g.id,
+                "id": g.id,
                 "grant_type": g.grant_type,
                 "grantee_id": g.grantee_id,
                 "granted_by": g.granted_by,
@@ -474,12 +485,17 @@ pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, co
 /// Open to any authenticated user (any owner may need to share), NOT admin-gated
 /// like the platform's general user directory — capped and username-only so
 /// that openness doesn't become a directory-enumeration/email-leak risk.
-pub async fn search_share_targets_view(state: &McpState, q: &str) -> Result<Value> {
+///
+/// `visible_ids` is the org-visibility allowlist resolved by the server via
+/// `AuthService::org_visible_user_ids`: `None` = unscoped (OSS, or an EE role
+/// that sees everyone), `Some(ids)` = restrict to those users (EE members only
+/// find users in their own team/department). `Some(empty)` matches no one.
+pub async fn search_share_targets_view(state: &McpState, q: &str, visible_ids: Option<Vec<Uuid>>) -> Result<Value> {
     let q = q.trim();
-    if q.len() < 2 {
+    if q.chars().count() < 2 {
         return Err(McpError::BadRequest("q must be at least 2 characters".into()));
     }
-    let rows = repo::search_users_for_share(&state.db, q, 20).await?;
+    let rows = repo::search_users_for_share(&state.db, q, 20, visible_ids.as_deref()).await?;
     let data: Vec<Value> = rows
         .into_iter()
         .map(|(id, username, display_name)| json!({ "user_id": id, "username": username, "display_name": display_name }))
@@ -487,18 +503,14 @@ pub async fn search_share_targets_view(state: &McpState, q: &str) -> Result<Valu
     Ok(json!({ "data": data }))
 }
 
-/// `GET /api/mcp/connectors/{id}/consumers` — which agents use this connector,
-/// plus aggregate connection/user counts. Owner/admin-gated, same as sharing —
-/// this is a management view. Reuses `list_access_reasons` (the EE-aware
-/// authorizer seam) for the reachable-user set, so a single query joins
-/// `agents` against it instead of checking `can_access_connector` per agent.
+/// `GET /api/mcp/connectors/{id}/consumers` — which agents have this connector
+/// configured (an explicit per-agent override row). Owner/admin-gated, same as
+/// sharing — a management view. Correct for public connectors too: it keys off
+/// the override row, not owner reachability, so a public-only user's configured
+/// agent still shows up.
 pub async fn list_consumers_view(state: &McpState, caller: Uuid, is_admin: bool, connector_id: Uuid) -> Result<Value> {
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
-    let reasons = state.authorizer.list_access_reasons(&state.db, &connector).await?;
-    let reachable_ids: Vec<Uuid> = reasons.iter().map(|r| r.user_id).collect();
-
-    let agents = repo::list_agents_for_connector_consumers(&state.db, &reachable_ids, connector.id).await?;
-    let (connections, distinct_users) = repo::connector_connection_counts(&state.db, connector.id).await?;
+    let agents = repo::list_configured_agent_consumers(&state.db, connector.id).await?;
 
     let agents_json: Vec<Value> = agents
         .into_iter()
@@ -507,17 +519,13 @@ pub async fn list_consumers_view(state: &McpState, caller: Uuid, is_admin: bool,
                 "agent_id": a.agent_id,
                 "agent_name": a.agent_name,
                 "agent_owner_id": a.agent_owner_id,
-                "enabled": a.enabled.unwrap_or(true),
-                "tool_rules": a.tool_rules.unwrap_or_else(|| json!([])),
+                "enabled": a.enabled,
+                "tool_rules": a.tool_rules,
             })
         })
         .collect();
 
-    Ok(json!({
-        "agents": agents_json,
-        "connections": connections,
-        "distinct_users": distinct_users,
-    }))
+    Ok(json!({ "agents": agents_json }))
 }
 
 /// `POST /api/mcp/connectors/{id}/pin` — pin a connector for quick access.

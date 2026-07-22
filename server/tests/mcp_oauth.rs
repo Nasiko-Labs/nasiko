@@ -253,6 +253,82 @@ async fn callback_round_trips_through_token_exchange() {
     assert!(enc.is_some(), "the exchanged access token must be persisted");
     assert_ne!(enc.unwrap(), "at_from_stub", "the token must be encrypted at rest, not stored raw");
 
+    // A successful OAuth round-trip must flip the connector's setup_status to
+    // 'active' (oss/mcp-gateway/src/oauth.rs).
+    let (setup_status, setup_error): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT setup_status, setup_error FROM mcp_connectors WHERE id = $1")
+            .bind(cid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(setup_status.as_deref(), Some("active"), "successful OAuth must mark the connector active");
+    assert!(setup_error.is_none(), "no error on success: {setup_error:?}");
+
+    clear_signing_key();
+    clear_gateway_public_url();
+    server.cleanup().await;
+}
+
+/// A stub OAuth token endpoint that rejects every exchange, to drive the
+/// failure branch of `handle_callback`.
+async fn start_failing_token_server() -> String {
+    async fn respond() -> impl IntoResponse {
+        (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid_grant"})))
+    }
+    let app = Router::new().route("/token", post(respond));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://127.0.0.1:{port}/token")
+}
+
+#[tokio::test]
+#[serial]
+async fn callback_failed_exchange_marks_connector_setup_failed() {
+    set_signing_key(SIGNING_KEY);
+    set_gateway_public_url();
+    let token_url = start_failing_token_server().await;
+    let server = common::TestServer::start().await;
+    let (_uid, uuid) = init_admin(&server).await;
+    let cid = seed_oauth_connector_with_token_endpoint(&server, uuid, "cb-fail-tool", &token_url).await;
+
+    let oauth_state = OAuthState::new(uuid, cid, "verifier123".into(), Some("https://gateway.test.local/success".into()));
+    let signed = sign_state(&oauth_state, SIGNING_KEY);
+
+    let res = no_redirect_client()
+        .get(server.url("/api/mcp/oauth/callback"))
+        .query(&[("code", "authcode123"), ("state", signed.as_str())])
+        .send()
+        .await
+        .unwrap();
+    // A failed exchange renders the message page (200), never a redirect, and
+    // must not echo the token-endpoint body.
+    assert_eq!(res.status(), 200, "failed exchange must render the error page, not redirect");
+    let body = res.text().await.unwrap();
+    assert!(body.contains("Token exchange failed"), "{body}");
+
+    // No connection row should have become ACTIVE.
+    let conn: Option<String> =
+        sqlx::query_scalar("SELECT status FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
+            .bind(uuid)
+            .bind(cid)
+            .fetch_optional(&server.db)
+            .await
+            .unwrap();
+    assert_ne!(conn.as_deref(), Some("ACTIVE"), "a failed exchange must not leave an ACTIVE connection");
+
+    // The connector's setup_status must record the failure.
+    let (setup_status, setup_error): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT setup_status, setup_error FROM mcp_connectors WHERE id = $1")
+            .bind(cid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(setup_status.as_deref(), Some("failed"), "failed OAuth must mark the connector setup failed");
+    assert!(setup_error.is_some(), "a failure reason must be recorded");
+
     clear_signing_key();
     clear_gateway_public_url();
     server.cleanup().await;
