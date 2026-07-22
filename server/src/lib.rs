@@ -9,9 +9,9 @@ pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
+pub mod llm_router;
 pub mod maf;
 pub mod mcp;
-pub mod multipart_util;
 pub mod observability;
 pub mod pool;
 pub mod rate_limit;
@@ -184,17 +184,6 @@ where
             auth::rbac::require_deployer,
         ));
 
-    // MCP-server-upload MUTATIONS (build a container from user-supplied
-    // source): deployer+ only, same reasoning as `build_routes` above —
-    // building a container is a privileged, resource-consuming operation.
-    // Build-status/build-logs reads stay in `mcp::router()` below, at plain
-    // `require_auth` (ownership-checked inside the handler).
-    let mcp_upload_routes = mcp::upload_mutation_router(state.config.mcp_upload_max_bytes)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::rbac::require_deployer,
-        ));
-
     // GET routes pulled out from the require_deployer-gated groups above —
     // each handler checks `can_deploy` (and any resource-ownership check
     // that already existed) itself, returning `nasiko_server::unavailable()`
@@ -236,6 +225,7 @@ where
         .merge(maf::router())
         .merge(secrets::router())
         .merge(settings::router())
+        .merge(llm_router::model_registry::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
@@ -245,7 +235,6 @@ where
         .merge(auth::login::protected_router())
         .merge(transcribe::router())
         .merge(mcp::router())
-        .merge(mcp_upload_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -293,6 +282,15 @@ where
             auth::require_auth,
         ));
 
+    // LLM router: OpenAI-compatible egress proxy for deployed agents. Mounted at the
+    // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
+    // own identity JWT internally, not the user session. Deployed agents point their
+    // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
+    let llm_routes = nasiko_llm_router::router(nasiko_llm_router::LlmRouterCtx::from_shared(
+        state.db.clone(),
+        state.http_client.clone(),
+    ));
+
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
@@ -304,6 +302,7 @@ where
         .nest("/api", proxy_routes)
         .with_state(state)
         .merge(oci_routes)
+        .merge(llm_routes)
         .merge(mcp_agent_gateway)
         .fallback(fallback)
         .layer(cors)
