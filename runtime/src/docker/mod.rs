@@ -149,6 +149,27 @@ impl DockerRuntime {
             Err(e) => Err(map_bollard_err(e)),
         }
     }
+
+    /// Names of every Docker network `container_id`'s container is currently
+    /// attached to. Introspection helper (not part of `ContainerRuntime` — this
+    /// is Docker-specific, used to verify network-segmentation guarantees in
+    /// tests, e.g. that an uploaded MCP server's container is on
+    /// `mcp_servers_network` only, never the default network agents/DB/Redis
+    /// share).
+    pub async fn container_networks(&self, container_id: &ContainerId) -> Result<Vec<String>> {
+        container_id.validate()?;
+        let name = DockerRuntime::container_name(container_id);
+        let info = self
+            .client
+            .inspect_container(&name, None::<InspectContainerOptions>)
+            .await
+            .map_err(|e| if is_not_found(&e) { RuntimeError::ContainerNotFound(container_id.clone()) } else { map_bollard_err(e) })?;
+        Ok(info
+            .network_settings
+            .and_then(|ns| ns.networks)
+            .map(|nets| nets.into_keys().collect())
+            .unwrap_or_default())
+    }
 }
 
 // ── Error mapping ──────────────────────────────────────────────────────────────
@@ -272,6 +293,15 @@ fn build_host_config(spec: &DeploymentSpec, port_bindings: PortBindingsMap) -> H
         port_bindings: Some(port_bindings),
         memory: Some(parse_memory_bytes(&lim.memory)),
         nano_cpus: Some(lim.cpu_milli as i64 * 1_000_000),
+        // Without this, Docker creates every container on the default "bridge"
+        // network first; `create_and_start`'s later `connect_network` call
+        // only ever ADDS the target network, it never removes "bridge" — so a
+        // network-segmented deploy (network_override) ended up dual-homed on
+        // both the isolated network and the default one, defeating the whole
+        // point of segmentation (RUN-11, found via a real isolation test, not
+        // theoretical). Only `network_override` deploys are re-homed this way;
+        // ordinary agent deploys (which never set it) are unaffected.
+        network_mode: spec.network_override.clone(),
         ..Default::default()
     };
     if spec.harden {
@@ -505,7 +535,15 @@ async fn create_and_start(
     .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
     .map_err(map_bollard_err)?;
 
-    if let Some(net) = network {
+    // `network_override` deploys already got `net` as their sole `NetworkMode`
+    // at creation (see `build_host_config`) — connecting again here would just
+    // error "already attached". Only deploys that rely on the runtime's
+    // *default* network (agents, which never set `network_override`) still
+    // need this explicit post-start connect, since their `NetworkMode` at
+    // creation was Docker's own default ("bridge"), not `net`.
+    if let Some(net) = network
+        && spec.network_override.is_none()
+    {
         let connect_opts = ConnectNetworkOptions {
             container: name.as_str(),
             ..Default::default()

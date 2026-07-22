@@ -33,6 +33,16 @@ impl DetectedRuntime {
     }
 }
 
+/// Only covers failures this module can actually detect from an *already
+/// extracted* directory. Two related failure modes the original design doc
+/// initially sketched as variants here in fact belong to earlier layers, since
+/// they operate on the raw upload before extraction ever happens, and stay
+/// there rather than being duplicated: an oversized upload is rejected while
+/// streaming, before any bytes are ever unzipped
+/// (`oss/server/src/multipart_util.rs::StreamUploadError::TooLarge`); a
+/// zip-slip/path-traversal entry is rejected during extraction itself
+/// (`oss/utils/src/zip.rs`, shared with the agent-upload path, not duplicated
+/// here).
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {
     #[error("zip contains no root Dockerfile")]

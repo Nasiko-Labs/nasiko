@@ -221,82 +221,6 @@ pub enum AgentOpsCommands {
         #[command(subcommand)]
         command: SecretsCommands,
     },
-    /// View or change the provider/model an agent routes through the LLM router
-    #[command(name = "llm-config")]
-    LlmConfig {
-        #[command(subcommand)]
-        command: LlmConfigCommands,
-    },
-    /// View or set the platform tier→model registry the smart router resolves against
-    #[command(name = "model-registry")]
-    ModelRegistry {
-        #[command(subcommand)]
-        command: ModelRegistryCommands,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum LlmConfigCommands {
-    /// Show an agent's current LLM routing config
-    Get {
-        /// Agent name or ID
-        agent: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Set an agent's provider/model (and optional fallbacks, tuning, pin)
-    Set {
-        /// Agent name or ID
-        agent: String,
-        #[arg(long)]
-        provider: String,
-        #[arg(long)]
-        model: String,
-        /// Fallback model, repeatable: --fallback a --fallback b
-        #[arg(long = "fallback")]
-        fallback: Vec<String>,
-        #[arg(long)]
-        temperature: Option<f64>,
-        #[arg(long = "max-tokens")]
-        max_tokens: Option<i64>,
-        /// Name of the caller's user-secret holding the provider API key
-        #[arg(long = "api-key-secret")]
-        api_key_secret: Option<String>,
-        /// SDK format the agent's code speaks: openai | anthropic | gemini
-        #[arg(long = "inbound-format")]
-        inbound_format: Option<String>,
-        /// Pin routing so the smart router never re-selects
-        #[arg(long)]
-        pin: bool,
-        /// Model to pin to (defaults to --model when --pin is set)
-        #[arg(long = "pinned-model")]
-        pinned_model: Option<String>,
-    },
-    /// List the provider/model catalog (valid values for `set`)
-    Providers {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ModelRegistryCommands {
-    /// List all configured (provider, tier) → model mappings
-    #[command(alias = "list")]
-    Ls {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Upsert one (provider, tier) → model mapping (superuser only)
-    Set {
-        #[arg(long)]
-        provider: String,
-        /// Model strength tier: 1 = strongest … 3 = smallest
-        #[arg(long)]
-        tier: i16,
-        #[arg(long)]
-        model: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -766,41 +690,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
             SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
         },
-        AgentOpsCommands::LlmConfig { command } => match command {
-            LlmConfigCommands::Get { agent, json } => commands::llm_config::get(&agent, json),
-            LlmConfigCommands::Set {
-                agent,
-                provider,
-                model,
-                fallback,
-                temperature,
-                max_tokens,
-                api_key_secret,
-                inbound_format,
-                pin,
-                pinned_model,
-            } => commands::llm_config::set(
-                &agent,
-                &provider,
-                &model,
-                fallback,
-                temperature,
-                max_tokens,
-                api_key_secret,
-                inbound_format,
-                pin,
-                pinned_model,
-            ),
-            LlmConfigCommands::Providers { json } => commands::llm_config::providers(json),
-        },
-        AgentOpsCommands::ModelRegistry { command } => match command {
-            ModelRegistryCommands::Ls { json } => commands::model_registry::ls(json),
-            ModelRegistryCommands::Set {
-                provider,
-                tier,
-                model,
-            } => commands::model_registry::set(&provider, tier, &model),
-        },
     }
 }
 
@@ -1009,6 +898,64 @@ pub enum McpConnectorCommands {
         #[command(subcommand)]
         command: McpConnectorShareCommands,
     },
+    /// Upload your own MCP server's source (a .zip) — the platform builds and
+    /// deploys it into a container the same way agent uploads work, then
+    /// polls until it's live. See docs/MCP_UPLOAD_ITERATION_PLAN.md for the
+    /// full pipeline (validation → build → hardened deploy → readiness check).
+    Upload {
+        /// Connector name (shown in `nasiko mcp connector list`)
+        #[arg(long)]
+        name: String,
+        /// Build version tag, shown on the connector's build history
+        #[arg(long, visible_alias = "version", default_value = "v1")]
+        version_tag: String,
+        /// Path to a .zip containing your MCP server's source (must include a
+        /// Dockerfile; the server must read $PORT and mount its Streamable
+        /// HTTP endpoint at /mcp — see the upload plan doc for the full contract)
+        #[arg(long)]
+        zip: std::path::PathBuf,
+        /// Secret env var for the uploaded server itself, "KEY=VALUE"
+        /// (repeatable) — encrypted at rest, injected into the container only
+        /// at deploy time. Distinct from a connector's own auth credential
+        /// (`nasiko mcp credential set`), which authenticates the GATEWAY to
+        /// the server, not the server to some third-party API it wraps.
+        #[arg(long = "env")]
+        env: Vec<String>,
+    },
+    /// Same as `upload`, but builds from a GitHub repo instead of a local zip
+    /// — the server clones it (HTTPS + host-allowlisted, same validation
+    /// `nasiko deploy`'s GitHub source uses) rather than receiving a file.
+    UploadGithub {
+        /// Connector name (shown in `nasiko mcp connector list`)
+        #[arg(long)]
+        name: String,
+        /// Build version tag, shown on the connector's build history
+        #[arg(long, visible_alias = "version", default_value = "v1")]
+        version_tag: String,
+        /// HTTPS GitHub URL of the MCP server's source repo
+        #[arg(long)]
+        github_url: String,
+        /// Secret env var for the uploaded server itself, "KEY=VALUE"
+        /// (repeatable) — same semantics as `upload --env`
+        #[arg(long = "env")]
+        env: Vec<String>,
+    },
+    /// Check an uploaded connector's build status (one-shot, no polling) —
+    /// `pending` | `building` | `running` (live) | `failed`
+    BuildStatus {
+        connector_id: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Show an uploaded connector's container logs (stdout/stderr) — the
+    /// same `ContainerRuntime::logs` call the agent logs route already
+    /// exposes, just scoped to this connector's container
+    Logs {
+        connector_id: String,
+        /// Number of trailing log lines to fetch (capped server-side at 10000)
+        #[arg(long, default_value_t = 200)]
+        tail: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1188,6 +1135,14 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                     commands::mcp::share_remove(&connector_id, user.as_deref(), public)
                 }
             },
+            McpConnectorCommands::Upload { name, version_tag, zip, env } => {
+                commands::mcp::connector_upload(&zip, &name, &version_tag, &env)
+            }
+            McpConnectorCommands::UploadGithub { name, version_tag, github_url, env } => {
+                commands::mcp::connector_upload_github(&name, &version_tag, &github_url, &env)
+            }
+            McpConnectorCommands::BuildStatus { connector_id, json } => commands::mcp::connector_build_status(&connector_id, json),
+            McpConnectorCommands::Logs { connector_id, tail } => commands::mcp::connector_logs(&connector_id, tail),
         },
         McpSubCommands::Credential { command } => match command {
             McpCredentialCommands::Set { connector_id, value } => commands::mcp::credential_set(&connector_id, value.as_deref()),

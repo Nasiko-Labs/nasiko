@@ -87,6 +87,19 @@ async fn ensure_test_network() {
     docker.ensure_network(TEST_MCP_NETWORK).await.expect("create test mcp network");
 }
 
+/// Every Docker network the given connector's container is currently attached
+/// to — used to prove network segmentation (§4.3 of the original plan): an
+/// uploaded MCP server's container must be reachable only via
+/// `mcp_servers_network`, never the platform's own default network
+/// (Postgres/Redis/agents). `container_networks` is a `DockerRuntime`
+/// inherent method, not part of `ContainerRuntime`, so this needs its own
+/// concrete `DockerRuntime` handle rather than the `Arc<dyn ContainerRuntime>`
+/// the rest of this test file uses.
+async fn container_networks(connector_id: Uuid) -> Vec<String> {
+    let docker = DockerRuntime::new(DockerRuntimeConfig::default()).await.expect("Docker must be running");
+    docker.container_networks(&ContainerId::from_uuid(connector_id)).await.expect("inspect container networks")
+}
+
 /// Inserts a `mcp_connectors` row + a `mcp_connector_builds` row in the shapes
 /// Step 10's (not-yet-built) upload handler would produce, and returns
 /// (connector_id, build_id).
@@ -201,6 +214,19 @@ async fn upload_builds_deploys_and_serves_real_tools() {
     assert!(
         logs.iter().any(|line| line.contains("Uvicorn running") || line.contains("Application startup complete")),
         "expected real FastMCP/uvicorn startup output in the logs, got: {logs:?}"
+    );
+
+    // Network segmentation (original plan §4.3/§8.3's "third test", never
+    // written until now): the deployed container must be reachable only via
+    // the isolated mcp_servers_network — never the default network
+    // Postgres/Redis/agent containers share. A container on the default
+    // network too would mean a compromised uploaded server could reach the
+    // platform's own infrastructure directly.
+    let networks = container_networks(connector_id).await;
+    assert_eq!(
+        networks,
+        vec![TEST_MCP_NETWORK.to_string()],
+        "uploaded connector container must be attached to the isolated mcp network only, got: {networks:?}"
     );
 
     // Cleanup: destroy the container this test deployed.
