@@ -121,18 +121,10 @@ pub struct Config {
     pub mcp_perm_cache_ttl_seconds: u64,
     /// TTL (seconds) for the Redis-cached aggregated tool manifest.
     pub mcp_manifest_ttl_seconds: u64,
-    /// Max upload size for a user's own MCP server zip. MCP_UPLOAD_MAX_BYTES,
-    /// default 50 MiB — deliberately smaller than agents' 100 MiB default,
-    /// since MCP servers are typically much smaller than full agent codebases.
-    pub mcp_upload_max_bytes: u64,
-    /// Port an uploaded MCP server container is expected to bind via `$PORT`.
-    /// MCP_UPLOAD_DEFAULT_PORT, default 8080.
-    pub mcp_upload_default_port: u16,
-    /// Docker network uploaded MCP server containers are deployed onto,
-    /// isolated from the default network (DB/Redis/agents). MCP_SERVERS_NETWORK,
-    /// default "nasiko-mcp-servers-net" (the server's own compose config must
-    /// also join this network — see docker-compose.infra.yml).
-    pub mcp_servers_network: String,
+    /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
+    /// unconnected catalog cards — changes rarely, so a much longer TTL than
+    /// the permission/session caches.
+    pub mcp_toolcount_ttl_seconds: u64,
 }
 
 impl Config {
@@ -255,9 +247,7 @@ impl Config {
             mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
             mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
             mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
-            mcp_upload_max_bytes: env_parse("MCP_UPLOAD_MAX_BYTES", 50 * 1024 * 1024),
-            mcp_upload_default_port: env_parse("MCP_UPLOAD_DEFAULT_PORT", 8080),
-            mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
+            mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
         })
     }
 

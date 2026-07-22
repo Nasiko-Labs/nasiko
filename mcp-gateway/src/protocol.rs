@@ -303,6 +303,7 @@ mod tests {
                 session_ttl_seconds: 60,
                 perm_cache_ttl_seconds: 60,
                 manifest_ttl_seconds: 60,
+                toolcount_ttl_seconds: 3600,
                 oauth_state_signing_key: "test".to_string(),
             },
             providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },

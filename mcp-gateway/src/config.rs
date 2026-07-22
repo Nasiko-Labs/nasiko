@@ -26,6 +26,8 @@ pub struct McpConfig {
     pub perm_cache_ttl_seconds: u64,
     /// TTL for the Redis-cached aggregated tool manifest.
     pub manifest_ttl_seconds: u64,
+    /// TTL for the Redis-cached Composio toolkit tool count.
+    pub toolcount_ttl_seconds: u64,
     /// HMAC key for signing MCP OAuth 2.1 `state`. Reuses `OAUTH_STATE_SIGNING_KEY`
     /// (the same signer GitHub OAuth uses); falls back to a dev constant.
     pub oauth_state_signing_key: String,
@@ -43,6 +45,7 @@ impl McpConfig {
             session_ttl_seconds: config.mcp_session_ttl_seconds,
             perm_cache_ttl_seconds: config.mcp_perm_cache_ttl_seconds,
             manifest_ttl_seconds: config.mcp_manifest_ttl_seconds,
+            toolcount_ttl_seconds: config.mcp_toolcount_ttl_seconds,
             // Never fall back to a shipped constant (this file syncs to the public
             // repo). Use the dedicated key if set, else derive from the already-
             // required JWT_SECRET with domain separation. Panics only if BOTH are

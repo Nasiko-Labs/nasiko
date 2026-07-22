@@ -138,7 +138,6 @@ fn minimal_pool_opts() -> PgPoolOptions {
 }
 
 impl TestServer {
-    #[allow(dead_code)]
     pub async fn start() -> Self {
         Self::start_with(|_| {}).await
     }
@@ -149,21 +148,6 @@ impl TestServer {
     /// path, which `test_config()` otherwise always leaves empty.
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
-        Self::start_with_runtime(configure, Arc::new(FakeRuntime::default())).await
-    }
-
-    /// Same as [`start_with`](Self::start_with), but lets the caller supply a
-    /// real `ContainerRuntime` (e.g. a real `DockerRuntime`) instead of
-    /// `FakeRuntime` — needed by tests that must observe a real container's
-    /// lifecycle through the actual HTTP route (not by calling orchestration
-    /// functions directly), such as confirming `DELETE
-    /// /api/mcp/connectors/{id}` really destroys an uploaded connector's
-    /// container.
-    #[allow(dead_code)]
-    pub async fn start_with_runtime(
-        configure: impl FnOnce(&mut Config),
-        runtime: Arc<dyn ContainerRuntime>,
-    ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
@@ -201,6 +185,8 @@ impl TestServer {
         let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
+
+        let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime::default());
 
         let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
@@ -348,9 +334,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
-        mcp_upload_max_bytes: 50 * 1024 * 1024,
-        mcp_upload_default_port: 8080,
-        mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
+        mcp_toolcount_ttl_seconds: 3600,
         app_base_url: "".to_string(),
     }
 }
