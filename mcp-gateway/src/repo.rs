@@ -759,6 +759,57 @@ pub async fn delete_user_connection(db: &PgPool, user_id: Uuid, connector_id: Uu
     Ok(res.rows_affected() > 0)
 }
 
+// ─── Pins ───────────────────────────────────────────────────────────────────
+
+/// Pin a connector for a user (idempotent — pinning an already-pinned
+/// connector is a no-op, not an error).
+pub async fn pin_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO mcp_connector_pins (user_id, connector_id) VALUES ($1, $2)
+         ON CONFLICT (user_id, connector_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(connector_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Unpin. Returns `false` if it wasn't pinned.
+pub async fn unpin_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM mcp_connector_pins WHERE user_id = $1 AND connector_id = $2")
+        .bind(user_id)
+        .bind(connector_id)
+        .execute(db)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// A user's pinned connector ids, most recently pinned first.
+pub async fn list_pinned_connector_ids(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT connector_id FROM mcp_connector_pins WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
+}
+
+/// "Recent" connector ids for a user, derived from real connect/reconnect
+/// activity (`mcp_user_connections.updated_at`) rather than a separate
+/// page-view tracking table.
+pub async fn list_recent_connector_ids(db: &PgPool, user_id: Uuid, limit: i64) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT connector_id FROM mcp_user_connections WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
+}
+
 // ─── Tool catalog ─────────────────────────────────────────────────────────────
 
 /// Replace a connector's synced tool catalog with `tools` (name, description).

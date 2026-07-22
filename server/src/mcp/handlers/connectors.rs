@@ -143,3 +143,37 @@ pub async fn probe(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(service::connectors::probe(&state, &body.url).await?))
 }
+
+/// `POST /api/mcp/connectors/{id}/pin` — pin for quick access.
+pub async fn pin(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user_id = parse_user(&claims)?;
+    service::connectors::pin(&state, user_id, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/mcp/connectors/{id}/pin` — unpin.
+pub async fn unpin(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user_id = parse_user(&claims)?;
+    service::connectors::unpin(&state, user_id, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/mcp/connectors/pinned` — the caller's pinned connectors.
+pub async fn pinned(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+    let user_id = parse_user(&claims)?;
+    Ok(Json(service::connectors::list_pinned(&state, user_id).await?))
+}
+
+/// `GET /api/mcp/connectors/recent` — the caller's recently-used connectors.
+pub async fn recent(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+    let user_id = parse_user(&claims)?;
+    Ok(Json(service::connectors::list_recent(&state, user_id).await?))
+}

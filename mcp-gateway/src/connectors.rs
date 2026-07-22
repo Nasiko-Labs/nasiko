@@ -520,6 +520,55 @@ pub async fn list_consumers_view(state: &McpState, caller: Uuid, is_admin: bool,
     }))
 }
 
+/// `POST /api/mcp/connectors/{id}/pin` — pin a connector for quick access.
+/// Requires the connector be reachable (Layer 1) — pinning something you
+/// can't use would be a pointless, confusing shortlist entry.
+pub async fn pin_connector_view(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<()> {
+    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
+        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+    }
+    repo::pin_connector(&state.db, user_id, connector_id).await
+}
+
+/// `DELETE /api/mcp/connectors/{id}/pin` — unpin.
+pub async fn unpin_connector_view(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<()> {
+    repo::unpin_connector(&state.db, user_id, connector_id).await?;
+    Ok(())
+}
+
+/// `GET /api/mcp/connectors/pinned` — the caller's pinned connectors, filtered
+/// to ones still reachable (a stale pin on a since-revoked connector must not
+/// leak it), most recently pinned first.
+pub async fn list_pinned_view(state: &McpState, user_id: Uuid) -> Result<Value> {
+    let pinned_ids = repo::list_pinned_connector_ids(&state.db, user_id).await?;
+    Ok(json!({ "data": connectors_reachable_in_order(state, user_id, &pinned_ids).await? }))
+}
+
+/// `GET /api/mcp/connectors/recent` — the caller's recently-used connectors
+/// (derived from real connect activity, not a page-view tracker), filtered to
+/// ones still reachable, most recent first.
+pub async fn list_recent_view(state: &McpState, user_id: Uuid) -> Result<Value> {
+    let recent_ids = repo::list_recent_connector_ids(&state.db, user_id, 10).await?;
+    Ok(json!({ "data": connectors_reachable_in_order(state, user_id, &recent_ids).await? }))
+}
+
+/// Resolve `ids` to full connector DTOs, preserving order, dropping any the
+/// caller can no longer reach.
+async fn connectors_reachable_in_order(state: &McpState, user_id: Uuid, ids: &[Uuid]) -> Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        if !state.authorizer.can_access_connector(&state.db, user_id, id).await? {
+            continue;
+        }
+        if let Some(c) = repo::get_connector_by_id(&state.db, id).await? {
+            let mut dto = connector_dto(&c);
+            dto["is_owner"] = json!(c.owner_id == Some(user_id));
+            out.push(dto);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

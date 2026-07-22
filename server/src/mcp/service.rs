@@ -127,6 +127,18 @@ pub mod connectors {
     pub async fn list_consumers(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
         connectors::list_consumers_view(&s.mcp, caller, is_admin, id).await
     }
+    pub async fn pin(s: &AppState, user: Uuid, id: Uuid) -> R<()> {
+        connectors::pin_connector_view(&s.mcp, user, id).await
+    }
+    pub async fn unpin(s: &AppState, user: Uuid, id: Uuid) -> R<()> {
+        connectors::unpin_connector_view(&s.mcp, user, id).await
+    }
+    pub async fn list_pinned(s: &AppState, user: Uuid) -> R<Value> {
+        connectors::list_pinned_view(&s.mcp, user).await
+    }
+    pub async fn list_recent(s: &AppState, user: Uuid) -> R<Value> {
+        connectors::list_recent_view(&s.mcp, user).await
+    }
 }
 
 pub mod credentials {

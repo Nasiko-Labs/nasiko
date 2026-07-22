@@ -69,6 +69,18 @@ async fn seed_custom_connector(server: &common::TestServer, owner: Uuid, name: &
     .unwrap()
 }
 
+async fn seed_connection(server: &common::TestServer, user: Uuid, connector: Uuid) {
+    sqlx::query(
+        "INSERT INTO mcp_user_connections (user_id, connector_id, status, encrypted_credential)
+         VALUES ($1, $2, 'ACTIVE', 'enc')",
+    )
+    .bind(user)
+    .bind(connector)
+    .execute(&server.db)
+    .await
+    .unwrap();
+}
+
 async fn seed_agent(server: &common::TestServer, owner_id: Uuid, name: &str) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agents (name, owner_id, image, status, is_public) VALUES ($1, $2, 'x:1.0.0', 'stopped', false) RETURNING id",
@@ -746,6 +758,92 @@ async fn probe_rejects_private_url() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn pin_unpin_and_pinned_filters_out_revoked_access() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let uuid = Uuid::parse_str(uid).unwrap();
+    let bob = create_user(&server, uid, "pin-bob").await;
+    let bob_uuid = Uuid::parse_str(bob["id"].as_str().unwrap()).unwrap();
+
+    let own_cid = seed_custom_connector(&server, uuid, "pin-own-tool", "none").await;
+    let bobs_cid = seed_custom_connector(&server, bob_uuid, "pin-bobs-tool", "none").await;
+
+    // Pin an inaccessible connector → 404, nothing pinned.
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{bobs_cid}/pin"))), uid, "admin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+
+    // Pin the owned one.
+    let res = common::as_member(server.client.post(server.url(&format!("/api/mcp/connectors/{own_cid}/pin"))), uid, "admin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+
+    let body: Value =
+        common::as_member(server.client.get(server.url("/api/mcp/connectors/pinned")), uid, "admin")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    let names: Vec<&str> = body["data"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["pin-own-tool"]);
+
+    // Unpin → list is empty again.
+    let res = common::as_member(server.client.delete(server.url(&format!("/api/mcp/connectors/{own_cid}/pin"))), uid, "admin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let body: Value =
+        common::as_member(server.client.get(server.url("/api/mcp/connectors/pinned")), uid, "admin")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    assert!(body["data"].as_array().unwrap().is_empty());
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn recent_reflects_connection_activity_most_recent_first() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let uuid = Uuid::parse_str(uid).unwrap();
+
+    let older = seed_custom_connector(&server, uuid, "recent-older-tool", "none").await;
+    let newer = seed_custom_connector(&server, uuid, "recent-newer-tool", "none").await;
+    seed_connection(&server, uuid, older).await;
+    // Ensure a distinct, later updated_at than `older`'s.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    seed_connection(&server, uuid, newer).await;
+
+    let body: Value =
+        common::as_member(server.client.get(server.url("/api/mcp/connectors/recent")), uid, "admin")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    let names: Vec<&str> = body["data"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["recent-newer-tool", "recent-older-tool"], "most recently connected first: {names:?}");
 
     server.cleanup().await;
 }
