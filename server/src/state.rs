@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use nasiko_auth::AuthService;
@@ -181,11 +180,12 @@ impl AppState {
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
         // HTTP client — no duplicated infrastructure.
-        let mut mcp = nasiko_mcp_gateway::McpState::new(db.clone(), redis.clone(), http_client.clone(), &config);
-        // Swap in the real, ContainerRuntime-backed endpoint refresher (Step
-        // 13) — the gateway crate's own default is a no-op, since it has no
-        // ContainerRuntime dependency by design.
-        mcp.endpoint_refresher = Arc::new(crate::mcp::build::RuntimeEndpointRefresher::new(runtime.clone(), db.clone()));
+        let mcp = nasiko_mcp_gateway::McpState::new(
+            db.clone(),
+            redis.clone(),
+            http_client.clone(),
+            &config,
+        );
 
         let state = Self {
             runtime,

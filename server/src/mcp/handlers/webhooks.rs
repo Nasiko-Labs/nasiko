@@ -20,14 +20,33 @@ pub async fn composio(State(state): State<AppState>, headers: HeaderMap, body: B
 
     // Fail CLOSED: without a secret we can't distinguish Composio from anyone.
     let Some(secret) = &state.mcp.config.composio_webhook_secret else {
-        tracing::error!("COMPOSIO_WEBHOOK_SECRET not set — refusing to process unauthenticated webhook");
-        return (StatusCode::SERVICE_UNAVAILABLE, "webhook processing disabled").into_response();
+        tracing::error!(
+            "COMPOSIO_WEBHOOK_SECRET not set — refusing to process unauthenticated webhook"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "webhook processing disabled",
+        )
+            .into_response();
     };
 
-    let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let (id, ts, sig) = (get("webhook-id"), get("webhook-timestamp"), get("webhook-signature"));
+    let get = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+    };
+    let (id, ts, sig) = (
+        get("webhook-id"),
+        get("webhook-timestamp"),
+        get("webhook-signature"),
+    );
     if id.is_empty() || ts.is_empty() || sig.is_empty() {
-        return (StatusCode::UNAUTHORIZED, "missing webhook signature headers").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "missing webhook signature headers",
+        )
+            .into_response();
     }
     if !service::webhooks::verify_signature(id, ts, &raw, sig, secret) {
         return (StatusCode::UNAUTHORIZED, "invalid webhook signature").into_response();
@@ -45,7 +64,11 @@ pub async fn composio(State(state): State<AppState>, headers: HeaderMap, body: B
         }
         Err(e) => {
             tracing::error!(error = %e, "composio webhook processing failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "status": "error" }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "status": "error" })),
+            )
+                .into_response()
         }
     }
 }

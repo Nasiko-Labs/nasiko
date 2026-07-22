@@ -8,8 +8,8 @@
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use nasiko_mcp_gateway::McpError;
 use crate::state::AppState;
+use nasiko_mcp_gateway::McpError;
 
 type R<T> = Result<T, McpError>;
 
@@ -60,8 +60,8 @@ pub mod catalog {
 
 pub mod connect {
     use super::*;
-    pub use nasiko_mcp_gateway::connect::{ConnectInput, ConnectOutcome, DisconnectOutcome};
     use nasiko_mcp_gateway::connect;
+    pub use nasiko_mcp_gateway::connect::{ConnectInput, ConnectOutcome, DisconnectOutcome};
     use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
     pub async fn connect(s: &AppState, user: Uuid, input: ConnectInput) -> R<ConnectOutcome> {
@@ -85,8 +85,10 @@ pub mod connect {
 
 pub mod connectors {
     use super::*;
-    pub use nasiko_mcp_gateway::connectors::{NewConnectorInput, ShareTarget, UpdateConnectorInput};
     use nasiko_mcp_gateway::connectors;
+    pub use nasiko_mcp_gateway::connectors::{
+        NewConnectorInput, ShareTarget, UpdateConnectorInput,
+    };
 
     pub async fn list(s: &AppState, user: Uuid) -> R<Value> {
         connectors::list_connectors_view(&s.mcp, user).await
@@ -98,7 +100,13 @@ pub mod connectors {
         let c = connectors::register_connector(&s.mcp, owner, input).await?;
         Ok(connectors::connector_dto(&c))
     }
-    pub async fn update(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid, input: UpdateConnectorInput) -> R<Value> {
+    pub async fn update(
+        s: &AppState,
+        caller: Uuid,
+        is_admin: bool,
+        id: Uuid,
+        input: UpdateConnectorInput,
+    ) -> R<Value> {
         let c = connectors::update_connector(&s.mcp, caller, is_admin, id, input).await?;
         Ok(connectors::connector_dto(&c))
     }
@@ -108,30 +116,69 @@ pub mod connectors {
     pub async fn delete(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<()> {
         connectors::delete_connector_authorized(&s.mcp, caller, is_admin, id).await
     }
-    pub async fn share(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid, target: ShareTarget) -> R<Value> {
+    pub async fn share(
+        s: &AppState,
+        caller: Uuid,
+        is_admin: bool,
+        id: Uuid,
+        target: ShareTarget,
+    ) -> R<Value> {
         connectors::share_connector(&s.mcp, caller, is_admin, id, target).await
     }
-    pub async fn revoke(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid, target: ShareTarget) -> R<()> {
+    pub async fn revoke(
+        s: &AppState,
+        caller: Uuid,
+        is_admin: bool,
+        id: Uuid,
+        target: ShareTarget,
+    ) -> R<()> {
         connectors::revoke_share(&s.mcp, caller, is_admin, id, target).await
     }
     pub async fn list_shares(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
         connectors::list_shares_view(&s.mcp, caller, is_admin, id).await
     }
-    pub async fn search_share_targets(s: &AppState, claims: crate::auth::Claims, q: &str) -> R<Value> {
+    pub async fn search_share_targets(
+        s: &AppState,
+        claims: crate::auth::Claims,
+        q: &str,
+    ) -> R<Value> {
         // OSS: `org_visible_user_ids` defaults to `None` → unscoped. EE: members
         // are restricted to their own team/department, so the share picker can't
         // enumerate usernames across org boundaries (matches the platform's own
         // user directory). Non-uuid ids (shouldn't happen) are dropped.
         let identity: nasiko_auth::Identity = claims.into();
-        let visible_ids = s
-            .auth
-            .org_visible_user_ids(&identity)
-            .await
-            .map(|ids| ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect::<Vec<_>>());
+        let visible_ids = s.auth.org_visible_user_ids(&identity).await.map(|ids| {
+            ids.iter()
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect::<Vec<_>>()
+        });
         connectors::search_share_targets_view(&s.mcp, q, visible_ids).await
     }
     pub async fn list_consumers(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
         connectors::list_consumers_view(&s.mcp, caller, is_admin, id).await
+    }
+    /// Share a connector directly with a specific agent (grant_type="agent"),
+    /// bypassing `ShareTarget` the same way EE's team/department grants do —
+    /// generic `create_share_grant` needs only the raw grant_type/grantee_id.
+    pub async fn grant_agent(
+        s: &AppState,
+        caller: Uuid,
+        is_admin: bool,
+        id: Uuid,
+        agent_id: Uuid,
+    ) -> R<Value> {
+        connectors::create_share_grant(&s.mcp, caller, is_admin, id, "agent", &agent_id.to_string())
+            .await
+    }
+    pub async fn revoke_agent(
+        s: &AppState,
+        caller: Uuid,
+        is_admin: bool,
+        id: Uuid,
+        agent_id: Uuid,
+    ) -> R<()> {
+        connectors::revoke_share_grant(&s.mcp, caller, is_admin, id, "agent", &agent_id.to_string())
+            .await
     }
     pub async fn pin(s: &AppState, user: Uuid, id: Uuid) -> R<()> {
         connectors::pin_connector_view(&s.mcp, user, id).await
@@ -159,7 +206,9 @@ pub mod credentials {
     pub async fn status(s: &AppState, user: Uuid, connector_id: Uuid) -> R<Value> {
         let c = credentials::authorize_connector(&s.mcp, user, connector_id).await?;
         let auth = credentials::credential_status(&s.mcp, connector_id, user).await?;
-        Ok(json!({ "connector_id": c.id, "name": c.name, "connected": auth.is_some(), "auth_type": auth }))
+        Ok(
+            json!({ "connector_id": c.id, "name": c.name, "connected": auth.is_some(), "auth_type": auth }),
+        )
     }
     pub async fn delete(s: &AppState, user: Uuid, connector_id: Uuid) -> R<()> {
         let c = credentials::authorize_connector(&s.mcp, user, connector_id).await?;
@@ -187,7 +236,10 @@ pub mod oauth {
     pub async fn status(s: &AppState, user: Uuid, connector_id: Uuid) -> R<Value> {
         let c = oauth::load_accessible_oauth_connector(&s.mcp, user, connector_id).await?;
         let conn = repo::get_user_connection(&s.mcp.db, user, connector_id).await?;
-        let authorized = conn.as_ref().and_then(|x| x.encrypted_credential.as_ref()).is_some();
+        let authorized = conn
+            .as_ref()
+            .and_then(|x| x.encrypted_credential.as_ref())
+            .is_some();
         Ok(json!({
             "connector_id": c.id,
             "name": c.name,
@@ -217,22 +269,38 @@ pub mod oauth {
 
 pub mod permissions {
     use super::*;
-    pub use nasiko_mcp_gateway::permissions::ToolRuleInput;
     use nasiko_mcp_gateway::permissions;
+    pub use nasiko_mcp_gateway::permissions::ToolRuleInput;
 
     pub async fn list_connectors(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
         permissions::list_connectors_view(&s.mcp, user, agent).await
     }
-    pub async fn set_connector_access(s: &AppState, user: Uuid, agent: Uuid, connector: Uuid, enabled: bool) -> R<Value> {
+    pub async fn set_connector_access(
+        s: &AppState,
+        user: Uuid,
+        agent: Uuid,
+        connector: Uuid,
+        enabled: bool,
+    ) -> R<Value> {
         permissions::set_connector_access_view(&s.mcp, user, agent, connector, enabled).await
     }
-    pub async fn list_connector_tools(s: &AppState, user: Uuid, agent: Uuid, connector: Uuid) -> R<Value> {
+    pub async fn list_connector_tools(
+        s: &AppState,
+        user: Uuid,
+        agent: Uuid,
+        connector: Uuid,
+    ) -> R<Value> {
         permissions::list_connector_tools_view(&s.mcp, user, agent, connector).await
     }
     pub async fn list_tool_rules(s: &AppState, agent: Uuid) -> R<Value> {
         permissions::list_tool_rules_view(&s.mcp, agent).await
     }
-    pub async fn bulk_update_tools(s: &AppState, user: Uuid, agent: Uuid, rules: &[ToolRuleInput]) -> R<Value> {
+    pub async fn bulk_update_tools(
+        s: &AppState,
+        user: Uuid,
+        agent: Uuid,
+        rules: &[ToolRuleInput],
+    ) -> R<Value> {
         permissions::bulk_update_tools(&s.mcp, user, agent, rules).await
     }
     pub async fn reset(s: &AppState, agent: Uuid) -> R<u64> {
@@ -242,8 +310,8 @@ pub mod permissions {
 
 pub mod webhooks {
     use super::*;
-    pub use nasiko_mcp_gateway::webhooks::WebhookOutcome;
     use nasiko_mcp_gateway::webhooks;
+    pub use nasiko_mcp_gateway::webhooks::WebhookOutcome;
 
     pub fn verify_signature(id: &str, ts: &str, body: &str, sig: &str, secret: &str) -> bool {
         webhooks::verify_signature(id, ts, body, sig, secret)

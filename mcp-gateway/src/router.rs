@@ -19,7 +19,9 @@ pub fn route_tool<'a>(
         return servers
             .iter()
             .find(|s| {
-                s.kind == ServerType::Mcp && !s.url.is_empty() && connector_prefix(s.connector_id) == prefix
+                s.kind == ServerType::Mcp
+                    && !s.url.is_empty()
+                    && connector_prefix(s.connector_id) == prefix
             })
             .map(|s| (s, original.to_string()))
             .ok_or_else(|| {
@@ -33,10 +35,15 @@ pub fn route_tool<'a>(
     // A bare (un-prefixed) name is only valid as a Composio meta-tool. Never
     // guess a generic backend — the aggregator always namespaces generic tools,
     // so an un-prefixed name that isn't Composio is malformed/hallucinated.
-    if let Some(composio) = servers.iter().find(|s| s.kind == ServerType::Composio && !s.url.is_empty()) {
+    if let Some(composio) = servers
+        .iter()
+        .find(|s| s.kind == ServerType::Composio && !s.url.is_empty())
+    {
         return Ok((composio, tool_name.to_string()));
     }
-    Err(McpError::BadRequest(format!("Unknown tool '{tool_name}' — no matching connector.")))
+    Err(McpError::BadRequest(format!(
+        "Unknown tool '{tool_name}' — no matching connector."
+    )))
 }
 
 #[cfg(test)]
@@ -53,7 +60,6 @@ mod tests {
             url: url.into(),
             headers: HashMap::new(),
             transport: "streamable_http".into(),
-            trusted: false,
         }
     }
 

@@ -65,9 +65,10 @@ async fn refresh(
     connector: &McpConnector,
     conn: &McpUserConnection,
 ) -> Result<Option<String>> {
-    let (Some(refresh_enc), Some(token_endpoint)) =
-        (conn.encrypted_refresh_token.as_ref(), connector.oauth_token_endpoint.as_ref())
-    else {
+    let (Some(refresh_enc), Some(token_endpoint)) = (
+        conn.encrypted_refresh_token.as_ref(),
+        connector.oauth_token_endpoint.as_ref(),
+    ) else {
         tracing::warn!(connector = %connector.name, "oauth near expiry but no refresh token / endpoint — skipping");
         return Ok(None);
     };
@@ -93,7 +94,13 @@ async fn refresh(
 
     // Guarded client: the token endpoint was discovered from the target server's
     // response, so it must be SSRF-checked, not fetched with the internal client.
-    let resp = state.guarded_http_client.post(token_endpoint).timeout(REFRESH_TIMEOUT).form(&form).send().await;
+    let resp = state
+        .guarded_http_client
+        .post(token_endpoint)
+        .timeout(REFRESH_TIMEOUT)
+        .form(&form)
+        .send()
+        .await;
     let body: Value = match resp {
         Ok(r) if r.status().is_success() => match r.json().await {
             Ok(v) => v,
@@ -118,10 +125,17 @@ async fn refresh(
     };
     let new_refresh = first_str(&body, &["refresh_token"]).unwrap_or(refresh_plain);
     let scope = first_str(&body, &["scope"]).or_else(|| conn.scope.clone());
-    let expires_at = body.get("expires_in").and_then(|v| v.as_i64()).map(|s| Utc::now() + ChronoDuration::seconds(s));
+    let expires_at = body
+        .get("expires_in")
+        .and_then(|v| v.as_i64())
+        .map(|s| Utc::now() + ChronoDuration::seconds(s));
 
-    let access_enc = crypto.encrypt(&new_access).map_err(|e| McpError::Internal(format!("encrypt access token: {e}")))?;
-    let refresh_enc = crypto.encrypt(&new_refresh).map_err(|e| McpError::Internal(format!("encrypt refresh token: {e}")))?;
+    let access_enc = crypto
+        .encrypt(&new_access)
+        .map_err(|e| McpError::Internal(format!("encrypt access token: {e}")))?;
+    let refresh_enc = crypto
+        .encrypt(&new_refresh)
+        .map_err(|e| McpError::Internal(format!("encrypt refresh token: {e}")))?;
     repo::upsert_connection_oauth_token(
         &state.db,
         user_id,
@@ -172,7 +186,12 @@ pub struct OAuthState {
 }
 
 impl OAuthState {
-    pub fn new(user_id: Uuid, connector_id: Uuid, code_verifier: String, redirect_url: Option<String>) -> Self {
+    pub fn new(
+        user_id: Uuid,
+        connector_id: Uuid,
+        code_verifier: String,
+        redirect_url: Option<String>,
+    ) -> Self {
         Self {
             user_id,
             connector_id,
@@ -256,23 +275,50 @@ pub async fn discover_oauth_config(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let rm_url = extract_resource_metadata(&www_auth)
-        .ok_or_else(|| McpError::Oauth("401 has no resource_metadata URL in WWW-Authenticate".to_string()))?;
+    let rm_url = extract_resource_metadata(&www_auth).ok_or_else(|| {
+        McpError::Oauth("401 has no resource_metadata URL in WWW-Authenticate".to_string())
+    })?;
 
-    let rm: Value = http.get(&rm_url).timeout(DISCOVERY_TIMEOUT).send().await?.json().await?;
+    let rm: Value = http
+        .get(&rm_url)
+        .timeout(DISCOVERY_TIMEOUT)
+        .send()
+        .await?
+        .json()
+        .await?;
     let as_url = rm
         .get("authorization_servers")
         .and_then(|v| v.as_array())
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
-        .ok_or_else(|| McpError::Oauth(format!("no authorization_servers in resource metadata at {rm_url}")))?;
+        .ok_or_else(|| {
+            McpError::Oauth(format!(
+                "no authorization_servers in resource metadata at {rm_url}"
+            ))
+        })?;
 
-    let as_meta_url = format!("{}/.well-known/oauth-authorization-server", as_url.trim_end_matches('/'));
-    let as_meta: Value = http.get(&as_meta_url).timeout(DISCOVERY_TIMEOUT).send().await?.json().await?;
-    let authorization_endpoint = first_str(&as_meta, &["authorization_endpoint"])
-        .ok_or_else(|| McpError::Oauth(format!("AS metadata at {as_meta_url} missing authorization_endpoint")))?;
-    let token_endpoint = first_str(&as_meta, &["token_endpoint"])
-        .ok_or_else(|| McpError::Oauth(format!("AS metadata at {as_meta_url} missing token_endpoint")))?;
+    let as_meta_url = format!(
+        "{}/.well-known/oauth-authorization-server",
+        as_url.trim_end_matches('/')
+    );
+    let as_meta: Value = http
+        .get(&as_meta_url)
+        .timeout(DISCOVERY_TIMEOUT)
+        .send()
+        .await?
+        .json()
+        .await?;
+    let authorization_endpoint =
+        first_str(&as_meta, &["authorization_endpoint"]).ok_or_else(|| {
+            McpError::Oauth(format!(
+                "AS metadata at {as_meta_url} missing authorization_endpoint"
+            ))
+        })?;
+    let token_endpoint = first_str(&as_meta, &["token_endpoint"]).ok_or_else(|| {
+        McpError::Oauth(format!(
+            "AS metadata at {as_meta_url} missing token_endpoint"
+        ))
+    })?;
     let registration_endpoint = first_str(&as_meta, &["registration_endpoint"]);
 
     let mut client_id = pre_client_id.map(str::to_string);
@@ -297,11 +343,19 @@ pub async fn discover_oauth_config(
             client_id = first_str(&reg_data, &["client_id"]);
             client_secret = first_str(&reg_data, &["client_secret"]);
         } else {
-            tracing::warn!(status = reg.status().as_u16(), "dynamic client registration failed");
+            tracing::warn!(
+                status = reg.status().as_u16(),
+                "dynamic client registration failed"
+            );
         }
     }
 
-    Ok(DiscoveredOAuth { authorization_endpoint, token_endpoint, client_id, client_secret })
+    Ok(DiscoveredOAuth {
+        authorization_endpoint,
+        token_endpoint,
+        client_id,
+        client_secret,
+    })
 }
 
 /// Build the authorization URL the user opens in their browser.
@@ -349,12 +403,19 @@ pub async fn exchange_code(
         form.push(("client_secret", secret.to_string()));
     }
 
-    let resp = http.post(token_endpoint).timeout(DISCOVERY_TIMEOUT).form(&form).send().await?;
+    let resp = http
+        .post(token_endpoint)
+        .timeout(DISCOVERY_TIMEOUT)
+        .form(&form)
+        .send()
+        .await?;
     if !resp.status().is_success() {
         let code = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
         let snippet: String = body.chars().take(300).collect();
-        return Err(McpError::Oauth(format!("token exchange failed (HTTP {code}): {snippet}")));
+        return Err(McpError::Oauth(format!(
+            "token exchange failed (HTTP {code}): {snippet}"
+        )));
     }
 
     let body: Value = resp.json().await?;
@@ -396,11 +457,19 @@ pub async fn load_accessible_oauth_connector(
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
-    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
-        return Err(McpError::Forbidden("you do not have access to this connector".into()));
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, user_id, connector_id)
+        .await?
+    {
+        return Err(McpError::Forbidden(
+            "you do not have access to this connector".into(),
+        ));
     }
     if connector.auth_type.as_deref() != Some("oauth2") {
-        return Err(McpError::BadRequest("OAuth is only for auth_type='oauth2' connectors".into()));
+        return Err(McpError::BadRequest(
+            "OAuth is only for auth_type='oauth2' connectors".into(),
+        ));
     }
     Ok(connector)
 }
@@ -426,8 +495,13 @@ pub async fn begin_authorization(
         // Guarded client: discovery follows URLs from the target server's own
         // response (resource_metadata, authorization_servers, endpoints), which
         // are attacker-influenced and must be SSRF-checked.
-        let discovered =
-            discover_oauth_config(&state.guarded_http_client, &server_url, &redirect_uri, pre_client_id.as_deref()).await?;
+        let discovered = discover_oauth_config(
+            &state.guarded_http_client,
+            &server_url,
+            &redirect_uri,
+            pre_client_id.as_deref(),
+        )
+        .await?;
         // Encrypt the DCR client secret at rest with the owner's key.
         let client_secret_enc = match (discovered.client_secret.as_deref(), connector.owner_id) {
             (Some(sec), Some(owner)) => Some(
@@ -451,16 +525,26 @@ pub async fn begin_authorization(
             .ok_or_else(|| McpError::Internal("connector vanished after oauth config".into()))?;
     }
 
-    let (Some(auth_endpoint), Some(client_id)) =
-        (connector.oauth_authorization_endpoint.as_ref(), connector.oauth_client_id.as_ref())
-    else {
-        return Err(McpError::Oauth("dynamic client registration unavailable — supply a client_id".into()));
+    let (Some(auth_endpoint), Some(client_id)) = (
+        connector.oauth_authorization_endpoint.as_ref(),
+        connector.oauth_client_id.as_ref(),
+    ) else {
+        return Err(McpError::Oauth(
+            "dynamic client registration unavailable — supply a client_id".into(),
+        ));
     };
 
     let (verifier, challenge) = pkce_pair();
     let oauth_state = OAuthState::new(user_id, connector.id, verifier, redirect_url);
     let signed = sign_state(&oauth_state, &state.config.oauth_state_signing_key);
-    build_authorize_url(auth_endpoint, client_id, &redirect_uri, &signed, &challenge, &server_url)
+    build_authorize_url(
+        auth_endpoint,
+        client_id,
+        &redirect_uri,
+        &signed,
+        &challenge,
+        &server_url,
+    )
 }
 
 /// Outcome of the public OAuth callback for the server to render.
@@ -485,8 +569,11 @@ pub async fn handle_callback(
         return CallbackOutcome::Message("Missing code or state.".to_string());
     };
 
-    let Some(oauth_state) = verify_state(&signed_state, &state.config.oauth_state_signing_key) else {
-        return CallbackOutcome::Message("Invalid or expired state — restart the authorization flow.".to_string());
+    let Some(oauth_state) = verify_state(&signed_state, &state.config.oauth_state_signing_key)
+    else {
+        return CallbackOutcome::Message(
+            "Invalid or expired state — restart the authorization flow.".to_string(),
+        );
     };
 
     let connector = match repo::get_connector_by_id(&state.db, oauth_state.connector_id).await {
@@ -517,24 +604,51 @@ pub async fn handle_callback(
         // Do not echo the token-endpoint response body back to the browser.
         Err(e) => {
             tracing::warn!(error = %e, "oauth token exchange failed");
-            let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("token exchange failed")).await;
-            return CallbackOutcome::Message("Token exchange failed — please restart the authorization flow.".to_string());
+            let _ = repo::set_connector_setup_status(
+                &state.db,
+                connector.id,
+                "failed",
+                Some("token exchange failed"),
+            )
+            .await;
+            return CallbackOutcome::Message(
+                "Token exchange failed — please restart the authorization flow.".to_string(),
+            );
         }
     };
 
     let crypto = SecretsCrypto::for_user(oauth_state.user_id);
-    let expires_at = tokens.expires_in.map(|secs| Utc::now() + ChronoDuration::seconds(secs));
+    let expires_at = tokens
+        .expires_in
+        .map(|secs| Utc::now() + ChronoDuration::seconds(secs));
     let access_enc = match crypto.encrypt(&tokens.access_token) {
         Ok(enc) => enc,
         Err(e) => {
-            let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("failed to encrypt token")).await;
+            let _ = repo::set_connector_setup_status(
+                &state.db,
+                connector.id,
+                "failed",
+                Some("failed to encrypt token"),
+            )
+            .await;
             return CallbackOutcome::Message(format!("Failed to encrypt token: {e}"));
         }
     };
-    let refresh_enc = match tokens.refresh_token.as_ref().map(|r| crypto.encrypt(r)).transpose() {
+    let refresh_enc = match tokens
+        .refresh_token
+        .as_ref()
+        .map(|r| crypto.encrypt(r))
+        .transpose()
+    {
         Ok(enc) => enc,
         Err(e) => {
-            let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("failed to encrypt token")).await;
+            let _ = repo::set_connector_setup_status(
+                &state.db,
+                connector.id,
+                "failed",
+                Some("failed to encrypt token"),
+            )
+            .await;
             return CallbackOutcome::Message(format!("Failed to encrypt token: {e}"));
         }
     };
@@ -549,7 +663,13 @@ pub async fn handle_callback(
     )
     .await
     {
-        let _ = repo::set_connector_setup_status(&state.db, connector.id, "failed", Some("failed to store token")).await;
+        let _ = repo::set_connector_setup_status(
+            &state.db,
+            connector.id,
+            "failed",
+            Some("failed to store token"),
+        )
+        .await;
         return CallbackOutcome::Message(format!("Failed to store token: {e}"));
     }
 
@@ -557,7 +677,10 @@ pub async fn handle_callback(
     crate::session::invalidate_session_cache(state, oauth_state.user_id).await;
     tracing::info!(connector = %connector.name, user_id = %oauth_state.user_id, "stored mcp oauth token");
     let dest = oauth_state.redirect_url.unwrap_or_else(|| "/".to_string());
-    CallbackOutcome::Redirect(crate::net::safe_redirect(&dest, state.config.gateway_public_url.as_deref()))
+    CallbackOutcome::Redirect(crate::net::safe_redirect(
+        &dest,
+        state.config.gateway_public_url.as_deref(),
+    ))
 }
 
 /// Parse `resource_metadata="<url>"` out of a `WWW-Authenticate` header value.
@@ -594,7 +717,10 @@ mod tests {
     #[test]
     fn extracts_resource_metadata_url() {
         let h = r#"Bearer resource_metadata="https://as.example.com/.well-known/x", error="x""#;
-        assert_eq!(extract_resource_metadata(h).as_deref(), Some("https://as.example.com/.well-known/x"));
+        assert_eq!(
+            extract_resource_metadata(h).as_deref(),
+            Some("https://as.example.com/.well-known/x")
+        );
     }
 
     #[test]

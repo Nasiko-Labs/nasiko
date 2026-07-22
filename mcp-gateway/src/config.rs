@@ -54,9 +54,14 @@ impl McpConfig {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .or_else(|| {
-                    std::env::var("JWT_SECRET").ok().filter(|s| !s.is_empty()).map(|j| format!("mcp-oauth-state::{j}"))
+                    std::env::var("JWT_SECRET")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .map(|j| format!("mcp-oauth-state::{j}"))
                 })
-                .expect("OAUTH_STATE_SIGNING_KEY or JWT_SECRET must be set for MCP OAuth state signing"),
+                .expect(
+                    "OAUTH_STATE_SIGNING_KEY or JWT_SECRET must be set for MCP OAuth state signing",
+                ),
         }
     }
 

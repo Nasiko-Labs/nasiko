@@ -32,7 +32,9 @@ impl ShareRequest {
         }
         match self.username {
             Some(u) if !u.is_empty() => Ok(ShareTarget::User(u)),
-            _ => Err(ApiError(McpError::BadRequest("provide 'username' or set 'public': true".into()))),
+            _ => Err(ApiError(McpError::BadRequest(
+                "provide 'username' or set 'public': true".into(),
+            ))),
         }
     }
 }
@@ -44,7 +46,9 @@ pub async fn list(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     let caller = parse_user(&claims)?;
-    Ok(Json(service::connectors::list_shares(&state, caller, claims.is_superuser, id).await?))
+    Ok(Json(
+        service::connectors::list_shares(&state, caller, claims.is_superuser, id).await?,
+    ))
 }
 
 /// `POST /api/mcp/connectors/{id}/share` — share by username or with everyone.
@@ -86,7 +90,9 @@ pub async fn search_targets(
     claims: Claims,
     Query(query): Query<SearchShareTargetsQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(Json(service::connectors::search_share_targets(&state, claims, &query.q).await?))
+    Ok(Json(
+        service::connectors::search_share_targets(&state, claims, &query.q).await?,
+    ))
 }
 
 /// `GET /api/mcp/connectors/{id}/consumers` — agents that have this connector
@@ -97,5 +103,54 @@ pub async fn consumers(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     let caller = parse_user(&claims)?;
-    Ok(Json(service::connectors::list_consumers(&state, caller, claims.is_superuser, id).await?))
+    Ok(Json(
+        service::connectors::list_consumers(&state, caller, claims.is_superuser, id).await?,
+    ))
+}
+
+/// `POST /api/mcp/connectors/{id}/grants/agents/{agent_id}` — share a
+/// connector directly with a specific agent, independent of who owns it. Lets
+/// that agent be configured with the connector (`PUT
+/// /api/mcp/agents/{agent_id}/connectors/{connector_id}`) even if its owner has
+/// no personal reachability to it otherwise. Owner/admin-gated, same as
+/// user/public shares (enforced inside `service::connectors::grant_agent`).
+pub async fn grant_agent(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path((id, agent_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    if !agent_exists(&state, agent_id).await? {
+        return Err(ApiError(McpError::NotFound(format!(
+            "agent '{agent_id}' not found"
+        ))));
+    }
+    let view =
+        service::connectors::grant_agent(&state, caller, claims.is_superuser, id, agent_id).await?;
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+/// `DELETE /api/mcp/connectors/{id}/grants/agents/{agent_id}` — revoke.
+pub async fn revoke_agent(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path((id, agent_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    service::connectors::revoke_agent(&state, caller, claims.is_superuser, id, agent_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `create_share_grant` stores `grantee_id` as a free-form string with no FK
+/// into `agents` — validate existence here so a mistyped/nonexistent agent id
+/// doesn't silently create a grant nothing can ever match (mirrors EE's
+/// `team_exists`/`department_exists` in `ee/server/src/mcp_sharing.rs`).
+async fn agent_exists(state: &AppState, agent_id: Uuid) -> nasiko_mcp_gateway::Result<bool> {
+    let ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(agent_id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(ok)
 }

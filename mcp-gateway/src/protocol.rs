@@ -69,14 +69,35 @@ pub async fn handle_request(
 
     let result = match method {
         "tools/list" => {
-            handle_tools_list(state, user_id, &req_id, &resolved.servers, &resolved.connected_toolkits, &perms, traceparent)
-                .await
+            handle_tools_list(
+                state,
+                user_id,
+                &req_id,
+                &resolved.servers,
+                &resolved.connected_toolkits,
+                &perms,
+                traceparent,
+            )
+            .await
         }
         "tools/call" => {
             let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
-            handle_tools_call(state, user_id, &req_id, &params, &resolved, &perms, traceparent).await
+            handle_tools_call(
+                state,
+                user_id,
+                &req_id,
+                &params,
+                &resolved,
+                &perms,
+                traceparent,
+            )
+            .await
         }
-        other => err(&req_id, codes::METHOD_NOT_FOUND, format!("Method not found: {other}")),
+        other => err(
+            &req_id,
+            codes::METHOD_NOT_FOUND,
+            format!("Method not found: {other}"),
+        ),
     };
     Some(result)
 }
@@ -103,7 +124,16 @@ pub async fn handle_tools_list(
     perms: &PermissionContext,
     traceparent: Option<&str>,
 ) -> Value {
-    match aggregator::aggregate_tools(state, user_id, servers, connected_toolkits, perms, traceparent).await {
+    match aggregator::aggregate_tools(
+        state,
+        user_id,
+        servers,
+        connected_toolkits,
+        perms,
+        traceparent,
+    )
+    .await
+    {
         Ok(tools) => ok(req_id, json!({ "tools": tools })),
         Err(e) => err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
     }
@@ -120,7 +150,10 @@ pub async fn handle_tools_call(
     traceparent: Option<&str>,
 ) -> Value {
     let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let mut arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let mut arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
 
     let (server, original) = match router::route_tool(tool_name, &resolved.servers) {
         Ok(pair) => pair,
@@ -129,10 +162,18 @@ pub async fn handle_tools_call(
 
     // ── Generic MCP tool: Layer 1 (reachability) then Layer 2 (decide) ─────
     if server.kind == ServerType::Mcp {
-        match state.authorizer.can_access_connector(&state.db, user_id, server.connector_id).await {
+        match state
+            .authorizer
+            .can_access_connector(&state.db, user_id, server.connector_id)
+            .await
+        {
             Ok(true) => {}
             Ok(false) => {
-                return err(req_id, codes::TOOL_BLOCKED, format!("Connector for '{tool_name}' is not available."));
+                return err(
+                    req_id,
+                    codes::TOOL_BLOCKED,
+                    format!("Connector for '{tool_name}' is not available."),
+                );
             }
             Err(e) => return err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
         }
@@ -140,13 +181,19 @@ pub async fn handle_tools_call(
         // agent denies the call even though Layer 1 (owner/grant) still passes.
         match perms.decide(server.connector_id, &original) {
             ToolAccess::Denied => {
-                return err(req_id, codes::TOOL_BLOCKED, format!("Tool '{tool_name}' is blocked or disabled for this agent."));
+                return err(
+                    req_id,
+                    codes::TOOL_BLOCKED,
+                    format!("Tool '{tool_name}' is blocked or disabled for this agent."),
+                );
             }
             ToolAccess::Ask => {
                 return err_data(
                     req_id,
                     codes::TOOL_ASK,
-                    format!("Tool '{tool_name}' requires user approval. Grant access in the agent settings."),
+                    format!(
+                        "Tool '{tool_name}' requires user approval. Grant access in the agent settings."
+                    ),
                     json!({ "server": server.name }),
                 );
             }
@@ -163,17 +210,25 @@ pub async fn handle_tools_call(
     // maps to no connector — they skip this block and are handled below / passed
     // through, exactly as before.
     if server.kind == ServerType::Composio
-        && let Some(&cid) = resolved.toolkit_to_connector.get(&toolkit_from_composio_slug(tool_name))
+        && let Some(&cid) = resolved
+            .toolkit_to_connector
+            .get(&toolkit_from_composio_slug(tool_name))
     {
         match perms.decide(cid, tool_name) {
             ToolAccess::Denied => {
-                return err(req_id, codes::TOOL_BLOCKED, format!("Tool '{tool_name}' is blocked or disabled for this agent."));
+                return err(
+                    req_id,
+                    codes::TOOL_BLOCKED,
+                    format!("Tool '{tool_name}' is blocked or disabled for this agent."),
+                );
             }
             ToolAccess::Ask => {
                 return err_data(
                     req_id,
                     codes::TOOL_ASK,
-                    format!("Tool '{tool_name}' requires user approval. Grant access in the agent settings."),
+                    format!(
+                        "Tool '{tool_name}' requires user approval. Grant access in the agent settings."
+                    ),
                     json!({ "server": "composio" }),
                 );
             }
@@ -185,14 +240,21 @@ pub async fn handle_tools_call(
     if tool_name == "COMPOSIO_MANAGE_CONNECTIONS"
         && let Some(requested) = arguments.get("toolkits").and_then(|v| v.as_array())
     {
-        let requested: Vec<String> = requested.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        let requested: Vec<String> = requested
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
         let blocked: Vec<String> = requested
             .iter()
             .filter(|tk| connector_disabled(resolved, perms, tk))
             .cloned()
             .collect();
         if !blocked.is_empty() {
-            let allowed: Vec<String> = requested.iter().filter(|tk| !blocked.contains(tk)).cloned().collect();
+            let allowed: Vec<String> = requested
+                .iter()
+                .filter(|tk| !blocked.contains(tk))
+                .cloned()
+                .collect();
             if allowed.is_empty() {
                 return err(
                     req_id,
@@ -256,19 +318,34 @@ pub async fn handle_tools_call(
     match state
         .providers
         .mcp
-        .call_tool(server, req_id, &original, &arguments, DEFAULT_CALL_TIMEOUT, traceparent)
+        .call_tool(
+            server,
+            req_id,
+            &original,
+            &arguments,
+            DEFAULT_CALL_TIMEOUT,
+            traceparent,
+        )
         .await
     {
         Ok(response) => response,
         Err(e) => {
             tracing::warn!(server = %server.name, tool = %original, error = %e, "backend tool call failed");
-            err(req_id, codes::INTERNAL_ERROR, format!("Backend '{}' failed to execute '{}'", server.name, original))
+            err(
+                req_id,
+                codes::INTERNAL_ERROR,
+                format!("Backend '{}' failed to execute '{}'", server.name, original),
+            )
         }
     }
 }
 
 /// True when a Composio toolkit maps to a connector that is disabled for the agent.
-fn connector_disabled(resolved: &ResolvedSession, perms: &PermissionContext, toolkit: &str) -> bool {
+fn connector_disabled(
+    resolved: &ResolvedSession,
+    perms: &PermissionContext,
+    toolkit: &str,
+) -> bool {
     resolved
         .toolkit_to_connector
         .get(&toolkit.to_ascii_lowercase())
@@ -306,7 +383,10 @@ mod tests {
                 toolcount_ttl_seconds: 3600,
                 oauth_state_signing_key: "test".to_string(),
             },
-            providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
+            providers: Providers {
+                composio: None,
+                mcp: GenericMcpProvider::new(reqwest::Client::new()),
+            },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
         }
     }
@@ -338,7 +418,11 @@ mod tests {
     }
 
     fn rule(cid: Uuid, pat: &str, stance: Stance) -> PermissionRule {
-        PermissionRule { connector_id: cid, tool_pattern: pat.into(), stance }
+        PermissionRule {
+            connector_id: cid,
+            tool_pattern: pat.into(),
+            stance,
+        }
     }
 
     // ── Round 3: direct Composio tool calls must be permission-enforced ──────
@@ -457,7 +541,10 @@ mod tests {
             None,
         )
         .await;
-        assert!(res.get("error").is_none(), "a cross-toolkit meta-tool must not be blocked by the per-toolkit check: {res}");
+        assert!(
+            res.get("error").is_none(),
+            "a cross-toolkit meta-tool must not be blocked by the per-toolkit check: {res}"
+        );
         hit.assert_async().await;
     }
 }

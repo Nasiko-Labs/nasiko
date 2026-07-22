@@ -29,15 +29,22 @@ mod tests {
 
     #[test]
     fn injects_when_configured() {
-        let injector = McpInjector { gateway_public_url: Some("http://gateway:8080/api/mcp".into()) };
+        let injector = McpInjector {
+            gateway_public_url: Some("http://gateway:8080/api/mcp".into()),
+        };
         let mut env = HashMap::new();
         injector.inject(&mut env, &test_ctx());
-        assert_eq!(env.get("MCP_GATEWAY_URL").map(String::as_str), Some("http://gateway:8080/api/mcp"));
+        assert_eq!(
+            env.get("MCP_GATEWAY_URL").map(String::as_str),
+            Some("http://gateway:8080/api/mcp")
+        );
     }
 
     #[test]
     fn no_op_when_unconfigured() {
-        let injector = McpInjector { gateway_public_url: None };
+        let injector = McpInjector {
+            gateway_public_url: None,
+        };
         let mut env = HashMap::new();
         injector.inject(&mut env, &test_ctx());
         assert!(env.is_empty());

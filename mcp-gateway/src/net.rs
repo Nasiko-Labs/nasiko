@@ -11,21 +11,6 @@
 //! DNS-rebinding gap between validation and the later connection is closed by
 //! [`GuardedResolver`], installed on the generic-backend client so reqwest
 //! connects only to addresses that pass the same check at resolution time.
-//!
-//! A `GenericMcpProvider` also holds a **second, unguarded** client — this is
-//! not a bypass of the guard above. It exists solely for `MCPServerConfig`s
-//! whose `trusted` flag is `true`, meaning the connector's `url` was never
-//! typed by a user in the first place: it's an `uploaded_build` MCP-server
-//! connector, whose address was resolved by the platform's own
-//! `ContainerRuntime::endpoint()` after building and deploying the user's
-//! uploaded source. Such an address is necessarily internal/private (it's a
-//! container on the platform's own Docker network), which is exactly what this
-//! guard exists to reject for *user-supplied* URLs — so a live-traffic
-//! `trusted` connector must route around it, not through it. `trusted` is
-//! computed in exactly one place (`credentials::build_generic_servers`) from
-//! the connector's `source_kind` column and is never accepted as external
-//! input anywhere (not in `NewConnectorInput`, the HTTP `CreateConnector`
-//! body, or any CLI argument) — see `provider/generic.rs::GenericMcpProvider`.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -61,8 +46,9 @@ impl Resolve for GuardedResolver {
             let host = name.as_str().to_owned();
             let addrs = tokio::net::lookup_host((host.as_str(), 0)).await?;
             let allow_private = private_urls_allowed();
-            let filtered: Vec<SocketAddr> =
-                addrs.filter(|sa| allow_private || !is_blocked_ip(sa.ip())).collect();
+            let filtered: Vec<SocketAddr> = addrs
+                .filter(|sa| allow_private || !is_blocked_ip(sa.ip()))
+                .collect();
             if filtered.is_empty() {
                 return Err(format!(
                     "host '{host}' did not resolve to any allowed (public) address"
@@ -112,12 +98,16 @@ pub async fn validate_public_url(raw: &str) -> Result<()> {
         return Ok(());
     }
 
-    let url = reqwest::Url::parse(raw)
-        .map_err(|e| McpError::BadRequest(format!("invalid url: {e}")))?;
+    let url =
+        reqwest::Url::parse(raw).map_err(|e| McpError::BadRequest(format!("invalid url: {e}")))?;
 
     match url.scheme() {
         "http" | "https" => {}
-        s => return Err(McpError::BadRequest(format!("unsupported url scheme '{s}' (use http/https)"))),
+        s => {
+            return Err(McpError::BadRequest(format!(
+                "unsupported url scheme '{s}' (use http/https)"
+            )));
+        }
     }
 
     let host = url
@@ -125,7 +115,9 @@ pub async fn validate_public_url(raw: &str) -> Result<()> {
         .ok_or_else(|| McpError::BadRequest("url has no host".to_string()))?;
     let lower = host.to_ascii_lowercase();
     if lower == "localhost" || lower.ends_with(".localhost") {
-        return Err(McpError::BadRequest("url host is not allowed (loopback)".to_string()));
+        return Err(McpError::BadRequest(
+            "url host is not allowed (loopback)".to_string(),
+        ));
     }
 
     let port = url.port_or_known_default().unwrap_or(443);
@@ -183,23 +175,38 @@ mod tests {
     #[test]
     fn blocks_private_and_metadata_ips() {
         for ip in [
-            "127.0.0.1", "10.0.0.5", "192.168.1.1", "172.16.0.1", "169.254.169.254", "0.0.0.0",
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "169.254.169.254",
+            "0.0.0.0",
             "100.64.0.1",
         ] {
-            assert!(is_blocked_ip(ip.parse::<Ipv4Addr>().unwrap().into()), "{ip} should be blocked");
+            assert!(
+                is_blocked_ip(ip.parse::<Ipv4Addr>().unwrap().into()),
+                "{ip} should be blocked"
+            );
         }
         assert!(is_blocked_ip(Ipv6Addr::LOCALHOST.into()));
         assert!(is_blocked_ip("fe80::1".parse::<Ipv6Addr>().unwrap().into()));
         assert!(is_blocked_ip("fc00::1".parse::<Ipv6Addr>().unwrap().into()));
-        assert!(is_blocked_ip("::ffff:127.0.0.1".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(is_blocked_ip(
+            "::ffff:127.0.0.1".parse::<Ipv6Addr>().unwrap().into()
+        ));
     }
 
     #[test]
     fn allows_public_ips() {
         for ip in ["8.8.8.8", "1.1.1.1", "93.184.216.34"] {
-            assert!(!is_blocked_ip(ip.parse::<Ipv4Addr>().unwrap().into()), "{ip} should be allowed");
+            assert!(
+                !is_blocked_ip(ip.parse::<Ipv4Addr>().unwrap().into()),
+                "{ip} should be allowed"
+            );
         }
-        assert!(!is_blocked_ip("2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(!is_blocked_ip(
+            "2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap().into()
+        ));
     }
 
     #[test]
@@ -209,11 +216,18 @@ mod tests {
         assert_eq!(safe_redirect("/chat", base), "/chat");
         assert_eq!(safe_redirect("/", base), "/");
         // Same-origin absolute is allowed.
-        assert_eq!(safe_redirect("https://app.nasiko.com/done", base), "https://app.nasiko.com/done");
+        assert_eq!(
+            safe_redirect("https://app.nasiko.com/done", base),
+            "https://app.nasiko.com/done"
+        );
         // Off-origin, protocol-relative, and scheme tricks fall back to "/".
         assert_eq!(safe_redirect("https://evil.example.com", base), "/");
         assert_eq!(safe_redirect("//evil.example.com", base), "/");
-        assert_eq!(safe_redirect("http://app.nasiko.com/done", base), "/", "scheme mismatch is off-origin");
+        assert_eq!(
+            safe_redirect("http://app.nasiko.com/done", base),
+            "/",
+            "scheme mismatch is off-origin"
+        );
         assert_eq!(safe_redirect("javascript:alert(1)", base), "/");
         // With no configured base, only relative paths are allowed.
         assert_eq!(safe_redirect("https://app.nasiko.com/x", None), "/");
@@ -223,41 +237,79 @@ mod tests {
     #[test]
     fn rfc1918_172_range_boundaries_are_exact() {
         // 172.16.0.0/12 — just outside on both sides allowed, just inside blocked.
-        assert!(!is_blocked_ip("172.15.255.255".parse::<Ipv4Addr>().unwrap().into()));
-        assert!(is_blocked_ip("172.16.0.0".parse::<Ipv4Addr>().unwrap().into()));
-        assert!(is_blocked_ip("172.31.255.255".parse::<Ipv4Addr>().unwrap().into()));
-        assert!(!is_blocked_ip("172.32.0.0".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(!is_blocked_ip(
+            "172.15.255.255".parse::<Ipv4Addr>().unwrap().into()
+        ));
+        assert!(is_blocked_ip(
+            "172.16.0.0".parse::<Ipv4Addr>().unwrap().into()
+        ));
+        assert!(is_blocked_ip(
+            "172.31.255.255".parse::<Ipv4Addr>().unwrap().into()
+        ));
+        assert!(!is_blocked_ip(
+            "172.32.0.0".parse::<Ipv4Addr>().unwrap().into()
+        ));
     }
 
     #[test]
     fn link_local_v4_metadata_range_boundaries() {
         // 169.254.0.0/16 — the whole range (incl. cloud metadata IP) blocked end to end.
-        assert!(is_blocked_ip("169.254.0.0".parse::<Ipv4Addr>().unwrap().into()));
-        assert!(is_blocked_ip("169.254.169.254".parse::<Ipv4Addr>().unwrap().into()));
-        assert!(is_blocked_ip("169.254.255.255".parse::<Ipv4Addr>().unwrap().into()));
-        assert!(!is_blocked_ip("169.253.255.255".parse::<Ipv4Addr>().unwrap().into()));
-        assert!(!is_blocked_ip("169.255.0.0".parse::<Ipv4Addr>().unwrap().into()));
+        assert!(is_blocked_ip(
+            "169.254.0.0".parse::<Ipv4Addr>().unwrap().into()
+        ));
+        assert!(is_blocked_ip(
+            "169.254.169.254".parse::<Ipv4Addr>().unwrap().into()
+        ));
+        assert!(is_blocked_ip(
+            "169.254.255.255".parse::<Ipv4Addr>().unwrap().into()
+        ));
+        assert!(!is_blocked_ip(
+            "169.253.255.255".parse::<Ipv4Addr>().unwrap().into()
+        ));
+        assert!(!is_blocked_ip(
+            "169.255.0.0".parse::<Ipv4Addr>().unwrap().into()
+        ));
     }
 
     #[test]
     fn unique_local_v6_range_boundaries() {
         // fc00::/7 spans fc00:: through fdff:...; both ends blocked, fe00:: allowed.
         assert!(is_blocked_ip("fc00::".parse::<Ipv6Addr>().unwrap().into()));
-        assert!(is_blocked_ip("fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff".parse::<Ipv6Addr>().unwrap().into()));
-        assert!(!is_blocked_ip("fe00::1".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(is_blocked_ip(
+            "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+                .parse::<Ipv6Addr>()
+                .unwrap()
+                .into()
+        ));
+        assert!(!is_blocked_ip(
+            "fe00::1".parse::<Ipv6Addr>().unwrap().into()
+        ));
         assert!(is_blocked_ip("fe80::1".parse::<Ipv6Addr>().unwrap().into()));
-        assert!(!is_blocked_ip("fec0::1".parse::<Ipv6Addr>().unwrap().into())); // fe80::/10 ends before fec0::
+        assert!(!is_blocked_ip(
+            "fec0::1".parse::<Ipv6Addr>().unwrap().into()
+        )); // fe80::/10 ends before fec0::
     }
 
     #[test]
     fn ipv4_mapped_ipv6_cannot_bypass_the_guard() {
         // Classic SSRF bypass: private v4 encoded as `::ffff:a.b.c.d`. The guard
         // unwraps `to_ipv4_mapped()` and re-checks, so every private class is caught.
-        for ip in ["::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1", "::ffff:172.16.0.1", "::ffff:169.254.169.254"] {
-            assert!(is_blocked_ip(ip.parse::<Ipv6Addr>().unwrap().into()), "{ip} (v4-mapped) should be blocked");
+        for ip in [
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "::ffff:192.168.1.1",
+            "::ffff:172.16.0.1",
+            "::ffff:169.254.169.254",
+        ] {
+            assert!(
+                is_blocked_ip(ip.parse::<Ipv6Addr>().unwrap().into()),
+                "{ip} (v4-mapped) should be blocked"
+            );
         }
         // A v4-mapped *public* address must still be allowed.
-        assert!(!is_blocked_ip("::ffff:8.8.8.8".parse::<Ipv6Addr>().unwrap().into()));
+        assert!(!is_blocked_ip(
+            "::ffff:8.8.8.8".parse::<Ipv6Addr>().unwrap().into()
+        ));
     }
 
     #[test]

@@ -159,16 +159,15 @@ impl Providers {
                 config.composio_base_url.clone(),
             )) as Arc<dyn ToolProvider>
         });
-        // The generic transport talks to user-registered backend URLs by default,
-        // so it uses an SSRF/DNS-rebinding-guarded client (rejects private/internal
-        // targets at resolution time) rather than the platform's shared client,
-        // which must still reach internal hosts. The Composio session URL it also
-        // calls is public, so the guard is transparent there. `http` (the
-        // platform's own client, already passed in for the Composio provider
-        // above) is reused as the `plain` client for `trusted == true` backends —
-        // i.e. uploaded-build MCP-server connectors, whose address the platform
-        // itself resolved, not a user.
-        Self { composio, mcp: GenericMcpProvider::new(crate::net::guarded_http_client(), http) }
+        // The generic transport talks to user-registered backend URLs, so it uses
+        // an SSRF/DNS-rebinding-guarded client (rejects private/internal targets
+        // at resolution time) rather than the platform's shared client, which must
+        // still reach internal hosts. The Composio session URL it also calls is
+        // public, so the guard is transparent there.
+        Self {
+            composio,
+            mcp: GenericMcpProvider::new(crate::net::guarded_http_client()),
+        }
     }
 
     /// The Composio provider, or a `NotConfigured` error when no API key is set.

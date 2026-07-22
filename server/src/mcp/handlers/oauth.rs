@@ -31,7 +31,16 @@ pub async fn authorize(
 ) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    Ok(Json(service::oauth::authorize(&state, user_id, connector_id, body.client_id, body.redirect_url).await?))
+    Ok(Json(
+        service::oauth::authorize(
+            &state,
+            user_id,
+            connector_id,
+            body.client_id,
+            body.redirect_url,
+        )
+        .await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,7 +66,9 @@ pub async fn status(
     Path(connector_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::oauth::status(&state, user_id, connector_id).await?))
+    Ok(Json(
+        service::oauth::status(&state, user_id, connector_id).await?,
+    ))
 }
 
 /// `DELETE /api/mcp/connectors/{id}/oauth/token` — remove the caller's token.
@@ -81,5 +92,7 @@ fn error_page(message: &str) -> String {
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

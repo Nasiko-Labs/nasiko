@@ -104,7 +104,9 @@ pub async fn update(
         logo_url: body.logo_url,
         is_active: body.is_active,
     };
-    Ok(Json(service::connectors::update(&state, caller, claims.is_superuser, id, input).await?))
+    Ok(Json(
+        service::connectors::update(&state, caller, claims.is_superuser, id, input).await?,
+    ))
 }
 
 /// `GET /api/mcp/connectors` — custom connectors visible to the caller.
@@ -114,7 +116,11 @@ pub async fn list(State(state): State<AppState>, claims: Claims) -> Result<Json<
 }
 
 /// `GET /api/mcp/connectors/{id}` — a single connector, 404 if not reachable.
-pub async fn get(State(state): State<AppState>, claims: Claims, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
+pub async fn get(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
     Ok(Json(service::connectors::get(&state, user_id, id).await?))
 }
@@ -167,13 +173,23 @@ pub async fn unpin(
 }
 
 /// `GET /api/mcp/connectors/pinned` — the caller's pinned connectors.
-pub async fn pinned(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+pub async fn pinned(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::connectors::list_pinned(&state, user_id).await?))
+    Ok(Json(
+        service::connectors::list_pinned(&state, user_id).await?,
+    ))
 }
 
 /// `GET /api/mcp/connectors/recent` — the caller's recently-used connectors.
-pub async fn recent(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+pub async fn recent(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::connectors::list_recent(&state, user_id).await?))
+    Ok(Json(
+        service::connectors::list_recent(&state, user_id).await?,
+    ))
 }

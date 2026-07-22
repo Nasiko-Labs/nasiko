@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post, put},
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -338,7 +339,80 @@ async fn get_one(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    Json(agent).into_response()
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AgentDetailResponse {
+        id: Uuid,
+        name: String,
+        version: String,
+        description: String,
+        url: String,
+        preferred_transport: String,
+        protocol_version: String,
+        provider: Option<serde_json::Value>,
+        icon_url: Option<String>,
+        documentation_url: Option<String>,
+        capabilities: serde_json::Value,
+        security_schemes: serde_json::Value,
+        security: Vec<serde_json::Value>,
+        default_input_modes: Vec<String>,
+        default_output_modes: Vec<String>,
+        skills: Vec<serde_json::Value>,
+        tags: Vec<String>,
+        supports_authenticated_extended_card: bool,
+        signatures: Vec<serde_json::Value>,
+        additional_interfaces: Option<serde_json::Value>,
+        #[serde(rename = "created_at")]
+        created_at: DateTime<Utc>,
+        #[serde(rename = "updated_at")]
+        updated_at: DateTime<Utc>,
+    }
+
+    #[derive(Serialize)]
+    struct SingleResponse {
+        data: AgentDetailResponse,
+        status_code: u16,
+        message: String,
+    }
+
+    let skills: Vec<serde_json::Value> = agent
+        .skills
+        .0
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or_default())
+        .collect();
+
+    let data = AgentDetailResponse {
+        id: agent.id,
+        name: agent.name.clone(),
+        version: agent.version.clone(),
+        description: agent.description.unwrap_or_default(),
+        url: format!("/api/agents/{}", agent.id),
+        preferred_transport: agent.preferred_transport.clone(),
+        protocol_version: agent.protocol_version.clone(),
+        provider: None,
+        icon_url: agent.icon_url.clone(),
+        documentation_url: agent.documentation_url.clone(),
+        capabilities: agent.capabilities.0.clone(),
+        security_schemes: agent.security_schemes.0.clone(),
+        security: vec![],
+        default_input_modes: agent.default_input_modes.0.clone(),
+        default_output_modes: agent.default_output_modes.0.clone(),
+        skills,
+        tags: agent.tags.clone(),
+        supports_authenticated_extended_card: false,
+        signatures: vec![],
+        additional_interfaces: None,
+        created_at: agent.created_at,
+        updated_at: agent.updated_at,
+    };
+
+    Json(SingleResponse {
+        data,
+        status_code: 200,
+        message: "Registry retrieved successfully".to_string(),
+    })
+    .into_response()
 }
 
 async fn update(
@@ -835,16 +909,10 @@ struct UserSearchQuery {
 struct UserSearchResult {
     id: Uuid,
     username: String,
-    display_name: Option<String>,
-    email: Option<String>,
+    display_name: String,
+    email: String,
+    role: Option<String>,
     score: f64,
-}
-
-#[derive(Serialize)]
-struct UserSearchResponse {
-    users: Vec<UserSearchResult>,
-    total: usize,
-    max_score: f64,
 }
 
 async fn search_users(
@@ -866,8 +934,13 @@ async fn search_users(
     // Escaped term + a hard LIMIT so the endpoint can't be turned into a full-table
     // dump via a wildcard.
     let sql = format!(
-        r#"SELECT id, username, display_name, email, score FROM (
-               SELECT id, username, display_name, email,
+        r#"SELECT id, username,
+                  COALESCE(display_name, username) AS display_name,
+                  COALESCE(email, '') AS email,
+                  role::text AS role,
+                  score
+           FROM (
+               SELECT id, username, display_name, email, role,
                       ({USER_SCORE_SQL})::double precision AS score
                FROM users
                WHERE deleted_at IS NULL
@@ -884,13 +957,13 @@ async fn search_users(
 
     match result {
         Ok(users) => {
-            let max_score = users.first().map(|u| u.score).unwrap_or(0.0);
             let total = users.len();
-            Json(UserSearchResponse {
-                users,
-                total,
-                max_score,
-            })
+            Json(serde_json::json!({
+                "data": users,
+                "query": q,
+                "total_matches": total,
+                "showing": total,
+            }))
             .into_response()
         }
         Err(e) => {
@@ -972,7 +1045,40 @@ async fn registry_user_agents(
     };
 
     match agents {
-        Ok(list) => Json(list).into_response(),
+        Ok(list) => {
+            #[derive(serde::Serialize)]
+            struct SimpleAgent {
+                agent_id: Uuid,
+                name: String,
+                icon_url: Option<String>,
+                tags: Vec<String>,
+                description: Option<String>,
+                owner_id: Uuid,
+            }
+            #[derive(serde::Serialize)]
+            struct Response {
+                data: Vec<SimpleAgent>,
+                status_code: u16,
+                message: String,
+            }
+            let data = list
+                .into_iter()
+                .map(|a| SimpleAgent {
+                    agent_id: a.id,
+                    name: a.name,
+                    icon_url: a.icon_url,
+                    tags: a.tags,
+                    description: a.description,
+                    owner_id: a.owner_id,
+                })
+                .collect();
+            Json(Response {
+                data,
+                status_code: 200,
+                message: "success".to_string(),
+            })
+            .into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "registry_user_agents: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()

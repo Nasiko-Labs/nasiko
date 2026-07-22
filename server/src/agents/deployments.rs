@@ -14,8 +14,10 @@ use crate::auth::Claims;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/deployment/{deployment_id}/restart", post(restart_deployment))
+    Router::new().route(
+        "/deployment/{deployment_id}/restart",
+        post(restart_deployment),
+    )
 }
 
 /// Mounted separately from `router()`, under `require_auth` only — each
@@ -66,10 +68,7 @@ struct AgentDeployInfo {
 
 // ─── GET /deployments ────────────────────────────────────────────────────────
 
-async fn list_deployments(
-    State(state): State<AppState>,
-    claims: Claims,
-) -> impl IntoResponse {
+async fn list_deployments(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let identity: nasiko_auth::Identity = claims.clone().into();
     if !state.auth.can_deploy(&identity).await {
         return crate::unavailable();
@@ -163,11 +162,12 @@ async fn get_agent_deployment(
 /// truly is back at its pre-attempt state, not just claimed to be) — never
 /// call this once a runtime deploy/restart has actually succeeded.
 async fn revert_starting_status(state: &AppState, deployment_id: Uuid, original_status: &str) {
-    if let Err(e) = sqlx::query("UPDATE agent_deployments SET status = $2, updated_at = now() WHERE id = $1")
-        .bind(deployment_id)
-        .bind(original_status)
-        .execute(&state.db)
-        .await
+    if let Err(e) =
+        sqlx::query("UPDATE agent_deployments SET status = $2, updated_at = now() WHERE id = $1")
+            .bind(deployment_id)
+            .bind(original_status)
+            .execute(&state.db)
+            .await
     {
         tracing::error!(%e, %deployment_id, original_status, "restart_deployment: failed to revert starting status after runtime failure");
     }
@@ -312,8 +312,6 @@ async fn restart_deployment(
             // meaningless to DockerRuntime.
             image_pull_secret_name: None,
             image_pull_credential_seed: None,
-            harden: false,
-            network_override: None,
         };
 
         match state.runtime.deploy(&spec).await {

@@ -43,7 +43,12 @@ pub async fn get_json<T: DeserializeOwned>(client: &redis::Client, key: &str) ->
 
 /// Serialize and store a JSON value with a TTL (seconds). Errors are logged and
 /// swallowed — a failed cache write must never fail the request.
-pub async fn set_json_ex<T: Serialize>(client: &redis::Client, key: &str, value: &T, ttl_secs: u64) {
+pub async fn set_json_ex<T: Serialize>(
+    client: &redis::Client,
+    key: &str,
+    value: &T,
+    ttl_secs: u64,
+) {
     let payload = match serde_json::to_string(value) {
         Ok(s) => s,
         Err(e) => {

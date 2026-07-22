@@ -22,7 +22,9 @@ pub async fn list_connectors(
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::permissions::list_connectors(&state, user_id, agent_id).await?))
+    Ok(Json(
+        service::permissions::list_connectors(&state, user_id, agent_id).await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,7 +41,16 @@ pub async fn set_connector_access(
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::permissions::set_connector_access(&state, user_id, agent_id, connector_id, body.enabled).await?))
+    Ok(Json(
+        service::permissions::set_connector_access(
+            &state,
+            user_id,
+            agent_id,
+            connector_id,
+            body.enabled,
+        )
+        .await?,
+    ))
 }
 
 /// `GET /api/mcp/agents/{agent_id}/connectors/{connector_id}/tools` — tools + stances.
@@ -50,7 +61,9 @@ pub async fn list_connector_tools(
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::permissions::list_connector_tools(&state, user_id, agent_id, connector_id).await?))
+    Ok(Json(
+        service::permissions::list_connector_tools(&state, user_id, agent_id, connector_id).await?,
+    ))
 }
 
 /// `GET /api/mcp/agents/{agent_id}/tools` — the agent's current tool rules.
@@ -60,7 +73,9 @@ pub async fn list_tool_rules(
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
-    Ok(Json(service::permissions::list_tool_rules(&state, agent_id).await?))
+    Ok(Json(
+        service::permissions::list_tool_rules(&state, agent_id).await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,7 +108,9 @@ pub async fn bulk_update_tools(
             stance: r.stance,
         })
         .collect();
-    Ok(Json(service::permissions::bulk_update_tools(&state, user_id, agent_id, &rules).await?))
+    Ok(Json(
+        service::permissions::bulk_update_tools(&state, user_id, agent_id, &rules).await?,
+    ))
 }
 
 /// `DELETE /api/mcp/agents/{agent_id}/permissions` — reset to all-allowed.

@@ -15,7 +15,10 @@ use crate::auth::Claims;
 use crate::state::AppState;
 
 /// `GET /api/mcp/catalog` — connectable services, credential-free.
-pub async fn get_catalog(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+pub async fn get_catalog(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> Result<Json<Value>, ApiError> {
     let user = parse_user(&claims)?;
     Ok(Json(service::catalog::get_catalog(&state, user).await?))
 }
@@ -61,7 +64,10 @@ pub async fn create_auth_config(
 
 /// `GET /api/mcp/auth-configs` — list platform Composio connectors (admin).
 /// Gated like its create/update/delete siblings on the same resource.
-pub async fn list_auth_configs(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+pub async fn list_auth_configs(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> Result<Json<Value>, ApiError> {
     ensure_admin(&claims)?;
     Ok(Json(service::catalog::list_composio(&state).await?))
 }
@@ -86,7 +92,9 @@ pub async fn update_auth_config(
         logo_url: body.logo_url,
         description: body.description,
     };
-    Ok(Json(service::catalog::update_composio(&state, connector_id, meta).await?))
+    Ok(Json(
+        service::catalog::update_composio(&state, connector_id, meta).await?,
+    ))
 }
 
 /// `DELETE /api/mcp/auth-configs/{connector_id}` — remove a composio connector (admin).

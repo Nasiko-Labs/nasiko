@@ -199,7 +199,10 @@ pub async fn get_connector_by_id(db: &PgPool, id: Uuid) -> Result<Option<McpConn
 }
 
 /// A Composio connector by toolkit slug (its `name`).
-pub async fn get_composio_connector_by_name(db: &PgPool, name: &str) -> Result<Option<McpConnector>> {
+pub async fn get_composio_connector_by_name(
+    db: &PgPool,
+    name: &str,
+) -> Result<Option<McpConnector>> {
     let row = sqlx::query_as::<_, McpConnector>(
         "SELECT * FROM mcp_connectors WHERE provider_type = 'composio' AND name = $1",
     )
@@ -255,7 +258,10 @@ pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Ve
 }
 
 /// Accessible custom (mcp_server) connectors only — for building generic backends.
-pub async fn list_accessible_mcp_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
+pub async fn list_accessible_mcp_connectors(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
         r#"SELECT * FROM mcp_connectors c
            WHERE c.provider_type = 'mcp_server' AND c.is_active = true
@@ -435,7 +441,10 @@ pub async fn create_grant(
     Ok(row)
 }
 
-pub async fn list_grants_for_connector(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorGrant>> {
+pub async fn list_grants_for_connector(
+    db: &PgPool,
+    connector_id: Uuid,
+) -> Result<Vec<McpConnectorGrant>> {
     let rows = sqlx::query_as::<_, McpConnectorGrant>(
         "SELECT * FROM mcp_connector_grants WHERE connector_id = $1 ORDER BY created_at",
     )
@@ -464,13 +473,15 @@ pub async fn resolve_user_labels(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, username, display_name FROM users WHERE id = ANY($1)",
-    )
-    .bind(ids)
-    .fetch_all(db)
-    .await?;
-    Ok(rows.into_iter().map(|(id, username, display_name)| (id, (username, display_name))).collect())
+    let rows: Vec<(Uuid, String, Option<String>)> =
+        sqlx::query_as("SELECT id, username, display_name FROM users WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(db)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, username, display_name)| (id, (username, display_name)))
+        .collect())
 }
 
 /// Search users by username substring, for the "who do I share this with"
@@ -486,7 +497,10 @@ pub async fn search_users_for_share(
     limit: i64,
     visible_ids: Option<&[Uuid]>,
 ) -> Result<Vec<(Uuid, String, Option<String>)>> {
-    let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let escaped = q
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
     match visible_ids {
         Some([]) => Ok(Vec::new()),
         Some(ids) => {
@@ -541,7 +555,8 @@ pub async fn revoke_grant_and_connection(
 
     // Only a specific user's connection is removed; a public revoke leaves other
     // users' own connections intact.
-    if grant_type == "user" && grantee_id != PUBLIC_GRANTEE
+    if grant_type == "user"
+        && grantee_id != PUBLIC_GRANTEE
         && let Ok(uid) = Uuid::parse_str(grantee_id)
     {
         sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
@@ -625,7 +640,10 @@ pub struct AgentConsumer {
 /// bounded AND correct for a public connector, where an agent owned by a
 /// public-only user still appears if it has a row. Only an agent's OWNER can
 /// create such a row (`ensure_can_manage_agent`).
-pub async fn list_configured_agent_consumers(db: &PgPool, connector_id: Uuid) -> Result<Vec<AgentConsumer>> {
+pub async fn list_configured_agent_consumers(
+    db: &PgPool,
+    connector_id: Uuid,
+) -> Result<Vec<AgentConsumer>> {
     let rows = sqlx::query_as::<_, AgentConsumer>(
         r#"SELECT a.id AS agent_id, a.name AS agent_name, a.owner_id AS agent_owner_id,
                   acc.enabled, acc.tool_rules
@@ -757,12 +775,17 @@ pub async fn update_connection_account_id(db: &PgPool, id: Uuid, account_id: &st
     Ok(())
 }
 
-pub async fn delete_user_connection(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
-        .bind(user_id)
-        .bind(connector_id)
-        .execute(db)
-        .await?;
+pub async fn delete_user_connection(
+    db: &PgPool,
+    user_id: Uuid,
+    connector_id: Uuid,
+) -> Result<bool> {
+    let res =
+        sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
+            .bind(user_id)
+            .bind(connector_id)
+            .execute(db)
+            .await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -784,11 +807,12 @@ pub async fn pin_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Re
 
 /// Unpin. Returns `false` if it wasn't pinned.
 pub async fn unpin_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM mcp_connector_pins WHERE user_id = $1 AND connector_id = $2")
-        .bind(user_id)
-        .bind(connector_id)
-        .execute(db)
-        .await?;
+    let res =
+        sqlx::query("DELETE FROM mcp_connector_pins WHERE user_id = $1 AND connector_id = $2")
+            .bind(user_id)
+            .bind(connector_id)
+            .execute(db)
+            .await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -806,7 +830,11 @@ pub async fn list_pinned_connector_ids(db: &PgPool, user_id: Uuid) -> Result<Vec
 /// "Recent" connector ids for a user, derived from real connect/reconnect
 /// activity (`mcp_user_connections.updated_at`) rather than a separate
 /// page-view tracking table.
-pub async fn list_recent_connector_ids(db: &PgPool, user_id: Uuid, limit: i64) -> Result<Vec<Uuid>> {
+pub async fn list_recent_connector_ids(
+    db: &PgPool,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Uuid>> {
     let ids = sqlx::query_scalar::<_, Uuid>(
         "SELECT connector_id FROM mcp_user_connections WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2",
     )
@@ -843,7 +871,10 @@ pub async fn upsert_connector_tools(
     Ok(())
 }
 
-pub async fn list_connector_tools(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorTool>> {
+pub async fn list_connector_tools(
+    db: &PgPool,
+    connector_id: Uuid,
+) -> Result<Vec<McpConnectorTool>> {
     let rows = sqlx::query_as::<_, McpConnectorTool>(
         "SELECT * FROM mcp_connector_tools WHERE connector_id = $1 ORDER BY tool_name",
     )
@@ -855,7 +886,10 @@ pub async fn list_connector_tools(db: &PgPool, connector_id: Uuid) -> Result<Vec
 
 // ─── Composio sessions ──────────────────────────────────────────────────────
 
-pub async fn get_composio_session(db: &PgPool, user_id: Uuid) -> Result<Option<McpComposioSession>> {
+pub async fn get_composio_session(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Option<McpComposioSession>> {
     let row = sqlx::query_as::<_, McpComposioSession>(
         "SELECT * FROM mcp_composio_sessions WHERE user_id = $1",
     )
@@ -963,4 +997,41 @@ pub async fn get_agents_for_connector(db: &PgPool, connector_id: Uuid) -> Result
     .fetch_all(db)
     .await?;
     Ok(ids)
+}
+
+/// Connectors granted directly to `agent_id` (`grant_type = 'agent'`),
+/// independent of who owns that agent — lets an agent use a connector its
+/// owner might not otherwise be able to reach. Feeds `list_connectors_view` so
+/// the owner can see and enable it for this specific agent.
+pub async fn list_agent_granted_connectors(
+    db: &PgPool,
+    agent_id: Uuid,
+) -> Result<Vec<McpConnector>> {
+    let rows = sqlx::query_as::<_, McpConnector>(
+        r#"SELECT c.* FROM mcp_connectors c
+           JOIN mcp_connector_grants g ON g.connector_id = c.id
+           WHERE g.grant_type = 'agent' AND g.grantee_id = $1"#,
+    )
+    .bind(agent_id.to_string())
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Does `agent_id` have a direct grant on `connector_id`? Lets whoever manages
+/// that agent configure it via `set_connector_access_view` even without their
+/// own personal reachability to the connector.
+pub async fn agent_has_connector_grant(
+    db: &PgPool,
+    agent_id: Uuid,
+    connector_id: Uuid,
+) -> Result<bool> {
+    let ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM mcp_connector_grants WHERE connector_id = $1 AND grant_type = 'agent' AND grantee_id = $2)",
+    )
+    .bind(connector_id)
+    .bind(agent_id.to_string())
+    .fetch_one(db)
+    .await?;
+    Ok(ok)
 }

@@ -77,7 +77,10 @@ pub async fn process_event(state: &McpState, payload: &Value) -> Result<WebhookO
     };
 
     let Some(connection) = repo::get_connection_by_account_id(&state.db, account_id).await? else {
-        tracing::warn!(account_id, "expiry webhook for unknown connection — already deleted or unknown");
+        tracing::warn!(
+            account_id,
+            "expiry webhook for unknown connection — already deleted or unknown"
+        );
         return Ok(WebhookOutcome::UnknownAccount);
     };
 
@@ -169,6 +172,12 @@ mod tests {
         let secret = "whsec_test";
         assert!(!verify_signature("wh_1", "1700000000", "{}", "", secret));
         // Malformed non-base64 signature must also fail cleanly, not panic.
-        assert!(!verify_signature("wh_1", "1700000000", "{}", "not-base64!!", secret));
+        assert!(!verify_signature(
+            "wh_1",
+            "1700000000",
+            "{}",
+            "not-base64!!",
+            secret
+        ));
     }
 }

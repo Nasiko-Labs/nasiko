@@ -16,7 +16,8 @@ use serial_test::serial;
 use uuid::Uuid;
 
 fn deleg_token(user_id: &str, agent_id: &str) -> String {
-    mint_delegation_token(common::TEST_JWT_SECRET, user_id, agent_id).expect("mint delegation token")
+    mint_delegation_token(common::TEST_JWT_SECRET, user_id, agent_id)
+        .expect("mint delegation token")
 }
 
 async fn mcp_initialize(server: &TestServer, token: Option<&str>) -> reqwest::Response {
@@ -73,7 +74,11 @@ async fn a_real_user_session_jwt_alone_does_not_work() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 401, "a session JWT alone must not satisfy the delegation auth gate");
+    assert_eq!(
+        res.status(),
+        401,
+        "a session JWT alone must not satisfy the delegation auth gate"
+    );
 
     server.cleanup().await;
 }
@@ -82,8 +87,12 @@ async fn a_real_user_session_jwt_alone_does_not_work() {
 #[serial]
 async fn delegation_token_signed_with_wrong_secret_is_rejected() {
     let server = TestServer::start().await;
-    let forged = mint_delegation_token("attacker-controlled-secret", &Uuid::new_v4().to_string(), &Uuid::new_v4().to_string())
-        .expect("mint delegation token");
+    let forged = mint_delegation_token(
+        "attacker-controlled-secret",
+        &Uuid::new_v4().to_string(),
+        &Uuid::new_v4().to_string(),
+    )
+    .expect("mint delegation token");
 
     let res = mcp_initialize(&server, Some(&forged)).await;
     assert_eq!(res.status(), 401);
@@ -98,7 +107,11 @@ async fn garbage_delegation_token_is_rejected_not_panicking() {
 
     for bad in ["", "not-a-jwt", "a.b.c", &"A".repeat(5000)] {
         let res = mcp_initialize(&server, Some(bad)).await;
-        assert_eq!(res.status(), 401, "{bad:?} must be a clean 401, not a panic/500");
+        assert_eq!(
+            res.status(),
+            401,
+            "{bad:?} must be a clean 401, not a panic/500"
+        );
     }
 
     server.cleanup().await;
@@ -166,7 +179,11 @@ async fn expired_delegation_token_is_rejected() {
     );
 
     let res = mcp_initialize(&server, Some(&expired)).await;
-    assert_eq!(res.status(), 401, "an expired-but-correctly-signed delegation token must be rejected");
+    assert_eq!(
+        res.status(),
+        401,
+        "an expired-but-correctly-signed delegation token must be rejected"
+    );
 
     server.cleanup().await;
 }
@@ -188,7 +205,11 @@ async fn wrong_audience_delegation_token_is_rejected() {
     );
 
     let res = mcp_initialize(&server, Some(&wrong_aud)).await;
-    assert_eq!(res.status(), 401, "a token with the wrong audience must be rejected even with the right secret");
+    assert_eq!(
+        res.status(),
+        401,
+        "a token with the wrong audience must be rejected even with the right secret"
+    );
 
     server.cleanup().await;
 }

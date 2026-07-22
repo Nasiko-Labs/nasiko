@@ -124,7 +124,10 @@ impl PermissionContext {
 /// `_GMAIL_SEND` still resolves to `gmail` rather than an empty toolkit (which
 /// would bypass the per-toolkit permission check).
 pub fn toolkit_from_composio_slug(slug: &str) -> String {
-    slug.split('_').find(|s| !s.is_empty()).unwrap_or("").to_ascii_lowercase()
+    slug.split('_')
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 fn perm_cache_key(agent_id: Uuid) -> String {
@@ -135,7 +138,10 @@ fn perm_cache_key(agent_id: Uuid) -> String {
 /// caller who manages the agent (there is exactly one row per
 /// `(agent_id, connector_id)`, not one per caller) — see
 /// `mcp_agent_connector_access`'s table comment for why.
-pub async fn load_permission_context(state: &McpState, agent_id: Uuid) -> Result<PermissionContext> {
+pub async fn load_permission_context(
+    state: &McpState,
+    agent_id: Uuid,
+) -> Result<PermissionContext> {
     let key = perm_cache_key(agent_id);
     if let Some(ctx) = cache::get_json::<PermissionContext>(&state.redis, &key).await {
         return Ok(ctx);
@@ -150,14 +156,29 @@ pub async fn load_permission_context(state: &McpState, agent_id: Uuid) -> Result
         }
         for tr in parse_tool_rules(&row.tool_rules) {
             if let Some(stance) = Stance::from_str(&tr.stance) {
-                rules.push(PermissionRule { connector_id: row.connector_id, tool_pattern: tr.pattern, stance });
+                rules.push(PermissionRule {
+                    connector_id: row.connector_id,
+                    tool_pattern: tr.pattern,
+                    stance,
+                });
             }
         }
     }
 
     let hash = compute_hash(&rules, &disabled_connectors);
-    let ctx = PermissionContext { agent_id, disabled_connectors, rules, hash };
-    cache::set_json_ex(&state.redis, &key, &ctx, state.config.perm_cache_ttl_seconds).await;
+    let ctx = PermissionContext {
+        agent_id,
+        disabled_connectors,
+        rules,
+        hash,
+    };
+    cache::set_json_ex(
+        &state.redis,
+        &key,
+        &ctx,
+        state.config.perm_cache_ttl_seconds,
+    )
+    .await;
     Ok(ctx)
 }
 
@@ -174,7 +195,13 @@ fn parse_tool_rules(raw: &Value) -> Vec<ToolRule> {
 fn compute_hash(rules: &[PermissionRule], disabled: &HashSet<Uuid>) -> String {
     let mut data: Vec<[String; 3]> = rules
         .iter()
-        .map(|r| [r.connector_id.to_string(), r.tool_pattern.clone(), r.stance.as_str().to_string()])
+        .map(|r| {
+            [
+                r.connector_id.to_string(),
+                r.tool_pattern.clone(),
+                r.stance.as_str().to_string(),
+            ]
+        })
         .collect();
     data.sort();
 
@@ -235,10 +262,31 @@ pub const STANCES: [&str; 3] = ["allow", "ask", "block"];
 
 /// `GET /agents/{id}/connectors` view: connectors this agent can use, with
 /// per-agent enabled + connected status.
-pub async fn list_connectors_view(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<Value> {
-    let connectors = state.authorizer.list_accessible_connectors(&state.db, user_id).await?;
+pub async fn list_connectors_view(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+) -> Result<Value> {
+    let mut connectors = state
+        .authorizer
+        .list_accessible_connectors(&state.db, user_id)
+        .await?;
+    // Union in connectors granted directly to THIS agent (grant_type="agent"),
+    // independent of the caller's own reachability — so the owner can see and
+    // enable a connector that was shared with their agent specifically.
+    let agent_granted = repo::list_agent_granted_connectors(&state.db, agent_id).await?;
+    let existing: HashSet<Uuid> = connectors.iter().map(|c| c.id).collect();
+    connectors.extend(
+        agent_granted
+            .into_iter()
+            .filter(|c| !existing.contains(&c.id)),
+    );
+
     let access = repo::get_agent_connector_access(&state.db, agent_id).await?;
-    let enabled_map: HashMap<Uuid, bool> = access.into_iter().map(|r| (r.connector_id, r.enabled)).collect();
+    let enabled_map: HashMap<Uuid, bool> = access
+        .into_iter()
+        .map(|r| (r.connector_id, r.enabled))
+        .collect();
     let connected: HashSet<Uuid> = repo::list_user_connections(&state.db, user_id, Some("ACTIVE"))
         .await?
         .into_iter()
@@ -272,15 +320,32 @@ pub async fn set_connector_access_view(
     connector_id: Uuid,
     enabled: bool,
 ) -> Result<Value> {
-    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
-        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+    // Reachable either the normal way (caller's own owner/user/public/team/
+    // department grant) OR because the connector was shared directly with
+    // THIS agent (grant_type="agent") — letting whoever manages the agent
+    // configure it even without their own personal reachability.
+    let reachable = state
+        .authorizer
+        .can_access_connector(&state.db, user_id, connector_id)
+        .await?
+        || repo::agent_has_connector_grant(&state.db, agent_id, connector_id).await?;
+    if !reachable {
+        return Err(McpError::NotFound(format!(
+            "connector '{connector_id}' not found"
+        )));
     }
     let existing_rules = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
         .await?
         .map(|r| r.tool_rules)
         .unwrap_or_else(|| json!([]));
-    let row = repo::upsert_agent_connector_access(&state.db, agent_id, connector_id, enabled, &existing_rules)
-        .await?;
+    let row = repo::upsert_agent_connector_access(
+        &state.db,
+        agent_id,
+        connector_id,
+        enabled,
+        &existing_rules,
+    )
+    .await?;
     invalidate_permission_cache(state, agent_id).await;
     Ok(json!({ "connector_id": row.connector_id, "enabled": row.enabled }))
 }
@@ -293,8 +358,14 @@ pub async fn list_connector_tools_view(
     agent_id: Uuid,
     connector_id: Uuid,
 ) -> Result<Value> {
-    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
-        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, user_id, connector_id)
+        .await?
+    {
+        return Err(McpError::NotFound(format!(
+            "connector '{connector_id}' not found"
+        )));
     }
     let perms = load_permission_context(state, agent_id).await?;
 
@@ -327,7 +398,12 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
 
     let tools: Vec<(String, Option<String>)> = if connector.is_composio() {
         match &state.providers.composio {
-            Some(p) => p.list_toolkit_tools(&connector.name).await?.into_iter().map(|t| (t.name, t.description)).collect(),
+            Some(p) => p
+                .list_toolkit_tools(&connector.name)
+                .await?
+                .into_iter()
+                .map(|t| (t.name, t.description))
+                .collect(),
             None => Vec::new(),
         }
     } else {
@@ -341,7 +417,12 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
                 .into_iter()
                 .filter_map(|t| {
                     t.get("name").and_then(|n| n.as_str()).map(|name| {
-                        (name.to_string(), t.get("description").and_then(|d| d.as_str()).map(str::to_string))
+                        (
+                            name.to_string(),
+                            t.get("description")
+                                .and_then(|d| d.as_str())
+                                .map(str::to_string),
+                        )
                     })
                 })
                 .collect(),
@@ -384,7 +465,9 @@ pub async fn bulk_update_tools(
 ) -> Result<Value> {
     for rule in rules {
         if !STANCES.contains(&rule.stance.as_str()) {
-            return Err(McpError::BadRequest(format!("stance must be one of {STANCES:?}")));
+            return Err(McpError::BadRequest(format!(
+                "stance must be one of {STANCES:?}"
+            )));
         }
     }
 
@@ -399,17 +482,35 @@ pub async fn bulk_update_tools(
 
     let mut applied: Vec<Value> = Vec::new();
     for (connector_id, patterns) in by_connector {
-        if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
-            return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+        if !state
+            .authorizer
+            .can_access_connector(&state.db, user_id, connector_id)
+            .await?
+        {
+            return Err(McpError::NotFound(format!(
+                "connector '{connector_id}' not found"
+            )));
         }
         let enabled = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
             .await?
             .map(|r| r.enabled)
             .unwrap_or(true);
-        let tool_rules: Vec<ToolRule> =
-            patterns.iter().map(|(p, s)| ToolRule { pattern: p.clone(), stance: s.clone() }).collect();
+        let tool_rules: Vec<ToolRule> = patterns
+            .iter()
+            .map(|(p, s)| ToolRule {
+                pattern: p.clone(),
+                stance: s.clone(),
+            })
+            .collect();
         let rules_json = serde_json::to_value(&tool_rules)?;
-        repo::upsert_agent_connector_access(&state.db, agent_id, connector_id, enabled, &rules_json).await?;
+        repo::upsert_agent_connector_access(
+            &state.db,
+            agent_id,
+            connector_id,
+            enabled,
+            &rules_json,
+        )
+        .await?;
         for tr in tool_rules {
             applied.push(json!({ "connector_id": connector_id, "tool_pattern": tr.pattern, "stance": tr.stance }));
         }
@@ -439,7 +540,11 @@ mod tests {
         }
     }
     fn rule(c: Uuid, pat: &str, stance: Stance) -> PermissionRule {
-        PermissionRule { connector_id: c, tool_pattern: pat.into(), stance }
+        PermissionRule {
+            connector_id: c,
+            tool_pattern: pat.into(),
+            stance,
+        }
     }
 
     #[test]
@@ -495,7 +600,10 @@ mod tests {
         // Enabled connector: stance maps 1:1 to the access decision.
         let b = Uuid::new_v4();
         let enabled = ctx(
-            vec![rule(b, "blocked_*", Stance::Block), rule(b, "ask_*", Stance::Ask)],
+            vec![
+                rule(b, "blocked_*", Stance::Block),
+                rule(b, "ask_*", Stance::Ask),
+            ],
             &[],
         );
         assert_eq!(enabled.decide(b, "blocked_tool"), ToolAccess::Denied);
@@ -616,8 +724,22 @@ mod tests {
         let a = Uuid::new_v4();
         // Same exact pattern (`*`), three different stances registered for it —
         // block must win regardless of the order the rules were inserted in.
-        let order1 = ctx(vec![rule(a, "*", Stance::Allow), rule(a, "*", Stance::Ask), rule(a, "*", Stance::Block)], &[]);
-        let order2 = ctx(vec![rule(a, "*", Stance::Block), rule(a, "*", Stance::Ask), rule(a, "*", Stance::Allow)], &[]);
+        let order1 = ctx(
+            vec![
+                rule(a, "*", Stance::Allow),
+                rule(a, "*", Stance::Ask),
+                rule(a, "*", Stance::Block),
+            ],
+            &[],
+        );
+        let order2 = ctx(
+            vec![
+                rule(a, "*", Stance::Block),
+                rule(a, "*", Stance::Ask),
+                rule(a, "*", Stance::Allow),
+            ],
+            &[],
+        );
         assert_eq!(order1.get_stance(a, "anything"), Stance::Block);
         assert_eq!(order2.get_stance(a, "anything"), Stance::Block);
     }
@@ -629,14 +751,32 @@ mod tests {
         // dedupe by pattern — it collects every matching stance and picks by
         // block > ask > allow priority, NOT by insertion/"last write" order.
         let a = Uuid::new_v4();
-        let allow_first = ctx(vec![rule(a, "gmail_send", Stance::Allow), rule(a, "gmail_send", Stance::Block)], &[]);
-        let block_first = ctx(vec![rule(a, "gmail_send", Stance::Block), rule(a, "gmail_send", Stance::Allow)], &[]);
+        let allow_first = ctx(
+            vec![
+                rule(a, "gmail_send", Stance::Allow),
+                rule(a, "gmail_send", Stance::Block),
+            ],
+            &[],
+        );
+        let block_first = ctx(
+            vec![
+                rule(a, "gmail_send", Stance::Block),
+                rule(a, "gmail_send", Stance::Allow),
+            ],
+            &[],
+        );
         assert_eq!(allow_first.get_stance(a, "gmail_send"), Stance::Block);
         assert_eq!(block_first.get_stance(a, "gmail_send"), Stance::Block);
 
         // Ask vs allow duplicate — ask (higher priority) wins in both orders.
-        let ask_allow = ctx(vec![rule(a, "x", Stance::Ask), rule(a, "x", Stance::Allow)], &[]);
-        let allow_ask = ctx(vec![rule(a, "x", Stance::Allow), rule(a, "x", Stance::Ask)], &[]);
+        let ask_allow = ctx(
+            vec![rule(a, "x", Stance::Ask), rule(a, "x", Stance::Allow)],
+            &[],
+        );
+        let allow_ask = ctx(
+            vec![rule(a, "x", Stance::Allow), rule(a, "x", Stance::Ask)],
+            &[],
+        );
         assert_eq!(ask_allow.get_stance(a, "x"), Stance::Ask);
         assert_eq!(allow_ask.get_stance(a, "x"), Stance::Ask);
     }
@@ -653,7 +793,10 @@ mod tests {
         let a = Uuid::new_v4();
         let disabled_but_explicit_allow = ctx(vec![rule(a, "gmail_send", Stance::Allow)], &[a]);
         assert!(!disabled_but_explicit_allow.is_connector_enabled(a));
-        assert_eq!(disabled_but_explicit_allow.get_stance(a, "gmail_send"), Stance::Allow);
+        assert_eq!(
+            disabled_but_explicit_allow.get_stance(a, "gmail_send"),
+            Stance::Allow
+        );
 
         // Even with a disabled connector and zero rules, get_stance defaults
         // to Allow — disabling alone is invisible to get_stance.
@@ -670,7 +813,10 @@ mod tests {
 
         // A literal (non-wildcard) pattern longer than the tool name can never
         // match — falls through to the default Allow.
-        let c = ctx(vec![rule(a, "gmail_send_email_extra_suffix", Stance::Block)], &[]);
+        let c = ctx(
+            vec![rule(a, "gmail_send_email_extra_suffix", Stance::Block)],
+            &[],
+        );
         assert_eq!(c.get_stance(a, "gmail_send"), Stance::Allow);
     }
 

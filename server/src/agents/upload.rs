@@ -19,8 +19,8 @@ use uuid::Uuid;
 use nasiko_runtime::DeploymentStatus;
 
 use crate::auth::Claims;
+use crate::build::routes::extract_zip_from_file;
 use crate::build::{self, BuildStatus};
-use crate::build::routes::{extract_zip_from_file};
 use crate::state::AppState;
 
 use super::utils::{set_build_status, set_upload_status};
@@ -37,20 +37,18 @@ pub fn router() -> Router<AppState> {
 /// blanket 403.
 pub fn degradable_router() -> Router<AppState> {
     Router::new()
-        .route("/uploads",                   get(list_upload_status))
-        .route("/uploads/{upload_id}",       get(get_upload_status))
+        .route("/uploads", get(list_upload_status))
+        .route("/uploads/{upload_id}", get(get_upload_status))
         .route("/deploys/{build_id}/stream", get(deploy_status_sse))
 }
 
 pub fn user_routes() -> Router<AppState> {
-    Router::new()
-        .route("/my-uploads", get(list_upload_agents))
+    Router::new().route("/my-uploads", get(list_upload_agents))
 }
 
 /// Routes mounted at the top-level `/api` — not nested under `/agents`.
 pub fn status_router() -> Router<AppState> {
-    Router::new()
-        .route("/upload-status", get(list_upload_status))
+    Router::new().route("/upload-status", get(list_upload_status))
 }
 
 #[derive(Debug, Serialize)]
@@ -150,14 +148,18 @@ impl BuildJobPayload {
             Self::Upload { build_id, .. }
             | Self::Update { build_id, .. }
             | Self::StandaloneBuild { build_id, .. } => *build_id,
-            Self::Rollback { rollback_build_id, .. } => *rollback_build_id,
+            Self::Rollback {
+                rollback_build_id, ..
+            } => *rollback_build_id,
         }
     }
 
     pub fn label(&self) -> &str {
         match self {
             Self::Upload { name, .. } | Self::Update { name, .. } => name,
-            Self::Rollback { agent_name, .. } | Self::StandaloneBuild { agent_name, .. } => agent_name,
+            Self::Rollback { agent_name, .. } | Self::StandaloneBuild { agent_name, .. } => {
+                agent_name
+            }
         }
     }
 }
@@ -181,8 +183,6 @@ async fn upload_and_deploy(
     let mut zip_path: Option<PathBuf> = None;
     let mut ports: Vec<u16> = vec![];
     let mut env: HashMap<String, String> = HashMap::new();
-    // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
-    let mut inbound_format: Option<String> = None;
 
     // Build a temporary directory early so we have a path to stream into.
     // The worker cleans this up after the job completes.
@@ -192,7 +192,6 @@ async fn upload_and_deploy(
         match field.name().unwrap_or("") {
             "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
-            "inbound_format" => inbound_format = field.text().await.ok(),
             "source" | "file" => {
                 // Stream zip to disk rather than buffering it all in RAM. Key the
                 // temp dir on a fresh UUID, never the agent name (RUN-10) — two
@@ -209,7 +208,8 @@ async fn upload_and_deploy(
                     Ok(f) => f,
                     Err(e) => {
                         tracing::error!(%e, "upload: create zip file failed");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                            .into_response();
                     }
                 };
 
@@ -220,20 +220,27 @@ async fn upload_and_deploy(
                         Ok(Some(chunk)) => {
                             total_bytes += chunk.len() as u64;
                             if total_bytes > MAX_UPLOAD_BYTES {
-                                tracing::warn!(total_bytes, limit = MAX_UPLOAD_BYTES, "upload rejected: size limit exceeded");
+                                tracing::warn!(
+                                    total_bytes,
+                                    limit = MAX_UPLOAD_BYTES,
+                                    "upload rejected: size limit exceeded"
+                                );
                                 let _ = tokio::fs::remove_dir_all(&upload_dir).await;
-                                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 100 MiB").into_response();
+                                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 100 MiB")
+                                    .into_response();
                             }
                             use tokio::io::AsyncWriteExt;
                             if let Err(e) = f.write_all(&chunk).await {
                                 tracing::error!(%e, "upload: write chunk failed");
-                                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                                    .into_response();
                             }
                         }
                         Ok(None) => break,
                         Err(e) => {
                             tracing::warn!(%e, "upload: read multipart chunk failed");
-                            return (StatusCode::BAD_REQUEST, "failed to read upload stream").into_response();
+                            return (StatusCode::BAD_REQUEST, "failed to read upload stream")
+                                .into_response();
                         }
                     }
                 }
@@ -249,9 +256,10 @@ async fn upload_and_deploy(
             }
             "env" => {
                 if let Ok(text) = field.text().await
-                    && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&text) {
-                        env = map;
-                    }
+                    && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&text)
+                {
+                    env = map;
+                }
             }
             _ => {}
         }
@@ -262,12 +270,6 @@ async fn upload_and_deploy(
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
     let version_tag = version_tag.unwrap_or_else(|| "latest".to_string());
-    // Accept only the supported SDK formats; anything else falls back to openai.
-    let inbound_format = match inbound_format.as_deref() {
-        Some("anthropic") => "anthropic",
-        Some("gemini") => "gemini",
-        _ => "openai",
-    };
 
     // Validate name + version_tag charset (RUN-10): both flow into the OCI image
     // reference `{name}:{tag}`; unvalidated values allow push-target redirection
@@ -286,7 +288,8 @@ async fn upload_and_deploy(
 
     // ── Agent structure validation ────────────────────────────────────────────
     // Extract to a temp dir, validate, then clean up (the zip stays for the worker).
-    let validation_dir = zip_path.parent()
+    let validation_dir = zip_path
+        .parent()
         .unwrap_or(&std::env::temp_dir().join("nasiko-val"))
         .join("validate");
 
@@ -299,7 +302,8 @@ async fn upload_and_deploy(
     let validation_dir_clone = validation_dir.clone();
     let validation_result = tokio::task::spawn_blocking(move || {
         validate_agent_zip(&zip_path_clone, &validation_dir_clone)
-    }).await;
+    })
+    .await;
 
     // Clean up validation dir regardless of outcome
     let _ = tokio::fs::remove_dir_all(&validation_dir).await;
@@ -317,7 +321,8 @@ async fn upload_and_deploy(
         }
     }
 
-    let image_tag = crate::agents::build_image_tag(&state.config.agent_image_registry, &name, &version_tag);
+    let image_tag =
+        crate::agents::build_image_tag(&state.config.agent_image_registry, &name, &version_tag);
     // Empty → canonical default is applied by build_agent_spec (8000, matching the
     // agent images' EXPOSE); never default to 5000 here.
 
@@ -342,11 +347,10 @@ async fn upload_and_deploy(
     // concurrent same-name uploads create duplicate rows (SRV-2).
     let agent_id = {
         match sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5) \
+            "INSERT INTO agents (name, owner_id, version, image, status) \
+             VALUES ($1, $2, $3, $4, 'deploying') \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
-                           inbound_format = EXCLUDED.inbound_format, \
                            status = 'deploying', updated_at = now() \
              RETURNING id",
         )
@@ -354,7 +358,6 @@ async fn upload_and_deploy(
         .bind(owner_id)
         .bind(&version_tag)
         .bind(&image_tag)
-        .bind(inbound_format)
         .fetch_one(&mut *tx)
         .await
         {
@@ -386,11 +389,6 @@ async fn upload_and_deploy(
         }
     };
 
-    // Wire the agent's LLM SDK through the gateway (mint JWT + inject base-URL/key per the
-    // agent's inbound_format). Best-effort; skipped (with a warning) if the gateway isn't
-    // configured. Injected before the build job is enqueued so the worker deploys with it.
-    crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id)).await;
-
     let upload_id = build_id.to_string();
 
     // NOTE: server-level secrets (OPENAI_API_KEY / OPENAI_BASE_URL) are deliberately
@@ -419,14 +417,13 @@ async fn upload_and_deploy(
         }
     };
 
-    if let Err(e) = sqlx::query(
-        "INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)",
-    )
-    .bind(agent_id)
-    .bind(owner_id)
-    .bind(&payload_value)
-    .execute(&mut *tx)
-    .await
+    if let Err(e) =
+        sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
+            .bind(agent_id)
+            .bind(owner_id)
+            .bind(&payload_value)
+            .execute(&mut *tx)
+            .await
     {
         tracing::error!(%e, %agent_id, "upload: queue build_jobs db error");
         let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
@@ -446,7 +443,16 @@ async fn upload_and_deploy(
     // GET /api/agents/my-uploads returns the correct agent_id immediately.
     // The build worker's first set_upload_status call will hit the ON CONFLICT
     // path and preserve agent_id via COALESCE.
-    set_upload_status(&state.db, &upload_id, &name, owner_id, "initiated", Some(agent_id), None).await;
+    set_upload_status(
+        &state.db,
+        &upload_id,
+        &name,
+        owner_id,
+        "initiated",
+        Some(agent_id),
+        None,
+    )
+    .await;
 
     tracing::info!(
         %build_id,
@@ -485,9 +491,12 @@ fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Res
         tracing::warn!(zip_path = %zip_path.display(), reason = "missing Dockerfile", "upload rejected: invalid agent structure");
         return Err("no Dockerfile found in root of zip".into());
     }
-    let contents = std::fs::read_to_string(&dockerfile)
-        .map_err(|e| format!("read Dockerfile: {e}"))?;
-    if !contents.lines().any(|l| l.trim_start().starts_with("FROM ")) {
+    let contents =
+        std::fs::read_to_string(&dockerfile).map_err(|e| format!("read Dockerfile: {e}"))?;
+    if !contents
+        .lines()
+        .any(|l| l.trim_start().starts_with("FROM "))
+    {
         tracing::warn!(zip_path = %zip_path.display(), reason = "Dockerfile missing FROM", "upload rejected: invalid agent structure");
         return Err("Dockerfile has no FROM instruction".into());
     }
@@ -497,7 +506,10 @@ fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Res
     let has_entrypoint = entrypoints.iter().any(|p| dest.join(p).exists());
     if !has_entrypoint {
         tracing::warn!(zip_path = %zip_path.display(), reason = "missing entrypoint", "upload rejected: invalid agent structure");
-        return Err("no Python entrypoint found (main.py, src/main.py, __main__.py, or src/__main__.py)".into());
+        return Err(
+            "no Python entrypoint found (main.py, src/main.py, __main__.py, or src/__main__.py)"
+                .into(),
+        );
     }
 
     Ok(())
@@ -571,24 +583,49 @@ pub async fn execute_upload_and_deploy(
         }
 
         // Build Docker image.
-        let tar_bytes = build::tar_directory(&tmp_dir)
-            .map_err(|e| format!("tar source: {e}"))?;
+        let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
             .map_err(|e| format!("docker build: {e}"))?;
 
-        set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_triggered", None, None).await;
+        set_upload_status(
+            &db,
+            &upload_id,
+            &name,
+            owner_id,
+            "orchestration_triggered",
+            None,
+            None,
+        )
+        .await;
 
         // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
-        let mut spec = crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
-        crate::agents::attach_pull_credential(&db, &agent_runtime, &agent_image_registry, &mut spec, agent_id).await;
+        let mut spec =
+            crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
+        crate::agents::attach_pull_credential(
+            &db,
+            &agent_runtime,
+            &agent_image_registry,
+            &mut spec,
+            agent_id,
+        )
+        .await;
         let deploy_status = runtime
             .deploy(&spec)
             .await
             .map_err(|e| format!("deploy: {e}"))?;
 
-        set_upload_status(&db, &upload_id, &name, owner_id, "orchestration_processing", None, None).await;
+        set_upload_status(
+            &db,
+            &upload_id,
+            &name,
+            owner_id,
+            "orchestration_processing",
+            None,
+            None,
+        )
+        .await;
 
         Ok(deploy_status)
     }
@@ -603,7 +640,16 @@ pub async fn execute_upload_and_deploy(
     match result {
         Ok(deploy_status) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
-            set_upload_status(&db, &upload_id, &name, owner_id, "completed", Some(agent_id), None).await;
+            set_upload_status(
+                &db,
+                &upload_id,
+                &name,
+                owner_id,
+                "completed",
+                Some(agent_id),
+                None,
+            )
+            .await;
             let _ = sqlx::query(
                 "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
                  SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
@@ -619,11 +665,13 @@ pub async fn execute_upload_and_deploy(
                 &nasiko_runtime::ContainerId::from_uuid(agent_id),
             )
             .await;
-            let _ = sqlx::query("UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1")
-                .bind(agent_id)
-                .bind(&agent_url)
-                .execute(&db)
-                .await;
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .bind(&agent_url)
+            .execute(&db)
+            .await;
             // Fetch the agent's card in the background to persist skills,
             // description and the advertised transport_path (chat URL).
             tokio::spawn(super::utils::fetch_agent_card_with_retry(
@@ -653,11 +701,22 @@ pub async fn execute_upload_and_deploy(
             // `e` may embed raw docker/tar/IO error text — log it, but
             // upload_status.error_message is read back by clients via
             // GET /agents/uploads, so store a generic reason there.
-            set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some("upload and deploy failed")).await;
-            let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
-                .bind(agent_id)
-                .execute(&db)
-                .await;
+            set_upload_status(
+                &db,
+                &upload_id,
+                &name,
+                owner_id,
+                "failed",
+                None,
+                Some("upload and deploy failed"),
+            )
+            .await;
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .execute(&db)
+            .await;
             tracing::error!(build_id = %build_id, %e, "upload-and-deploy failed");
         }
     }
@@ -715,7 +774,9 @@ async fn deploy_status_sse(
         }
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 // ─── Upload status helpers ────────────────────────────────────────────────────
@@ -779,16 +840,17 @@ fn row_to_status_item(row: UploadStatusRow) -> UploadStatusItem {
     let is_done = matches!(row.status.as_str(), "completed" | "failed");
     let cap_gen = matches!(
         row.status.as_str(),
-        "capabilities_generated" | "orchestration_triggered" | "orchestration_processing" | "completed"
+        "capabilities_generated"
+            | "orchestration_triggered"
+            | "orchestration_processing"
+            | "completed"
     );
     let orch_trig = matches!(
         row.status.as_str(),
         "orchestration_triggered" | "orchestration_processing" | "completed"
     );
-    let processing_duration = (row.updated_at - row.created_at)
-        .num_milliseconds()
-        .max(0) as f64
-        / 1000.0;
+    let processing_duration =
+        (row.updated_at - row.created_at).num_milliseconds().max(0) as f64 / 1000.0;
     let status_msg = status_message_str(&row.status, &row.agent_name);
     let error_details: Vec<String> = row.error_message.into_iter().collect();
     let filename = format!("{}.zip", row.agent_name);
@@ -1004,10 +1066,7 @@ fn agent_status_message(display_status: &str, version: Option<&str>) -> Option<S
     }
 }
 
-async fn list_upload_agents(
-    State(state): State<AppState>,
-    claims: Claims,
-) -> impl IntoResponse {
+async fn list_upload_agents(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -1063,10 +1122,8 @@ async fn list_upload_agents(
             let data = rows
                 .into_iter()
                 .map(|r| {
-                    let display_status =
-                        agent_display_status(r.agent_status.as_deref());
-                    let status_message =
-                        agent_status_message(display_status, r.version.as_deref());
+                    let display_status = agent_display_status(r.agent_status.as_deref());
+                    let status_message = agent_status_message(display_status, r.version.as_deref());
                     UploadAgentResponse {
                         agent_id: r
                             .agent_id

@@ -247,6 +247,15 @@ async fn orchestrator_stream(
     let mut orchestrator = Orchestrator::new(config, RegistrySource::Static(agents))
         .with_a2a_client(a2a_client)
         .with_guard(guard);
+    // Each agent the orchestrator calls gets its own MCP delegation token
+    // minted per-call (see `A2aTool`) — best-effort, omitted if JWT_SECRET
+    // is unset rather than failing the whole chat/orchestration request.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET") {
+        orchestrator = orchestrator.with_delegation(nasiko_react_agent::DelegationContext {
+            user_id: user_id.to_string(),
+            jwt_secret,
+        });
+    }
     orchestrator
         .init()
         .await
@@ -492,13 +501,36 @@ async fn agent_stream(
     .execute(&state.db)
     .await;
 
-    let req_body = nasiko_types::a2a::build_stream_request(query, Some(context_id));
+    // Non-streaming (`message/send`), not `build_stream_request`: every example
+    // agent's `a2a-sdk` (Python) SSE producer spins the event loop indefinitely
+    // rather than terminating (upstream bug, not fixable here) — the
+    // non-streaming path is fully supported by both sides (the SDK's own
+    // `message/send` handler, and the JSON-response fallback branch just below,
+    // which already wraps a plain JSON reply into this endpoint's own SSE stream
+    // for the caller).
+    let req_body = nasiko_types::a2a::build_send_request(query, Some(context_id));
 
-    let response = state
+    let mut req = state
         .http_client
         .post(&endpoint)
         .header("A2A-Version", "1.0")
-        .header("traceparent", flow_ctx.to_traceparent())
+        .header("traceparent", flow_ctx.to_traceparent());
+
+    // Mint a delegation token so this agent can call back into `/api/mcp`
+    // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
+    // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
+    // unavailable to this agent rather than failing the whole chat call.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+        && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
+            &jwt_secret,
+            &user_id.to_string(),
+            &agent.id.to_string(),
+        )
+    {
+        req = req.header("x-nasiko-agent-token", delegation_token);
+    }
+
+    let response = req
         .json(&req_body)
         .send()
         .await

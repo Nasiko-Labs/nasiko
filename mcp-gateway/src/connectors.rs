@@ -116,16 +116,22 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
         .map_err(|e| McpError::Backend(format!("could not reach MCP server: {e}")))?;
 
     let (requires, hint) = match detected {
-        DetectedAuthType::None => ("nothing", "This server requires no authentication.".to_string()),
-        DetectedAuthType::OAuth2 => {
-            ("oauth_flow", "This server uses OAuth 2.1. You will be redirected to authorize.".to_string())
-        }
-        DetectedAuthType::Bearer if status == StatusCode::UNAUTHORIZED.as_u16() => {
-            ("api_key_input", "This server requires a Bearer token or API key.".to_string())
-        }
-        DetectedAuthType::Bearer => {
-            ("api_key_input", format!("Server returned HTTP {status}. It may require an API key."))
-        }
+        DetectedAuthType::None => (
+            "nothing",
+            "This server requires no authentication.".to_string(),
+        ),
+        DetectedAuthType::OAuth2 => (
+            "oauth_flow",
+            "This server uses OAuth 2.1. You will be redirected to authorize.".to_string(),
+        ),
+        DetectedAuthType::Bearer if status == StatusCode::UNAUTHORIZED.as_u16() => (
+            "api_key_input",
+            "This server requires a Bearer token or API key.".to_string(),
+        ),
+        DetectedAuthType::Bearer => (
+            "api_key_input",
+            format!("Server returned HTTP {status}. It may require an API key."),
+        ),
     };
     Ok(json!({ "url": url, "auth_type": detected.as_str(), "requires": requires, "hint": hint }))
 }
@@ -155,21 +161,35 @@ pub async fn register_connector(
     input: NewConnectorInput,
 ) -> Result<McpConnector> {
     if !AUTH_TYPES.contains(&input.auth_type.as_str()) {
-        return Err(McpError::BadRequest(format!("auth_type must be one of {AUTH_TYPES:?}")));
+        return Err(McpError::BadRequest(format!(
+            "auth_type must be one of {AUTH_TYPES:?}"
+        )));
     }
     if input.auth_type == "url_param" && input.url_param_name.is_none() {
-        return Err(McpError::BadRequest("url_param_name is required when auth_type='url_param'".into()));
+        return Err(McpError::BadRequest(
+            "url_param_name is required when auth_type='url_param'".into(),
+        ));
     }
     crate::net::validate_public_url(&input.url).await?;
 
-    if repo::get_owned_connector_by_name(&state.db, owner_id, &input.name).await?.is_some() {
-        return Err(McpError::Conflict(format!("you already have a connector named '{}'", input.name)));
+    if repo::get_owned_connector_by_name(&state.db, owner_id, &input.name)
+        .await?
+        .is_some()
+    {
+        return Err(McpError::Conflict(format!(
+            "you already have a connector named '{}'",
+            input.name
+        )));
     }
 
     // `none` needs nothing further; every other auth_type still needs a
     // credential registered (bearer/basic/url_param) or a browser OAuth
     // round-trip (oauth2) before the connector is actually usable.
-    let initial_setup_status = if input.auth_type == "none" { "active" } else { "pending" };
+    let initial_setup_status = if input.auth_type == "none" {
+        "active"
+    } else {
+        "pending"
+    };
 
     // For basic auth, precompute the Authorization: Basic header into static headers.
     let mut headers = input.headers.clone().unwrap_or_default();
@@ -179,7 +199,11 @@ pub async fn register_connector(
         let encoded = B64.encode(format!("{u}:{p}"));
         headers.insert("Authorization".to_string(), format!("Basic {encoded}"));
     }
-    let headers_json = if headers.is_empty() { None } else { Some(serde_json::to_value(&headers).unwrap_or(Value::Null)) };
+    let headers_json = if headers.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_value(&headers).unwrap_or(Value::Null))
+    };
 
     let connector = repo::create_connector(
         &state.db,
@@ -203,7 +227,10 @@ pub async fn register_connector(
     .await?;
     repo::set_connector_setup_status(&state.db, connector.id, initial_setup_status, None).await?;
     tracing::info!(name = %connector.name, %owner_id, "registered mcp connector");
-    Ok(McpConnector { setup_status: Some(initial_setup_status.to_string()), ..connector })
+    Ok(McpConnector {
+        setup_status: Some(initial_setup_status.to_string()),
+        ..connector
+    })
 }
 
 /// Partial-update input for [`update_connector`]. `None` fields are unchanged.
@@ -235,22 +262,37 @@ pub async fn update_connector(
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{id}' not found")))?;
     if !connector.is_mcp_server() {
-        return Err(McpError::BadRequest("only custom MCP connectors can be updated here".into()));
+        return Err(McpError::BadRequest(
+            "only custom MCP connectors can be updated here".into(),
+        ));
     }
     if !is_admin && connector.owner_id != Some(caller) {
-        return Err(McpError::Forbidden("this connector does not belong to you".into()));
+        return Err(McpError::Forbidden(
+            "this connector does not belong to you".into(),
+        ));
     }
 
     if let Some(at) = &input.auth_type
         && !AUTH_TYPES.contains(&at.as_str())
     {
-        return Err(McpError::BadRequest(format!("auth_type must be one of {AUTH_TYPES:?}")));
+        return Err(McpError::BadRequest(format!(
+            "auth_type must be one of {AUTH_TYPES:?}"
+        )));
     }
     // url_param needs a param name (using the post-update effective values).
-    let effective_auth = input.auth_type.clone().or_else(|| connector.auth_type.clone()).unwrap_or_default();
-    let effective_param = input.url_param_name.clone().or_else(|| connector.url_param_name.clone());
+    let effective_auth = input
+        .auth_type
+        .clone()
+        .or_else(|| connector.auth_type.clone())
+        .unwrap_or_default();
+    let effective_param = input
+        .url_param_name
+        .clone()
+        .or_else(|| connector.url_param_name.clone());
     if effective_auth == "url_param" && effective_param.is_none() {
-        return Err(McpError::BadRequest("url_param_name is required when auth_type='url_param'".into()));
+        return Err(McpError::BadRequest(
+            "url_param_name is required when auth_type='url_param'".into(),
+        ));
     }
     if let Some(url) = &input.url {
         crate::net::validate_public_url(url).await?;
@@ -262,10 +304,15 @@ pub async fn update_connector(
         && let Some(existing) = repo::get_owned_connector_by_name(&state.db, owner, name).await?
         && existing.id != connector.id
     {
-        return Err(McpError::Conflict(format!("you already have a connector named '{name}'")));
+        return Err(McpError::Conflict(format!(
+            "you already have a connector named '{name}'"
+        )));
     }
 
-    let headers_json = input.headers.as_ref().map(|h| serde_json::to_value(h).unwrap_or(Value::Null));
+    let headers_json = input
+        .headers
+        .as_ref()
+        .map(|h| serde_json::to_value(h).unwrap_or(Value::Null));
     let updated = repo::update_connector(
         &state.db,
         id,
@@ -290,7 +337,10 @@ pub async fn update_connector(
 
 /// `GET /api/mcp/connectors` — custom connectors visible to the caller.
 pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Value> {
-    let connectors = state.authorizer.list_accessible_mcp_connectors(&state.db, user_id).await?;
+    let connectors = state
+        .authorizer
+        .list_accessible_mcp_connectors(&state.db, user_id)
+        .await?;
     let data: Vec<Value> = connectors
         .iter()
         .map(|c| {
@@ -305,9 +355,19 @@ pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Val
 
 /// `GET /api/mcp/connectors/{id}` — a single connector. 404s (not 403) when the
 /// caller can't reach it, so the response never leaks whether the id exists.
-pub async fn get_connector_view(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<Value> {
-    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
-        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+pub async fn get_connector_view(
+    state: &McpState,
+    user_id: Uuid,
+    connector_id: Uuid,
+) -> Result<Value> {
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, user_id, connector_id)
+        .await?
+    {
+        return Err(McpError::NotFound(format!(
+            "connector '{connector_id}' not found"
+        )));
     }
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
@@ -327,10 +387,17 @@ pub async fn get_connector_for_deletion(state: &McpState, id: Uuid) -> Result<Mc
 /// `DELETE /api/mcp/connectors/{id}` — owner/admin-gated delete. Ownership is
 /// enforced here (in the crate) alongside the delete itself, so the server
 /// layer stays a thin forwarder — matching `update_connector`/`owned_shareable`.
-pub async fn delete_connector_authorized(state: &McpState, caller: Uuid, is_admin: bool, id: Uuid) -> Result<()> {
+pub async fn delete_connector_authorized(
+    state: &McpState,
+    caller: Uuid,
+    is_admin: bool,
+    id: Uuid,
+) -> Result<()> {
     let connector = get_connector_for_deletion(state, id).await?;
     if !is_admin && connector.owner_id != Some(caller) {
-        return Err(McpError::Forbidden("this connector does not belong to you".into()));
+        return Err(McpError::Forbidden(
+            "this connector does not belong to you".into(),
+        ));
     }
     delete_connector(state, &connector).await
 }
@@ -358,15 +425,24 @@ pub enum ShareTarget {
 }
 
 /// Load a connector and confirm `caller` may share it (owner or admin).
-async fn owned_shareable(state: &McpState, caller: Uuid, is_admin: bool, connector_id: Uuid) -> Result<McpConnector> {
+async fn owned_shareable(
+    state: &McpState,
+    caller: Uuid,
+    is_admin: bool,
+    connector_id: Uuid,
+) -> Result<McpConnector> {
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
     if !connector.is_mcp_server() {
-        return Err(McpError::BadRequest("only custom MCP connectors can be shared".into()));
+        return Err(McpError::BadRequest(
+            "only custom MCP connectors can be shared".into(),
+        ));
     }
     if !is_admin && connector.owner_id != Some(caller) {
-        return Err(McpError::Forbidden("only the owner can share this connector".into()));
+        return Err(McpError::Forbidden(
+            "only the owner can share this connector".into(),
+        ));
     }
     Ok(connector)
 }
@@ -402,7 +478,8 @@ pub async fn revoke_share_grant(
     grantee_id: &str,
 ) -> Result<()> {
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
-    let removed = repo::revoke_grant_and_connection(&state.db, connector.id, grant_type, grantee_id).await?;
+    let removed =
+        repo::revoke_grant_and_connection(&state.db, connector.id, grant_type, grantee_id).await?;
     if !removed {
         return Err(McpError::NotFound("no matching share to revoke".into()));
     }
@@ -414,7 +491,10 @@ pub async fn revoke_share_grant(
 }
 
 /// Resolve a [`ShareTarget`] to `(grant_type, grantee_id, grantee_user)`.
-async fn resolve_target(state: &McpState, target: ShareTarget) -> Result<(&'static str, String, Option<Uuid>)> {
+async fn resolve_target(
+    state: &McpState,
+    target: ShareTarget,
+) -> Result<(&'static str, String, Option<Uuid>)> {
     match target {
         ShareTarget::Public => Ok((GrantType::Public.as_str(), PUBLIC_GRANTEE.to_string(), None)),
         ShareTarget::User(username) => {
@@ -435,7 +515,15 @@ pub async fn share_connector(
     target: ShareTarget,
 ) -> Result<Value> {
     let (grant_type, grantee_id, grantee_user) = resolve_target(state, target).await?;
-    let view = create_share_grant(state, caller, is_admin, connector_id, grant_type, &grantee_id).await?;
+    let view = create_share_grant(
+        state,
+        caller,
+        is_admin,
+        connector_id,
+        grant_type,
+        &grantee_id,
+    )
+    .await?;
     if let Some(uid) = grantee_user {
         crate::session::invalidate_session_cache(state, uid).await;
     }
@@ -451,7 +539,15 @@ pub async fn revoke_share(
     target: ShareTarget,
 ) -> Result<()> {
     let (grant_type, grantee_id, grantee_user) = resolve_target(state, target).await?;
-    revoke_share_grant(state, caller, is_admin, connector_id, grant_type, &grantee_id).await?;
+    revoke_share_grant(
+        state,
+        caller,
+        is_admin,
+        connector_id,
+        grant_type,
+        &grantee_id,
+    )
+    .await?;
     if let Some(uid) = grantee_user {
         crate::session::invalidate_session_cache(state, uid).await;
     }
@@ -461,11 +557,19 @@ pub async fn revoke_share(
 /// `GET /api/mcp/connectors/{id}/share` — list a connector's grants, plus who
 /// has access and why (`access_reasons`, EE-aware via the authorizer seam)
 /// and whether it's public (a flag, not a per-person reason).
-pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, connector_id: Uuid) -> Result<Value> {
+pub async fn list_shares_view(
+    state: &McpState,
+    caller: Uuid,
+    is_admin: bool,
+    connector_id: Uuid,
+) -> Result<Value> {
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
     let grants = repo::list_grants_for_connector(&state.db, connector.id).await?;
     let is_public = grants.iter().any(|g| g.grant_type == "public");
-    let access_reasons = state.authorizer.list_access_reasons(&state.db, &connector).await?;
+    let access_reasons = state
+        .authorizer
+        .list_access_reasons(&state.db, &connector)
+        .await?;
     let data: Vec<Value> = grants
         .into_iter()
         .map(|g| {
@@ -490,10 +594,16 @@ pub async fn list_shares_view(state: &McpState, caller: Uuid, is_admin: bool, co
 /// `AuthService::org_visible_user_ids`: `None` = unscoped (OSS, or an EE role
 /// that sees everyone), `Some(ids)` = restrict to those users (EE members only
 /// find users in their own team/department). `Some(empty)` matches no one.
-pub async fn search_share_targets_view(state: &McpState, q: &str, visible_ids: Option<Vec<Uuid>>) -> Result<Value> {
+pub async fn search_share_targets_view(
+    state: &McpState,
+    q: &str,
+    visible_ids: Option<Vec<Uuid>>,
+) -> Result<Value> {
     let q = q.trim();
     if q.chars().count() < 2 {
-        return Err(McpError::BadRequest("q must be at least 2 characters".into()));
+        return Err(McpError::BadRequest(
+            "q must be at least 2 characters".into(),
+        ));
     }
     let rows = repo::search_users_for_share(&state.db, q, 20, visible_ids.as_deref()).await?;
     let data: Vec<Value> = rows
@@ -503,12 +613,23 @@ pub async fn search_share_targets_view(state: &McpState, q: &str, visible_ids: O
     Ok(json!({ "data": data }))
 }
 
-/// `GET /api/mcp/connectors/{id}/consumers` — which agents have this connector
-/// configured (an explicit per-agent override row). Owner/admin-gated, same as
-/// sharing — a management view. Correct for public connectors too: it keys off
-/// the override row, not owner reachability, so a public-only user's configured
-/// agent still shows up.
-pub async fn list_consumers_view(state: &McpState, caller: Uuid, is_admin: bool, connector_id: Uuid) -> Result<Value> {
+/// `GET /api/mcp/connectors/{id}/consumers` — which agents, users, teams, and
+/// departments actually use this connector. Owner/admin-gated, same as
+/// sharing — a management view.
+///
+/// Agents are read off `mcp_agent_connector_access` (an explicit per-agent
+/// override row) — correct for public connectors too, since it keys off the
+/// override row, not owner reachability, so a public-only user's configured
+/// agent still shows up. Users/teams/departments are read off the grant rows
+/// directly (entity-level, not exploded per team member — that's
+/// `list_access_reasons`'s job for the Share tab); team/department grants are
+/// always empty in OSS via the authorizer seam.
+pub async fn list_consumers_view(
+    state: &McpState,
+    caller: Uuid,
+    is_admin: bool,
+    connector_id: Uuid,
+) -> Result<Value> {
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
     let agents = repo::list_configured_agent_consumers(&state.db, connector.id).await?;
 
@@ -525,21 +646,61 @@ pub async fn list_consumers_view(state: &McpState, caller: Uuid, is_admin: bool,
         })
         .collect();
 
-    Ok(json!({ "agents": agents_json }))
+    let grants = repo::list_grants_for_connector(&state.db, connector.id).await?;
+    let direct_user_ids: Vec<Uuid> = grants
+        .iter()
+        .filter(|g| g.grant_type == "user")
+        .filter_map(|g| Uuid::parse_str(&g.grantee_id).ok())
+        .collect();
+    let labels = repo::resolve_user_labels(&state.db, &direct_user_ids).await?;
+    let users_json: Vec<Value> = grants
+        .iter()
+        .filter(|g| g.grant_type == "user")
+        .filter_map(|g| {
+            let user_id = Uuid::parse_str(&g.grantee_id).ok()?;
+            let (username, display_name) = labels.get(&user_id)?;
+            Some(json!({
+                "user_id": user_id,
+                "username": username,
+                "display_name": display_name,
+                "granted_by": g.granted_by,
+                "created_at": g.created_at,
+            }))
+        })
+        .collect();
+
+    let (teams, departments) = state
+        .authorizer
+        .list_org_grant_consumers(&state.db, connector.id)
+        .await?;
+
+    Ok(
+        json!({ "agents": agents_json, "users": users_json, "teams": teams, "departments": departments }),
+    )
 }
 
 /// `POST /api/mcp/connectors/{id}/pin` — pin a connector for quick access.
 /// Requires the connector be reachable (Layer 1) — pinning something you
 /// can't use would be a pointless, confusing shortlist entry.
 pub async fn pin_connector_view(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<()> {
-    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
-        return Err(McpError::NotFound(format!("connector '{connector_id}' not found")));
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, user_id, connector_id)
+        .await?
+    {
+        return Err(McpError::NotFound(format!(
+            "connector '{connector_id}' not found"
+        )));
     }
     repo::pin_connector(&state.db, user_id, connector_id).await
 }
 
 /// `DELETE /api/mcp/connectors/{id}/pin` — unpin.
-pub async fn unpin_connector_view(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<()> {
+pub async fn unpin_connector_view(
+    state: &McpState,
+    user_id: Uuid,
+    connector_id: Uuid,
+) -> Result<()> {
     repo::unpin_connector(&state.db, user_id, connector_id).await?;
     Ok(())
 }
@@ -562,10 +723,18 @@ pub async fn list_recent_view(state: &McpState, user_id: Uuid) -> Result<Value> 
 
 /// Resolve `ids` to full connector DTOs, preserving order, dropping any the
 /// caller can no longer reach.
-async fn connectors_reachable_in_order(state: &McpState, user_id: Uuid, ids: &[Uuid]) -> Result<Vec<Value>> {
+async fn connectors_reachable_in_order(
+    state: &McpState,
+    user_id: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<Value>> {
     let mut out = Vec::with_capacity(ids.len());
     for &id in ids {
-        if !state.authorizer.can_access_connector(&state.db, user_id, id).await? {
+        if !state
+            .authorizer
+            .can_access_connector(&state.db, user_id, id)
+            .await?
+        {
             continue;
         }
         if let Some(c) = repo::get_connector_by_id(&state.db, id).await? {
@@ -583,15 +752,30 @@ mod tests {
 
     #[test]
     fn classify_response_cases() {
-        assert_eq!(classify_response(StatusCode::OK, ""), DetectedAuthType::None);
-        assert_eq!(classify_response(StatusCode::CREATED, "Bearer"), DetectedAuthType::None);
+        assert_eq!(
+            classify_response(StatusCode::OK, ""),
+            DetectedAuthType::None
+        );
+        assert_eq!(
+            classify_response(StatusCode::CREATED, "Bearer"),
+            DetectedAuthType::None
+        );
         assert_eq!(
             classify_response(StatusCode::UNAUTHORIZED, "Bearer resource_metadata=\"x\""),
             DetectedAuthType::OAuth2
         );
-        assert_eq!(classify_response(StatusCode::UNAUTHORIZED, ""), DetectedAuthType::Bearer);
-        assert_eq!(classify_response(StatusCode::INTERNAL_SERVER_ERROR, ""), DetectedAuthType::Bearer);
-        assert_eq!(classify_response(StatusCode::NOT_FOUND, ""), DetectedAuthType::Bearer);
+        assert_eq!(
+            classify_response(StatusCode::UNAUTHORIZED, ""),
+            DetectedAuthType::Bearer
+        );
+        assert_eq!(
+            classify_response(StatusCode::INTERNAL_SERVER_ERROR, ""),
+            DetectedAuthType::Bearer
+        );
+        assert_eq!(
+            classify_response(StatusCode::NOT_FOUND, ""),
+            DetectedAuthType::Bearer
+        );
     }
 
     #[test]

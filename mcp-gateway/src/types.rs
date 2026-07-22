@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
@@ -44,7 +45,11 @@ pub struct JsonRpcError {
 
 impl JsonRpcError {
     pub fn new(code: i64, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), data: None }
+        Self {
+            code,
+            message: message.into(),
+            data: None,
+        }
     }
 }
 
@@ -62,12 +67,22 @@ pub struct JsonRpcResponse {
 impl JsonRpcResponse {
     /// A successful response carrying `result`.
     pub fn ok(id: Value, result: Value) -> Self {
-        Self { jsonrpc: "2.0", id, result: Some(result), error: None }
+        Self {
+            jsonrpc: "2.0",
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     /// An error response.
     pub fn err(id: Value, error: JsonRpcError) -> Self {
-        Self { jsonrpc: "2.0", id, result: None, error: Some(error) }
+        Self {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(error),
+        }
     }
 }
 
@@ -220,6 +235,19 @@ pub struct AccessReason {
     pub via_label: Option<String>,
 }
 
+/// A team or department with a direct grant on a connector — the entity
+/// itself, not exploded per member (contrast [`AccessReason`], which lists
+/// the individual people reachable through that grant). Feeds the
+/// consumers view's Teams/Departments tables. OSS has no team/department
+/// concept, so this is always empty outside EE.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgGrantConsumer {
+    pub id: Uuid,
+    pub name: String,
+    pub granted_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A resolved backend the gateway will fan out to. The Composio session (when
 /// present) is entry `[0]` with `kind = Composio`; generic servers follow with
 /// per-user credentials already injected into `headers` / `url`. `connector_id`
@@ -309,8 +337,11 @@ mod tests {
     #[test]
     fn auth_type_round_trips_and_rejects_unknown() {
         for (v, s) in [
-            (AuthType::None, "none"), (AuthType::Bearer, "bearer"), (AuthType::Basic, "basic"),
-            (AuthType::OAuth2, "oauth2"), (AuthType::UrlParam, "url_param"),
+            (AuthType::None, "none"),
+            (AuthType::Bearer, "bearer"),
+            (AuthType::Basic, "basic"),
+            (AuthType::OAuth2, "oauth2"),
+            (AuthType::UrlParam, "url_param"),
         ] {
             assert_eq!(v.as_str(), s);
             assert_eq!(AuthType::from_str(s), Some(v));
@@ -322,13 +353,25 @@ mod tests {
 
     #[test]
     fn provider_and_grant_type_round_trip() {
-        assert_eq!(ProviderType::from_str("composio"), Some(ProviderType::Composio));
-        assert_eq!(ProviderType::from_str("mcp_server"), Some(ProviderType::McpServer));
+        assert_eq!(
+            ProviderType::from_str("composio"),
+            Some(ProviderType::Composio)
+        );
+        assert_eq!(
+            ProviderType::from_str("mcp_server"),
+            Some(ProviderType::McpServer)
+        );
         assert_eq!(ProviderType::from_str("nope"), None);
-        assert_eq!(serde_json::to_value(ProviderType::McpServer).unwrap(), json!("mcp_server"));
+        assert_eq!(
+            serde_json::to_value(ProviderType::McpServer).unwrap(),
+            json!("mcp_server")
+        );
         assert_eq!(GrantType::from_str("public"), Some(GrantType::Public));
         assert_eq!(GrantType::from_str(""), None);
-        assert_eq!(serde_json::to_value(GrantType::User).unwrap(), json!("user"));
+        assert_eq!(
+            serde_json::to_value(GrantType::User).unwrap(),
+            json!("user")
+        );
     }
 
     #[test]
@@ -340,7 +383,10 @@ mod tests {
         let b = Uuid::parse_str("abcdef00-2222-3333-4444-555555555555").unwrap();
         assert_ne!(connector_prefix(a), connector_prefix(b));
         let name = format!("{}__{}", connector_prefix(b), "SEND_EMAIL");
-        assert_eq!(name.split_once("__"), Some(("abcdef0022223333", "SEND_EMAIL")));
+        assert_eq!(
+            name.split_once("__"),
+            Some(("abcdef0022223333", "SEND_EMAIL"))
+        );
     }
 
     #[test]
@@ -349,7 +395,10 @@ mod tests {
         assert_eq!(Stance::from_str("block"), Some(Stance::Block));
         assert_eq!(Stance::from_str("bogus"), None);
         assert_eq!(serde_json::to_value(Stance::Ask).unwrap(), json!("ask"));
-        assert_eq!(serde_json::to_value(ServerType::Composio).unwrap(), json!("composio"));
+        assert_eq!(
+            serde_json::to_value(ServerType::Composio).unwrap(),
+            json!("composio")
+        );
         assert_eq!(ServerType::Mcp.as_str(), "mcp");
     }
 
@@ -380,14 +429,22 @@ mod tests {
     fn jsonrpc_response_omits_none_fields() {
         let ok = serde_json::to_value(JsonRpcResponse::ok(json!(1), json!({"a":1}))).unwrap();
         assert!(ok.get("result").is_some() && ok.get("error").is_none());
-        let e = serde_json::to_value(JsonRpcResponse::err(json!(1), JsonRpcError::new(codes::TOOL_BLOCKED, "no"))).unwrap();
+        let e = serde_json::to_value(JsonRpcResponse::err(
+            json!(1),
+            JsonRpcError::new(codes::TOOL_BLOCKED, "no"),
+        ))
+        .unwrap();
         assert!(e.get("error").is_some() && e.get("result").is_none());
         assert_eq!(e["error"]["code"], json!(codes::TOOL_BLOCKED));
     }
 
     #[test]
     fn connector_prefix_is_always_16_lowercase_hex_chars() {
-        let is_lower_hex_16 = |s: &str| s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+        let is_lower_hex_16 = |s: &str| {
+            s.len() == 16
+                && s.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        };
         for id in [
             Uuid::nil(),
             Uuid::max(),
@@ -395,10 +452,16 @@ mod tests {
             Uuid::new_v4(),
         ] {
             let p = connector_prefix(id);
-            assert!(is_lower_hex_16(&p), "prefix '{p}' for {id} is not 16 lowercase hex chars");
+            assert!(
+                is_lower_hex_16(&p),
+                "prefix '{p}' for {id} is not 16 lowercase hex chars"
+            );
         }
         // Uppercase-hex UUID input still lowercases in the prefix.
-        assert_eq!(connector_prefix(Uuid::parse_str("ABCDEF12-2222-3333-4444-555555555555").unwrap()), "abcdef1222223333");
+        assert_eq!(
+            connector_prefix(Uuid::parse_str("ABCDEF12-2222-3333-4444-555555555555").unwrap()),
+            "abcdef1222223333"
+        );
     }
 
     #[test]
@@ -411,8 +474,16 @@ mod tests {
             owner: &'static str,
         }
         let shared_id = Uuid::new_v4();
-        let mut c1 = Connector { id: shared_id, name: "gmail-prod", owner: "alice" };
-        let c2 = Connector { id: shared_id, name: "totally-different-name", owner: "bob" };
+        let mut c1 = Connector {
+            id: shared_id,
+            name: "gmail-prod",
+            owner: "alice",
+        };
+        let c2 = Connector {
+            id: shared_id,
+            name: "totally-different-name",
+            owner: "bob",
+        };
         assert_eq!(connector_prefix(c1.id), connector_prefix(c2.id));
 
         let before = connector_prefix(c1.id);
@@ -427,13 +498,19 @@ mod tests {
         // so a collision now requires two distinct ids to match on all 8 leading
         // bytes — far narrower than the old 4-byte (32-bit) surface. Constructed
         // deterministically to prove the prefix is exactly those 8 bytes.
-        let a = Uuid::from_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0x01]);
-        let b = Uuid::from_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0x02]);
+        let a = Uuid::from_bytes([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0x01,
+        ]);
+        let b = Uuid::from_bytes([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0x02,
+        ]);
         assert_ne!(a, b, "the two ids must be genuinely distinct connectors");
         assert_eq!(connector_prefix(a), connector_prefix(b));
         assert_eq!(connector_prefix(a), "1122334455667788");
         // Differing within the first 8 bytes must NOT collide.
-        let c = Uuid::from_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x89, 0, 0, 0, 0, 0, 0, 0, 0x01]);
+        let c = Uuid::from_bytes([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x89, 0, 0, 0, 0, 0, 0, 0, 0x01,
+        ]);
         assert_ne!(connector_prefix(a), connector_prefix(c));
     }
 }

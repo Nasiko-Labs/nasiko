@@ -46,7 +46,10 @@ fn clear_gateway_public_url() {
 /// A client that does NOT follow redirects, so a 3xx response can be inspected
 /// directly instead of chasing `Location` into a real (possibly nonexistent) host.
 fn no_redirect_client() -> reqwest::Client {
-    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
 }
 
 async fn seed_oauth_connector_with_token_endpoint(
@@ -72,7 +75,9 @@ async fn seed_oauth_connector_with_token_endpoint(
 /// A stub OAuth token endpoint returning a fixed token response for any POST.
 async fn start_stub_token_server() -> String {
     async fn respond() -> impl IntoResponse {
-        axum::Json(json!({"access_token": "at_from_stub", "refresh_token": "rt_from_stub", "expires_in": 3600}))
+        axum::Json(
+            json!({"access_token": "at_from_stub", "refresh_token": "rt_from_stub", "expires_in": 3600}),
+        )
     }
     let app = Router::new().route("/token", post(respond));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -98,7 +103,12 @@ async fn init_admin(server: &common::TestServer) -> (String, Uuid) {
     (id.clone(), Uuid::parse_str(&id).unwrap())
 }
 
-async fn seed_connector(server: &common::TestServer, owner: Uuid, name: &str, auth_type: &str) -> Uuid {
+async fn seed_connector(
+    server: &common::TestServer,
+    owner: Uuid,
+    name: &str,
+    auth_type: &str,
+) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO mcp_connectors (provider_type, owner_id, name, url, auth_type)
          VALUES ('mcp_server', $1, $2, 'https://example.com', $3) RETURNING id",
@@ -118,12 +128,22 @@ async fn authorize_on_non_oauth_connector_is_bad_request() {
     let (uid, uuid) = init_admin(&server).await;
     let cid = seed_connector(&server, uuid, "not-oauth", "bearer").await;
 
-    let res = common::as_superuser(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/oauth/authorize"))), &uid, "admin")
-        .json(&json!({}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 400, "OAuth authorize is only for auth_type='oauth2'");
+    let res = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/oauth/authorize"))),
+        &uid,
+        "admin",
+    )
+    .json(&json!({}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "OAuth authorize is only for auth_type='oauth2'"
+    );
 
     server.cleanup().await;
 }
@@ -139,11 +159,17 @@ async fn authorize_without_gateway_url_is_not_configured() {
     let (uid, uuid) = init_admin(&server).await;
     let cid = seed_connector(&server, uuid, "oauth-tool", "oauth2").await;
 
-    let res = common::as_superuser(server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/oauth/authorize"))), &uid, "admin")
-        .json(&json!({}))
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/oauth/authorize"))),
+        &uid,
+        "admin",
+    )
+    .json(&json!({}))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 503);
 
     server.cleanup().await;
@@ -156,19 +182,31 @@ async fn status_reports_unauthorized_and_revoke_404_when_no_token() {
     let (uid, uuid) = init_admin(&server).await;
     let cid = seed_connector(&server, uuid, "oauth-status-tool", "oauth2").await;
 
-    let body: Value = common::as_superuser(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/oauth/status"))), &uid, "admin")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let body: Value = common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/oauth/status"))),
+        &uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     assert_eq!(body["authorized"], false);
 
-    let res = common::as_superuser(server.client.delete(server.url(&format!("/api/mcp/connectors/{cid}/oauth/token"))), &uid, "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server
+            .client
+            .delete(server.url(&format!("/api/mcp/connectors/{cid}/oauth/token"))),
+        &uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 404, "no token to revoke");
 
     server.cleanup().await;
@@ -180,32 +218,46 @@ async fn authorize_on_inaccessible_connector_forbidden() {
     let server = common::TestServer::start().await;
     let (admin, _) = init_admin(&server).await;
     // A connector owned by someone else.
-    let other = common::as_superuser(server.client.post(server.url("/api/users")), &admin, "admin")
-        .json(&json!({"username": "oa-other", "email": "oa-other@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap();
+    let other = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &admin,
+        "admin",
+    )
+    .json(&json!({"username": "oa-other", "email": "oa-other@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
     let other_uuid = Uuid::parse_str(other["id"].as_str().unwrap()).unwrap();
     let cid = seed_connector(&server, other_uuid, "other-oauth", "oauth2").await;
 
     // A plain member (not admin, not owner, no grant) is denied.
-    let member = common::as_superuser(server.client.post(server.url("/api/users")), &admin, "admin")
-        .json(&json!({"username": "oa-member", "email": "oa-member@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap();
+    let member = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &admin,
+        "admin",
+    )
+    .json(&json!({"username": "oa-member", "email": "oa-member@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
     let member_id = member["id"].as_str().unwrap();
 
-    let res = common::as_member(server.client.get(server.url(&format!("/api/mcp/connectors/{cid}/oauth/status"))), member_id, "oa-member")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/oauth/status"))),
+        member_id,
+        "oa-member",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 403);
 
     server.cleanup().await;
@@ -226,7 +278,12 @@ async fn callback_round_trips_through_token_exchange() {
     // Same-origin as the configured gateway public URL, so fix #3's
     // `safe_redirect` honors it verbatim (an off-origin target would be
     // rewritten to "/" — covered by the connect.rs neutralization test).
-    let oauth_state = OAuthState::new(uuid, cid, "verifier123".into(), Some("https://gateway.test.local/success".into()));
+    let oauth_state = OAuthState::new(
+        uuid,
+        cid,
+        "verifier123".into(),
+        Some("https://gateway.test.local/success".into()),
+    );
     let signed = sign_state(&oauth_state, SIGNING_KEY);
 
     let res = no_redirect_client()
@@ -235,7 +292,11 @@ async fn callback_round_trips_through_token_exchange() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 303, "successful exchange must redirect to the caller-supplied redirect_url");
+    assert_eq!(
+        res.status(),
+        303,
+        "successful exchange must redirect to the caller-supplied redirect_url"
+    );
     assert_eq!(
         res.headers().get("location").and_then(|v| v.to_str().ok()),
         Some("https://gateway.test.local/success")
@@ -250,8 +311,15 @@ async fn callback_round_trips_through_token_exchange() {
     .await
     .unwrap();
     assert_eq!(status, "ACTIVE");
-    assert!(enc.is_some(), "the exchanged access token must be persisted");
-    assert_ne!(enc.unwrap(), "at_from_stub", "the token must be encrypted at rest, not stored raw");
+    assert!(
+        enc.is_some(),
+        "the exchanged access token must be persisted"
+    );
+    assert_ne!(
+        enc.unwrap(),
+        "at_from_stub",
+        "the token must be encrypted at rest, not stored raw"
+    );
 
     // A successful OAuth round-trip must flip the connector's setup_status to
     // 'active' (oss/mcp-gateway/src/oauth.rs).
@@ -261,8 +329,15 @@ async fn callback_round_trips_through_token_exchange() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert_eq!(setup_status.as_deref(), Some("active"), "successful OAuth must mark the connector active");
-    assert!(setup_error.is_none(), "no error on success: {setup_error:?}");
+    assert_eq!(
+        setup_status.as_deref(),
+        Some("active"),
+        "successful OAuth must mark the connector active"
+    );
+    assert!(
+        setup_error.is_none(),
+        "no error on success: {setup_error:?}"
+    );
 
     clear_signing_key();
     clear_gateway_public_url();
@@ -273,7 +348,10 @@ async fn callback_round_trips_through_token_exchange() {
 /// failure branch of `handle_callback`.
 async fn start_failing_token_server() -> String {
     async fn respond() -> impl IntoResponse {
-        (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid_grant"})))
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "invalid_grant"})),
+        )
     }
     let app = Router::new().route("/token", post(respond));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -292,9 +370,15 @@ async fn callback_failed_exchange_marks_connector_setup_failed() {
     let token_url = start_failing_token_server().await;
     let server = common::TestServer::start().await;
     let (_uid, uuid) = init_admin(&server).await;
-    let cid = seed_oauth_connector_with_token_endpoint(&server, uuid, "cb-fail-tool", &token_url).await;
+    let cid =
+        seed_oauth_connector_with_token_endpoint(&server, uuid, "cb-fail-tool", &token_url).await;
 
-    let oauth_state = OAuthState::new(uuid, cid, "verifier123".into(), Some("https://gateway.test.local/success".into()));
+    let oauth_state = OAuthState::new(
+        uuid,
+        cid,
+        "verifier123".into(),
+        Some("https://gateway.test.local/success".into()),
+    );
     let signed = sign_state(&oauth_state, SIGNING_KEY);
 
     let res = no_redirect_client()
@@ -305,19 +389,28 @@ async fn callback_failed_exchange_marks_connector_setup_failed() {
         .unwrap();
     // A failed exchange renders the message page (200), never a redirect, and
     // must not echo the token-endpoint body.
-    assert_eq!(res.status(), 200, "failed exchange must render the error page, not redirect");
+    assert_eq!(
+        res.status(),
+        200,
+        "failed exchange must render the error page, not redirect"
+    );
     let body = res.text().await.unwrap();
     assert!(body.contains("Token exchange failed"), "{body}");
 
     // No connection row should have become ACTIVE.
-    let conn: Option<String> =
-        sqlx::query_scalar("SELECT status FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
-            .bind(uuid)
-            .bind(cid)
-            .fetch_optional(&server.db)
-            .await
-            .unwrap();
-    assert_ne!(conn.as_deref(), Some("ACTIVE"), "a failed exchange must not leave an ACTIVE connection");
+    let conn: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2",
+    )
+    .bind(uuid)
+    .bind(cid)
+    .fetch_optional(&server.db)
+    .await
+    .unwrap();
+    assert_ne!(
+        conn.as_deref(),
+        Some("ACTIVE"),
+        "a failed exchange must not leave an ACTIVE connection"
+    );
 
     // The connector's setup_status must record the failure.
     let (setup_status, setup_error): (Option<String>, Option<String>) =
@@ -326,7 +419,11 @@ async fn callback_failed_exchange_marks_connector_setup_failed() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert_eq!(setup_status.as_deref(), Some("failed"), "failed OAuth must mark the connector setup failed");
+    assert_eq!(
+        setup_status.as_deref(),
+        Some("failed"),
+        "failed OAuth must mark the connector setup failed"
+    );
     assert!(setup_error.is_some(), "a failure reason must be recorded");
 
     clear_signing_key();
@@ -346,7 +443,11 @@ async fn callback_missing_state_is_message_page_not_redirect() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "missing state must render the error page, not redirect");
+    assert_eq!(
+        res.status(),
+        200,
+        "missing state must render the error page, not redirect"
+    );
     let body = res.text().await.unwrap();
     assert!(body.contains("Missing code or state"), "{body}");
 
@@ -367,9 +468,16 @@ async fn callback_malformed_state_is_clean_error_not_panic() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 200, "garbage state {garbage:?} must be a clean error page, not a panic/500");
+        assert_eq!(
+            res.status(),
+            200,
+            "garbage state {garbage:?} must be a clean error page, not a panic/500"
+        );
         let body = res.text().await.unwrap();
-        assert!(body.contains("Invalid or expired state"), "{garbage:?} -> {body}");
+        assert!(
+            body.contains("Invalid or expired state"),
+            "{garbage:?} -> {body}"
+        );
     }
 
     clear_signing_key();
@@ -394,7 +502,11 @@ async fn callback_expired_state_is_rejected() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "expired state must render the error page, not redirect");
+    assert_eq!(
+        res.status(),
+        200,
+        "expired state must render the error page, not redirect"
+    );
     let body = res.text().await.unwrap();
     assert!(body.contains("Invalid or expired state"), "{body}");
 
@@ -411,11 +523,18 @@ async fn callback_idp_error_renders_message_not_redirect() {
     // The user denied consent at the IdP — no code/state at all, just error params.
     let res = no_redirect_client()
         .get(server.url("/api/mcp/oauth/callback"))
-        .query(&[("error", "access_denied"), ("error_description", "User denied access")])
+        .query(&[
+            ("error", "access_denied"),
+            ("error_description", "User denied access"),
+        ])
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "an IdP error must render the error page, not redirect or crash");
+    assert_eq!(
+        res.status(),
+        200,
+        "an IdP error must render the error page, not redirect or crash"
+    );
     let body = res.text().await.unwrap();
     assert!(body.contains("Authorization failed"), "{body}");
     assert!(body.contains("access_denied"), "{body}");
@@ -441,10 +560,16 @@ async fn callback_rejects_forged_state_signed_with_old_default_key_vuln2() {
     let token_url = start_stub_token_server().await;
     let server = common::TestServer::start().await;
     let (_uid, uuid) = init_admin(&server).await;
-    let cid = seed_oauth_connector_with_token_endpoint(&server, uuid, "vuln2-tool", &token_url).await;
+    let cid =
+        seed_oauth_connector_with_token_endpoint(&server, uuid, "vuln2-tool", &token_url).await;
 
     // The old published default literal — no longer the real signing key.
-    let forged_state = OAuthState::new(uuid, cid, "attacker-chosen-verifier".into(), Some("https://attacker.example/land".into()));
+    let forged_state = OAuthState::new(
+        uuid,
+        cid,
+        "attacker-chosen-verifier".into(),
+        Some("https://attacker.example/land".into()),
+    );
     let signed = sign_state(&forged_state, DEFAULT_SIGNING_KEY);
 
     let res = no_redirect_client()
@@ -456,9 +581,17 @@ async fn callback_rejects_forged_state_signed_with_old_default_key_vuln2() {
 
     // State fails HMAC verification against the JWT-derived key → error page,
     // no redirect, no token exchange.
-    assert_eq!(res.status(), 200, "a state forged with the old default key must be rejected, not honored");
+    assert_eq!(
+        res.status(),
+        200,
+        "a state forged with the old default key must be rejected, not honored"
+    );
     let location = res.headers().get("location").and_then(|v| v.to_str().ok());
-    assert_ne!(location, Some("https://attacker.example/land"), "forged state must never drive a redirect");
+    assert_ne!(
+        location,
+        Some("https://attacker.example/land"),
+        "forged state must never drive a redirect"
+    );
     let body = res.text().await.unwrap();
     assert!(body.contains("Invalid or expired state"), "{body}");
 
@@ -471,7 +604,10 @@ async fn callback_rejects_forged_state_signed_with_old_default_key_vuln2() {
     .fetch_one(&server.db)
     .await
     .unwrap();
-    assert_eq!(count, 0, "no token may be stored from a rejected forged state");
+    assert_eq!(
+        count, 0,
+        "no token may be stored from a rejected forged state"
+    );
 
     clear_gateway_public_url();
     server.cleanup().await;

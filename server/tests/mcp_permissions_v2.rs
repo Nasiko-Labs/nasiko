@@ -111,7 +111,9 @@ async fn start_stub_backend() -> (String, CallLog) {
         }
     }
 
-    let app = Router::new().route("/", post(handle)).with_state(calls.clone());
+    let app = Router::new()
+        .route("/", post(handle))
+        .with_state(calls.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -138,19 +140,34 @@ async fn setup_fixture(server: &common::TestServer) -> Fixture {
 
     allow_private_urls();
     let (backend_url, calls) = start_stub_backend().await;
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), &owner_id, "admin")
-        .json(&json!({"name": "matrix-stub", "url": backend_url}))
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors")),
+        &owner_id,
+        "admin",
+    )
+    .json(&json!({"name": "matrix-stub", "url": backend_url}))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 201);
-    let connector_id =
-        Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    let connector_id = Uuid::parse_str(
+        res.json::<Value>().await.unwrap()["connector_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     disallow_private_urls();
 
-    let token = mint_delegation_token(common::TEST_JWT_SECRET, &owner_id, &agent_id.to_string()).unwrap();
+    let token =
+        mint_delegation_token(common::TEST_JWT_SECRET, &owner_id, &agent_id.to_string()).unwrap();
     let prefix = connector_prefix(connector_id);
-    Fixture { owner_id, connector_id, prefix, token, calls }
+    Fixture {
+        owner_id,
+        connector_id,
+        prefix,
+        token,
+        calls,
+    }
 }
 
 impl Fixture {
@@ -187,7 +204,12 @@ impl Fixture {
     }
 
     async fn call(&self, server: &common::TestServer, tool: &str) -> Value {
-        self.mcp(server, "tools/call", Some(json!({"name": self.namespaced(tool), "arguments": {}}))).await
+        self.mcp(
+            server,
+            "tools/call",
+            Some(json!({"name": self.namespaced(tool), "arguments": {}})),
+        )
+        .await
     }
 
     async fn set_connector_enabled(&self, server: &common::TestServer, enabled: bool) {
@@ -213,7 +235,10 @@ impl Fixture {
             .map(|(cid, pattern, stance)| json!({"connector_id": cid, "tool_pattern": pattern, "stance": stance}))
             .collect();
         let res = common::as_superuser(
-            server.client.put(server.url(&format!("/api/mcp/agents/{}/tools", self.agent_id_from_token()))),
+            server.client.put(server.url(&format!(
+                "/api/mcp/agents/{}/tools",
+                self.agent_id_from_token()
+            ))),
             &self.owner_id,
             "admin",
         )
@@ -227,7 +252,9 @@ impl Fixture {
     /// The delegation token's `act` claim, decoded back out — avoids threading
     /// `agent_id` through every helper call site separately.
     fn agent_id_from_token(&self) -> String {
-        let (_user, agent) = nasiko_auth::jwt::validate_delegation_token(common::TEST_JWT_SECRET, &self.token).unwrap();
+        let (_user, agent) =
+            nasiko_auth::jwt::validate_delegation_token(common::TEST_JWT_SECRET, &self.token)
+                .unwrap();
         agent
     }
 }
@@ -241,7 +268,9 @@ async fn default_allow_lists_connector_enabled() {
     let agent_id = seed_agent(&server, admin_uuid, "perm-agent").await;
 
     let res = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
         &admin_id,
         "admin",
     )
@@ -250,7 +279,12 @@ async fn default_allow_lists_connector_enabled() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    let entry = body["data"].as_array().unwrap().iter().find(|e| e["connector_id"] == cid.to_string()).unwrap();
+    let entry = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["connector_id"] == cid.to_string())
+        .unwrap();
     assert_eq!(entry["enabled"], true, "no row → enabled by default");
 
     server.cleanup().await;
@@ -265,7 +299,9 @@ async fn disable_connector_persists_and_lists() {
     let agent_id = seed_agent(&server, admin_uuid, "dis-agent").await;
 
     let res = common::as_superuser(
-        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
         &admin_id,
         "admin",
     )
@@ -277,7 +313,9 @@ async fn disable_connector_persists_and_lists() {
     assert_eq!(res.json::<Value>().await.unwrap()["enabled"], false);
 
     let body: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
         &admin_id,
         "admin",
     )
@@ -287,7 +325,12 @@ async fn disable_connector_persists_and_lists() {
     .json()
     .await
     .unwrap();
-    let entry = body["data"].as_array().unwrap().iter().find(|e| e["connector_id"] == cid.to_string()).unwrap();
+    let entry = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["connector_id"] == cid.to_string())
+        .unwrap();
     assert_eq!(entry["enabled"], false);
 
     server.cleanup().await;
@@ -303,7 +346,9 @@ async fn tool_rules_bulk_update_list_and_reset() {
 
     // Bulk update.
     let res = common::as_superuser(
-        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
         &admin_id,
         "admin",
     )
@@ -318,7 +363,9 @@ async fn tool_rules_bulk_update_list_and_reset() {
 
     // List.
     let body: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
         &admin_id,
         "admin",
     )
@@ -330,11 +377,17 @@ async fn tool_rules_bulk_update_list_and_reset() {
     .unwrap();
     let rules = body["data"].as_array().unwrap();
     assert_eq!(rules.len(), 2);
-    assert!(rules.iter().any(|r| r["tool_pattern"] == "SEND_*" && r["stance"] == "block"));
+    assert!(
+        rules
+            .iter()
+            .any(|r| r["tool_pattern"] == "SEND_*" && r["stance"] == "block")
+    );
 
     // Invalid stance → 400.
     let bad = common::as_superuser(
-        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
         &admin_id,
         "admin",
     )
@@ -346,7 +399,9 @@ async fn tool_rules_bulk_update_list_and_reset() {
 
     // Reset.
     let res = common::as_superuser(
-        server.client.delete(server.url(&format!("/api/mcp/agents/{agent_id}/permissions"))),
+        server
+            .client
+            .delete(server.url(&format!("/api/mcp/agents/{agent_id}/permissions"))),
         &admin_id,
         "admin",
     )
@@ -355,11 +410,12 @@ async fn tool_rules_bulk_update_list_and_reset() {
     .unwrap();
     assert_eq!(res.status(), 200);
 
-    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_agent_connector_access WHERE agent_id = $1")
-        .bind(agent_id)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mcp_agent_connector_access WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
     assert_eq!(rows, 0, "reset must delete all access rows");
 
     server.cleanup().await;
@@ -374,21 +430,35 @@ async fn toggle_preserves_existing_tool_rules() {
     let agent_id = seed_agent(&server, admin_uuid, "pre-agent").await;
 
     // Set a tool rule first.
-    common::as_superuser(server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))), &admin_id, "admin")
-        .json(&json!({"rules": [{"connector_id": cid, "tool_pattern": "SEND_*", "stance": "block"}]}))
-        .send()
-        .await
-        .unwrap();
+    common::as_superuser(
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"rules": [{"connector_id": cid, "tool_pattern": "SEND_*", "stance": "block"}]}))
+    .send()
+    .await
+    .unwrap();
 
     // Now toggle the connector off — must not wipe the tool rule.
-    common::as_superuser(server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))), &admin_id, "admin")
-        .json(&json!({"enabled": false}))
-        .send()
-        .await
-        .unwrap();
+    common::as_superuser(
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"enabled": false}))
+    .send()
+    .await
+    .unwrap();
 
     let body: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
         &admin_id,
         "admin",
     )
@@ -398,7 +468,11 @@ async fn toggle_preserves_existing_tool_rules() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["data"].as_array().unwrap().len(), 1, "toggling enabled must preserve tool_rules");
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        1,
+        "toggling enabled must preserve tool_rules"
+    );
 
     server.cleanup().await;
 }
@@ -409,19 +483,25 @@ async fn permissions_require_manage_agent() {
     let server = common::TestServer::start().await;
     let (admin_id, admin_uuid) = init_admin(&server).await;
     // Agent owned by admin; a different member must be forbidden.
-    let member = common::as_superuser(server.client.post(server.url("/api/users")), &admin_id, "admin")
-        .json(&json!({"username": "pm-member", "email": "pm-member@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap();
+    let member = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"username": "pm-member", "email": "pm-member@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
     let member_id = member["id"].as_str().unwrap();
     let agent_id = seed_agent(&server, admin_uuid, "pm-agent").await;
 
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
         member_id,
         "pm-member",
     )
@@ -444,24 +524,36 @@ async fn list_connector_tools_syncs_and_shows_default_allow_stance() {
 
     allow_private_urls();
     let (backend_url, _calls) = start_stub_backend().await;
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), &admin_id, "admin")
-        .json(&json!({"name": "lct-stub", "url": backend_url}))
-        .send()
-        .await
-        .unwrap();
-    let cid = Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors")),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"name": "lct-stub", "url": backend_url}))
+    .send()
+    .await
+    .unwrap();
+    let cid = Uuid::parse_str(
+        res.json::<Value>().await.unwrap()["connector_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     disallow_private_urls();
 
     // No catalog rows yet — the endpoint must sync live from the backend.
-    let empty: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_connector_tools WHERE connector_id = $1")
-        .bind(cid)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
+    let empty: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mcp_connector_tools WHERE connector_id = $1")
+            .bind(cid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
     assert_eq!(empty, 0, "catalog must start empty (nothing synced yet)");
 
     let body: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        server.client.get(server.url(&format!(
+            "/api/mcp/agents/{agent_id}/connectors/{cid}/tools"
+        ))),
         &admin_id,
         "admin",
     )
@@ -472,7 +564,11 @@ async fn list_connector_tools_syncs_and_shows_default_allow_stance() {
     .await
     .unwrap();
     let data = body["data"].as_array().unwrap();
-    assert_eq!(data.len(), 3, "must have synced live and returned all 3 stub tools: {data:?}");
+    assert_eq!(
+        data.len(),
+        3,
+        "must have synced live and returned all 3 stub tools: {data:?}"
+    );
     assert!(
         data.iter().all(|t| t["stance"] == "allow"),
         "with no access row and no tool_rules, every tool must default to 'allow': {data:?}"
@@ -506,16 +602,27 @@ async fn list_connector_tools_empty_catalog_when_backend_has_no_tools() {
     });
     let backend_url = format!("http://127.0.0.1:{port}/");
 
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), &admin_id, "admin")
-        .json(&json!({"name": "lct-empty-stub", "url": backend_url}))
-        .send()
-        .await
-        .unwrap();
-    let cid = Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors")),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"name": "lct-empty-stub", "url": backend_url}))
+    .send()
+    .await
+    .unwrap();
+    let cid = Uuid::parse_str(
+        res.json::<Value>().await.unwrap()["connector_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     disallow_private_urls();
 
     let body: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        server.client.get(server.url(&format!(
+            "/api/mcp/agents/{agent_id}/connectors/{cid}/tools"
+        ))),
         &admin_id,
         "admin",
     )
@@ -525,7 +632,11 @@ async fn list_connector_tools_empty_catalog_when_backend_has_no_tools() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["data"].as_array().unwrap().len(), 0, "an empty backend catalog must list as empty, not error");
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        0,
+        "an empty backend catalog must list as empty, not error"
+    );
 
     server.cleanup().await;
 }
@@ -537,25 +648,35 @@ async fn list_connector_tools_requires_manage_agent() {
     let (admin_id, admin_uuid) = init_admin(&server).await;
     let cid = seed_connector(&server, admin_uuid, "lct-forbidden-tool").await;
     let agent_id = seed_agent(&server, admin_uuid, "lct-forbidden-agent").await;
-    let member = common::as_superuser(server.client.post(server.url("/api/users")), &admin_id, "admin")
-        .json(&json!({"username": "lct-member", "email": "lct-member@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap();
+    let member = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"username": "lct-member", "email": "lct-member@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
     let member_id = member["id"].as_str().unwrap();
 
     let res = common::as_member(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        server.client.get(server.url(&format!(
+            "/api/mcp/agents/{agent_id}/connectors/{cid}/tools"
+        ))),
         member_id,
         "lct-member",
     )
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 403, "a caller who cannot manage the agent must be forbidden");
+    assert_eq!(
+        res.status(),
+        403,
+        "a caller who cannot manage the agent must be forbidden"
+    );
 
     server.cleanup().await;
 }
@@ -578,15 +699,21 @@ async fn list_connector_tools_default_allow_with_no_access_row_at_all() {
         .await
         .unwrap();
 
-    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_agent_connector_access WHERE agent_id = $1")
-        .bind(agent_id)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    assert_eq!(rows, 0, "precondition: no access row exists for this agent at all");
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mcp_agent_connector_access WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows, 0,
+        "precondition: no access row exists for this agent at all"
+    );
 
     let body: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        server.client.get(server.url(&format!(
+            "/api/mcp/agents/{agent_id}/connectors/{cid}/tools"
+        ))),
         &admin_id,
         "admin",
     )
@@ -599,7 +726,10 @@ async fn list_connector_tools_default_allow_with_no_access_row_at_all() {
     let data = body["data"].as_array().unwrap();
     assert_eq!(data.len(), 1);
     assert_eq!(data[0]["name"], "PING");
-    assert_eq!(data[0]["stance"], "allow", "no access row at all → default-allow, reflected correctly");
+    assert_eq!(
+        data[0]["stance"], "allow",
+        "no access row at all → default-allow, reflected correctly"
+    );
 
     server.cleanup().await;
 }
@@ -626,7 +756,10 @@ async fn matrix_absent_access_row_is_default_allow() {
 
     let res = fx.call(&server, TOOL_OTHER).await;
     assert!(res.get("error").is_none(), "{res:?}");
-    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_OTHER.to_string()]);
+    assert_eq!(
+        fx.calls.lock().unwrap().as_slice(),
+        &[TOOL_OTHER.to_string()]
+    );
 
     server.cleanup().await;
 }
@@ -662,7 +795,10 @@ async fn matrix_disabled_connector_is_denied_at_both_list_and_call() {
     fx.set_connector_enabled(&server, false).await;
 
     let names = fx.tools_list_names(&server).await;
-    assert!(names.is_empty(), "a disabled connector's tools must be hidden entirely from tools/list: {names:?}");
+    assert!(
+        names.is_empty(),
+        "a disabled connector's tools must be hidden entirely from tools/list: {names:?}"
+    );
 
     let res = fx.call(&server, TOOL_OTHER).await;
     assert_eq!(
@@ -683,14 +819,18 @@ async fn matrix_disabled_connector_is_denied_at_both_list_and_call() {
 async fn matrix_exact_allow_rule() {
     let server = common::TestServer::start().await;
     let fx = setup_fixture(&server).await;
-    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "allow")]).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "allow")])
+        .await;
 
     let names = fx.tools_list_names(&server).await;
     assert!(names.contains(&fx.namespaced(TOOL_SEND)), "{names:?}");
 
     let res = fx.call(&server, TOOL_SEND).await;
     assert!(res.get("error").is_none(), "{res:?}");
-    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_SEND.to_string()]);
+    assert_eq!(
+        fx.calls.lock().unwrap().as_slice(),
+        &[TOOL_SEND.to_string()]
+    );
 
     server.cleanup().await;
 }
@@ -700,15 +840,25 @@ async fn matrix_exact_allow_rule() {
 async fn matrix_exact_block_rule() {
     let server = common::TestServer::start().await;
     let fx = setup_fixture(&server).await;
-    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "block")]).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "block")])
+        .await;
 
     let names = fx.tools_list_names(&server).await;
-    assert!(!names.contains(&fx.namespaced(TOOL_SEND)), "a blocked tool must be OMITTED from tools/list: {names:?}");
-    assert!(names.contains(&fx.namespaced(TOOL_READ)), "an unrelated tool must remain listed: {names:?}");
+    assert!(
+        !names.contains(&fx.namespaced(TOOL_SEND)),
+        "a blocked tool must be OMITTED from tools/list: {names:?}"
+    );
+    assert!(
+        names.contains(&fx.namespaced(TOOL_READ)),
+        "an unrelated tool must remain listed: {names:?}"
+    );
 
     let res = fx.call(&server, TOOL_SEND).await;
     assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res:?}");
-    assert!(fx.calls.lock().unwrap().is_empty(), "the backend must never see a blocked call");
+    assert!(
+        fx.calls.lock().unwrap().is_empty(),
+        "the backend must never see a blocked call"
+    );
 
     server.cleanup().await;
 }
@@ -727,7 +877,8 @@ async fn matrix_exact_block_rule() {
 async fn matrix_exact_ask_rule() {
     let server = common::TestServer::start().await;
     let fx = setup_fixture(&server).await;
-    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "ask")]).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, TOOL_SEND, "ask")])
+        .await;
 
     let names = fx.tools_list_names(&server).await;
     assert!(
@@ -738,7 +889,10 @@ async fn matrix_exact_ask_rule() {
     let res = fx.call(&server, TOOL_SEND).await;
     assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res:?}");
     assert!(res["error"]["data"]["server"].is_string(), "{res:?}");
-    assert!(fx.calls.lock().unwrap().is_empty(), "an ask-stance tool must never reach the backend via a bare call");
+    assert!(
+        fx.calls.lock().unwrap().is_empty(),
+        "an ask-stance tool must never reach the backend via a bare call"
+    );
 
     server.cleanup().await;
 }
@@ -748,7 +902,8 @@ async fn matrix_exact_ask_rule() {
 async fn matrix_wildcard_allow_rule() {
     let server = common::TestServer::start().await;
     let fx = setup_fixture(&server).await;
-    fx.set_tool_rules(&server, vec![(fx.connector_id, "SEND_*", "allow")]).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, "SEND_*", "allow")])
+        .await;
 
     let names = fx.tools_list_names(&server).await;
     assert!(names.contains(&fx.namespaced(TOOL_SEND)), "{names:?}");
@@ -764,7 +919,8 @@ async fn matrix_wildcard_allow_rule() {
 async fn matrix_wildcard_block_rule() {
     let server = common::TestServer::start().await;
     let fx = setup_fixture(&server).await;
-    fx.set_tool_rules(&server, vec![(fx.connector_id, "SEND_*", "block")]).await;
+    fx.set_tool_rules(&server, vec![(fx.connector_id, "SEND_*", "block")])
+        .await;
 
     let names = fx.tools_list_names(&server).await;
     assert!(!names.contains(&fx.namespaced(TOOL_SEND)), "{names:?}");
@@ -781,18 +937,38 @@ async fn matrix_wildcard_block_rule() {
 async fn matrix_overlapping_allow_and_block_block_wins() {
     let server = common::TestServer::start().await;
     let fx = setup_fixture(&server).await;
-    fx.set_tool_rules(&server, vec![(fx.connector_id, "*", "allow"), (fx.connector_id, TOOL_SEND, "block")]).await;
+    fx.set_tool_rules(
+        &server,
+        vec![
+            (fx.connector_id, "*", "allow"),
+            (fx.connector_id, TOOL_SEND, "block"),
+        ],
+    )
+    .await;
 
     let names = fx.tools_list_names(&server).await;
-    assert!(!names.contains(&fx.namespaced(TOOL_SEND)), "block must win over the wildcard allow: {names:?}");
-    assert!(names.contains(&fx.namespaced(TOOL_READ)), "READ_EMAIL only matches the wildcard allow: {names:?}");
+    assert!(
+        !names.contains(&fx.namespaced(TOOL_SEND)),
+        "block must win over the wildcard allow: {names:?}"
+    );
+    assert!(
+        names.contains(&fx.namespaced(TOOL_READ)),
+        "READ_EMAIL only matches the wildcard allow: {names:?}"
+    );
 
     let blocked = fx.call(&server, TOOL_SEND).await;
-    assert_eq!(blocked["error"]["code"], json!(codes::TOOL_BLOCKED), "{blocked:?}");
+    assert_eq!(
+        blocked["error"]["code"],
+        json!(codes::TOOL_BLOCKED),
+        "{blocked:?}"
+    );
 
     let allowed = fx.call(&server, TOOL_READ).await;
     assert!(allowed.get("error").is_none(), "{allowed:?}");
-    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_READ.to_string()]);
+    assert_eq!(
+        fx.calls.lock().unwrap().as_slice(),
+        &[TOOL_READ.to_string()]
+    );
 
     server.cleanup().await;
 }
@@ -805,15 +981,27 @@ async fn matrix_rule_scoped_to_different_connector_does_not_leak() {
 
     // A second, unrelated connector owned by the same user, with a blanket
     // block rule — must have zero effect on `fx.connector_id`'s resolution.
-    let other_cid = seed_connector(&server, Uuid::parse_str(&fx.owner_id).unwrap(), "matrix-other-connector").await;
-    fx.set_tool_rules(&server, vec![(other_cid, "*", "block")]).await;
+    let other_cid = seed_connector(
+        &server,
+        Uuid::parse_str(&fx.owner_id).unwrap(),
+        "matrix-other-connector",
+    )
+    .await;
+    fx.set_tool_rules(&server, vec![(other_cid, "*", "block")])
+        .await;
 
     let names = fx.tools_list_names(&server).await;
-    assert!(names.contains(&fx.namespaced(TOOL_SEND)), "a rule on a different connector must not leak: {names:?}");
+    assert!(
+        names.contains(&fx.namespaced(TOOL_SEND)),
+        "a rule on a different connector must not leak: {names:?}"
+    );
 
     let res = fx.call(&server, TOOL_SEND).await;
     assert!(res.get("error").is_none(), "{res:?}");
-    assert_eq!(fx.calls.lock().unwrap().as_slice(), &[TOOL_SEND.to_string()]);
+    assert_eq!(
+        fx.calls.lock().unwrap().as_slice(),
+        &[TOOL_SEND.to_string()]
+    );
 
     server.cleanup().await;
 }
@@ -832,14 +1020,18 @@ async fn matrix_rule_scoped_to_different_connector_does_not_leak() {
 async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
     let server = common::TestServer::start().await;
     let (admin_id, _) = init_admin(&server).await;
-    let owner = common::as_superuser(server.client.post(server.url("/api/users")), &admin_id, "admin")
-        .json(&json!({"username": "shared-owner", "email": "shared-owner@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap();
+    let owner = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"username": "shared-owner", "email": "shared-owner@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
     let owner_id = owner["id"].as_str().unwrap();
     let owner_uuid = Uuid::parse_str(owner_id).unwrap();
 
@@ -849,19 +1041,30 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
 
     allow_private_urls();
     let (backend_url, _calls) = start_stub_backend().await;
-    let res = common::as_member(server.client.post(server.url("/api/mcp/connectors")), owner_id, "shared-owner")
-        .json(&json!({"name": "shared-tool", "url": backend_url}))
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_member(
+        server.client.post(server.url("/api/mcp/connectors")),
+        owner_id,
+        "shared-owner",
+    )
+    .json(&json!({"name": "shared-tool", "url": backend_url}))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 201);
-    let cid = Uuid::parse_str(res.json::<Value>().await.unwrap()["connector_id"].as_str().unwrap()).unwrap();
+    let cid = Uuid::parse_str(
+        res.json::<Value>().await.unwrap()["connector_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     disallow_private_urls();
 
     // Share publicly so the admin — a different manager who doesn't own this
     // connector — also passes the Layer-1 reachability check.
     let res = common::as_member(
-        server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server
+            .client
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
         owner_id,
         "shared-owner",
     )
@@ -873,7 +1076,9 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
 
     // Caller #1 (the owner) blocks a tool.
     let res = common::as_member(
-        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
         owner_id,
         "shared-owner",
     )
@@ -886,7 +1091,9 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
     // Caller #2 (a different manager — the admin) must see the SAME
     // restriction, not a fresh default-allow row scoped to their own identity.
     let body: Value = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools"))),
+        server.client.get(server.url(&format!(
+            "/api/mcp/agents/{agent_id}/connectors/{cid}/tools"
+        ))),
         &admin_id,
         "admin",
     )
@@ -897,8 +1104,14 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
     .await
     .unwrap();
     let tools = body["data"].as_array().unwrap();
-    let send_tool = tools.iter().find(|t| t["name"] == TOOL_SEND).expect("stub tool list includes SEND_EMAIL");
-    assert_eq!(send_tool["stance"], "block", "a different manager must see the same shared stance: {body:?}");
+    let send_tool = tools
+        .iter()
+        .find(|t| t["name"] == TOOL_SEND)
+        .expect("stub tool list includes SEND_EMAIL");
+    assert_eq!(
+        send_tool["stance"], "block",
+        "a different manager must see the same shared stance: {body:?}"
+    );
 
     server.cleanup().await;
 }
@@ -908,14 +1121,18 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
 async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
     let server = common::TestServer::start().await;
     let (admin_id, _) = init_admin(&server).await;
-    let owner = common::as_superuser(server.client.post(server.url("/api/users")), &admin_id, "admin")
-        .json(&json!({"username": "shared-owner2", "email": "shared-owner2@test.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap();
+    let owner = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &admin_id,
+        "admin",
+    )
+    .json(&json!({"username": "shared-owner2", "email": "shared-owner2@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
     let owner_id = owner["id"].as_str().unwrap();
     let owner_uuid = Uuid::parse_str(owner_id).unwrap();
 
@@ -925,7 +1142,9 @@ async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
     // Share publicly so the admin — a different manager who doesn't own this
     // connector — also passes the Layer-1 reachability check.
     let res = common::as_member(
-        server.client.post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server
+            .client
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
         owner_id,
         "shared-owner2",
     )
@@ -937,7 +1156,9 @@ async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
 
     // Caller #1 (admin) disables the connector for the agent.
     let res = common::as_superuser(
-        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
         &admin_id,
         "admin",
     )
@@ -950,7 +1171,9 @@ async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
     // Caller #2 (the owner) must see it disabled too — not their own,
     // independent default-enabled row.
     let body: Value = common::as_member(
-        server.client.get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
         owner_id,
         "shared-owner2",
     )
@@ -960,8 +1183,16 @@ async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
     .json()
     .await
     .unwrap();
-    let entry = body["data"].as_array().unwrap().iter().find(|c| c["connector_id"] == json!(cid)).unwrap();
-    assert_eq!(entry["enabled"], false, "a different manager must see the shared disabled state: {body:?}");
+    let entry = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["connector_id"] == json!(cid))
+        .unwrap();
+    assert_eq!(
+        entry["enabled"], false,
+        "a different manager must see the shared disabled state: {body:?}"
+    );
 
     server.cleanup().await;
 }

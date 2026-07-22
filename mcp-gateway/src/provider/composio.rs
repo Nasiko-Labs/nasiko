@@ -48,7 +48,11 @@ pub struct ComposioProvider {
 
 impl ComposioProvider {
     pub fn new(http: reqwest::Client, api_key: String, base_url: String) -> Self {
-        Self { http, api_key, base_url: base_url.trim_end_matches('/').to_string() }
+        Self {
+            http,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -156,7 +160,11 @@ impl ComposioProvider {
         // url); the session response omits it, so inject it for the gateway.
         mcp_headers.insert("x-api-key".to_string(), self.api_key.clone());
 
-        Ok(ComposioSession { session_id, mcp_url, mcp_headers })
+        Ok(ComposioSession {
+            session_id,
+            mcp_url,
+            mcp_headers,
+        })
     }
 }
 
@@ -191,7 +199,9 @@ impl ToolProvider for ComposioProvider {
         };
 
         let body = json!({ "toolkit": { "slug": toolkit }, "auth_config": auth_config });
-        let resp = self.post_json("/api/v3/auth_configs", &body, DEFAULT_TIMEOUT).await?;
+        let resp = self
+            .post_json("/api/v3/auth_configs", &body, DEFAULT_TIMEOUT)
+            .await?;
 
         // Preferred shape nests the id under `auth_config`; fall back to top-level.
         let auth_config_id = resp
@@ -227,7 +237,10 @@ impl ToolProvider for ComposioProvider {
         });
         let status = first_str(&resp, &["status"]).unwrap_or_else(|| "INITIATED".to_string());
 
-        Ok(ConnectionInitiated { redirect_url, status })
+        Ok(ConnectionInitiated {
+            redirect_url,
+            status,
+        })
     }
 
     async fn check_connection_status(
@@ -244,7 +257,10 @@ impl ToolProvider for ComposioProvider {
             .await?;
 
         let Some(resp) = resp else {
-            return Ok(ConnectionStatus { status: "NOT_FOUND".to_string(), account_id: None });
+            return Ok(ConnectionStatus {
+                status: "NOT_FOUND".to_string(),
+                account_id: None,
+            });
         };
 
         // Response is paginated: `{ items: [ { id, status, auth_config: { id } } ] }`.
@@ -269,7 +285,10 @@ impl ToolProvider for ComposioProvider {
                 status: first_str(item, &["status"]).unwrap_or_else(|| "UNKNOWN".to_string()),
                 account_id: first_str(item, &["id", "nanoid"]),
             },
-            None => ConnectionStatus { status: "NOT_FOUND".to_string(), account_id: None },
+            None => ConnectionStatus {
+                status: "NOT_FOUND".to_string(),
+                account_id: None,
+            },
         })
     }
 
@@ -356,10 +375,20 @@ impl ToolProvider for ComposioProvider {
     async fn list_toolkit_tools(&self, toolkit: &str) -> Result<Vec<ToolDescriptor>> {
         // GET /api/v3/tools?toolkit_slugs=<toolkit> → { items: [ { slug, description } ] }.
         let resp = self
-            .get_json_opt("/api/v3/tools", &[("toolkit_slugs", &toolkit.to_uppercase())], DEFAULT_TIMEOUT)
+            .get_json_opt(
+                "/api/v3/tools",
+                &[("toolkit_slugs", &toolkit.to_uppercase())],
+                DEFAULT_TIMEOUT,
+            )
             .await?;
-        let Some(resp) = resp else { return Ok(Vec::new()) };
-        let items = resp.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
+        let Some(resp) = resp else {
+            return Ok(Vec::new());
+        };
+        let items = resp
+            .get("items")
+            .and_then(|i| i.as_array())
+            .cloned()
+            .unwrap_or_default();
         // The v3 `toolkit_slugs` filter has been observed live to be ignored
         // server-side (returning tools from unrelated toolkits), which would
         // pollute a connector's permission UI with other toolkits' tools. Scope
@@ -371,7 +400,10 @@ impl ToolProvider for ComposioProvider {
             .filter_map(|it| {
                 let name = first_str(it, &["slug", "name"])?;
                 let item_toolkit = item_toolkit_slug(it).unwrap_or_else(|| slug_toolkit(&name));
-                (item_toolkit == want).then(|| ToolDescriptor { name, description: first_str(it, &["description"]) })
+                (item_toolkit == want).then(|| ToolDescriptor {
+                    name,
+                    description: first_str(it, &["description"]),
+                })
             })
             .collect())
     }
@@ -385,7 +417,10 @@ fn truncate(s: &str, max: usize) -> String {
 /// Toolkit slug embedded in a Composio tool slug: `GITHUB_CREATE_ISSUE` → `github`.
 /// Skips leading underscores so `_1PASSWORD_...` → `1password`, not empty.
 fn slug_toolkit(slug: &str) -> String {
-    slug.split('_').find(|s| !s.is_empty()).unwrap_or("").to_ascii_lowercase()
+    slug.split('_')
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 /// Explicit toolkit slug on a tool item, if present (`toolkit.slug`/`.name` or a
@@ -415,5 +450,9 @@ fn account_is_active(item: &Value) -> bool {
 /// sorts lexically. Empty when Composio returns no timestamp (then selection
 /// falls back to array order, with the last matching item winning ties).
 fn account_recency(item: &Value) -> String {
-    first_str(item, &["updated_at", "updatedAt", "created_at", "createdAt"]).unwrap_or_default()
+    first_str(
+        item,
+        &["updated_at", "updatedAt", "created_at", "createdAt"],
+    )
+    .unwrap_or_default()
 }

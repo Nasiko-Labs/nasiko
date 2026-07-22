@@ -38,7 +38,9 @@ pub async fn status(
     Path(connector_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::credentials::status(&state, user_id, connector_id).await?))
+    Ok(Json(
+        service::credentials::status(&state, user_id, connector_id).await?,
+    ))
 }
 
 /// `DELETE /api/mcp/connectors/{id}/credential` — remove the caller's credential.

@@ -20,14 +20,21 @@ use crate::state::McpState;
 use crate::types::{MCPServerConfig, ServerType};
 
 /// Build the ordered list of generic backends for `user_id`, credentials injected.
-pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Vec<MCPServerConfig>> {
-    let connectors = state.authorizer.list_accessible_mcp_connectors(&state.db, user_id).await?;
+pub async fn build_generic_servers(
+    state: &McpState,
+    user_id: Uuid,
+) -> Result<Vec<MCPServerConfig>> {
+    let connectors = state
+        .authorizer
+        .list_accessible_mcp_connectors(&state.db, user_id)
+        .await?;
     if connectors.is_empty() {
         return Ok(Vec::new());
     }
 
     let conns = repo::list_user_connections(&state.db, user_id, None).await?;
-    let conn_by_connector: HashMap<Uuid, _> = conns.into_iter().map(|c| (c.connector_id, c)).collect();
+    let conn_by_connector: HashMap<Uuid, _> =
+        conns.into_iter().map(|c| (c.connector_id, c)).collect();
 
     let crypto = SecretsCrypto::for_user(user_id);
     let mut result = Vec::with_capacity(connectors.len());
@@ -46,7 +53,9 @@ pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Ve
 
             "bearer" | "basic" => match conn.and_then(|c| c.encrypted_credential.as_deref()) {
                 Some(enc) => {
-                    let Some(value) = decrypt_or_skip(&crypto, enc, connector) else { continue };
+                    let Some(value) = decrypt_or_skip(&crypto, enc, connector) else {
+                        continue;
+                    };
                     headers.insert(credential_header(connector), value);
                 }
                 // No per-user credential: rely on static headers, else skip.
@@ -59,8 +68,12 @@ pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Ve
                     tracing::warn!(connector = %connector.name, "url_param connector missing url_param_name — skipping");
                     continue;
                 };
-                let Some(enc) = conn.and_then(|c| c.encrypted_credential.as_deref()) else { continue };
-                let Some(value) = decrypt_or_skip(&crypto, enc, connector) else { continue };
+                let Some(enc) = conn.and_then(|c| c.encrypted_credential.as_deref()) else {
+                    continue;
+                };
+                let Some(value) = decrypt_or_skip(&crypto, enc, connector) else {
+                    continue;
+                };
                 url = inject_url_param(&url, param, &value)?;
             }
 
@@ -86,7 +99,10 @@ pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Ve
             name: connector.name.clone(),
             url,
             headers,
-            transport: connector.transport.clone().unwrap_or_else(|| "streamable_http".to_string()),
+            transport: connector
+                .transport
+                .clone()
+                .unwrap_or_else(|| "streamable_http".to_string()),
         });
     }
 
@@ -95,10 +111,17 @@ pub async fn build_generic_servers(state: &McpState, user_id: Uuid) -> Result<Ve
 
 /// The header a bearer/basic credential is injected into (default `Authorization`).
 fn credential_header(connector: &McpConnector) -> String {
-    connector.credential_header_name.clone().unwrap_or_else(|| "Authorization".to_string())
+    connector
+        .credential_header_name
+        .clone()
+        .unwrap_or_else(|| "Authorization".to_string())
 }
 
-fn decrypt_or_skip(crypto: &SecretsCrypto, encrypted: &str, connector: &McpConnector) -> Option<String> {
+fn decrypt_or_skip(
+    crypto: &SecretsCrypto,
+    encrypted: &str,
+    connector: &McpConnector,
+) -> Option<String> {
     match crypto.decrypt(encrypted) {
         Ok(v) => Some(v),
         Err(e) => {
@@ -112,7 +135,9 @@ fn parse_headers(raw: &Option<Value>) -> HashMap<String, String> {
     raw.as_ref()
         .and_then(|v| v.as_object())
         .map(|obj| {
-            obj.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -128,23 +153,38 @@ fn inject_url_param(raw: &str, param: &str, value: &str) -> Result<String> {
 // ─── Management (CRUD) ──────────────────────────────────────────────────────
 
 /// Load a connector and confirm `user_id` may reach it (owner / grant / composio).
-pub async fn authorize_connector(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<McpConnector> {
+pub async fn authorize_connector(
+    state: &McpState,
+    user_id: Uuid,
+    connector_id: Uuid,
+) -> Result<McpConnector> {
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
-    if !state.authorizer.can_access_connector(&state.db, user_id, connector_id).await? {
-        return Err(McpError::Forbidden("you do not have access to this connector".into()));
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, user_id, connector_id)
+        .await?
+    {
+        return Err(McpError::Forbidden(
+            "you do not have access to this connector".into(),
+        ));
     }
     Ok(connector)
 }
 
 /// Auto-prefix `Bearer `/`Basic `, base64-encode basic `user:pass`, leave the rest raw.
 pub fn normalize_for(connector: &McpConnector, raw: &str) -> String {
-    let header = connector.credential_header_name.as_deref().unwrap_or("Authorization");
+    let header = connector
+        .credential_header_name
+        .as_deref()
+        .unwrap_or("Authorization");
     let auth_type = connector.auth_type.as_deref().unwrap_or("none");
     let lower = raw.to_ascii_lowercase();
     match auth_type {
-        "bearer" if header.eq_ignore_ascii_case("Authorization") && !lower.starts_with("bearer ") => {
+        "bearer"
+            if header.eq_ignore_ascii_case("Authorization") && !lower.starts_with("bearer ") =>
+        {
             format!("Bearer {raw}")
         }
         "basic" if !lower.starts_with("basic ") => {
@@ -184,9 +224,16 @@ pub async fn register_credential(
 
 /// The caller's credential status for `connector` (never the value): the auth
 /// type when a credential is stored, else `None`.
-pub async fn credential_status(state: &McpState, connector_id: Uuid, user_id: Uuid) -> Result<Option<String>> {
+pub async fn credential_status(
+    state: &McpState,
+    connector_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<String>> {
     let conn = repo::get_user_connection(&state.db, user_id, connector_id).await?;
-    let has_cred = conn.as_ref().and_then(|c| c.encrypted_credential.as_ref()).is_some();
+    let has_cred = conn
+        .as_ref()
+        .and_then(|c| c.encrypted_credential.as_ref())
+        .is_some();
     if !has_cred {
         return Ok(None);
     }
@@ -195,7 +242,11 @@ pub async fn credential_status(state: &McpState, connector_id: Uuid, user_id: Uu
 }
 
 /// Remove the caller's credential/connection for `connector`.
-pub async fn delete_credential(state: &McpState, connector: &McpConnector, user_id: Uuid) -> Result<()> {
+pub async fn delete_credential(
+    state: &McpState,
+    connector: &McpConnector,
+    user_id: Uuid,
+) -> Result<()> {
     if !repo::delete_user_connection(&state.db, user_id, connector.id).await? {
         return Err(McpError::NotFound("no credential to delete".into()));
     }
@@ -259,7 +310,10 @@ mod tests {
     #[test]
     fn normalize_basic_variants() {
         let c = connector("basic", None);
-        assert_eq!(normalize_for(&c, "user:pass"), format!("Basic {}", B64.encode("user:pass")));
+        assert_eq!(
+            normalize_for(&c, "user:pass"),
+            format!("Basic {}", B64.encode("user:pass"))
+        );
         let enc = B64.encode("user:pass");
         assert_eq!(normalize_for(&c, &enc), format!("Basic {enc}"));
         assert_eq!(normalize_for(&c, "Basic xyz"), "Basic xyz");

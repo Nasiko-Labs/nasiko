@@ -19,7 +19,6 @@ fn cfg(url: String) -> MCPServerConfig {
         url,
         headers: HashMap::new(),
         transport: "streamable_http".into(),
-        trusted: false,
     }
 }
 
@@ -36,9 +35,13 @@ async fn generic_parses_application_json() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     let tools = provider
-        .list_tools(&cfg(format!("{}/mcp", srv.url())), std::time::Duration::from_secs(5), None)
+        .list_tools(
+            &cfg(format!("{}/mcp", srv.url())),
+            std::time::Duration::from_secs(5),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(tools.len(), 1);
@@ -52,14 +55,21 @@ async fn generic_parses_event_stream() {
     srv.mock("POST", "/mcp")
         .with_status(200)
         .with_header("content-type", "text/event-stream")
-        .with_body("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n")
+        .with_body(
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n",
+        )
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping","params":{}});
     let resp = provider
-        .request(&cfg(format!("{}/mcp", srv.url())), &body, std::time::Duration::from_secs(5), None)
+        .request(
+            &cfg(format!("{}/mcp", srv.url())),
+            &body,
+            std::time::Duration::from_secs(5),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(resp["result"]["ok"], true);
@@ -68,13 +78,22 @@ async fn generic_parses_event_stream() {
 #[tokio::test]
 async fn generic_non_2xx_is_error() {
     let mut srv = mockito::Server::new_async().await;
-    srv.mock("POST", "/mcp").with_status(500).with_body("boom").create_async().await;
+    srv.mock("POST", "/mcp")
+        .with_status(500)
+        .with_body("boom")
+        .create_async()
+        .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
     assert!(
         provider
-            .request(&cfg(format!("{}/mcp", srv.url())), &body, std::time::Duration::from_secs(5), None)
+            .request(
+                &cfg(format!("{}/mcp", srv.url())),
+                &body,
+                std::time::Duration::from_secs(5),
+                None
+            )
             .await
             .is_err()
     );
@@ -92,7 +111,7 @@ async fn generic_injects_auth_headers() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     let mut headers = HashMap::new();
     headers.insert("Authorization".to_string(), "Bearer sk-xyz".to_string());
     let server = MCPServerConfig {
@@ -102,9 +121,11 @@ async fn generic_injects_auth_headers() {
         url: format!("{}/mcp", srv.url()),
         headers,
         transport: "streamable_http".into(),
-        trusted: false,
     };
-    provider.list_tools(&server, std::time::Duration::from_secs(5), None).await.unwrap();
+    provider
+        .list_tools(&server, std::time::Duration::from_secs(5), None)
+        .await
+        .unwrap();
     m.assert_async().await; // fails if the auth header wasn't sent
 }
 
@@ -120,7 +141,7 @@ async fn generic_propagates_traceparent_when_provided() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     provider
         .list_tools(
             &cfg(format!("{}/mcp", srv.url())),
@@ -144,9 +165,13 @@ async fn generic_omits_traceparent_when_absent() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     provider
-        .list_tools(&cfg(format!("{}/mcp", srv.url())), std::time::Duration::from_secs(5), None)
+        .list_tools(
+            &cfg(format!("{}/mcp", srv.url())),
+            std::time::Duration::from_secs(5),
+            None,
+        )
         .await
         .unwrap();
     m.assert_async().await;
@@ -198,9 +223,13 @@ async fn generic_stateful_backend_negotiates_session() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     let tools = provider
-        .list_tools(&cfg(format!("{}/mcp", srv.url())), std::time::Duration::from_secs(5), None)
+        .list_tools(
+            &cfg(format!("{}/mcp", srv.url())),
+            std::time::Duration::from_secs(5),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(tools.len(), 1);
@@ -222,11 +251,16 @@ async fn generic_non_session_400_stays_error() {
         .create_async()
         .await;
 
-    let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
+    let provider = GenericMcpProvider::new(reqwest::Client::new());
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
     assert!(
         provider
-            .request(&cfg(format!("{}/mcp", srv.url())), &body, std::time::Duration::from_secs(5), None)
+            .request(
+                &cfg(format!("{}/mcp", srv.url())),
+                &body,
+                std::time::Duration::from_secs(5),
+                None
+            )
             .await
             .is_err()
     );
@@ -250,7 +284,10 @@ async fn composio_create_auth_config_nested_and_flat_id() {
         .create_async()
         .await;
     let p = composio(srv.url());
-    let created = p.create_auth_config("gmail", true, None, None, None).await.unwrap();
+    let created = p
+        .create_auth_config("gmail", true, None, None, None)
+        .await
+        .unwrap();
     assert_eq!(created.auth_config_id, "ac_nested");
     m.assert_async().await;
 
@@ -280,24 +317,33 @@ async fn composio_initiate_connection_reads_redirect() {
         .initiate_connection("u1", "ac_1", Some("https://cb"))
         .await
         .unwrap();
-    assert_eq!(out.redirect_url.as_deref(), Some("https://auth.example/authorize"));
+    assert_eq!(
+        out.redirect_url.as_deref(),
+        Some("https://auth.example/authorize")
+    );
     assert_eq!(out.status, "INITIATED");
 }
 
 #[tokio::test]
 async fn composio_check_status_matches_by_auth_config() {
     let mut srv = mockito::Server::new_async().await;
-    srv.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
-        .with_status(200)
-        .with_body(
-            r#"{"items":[
+    srv.mock(
+        "GET",
+        mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()),
+    )
+    .with_status(200)
+    .with_body(
+        r#"{"items":[
                 {"id":"ca_other","status":"ACTIVE","auth_config":{"id":"ac_other"}},
                 {"id":"ca_1","status":"ACTIVE","auth_config":{"id":"ac_1"}}
             ]}"#,
-        )
-        .create_async()
-        .await;
-    let out = composio(srv.url()).check_connection_status("u1", "ac_1").await.unwrap();
+    )
+    .create_async()
+    .await;
+    let out = composio(srv.url())
+        .check_connection_status("u1", "ac_1")
+        .await
+        .unwrap();
     assert_eq!(out.account_id.as_deref(), Some("ca_1"));
     assert_eq!(out.status, "ACTIVE");
 }
@@ -309,33 +355,49 @@ async fn composio_check_status_matches_by_auth_config() {
 async fn composio_check_status_prefers_active_over_expired_regardless_of_order() {
     // Dead account listed FIRST — the old "return first match" would pick it.
     let mut srv = mockito::Server::new_async().await;
-    srv.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
-        .with_status(200)
-        .with_body(
-            r#"{"items":[
+    srv.mock(
+        "GET",
+        mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()),
+    )
+    .with_status(200)
+    .with_body(
+        r#"{"items":[
                 {"id":"ca_expired","status":"EXPIRED","auth_config":{"id":"ac_1"}},
                 {"id":"ca_active","status":"ACTIVE","auth_config":{"id":"ac_1"}}
             ]}"#,
-        )
-        .create_async()
-        .await;
-    let out = composio(srv.url()).check_connection_status("u1", "ac_1").await.unwrap();
-    assert_eq!(out.account_id.as_deref(), Some("ca_active"), "must pick the ACTIVE account, not the expired one");
+    )
+    .create_async()
+    .await;
+    let out = composio(srv.url())
+        .check_connection_status("u1", "ac_1")
+        .await
+        .unwrap();
+    assert_eq!(
+        out.account_id.as_deref(),
+        Some("ca_active"),
+        "must pick the ACTIVE account, not the expired one"
+    );
     assert_eq!(out.status, "ACTIVE");
 
     // Same, ACTIVE listed first — must still pick ACTIVE (order-independent).
     let mut srv2 = mockito::Server::new_async().await;
-    srv2.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
-        .with_status(200)
-        .with_body(
-            r#"{"items":[
+    srv2.mock(
+        "GET",
+        mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()),
+    )
+    .with_status(200)
+    .with_body(
+        r#"{"items":[
                 {"id":"ca_active","status":"ACTIVE","auth_config":{"id":"ac_1"}},
                 {"id":"ca_expired","status":"EXPIRED","auth_config":{"id":"ac_1"}}
             ]}"#,
-        )
-        .create_async()
-        .await;
-    let out2 = composio(srv2.url()).check_connection_status("u1", "ac_1").await.unwrap();
+    )
+    .create_async()
+    .await;
+    let out2 = composio(srv2.url())
+        .check_connection_status("u1", "ac_1")
+        .await
+        .unwrap();
     assert_eq!(out2.account_id.as_deref(), Some("ca_active"));
 }
 
@@ -353,8 +415,15 @@ async fn composio_check_status_breaks_active_ties_by_recency() {
         )
         .create_async()
         .await;
-    let out = composio(srv.url()).check_connection_status("u1", "ac_1").await.unwrap();
-    assert_eq!(out.account_id.as_deref(), Some("ca_new"), "newest ACTIVE by created_at must win");
+    let out = composio(srv.url())
+        .check_connection_status("u1", "ac_1")
+        .await
+        .unwrap();
+    assert_eq!(
+        out.account_id.as_deref(),
+        Some("ca_new"),
+        "newest ACTIVE by created_at must win"
+    );
 }
 
 // No ACTIVE account → still report the (newest) non-active status, so the
@@ -362,16 +431,22 @@ async fn composio_check_status_breaks_active_ties_by_recency() {
 #[tokio::test]
 async fn composio_check_status_reports_non_active_when_none_active() {
     let mut srv = mockito::Server::new_async().await;
-    srv.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
-        .with_status(200)
-        .with_body(
-            r#"{"items":[
+    srv.mock(
+        "GET",
+        mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()),
+    )
+    .with_status(200)
+    .with_body(
+        r#"{"items":[
                 {"id":"ca_expired","status":"EXPIRED","auth_config":{"id":"ac_1"}}
             ]}"#,
-        )
-        .create_async()
-        .await;
-    let out = composio(srv.url()).check_connection_status("u1", "ac_1").await.unwrap();
+    )
+    .create_async()
+    .await;
+    let out = composio(srv.url())
+        .check_connection_status("u1", "ac_1")
+        .await
+        .unwrap();
     assert_eq!(out.status, "EXPIRED");
     assert_eq!(out.account_id.as_deref(), Some("ca_expired"));
 }
@@ -379,12 +454,18 @@ async fn composio_check_status_reports_non_active_when_none_active() {
 #[tokio::test]
 async fn composio_check_status_not_found() {
     let mut srv = mockito::Server::new_async().await;
-    srv.mock("GET", mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()))
-        .with_status(200)
-        .with_body(r#"{"items":[]}"#)
-        .create_async()
-        .await;
-    let out = composio(srv.url()).check_connection_status("u1", "ac_missing").await.unwrap();
+    srv.mock(
+        "GET",
+        mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()),
+    )
+    .with_status(200)
+    .with_body(r#"{"items":[]}"#)
+    .create_async()
+    .await;
+    let out = composio(srv.url())
+        .check_connection_status("u1", "ac_missing")
+        .await
+        .unwrap();
     assert_eq!(out.status, "NOT_FOUND");
     assert!(out.account_id.is_none());
 }
@@ -407,9 +488,16 @@ async fn composio_list_toolkit_tools_scopes_to_requested_toolkit() {
         )
         .create_async()
         .await;
-    let tools = composio(srv.url()).list_toolkit_tools("github").await.unwrap();
+    let tools = composio(srv.url())
+        .list_toolkit_tools("github")
+        .await
+        .unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, vec!["GITHUB_CREATE_AN_ISSUE", "GITHUB_LIST_REPOS"], "only github tools may be returned");
+    assert_eq!(
+        names,
+        vec!["GITHUB_CREATE_AN_ISSUE", "GITHUB_LIST_REPOS"],
+        "only github tools may be returned"
+    );
 }
 
 #[tokio::test]
@@ -422,12 +510,18 @@ async fn composio_create_session_nested_and_flat() {
         .create_async()
         .await;
     let accounts: ConnectedAccounts = HashMap::new();
-    let s = composio(srv.url()).create_session("u1", &accounts).await.unwrap();
+    let s = composio(srv.url())
+        .create_session("u1", &accounts)
+        .await
+        .unwrap();
     assert_eq!(s.session_id, "s1");
     assert_eq!(s.mcp_url, "https://mcp.composio/x");
     // x-api-key is always injected (the real API omits headers; the MCP url 401s
     // without it), overriding whatever the response carried.
-    assert_eq!(s.mcp_headers.get("x-api-key").map(String::as_str), Some("ak_test"));
+    assert_eq!(
+        s.mcp_headers.get("x-api-key").map(String::as_str),
+        Some("ak_test")
+    );
 
     // Flat envelope (id / mcp_url), no headers in response → x-api-key still injected.
     let mut srv2 = mockito::Server::new_async().await;
@@ -436,10 +530,16 @@ async fn composio_create_session_nested_and_flat() {
         .with_body(r#"{"id":"s2","mcp_url":"https://mcp/y"}"#)
         .create_async()
         .await;
-    let s = composio(srv2.url()).create_session("u1", &accounts).await.unwrap();
+    let s = composio(srv2.url())
+        .create_session("u1", &accounts)
+        .await
+        .unwrap();
     assert_eq!(s.session_id, "s2");
     assert_eq!(s.mcp_url, "https://mcp/y");
-    assert_eq!(s.mcp_headers.get("x-api-key").map(String::as_str), Some("ak_test"));
+    assert_eq!(
+        s.mcp_headers.get("x-api-key").map(String::as_str),
+        Some("ak_test")
+    );
 }
 
 #[tokio::test]
@@ -449,14 +549,26 @@ async fn composio_reuse_session_404_is_none() {
         .with_status(404)
         .create_async()
         .await;
-    assert!(composio(srv.url()).reuse_session("dead").await.unwrap().is_none());
+    assert!(
+        composio(srv.url())
+            .reuse_session("dead")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
 async fn composio_patch_and_revoke_status_semantics() {
     let mut srv = mockito::Server::new_async().await;
-    srv.mock("PATCH", "/api/v3.1/tool_router/session/s1").with_status(200).create_async().await;
-    srv.mock("POST", "/api/v3.1/connected_accounts/ca_1/revoke").with_status(200).create_async().await;
+    srv.mock("PATCH", "/api/v3.1/tool_router/session/s1")
+        .with_status(200)
+        .create_async()
+        .await;
+    srv.mock("POST", "/api/v3.1/connected_accounts/ca_1/revoke")
+        .with_status(200)
+        .create_async()
+        .await;
     let accounts: ConnectedAccounts = HashMap::new();
     let p = composio(srv.url());
     assert!(p.patch_session("s1", &accounts).await.unwrap());
@@ -464,97 +576,15 @@ async fn composio_patch_and_revoke_status_semantics() {
 
     // Failures degrade to false, not error.
     let mut srv2 = mockito::Server::new_async().await;
-    srv2.mock("PATCH", "/api/v3.1/tool_router/session/s2").with_status(500).create_async().await;
-    srv2.mock("POST", "/api/v3.1/connected_accounts/ca_2/revoke").with_status(404).create_async().await;
+    srv2.mock("PATCH", "/api/v3.1/tool_router/session/s2")
+        .with_status(500)
+        .create_async()
+        .await;
+    srv2.mock("POST", "/api/v3.1/connected_accounts/ca_2/revoke")
+        .with_status(404)
+        .create_async()
+        .await;
     let p2 = composio(srv2.url());
     assert!(!p2.patch_session("s2", &accounts).await.unwrap());
     assert!(!p2.revoke_connection("ca_2").await.unwrap());
-}
-
-// ─── SSRF-guard `trusted` split (Step 7) ─────────────────────────────────────
-//
-// The single most important test in the whole MCP-server-upload plan: proves
-// `trusted: true` configs route around the SSRF guard (as an uploaded-build
-// connector's platform-resolved container address must), while `trusted: false`
-// configs are still rejected exactly as before. Deliberately targets the mock
-// server via the *hostname* "localhost", not the literal IP "127.0.0.1" —
-// reqwest/hyper only invoke a custom DNS `Resolve` implementation (which is
-// where `GuardedResolver` lives) for hostnames; a literal IP in the URL bypasses
-// resolution entirely, which would make this test pass regardless of whether
-// the guard actually works.
-
-fn loopback_cfg(port: u16, trusted: bool) -> MCPServerConfig {
-    MCPServerConfig {
-        connector_id: Uuid::new_v4(),
-        kind: ServerType::Mcp,
-        name: "loopback-test".into(),
-        url: format!("http://localhost:{port}/mcp"),
-        headers: HashMap::new(),
-        transport: "streamable_http".into(),
-        trusted,
-    }
-}
-
-#[tokio::test]
-async fn trusted_config_bypasses_ssrf_guard_against_loopback() {
-    let mut srv = mockito::Server::new_async().await;
-    let port = srv.socket_address().port();
-    let m = srv
-        .mock("POST", "/mcp")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#)
-        .create_async()
-        .await;
-
-    let provider = GenericMcpProvider::new(
-        nasiko_mcp_gateway::net::guarded_http_client(),
-        reqwest::Client::new(),
-    );
-    let server = loopback_cfg(port, true);
-    provider
-        .list_tools(&server, std::time::Duration::from_secs(5), None)
-        .await
-        .expect("trusted=true must reach a loopback backend via the plain client");
-    m.assert_async().await;
-}
-
-#[tokio::test]
-async fn untrusted_config_is_still_rejected_by_ssrf_guard_against_loopback() {
-    let mut srv = mockito::Server::new_async().await;
-    let port = srv.socket_address().port();
-    // No mock registered — if the guard fails to reject, the request would 404,
-    // which would also fail the assertion below, but for the wrong reason. The
-    // guard must fail at DNS-resolution time, before any HTTP request is sent.
-    let _never_called = srv
-        .mock("POST", "/mcp")
-        .expect(0)
-        .with_status(200)
-        .create_async()
-        .await;
-
-    let provider = GenericMcpProvider::new(
-        nasiko_mcp_gateway::net::guarded_http_client(),
-        reqwest::Client::new(),
-    );
-    let server = loopback_cfg(port, false);
-    let err = provider
-        .list_tools(&server, std::time::Duration::from_secs(5), None)
-        .await
-        .expect_err("trusted=false must be rejected by the SSRF guard for a loopback address");
-    // reqwest wraps the resolver's error ("http error: error sending request...")
-    // so the guard's own message lives in the `source()` chain, not top-level
-    // Display — walk it to confirm this is genuinely GuardedResolver's rejection
-    // and not some other transport failure.
-    let mut cause: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(&err);
-    let mut found = false;
-    while let Some(e) = cause {
-        if e.to_string().contains("did not resolve to any allowed") {
-            found = true;
-            break;
-        }
-        cause = e.source();
-    }
-    assert!(found, "expected the GuardedResolver's rejection in the error chain, got: {err}");
-    _never_called.assert_async().await;
 }

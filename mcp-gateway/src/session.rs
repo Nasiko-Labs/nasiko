@@ -59,7 +59,8 @@ pub async fn resolve_session(state: &McpState, user_id: Uuid) -> Result<Resolved
     let mut servers = Vec::new();
     let mut connected_toolkits = Vec::new();
 
-    let (accounts, toolkits, toolkit_to_connector) = current_connected_accounts(state, user_id).await?;
+    let (accounts, toolkits, toolkit_to_connector) =
+        current_connected_accounts(state, user_id).await?;
 
     if let Some(composio) = resolve_composio_backend(state, user_id, &accounts, &toolkits).await? {
         servers.push(composio);
@@ -69,7 +70,11 @@ pub async fn resolve_session(state: &McpState, user_id: Uuid) -> Result<Resolved
     let generic = credentials::build_generic_servers(state, user_id).await?;
     servers.extend(generic);
 
-    Ok(ResolvedSession { servers, connected_toolkits, toolkit_to_connector })
+    Ok(ResolvedSession {
+        servers,
+        connected_toolkits,
+        toolkit_to_connector,
+    })
 }
 
 /// Invalidate the cached Composio session for a user.
@@ -97,7 +102,11 @@ async fn resolve_composio_backend(
     if let Some(cached) = cache::get_json::<CachedComposioSession>(&state.redis, &key).await
         && cached.toolkits == toolkits
     {
-        return Ok(Some(composio_config(cached.mcp_url, cached.mcp_headers, &state.config.composio_api_key)));
+        return Ok(Some(composio_config(
+            cached.mcp_url,
+            cached.mcp_headers,
+            &state.config.composio_api_key,
+        )));
     }
 
     // Slow/cold path: reuse / patch / create the upstream session.
@@ -122,7 +131,11 @@ async fn resolve_composio_backend(
     )
     .await;
 
-    Ok(Some(composio_config(session.mcp_url, session.mcp_headers, &state.config.composio_api_key)))
+    Ok(Some(composio_config(
+        session.mcp_url,
+        session.mcp_headers,
+        &state.config.composio_api_key,
+    )))
 }
 
 /// Reuse the stored session (patching connected accounts), or create a fresh one.
@@ -136,7 +149,10 @@ async fn resolve_upstream(
         && let Some(session) = provider.reuse_session(&row.composio_session_id).await?
     {
         // Session alive — ensure connected accounts are current (idempotent).
-        if provider.patch_session(&row.composio_session_id, accounts).await? {
+        if provider
+            .patch_session(&row.composio_session_id, accounts)
+            .await?
+        {
             return Ok(session);
         }
         // Session died during patch → recreate.
@@ -150,7 +166,9 @@ async fn create_and_store(
     user_id: Uuid,
     accounts: &ConnectedAccounts,
 ) -> Result<ComposioSession> {
-    let session = provider.create_session(&user_id.to_string(), accounts).await?;
+    let session = provider
+        .create_session(&user_id.to_string(), accounts)
+        .await?;
     repo::upsert_composio_session(&state.db, user_id, &session.session_id).await?;
     tracing::info!(%user_id, session_id = %session.session_id, "created composio tool router session");
     Ok(session)
@@ -166,7 +184,10 @@ async fn current_connected_accounts(
     let mut accounts: ConnectedAccounts = HashMap::new();
     let mut toolkit_to_connector = HashMap::new();
     for conn in active {
-        accounts.entry(conn.toolkit.clone()).or_default().push(conn.connected_account_id);
+        accounts
+            .entry(conn.toolkit.clone())
+            .or_default()
+            .push(conn.connected_account_id);
         toolkit_to_connector.insert(conn.toolkit.to_ascii_lowercase(), conn.connector_id);
     }
     let mut toolkits: Vec<String> = accounts.keys().cloned().collect();
@@ -190,7 +211,6 @@ fn composio_config(
         url,
         headers,
         transport: "streamable_http".to_string(),
-        trusted: false, // Composio's session URL is never an uploaded_build connector
     }
 }
 
@@ -217,8 +237,15 @@ mod tests {
 
     #[test]
     fn config_reinjects_key_from_config_not_cache() {
-        let cfg = composio_config("https://mcp/x".into(), HashMap::new(), &Some("ak_from_config".to_string()));
-        assert_eq!(cfg.headers.get("x-api-key").map(String::as_str), Some("ak_from_config"));
+        let cfg = composio_config(
+            "https://mcp/x".into(),
+            HashMap::new(),
+            &Some("ak_from_config".to_string()),
+        );
+        assert_eq!(
+            cfg.headers.get("x-api-key").map(String::as_str),
+            Some("ak_from_config")
+        );
         assert_eq!(cfg.kind, ServerType::Composio);
         assert_eq!(cfg.connector_id, Uuid::nil());
     }
@@ -248,12 +275,25 @@ mod tests {
         // overwrites it with the current config key — stale credential data
         // from a previous state can never leak through into the live config.
         let mut stale_headers = HashMap::new();
-        stale_headers.insert("x-api-key".to_string(), "ak_STALE_from_before_rotation".to_string());
+        stale_headers.insert(
+            "x-api-key".to_string(),
+            "ak_STALE_from_before_rotation".to_string(),
+        );
         stale_headers.insert("x-other".to_string(), "unrelated".to_string());
 
-        let cfg = composio_config("https://mcp/x".into(), stale_headers, &Some("ak_FRESH_current".to_string()));
-        assert_eq!(cfg.headers.get("x-api-key").map(String::as_str), Some("ak_FRESH_current"));
-        assert_eq!(cfg.headers.get("x-other").map(String::as_str), Some("unrelated"));
+        let cfg = composio_config(
+            "https://mcp/x".into(),
+            stale_headers,
+            &Some("ak_FRESH_current".to_string()),
+        );
+        assert_eq!(
+            cfg.headers.get("x-api-key").map(String::as_str),
+            Some("ak_FRESH_current")
+        );
+        assert_eq!(
+            cfg.headers.get("x-other").map(String::as_str),
+            Some("unrelated")
+        );
     }
 
     #[test]
@@ -284,10 +324,19 @@ mod tests {
             toolkits: vec!["gmail".to_string()],
         };
         let json = serde_json::to_string(&cached).unwrap();
-        assert!(!json.contains("ak_master_secret"), "serialized cache payload must never contain the secret");
+        assert!(
+            !json.contains("ak_master_secret"),
+            "serialized cache payload must never contain the secret"
+        );
 
         let round_tripped: CachedComposioSession = serde_json::from_str(&json).unwrap();
         assert!(!round_tripped.mcp_headers.contains_key("x-api-key"));
-        assert_eq!(round_tripped.mcp_headers.get("mcp-session-id").map(String::as_str), Some("sess-abc"));
+        assert_eq!(
+            round_tripped
+                .mcp_headers
+                .get("mcp-session-id")
+                .map(String::as_str),
+            Some("sess-abc")
+        );
     }
 }

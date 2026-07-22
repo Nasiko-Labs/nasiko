@@ -66,8 +66,11 @@ pub async fn aggregate_tools(
         }
         let prefix = connector_prefix(server.connector_id);
         for mut tool in tools {
-            let Some(obj) = tool.as_object_mut() else { continue };
-            let Some(original) = obj.get("name").and_then(|n| n.as_str()).map(str::to_string) else {
+            let Some(obj) = tool.as_object_mut() else {
+                continue;
+            };
+            let Some(original) = obj.get("name").and_then(|n| n.as_str()).map(str::to_string)
+            else {
                 continue;
             };
             if perms.decide(server.connector_id, &original) == ToolAccess::Denied {
@@ -78,7 +81,13 @@ pub async fn aggregate_tools(
         }
     }
 
-    cache::set_json_ex(&state.redis, &key, &merged, state.config.manifest_ttl_seconds).await;
+    cache::set_json_ex(
+        &state.redis,
+        &key,
+        &merged,
+        state.config.manifest_ttl_seconds,
+    )
+    .await;
     tracing::info!(%user_id, tool_count = merged.len(), backends = active.len(), perms_hash = %perms.hash, "manifest built");
     Ok(merged)
 }
@@ -102,7 +111,13 @@ fn manifest_key(
     let mut backends: Vec<(String, &str, String)> = servers
         .iter()
         .filter(|s| !s.url.is_empty())
-        .map(|s| (s.connector_id.to_string(), s.url.as_str(), headers_fingerprint(&s.headers)))
+        .map(|s| {
+            (
+                s.connector_id.to_string(),
+                s.url.as_str(),
+                headers_fingerprint(&s.headers),
+            )
+        })
         .collect();
     backends.sort();
 
@@ -121,7 +136,10 @@ fn headers_fingerprint(headers: &std::collections::HashMap<String, String>) -> S
     if headers.is_empty() {
         return String::new();
     }
-    let mut pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut pairs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     pairs.sort();
     sha256_hex16(serde_json::to_string(&pairs).unwrap_or_default().as_bytes())
 }
@@ -185,7 +203,10 @@ mod tests {
                 toolcount_ttl_seconds: 3600,
                 oauth_state_signing_key: "test".to_string(),
             },
-            providers: Providers { composio: None, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
+            providers: Providers {
+                composio: None,
+                mcp: GenericMcpProvider::new(reqwest::Client::new()),
+            },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
         }
     }
@@ -197,9 +218,13 @@ mod tests {
         let user = Uuid::new_v4();
         let id = Uuid::new_v4();
         let mut old = srv(ServerType::Mcp, id, "https://backend.example/mcp");
-        old.headers.insert("authorization".into(), "Bearer OLD_TOKEN".into());
+        old.headers
+            .insert("authorization".into(), "Bearer OLD_TOKEN".into());
         let mut rotated = old.clone();
-        rotated.headers.insert("authorization".into(), "Bearer ROTATED_TOKEN_DIFFERENT_SCOPES".into());
+        rotated.headers.insert(
+            "authorization".into(),
+            "Bearer ROTATED_TOKEN_DIFFERENT_SCOPES".into(),
+        );
 
         let toolkits: Vec<String> = vec![];
         let k_old = manifest_key(user, &[old], &toolkits, "permshash1");
@@ -209,16 +234,27 @@ mod tests {
         // is folded into the key via a hash, so a rotation that could change
         // which tools the backend exposes invalidates the stale manifest instead
         // of serving it for up to `manifest_ttl_seconds`.
-        assert_ne!(k_old, k_rotated, "a rotated credential must produce a different manifest cache key");
+        assert_ne!(
+            k_old, k_rotated,
+            "a rotated credential must produce a different manifest cache key"
+        );
     }
 
     #[test]
     fn manifest_key_does_not_leak_the_raw_credential() {
         let user = Uuid::new_v4();
-        let mut s = srv(ServerType::Mcp, Uuid::new_v4(), "https://backend.example/mcp");
-        s.headers.insert("authorization".into(), "Bearer SUPER_SECRET_TOKEN".into());
+        let mut s = srv(
+            ServerType::Mcp,
+            Uuid::new_v4(),
+            "https://backend.example/mcp",
+        );
+        s.headers
+            .insert("authorization".into(), "Bearer SUPER_SECRET_TOKEN".into());
         let key = manifest_key(user, &[s], &[], "permshash1");
-        assert!(!key.contains("SUPER_SECRET_TOKEN"), "the raw credential must never appear in the cache key: {key}");
+        assert!(
+            !key.contains("SUPER_SECRET_TOKEN"),
+            "the raw credential must never appear in the cache key: {key}"
+        );
     }
 
     #[test]
@@ -229,7 +265,10 @@ mod tests {
         let toolkits: Vec<String> = vec![];
         let k1 = manifest_key(user, &[a.clone(), b.clone()], &toolkits, "h");
         let k2 = manifest_key(user, &[b, a], &toolkits, "h");
-        assert_eq!(k1, k2, "backends are sorted before hashing, so input order must not matter");
+        assert_eq!(
+            k1, k2,
+            "backends are sorted before hashing, so input order must not matter"
+        );
     }
 
     // ─── aggregate_tools() — per-backend error isolation ───────────────────
@@ -245,7 +284,12 @@ mod tests {
             .await;
 
         let mut http500 = mockito::Server::new_async().await;
-        http500.mock("POST", "/mcp").with_status(500).with_body("boom").create_async().await;
+        http500
+            .mock("POST", "/mcp")
+            .with_status(500)
+            .with_body("boom")
+            .create_async()
+            .await;
 
         let mut malformed = mockito::Server::new_async().await;
         malformed
@@ -259,19 +303,35 @@ mod tests {
         let good_id = Uuid::new_v4();
         let servers = vec![
             srv(ServerType::Mcp, good_id, &format!("{}/mcp", good.url())),
-            srv(ServerType::Mcp, Uuid::new_v4(), &format!("{}/mcp", http500.url())),
-            srv(ServerType::Mcp, Uuid::new_v4(), &format!("{}/mcp", malformed.url())),
+            srv(
+                ServerType::Mcp,
+                Uuid::new_v4(),
+                &format!("{}/mcp", http500.url()),
+            ),
+            srv(
+                ServerType::Mcp,
+                Uuid::new_v4(),
+                &format!("{}/mcp", malformed.url()),
+            ),
             // Nothing listens here — a fast "connection refused" transport
             // error, exercising the same skip-and-continue path as a timeout.
             srv(ServerType::Mcp, Uuid::new_v4(), "http://127.0.0.1:1/mcp"),
         ];
 
         let state = test_state();
-        let merged =
-            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None).await.unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None)
+            .await
+            .unwrap();
 
-        assert_eq!(merged.len(), 1, "only the healthy backend's tool should survive: {merged:?}");
-        assert_eq!(merged[0]["name"], json!(format!("{}__good_tool", connector_prefix(good_id))));
+        assert_eq!(
+            merged.len(),
+            1,
+            "only the healthy backend's tool should survive: {merged:?}"
+        );
+        assert_eq!(
+            merged[0]["name"],
+            json!(format!("{}__good_tool", connector_prefix(good_id)))
+        );
     }
 
     #[tokio::test]
@@ -289,11 +349,15 @@ mod tests {
         let id = Uuid::new_v4();
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
-        let merged =
-            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None).await.unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None)
+            .await
+            .unwrap();
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0]["name"], json!(format!("{}__good_tool", connector_prefix(id))));
+        assert_eq!(
+            merged[0]["name"],
+            json!(format!("{}__good_tool", connector_prefix(id)))
+        );
     }
 
     #[tokio::test]
@@ -302,15 +366,18 @@ mod tests {
         m.mock("POST", "/mcp")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"dup"},{"name":"dup"}]}}"#)
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"dup"},{"name":"dup"}]}}"#,
+            )
             .create_async()
             .await;
 
         let id = Uuid::new_v4();
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
-        let merged =
-            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None).await.unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None)
+            .await
+            .unwrap();
 
         // Current behavior: the aggregator does not dedupe by tool name —
         // both entries survive namespacing, producing two identically-named
@@ -341,10 +408,16 @@ mod tests {
         let perms = PermissionContext {
             agent_id: Uuid::nil(),
             disabled_connectors: [id].into_iter().collect(),
-            rules: vec![PermissionRule { connector_id: id, tool_pattern: "*".into(), stance: Stance::Allow }],
+            rules: vec![PermissionRule {
+                connector_id: id,
+                tool_pattern: "*".into(),
+                stance: Stance::Allow,
+            }],
             hash: "h".into(),
         };
-        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms, None).await.unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms, None)
+            .await
+            .unwrap();
         assert!(merged.is_empty());
     }
 
@@ -364,11 +437,20 @@ mod tests {
         let perms = PermissionContext {
             agent_id: Uuid::nil(),
             disabled_connectors: Default::default(),
-            rules: vec![PermissionRule { connector_id: id, tool_pattern: "send_*".into(), stance: Stance::Block }],
+            rules: vec![PermissionRule {
+                connector_id: id,
+                tool_pattern: "send_*".into(),
+                stance: Stance::Block,
+            }],
             hash: "h".into(),
         };
-        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms, None).await.unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms, None)
+            .await
+            .unwrap();
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0]["name"], json!(format!("{}__read_email", connector_prefix(id))));
+        assert_eq!(
+            merged[0]["name"],
+            json!(format!("{}__read_email", connector_prefix(id)))
+        );
     }
 }

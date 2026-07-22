@@ -44,7 +44,11 @@ async fn webhook_without_secret_configured_is_service_unavailable() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 503, "must fail closed when no secret is configured");
+    assert_eq!(
+        res.status(),
+        503,
+        "must fail closed when no secret is configured"
+    );
 
     server.cleanup().await;
 }
@@ -97,7 +101,8 @@ async fn webhook_valid_signature_unknown_account_is_ok() {
     set_secret();
     let server = common::TestServer::start().await;
     let (id, ts) = ("wh_2", "1700000001");
-    let body = json!({"type": "composio.connected_account.expired", "data": {"id": "ca_unknown"}}).to_string();
+    let body = json!({"type": "composio.connected_account.expired", "data": {"id": "ca_unknown"}})
+        .to_string();
     let sig = sign(id, ts, &body);
 
     let res = server

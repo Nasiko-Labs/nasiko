@@ -75,9 +75,14 @@ pub async fn connect_service(
 }
 
 /// `GET /api/mcp/connections` — the caller's connections.
-pub async fn list_connections(State(state): State<AppState>, claims: Claims) -> Result<Json<Value>, ApiError> {
+pub async fn list_connections(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(service::connect::list_connections(&state, user_id).await?))
+    Ok(Json(
+        service::connect::list_connections(&state, user_id).await?,
+    ))
 }
 
 /// `DELETE /api/mcp/connections/{connector_id}` — disconnect the caller's connection.
@@ -103,8 +108,13 @@ pub struct ComposioCallbackQuery {
 }
 
 /// `GET /oauth/callback` — public Composio redirect target.
-pub async fn oauth_callback(State(state): State<AppState>, Query(q): Query<ComposioCallbackQuery>) -> Response {
-    match service::connect::composio_callback(&state, q.user_id, q.connector_id, q.success_url).await {
+pub async fn oauth_callback(
+    State(state): State<AppState>,
+    Query(q): Query<ComposioCallbackQuery>,
+) -> Response {
+    match service::connect::composio_callback(&state, q.user_id, q.connector_id, q.success_url)
+        .await
+    {
         CallbackOutcome::Redirect(dest) => Redirect::to(&dest).into_response(),
         CallbackOutcome::Message(msg) => Html(callback_page(&msg)).into_response(),
     }

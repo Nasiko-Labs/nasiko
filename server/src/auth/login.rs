@@ -22,16 +22,16 @@ const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 pub fn non_login_public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
     let credential_routes = Router::new()
         .route("/api/auth/initialize-admin", post(initialize_admin))
-        .layer(axum::middleware::from_fn_with_state(login_limiter, crate::rate_limit::limit_globally));
+        .layer(axum::middleware::from_fn_with_state(
+            login_limiter,
+            crate::rate_limit::limit_globally,
+        ));
 
     Router::new()
         .merge(credential_routes)
         .route("/api/auth/tokens/validate", post(token_validate))
 }
 
-/// OSS-only login route. `initialize-admin` and token validation are already
-/// covered by `non_login_public_router` (merged once, shared by OSS and EE);
-/// this must not re-register them or axum panics on the duplicate route.
 pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", post(login))
@@ -40,7 +40,6 @@ pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<Ap
             crate::rate_limit::limit_globally,
         ))
 }
-
 
 /// Protected auth routes — require X-User-* headers from the gateway.
 pub fn protected_router() -> Router<AppState> {
@@ -413,17 +412,20 @@ async fn token_validate(
     // Fetch the user's actual role from the DB so the Flutter sidebar can
     // gate admin-only tabs (access control) correctly. Fall back to
     // is_superuser-derived role on any error (user deleted, DB unavailable).
-    let role: String = sqlx::query_scalar(
-        "SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(identity.user_id.parse::<uuid::Uuid>().unwrap_or_default())
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| {
-        if identity.is_superuser { "admin".into() } else { "member".into() }
-    });
+    let role: String =
+        sqlx::query_scalar("SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(identity.user_id.parse::<uuid::Uuid>().unwrap_or_default())
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                if identity.is_superuser {
+                    "admin".into()
+                } else {
+                    "member".into()
+                }
+            });
 
     Json(serde_json::json!({
         "valid": true,

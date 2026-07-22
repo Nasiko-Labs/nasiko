@@ -31,7 +31,10 @@ fn auth_flow_for(connector: &repo::McpConnector) -> &'static str {
 
 /// `GET /api/mcp/catalog` — connectable services (composio ∪ accessible custom).
 pub async fn get_catalog_view(state: &McpState, user_id: Uuid) -> Result<Value> {
-    let connectors = state.authorizer.list_accessible_connectors(&state.db, user_id).await?;
+    let connectors = state
+        .authorizer
+        .list_accessible_connectors(&state.db, user_id)
+        .await?;
     let mut services: Vec<Value> = Vec::with_capacity(connectors.len());
     for c in &connectors {
         // Only Composio toolkits can report a tool count without a live
@@ -39,7 +42,11 @@ pub async fn get_catalog_view(state: &McpState, user_id: Uuid) -> Result<Value> 
         // `mcp_server` connector genuinely requires connecting first to
         // discover its tools — `null` here means "unknown until connected",
         // not zero.
-        let tool_count = if c.is_composio() { composio_tool_count(state, c.id, &c.name).await } else { None };
+        let tool_count = if c.is_composio() {
+            composio_tool_count(state, c.id, &c.name).await
+        } else {
+            None
+        };
         services.push(json!({
             "connector_id": c.id,
             "name": c.name,
@@ -63,7 +70,13 @@ async fn composio_tool_count(state: &McpState, connector_id: Uuid, toolkit: &str
     }
     let provider = state.providers.composio.as_ref()?;
     let count = provider.list_toolkit_tools(toolkit).await.ok()?.len();
-    cache::set_json_ex(&state.redis, &key, &count, state.config.toolcount_ttl_seconds).await;
+    cache::set_json_ex(
+        &state.redis,
+        &key,
+        &count,
+        state.config.toolcount_ttl_seconds,
+    )
+    .await;
     Some(count)
 }
 
@@ -80,15 +93,29 @@ pub struct CreateComposioInput<'a> {
 
 /// Register a platform Composio connector: collision check, register the OAuth
 /// app with Composio, record it as a `provider_type='composio'` connector.
-pub async fn create_composio_connector(state: &McpState, input: CreateComposioInput<'_>) -> Result<Value> {
+pub async fn create_composio_connector(
+    state: &McpState,
+    input: CreateComposioInput<'_>,
+) -> Result<Value> {
     let toolkit = input.toolkit.to_lowercase();
-    if repo::get_composio_connector_by_name(&state.db, &toolkit).await?.is_some() {
-        return Err(McpError::Conflict(format!("composio connector '{toolkit}' already exists")));
+    if repo::get_composio_connector_by_name(&state.db, &toolkit)
+        .await?
+        .is_some()
+    {
+        return Err(McpError::Conflict(format!(
+            "composio connector '{toolkit}' already exists"
+        )));
     }
 
     let provider = state.providers.require_composio()?;
     let created = provider
-        .create_auth_config(&toolkit, input.use_composio_managed, input.client_id, input.client_secret, input.scopes)
+        .create_auth_config(
+            &toolkit,
+            input.use_composio_managed,
+            input.client_id,
+            input.client_secret,
+            input.scopes,
+        )
         .await?;
 
     let connector = repo::create_connector(
@@ -125,7 +152,11 @@ pub struct ComposioMetadata {
 
 /// Update a composio connector's catalog metadata (display_name / logo / description).
 /// Does NOT touch the Composio `auth_config_id`, so connected users keep working.
-pub async fn update_composio_metadata(state: &McpState, connector_id: Uuid, meta: ComposioMetadata) -> Result<Value> {
+pub async fn update_composio_metadata(
+    state: &McpState,
+    connector_id: Uuid,
+    meta: ComposioMetadata,
+) -> Result<Value> {
     let connector = repo::get_connector_by_id(&state.db, connector_id).await?;
     match connector {
         Some(c) if c.is_composio() => {
@@ -147,7 +178,9 @@ pub async fn update_composio_metadata(state: &McpState, connector_id: Uuid, meta
                 "logo_url": updated.logo_url,
             }))
         }
-        _ => Err(McpError::NotFound(format!("composio connector '{connector_id}' not found"))),
+        _ => Err(McpError::NotFound(format!(
+            "composio connector '{connector_id}' not found"
+        ))),
     }
 }
 
@@ -178,7 +211,9 @@ pub async fn delete_composio_connector(state: &McpState, connector_id: Uuid) -> 
             repo::delete_connector(&state.db, connector_id).await?;
             Ok(())
         }
-        _ => Err(McpError::NotFound(format!("composio connector '{connector_id}' not found"))),
+        _ => Err(McpError::NotFound(format!(
+            "composio connector '{connector_id}' not found"
+        ))),
     }
 }
 
@@ -225,7 +260,10 @@ mod tests {
                 toolcount_ttl_seconds: 3600,
                 oauth_state_signing_key: "test".to_string(),
             },
-            providers: Providers { composio, mcp: GenericMcpProvider::new(reqwest::Client::new()) },
+            providers: Providers {
+                composio,
+                mcp: GenericMcpProvider::new(reqwest::Client::new()),
+            },
             authorizer: Arc::new(crate::authorizer::OssConnectorAuthorizer),
         }
     }
@@ -233,7 +271,10 @@ mod tests {
     #[tokio::test]
     async fn composio_tool_count_none_when_composio_not_configured() {
         let state = test_state(None);
-        assert_eq!(composio_tool_count(&state, Uuid::new_v4(), "gmail").await, None);
+        assert_eq!(
+            composio_tool_count(&state, Uuid::new_v4(), "gmail").await,
+            None
+        );
     }
 
     #[tokio::test]
@@ -244,9 +285,15 @@ mod tests {
             .with_body(r#"{"items":[{"slug":"GMAIL_SEND","description":"send"},{"slug":"GMAIL_READ","description":"read"}]}"#)
             .create_async()
             .await;
-        let provider: Arc<dyn crate::provider::ToolProvider> =
-            Arc::new(ComposioProvider::new(reqwest::Client::new(), "ak_test".into(), srv.url()));
+        let provider: Arc<dyn crate::provider::ToolProvider> = Arc::new(ComposioProvider::new(
+            reqwest::Client::new(),
+            "ak_test".into(),
+            srv.url(),
+        ));
         let state = test_state(Some(provider));
-        assert_eq!(composio_tool_count(&state, Uuid::new_v4(), "gmail").await, Some(2));
+        assert_eq!(
+            composio_tool_count(&state, Uuid::new_v4(), "gmail").await,
+            Some(2)
+        );
     }
 }

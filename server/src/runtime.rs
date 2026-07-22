@@ -36,7 +36,9 @@ pub fn instrument<R: ContainerRuntime>(
     );
     InstrumentedRuntime::new(
         otel_instrumented,
-        McpInjector { gateway_public_url: config.mcp_gateway_public_url.clone() },
+        McpInjector {
+            gateway_public_url: config.mcp_gateway_public_url.clone(),
+        },
         config.otel_collector_endpoint.clone(),
         config.otel_protocol.clone(),
         config.otel_capture_content,
@@ -53,16 +55,7 @@ pub async fn build_docker_runtime(
         network: config.docker_agent_network.clone(),
         registry_host: config.oci_registry_host.clone(),
         ..DockerRuntimeConfig::default()
-    }).await?;
-    // Created once here, never per-deploy, to avoid a create/create race between
-    // concurrent MCP-server-upload builds. Isolates uploaded MCP servers from
-    // Postgres/Redis/agents — see docs/MCP_UPLOAD_PLAN_OSS.md §4.3.
-    if let Err(e) = docker.ensure_network(&config.mcp_servers_network).await {
-        tracing::warn!(
-            error = %e,
-            network = %config.mcp_servers_network,
-            "failed to ensure MCP servers network exists at startup"
-        );
-    }
+    })
+    .await?;
     Ok(instrument(docker, config))
 }

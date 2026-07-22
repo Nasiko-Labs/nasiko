@@ -152,7 +152,9 @@ async fn start_stub_mcp_backend() -> (String, CallLog) {
         }
     }
 
-    let app = Router::new().route("/", post(handle)).with_state(calls.clone());
+    let app = Router::new()
+        .route("/", post(handle))
+        .with_state(calls.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -173,11 +175,15 @@ async fn agent_calls_mcp_gateway_end_to_end_with_permission_enforcement() {
     allow_private_urls();
     let (backend_url, backend_calls) = start_stub_mcp_backend().await;
 
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors")), &owner_id, "admin")
-        .json(&json!({"name": "e2e-stub", "url": backend_url}))
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors")),
+        &owner_id,
+        "admin",
+    )
+    .json(&json!({"name": "e2e-stub", "url": backend_url}))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 201, "connector registration must succeed");
     let connector: Value = res.json().await.unwrap();
     let connector_id = Uuid::parse_str(connector["connector_id"].as_str().unwrap()).unwrap();
@@ -185,7 +191,9 @@ async fn agent_calls_mcp_gateway_end_to_end_with_permission_enforcement() {
 
     // ── Grant the agent an explicit permission: block one tool, leave the other on default-allow ──
     let res = common::as_superuser(
-        server.client.put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
         &owner_id,
         "admin",
     )
@@ -213,13 +221,19 @@ async fn agent_calls_mcp_gateway_end_to_end_with_permission_enforcement() {
     };
 
     // ── 1. initialize ──
-    let res = mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"})).send().await.unwrap();
+    let res = mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["result"]["serverInfo"]["name"], "MCP Gateway");
 
     // ── 2. tools/list — allowed tool visible & namespaced, blocked tool absent entirely ──
-    let res = mcp(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).send().await.unwrap();
+    let res = mcp(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     let tools = body["result"]["tools"].as_array().expect("tools array");
@@ -229,7 +243,10 @@ async fn agent_calls_mcp_gateway_end_to_end_with_permission_enforcement() {
     let allowed_namespaced = format!("{prefix}__{ALLOWED_TOOL}");
     let blocked_namespaced = format!("{prefix}__{BLOCKED_TOOL}");
 
-    assert!(names.contains(&allowed_namespaced.as_str()), "allowed tool must be in the manifest: {names:?}");
+    assert!(
+        names.contains(&allowed_namespaced.as_str()),
+        "allowed tool must be in the manifest: {names:?}"
+    );
     assert!(
         !names.contains(&blocked_namespaced.as_str()),
         "blocked tool must NOT be in the manifest at all: {names:?}"
@@ -245,7 +262,10 @@ async fn agent_calls_mcp_gateway_end_to_end_with_permission_enforcement() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    assert!(body.get("error").is_none(), "allowed tool call must not error: {body:?}");
+    assert!(
+        body.get("error").is_none(),
+        "allowed tool call must not error: {body:?}"
+    );
     assert_eq!(
         body["result"]["echoed_arguments"]["q"], "hello",
         "the gateway's response must actually be the stub backend's response, proving the round trip: {body:?}"
