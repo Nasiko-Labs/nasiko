@@ -226,6 +226,7 @@ where
         .merge(secrets::router())
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
+        .merge(llm_router::providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
