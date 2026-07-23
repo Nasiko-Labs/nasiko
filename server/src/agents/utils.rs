@@ -30,10 +30,11 @@ pub(crate) async fn fetch_and_apply_agent_card(
     for url in &urls {
         if let Ok(resp) = http.get(url).send().await
             && resp.status().is_success()
-                && let Ok(v) = resp.json::<serde_json::Value>().await {
-                    card = Some(v);
-                    break;
-                }
+            && let Ok(v) = resp.json::<serde_json::Value>().await
+        {
+            card = Some(v);
+            break;
+        }
     }
 
     let card = match card {
@@ -58,7 +59,11 @@ pub(crate) async fn fetch_and_apply_agent_card(
         let mut tags: Vec<String> = card
             .get("tags")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         if let Some(skills) = card.get("skills").and_then(|v| v.as_array()) {
             for skill in skills {
@@ -100,6 +105,43 @@ pub(crate) async fn fetch_agent_card_with_retry(
         }
     }
     tracing::warn!(%agent_id, url = %agent_url, "agent card fetch: giving up after retries");
+}
+
+/// On failure of a first-time deploy (no prior successful `agent_builds`), delete
+/// the agents row so no orphaned `status='failed'` record is left in the catalog.
+///
+/// For re-uploads of an existing, previously-working agent, the row is kept and
+/// set to `status='failed'` so the agent's history and grants are preserved.
+///
+/// Cascade effects of the DELETE path (all intentional):
+/// - `agent_builds`      ON DELETE CASCADE  → failed build records removed
+/// - `build_jobs`        ON DELETE CASCADE  → orphaned job rows removed
+/// - `agent_deployments` ON DELETE CASCADE  → deployment rows removed
+/// - `agent_versions`    ON DELETE CASCADE  → version history removed
+/// - `upload_status`     ON DELETE SET NULL → row survives; agent_id becomes NULL
+pub(crate) async fn delete_agent_or_mark_failed(db: &sqlx::PgPool, agent_id: Uuid) {
+    let has_prior_success: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agent_builds WHERE agent_id = $1 AND status = 'success')",
+    )
+    .bind(agent_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if has_prior_success {
+        let _ = sqlx::query(
+            "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
+        )
+        .bind(agent_id)
+        .execute(db)
+        .await;
+    } else {
+        let _ = sqlx::query("DELETE FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .execute(db)
+            .await;
+        tracing::info!(%agent_id, "deleted new-agent row after build failure (no prior successful builds)");
+    }
 }
 
 pub(crate) async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: BuildStatus) {

@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tabled::settings::{Alignment, Style};
 use tabled::{Table, Tabled};
 
-use crate::api::{AgentRecord, Client, UploadedAgent};
+use crate::api::{AgentRecord, AgentVersion, Client, UpdateQueued, UploadedAgent};
 
 #[derive(Debug, Deserialize)]
 struct LogLine {
@@ -178,10 +178,25 @@ pub fn scale(agent: &str, replicas: u32) -> Result<()> {
     Ok(())
 }
 
-pub fn rm(agent: &str, force: bool) -> Result<()> {
+pub fn rm(id: Option<&str>, name: Option<&str>, force: bool) -> Result<()> {
+    let (agent_id, label) = match (id, name) {
+        (Some(id), None) => {
+            if uuid::Uuid::parse_str(id).is_err() {
+                bail!("'{}' is not a valid UUID — use --name to delete by name", id);
+            }
+            (id.to_string(), id.to_string())
+        }
+        (None, Some(n)) => {
+            let resolved = resolve_agent_id(n)?;
+            (resolved, n.to_string())
+        }
+        (None, None) => bail!("provide an agent UUID or use --name <name>"),
+        (Some(_), Some(_)) => bail!("provide either an id or --name, not both"),
+    };
+
     if !force {
         let confirm = dialoguer::Confirm::new()
-            .with_prompt(format!("Terminate '{agent}' and deregister?"))
+            .with_prompt(format!("Terminate '{label}' and deregister?"))
             .default(false)
             .interact()?;
         if !confirm {
@@ -190,8 +205,8 @@ pub fn rm(agent: &str, force: bool) -> Result<()> {
         }
     }
     let client = Client::from_active_cluster()?;
-    client.delete(&format!("/containers/{agent}"))?;
-    println!("Removed: {agent}");
+    client.delete(&format!("/agents/{agent_id}"))?;
+    println!("Removed: {label}");
     Ok(())
 }
 
@@ -261,7 +276,7 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
     }
 
     let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
+    let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
     let agents = unwrap_agents(raw)?;
 
     let matches: Vec<&AgentRecord> = agents
@@ -286,7 +301,10 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
 
 pub fn cmd_ls() -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/registry/user/agents")?;
+    // GET /agents returns Vec<Agent> directly — field names match AgentRecord.
+    // /registry/user/agents returns {data:[{agent_id,...}]} which uses agent_id
+    // instead of id, causing deserialization failures.
+    let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
     let agents = unwrap_agents(raw)?;
 
     if agents.is_empty() {
@@ -306,9 +324,10 @@ pub fn cmd_ls() -> Result<()> {
 
 pub fn cmd_get(agent_id: Option<&str>, name: Option<&str>, format: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
+    // GET /agents/{id} accepts either a UUID or an agent name.
     let raw: serde_json::Value = match (agent_id, name) {
-        (Some(id), _) => client.get_json(&format!("/registry/agent/id/{}", id))?,
-        (None, Some(n)) => client.get_json(&format!("/registry/agent/name/{}", n))?,
+        (Some(id), _) => client.get_json(&format!("/agents/{}", id))?,
+        (None, Some(n)) => client.get_json(&format!("/agents/{}", n))?,
         (None, None) => bail!("Provide at least one of --agent-id or --name"),
     };
     let agent: AgentRecord = if let Some(data) = raw.get("data") {
@@ -414,13 +433,13 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
     }
 
     let queued = result?;
-    println!(
-        "Status: {} | build_id: {} | agent_id: {}",
-        queued.status, queued.build_id, queued.agent_id
-    );
-    println!("Waiting for build to complete...");
-    client.poll_build_status(&queued.build_id)?;
-    println!("\nDeployed: {} ({})", queued.name, queued.image_tag);
+    println!("Status: {}", queued.data.status);
+    if let (Some(build_id), Some(agent_id)) = (&queued.data.build_id, &queued.data.agent_id) {
+        println!("build_id: {} | agent_id: {}", build_id, agent_id);
+        println!("Waiting for build to complete...");
+        client.poll_build_status(build_id)?;
+    }
+    println!("\nDeployed: {}", queued.data.agent_name);
     Ok(())
 }
 
@@ -642,5 +661,155 @@ pub fn cmd_list_uploaded() -> Result<()> {
             .with(Alignment::left())
     );
     println!("\n{} agent(s).", agents.len());
+    Ok(())
+}
+
+// ─── Reupload / Versions / Rollback ──────────────────────────────────────────
+
+/// Resolve the agent ID from positional UUID or --name, shared by reupload/versions/rollback.
+fn resolve_id_or_name(id: Option<&str>, name: Option<&str>) -> Result<(String, String)> {
+    match (id, name) {
+        (Some(id), None) => {
+            if uuid::Uuid::parse_str(id).is_err() {
+                bail!("'{}' is not a valid UUID — use --name to look up by name", id);
+            }
+            Ok((id.to_string(), id.to_string()))
+        }
+        (None, Some(n)) => {
+            let resolved = resolve_agent_id(n)?;
+            Ok((resolved, n.to_string()))
+        }
+        (None, None) => bail!("provide an agent UUID or use --name <name>"),
+        (Some(_), Some(_)) => bail!("provide either an id or --name, not both"),
+    }
+}
+
+pub fn reupload(
+    id: Option<&str>,
+    name: Option<&str>,
+    source: &str,
+    version: Option<&str>,
+    changelog: Option<&str>,
+) -> Result<()> {
+    let (agent_id, label) = resolve_id_or_name(id, name)?;
+
+    let source_path = Path::new(source);
+    if !source_path.exists() {
+        bail!("'{}' does not exist", source);
+    }
+
+    // Resolve version: flag → project files → None (server auto-patches)
+    let resolved_version: Option<String> = version
+        .map(String::from)
+        .or_else(|| crate::util::detect_version_from_source(source_path));
+
+    if let Some(ref v) = resolved_version {
+        println!("Version: {v}");
+    } else {
+        println!("Version: (server will auto-bump patch)");
+    }
+
+    // Zip directory if needed
+    let (zip_path, is_temp) = if source_path.is_dir() {
+        let tmp = std::env::temp_dir().join(format!(
+            "nasiko-reupload-{}.zip",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        println!("Zipping '{}'...", source_path.display());
+        let status = Command::new("zip")
+            .args(["-r", &tmp.to_string_lossy(), "."])
+            .current_dir(source_path)
+            .status()
+            .map_err(|e| anyhow::anyhow!("'zip' not found: {e}. Install with: brew install zip"))?;
+        if !status.success() {
+            bail!("zip failed for '{}'", source);
+        }
+        (tmp, true)
+    } else if source_path.extension().and_then(|e| e.to_str()) == Some("zip") {
+        (source_path.to_path_buf(), false)
+    } else {
+        bail!("source must be a directory or a .zip file");
+    };
+
+    let client = Client::from_active_cluster()?;
+    let result = client.update_agent(
+        &agent_id,
+        &zip_path,
+        resolved_version.as_deref(),
+        changelog,
+    );
+
+    if is_temp {
+        let _ = std::fs::remove_file(&zip_path);
+    }
+
+    let queued: UpdateQueued = result?;
+    println!(
+        "Queued: {} → {} (build: {})",
+        queued.previous_version, queued.new_version, queued.build_id
+    );
+    println!("Waiting for server to build and deploy...");
+    client.poll_build_status(&queued.build_id)?;
+    println!("\nRedeployed: {label} @ {}", queued.new_version);
+    Ok(())
+}
+
+pub fn versions(id: Option<&str>, name: Option<&str>) -> Result<()> {
+    let (agent_id, label) = resolve_id_or_name(id, name)?;
+    let client = Client::from_active_cluster()?;
+    let versions: Vec<AgentVersion> = client.get_json(&format!("/agents/{agent_id}/versions"))?;
+    if versions.is_empty() {
+        println!("No versions found for '{label}'.");
+        return Ok(());
+    }
+    println!(
+        "{}",
+        Table::new(&versions)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
+    println!("\n{} version(s) for '{label}'.", versions.len());
+    Ok(())
+}
+
+pub fn rollback(
+    id: Option<&str>,
+    name: Option<&str>,
+    version: Option<&str>,
+    reason: Option<&str>,
+) -> Result<()> {
+    let (agent_id, label) = resolve_id_or_name(id, name)?;
+
+    #[derive(serde::Serialize)]
+    struct RollbackRequest<'a> {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_version: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<&'a str>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RollbackQueued {
+        build_id: String,
+        rolled_back_to: String,
+        rolled_back_from: String,
+    }
+
+    let client = Client::from_active_cluster()?;
+    let queued: RollbackQueued = client.post_json(
+        &format!("/agents/{agent_id}/rollback"),
+        &RollbackRequest { target_version: version, reason },
+    )?;
+
+    println!(
+        "Rolling back '{}': {} → {} (build: {})",
+        label, queued.rolled_back_from, queued.rolled_back_to, queued.build_id
+    );
+    println!("Waiting for rollback to complete...");
+    client.poll_build_status(&queued.build_id)?;
+    println!("\nRolled back: {label} @ {}", queued.rolled_back_to);
     Ok(())
 }
