@@ -6,11 +6,12 @@ import logging
 from io import BytesIO
 from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+import time
 
 from router.src.config import settings
 from router.src.entities import UserRequest
@@ -44,6 +45,33 @@ app.add_middleware(
 
 # Initialize orchestrator
 orchestrator = RouterOrchestrator()
+
+# Metrics Tracker
+class RouterMetrics:
+    def __init__(self):
+        self.requests_processed = 0
+        self.active_sessions = 0
+        self.total_response_time = 0.0
+        self.error_count = 0
+
+metrics_tracker = RouterMetrics()
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    metrics_tracker.active_sessions += 1
+    start_time = time.time()
+    try:
+        response = await call_next(request)
+        if response.status_code >= 400:
+            metrics_tracker.error_count += 1
+        return response
+    except Exception:
+        metrics_tracker.error_count += 1
+        raise
+    finally:
+        metrics_tracker.requests_processed += 1
+        metrics_tracker.total_response_time += time.time() - start_time
+        metrics_tracker.active_sessions -= 1
 
 
 @app.get("/health")
@@ -124,12 +152,17 @@ async def process_request(
 @app.get("/metrics")
 async def get_metrics():
     """Get router service metrics."""
-    # TODO: Implement metrics collection
+    avg_time = 0.0
+    error_rate = 0.0
+    if metrics_tracker.requests_processed > 0:
+        avg_time = metrics_tracker.total_response_time / metrics_tracker.requests_processed
+        error_rate = metrics_tracker.error_count / metrics_tracker.requests_processed
+
     return {
-        "requests_processed": 0,
-        "active_sessions": 0,
-        "average_response_time": 0.0,
-        "error_rate": 0.0,
+        "requests_processed": metrics_tracker.requests_processed,
+        "active_sessions": metrics_tracker.active_sessions,
+        "average_response_time": round(avg_time, 4),
+        "error_rate": round(error_rate, 4),
     }
 
 
