@@ -308,7 +308,7 @@ pub async fn list_connectors_view(
             })
         })
         .collect();
-    Ok(json!({ "data": data }))
+    Ok(json!({ "connectors": data }))
 }
 
 /// `PUT /agents/{id}/connectors/{connector_id}` — toggle a connector, preserving
@@ -387,7 +387,7 @@ pub async fn list_connector_tools_view(
             })
         })
         .collect();
-    Ok(json!({ "data": out }))
+    Ok(json!({ "tools": out }))
 }
 
 /// Sync a connector's tool catalog from its live backend into `mcp_connector_tools`.
@@ -445,7 +445,7 @@ pub async fn list_tool_rules_view(state: &McpState, agent_id: Uuid) -> Result<Va
             data.push(json!({ "connector_id": row.connector_id, "tool_pattern": tr.pattern, "stance": tr.stance }));
         }
     }
-    Ok(json!({ "data": data }))
+    Ok(json!({ "rules": data }))
 }
 
 /// One rule input for [`bulk_update_tools`].
@@ -517,7 +517,7 @@ pub async fn bulk_update_tools(
     }
 
     invalidate_permission_cache(state, agent_id).await;
-    Ok(json!({ "data": applied }))
+    Ok(json!({ "rules": applied }))
 }
 
 /// `DELETE /agents/{id}/permissions` — reset to all-allowed.

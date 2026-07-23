@@ -124,7 +124,7 @@ async fn deleting_an_uploaded_connector_destroys_its_container() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     // The container must be gone — not just the DB row.
     let list_after = runtime.list().await.unwrap();

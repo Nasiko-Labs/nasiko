@@ -74,8 +74,8 @@ async fn upload_zip_queues_a_real_build_job() {
         .unwrap();
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
-    let connector_id: Uuid = body["connector_id"].as_str().unwrap().parse().unwrap();
-    let build_id: Uuid = body["build_id"].as_str().unwrap().parse().unwrap();
+    let connector_id: Uuid = body["data"]["connector_id"].as_str().unwrap().parse().unwrap();
+    let build_id: Uuid = body["data"]["build_id"].as_str().unwrap().parse().unwrap();
 
     // The real build-worker loop (spawned inside AppState — it is NOT a
     // no-op in this test harness) claims this job almost immediately with
@@ -132,7 +132,7 @@ async fn upload_zip_queues_a_real_build_job() {
     .unwrap();
     assert_eq!(status_res.status(), 200);
     let status_body: Value = status_res.json().await.unwrap();
-    let build_status = status_body["build_status"].as_str().unwrap();
+    let build_status = status_body["data"]["build_status"].as_str().unwrap();
     assert!(
         ["pending", "building", "failed"].contains(&build_status),
         "unexpected build_status in response: {status_body}"
@@ -230,7 +230,7 @@ async fn build_status_and_build_logs_require_ownership() {
         .await
         .unwrap();
     let body: Value = upload_res.json().await.unwrap();
-    let connector_id = body["connector_id"].as_str().unwrap();
+    let connector_id = body["data"]["connector_id"].as_str().unwrap();
 
     // Bob (a real, non-admin, non-owning user) must be forbidden from both routes.
     let status_res = common::as_member(

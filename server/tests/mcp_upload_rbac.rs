@@ -181,7 +181,7 @@ async fn member_can_reach_build_status_and_logs_routes_not_role_gated() {
         .unwrap();
     assert_eq!(upload_res.status(), 202);
     let body: Value = upload_res.json().await.unwrap();
-    let connector_id = body["connector_id"].as_str().unwrap();
+    let connector_id = body["data"]["connector_id"].as_str().unwrap();
 
     // The owner, a plain (non-deployer-role) member, must reach both GET
     // routes — proves they were never wrapped in the require_deployer layer.

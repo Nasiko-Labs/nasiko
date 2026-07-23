@@ -195,7 +195,7 @@ async fn status_reports_unauthorized_and_revoke_404_when_no_token() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["authorized"], false);
+    assert_eq!(body["data"]["authorized"], false);
 
     let res = common::as_superuser(
         server

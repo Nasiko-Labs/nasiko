@@ -151,7 +151,7 @@ async fn setup_fixture(server: &common::TestServer) -> Fixture {
     .unwrap();
     assert_eq!(res.status(), 201);
     let connector_id = Uuid::parse_str(
-        res.json::<Value>().await.unwrap()["connector_id"]
+        res.json::<Value>().await.unwrap()["data"]["connector_id"]
             .as_str()
             .unwrap(),
     )
@@ -279,7 +279,7 @@ async fn default_allow_lists_connector_enabled() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    let entry = body["data"]
+    let entry = body["data"]["connectors"]
         .as_array()
         .unwrap()
         .iter()
@@ -310,7 +310,7 @@ async fn disable_connector_persists_and_lists() {
     .await
     .unwrap();
     assert_eq!(res.status(), 200);
-    assert_eq!(res.json::<Value>().await.unwrap()["enabled"], false);
+    assert_eq!(res.json::<Value>().await.unwrap()["data"]["enabled"], false);
 
     let body: Value = common::as_superuser(
         server
@@ -325,7 +325,7 @@ async fn disable_connector_persists_and_lists() {
     .json()
     .await
     .unwrap();
-    let entry = body["data"]
+    let entry = body["data"]["connectors"]
         .as_array()
         .unwrap()
         .iter()
@@ -375,7 +375,7 @@ async fn tool_rules_bulk_update_list_and_reset() {
     .json()
     .await
     .unwrap();
-    let rules = body["data"].as_array().unwrap();
+    let rules = body["data"]["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 2);
     assert!(
         rules
@@ -469,7 +469,7 @@ async fn toggle_preserves_existing_tool_rules() {
     .await
     .unwrap();
     assert_eq!(
-        body["data"].as_array().unwrap().len(),
+        body["data"]["rules"].as_array().unwrap().len(),
         1,
         "toggling enabled must preserve tool_rules"
     );
@@ -534,7 +534,7 @@ async fn list_connector_tools_syncs_and_shows_default_allow_stance() {
     .await
     .unwrap();
     let cid = Uuid::parse_str(
-        res.json::<Value>().await.unwrap()["connector_id"]
+        res.json::<Value>().await.unwrap()["data"]["connector_id"]
             .as_str()
             .unwrap(),
     )
@@ -563,7 +563,7 @@ async fn list_connector_tools_syncs_and_shows_default_allow_stance() {
     .json()
     .await
     .unwrap();
-    let data = body["data"].as_array().unwrap();
+    let data = body["data"]["tools"].as_array().unwrap();
     assert_eq!(
         data.len(),
         3,
@@ -612,7 +612,7 @@ async fn list_connector_tools_empty_catalog_when_backend_has_no_tools() {
     .await
     .unwrap();
     let cid = Uuid::parse_str(
-        res.json::<Value>().await.unwrap()["connector_id"]
+        res.json::<Value>().await.unwrap()["data"]["connector_id"]
             .as_str()
             .unwrap(),
     )
@@ -633,7 +633,7 @@ async fn list_connector_tools_empty_catalog_when_backend_has_no_tools() {
     .await
     .unwrap();
     assert_eq!(
-        body["data"].as_array().unwrap().len(),
+        body["data"]["tools"].as_array().unwrap().len(),
         0,
         "an empty backend catalog must list as empty, not error"
     );
@@ -723,7 +723,7 @@ async fn list_connector_tools_default_allow_with_no_access_row_at_all() {
     .json()
     .await
     .unwrap();
-    let data = body["data"].as_array().unwrap();
+    let data = body["data"]["tools"].as_array().unwrap();
     assert_eq!(data.len(), 1);
     assert_eq!(data[0]["name"], "PING");
     assert_eq!(
@@ -1052,7 +1052,7 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
     .unwrap();
     assert_eq!(res.status(), 201);
     let cid = Uuid::parse_str(
-        res.json::<Value>().await.unwrap()["connector_id"]
+        res.json::<Value>().await.unwrap()["data"]["connector_id"]
             .as_str()
             .unwrap(),
     )
@@ -1103,7 +1103,7 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
     .json()
     .await
     .unwrap();
-    let tools = body["data"].as_array().unwrap();
+    let tools = body["data"]["tools"].as_array().unwrap();
     let send_tool = tools
         .iter()
         .find(|t| t["name"] == TOOL_SEND)
@@ -1183,7 +1183,7 @@ async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
     .json()
     .await
     .unwrap();
-    let entry = body["data"]
+    let entry = body["data"]["connectors"]
         .as_array()
         .unwrap()
         .iter()

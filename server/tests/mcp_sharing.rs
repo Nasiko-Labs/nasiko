@@ -74,7 +74,7 @@ async fn seed_connection(server: &common::TestServer, user: Uuid, connector: Uui
 }
 
 fn catalog_has(body: &Value, name: &str) -> bool {
-    body["services"]
+    body["data"]["services"]
         .as_array()
         .unwrap()
         .iter()
@@ -250,7 +250,7 @@ async fn revoke_deletes_grantee_connection() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     // Fix #2: the grantee's connection row must be gone.
     let conns: i64 = sqlx::query_scalar(
@@ -432,7 +432,7 @@ async fn list_shares_includes_granted_by() {
     .json()
     .await
     .unwrap();
-    let grants = body["data"].as_array().unwrap();
+    let grants = body["data"]["grants"].as_array().unwrap();
     assert_eq!(grants.len(), 1);
     assert_eq!(
         grants[0]["granted_by"], owner_uuid_str,
@@ -478,8 +478,8 @@ async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["is_public"], false);
-    let reasons = body["access_reasons"].as_array().unwrap();
+    assert_eq!(body["data"]["is_public"], false);
+    let reasons = body["data"]["access_reasons"].as_array().unwrap();
     assert_eq!(
         reasons.len(),
         2,
@@ -524,9 +524,9 @@ async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["is_public"], true);
+    assert_eq!(body["data"]["is_public"], true);
     assert_eq!(
-        body["access_reasons"].as_array().unwrap().len(),
+        body["data"]["access_reasons"].as_array().unwrap().len(),
         2,
         "public must not add a per-person reason row"
     );
@@ -558,7 +558,7 @@ async fn share_target_search_works_for_any_authenticated_user_and_validates_quer
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    let names: Vec<&str> = body["data"]
+    let names: Vec<&str> = body["data"]["users"]
         .as_array()
         .unwrap()
         .iter()
@@ -588,7 +588,7 @@ async fn share_target_search_works_for_any_authenticated_user_and_validates_quer
     .await
     .unwrap();
     let body: Value = res.json().await.unwrap();
-    let names: Vec<&str> = body["data"]
+    let names: Vec<&str> = body["data"]["users"]
         .as_array()
         .unwrap()
         .iter()
@@ -712,7 +712,7 @@ async fn consumers_lists_only_agents_that_configured_the_connector() {
     .await
     .unwrap();
 
-    let agent_ids: Vec<&str> = body["agents"]
+    let agent_ids: Vec<&str> = body["data"]["agents"]
         .as_array()
         .unwrap()
         .iter()
@@ -739,7 +739,7 @@ async fn consumers_lists_only_agents_that_configured_the_connector() {
     // Direct-user grant (the "cons-grantee" share above) shows up as a consumer;
     // the public flag does NOT synthesize a "users" row (that's `is_public` on
     // the share endpoint, not a specific consumer here).
-    let usernames: Vec<&str> = body["users"]
+    let usernames: Vec<&str> = body["data"]["users"]
         .as_array()
         .unwrap()
         .iter()
@@ -748,8 +748,8 @@ async fn consumers_lists_only_agents_that_configured_the_connector() {
     assert_eq!(usernames, vec!["cons-grantee"], "{usernames:?}");
 
     // OSS has no team/department concept — always empty via the authorizer seam.
-    assert_eq!(body["teams"].as_array().unwrap().len(), 0);
-    assert_eq!(body["departments"].as_array().unwrap().len(), 0);
+    assert_eq!(body["data"]["teams"].as_array().unwrap().len(), 0);
+    assert_eq!(body["data"]["departments"].as_array().unwrap().len(), 0);
 
     // A non-owner, non-admin caller must not be able to view consumers.
     let res = common::as_member(
@@ -801,7 +801,7 @@ async fn agent_grant_lets_owner_configure_connector_without_personal_reachabilit
     .await
     .unwrap();
     assert!(
-        !before["data"]
+        !before["data"]["connectors"]
             .as_array()
             .unwrap()
             .iter()
@@ -885,7 +885,7 @@ async fn agent_grant_lets_owner_configure_connector_without_personal_reachabilit
     .await
     .unwrap();
     assert!(
-        after["data"]
+        after["data"]["connectors"]
             .as_array()
             .unwrap()
             .iter()
@@ -924,7 +924,7 @@ async fn agent_grant_lets_owner_configure_connector_without_personal_reachabilit
     .unwrap();
     assert_eq!(
         res.status(),
-        204,
+        200,
         "owner revoking the agent grant should succeed"
     );
 

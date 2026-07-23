@@ -5,17 +5,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use axum::{
-    Json,
-    extract::{Multipart, Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::extract::{Multipart, State};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::super::{ApiError, parse_user};
+use super::super::{ApiError, ApiResponse, AppJson, AppPath, AppQuery, parse_user};
 use crate::auth::Claims;
 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
 use crate::state::AppState;
@@ -25,7 +20,7 @@ pub async fn upload_zip(
     State(state): State<AppState>,
     claims: Claims,
     mut multipart: Multipart,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let owner = parse_user(&claims)?;
 
     let mut name: Option<String> = None;
@@ -81,7 +76,10 @@ pub async fn upload_zip(
     let (connector_id, build_id) =
         crate::mcp::build::queue_zip_upload(&state, owner, name, version_tag, zip_path, env).await?;
 
-    Ok((StatusCode::ACCEPTED, Json(json!({ "connector_id": connector_id, "build_id": build_id }))))
+    Ok(ApiResponse::accepted(
+        json!({ "connector_id": connector_id, "build_id": build_id }),
+        "MCP server build queued",
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,8 +103,8 @@ fn default_version_tag() -> String {
 pub async fn upload_github(
     State(state): State<AppState>,
     claims: Claims,
-    Json(body): Json<UploadFromGithub>,
-) -> Result<impl IntoResponse, ApiError> {
+    AppJson(body): AppJson<UploadFromGithub>,
+) -> Result<ApiResponse, ApiError> {
     let owner = parse_user(&claims)?;
     if body.name.is_empty() {
         return Err(nasiko_mcp_gateway::McpError::BadRequest("name is required".into()).into());
@@ -124,17 +122,23 @@ pub async fn upload_github(
     )
     .await?;
 
-    Ok((StatusCode::ACCEPTED, Json(json!({ "connector_id": connector_id, "build_id": build_id }))))
+    Ok(ApiResponse::accepted(
+        json!({ "connector_id": connector_id, "build_id": build_id }),
+        "MCP server build queued",
+    ))
 }
 
 /// `GET /api/mcp/connectors/{id}/build-status` — plain polling JSON, no SSE.
 pub async fn build_status(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+    AppPath(id): AppPath<Uuid>,
+) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
-    Ok(Json(crate::mcp::build::get_build_status(&state.db, caller, claims.is_superuser, id).await?))
+    Ok(ApiResponse::ok(
+        crate::mcp::build::get_build_status(&state.db, caller, claims.is_superuser, id).await?,
+        "build status retrieved successfully",
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,9 +155,10 @@ fn default_tail() -> u32 {
 pub async fn build_logs(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
-    Query(q): Query<LogsQuery>,
-) -> Result<Json<Vec<String>>, ApiError> {
+    AppPath(id): AppPath<Uuid>,
+    AppQuery(q): AppQuery<LogsQuery>,
+) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
-    Ok(Json(crate::mcp::build::get_build_logs(&state.db, &state.runtime, caller, claims.is_superuser, id, q.tail).await?))
+    let logs = crate::mcp::build::get_build_logs(&state.db, &state.runtime, caller, claims.is_superuser, id, q.tail).await?;
+    Ok(ApiResponse::ok(json!(logs), "build logs retrieved successfully"))
 }

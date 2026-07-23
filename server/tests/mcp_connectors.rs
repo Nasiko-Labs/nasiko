@@ -160,7 +160,7 @@ async fn catalog_is_empty_by_default() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["services"].as_array().unwrap().len(), 0);
+    assert_eq!(body["data"]["services"].as_array().unwrap().len(), 0);
 
     server.cleanup().await;
 }
@@ -185,7 +185,7 @@ async fn catalog_merges_composio_and_owned_connectors() {
     .await
     .unwrap();
     let body: Value = res.json().await.unwrap();
-    let services = body["services"].as_array().unwrap();
+    let services = body["data"]["services"].as_array().unwrap();
     assert_eq!(services.len(), 2);
 
     let gmail = services.iter().find(|s| s["name"] == "gmail").unwrap();
@@ -232,7 +232,7 @@ async fn catalog_hides_other_users_private_connectors() {
     .await
     .unwrap();
     let body: Value = res.json().await.unwrap();
-    let names: Vec<&str> = body["services"]
+    let names: Vec<&str> = body["data"]["services"]
         .as_array()
         .unwrap()
         .iter()
@@ -346,10 +346,10 @@ async fn list_and_delete_auth_configs() {
     .await
     .unwrap();
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["total"], 1);
-    assert_eq!(body["data"][0]["toolkit"], "notion");
+    assert_eq!(body["data"]["total"], 1);
+    assert_eq!(body["data"]["connectors"][0]["toolkit"], "notion");
 
-    // Delete: non-admin 403, admin 204.
+    // Delete: non-admin 403, admin 200 (envelope, not 204).
     let res = common::as_member(
         server
             .client
@@ -372,7 +372,7 @@ async fn list_and_delete_auth_configs() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_connectors WHERE id = $1")
         .bind(id)
@@ -406,10 +406,10 @@ async fn register_connector_is_owned_by_caller() {
     .unwrap();
     assert_eq!(res.status(), 201);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["provider_type"], "mcp_server");
-    assert_eq!(body["auth_type"], "none");
-    assert_eq!(body["owner_id"], member_id);
-    let connector_id = body["connector_id"].as_str().unwrap();
+    assert_eq!(body["data"]["provider_type"], "mcp_server");
+    assert_eq!(body["data"]["auth_type"], "none");
+    assert_eq!(body["data"]["owner_id"], member_id);
+    let connector_id = body["data"]["connector_id"].as_str().unwrap();
 
     let owner: Uuid = sqlx::query_scalar("SELECT owner_id FROM mcp_connectors WHERE id = $1")
         .bind(Uuid::parse_str(connector_id).unwrap())
@@ -440,8 +440,8 @@ async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
     .unwrap();
     assert_eq!(res.status(), 201);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["setup_status"], "active");
-    assert!(body["setup_error"].is_null());
+    assert_eq!(body["data"]["setup_status"], "active");
+    assert!(body["data"]["setup_error"].is_null());
 
     // auth_type='bearer' needs a credential — pending until one is registered.
     let res = common::as_superuser(
@@ -455,8 +455,8 @@ async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
     .unwrap();
     assert_eq!(res.status(), 201);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["setup_status"], "pending");
-    let cid = body["connector_id"].as_str().unwrap();
+    assert_eq!(body["data"]["setup_status"], "pending");
+    let cid = body["data"]["connector_id"].as_str().unwrap();
 
     let res = common::as_superuser(
         server
@@ -469,7 +469,7 @@ async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
     .await
     .unwrap();
     assert_eq!(
-        res.json::<Value>().await.unwrap()["setup_status"],
+        res.json::<Value>().await.unwrap()["data"]["setup_status"],
         "pending"
     );
 
@@ -501,7 +501,7 @@ async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
     .await
     .unwrap();
     assert_eq!(
-        body["setup_status"], "active",
+        body["data"]["setup_status"], "active",
         "registering a credential must flip setup_status to active: {body:?}"
     );
 
@@ -624,7 +624,7 @@ async fn list_connectors_shows_own_not_others() {
     .await
     .unwrap();
     let body: Value = res.json().await.unwrap();
-    let names: Vec<&str> = body["data"]
+    let names: Vec<&str> = body["data"]["connectors"]
         .as_array()
         .unwrap()
         .iter()
@@ -667,8 +667,8 @@ async fn get_single_connector_by_id_and_404_when_unreachable() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["name"], "gs-alice-tool");
-    assert_eq!(body["is_owner"], true);
+    assert_eq!(body["data"]["name"], "gs-alice-tool");
+    assert_eq!(body["data"]["is_owner"], true);
 
     // A non-owner with no grant gets 404 (not 403) — existence isn't leaked.
     let res = common::as_member(
@@ -726,7 +726,7 @@ async fn delete_connector_owner_and_non_owner() {
     .unwrap();
     assert_eq!(res.status(), 403);
 
-    // Owner → 204.
+    // Owner → 200 (envelope, not 204).
     let res = common::as_member(
         server
             .client
@@ -737,7 +737,7 @@ async fn delete_connector_owner_and_non_owner() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     // 404 for missing.
     let res = common::as_superuser(
@@ -786,7 +786,7 @@ async fn delete_connector_cleans_up_agent_access() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     let remaining: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mcp_agent_connector_access WHERE connector_id = $1",
@@ -824,8 +824,8 @@ async fn update_connector_edits_fields() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["description"], "now documented");
-    assert_eq!(body["is_active"], false);
+    assert_eq!(body["data"]["description"], "now documented");
+    assert_eq!(body["data"]["is_active"], false);
 
     server.cleanup().await;
 }
@@ -911,7 +911,7 @@ async fn update_composio_metadata_admin_only() {
     .unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(
-        res.json::<Value>().await.unwrap()["display_name"],
+        res.json::<Value>().await.unwrap()["data"]["display_name"],
         "Gmail Pro"
     );
 
@@ -969,7 +969,7 @@ async fn probe_detects_auth_types() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.json::<Value>().await.unwrap()["auth_type"], "none");
+    assert_eq!(res.json::<Value>().await.unwrap()["data"]["auth_type"], "none");
 
     let bearer_url =
         start_stub_mcp_server(StatusCode::UNAUTHORIZED, Some("Bearer realm=\"mcp\"")).await;
@@ -982,7 +982,7 @@ async fn probe_detects_auth_types() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.json::<Value>().await.unwrap()["auth_type"], "bearer");
+    assert_eq!(res.json::<Value>().await.unwrap()["data"]["auth_type"], "bearer");
 
     let oauth_url = start_stub_mcp_server(
         StatusCode::UNAUTHORIZED,
@@ -998,7 +998,7 @@ async fn probe_detects_auth_types() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.json::<Value>().await.unwrap()["auth_type"], "oauth2");
+    assert_eq!(res.json::<Value>().await.unwrap()["data"]["auth_type"], "oauth2");
 
     disallow_private_urls();
     server.cleanup().await;
@@ -1063,7 +1063,7 @@ async fn pin_unpin_and_pinned_filters_out_revoked_access() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     let body: Value = common::as_member(
         server.client.get(server.url("/api/mcp/connectors/pinned")),
@@ -1076,7 +1076,7 @@ async fn pin_unpin_and_pinned_filters_out_revoked_access() {
     .json()
     .await
     .unwrap();
-    let names: Vec<&str> = body["data"]
+    let names: Vec<&str> = body["data"]["connectors"]
         .as_array()
         .unwrap()
         .iter()
@@ -1095,7 +1095,7 @@ async fn pin_unpin_and_pinned_filters_out_revoked_access() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
     let body: Value = common::as_member(
         server.client.get(server.url("/api/mcp/connectors/pinned")),
         uid,
@@ -1107,7 +1107,7 @@ async fn pin_unpin_and_pinned_filters_out_revoked_access() {
     .json()
     .await
     .unwrap();
-    assert!(body["data"].as_array().unwrap().is_empty());
+    assert!(body["data"]["connectors"].as_array().unwrap().is_empty());
 
     server.cleanup().await;
 }
@@ -1138,7 +1138,7 @@ async fn recent_reflects_connection_activity_most_recent_first() {
     .json()
     .await
     .unwrap();
-    let names: Vec<&str> = body["data"]
+    let names: Vec<&str> = body["data"]["connectors"]
         .as_array()
         .unwrap()
         .iter()

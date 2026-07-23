@@ -114,7 +114,11 @@ pub mod connectors {
         connectors::probe_connector_view(&s.mcp, url).await
     }
     pub async fn delete(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<()> {
-        connectors::delete_connector_authorized(&s.mcp, caller, is_admin, id).await
+        let connector = connectors::authorize_delete(&s.mcp, caller, is_admin, id).await?;
+        if connector.source_kind == nasiko_mcp_gateway::repo::SourceKind::UploadedBuild {
+            crate::mcp::build::destroy_uploaded_connector_container(&s.runtime, id).await;
+        }
+        connectors::delete_connector(&s.mcp, &connector).await
     }
     pub async fn share(
         s: &AppState,

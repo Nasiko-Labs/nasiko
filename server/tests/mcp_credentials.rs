@@ -84,7 +84,7 @@ async fn register_status_and_delete_credential() {
     .await
     .unwrap();
     assert_eq!(res.status(), 201);
-    assert_eq!(res.json::<Value>().await.unwrap()["connected"], true);
+    assert_eq!(res.json::<Value>().await.unwrap()["data"]["connected"], true);
 
     // Status: connected.
     let body: Value = common::as_superuser(
@@ -100,10 +100,10 @@ async fn register_status_and_delete_credential() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["connected"], true);
-    assert_eq!(body["auth_type"], "bearer");
+    assert_eq!(body["data"]["connected"], true);
+    assert_eq!(body["data"]["auth_type"], "bearer");
 
-    // Delete → 204, then status: not connected.
+    // Delete → 200 (envelope), then status: not connected.
     let res = common::as_superuser(
         server
             .client
@@ -114,7 +114,7 @@ async fn register_status_and_delete_credential() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     let body: Value = common::as_superuser(
         server
@@ -129,7 +129,7 @@ async fn register_status_and_delete_credential() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["connected"], false);
+    assert_eq!(body["data"]["connected"], false);
 
     server.cleanup().await;
 }

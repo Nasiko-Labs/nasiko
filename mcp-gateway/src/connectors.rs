@@ -221,6 +221,8 @@ pub async fn register_connector(
             credential_header_name: input.credential_header_name,
             headers: headers_json,
             is_active: Some(true),
+            source_kind: repo::SourceKind::ExternalUrl,
+            build_status: None,
             ..Default::default()
         },
     )
@@ -350,7 +352,7 @@ pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Val
         })
         .collect();
     let total = data.len();
-    Ok(json!({ "data": data, "total": total }))
+    Ok(json!({ "connectors": data, "total": total }))
 }
 
 /// `GET /api/mcp/connectors/{id}` — a single connector. 404s (not 403) when the
@@ -384,22 +386,26 @@ pub async fn get_connector_for_deletion(state: &McpState, id: Uuid) -> Result<Mc
         .ok_or_else(|| McpError::NotFound(format!("connector '{id}' not found")))
 }
 
-/// `DELETE /api/mcp/connectors/{id}` — owner/admin-gated delete. Ownership is
-/// enforced here (in the crate) alongside the delete itself, so the server
-/// layer stays a thin forwarder — matching `update_connector`/`owned_shareable`.
-pub async fn delete_connector_authorized(
+/// `DELETE /api/mcp/connectors/{id}` — owner/admin-gated. Ownership is enforced
+/// here (in the crate), but the delete itself is left to the caller: returns
+/// the authorized connector so `oss/server`'s `service::connectors::delete` can
+/// destroy an `uploaded_build` connector's container (needs `ContainerRuntime`,
+/// which this crate deliberately never depends on) BEFORE removing the DB row
+/// — so an interruption mid-delete leaves a retryable DB row, never an
+/// orphaned container with no DB trace pointing at it.
+pub async fn authorize_delete(
     state: &McpState,
     caller: Uuid,
     is_admin: bool,
     id: Uuid,
-) -> Result<()> {
+) -> Result<McpConnector> {
     let connector = get_connector_for_deletion(state, id).await?;
     if !is_admin && connector.owner_id != Some(caller) {
         return Err(McpError::Forbidden(
             "this connector does not belong to you".into(),
         ));
     }
-    delete_connector(state, &connector).await
+    Ok(connector)
 }
 
 /// Delete a connector (already authorized) + invalidate affected permission caches.
@@ -582,7 +588,7 @@ pub async fn list_shares_view(
             })
         })
         .collect();
-    Ok(json!({ "data": data, "is_public": is_public, "access_reasons": access_reasons }))
+    Ok(json!({ "grants": data, "is_public": is_public, "access_reasons": access_reasons }))
 }
 
 /// `GET /api/mcp/share-targets?q=` — search users to share a connector with.
@@ -610,7 +616,7 @@ pub async fn search_share_targets_view(
         .into_iter()
         .map(|(id, username, display_name)| json!({ "user_id": id, "username": username, "display_name": display_name }))
         .collect();
-    Ok(json!({ "data": data }))
+    Ok(json!({ "users": data }))
 }
 
 /// `GET /api/mcp/connectors/{id}/consumers` — which agents, users, teams, and
@@ -710,7 +716,7 @@ pub async fn unpin_connector_view(
 /// leak it), most recently pinned first.
 pub async fn list_pinned_view(state: &McpState, user_id: Uuid) -> Result<Value> {
     let pinned_ids = repo::list_pinned_connector_ids(&state.db, user_id).await?;
-    Ok(json!({ "data": connectors_reachable_in_order(state, user_id, &pinned_ids).await? }))
+    Ok(json!({ "connectors": connectors_reachable_in_order(state, user_id, &pinned_ids).await? }))
 }
 
 /// `GET /api/mcp/connectors/recent` — the caller's recently-used connectors
@@ -718,7 +724,7 @@ pub async fn list_pinned_view(state: &McpState, user_id: Uuid) -> Result<Value> 
 /// ones still reachable, most recent first.
 pub async fn list_recent_view(state: &McpState, user_id: Uuid) -> Result<Value> {
     let recent_ids = repo::list_recent_connector_ids(&state.db, user_id, 10).await?;
-    Ok(json!({ "data": connectors_reachable_in_order(state, user_id, &recent_ids).await? }))
+    Ok(json!({ "connectors": connectors_reachable_in_order(state, user_id, &recent_ids).await? }))
 }
 
 /// Resolve `ids` to full connector DTOs, preserving order, dropping any the

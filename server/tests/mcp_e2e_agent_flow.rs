@@ -186,7 +186,7 @@ async fn agent_calls_mcp_gateway_end_to_end_with_permission_enforcement() {
     .unwrap();
     assert_eq!(res.status(), 201, "connector registration must succeed");
     let connector: Value = res.json().await.unwrap();
-    let connector_id = Uuid::parse_str(connector["connector_id"].as_str().unwrap()).unwrap();
+    let connector_id = Uuid::parse_str(connector["data"]["connector_id"].as_str().unwrap()).unwrap();
     disallow_private_urls();
 
     // ── Grant the agent an explicit permission: block one tool, leave the other on default-allow ──

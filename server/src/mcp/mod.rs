@@ -4,6 +4,7 @@
 //! extraction + ACL; `service/` wraps the `nasiko-mcp-gateway` crate (all logic +
 //! SQL live in the crate, so `ee/` reuses it via the same routers).
 
+pub mod build;
 mod handlers;
 mod service;
 
@@ -31,9 +32,33 @@ pub fn agent_gateway_router() -> Router<AppState> {
     Router::new().route("/mcp", post(handlers::gateway::mcp_gateway))
 }
 
+/// MCP-server-upload MUTATION routes (build a container from user-supplied
+/// source) — deployer+ only, gated the same way agent-build/upload mutations
+/// are in `lib.rs::build_app_with_user_router` (building a container is the
+/// same class of privileged, resource-consuming operation). Kept as its own
+/// router, separate from [`router`], so that gate can be layered on
+/// specifically these two routes without affecting the rest of the MCP
+/// management surface.
+///
+/// `mcp_upload_max_bytes` sizes the body-limit layer scoped to the zip-upload
+/// route only (mirrors `agents::upload::router()`'s own `DefaultBodyLimit`,
+/// but this one's limit is config-driven, not a hardcoded constant, so it's a
+/// parameter here rather than baked into the router).
+pub fn upload_mutation_router(mcp_upload_max_bytes: u64) -> Router<AppState> {
+    let upload_zip_route = Router::new()
+        .route("/mcp/connectors/upload", post(handlers::upload::upload_zip))
+        .layer(axum::extract::DefaultBodyLimit::max(mcp_upload_max_bytes as usize));
+
+    Router::new()
+        .merge(upload_zip_route)
+        .route("/mcp/connectors/upload-github", post(handlers::upload::upload_github))
+}
+
 /// Authed MCP management routes (inherit `require_auth`).
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/mcp/connectors/{id}/build-status", get(handlers::upload::build_status))
+        .route("/mcp/connectors/{id}/build-logs", get(handlers::upload::build_logs))
         // Catalog + platform Composio connector registration.
         .route("/mcp/catalog", get(handlers::catalog::get_catalog))
         .route(
@@ -146,7 +171,9 @@ pub fn composio_callback_router() -> Router<AppState> {
 // ─── Shared error + auth helpers ────────────────────────────────────────────
 
 /// Standard API envelope: `{"data": …, "status_code": N, "message": "…"}`.
-pub(crate) struct ApiResponse {
+/// `pub` (not `pub(crate)`) so `ee/server`'s own MCP-related handlers
+/// (`mcp_sharing.rs`) can produce the same envelope shape.
+pub struct ApiResponse {
     status: StatusCode,
     data: serde_json::Value,
     message: &'static str,
@@ -159,6 +186,12 @@ impl ApiResponse {
 
     pub fn created(data: serde_json::Value, message: &'static str) -> Self {
         Self { status: StatusCode::CREATED, data, message }
+    }
+
+    /// 202 — request accepted, processing continues asynchronously (queued
+    /// build jobs; see `handlers::upload`).
+    pub fn accepted(data: serde_json::Value, message: &'static str) -> Self {
+        Self { status: StatusCode::ACCEPTED, data, message }
     }
 }
 
@@ -208,8 +241,9 @@ where
     }
 }
 
-/// Wraps [`McpError`] as an HTTP response for the management routes.
-pub(crate) struct ApiError(pub McpError);
+/// Wraps [`McpError`] as an HTTP response for the management routes. `pub` so
+/// `ee/server`'s MCP handlers can return it too (see [`ApiResponse`]).
+pub struct ApiError(pub McpError);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {

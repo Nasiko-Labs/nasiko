@@ -200,7 +200,7 @@ pub async fn list_composio_connectors_view(state: &McpState) -> Result<Value> {
         })
         .collect();
     let total = data.len();
-    Ok(json!({ "data": data, "total": total }))
+    Ok(json!({ "connectors": data, "total": total }))
 }
 
 /// Delete a platform Composio connector by id.

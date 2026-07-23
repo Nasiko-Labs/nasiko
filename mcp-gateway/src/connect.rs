@@ -292,7 +292,7 @@ pub async fn list_connections_view(state: &McpState, user_id: Uuid) -> Result<Va
         })
         .collect();
     let total = data.len();
-    Ok(json!({ "data": data, "total": total }))
+    Ok(json!({ "connections": data, "total": total }))
 }
 
 /// Outcome of [`disconnect`].
