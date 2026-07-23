@@ -1,5 +1,3 @@
-use crate::auth::Claims;
-use crate::state::AppState;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -9,6 +7,8 @@ use axum::{
 use nasiko_observability::ObservabilityError;
 use serde::Deserialize;
 use tracing::instrument;
+use crate::auth::Claims;
+use crate::state::AppState;
 
 use super::service::{InsightsRequest, ObservabilityService};
 
@@ -23,11 +23,7 @@ fn obs_err(e: ObservabilityError) -> Response {
         }
         ObservabilityError::Deserialization(_) => {
             tracing::error!(error = %e, "observability: failed to deserialize upstream response");
-            (
-                StatusCode::BAD_GATEWAY,
-                "observability backend returned an invalid response",
-            )
-                .into_response()
+            (StatusCode::BAD_GATEWAY, "observability backend returned an invalid response").into_response()
         }
         other => {
             // Catches `Internal` and any future variants — these wrap raw
@@ -41,6 +37,8 @@ fn obs_err(e: ObservabilityError) -> Response {
 fn svc(state: &AppState) -> ObservabilityService {
     ObservabilityService::from_state(state)
 }
+
+
 
 // ─── Request params ──────────────────────────────────────────────────────────
 
@@ -61,6 +59,19 @@ pub struct FinopsParams {
     pub start_time: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AgentHoursParams {
+    /// ISO-8601 window start (default: all-time; 30 days ago when `bucket` is set).
+    pub start_time: Option<String>,
+    /// ISO-8601 window end (default: now).
+    pub end_time: Option<String>,
+    /// Optional agent UUID — restricts the report to one agent.
+    pub agent_id: Option<String>,
+    /// Optional series granularity: "hour" | "day". Anything else is ignored.
+    pub bucket: Option<String>,
+}
+
+
 // ─── 1. GET /v1/observability/session/list ────────────────────────────────────
 #[instrument(skip(state))]
 pub async fn get_all_sessions(
@@ -75,6 +86,7 @@ pub async fn get_all_sessions(
             None,
             None,
             params.start_time.as_deref(),
+            claims.is_superuser,
         )
         .await
     {
@@ -118,7 +130,10 @@ pub async fn get_span_details(
     _claims: Claims,
     Path((trace_id, span_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match svc(&state).get_span_details(&trace_id, &span_id).await {
+    match svc(&state)
+        .get_span_details(&trace_id, &span_id)
+        .await
+    {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
@@ -181,6 +196,28 @@ pub async fn get_finops_insights(
     Json(body): Json<InsightsRequest>,
 ) -> impl IntoResponse {
     match svc(&state).get_finops_insights(&body).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => obs_err(e),
+    }
+}
+
+// ─── 8. GET /v1/observability/finops/agent-hours ─────────────────────────────
+
+#[instrument(skip(state))]
+pub async fn get_agent_hours(
+    State(state): State<AppState>,
+    _claims: Claims,
+    Query(params): Query<AgentHoursParams>,
+) -> impl IntoResponse {
+    match svc(&state)
+        .get_agent_hours(
+            params.start_time.as_deref(),
+            params.end_time.as_deref(),
+            params.agent_id.as_deref(),
+            params.bucket.as_deref(),
+        )
+        .await
+    {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }

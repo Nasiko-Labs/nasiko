@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use nasiko_config::Config;
 use nasiko_observability::{
     AgentFinOps, ObservabilityError, ObservabilityProvider, extract_token_attrs,
@@ -18,7 +18,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
 
+use crate::agents::hours_meter;
+
 // ─── Presentation helpers ─────────────────────────────────────────────────────
+
+/// Format a timestamp as RFC 3339 with millisecond precision.
+///
+/// Tempo stores span timestamps at nanosecond precision; Dart's DateTime.parse
+/// only handles up to microseconds. Capping at millis is safe for all consumers.
+fn fmt_ts(dt: DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
 
 fn round6(v: f64) -> f64 {
     (v * 1_000_000.0).round() / 1_000_000.0
@@ -67,13 +77,16 @@ fn status_code_str(code: u8) -> &'static str {
     }
 }
 
-fn parse_iso_or_default(iso: Option<&str>, default_days_ago: i64) -> DateTime<Utc> {
+fn parse_iso(iso: Option<&str>) -> Option<DateTime<Utc>> {
     iso.and_then(|s| {
         DateTime::parse_from_rfc3339(&s.replace('Z', "+00:00"))
             .ok()
             .map(|dt| dt.with_timezone(&Utc))
     })
-    .unwrap_or_else(|| Utc::now() - Duration::days(default_days_ago))
+}
+
+fn parse_iso_or_default(iso: Option<&str>, default_days_ago: i64) -> DateTime<Utc> {
+    parse_iso(iso).unwrap_or_else(|| Utc::now() - Duration::days(default_days_ago))
 }
 
 fn encode_span_id(span_id: &str) -> String {
@@ -96,21 +109,18 @@ fn build_span_tree(
     spans: &[nasiko_observability::Span],
 ) -> (Vec<SpanNode>, HashMap<String, SpanNode>) {
     let make_node = |s: &nasiko_observability::Span| {
-        let (input, output, model) = extract_token_attrs(&s.attributes);
+        let (input, output, _) = extract_token_attrs(&s.attributes);
         SpanNode {
             id: encode_span_id(&s.span_id),
             span_id: s.span_id.clone(),
             name: s.name.clone(),
             span_kind: span_kind_str(s.kind).to_string(),
             status_code: status_code_str(s.status_code).to_string(),
-            start_time: Some(s.started_at.to_rfc3339()),
-            end_time: s.ended_at.map(|t| t.to_rfc3339()),
+            start_time: Some(fmt_ts(s.started_at)),
+            end_time: s.ended_at.map(fmt_ts),
             parent_id: s.parent_span_id.as_deref().map(encode_span_id),
             latency_ms: s.duration_ms.map(|d| d as f64),
             token_count_total: input + output,
-            input_tokens: input,
-            output_tokens: output,
-            model,
             span_annotation_summaries: vec![],
             children: vec![],
         }
@@ -383,9 +393,6 @@ pub struct SpanNode {
     pub parent_id: Option<String>,
     pub latency_ms: Option<f64>,
     pub token_count_total: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub model: Option<String>,
     pub span_annotation_summaries: Vec<Value>,
     pub children: Vec<SpanNode>,
 }
@@ -488,6 +495,9 @@ pub struct FinopsSummary {
     pub average_cost: f64,
     pub active_agents: usize,
     pub total_agents: usize,
+    /// Replica-hours consumed in the dashboard window — includes agents that
+    /// have since been deleted (their sessions survive deletion).
+    pub total_container_hours: f64,
 }
 
 #[derive(Serialize)]
@@ -502,6 +512,8 @@ pub struct AgentFinopsRow {
     pub total_tokens: u64,
     pub avg_latency_ms: Option<f64>,
     pub version: Option<String>,
+    /// Replica-hours this agent consumed in the dashboard window.
+    pub container_hours: f64,
 }
 
 #[derive(Serialize)]
@@ -523,6 +535,49 @@ pub struct InsightsRequest {
 #[derive(Serialize)]
 pub struct InsightsResponse {
     pub insights: Vec<String>,
+}
+
+// finops/agent-hours
+
+#[derive(Serialize)]
+pub struct AgentHoursResponse {
+    pub data: AgentHoursData,
+    pub status_code: u16,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct AgentHoursData {
+    /// Replica-hours across all listed agents within the window.
+    pub total_hours: f64,
+    pub window: AgentHoursWindow,
+    /// Sessions-derived rows — includes agents that have since been deleted.
+    pub agents: Vec<AgentHoursRow>,
+    /// Time series, present only when the `bucket` query param is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buckets: Option<Vec<AgentHoursBucket>>,
+}
+
+#[derive(Serialize)]
+pub struct AgentHoursWindow {
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Serialize)]
+pub struct AgentHoursRow {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub hours: f64,
+    /// Replicas live right now among the sessions that overlapped this window.
+    pub live_replicas: i64,
+    pub deleted: bool,
+}
+
+#[derive(Serialize)]
+pub struct AgentHoursBucket {
+    pub start: String,
+    pub total_hours: f64,
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -563,47 +618,147 @@ impl ObservabilityService {
 
     pub async fn get_all_sessions(
         &self,
-        _user_id: &str,
+        user_id: &str,
         _role: Option<&str>,
         _department_id: Option<&str>,
         _team_id: Option<&str>,
         start_time: Option<&str>,
+        is_superuser: bool,
     ) -> Result<SessionListResponse, ObservabilityError> {
-        let agents = self.get_agent_names().await?;
-        let total = agents.len();
         let start = parse_iso_or_default(start_time, 7);
         let end = Utc::now();
 
+        // 1. Query chat_sessions as the authoritative source — every session
+        //    shows up here regardless of whether the agent is OTel-instrumented.
+        //    Non-superusers only see their own sessions.
+        let db_sessions: Vec<(String, Option<uuid::Uuid>, DateTime<Utc>)> = if is_superuser {
+            sqlx::query_as(
+                "SELECT session_id, agent_id, created_at \
+                 FROM chat_sessions \
+                 WHERE deleted_at IS NULL AND created_at >= $1 \
+                 ORDER BY created_at DESC LIMIT 500",
+            )
+            .bind(start)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+        } else {
+            let caller_uuid: uuid::Uuid = user_id.parse().map_err(|_| {
+                ObservabilityError::Internal("invalid user id in claims".into())
+            })?;
+            sqlx::query_as(
+                "SELECT session_id, agent_id, created_at \
+                 FROM chat_sessions \
+                 WHERE user_id = $1 AND deleted_at IS NULL AND created_at >= $2 \
+                 ORDER BY created_at DESC LIMIT 500",
+            )
+            .bind(caller_uuid)
+            .bind(start)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+        };
+
+        // 2. Build agent_id → name lookup for the agent_id column.
+        let agents = self.get_agent_names().await.unwrap_or_default();
+        let total = agents.len();
+        let agent_name_by_id: std::collections::HashMap<uuid::Uuid, String> = agents
+            .into_iter()
+            .map(|(id, name, _display)| (id, name))
+            .collect();
+
+        // 3. Enrich each DB session from Tempo (by session_id). For agents
+        //    without OTel, Tempo returns NotFound and we fall back to a minimal
+        //    summary built from the DB row — the session still appears in the UI.
         let mut all_sessions: Vec<SessionSummary> = Vec::new();
         let mut successful = 0usize;
 
-        for (_, agent_name, _) in &agents {
-            match self
-                .provider
-                .sessions_for_agent(agent_name, start, end)
-                .await
-            {
-                Ok(sessions) => {
-                    all_sessions.extend(sessions.into_iter().map(session_to_summary));
+        for (session_id, agent_id_opt, created_at) in db_sessions {
+            let agent_name = agent_id_opt
+                .and_then(|id| agent_name_by_id.get(&id))
+                .cloned()
+                .unwrap_or_default();
+
+            match self.provider.get_session(&session_id, start, end).await {
+                Ok(details) => {
+                    let total_tokens = details.input_tokens + details.output_tokens;
+                    let started_at = details
+                        .traces
+                        .iter()
+                        .map(|t| t.root_span.started_at)
+                        .min();
+                    let ended_at = details
+                        .traces
+                        .iter()
+                        .filter_map(|t| t.root_span.ended_at)
+                        .max();
+                    let duration_ms = started_at.zip(ended_at).map(|(s, e)| {
+                        (e - s).num_milliseconds().max(0) as u64
+                    });
+                    all_sessions.push(SessionSummary {
+                        id: session_id.clone(),
+                        session_id,
+                        agent_id: agent_name,
+                        num_traces: Some(details.traces.len() as u32),
+                        start_time: started_at.map(fmt_ts),
+                        // Flutter's DateTime.parse requires a non-empty string —
+                        // fall back to start_time when no end time is known.
+                        end_time: ended_at.or(started_at).map(fmt_ts),
+                        duration_ms,
+                        first_input: details.traces.first().and_then(|t| t.input_content.clone()),
+                        last_output: details.traces.last().and_then(|t| t.output_content.clone()),
+                        token_usage: TokenUsageSummary {
+                            total: (total_tokens > 0).then_some(total_tokens),
+                        },
+                        trace_latency_ms_p50: details.latency_ms_p50,
+                        trace_latency_ms_p99: None,
+                        cost_summary: SimpleCostSummary {
+                            total: CostEntry {
+                                cost: (details.cost.total_usd > 0.0)
+                                    .then_some(details.cost.total_usd),
+                            },
+                        },
+                        session_annotations: vec![],
+                        session_annotation_summaries: vec![],
+                    });
                     successful += 1;
                 }
                 Err(e) => {
-                    tracing::warn!(agent_name, error = %e, "failed to get sessions from Tempo");
+                    // Not found in Tempo (agent not OTel-instrumented) or a
+                    // transient error — surface the session from DB metadata so
+                    // it still appears in the execution history.
+                    if !matches!(e, ObservabilityError::NotFound(_)) {
+                        tracing::warn!(session_id, error = %e, "tempo lookup failed for session");
+                    }
+                    all_sessions.push(SessionSummary {
+                        id: session_id.clone(),
+                        session_id,
+                        agent_id: agent_name,
+                        num_traces: None,
+                        start_time: Some(fmt_ts(created_at)),
+                        end_time: Some(fmt_ts(created_at)),
+                        duration_ms: None,
+                        first_input: None,
+                        last_output: None,
+                        token_usage: TokenUsageSummary { total: None },
+                        trace_latency_ms_p50: None,
+                        trace_latency_ms_p99: None,
+                        cost_summary: SimpleCostSummary {
+                            total: CostEntry { cost: None },
+                        },
+                        session_annotations: vec![],
+                        session_annotation_summaries: vec![],
+                    });
                 }
             }
         }
-
-        all_sessions.sort_by(|a, b| b.start_time.cmp(&a.start_time));
 
         Ok(SessionListResponse {
             data: SessionListData {
                 sessions: all_sessions,
                 total_agents: total,
                 successful_agents: successful,
-                pagination: Pagination {
-                    end_cursor: None,
-                    has_next_page: false,
-                },
+                pagination: Pagination { end_cursor: None, has_next_page: false },
             },
         })
     }
@@ -644,7 +799,7 @@ impl ObservabilityService {
                         attributes: serde_json::to_string(&flat_attrs).unwrap_or_default(),
                         cumulative_token_count_total: t.input_tokens + t.output_tokens,
                         latency_ms: round6(t.duration_ms.unwrap_or(0) as f64),
-                        start_time: Some(t.root_span.started_at.to_rfc3339()),
+                        start_time: Some(fmt_ts(t.root_span.started_at)),
                         span_annotations: vec![],
                         span_annotation_summaries: vec![],
                         project: ProjectRef { id: String::new() },
@@ -679,9 +834,7 @@ impl ObservabilityService {
                     id: details.session_id.clone(),
                     session_id: details.session_id.clone(),
                     num_traces: details.traces.len(),
-                    token_usage: TokenUsageSummary {
-                        total: Some(total_tokens),
-                    },
+                    token_usage: TokenUsageSummary { total: Some(total_tokens) },
                     cost_summary: FullCostSummary {
                         total: CostWithTokens {
                             cost: details.cost.total_usd,
@@ -698,10 +851,7 @@ impl ObservabilityService {
                     },
                     latency_p50: details.latency_ms_p50,
                     traces: trace_entries,
-                    pagination: Pagination {
-                        end_cursor,
-                        has_next_page: false,
-                    },
+                    pagination: Pagination { end_cursor, has_next_page: false },
                 },
             },
         })
@@ -743,7 +893,7 @@ impl ObservabilityService {
                 span: RootSpanRef {
                     id: s.id.clone(),
                     span_id: s.span_id.clone(),
-                    parent_id: s.parent_id.clone(),
+                    parent_id: None,
                     status_code: s.status_code.clone(),
                 },
             })
@@ -757,15 +907,9 @@ impl ObservabilityService {
                     num_spans,
                     latency_ms: trace_latency_ms,
                     cost_summary: NestedCostSummary {
-                        total: CostOnly {
-                            cost: cost.total_usd,
-                        },
-                        prompt: CostOnly {
-                            cost: cost.prompt_usd,
-                        },
-                        completion: CostOnly {
-                            cost: cost.completion_usd,
-                        },
+                        total: CostOnly { cost: cost.total_usd },
+                        prompt: CostOnly { cost: cost.prompt_usd },
+                        completion: CostOnly { cost: cost.completion_usd },
                     },
                     root_spans: RootSpansWrapper { edges: root_edges },
                     spans: root_nodes,
@@ -849,15 +993,13 @@ impl ObservabilityService {
                     code: status.clone(),
                     status_code: status,
                     status_message: span.status_message.clone(),
-                    start_time: Some(span.started_at.to_rfc3339()),
-                    end_time: span.ended_at.map(|t| t.to_rfc3339()),
+                    start_time: Some(fmt_ts(span.started_at)),
+                    end_time: span.ended_at.map(fmt_ts),
                     parent_id: span.parent_span_id.clone(),
                     latency_ms: span.duration_ms.map(|d| d as f64),
                     token_count_total: input_tokens + output_tokens,
                     cost_summary: SimpleCostSummary {
-                        total: CostEntry {
-                            cost: Some(details.cost.total_usd),
-                        },
+                        total: CostEntry { cost: Some(details.cost.total_usd) },
                     },
                     input: ContentField {
                         value: input_value,
@@ -892,10 +1034,7 @@ impl ObservabilityService {
         start_time: Option<&str>,
     ) -> Result<AgentStatsResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 1);
-        let stats = self
-            .provider
-            .agent_stats(agent_id, start, Utc::now())
-            .await?;
+        let stats = self.provider.agent_stats(agent_id, start, Utc::now()).await?;
 
         Ok(AgentStatsResponse {
             data: AgentStatsData {
@@ -903,15 +1042,9 @@ impl ObservabilityService {
                     id: stats.agent_id,
                     trace_count: stats.trace_count,
                     cost_summary: NestedCostSummary {
-                        total: CostOnly {
-                            cost: stats.cost.total_usd,
-                        },
-                        prompt: CostOnly {
-                            cost: stats.cost.prompt_usd,
-                        },
-                        completion: CostOnly {
-                            cost: stats.cost.completion_usd,
-                        },
+                        total: CostOnly { cost: stats.cost.total_usd },
+                        prompt: CostOnly { cost: stats.cost.prompt_usd },
+                        completion: CostOnly { cost: stats.cost.completion_usd },
                     },
                     latency_ms_p50: stats.latency_ms_p50,
                     latency_ms_p99: stats.latency_ms_p99,
@@ -935,13 +1068,27 @@ impl ObservabilityService {
         let agents = self.get_agent_names().await?;
         let total_agents = agents.len();
 
-        if agents.is_empty() {
-            return Ok(empty_finops_response());
-        }
-
         let now = Utc::now();
         let start = parse_iso_or_default(start_time, 30);
         let last_24h = now - Duration::hours(24);
+
+        // Container-hours for the same window, one batched query. Includes
+        // agents that have since been deleted, so the summary total stays
+        // honest even when the per-agent rows below can't show them.
+        // Fail-soft, matching the per-agent finops calls.
+        let hours_rows = hours_meter::windowed_agent_hours(&self.db, start, now, None)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "container hours aggregation failed");
+                vec![]
+            });
+        let total_container_hours = round6(hours_rows.iter().map(|r| r.hours).sum());
+        let hours_by_agent: HashMap<uuid::Uuid, f64> =
+            hours_rows.iter().map(|r| (r.agent_id, r.hours)).collect();
+
+        if agents.is_empty() {
+            return Ok(empty_finops_response(total_container_hours));
+        }
 
         let mut agent_rows: Vec<AgentFinopsRow> = Vec::new();
         let mut grand_input = 0u64;
@@ -993,6 +1140,7 @@ impl ObservabilityService {
                 total_tokens: finops.input_tokens + finops.output_tokens,
                 avg_latency_ms: finops.latency_ms_p50,
                 version: None,
+                container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
             });
         }
 
@@ -1017,6 +1165,7 @@ impl ObservabilityService {
                     average_cost: avg_cost,
                     active_agents: active,
                     total_agents,
+                    total_container_hours,
                 },
                 agents: agent_rows,
                 token_usage: FinopsTokenUsage {
@@ -1099,36 +1248,133 @@ Data: {}"#,
 
         Ok(InsightsResponse { insights })
     }
+
+    // ── 8. finops/agent-hours ─────────────────────────────────────────────────
+
+    /// Windowed replica-hours from `agent_instance_sessions` — the metering
+    /// source of truth the external billing system reads. Deleted agents are
+    /// included (rows have no FK to `agents`); `bucket` adds an hourly/daily
+    /// series whose sum equals `total_hours` (additivity).
+    pub async fn get_agent_hours(
+        &self,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        agent_id: Option<&str>,
+        bucket: Option<&str>,
+    ) -> Result<AgentHoursResponse, ObservabilityError> {
+        /// Hard cap on series length so a caller can't request an unbounded
+        /// (e.g. epoch-to-now hourly) response.
+        const MAX_SERIES_BUCKETS: i64 = 1000;
+
+        let bucket = bucket.and_then(hours_meter::HoursBucket::parse);
+        let end = parse_iso(end_time).unwrap_or_else(Utc::now);
+        // No start_time means all-time for the plain report (this endpoint is
+        // the billing source of truth — silently dropping history would be
+        // wrong), but 30 days for a series (an epoch-to-now series is
+        // unbounded and gets capped below anyway).
+        let mut start = parse_iso(start_time).unwrap_or_else(|| match bucket {
+            Some(_) => end - Duration::days(30),
+            None => DateTime::<Utc>::UNIX_EPOCH,
+        });
+        if let Some(b) = bucket {
+            let max_span = Duration::seconds(b.seconds() * MAX_SERIES_BUCKETS);
+            if end - start > max_span {
+                tracing::warn!(
+                    requested_start = %start,
+                    clamped_start = %(end - max_span),
+                    "agent-hours series window clamped to {MAX_SERIES_BUCKETS} buckets"
+                );
+                start = end - max_span;
+            }
+        }
+
+        // An unparseable agent filter must return nothing, not everything —
+        // attributing the whole platform's hours to a mistyped agent would be
+        // a billing error.
+        let agent_filter = match agent_id {
+            Some(raw) => match uuid::Uuid::parse_str(raw) {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    tracing::debug!(agent_id = raw, "agent-hours: invalid agent_id filter");
+                    return Ok(empty_agent_hours_response(start, end, bucket.is_some()));
+                }
+            },
+            None => None,
+        };
+
+        if start >= end {
+            return Ok(empty_agent_hours_response(start, end, bucket.is_some()));
+        }
+
+        let rows = hours_meter::windowed_agent_hours(&self.db, start, end, agent_filter)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        let total_hours = round6(rows.iter().map(|r| r.hours).sum());
+        let agents = rows
+            .into_iter()
+            .map(|r| AgentHoursRow {
+                agent_id: r.agent_id.to_string(),
+                agent_name: r.agent_name,
+                hours: round6(r.hours),
+                live_replicas: r.live_replicas,
+                deleted: r.deleted,
+            })
+            .collect();
+
+        let buckets = match bucket {
+            Some(b) => Some(
+                hours_meter::windowed_hours_series(&self.db, start, end, b, agent_filter)
+                    .await
+                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+                    .into_iter()
+                    .map(|row| AgentHoursBucket {
+                        start: fmt_ts(row.bucket_start),
+                        total_hours: round6(row.hours),
+                    })
+                    .collect(),
+            ),
+            None => None,
+        };
+
+        Ok(AgentHoursResponse {
+            data: AgentHoursData {
+                total_hours,
+                window: AgentHoursWindow {
+                    start: fmt_ts(start),
+                    end: fmt_ts(end),
+                },
+                agents,
+                buckets,
+            },
+            status_code: 200,
+            message: "Agent hours retrieved successfully".into(),
+        })
+    }
+}
+
+fn empty_agent_hours_response(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    with_buckets: bool,
+) -> AgentHoursResponse {
+    AgentHoursResponse {
+        data: AgentHoursData {
+            total_hours: 0.0,
+            window: AgentHoursWindow {
+                start: fmt_ts(start),
+                end: fmt_ts(end),
+            },
+            agents: vec![],
+            buckets: with_buckets.then(Vec::new),
+        },
+        status_code: 200,
+        message: "Agent hours retrieved successfully".into(),
+    }
 }
 
 // ─── Mapping helpers ──────────────────────────────────────────────────────────
 
-fn session_to_summary(s: nasiko_observability::Session) -> SessionSummary {
-    let total_tokens = s.input_tokens + s.output_tokens;
-    SessionSummary {
-        id: s.session_id.clone(),
-        session_id: s.session_id,
-        agent_id: s.agent_id,
-        num_traces: Some(s.trace_ids.len() as u32),
-        start_time: s.started_at.map(|t| t.to_rfc3339()),
-        end_time: s.ended_at.map(|t| t.to_rfc3339()),
-        duration_ms: s.duration_ms,
-        first_input: None,
-        last_output: None,
-        token_usage: TokenUsageSummary {
-            total: (total_tokens > 0).then_some(total_tokens),
-        },
-        trace_latency_ms_p50: s.latency_ms_p50,
-        trace_latency_ms_p99: s.latency_ms_p99,
-        cost_summary: SimpleCostSummary {
-            total: CostEntry {
-                cost: (s.cost.total_usd > 0.0).then_some(s.cost.total_usd),
-            },
-        },
-        session_annotations: vec![],
-        session_annotation_summaries: vec![],
-    }
-}
 
 fn empty_agent_finops(agent_id: &str) -> AgentFinOps {
     AgentFinOps {
@@ -1142,7 +1388,9 @@ fn empty_agent_finops(agent_id: &str) -> AgentFinOps {
     }
 }
 
-fn empty_finops_response() -> FinopsDashboardResponse {
+/// `total_container_hours` is threaded in rather than zeroed: a deployment
+/// whose agents were all hard-deleted still has billable session history.
+fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse {
     FinopsDashboardResponse {
         data: FinopsDashboardData {
             summary: FinopsSummary {
@@ -1152,6 +1400,7 @@ fn empty_finops_response() -> FinopsDashboardResponse {
                 average_cost: 0.0,
                 active_agents: 0,
                 total_agents: 0,
+                total_container_hours,
             },
             agents: vec![],
             token_usage: FinopsTokenUsage {

@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use nasiko_runtime::{ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, Result};
+use nasiko_runtime::{
+    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo, Result,
+};
 
 use crate::injector::{AgentContext, InstrumentationInjector};
 
@@ -110,6 +112,14 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
     ) -> Result<()> {
         self.inner.refresh_secrets(id, env_vars).await
     }
+
+    /// Forward instance listing to the inner runtime. MUST be overridden here — the
+    /// trait's default synthesizes entries from `list()` against the decorator, so
+    /// without this the inner backend's per-instance identity (container IDs, pod
+    /// UIDs, true start times) would be silently bypassed (RUN-1).
+    async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
+        self.inner.list_instances().await
+    }
 }
 
 #[cfg(test)]
@@ -127,33 +137,15 @@ mod tests {
 
     #[async_trait]
     impl ContainerRuntime for RecordingRuntime {
-        async fn deploy(&self, _s: &DeploymentSpec) -> Result<DeploymentStatus> {
-            unimplemented!()
-        }
-        async fn destroy(&self, _id: &ContainerId) -> Result<()> {
-            Ok(())
-        }
-        async fn scale(&self, _id: &ContainerId, _r: u32) -> Result<()> {
-            Ok(())
-        }
-        async fn restart(&self, _id: &ContainerId) -> Result<()> {
-            Ok(())
-        }
-        async fn status(&self, _id: &ContainerId) -> Result<DeploymentStatus> {
-            unimplemented!()
-        }
-        async fn list(&self) -> Result<Vec<DeploymentStatus>> {
-            Ok(vec![])
-        }
-        async fn endpoint(&self, _id: &ContainerId) -> Result<String> {
-            Ok(String::new())
-        }
-        async fn logs(&self, _id: &ContainerId, _t: u32) -> Result<Vec<String>> {
-            Ok(vec![])
-        }
-        async fn build(&self, _c: &[u8], _t: &str) -> Result<String> {
-            Ok(String::new())
-        }
+        async fn deploy(&self, _s: &DeploymentSpec) -> Result<DeploymentStatus> { unimplemented!() }
+        async fn destroy(&self, _id: &ContainerId) -> Result<()> { Ok(()) }
+        async fn scale(&self, _id: &ContainerId, _r: u32) -> Result<()> { Ok(()) }
+        async fn restart(&self, _id: &ContainerId) -> Result<()> { Ok(()) }
+        async fn status(&self, _id: &ContainerId) -> Result<DeploymentStatus> { unimplemented!() }
+        async fn list(&self) -> Result<Vec<DeploymentStatus>> { Ok(vec![]) }
+        async fn endpoint(&self, _id: &ContainerId) -> Result<String> { Ok(String::new()) }
+        async fn logs(&self, _id: &ContainerId, _t: u32) -> Result<Vec<String>> { Ok(vec![]) }
+        async fn build(&self, _c: &[u8], _t: &str) -> Result<String> { Ok(String::new()) }
         async fn refresh_secrets(
             &self,
             _id: &ContainerId,
@@ -161,6 +153,14 @@ mod tests {
         ) -> Result<()> {
             self.refreshed.store(true, Ordering::SeqCst);
             Ok(())
+        }
+        async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
+            Ok(vec![InstanceInfo {
+                container_id: ContainerId::new("agent"),
+                instance_key: "marker-instance".to_string(),
+                started_at: None,
+                ready: true,
+            }])
         }
     }
 
@@ -176,12 +176,10 @@ mod tests {
     async fn refresh_secrets_forwards_to_inner() {
         let flag = Arc::new(AtomicBool::new(false));
         let rt = InstrumentedRuntime::new(
-            RecordingRuntime {
-                refreshed: flag.clone(),
-            },
+            RecordingRuntime { refreshed: flag.clone() },
             NoopInjector,
             "http://collector:4318".to_string(),
-            "http/protobuf".to_string(),
+            "http/protobuf".to_string(), 
             false,
         );
         rt.refresh_secrets(&ContainerId::new("agent"), HashMap::new())
@@ -190,6 +188,35 @@ mod tests {
         assert!(
             flag.load(Ordering::SeqCst),
             "InstrumentedRuntime must forward refresh_secrets to the inner runtime (RUN-1)"
+        );
+    }
+
+    /// RUN-1 regression guard: the decorator must forward `list_instances` to the
+    /// inner runtime. The trait's default synthesizes entries from `list()` — which
+    /// returns `[]` for `RecordingRuntime` — so an empty result here would mean
+    /// default-impl fallthrough, while the marker instance proves forwarding.
+    #[tokio::test]
+    async fn list_instances_forwards_to_inner() {
+        let rt = InstrumentedRuntime::new(
+            RecordingRuntime { refreshed: Arc::new(AtomicBool::new(false)) },
+            NoopInjector,
+            "http://collector:4318".to_string(),
+            "http/protobuf".to_string(),
+            false,
+        );
+        let instances = rt
+            .list_instances()
+            .await
+            .expect("list_instances should succeed");
+        assert_eq!(
+            instances,
+            vec![InstanceInfo {
+                container_id: ContainerId::new("agent"),
+                instance_key: "marker-instance".to_string(),
+                started_at: None,
+                ready: true,
+            }],
+            "InstrumentedRuntime must forward list_instances to the inner runtime (RUN-1)"
         );
     }
 }

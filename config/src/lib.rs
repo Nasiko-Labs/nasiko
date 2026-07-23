@@ -19,7 +19,6 @@ pub struct Config {
     /// Registry prefix prepended to agent image tags at build time.
     /// e.g. `"host.docker.internal:5001"` for local K8s dev.
     /// Empty string → no prefix (Docker local mode).
-    /// TODO: this needs to be removed.
     pub agent_image_registry: String,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
@@ -102,6 +101,8 @@ pub struct Config {
     /// When set, the Docker runtime pulls images from this registry before creating containers.
     /// Maps to env var `OCI_REGISTRY_HOST`.
     pub oci_registry_host: Option<String>,
+    /// Poll interval in seconds for the container-hours meter. 0 disables metering.
+    pub container_hours_poll_secs: u64,
 
     // ─── MCP Gateway ────────────────────────────────────────────────────────
     /// Composio platform API key. When unset, Composio integration is disabled
@@ -121,10 +122,6 @@ pub struct Config {
     pub mcp_perm_cache_ttl_seconds: u64,
     /// TTL (seconds) for the Redis-cached aggregated tool manifest.
     pub mcp_manifest_ttl_seconds: u64,
-    /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
-    /// unconnected catalog cards — changes rarely, so a much longer TTL than
-    /// the permission/session caches.
-    pub mcp_toolcount_ttl_seconds: u64,
 }
 
 impl Config {
@@ -186,18 +183,10 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_client_id: std::env::var("OIDC_CLIENT_ID")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL").ok().filter(|s| !s.is_empty()),
+            oidc_client_id: std::env::var("OIDC_CLIENT_ID").ok().filter(|s| !s.is_empty()),
+            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
+            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI").ok().filter(|s| !s.is_empty()),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
@@ -207,12 +196,9 @@ impl Config {
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             app_base_url: env_or("APP_BASE_URL", ""),
-            docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oci_registry_host: std::env::var("OCI_REGISTRY_HOST")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK").ok().filter(|s| !s.is_empty()),
+            oci_registry_host: std::env::var("OCI_REGISTRY_HOST").ok().filter(|s| !s.is_empty()),
+            container_hours_poll_secs: env_parse("CONTAINER_HOURS_POLL_SECS", 60),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')
@@ -234,9 +220,7 @@ impl Config {
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
 
-            composio_api_key: std::env::var("COMPOSIO_API_KEY")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            composio_api_key: std::env::var("COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
             composio_base_url: env_or("COMPOSIO_BASE_URL", "https://backend.composio.dev"),
             composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET")
                 .ok()
@@ -247,7 +231,6 @@ impl Config {
             mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
             mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
             mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
-            mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
         })
     }
 
@@ -283,9 +266,7 @@ mod tests {
 
     #[test]
     fn valid_32_byte_base64_key_passes() {
-        assert!(
-            validate_secrets_key_format("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=").is_ok()
-        );
+        assert!(validate_secrets_key_format("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=").is_ok());
     }
 
     #[test]

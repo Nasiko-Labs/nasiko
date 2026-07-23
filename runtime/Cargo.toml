@@ -11,6 +11,7 @@ serde = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 
 # docker feature
 bollard = { version = "0.17", optional = true }
@@ -20,7 +21,6 @@ serde_json = { workspace = true, optional = true }
 [features]
 default = ["docker"]
 docker = ["dep:bollard", "dep:futures-util", "dep:serde_json"]
-simulated = []
 
 [dev-dependencies]
 serde_json = { workspace = true }
