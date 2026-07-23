@@ -141,7 +141,7 @@ cargo test --workspace
 
 - [Architecture](../docs/ARCHITECTURE.md)
 - [CLI Design](../docs/CLI_DESIGN.md)
-- [Agent Development Lifecycle](../docs/ADLC.md)
+- [Agent Development Lifecycle](../docs/AGENT_LIFECYCLE.md)
 - [A2A Registry Design](../docs/A2A_REGISTRY_DESIGN.md)
 - [Bootstrap & Networking](../docs/BOOTSTRAP_AND_NETWORKING.md)
 
