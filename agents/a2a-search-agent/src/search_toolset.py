@@ -42,6 +42,23 @@ class SearchToolset:
         """
         logger.info(f"Reading webpage URL: {url}")
         try:
+            import socket
+            import ipaddress
+            from urllib.parse import urlparse
+
+            parsed_url = urlparse(url)
+            if parsed_url.scheme not in ("http", "https"):
+                raise ValueError("Only http and https schemes are supported.")
+
+            # Resolve the hostname to an IP address
+            try:
+                ip = socket.gethostbyname(parsed_url.hostname)
+                ip_obj = ipaddress.ip_address(ip)
+                if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                    raise ValueError(f"Access to private/local IP ({ip}) is blocked for security reasons.")
+            except socket.gaierror:
+                raise ValueError("Could not resolve hostname.")
+
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
 
