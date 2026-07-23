@@ -181,46 +181,32 @@ impl App {
     }
 
     fn persist_user_message(&self, text: &str) {
-        match &self.session.backend {
-            SessionBackend::Cp {
-                base_url,
-                token,
-                session_id,
-            } => {
-                let _ = session::post_cp_message(base_url, token, session_id, "user", text);
-            }
-            SessionBackend::Local => {
-                if let Ok(mut local) = session::load_local_session(&self.session.id) {
-                    local.messages.push(LocalMessage {
-                        role: "user".to_string(),
-                        text: text.to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                    });
-                    let _ = session::save_local_session(&local);
-                }
-            }
+        // CP backend: persistence is handled by the agent proxy on the server side.
+        // Local backend: save to the local session file (offline / direct-agent use).
+        if let SessionBackend::Local = &self.session.backend
+            && let Ok(mut local) = session::load_local_session(&self.session.id)
+        {
+            local.messages.push(LocalMessage {
+                role: "user".to_string(),
+                text: text.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+            let _ = session::save_local_session(&local);
         }
     }
 
     fn persist_agent_message(&self, text: &str) {
-        match &self.session.backend {
-            SessionBackend::Cp {
-                base_url,
-                token,
-                session_id,
-            } => {
-                let _ = session::post_cp_message(base_url, token, session_id, "assistant", text);
-            }
-            SessionBackend::Local => {
-                if let Ok(mut local) = session::load_local_session(&self.session.id) {
-                    local.messages.push(LocalMessage {
-                        role: "agent".to_string(),
-                        text: text.to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                    });
-                    let _ = session::save_local_session(&local);
-                }
-            }
+        // CP backend: persistence is handled by the agent proxy on the server side.
+        // Local backend: save to the local session file (offline / direct-agent use).
+        if let SessionBackend::Local = &self.session.backend
+            && let Ok(mut local) = session::load_local_session(&self.session.id)
+        {
+            local.messages.push(LocalMessage {
+                role: "agent".to_string(),
+                text: text.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+            let _ = session::save_local_session(&local);
         }
     }
 

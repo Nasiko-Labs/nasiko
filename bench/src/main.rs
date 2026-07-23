@@ -70,7 +70,7 @@ async fn setup_session(user: &mut GooseUser) -> TransactionResult {
     Ok(())
 }
 
-fn auth_header<'a>(user: &'a GooseUser) -> &'a str {
+fn auth_header(user: &GooseUser) -> &str {
     &user.get_session_data_unchecked::<Session>().token
 }
 

@@ -10,9 +10,11 @@ use crate::api::Client;
 #[derive(Debug, Deserialize)]
 struct GithubStatus {
     #[serde(default)]
-    success: bool,
+    connected: bool,
     #[serde(default)]
-    username: Option<String>,
+    valid: bool,
+    #[serde(default)]
+    login: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Tabled)]
@@ -30,18 +32,20 @@ struct GithubRepo {
     description: Option<String>,
 }
 
-fn repo_name(name: &String, full_name: &Option<String>) -> String {
+fn repo_name(name: &str, full_name: &Option<String>) -> String {
     full_name.as_deref().unwrap_or(name).to_string()
 }
 
 pub fn status() -> Result<()> {
     let client = Client::from_active_cluster()?;
     let s: GithubStatus = client.get_json("/auth/github/token")?;
-    if s.success {
+    if s.connected && s.valid {
         println!(
             "GitHub connected (username: {})",
-            s.username.as_deref().unwrap_or("unknown")
+            s.login.as_deref().unwrap_or("unknown")
         );
+    } else if s.connected {
+        println!("GitHub token stored but invalid — reconnect with `nasiko github connect`.");
     } else {
         println!("GitHub is not connected.");
         println!("Run `nasiko github connect` to authenticate.");
@@ -84,7 +88,7 @@ pub fn connect() -> Result<()> {
 
 pub fn disconnect() -> Result<()> {
     let client = Client::from_active_cluster()?;
-    client.post_json::<serde_json::Value, _>("/auth/github/logout", &serde_json::json!({}))?;
+    client.delete("/github/logout")?;
     println!("GitHub disconnected.");
     Ok(())
 }

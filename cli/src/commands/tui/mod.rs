@@ -18,12 +18,12 @@ use app::{App, AppMode};
 use event::{AppEvent, EventLoop};
 
 /// Tabled display helper for `LocalSession::endpoint` (session.rs).
-pub(crate) fn opt_endpoint(endpoint: &String) -> String {
+pub(crate) fn opt_endpoint(endpoint: &str) -> String {
     if endpoint.len() > 38 {
         let n = endpoint.floor_char_boundary(35);
         format!("{}...", &endpoint[..n])
     } else {
-        endpoint.clone()
+        endpoint.to_owned()
     }
 }
 
