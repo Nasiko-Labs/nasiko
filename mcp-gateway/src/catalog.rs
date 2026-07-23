@@ -262,9 +262,10 @@ mod tests {
             },
             providers: Providers {
                 composio,
-                mcp: GenericMcpProvider::new(reqwest::Client::new()),
+                mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: Arc::new(crate::authorizer::OssConnectorAuthorizer),
+            endpoint_refresher: Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
         }
     }
 
