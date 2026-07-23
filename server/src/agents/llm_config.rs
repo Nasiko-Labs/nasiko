@@ -6,16 +6,21 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::Claims;
 use crate::state::AppState;
 
-/// Outbound providers the LLM router can translate to, and the inbound SDK formats it
-/// can parse — used to validate `llm-config` writes.
-const SUPPORTED_PROVIDERS: [&str; 3] = ["openai", "anthropic", "gemini"];
+/// The inbound SDK formats the LLM router can parse — used to validate `inbound_format`.
 const SUPPORTED_INBOUND_FORMATS: [&str; 3] = ["openai", "anthropic", "gemini"];
+
+/// The `llm_configs` columns the resolver reads, assembled by Postgres into one JSON object.
+const CONFIG_JSON: &str = "json_build_object(\
+     'id', id, 'name', name, 'provider', provider, 'model', model, \
+     'fallback_models', fallback_models, 'temperature', temperature, \
+     'max_tokens', max_tokens, 'api_key_secret_name', api_key_secret_name, \
+     'pinned', pinned, 'pinned_model', pinned_model, 'is_default', is_default)";
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
@@ -48,83 +53,63 @@ async fn agent_owner_or_reject(
     }
 }
 
-// ─── PATCH /{id}/llm-config ──────────────────────────────────────────────────
-
-/// Self-service LLM routing config for an agent (P2.6). Sets the `agents.llm_config`
-/// JSONB (provider/model/fallbacks/tuning/secret) and, optionally, `inbound_format`.
-/// Owner-only (or superuser); the gateway routes off this on the next request (≤ cache TTL).
-#[derive(Debug, Deserialize)]
-pub struct UpdateLlmConfigRequest {
-    pub provider: String,
-    pub model: String,
-    #[serde(default)]
-    pub fallback_models: Vec<String>,
-    #[serde(default)]
-    pub temperature: Option<f64>,
-    #[serde(default)]
-    pub max_tokens: Option<i64>,
-    /// Name of the caller's `user_secrets` row holding the provider API key. None ⇒ the
-    /// platform-key path (see resolver §6.5).
-    #[serde(default)]
-    pub api_key_secret_name: Option<String>,
-    /// Optionally also change which SDK the agent's code speaks (drives deploy injection).
-    #[serde(default)]
-    pub inbound_format: Option<String>,
-    /// Compliance lock: pin routing so the smart model router never re-selects. The pinned
-    /// model is `pinned_model` if set, else `model`.
-    #[serde(default)]
-    pub pinned: bool,
-    /// The model to pin to when `pinned`. `None` ⇒ pin to `model`.
-    #[serde(default)]
-    pub pinned_model: Option<String>,
+/// Resolve the config an agent routes through: attached (`agents.llm_config_id`) → the owner's
+/// default (`llm_configs.is_default`) → none. Mirrors `nasiko_llm_router`'s resolver so the API
+/// shows exactly what the router will use. Returns the config JSON and its source label.
+async fn resolve_agent_config(
+    db: &sqlx::PgPool,
+    attached: Option<Uuid>,
+    owner: Uuid,
+) -> (Option<Value>, &'static str) {
+    if let Some(cid) = attached {
+        let cfg: Option<Value> = sqlx::query_scalar::<_, Value>(&format!(
+            "SELECT {CONFIG_JSON} FROM llm_configs WHERE id = $1 AND deleted_at IS NULL"
+        ))
+        .bind(cid)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+        if let Some(cfg) = cfg {
+            return (Some(cfg), "attached");
+        }
+    }
+    let default: Option<Value> = sqlx::query_scalar::<_, Value>(&format!(
+        "SELECT {CONFIG_JSON} FROM llm_configs \
+         WHERE created_by = $1 AND is_default AND deleted_at IS NULL"
+    ))
+    .bind(owner)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    match default {
+        Some(cfg) => (Some(cfg), "owner-default"),
+        None => (None, "none"),
+    }
 }
 
-/// Validate the provider/model/inbound_format fields (everything that doesn't need the DB).
-fn validate_llm_config(req: &UpdateLlmConfigRequest) -> Result<(), String> {
-    if !SUPPORTED_PROVIDERS.contains(&req.provider.as_str()) {
-        return Err(format!(
-            "unsupported provider '{}' (expected one of: {})",
-            req.provider,
-            SUPPORTED_PROVIDERS.join(", ")
-        ));
-    }
-    if req.model.trim().is_empty() {
-        return Err("model must not be empty".to_string());
-    }
-    if let Some(fmt) = &req.inbound_format
-        && !SUPPORTED_INBOUND_FORMATS.contains(&fmt.as_str())
-    {
-        return Err(format!(
-            "unsupported inbound_format '{fmt}' (expected one of: {})",
-            SUPPORTED_INBOUND_FORMATS.join(", ")
-        ));
-    }
-    // A pinned_model, when given, must be non-empty (otherwise it'd pin to nothing).
-    if let Some(pm) = &req.pinned_model
-        && pm.trim().is_empty()
-    {
-        return Err("pinned_model must not be empty".to_string());
-    }
-    Ok(())
-}
+// ─── GET /{id}/llm-config ─────────────────────────────────────────────────────
 
-/// `GET /{id}/llm-config` — current routing config + inbound format (owner/superuser).
+/// `GET /{id}/llm-config` — the agent's **resolved** routing config (attached → owner default →
+/// none), which config is attached, its source, and the inbound format (owner/superuser).
 async fn get_llm_config(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        Err(e) => return e.into_response(),
     };
-    if let Err(resp) = agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
+    let owner = match agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
     {
-        return resp;
-    }
+        Ok(owner) => owner,
+        Err(resp) => return resp,
+    };
 
-    let row: Option<(Option<serde_json::Value>, String)> = sqlx::query_as(
-        "SELECT llm_config, inbound_format FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    let row: Option<(Option<Uuid>, String)> = sqlx::query_as(
+        "SELECT llm_config_id, inbound_format FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&state.db)
@@ -132,163 +117,187 @@ async fn get_llm_config(
     .ok()
     .flatten();
 
-    match row {
-        Some((llm_config, inbound_format)) => (
-            StatusCode::OK,
-            Json(json!({
-                "agent_id": agent_id,
-                "llm_config": llm_config,           // null ⇒ backward-compat defaults apply
-                "inbound_format": inbound_format,
-            })),
-        )
-            .into_response(),
-        None => (StatusCode::NOT_FOUND, "agent not found").into_response(),
-    }
+    let Some((attached, inbound_format)) = row else {
+        return (StatusCode::NOT_FOUND, "agent not found").into_response();
+    };
+    let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "agent_id": agent_id,
+            "llm_config_id": attached,   // which config is attached (null ⇒ owner default / none)
+            "llm_config": config,        // the resolved config the router will use (or null)
+            "source": source,            // "attached" | "owner-default" | "none"
+            "inbound_format": inbound_format,
+        })),
+    )
+        .into_response()
+}
+
+// ─── PATCH /{id}/llm-config ───────────────────────────────────────────────────
+
+/// Deserialize any *present* value (including `null`) into `Some`, so an absent field stays
+/// `None`. This is what makes the double-option below distinguish "field omitted" from
+/// "field set to null" — plain `#[serde(default)]` collapses both to `None`.
+fn deserialize_present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Attach/detach a reusable LLM config to an agent, and optionally change the inbound format.
+/// A config can only be attached if it belongs to the agent owner (per-user ownership keeps the
+/// referenced secret in the owner's store). Owner-only (or superuser).
+#[derive(Debug, Deserialize)]
+pub struct AttachLlmConfigRequest {
+    /// Double-option distinguishes the three cases: absent ⇒ leave unchanged; `null` ⇒ detach
+    /// (fall back to the owner's default); a UUID ⇒ attach that config.
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub llm_config_id: Option<Option<Uuid>>,
+    /// Optionally change which SDK the agent's code speaks (drives deploy injection).
+    #[serde(default)]
+    pub inbound_format: Option<String>,
 }
 
 async fn update_llm_config(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
-    Json(req): Json<UpdateLlmConfigRequest>,
+    Json(req): Json<AttachLlmConfigRequest>,
 ) -> impl IntoResponse {
-    let user_id: Uuid = match claims.sub.parse() {
+    let user_id = match claims.user_uuid() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user id").into_response(),
+        Err(e) => return e.into_response(),
     };
-
-    // Owner-only mutation (superuser may override). Read access (public/grant) is NOT
-    // enough to edit routing config.
+    // Owner-only mutation (superuser may override). Read access is NOT enough to change routing.
     let owner = match agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
     {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
 
-    if let Err(msg) = validate_llm_config(&req) {
-        return (StatusCode::BAD_REQUEST, msg).into_response();
+    // Attach / detach. A config must be owned by the AGENT owner (not the caller) so its secret
+    // resolves from the same store the router reads.
+    match req.llm_config_id {
+        Some(Some(config_id)) => {
+            let ok: bool = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM llm_configs \
+                 WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL)",
+            )
+            .bind(config_id)
+            .bind(owner)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(false);
+            if !ok {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "llm config not found or not owned by the agent owner",
+                )
+                    .into_response();
+            }
+            if let Err(e) = sqlx::query(
+                "UPDATE agents SET llm_config_id = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .bind(config_id)
+            .execute(&state.db)
+            .await
+            {
+                return db_error("attach", e);
+            }
+        }
+        Some(None) => {
+            if let Err(e) = sqlx::query(
+                "UPDATE agents SET llm_config_id = NULL, updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .execute(&state.db)
+            .await
+            {
+                return db_error("detach", e);
+            }
+        }
+        None => {}
     }
 
-    // A referenced secret must exist for this owner (resolver would otherwise 400 at call
-    // time). Validate against the agent owner's secrets, not the (possibly superuser) caller.
-    if let Some(name) = req.api_key_secret_name.as_deref().filter(|s| !s.is_empty()) {
-        let exists: bool = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM user_secrets WHERE user_id = $1 AND name = $2)",
-        )
-        .bind(owner)
-        .bind(name)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(false);
-        if !exists {
+    if let Some(fmt) = req.inbound_format.as_deref() {
+        if !SUPPORTED_INBOUND_FORMATS.contains(&fmt) {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("secret '{name}' not found for the agent owner"),
+                format!(
+                    "unsupported inbound_format '{fmt}' (expected one of: {})",
+                    SUPPORTED_INBOUND_FORMATS.join(", ")
+                ),
             )
                 .into_response();
         }
-    }
-
-    // Build the llm_config JSONB exactly as the resolver's LLMConfig deserializes it.
-    let llm_config = json!({
-        "provider": req.provider,
-        "model": req.model,
-        "fallback_models": req.fallback_models,
-        "temperature": req.temperature,
-        "max_tokens": req.max_tokens,
-        "api_key_secret_name": req.api_key_secret_name,
-        "pinned": req.pinned,
-        "pinned_model": req.pinned_model,
-    });
-
-    let result = if let Some(fmt) = &req.inbound_format {
-        sqlx::query(
-            "UPDATE agents SET llm_config = $2, inbound_format = $3, updated_at = now() WHERE id = $1",
-        )
-        .bind(agent_id)
-        .bind(&llm_config)
-        .bind(fmt)
-        .execute(&state.db)
-        .await
-    } else {
-        sqlx::query("UPDATE agents SET llm_config = $2, updated_at = now() WHERE id = $1")
-            .bind(agent_id)
-            .bind(&llm_config)
-            .execute(&state.db)
-            .await
-    };
-
-    match result {
-        Ok(_) => {
-            let mut body = json!({ "agent_id": agent_id, "llm_config": llm_config });
-            if let Some(fmt) = &req.inbound_format {
-                body["inbound_format"] = json!(fmt);
-            }
-            (StatusCode::OK, Json(body)).into_response()
+        if let Err(e) =
+            sqlx::query("UPDATE agents SET inbound_format = $2, updated_at = now() WHERE id = $1")
+                .bind(agent_id)
+                .bind(fmt)
+                .execute(&state.db)
+                .await
+        {
+            return db_error("set inbound_format", e);
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to update llm_config: {e}"),
-        )
-            .into_response(),
     }
+
+    // Return the freshly resolved config so the caller sees the effect immediately.
+    let attached: Option<Uuid> =
+        sqlx::query_scalar("SELECT llm_config_id FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "agent_id": agent_id,
+            "llm_config_id": attached,
+            "llm_config": config,
+            "source": source,
+        })),
+    )
+        .into_response()
+}
+
+fn db_error(op: &str, e: sqlx::Error) -> axum::response::Response {
+    tracing::error!(%e, op, "agent llm-config: db error");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("failed to {op} llm config"),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn req(provider: &str, model: &str, inbound: Option<&str>) -> UpdateLlmConfigRequest {
-        UpdateLlmConfigRequest {
-            provider: provider.into(),
-            model: model.into(),
-            fallback_models: vec![],
-            temperature: None,
-            max_tokens: None,
-            api_key_secret_name: None,
-            inbound_format: inbound.map(str::to_string),
-            pinned: false,
-            pinned_model: None,
-        }
+    #[test]
+    fn attach_request_distinguishes_absent_null_and_value() {
+        // absent field ⇒ leave unchanged
+        let absent: AttachLlmConfigRequest = serde_json::from_str("{}").unwrap();
+        assert!(absent.llm_config_id.is_none());
+        // explicit null ⇒ detach
+        let null: AttachLlmConfigRequest =
+            serde_json::from_str(r#"{"llm_config_id": null}"#).unwrap();
+        assert!(matches!(null.llm_config_id, Some(None)));
+        // a UUID ⇒ attach
+        let val: AttachLlmConfigRequest =
+            serde_json::from_str(r#"{"llm_config_id": "11111111-1111-1111-1111-111111111111"}"#)
+                .unwrap();
+        assert!(matches!(val.llm_config_id, Some(Some(_))));
     }
 
     #[test]
-    fn accepts_supported_provider_and_format() {
-        assert!(validate_llm_config(&req("anthropic", "claude-3-5-sonnet-20241022", Some("gemini"))).is_ok());
-        assert!(validate_llm_config(&req("openai", "gpt-4o-mini", None)).is_ok());
-    }
-
-    #[test]
-    fn rejects_unsupported_provider() {
-        let err = validate_llm_config(&req("cohere", "command-r", None)).unwrap_err();
-        assert!(err.contains("unsupported provider"));
-    }
-
-    #[test]
-    fn rejects_empty_model() {
-        let err = validate_llm_config(&req("openai", "   ", None)).unwrap_err();
-        assert!(err.contains("model must not be empty"));
-    }
-
-    #[test]
-    fn rejects_unsupported_inbound_format() {
-        let err = validate_llm_config(&req("openai", "gpt-4o", Some("crewai"))).unwrap_err();
-        assert!(err.contains("unsupported inbound_format"));
-    }
-
-    #[test]
-    fn accepts_pinning() {
-        let mut r = req("anthropic", "claude-3-5-sonnet-20241022", None);
-        r.pinned = true;
-        r.pinned_model = Some("claude-3-5-sonnet-20241022".into());
-        assert!(validate_llm_config(&r).is_ok());
-    }
-
-    #[test]
-    fn rejects_empty_pinned_model() {
-        let mut r = req("openai", "gpt-4o", None);
-        r.pinned_model = Some("  ".into());
-        let err = validate_llm_config(&r).unwrap_err();
-        assert!(err.contains("pinned_model must not be empty"));
+    fn inbound_format_allowlist() {
+        assert!(SUPPORTED_INBOUND_FORMATS.contains(&"openai"));
+        assert!(!SUPPORTED_INBOUND_FORMATS.contains(&"crewai"));
     }
 }

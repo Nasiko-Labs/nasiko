@@ -221,6 +221,111 @@ pub enum AgentOpsCommands {
         #[command(subcommand)]
         command: SecretsCommands,
     },
+    /// Manage reusable LLM configs and attach them to agents
+    #[command(name = "llm-config")]
+    LlmConfig {
+        #[command(subcommand)]
+        command: LlmConfigCommands,
+    },
+    /// View or set the platform tier→model registry the smart router resolves against
+    #[command(name = "model-registry")]
+    ModelRegistry {
+        #[command(subcommand)]
+        command: ModelRegistryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LlmConfigCommands {
+    /// Create a reusable LLM config in your library
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+        /// Fallback model, repeatable: --fallback a --fallback b
+        #[arg(long = "fallback")]
+        fallback: Vec<String>,
+        #[arg(long)]
+        temperature: Option<f64>,
+        #[arg(long = "max-tokens")]
+        max_tokens: Option<i64>,
+        /// Name of your user-secret holding the provider API key
+        #[arg(long = "api-key-secret")]
+        api_key_secret: Option<String>,
+        /// Plaintext API key to store under --api-key-secret when it doesn't exist yet
+        #[arg(long = "secret-value")]
+        secret_value: Option<String>,
+        /// Pin routing so the smart router never re-selects
+        #[arg(long)]
+        pin: bool,
+        /// Model to pin to (defaults to --model when --pin is set)
+        #[arg(long = "pinned-model")]
+        pinned_model: Option<String>,
+        /// Mark this as your default config
+        #[arg(long)]
+        default: bool,
+    },
+    /// List the LLM configs in your library
+    #[command(alias = "ls")]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark one of your configs as your default
+    SetDefault {
+        /// Config name or ID
+        config: String,
+    },
+    /// Attach one of your configs to an agent you own
+    Attach {
+        /// Agent name or ID
+        agent: String,
+        /// Config name or ID
+        config: String,
+        /// SDK format the agent's code speaks: openai | anthropic | gemini
+        #[arg(long = "inbound-format")]
+        inbound_format: Option<String>,
+    },
+    /// Detach the config from an agent (falls back to your default, if any)
+    Detach {
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Show an agent's resolved LLM routing config
+    Get {
+        /// Agent name or ID
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the provider/model catalog (valid values for `create`)
+    Providers {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ModelRegistryCommands {
+    /// List all configured (provider, tier) → model mappings
+    #[command(alias = "list")]
+    Ls {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Upsert one (provider, tier) → model mapping (superuser only)
+    Set {
+        #[arg(long)]
+        provider: String,
+        /// Model strength tier: 1 = strongest … 3 = smallest
+        #[arg(long)]
+        tier: i16,
+        #[arg(long)]
+        model: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -690,6 +795,51 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
             SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
         },
+        AgentOpsCommands::LlmConfig { command } => match command {
+            LlmConfigCommands::Create {
+                name,
+                provider,
+                model,
+                fallback,
+                temperature,
+                max_tokens,
+                api_key_secret,
+                secret_value,
+                pin,
+                pinned_model,
+                default,
+            } => commands::llm_config::create(
+                &name,
+                &provider,
+                &model,
+                fallback,
+                temperature,
+                max_tokens,
+                api_key_secret,
+                secret_value,
+                pin,
+                pinned_model,
+                default,
+            ),
+            LlmConfigCommands::List { json } => commands::llm_config::list(json),
+            LlmConfigCommands::SetDefault { config } => commands::llm_config::set_default(&config),
+            LlmConfigCommands::Attach {
+                agent,
+                config,
+                inbound_format,
+            } => commands::llm_config::attach(&agent, &config, inbound_format),
+            LlmConfigCommands::Detach { agent } => commands::llm_config::detach(&agent),
+            LlmConfigCommands::Get { agent, json } => commands::llm_config::get(&agent, json),
+            LlmConfigCommands::Providers { json } => commands::llm_config::providers(json),
+        },
+        AgentOpsCommands::ModelRegistry { command } => match command {
+            ModelRegistryCommands::Ls { json } => commands::model_registry::ls(json),
+            ModelRegistryCommands::Set {
+                provider,
+                tier,
+                model,
+            } => commands::model_registry::set(&provider, tier, &model),
+        },
     }
 }
 
@@ -755,9 +905,7 @@ pub enum McpSubCommands {
         json: bool,
     },
     /// Disconnect from a connector
-    Disconnect {
-        connector_id: String,
-    },
+    Disconnect { connector_id: String },
     /// Manage Composio toolkit auth-configs (admin)
     Toolkit {
         #[command(subcommand)]
@@ -898,64 +1046,6 @@ pub enum McpConnectorCommands {
         #[command(subcommand)]
         command: McpConnectorShareCommands,
     },
-    /// Upload your own MCP server's source (a .zip) — the platform builds and
-    /// deploys it into a container the same way agent uploads work, then
-    /// polls until it's live. See docs/MCP_UPLOAD_ITERATION_PLAN.md for the
-    /// full pipeline (validation → build → hardened deploy → readiness check).
-    Upload {
-        /// Connector name (shown in `nasiko mcp connector list`)
-        #[arg(long)]
-        name: String,
-        /// Build version tag, shown on the connector's build history
-        #[arg(long, visible_alias = "version", default_value = "v1")]
-        version_tag: String,
-        /// Path to a .zip containing your MCP server's source (must include a
-        /// Dockerfile; the server must read $PORT and mount its Streamable
-        /// HTTP endpoint at /mcp — see the upload plan doc for the full contract)
-        #[arg(long)]
-        zip: std::path::PathBuf,
-        /// Secret env var for the uploaded server itself, "KEY=VALUE"
-        /// (repeatable) — encrypted at rest, injected into the container only
-        /// at deploy time. Distinct from a connector's own auth credential
-        /// (`nasiko mcp credential set`), which authenticates the GATEWAY to
-        /// the server, not the server to some third-party API it wraps.
-        #[arg(long = "env")]
-        env: Vec<String>,
-    },
-    /// Same as `upload`, but builds from a GitHub repo instead of a local zip
-    /// — the server clones it (HTTPS + host-allowlisted, same validation
-    /// `nasiko deploy`'s GitHub source uses) rather than receiving a file.
-    UploadGithub {
-        /// Connector name (shown in `nasiko mcp connector list`)
-        #[arg(long)]
-        name: String,
-        /// Build version tag, shown on the connector's build history
-        #[arg(long, visible_alias = "version", default_value = "v1")]
-        version_tag: String,
-        /// HTTPS GitHub URL of the MCP server's source repo
-        #[arg(long)]
-        github_url: String,
-        /// Secret env var for the uploaded server itself, "KEY=VALUE"
-        /// (repeatable) — same semantics as `upload --env`
-        #[arg(long = "env")]
-        env: Vec<String>,
-    },
-    /// Check an uploaded connector's build status (one-shot, no polling) —
-    /// `pending` | `building` | `running` (live) | `failed`
-    BuildStatus {
-        connector_id: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Show an uploaded connector's container logs (stdout/stderr) — the
-    /// same `ContainerRuntime::logs` call the agent logs route already
-    /// exposes, just scoped to this connector's container
-    Logs {
-        connector_id: String,
-        /// Number of trailing log lines to fetch (capped server-side at 10000)
-        #[arg(long, default_value_t = 200)]
-        tail: u32,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1076,98 +1166,189 @@ pub enum McpAgentToolsCommands {
 pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
     match cmd {
         McpSubCommands::Catalog { json } => commands::mcp::catalog(json),
-        McpSubCommands::Connect { connector_id, toolkit, url, value, redirect_url, yes } => {
-            commands::mcp::connect(
-                connector_id.as_deref(),
-                toolkit.as_deref(),
-                url.as_deref(),
-                value.as_deref(),
-                redirect_url.as_deref(),
-                yes,
-            )
-        }
+        McpSubCommands::Connect {
+            connector_id,
+            toolkit,
+            url,
+            value,
+            redirect_url,
+            yes,
+        } => commands::mcp::connect(
+            connector_id.as_deref(),
+            toolkit.as_deref(),
+            url.as_deref(),
+            value.as_deref(),
+            redirect_url.as_deref(),
+            yes,
+        ),
         McpSubCommands::Connections { json } => commands::mcp::connections(json),
         McpSubCommands::Disconnect { connector_id } => commands::mcp::disconnect(&connector_id),
         McpSubCommands::Toolkit { command } => match command {
             McpToolkitCommands::List { json } => commands::mcp::toolkit_list(json),
-            McpToolkitCommands::Register { toolkit, client_id, client_secret, scopes, display_name, logo_url } => {
-                commands::mcp::toolkit_register(
-                    &toolkit,
-                    client_id.as_deref(),
-                    client_secret.as_deref(),
-                    &scopes,
-                    display_name.as_deref(),
-                    logo_url.as_deref(),
-                )
+            McpToolkitCommands::Register {
+                toolkit,
+                client_id,
+                client_secret,
+                scopes,
+                display_name,
+                logo_url,
+            } => commands::mcp::toolkit_register(
+                &toolkit,
+                client_id.as_deref(),
+                client_secret.as_deref(),
+                &scopes,
+                display_name.as_deref(),
+                logo_url.as_deref(),
+            ),
+            McpToolkitCommands::Update {
+                connector_id,
+                display_name,
+                logo_url,
+                description,
+            } => commands::mcp::toolkit_update(
+                &connector_id,
+                display_name.as_deref(),
+                logo_url.as_deref(),
+                description.as_deref(),
+            ),
+            McpToolkitCommands::Delete { connector_id, yes } => {
+                commands::mcp::toolkit_delete(&connector_id, yes)
             }
-            McpToolkitCommands::Update { connector_id, display_name, logo_url, description } => {
-                commands::mcp::toolkit_update(&connector_id, display_name.as_deref(), logo_url.as_deref(), description.as_deref())
-            }
-            McpToolkitCommands::Delete { connector_id, yes } => commands::mcp::toolkit_delete(&connector_id, yes),
         },
         McpSubCommands::Connector { command } => match command {
             McpConnectorCommands::List { json } => commands::mcp::connector_list(json),
             McpConnectorCommands::Probe { url } => commands::mcp::connector_probe(&url),
             McpConnectorCommands::Register {
-                name, url, transport, auth_type, url_param_name, credential_header_name,
-                headers, basic_username, basic_password, description, display_name, logo_url,
+                name,
+                url,
+                transport,
+                auth_type,
+                url_param_name,
+                credential_header_name,
+                headers,
+                basic_username,
+                basic_password,
+                description,
+                display_name,
+                logo_url,
             } => commands::mcp::connector_register(
-                &name, &url, &transport, &auth_type,
-                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
-                basic_username.as_deref(), basic_password.as_deref(),
-                description.as_deref(), display_name.as_deref(), logo_url.as_deref(),
+                &name,
+                &url,
+                &transport,
+                &auth_type,
+                url_param_name.as_deref(),
+                credential_header_name.as_deref(),
+                &headers,
+                basic_username.as_deref(),
+                basic_password.as_deref(),
+                description.as_deref(),
+                display_name.as_deref(),
+                logo_url.as_deref(),
             ),
             McpConnectorCommands::Update {
-                connector_id, name, url, transport, auth_type, url_param_name, credential_header_name,
-                headers, description, display_name, logo_url, active,
+                connector_id,
+                name,
+                url,
+                transport,
+                auth_type,
+                url_param_name,
+                credential_header_name,
+                headers,
+                description,
+                display_name,
+                logo_url,
+                active,
             } => commands::mcp::connector_update(
-                &connector_id, name.as_deref(), url.as_deref(), transport.as_deref(), auth_type.as_deref(),
-                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
-                description.as_deref(), display_name.as_deref(), logo_url.as_deref(), active,
+                &connector_id,
+                name.as_deref(),
+                url.as_deref(),
+                transport.as_deref(),
+                auth_type.as_deref(),
+                url_param_name.as_deref(),
+                credential_header_name.as_deref(),
+                &headers,
+                description.as_deref(),
+                display_name.as_deref(),
+                logo_url.as_deref(),
+                active,
             ),
-            McpConnectorCommands::Delete { connector_id, yes } => commands::mcp::connector_delete(&connector_id, yes),
+            McpConnectorCommands::Delete { connector_id, yes } => {
+                commands::mcp::connector_delete(&connector_id, yes)
+            }
             McpConnectorCommands::Share { command } => match command {
-                McpConnectorShareCommands::List { connector_id, json } => commands::mcp::share_list(&connector_id, json),
-                McpConnectorShareCommands::Add { connector_id, user, public } => {
-                    commands::mcp::share_add(&connector_id, user.as_deref(), public)
+                McpConnectorShareCommands::List { connector_id, json } => {
+                    commands::mcp::share_list(&connector_id, json)
                 }
-                McpConnectorShareCommands::Remove { connector_id, user, public } => {
-                    commands::mcp::share_remove(&connector_id, user.as_deref(), public)
-                }
+                McpConnectorShareCommands::Add {
+                    connector_id,
+                    user,
+                    public,
+                } => commands::mcp::share_add(&connector_id, user.as_deref(), public),
+                McpConnectorShareCommands::Remove {
+                    connector_id,
+                    user,
+                    public,
+                } => commands::mcp::share_remove(&connector_id, user.as_deref(), public),
             },
-            McpConnectorCommands::Upload { name, version_tag, zip, env } => {
-                commands::mcp::connector_upload(&zip, &name, &version_tag, &env)
-            }
-            McpConnectorCommands::UploadGithub { name, version_tag, github_url, env } => {
-                commands::mcp::connector_upload_github(&name, &version_tag, &github_url, &env)
-            }
-            McpConnectorCommands::BuildStatus { connector_id, json } => commands::mcp::connector_build_status(&connector_id, json),
-            McpConnectorCommands::Logs { connector_id, tail } => commands::mcp::connector_logs(&connector_id, tail),
         },
         McpSubCommands::Credential { command } => match command {
-            McpCredentialCommands::Set { connector_id, value } => commands::mcp::credential_set(&connector_id, value.as_deref()),
-            McpCredentialCommands::Status { connector_id, json } => commands::mcp::credential_status(&connector_id, json),
-            McpCredentialCommands::Delete { connector_id, yes } => commands::mcp::credential_delete(&connector_id, yes),
+            McpCredentialCommands::Set {
+                connector_id,
+                value,
+            } => commands::mcp::credential_set(&connector_id, value.as_deref()),
+            McpCredentialCommands::Status { connector_id, json } => {
+                commands::mcp::credential_status(&connector_id, json)
+            }
+            McpCredentialCommands::Delete { connector_id, yes } => {
+                commands::mcp::credential_delete(&connector_id, yes)
+            }
         },
         McpSubCommands::Oauth { command } => match command {
-            McpOauthCommands::Authorize { connector_id, client_id, redirect_url } => {
-                commands::mcp::oauth_authorize(&connector_id, client_id.as_deref(), redirect_url.as_deref())
+            McpOauthCommands::Authorize {
+                connector_id,
+                client_id,
+                redirect_url,
+            } => commands::mcp::oauth_authorize(
+                &connector_id,
+                client_id.as_deref(),
+                redirect_url.as_deref(),
+            ),
+            McpOauthCommands::Status { connector_id, json } => {
+                commands::mcp::oauth_status(&connector_id, json)
             }
-            McpOauthCommands::Status { connector_id, json } => commands::mcp::oauth_status(&connector_id, json),
-            McpOauthCommands::Revoke { connector_id, yes } => commands::mcp::oauth_revoke(&connector_id, yes),
+            McpOauthCommands::Revoke { connector_id, yes } => {
+                commands::mcp::oauth_revoke(&connector_id, yes)
+            }
         },
         McpSubCommands::AgentTools { command } => match command {
-            McpAgentToolsCommands::Connectors { agent, json } => commands::mcp::agent_tools_connectors(&agent, json),
-            McpAgentToolsCommands::Enable { agent, connector_id } => commands::mcp::agent_tools_enable(&agent, &connector_id),
-            McpAgentToolsCommands::Disable { agent, connector_id } => commands::mcp::agent_tools_disable(&agent, &connector_id),
-            McpAgentToolsCommands::Tools { agent, connector_id, json } => {
-                commands::mcp::agent_tools_tools(&agent, &connector_id, json)
+            McpAgentToolsCommands::Connectors { agent, json } => {
+                commands::mcp::agent_tools_connectors(&agent, json)
             }
-            McpAgentToolsCommands::Rules { agent, json } => commands::mcp::agent_tools_rules(&agent, json),
-            McpAgentToolsCommands::SetRule { agent, connector_id, pattern, stance } => {
-                commands::mcp::agent_tools_set_rule(&agent, &connector_id, &pattern, &stance)
+            McpAgentToolsCommands::Enable {
+                agent,
+                connector_id,
+            } => commands::mcp::agent_tools_enable(&agent, &connector_id),
+            McpAgentToolsCommands::Disable {
+                agent,
+                connector_id,
+            } => commands::mcp::agent_tools_disable(&agent, &connector_id),
+            McpAgentToolsCommands::Tools {
+                agent,
+                connector_id,
+                json,
+            } => commands::mcp::agent_tools_tools(&agent, &connector_id, json),
+            McpAgentToolsCommands::Rules { agent, json } => {
+                commands::mcp::agent_tools_rules(&agent, json)
             }
-            McpAgentToolsCommands::Reset { agent, yes } => commands::mcp::agent_tools_reset(&agent, yes),
+            McpAgentToolsCommands::SetRule {
+                agent,
+                connector_id,
+                pattern,
+                stance,
+            } => commands::mcp::agent_tools_set_rule(&agent, &connector_id, &pattern, &stance),
+            McpAgentToolsCommands::Reset { agent, yes } => {
+                commands::mcp::agent_tools_reset(&agent, yes)
+            }
         },
     }
 }

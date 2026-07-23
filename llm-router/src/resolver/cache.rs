@@ -1,9 +1,9 @@
-//! In-process TTL cache for per-agent `llm_config` lookups.
+//! In-process TTL cache for per-agent resolved-config lookups.
 //!
-//! Config edits take effect within `LLM_CONFIG_CACHE_TTL` with no redeploy. Only
-//! *successful* agent fetches are cached (the inner `Option<LLMConfig>` distinguishes
-//! "row exists, no llm_config" from "row exists with config"); a **missing agent row**
-//! is an error and is never cached.
+//! Config edits (and attach/detach/default changes) take effect within `LLM_CONFIG_CACHE_TTL`
+//! with no redeploy. Only *successful* agent fetches are cached (the inner `Option<LLMConfig>`
+//! distinguishes "agent resolves to no config" from "agent resolves to a config"); a **missing
+//! agent row** is an error and is never cached.
 
 use std::time::{Duration, Instant};
 

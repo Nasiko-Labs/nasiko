@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
+pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
 pub mod mcp;
@@ -224,6 +225,7 @@ where
         .merge(chat::router())
         .merge(maf::router())
         .merge(secrets::router())
+        .merge(llm_configs::router())
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
