@@ -1,10 +1,10 @@
 //! Catalog + platform Composio connector registration.
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, AppJson, ensure_admin, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, AppPath, ensure_admin, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -82,7 +82,7 @@ pub struct UpdateAuthConfig {
 pub async fn update_auth_config(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
     AppJson(body): AppJson<UpdateAuthConfig>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_admin(&claims)?;
@@ -101,7 +101,7 @@ pub async fn update_auth_config(
 pub async fn delete_auth_config(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_admin(&claims)?;
     service::catalog::delete_composio(&state, connector_id).await?;

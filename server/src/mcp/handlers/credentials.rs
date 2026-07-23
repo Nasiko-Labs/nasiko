@@ -1,10 +1,10 @@
 //! Per-user bearer/basic/url_param credentials for MCP connectors (write-only).
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -17,7 +17,7 @@ pub struct RegisterCredential {
 pub async fn register(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
     AppJson(body): AppJson<RegisterCredential>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
@@ -30,7 +30,7 @@ pub async fn register(
 pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     Ok(ApiResponse::ok(
@@ -43,7 +43,7 @@ pub async fn status(
 pub async fn delete(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::credentials::delete(&state, user_id, connector_id).await?;

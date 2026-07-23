@@ -1,10 +1,10 @@
 //! Custom MCP connector registration + probe.
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -81,7 +81,7 @@ pub struct UpdateConnector {
 pub async fn update(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
     AppJson(body): AppJson<UpdateConnector>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
@@ -117,7 +117,7 @@ pub async fn list(State(state): State<AppState>, claims: Claims) -> Result<ApiRe
 pub async fn get(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     Ok(ApiResponse::ok(
@@ -130,7 +130,7 @@ pub async fn get(
 pub async fn delete(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     service::connectors::delete(&state, caller, claims.is_superuser, id).await?;
@@ -158,7 +158,7 @@ pub async fn probe(
 pub async fn pin(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::connectors::pin(&state, user_id, id).await?;
@@ -169,7 +169,7 @@ pub async fn pin(
 pub async fn unpin(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::connectors::unpin(&state, user_id, id).await?;

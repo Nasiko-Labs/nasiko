@@ -1,12 +1,12 @@
 //! Owner-controlled connector sharing.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::McpError;
 
-use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, AppPath, AppQuery, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -37,7 +37,7 @@ impl ShareRequest {
 pub async fn list(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     Ok(ApiResponse::ok(
@@ -50,7 +50,7 @@ pub async fn list(
 pub async fn share(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
     AppJson(body): AppJson<ShareRequest>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
@@ -64,7 +64,7 @@ pub async fn share(
 pub async fn revoke(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
     AppJson(body): AppJson<ShareRequest>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
@@ -82,7 +82,7 @@ pub struct SearchShareTargetsQuery {
 pub async fn search_targets(
     State(state): State<AppState>,
     claims: Claims,
-    Query(query): Query<SearchShareTargetsQuery>,
+    AppQuery(query): AppQuery<SearchShareTargetsQuery>,
 ) -> Result<ApiResponse, ApiError> {
     Ok(ApiResponse::ok(
         service::connectors::search_share_targets(&state, claims, &query.q).await?,
@@ -94,7 +94,7 @@ pub async fn search_targets(
 pub async fn consumers(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     Ok(ApiResponse::ok(
@@ -107,7 +107,7 @@ pub async fn consumers(
 pub async fn grant_agent(
     State(state): State<AppState>,
     claims: Claims,
-    Path((id, agent_id)): Path<(Uuid, Uuid)>,
+    AppPath((id, agent_id)): AppPath<(Uuid, Uuid)>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     if !agent_exists(&state, agent_id).await? {
@@ -125,7 +125,7 @@ pub async fn grant_agent(
 pub async fn revoke_agent(
     State(state): State<AppState>,
     claims: Claims,
-    Path((id, agent_id)): Path<(Uuid, Uuid)>,
+    AppPath((id, agent_id)): AppPath<(Uuid, Uuid)>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     service::connectors::revoke_agent(&state, caller, claims.is_superuser, id, agent_id).await?;

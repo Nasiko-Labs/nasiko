@@ -1,12 +1,32 @@
 use axum::{
+    Json,
     extract::{FromRequestParts, Request, State},
     http::{StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use serde_json::json;
 
 use super::Claims;
 use crate::state::AppState;
+
+/// A 401 rejection that returns the standard JSON envelope instead of plain text.
+pub struct AuthRejection(pub StatusCode, pub &'static str);
+
+impl IntoResponse for AuthRejection {
+    fn into_response(self) -> Response {
+        let code = self.0.as_u16();
+        (
+            self.0,
+            Json(json!({
+                "data": serde_json::Value::Null,
+                "status_code": code,
+                "message": self.1,
+            })),
+        )
+            .into_response()
+    }
+}
 
 /// Auth middleware — validates the JWT from Authorization: Bearer or access_token cookie.
 ///
@@ -15,7 +35,7 @@ use crate::state::AppState;
 pub async fn require_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     let claims = match validate_bearer(&state, req.headers()).await {
         Ok(c) => c,
-        Err((status, message)) => return (status, message).into_response(),
+        Err((status, message)) => return AuthRejection(status, message).into_response(),
     };
     req.extensions_mut().insert(claims);
     next.run(req).await
@@ -106,13 +126,13 @@ fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for Claims {
-    type Rejection = (StatusCode, &'static str);
+    type Rejection = AuthRejection;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<Claims>()
             .cloned()
-            .ok_or((StatusCode::UNAUTHORIZED, "not authenticated"))
+            .ok_or(AuthRejection(StatusCode::UNAUTHORIZED, "not authenticated"))
     }
 }

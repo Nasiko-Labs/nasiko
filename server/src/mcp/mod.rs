@@ -9,8 +9,8 @@ mod service;
 
 use axum::{
     Json, Router,
-    extract::{FromRequest, Request},
-    http::StatusCode,
+    extract::{FromRequest, FromRequestParts, Path, Query, Request},
+    http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
 };
@@ -254,6 +254,44 @@ pub(crate) async fn ensure_can_manage_agent(
         Err(ApiError(McpError::Forbidden(
             "you do not have permission to manage this agent".into(),
         )))
+    }
+}
+
+/// Drop-in for `axum::extract::Path` that converts path-param parse failures into
+/// the standard `ApiError` envelope instead of Axum's plain-text 422.
+pub(crate) struct AppPath<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for AppPath<T>
+where
+    T: DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match Path::<T>::from_request_parts(parts, state).await {
+            Ok(Path(val)) => Ok(AppPath(val)),
+            Err(e) => Err(ApiError(McpError::BadRequest(format!("invalid path parameter: {e}")))),
+        }
+    }
+}
+
+/// Drop-in for `axum::extract::Query` that converts query-string parse failures into
+/// the standard `ApiError` envelope instead of Axum's plain-text 400.
+pub(crate) struct AppQuery<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for AppQuery<T>
+where
+    T: DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match Query::<T>::from_request_parts(parts, state).await {
+            Ok(Query(val)) => Ok(AppQuery(val)),
+            Err(e) => Err(ApiError(McpError::BadRequest(format!("invalid query parameter: {e}")))),
+        }
     }
 }
 

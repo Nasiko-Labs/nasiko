@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, ApiResponse, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -24,7 +24,7 @@ pub struct AuthorizeRequest {
 pub async fn authorize(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
     body: Option<Json<AuthorizeRequest>>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
@@ -62,7 +62,7 @@ pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQue
 pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     Ok(ApiResponse::ok(
@@ -75,7 +75,7 @@ pub async fn status(
 pub async fn revoke(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::oauth::revoke(&state, user_id, connector_id).await?;

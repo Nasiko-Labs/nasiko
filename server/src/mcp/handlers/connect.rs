@@ -2,8 +2,7 @@
 //! browser callback.
 
 use axum::{
-    Json,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
@@ -12,7 +11,7 @@ use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -84,7 +83,7 @@ pub async fn list_connections(
 pub async fn disconnect(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     let outcome = service::connect::disconnect(&state, user_id, connector_id).await?;
