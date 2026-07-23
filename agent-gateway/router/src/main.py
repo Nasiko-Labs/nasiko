@@ -58,6 +58,9 @@ metrics_tracker = RouterMetrics()
 
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
+    if request.url.path in ("/metrics", "/health", "/router/health"):
+        return await call_next(request)
+
     metrics_tracker.active_sessions += 1
     start_time = time.time()
     try:
