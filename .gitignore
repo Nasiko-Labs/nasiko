@@ -28,6 +28,8 @@ uv.lock
 
 # Local-only MCP planning/research docs — not pushed to remote
 /mcp_upload_flow_docs/
+/docs/MCP_GATEWAY_API_GAPS_IMPLEMENTATION_PLAN.md
 /docs/MCP_GITHUB_IMPORT_UI_GAP_ANALYSIS.md
 /docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
+/docs/MCP_UPLOAD_ITERATION_PLAN.md
 /docs/MCP_UPLOAD_PLAN_OSS.md
