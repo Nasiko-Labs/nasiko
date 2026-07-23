@@ -1,11 +1,11 @@
 //! Per-agent connector access + tool rules. Gated by `ensure_can_manage_agent`.
 
-use axum::{Json, extract::{Path, State}};
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, ensure_can_manage_agent, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, ensure_can_manage_agent, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -33,7 +33,7 @@ pub async fn set_connector_access(
     State(state): State<AppState>,
     claims: Claims,
     Path((agent_id, connector_id)): Path<(Uuid, Uuid)>,
-    Json(body): Json<SetConnectorAccess>,
+    AppJson(body): AppJson<SetConnectorAccess>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
@@ -91,7 +91,7 @@ pub async fn bulk_update_tools(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
-    Json(body): Json<BulkToolUpdate>,
+    AppJson(body): AppJson<BulkToolUpdate>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;

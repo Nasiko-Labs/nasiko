@@ -1,10 +1,10 @@
 //! Catalog + platform Composio connector registration.
 
-use axum::{Json, extract::{Path, State}};
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, ensure_admin, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, ensure_admin, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -40,7 +40,7 @@ fn default_true() -> bool {
 pub async fn create_auth_config(
     State(state): State<AppState>,
     claims: Claims,
-    Json(body): Json<CreateAuthConfig>,
+    AppJson(body): AppJson<CreateAuthConfig>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_admin(&claims)?;
     let view = service::catalog::create_composio(
@@ -83,7 +83,7 @@ pub async fn update_auth_config(
     State(state): State<AppState>,
     claims: Claims,
     Path(connector_id): Path<Uuid>,
-    Json(body): Json<UpdateAuthConfig>,
+    AppJson(body): AppJson<UpdateAuthConfig>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_admin(&claims)?;
     let meta = service::catalog::ComposioMetadata {

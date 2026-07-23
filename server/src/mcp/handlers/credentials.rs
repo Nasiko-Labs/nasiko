@@ -1,10 +1,10 @@
 //! Per-user bearer/basic/url_param credentials for MCP connectors (write-only).
 
-use axum::{Json, extract::{Path, State}};
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -18,7 +18,7 @@ pub async fn register(
     State(state): State<AppState>,
     claims: Claims,
     Path(connector_id): Path<Uuid>,
-    Json(body): Json<RegisterCredential>,
+    AppJson(body): AppJson<RegisterCredential>,
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     let view =

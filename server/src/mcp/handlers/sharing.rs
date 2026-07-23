@@ -1,12 +1,12 @@
 //! Owner-controlled connector sharing.
 
-use axum::{Json, extract::{Path, Query, State}};
+use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::McpError;
 
-use super::super::{ApiError, ApiResponse, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -51,7 +51,7 @@ pub async fn share(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-    Json(body): Json<ShareRequest>,
+    AppJson(body): AppJson<ShareRequest>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     let target = body.into_target()?;
@@ -65,7 +65,7 @@ pub async fn revoke(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-    Json(body): Json<ShareRequest>,
+    AppJson(body): AppJson<ShareRequest>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     let target = body.into_target()?;

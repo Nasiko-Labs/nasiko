@@ -1,10 +1,10 @@
 //! Custom MCP connector registration + probe.
 
-use axum::{Json, extract::{Path, State}};
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -37,7 +37,7 @@ fn default_auth_type() -> String {
 pub async fn create(
     State(state): State<AppState>,
     claims: Claims,
-    Json(body): Json<CreateConnector>,
+    AppJson(body): AppJson<CreateConnector>,
 ) -> Result<ApiResponse, ApiError> {
     let owner = parse_user(&claims)?;
     let view = service::connectors::create(
@@ -82,7 +82,7 @@ pub async fn update(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-    Json(body): Json<UpdateConnector>,
+    AppJson(body): AppJson<UpdateConnector>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     let input = service::connectors::UpdateConnectorInput {
@@ -146,7 +146,7 @@ pub struct ProbeRequest {
 pub async fn probe(
     State(state): State<AppState>,
     _claims: Claims,
-    Json(body): Json<ProbeRequest>,
+    AppJson(body): AppJson<ProbeRequest>,
 ) -> Result<ApiResponse, ApiError> {
     Ok(ApiResponse::ok(
         service::connectors::probe(&state, &body.url).await?,

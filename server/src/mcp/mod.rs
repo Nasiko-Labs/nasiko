@@ -9,10 +9,12 @@ mod service;
 
 use axum::{
     Json, Router,
+    extract::{FromRequest, Request},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
 };
+use serde::de::DeserializeOwned;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -172,6 +174,37 @@ impl IntoResponse for ApiResponse {
             })),
         )
             .into_response()
+    }
+}
+
+/// Drop-in replacement for `axum::Json` in handler *arguments* that converts
+/// deserialization failures into the standard `ApiError` envelope instead of
+/// Axum's default plain-text 422.
+pub(crate) struct AppJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for AppJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        use axum::extract::rejection::JsonRejection;
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(val)) => Ok(AppJson(val)),
+            Err(e) => {
+                let msg = match &e {
+                    JsonRejection::JsonDataError(_) => format!("invalid request body: {}", e.body_text()),
+                    JsonRejection::JsonSyntaxError(_) => format!("invalid JSON syntax: {}", e.body_text()),
+                    JsonRejection::MissingJsonContentType(_) => {
+                        "Content-Type must be application/json".to_string()
+                    }
+                    _ => e.body_text(),
+                };
+                Err(ApiError(McpError::BadRequest(msg)))
+            }
+        }
     }
 }
 

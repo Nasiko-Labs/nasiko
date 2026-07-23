@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, ApiResponse, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppJson, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -35,7 +35,7 @@ pub struct ConnectRequest {
 pub async fn connect_service(
     State(state): State<AppState>,
     claims: Claims,
-    Json(body): Json<ConnectRequest>,
+    AppJson(body): AppJson<ConnectRequest>,
 ) -> Result<ApiResponse, ApiError> {
     use service::connect::{ConnectInput, ConnectOutcome};
     let user_id = parse_user(&claims)?;
