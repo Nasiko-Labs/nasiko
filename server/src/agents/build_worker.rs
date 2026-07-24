@@ -21,7 +21,7 @@ use super::upload::{
 use crate::build::routes::execute_build;
 
 /// A job targets exactly one of an agent or an MCP connector — enforced by
-/// `chk_build_jobs_one_target` (`026_mcp_connector_uploads.sql`), so `agent_id`
+/// `chk_build_jobs_one_target` (`027_mcp_connector_uploads.sql`), so `agent_id`
 /// and `connector_id` are never both `Some`.
 #[derive(Debug, sqlx::FromRow)]
 struct BuildJob {
