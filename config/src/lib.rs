@@ -58,7 +58,7 @@ pub struct Config {
     pub github_client_secret: Option<String>,
     /// OIDC issuer authority, e.g. `https://login.microsoftonline.com/<tenant-id>/v2.0`
     /// for Microsoft Entra ID — or any other OIDC-compliant provider. `None`
-    /// disables OIDC login entirely (see `docs/OIDC_SSO_SETUP.md`).
+    /// disables OIDC login entirely (see the enterprise OIDC SSO guide).
     pub oidc_issuer_url: Option<String>,
     pub oidc_client_id: Option<String>,
     pub oidc_client_secret: Option<String>,
@@ -123,39 +123,12 @@ pub struct Config {
     /// Public URL of the MCP gateway, injected into every deployed agent as
     /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
     pub mcp_gateway_public_url: Option<String>,
-    /// Browser-reachable base URL for Composio OAuth callbacks. When set,
-    /// OAuth redirects use this instead of `MCP_GATEWAY_PUBLIC_URL` (which
-    /// may be an in-cluster URL). COMPOSIO_CALLBACK_BASE_URL, optional.
-    pub composio_callback_base_url: Option<String>,
     /// TTL (seconds) for the Redis-cached resolved backend/session list.
     pub mcp_session_ttl_seconds: u64,
     /// TTL (seconds) for the Redis-cached per-agent permission context.
     pub mcp_perm_cache_ttl_seconds: u64,
     /// TTL (seconds) for the Redis-cached aggregated tool manifest.
     pub mcp_manifest_ttl_seconds: u64,
-    /// Max upload size for a user's own MCP server zip. MCP_UPLOAD_MAX_BYTES,
-    /// default 50 MiB — deliberately smaller than agents' 100 MiB default,
-    /// since MCP servers are typically much smaller than full agent codebases.
-    pub mcp_upload_max_bytes: u64,
-    /// Port an uploaded MCP server container is expected to bind via `$PORT`.
-    /// MCP_UPLOAD_DEFAULT_PORT, default 8080.
-    pub mcp_upload_default_port: u16,
-    /// Docker network uploaded MCP server containers are deployed onto,
-    /// isolated from the default network (DB/Redis/agents). MCP_SERVERS_NETWORK,
-    /// default "nasiko-mcp-servers-net" (the server's own compose config must
-    /// also join this network — see docker-compose.infra.yml).
-    pub mcp_servers_network: String,
-    /// Maximum replica count for uploaded MCP server pods under Kubernetes
-    /// (KEDA ScaledObject). MCP_UPLOAD_MAX_REPLICAS, default 1 (matches
-    /// agents; set higher when KEDA is installed). Ignored by DockerRuntime.
-    pub mcp_upload_max_replicas: u32,
-    /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
-    /// unconnected catalog cards — changes rarely, so a much longer TTL than
-    /// the permission/session caches.
-    pub mcp_toolcount_ttl_seconds: u64,
-    /// Comma-separated Composio toolkit names to auto-register at first boot.
-    /// SEED_TOOLKITS, default empty. Requires COMPOSIO_API_KEY to be set.
-    pub seed_toolkits: Vec<String>,
 }
 
 impl Config {
@@ -281,23 +254,9 @@ impl Config {
             mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            composio_callback_base_url: std::env::var("COMPOSIO_CALLBACK_BASE_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
             mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
             mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
             mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
-            mcp_upload_max_bytes: env_parse("MCP_UPLOAD_MAX_BYTES", 50 * 1024 * 1024),
-            mcp_upload_default_port: env_parse("MCP_UPLOAD_DEFAULT_PORT", 8080),
-            mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
-            mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
-            mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
-            seed_toolkits: std::env::var("SEED_TOOLKITS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
         })
     }
 

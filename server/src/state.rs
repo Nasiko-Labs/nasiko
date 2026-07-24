@@ -14,8 +14,6 @@ use crate::usage::UsageTracker;
 use nasiko_config::Config;
 use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 
-type OidcDynamicCache = Arc<tokio::sync::RwLock<Option<(String, Arc<nasiko_oidc::OidcClient>)>>>;
-
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<dyn ContainerRuntime>,
@@ -42,13 +40,13 @@ pub struct AppState {
     /// `OIDC_REDIRECT_URI` are all set. This is the fallback; prefer
     /// `resolve_oidc_client()`, which lets DB-stored settings (configurable
     /// by an admin via `PUT /api/settings`, see `oss/server/src/settings.rs`)
-    /// take precedence. See `docs/OIDC_SSO_SETUP.md`.
+    /// take precedence. See the enterprise OIDC SSO guide.
     pub oidc_svc: Option<Arc<nasiko_oidc::OidcClient>>,
     /// Cache for the DB-configured OIDC client: (config fingerprint, client).
     /// Rebuilt only when the stored config actually changes, so a config
     /// change takes effect on the next login without forcing a fresh
     /// discovery/JWKS fetch on every single request. See `resolve_oidc_client`.
-    oidc_dynamic_cache: OidcDynamicCache,
+    oidc_dynamic_cache: Arc<tokio::sync::RwLock<Option<(String, Arc<nasiko_oidc::OidcClient>)>>>,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
 }
@@ -183,11 +181,7 @@ impl AppState {
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
         // HTTP client — no duplicated infrastructure.
-        let mut mcp = nasiko_mcp_gateway::McpState::new(db.clone(), redis.clone(), http_client.clone(), &config);
-        // Swap in the real, ContainerRuntime-backed endpoint refresher (Step
-        // 13) — the gateway crate's own default is a no-op, since it has no
-        // ContainerRuntime dependency by design.
-        mcp.endpoint_refresher = Arc::new(crate::mcp::build::RuntimeEndpointRefresher::new(runtime.clone(), db.clone()));
+        let mcp = nasiko_mcp_gateway::McpState::new(db.clone(), redis.clone(), http_client.clone(), &config);
 
         let state = Self {
             runtime,
@@ -231,7 +225,6 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
-            crate::seed::seed_toolkits_if_configured(&state).await;
         });
 
         // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).

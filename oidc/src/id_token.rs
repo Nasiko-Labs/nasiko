@@ -26,7 +26,7 @@ pub struct IdTokenClaims {
     #[serde(default)]
     pub name: Option<String>,
     /// Entra "App Roles" claim, when the app manifest defines any — captured
-    /// for future role-mapping, not acted on today (see docs/OIDC_SSO_SETUP.md).
+    /// for future role-mapping, not acted on today (see the enterprise OIDC SSO guide).
     #[serde(default, deserialize_with = "string_or_seq_opt")]
     pub roles: Option<Vec<String>>,
     /// Entra Security Group Object IDs the user belongs to — only present
@@ -36,7 +36,7 @@ pub struct IdTokenClaims {
     /// `oidc_group_mappings` and `ee/server/src/oidc_group_mappings.rs`.
     /// `None` (not an empty list) if the claim was omitted entirely — e.g.
     /// group-overage tenants, where Entra requires a separate Graph API
-    /// call instead (not implemented; see docs/OIDC_SSO_SETUP.md).
+    /// call instead (not implemented; see the enterprise OIDC SSO guide).
     ///
     /// Deserialized permissively (bare string OR array): several OIDC
     /// providers (confirmed against a local oidc-server-mock instance, not

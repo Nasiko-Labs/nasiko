@@ -46,6 +46,14 @@ just clippy           # Lint
 
 ## Code Conventions
 
+The authoritative standards live in `docs/`:
+
+- `docs/CLEAN_CODE_GUIDE.md` — code standards (names, functions, errors, traits, tests)
+- `docs/ORGANIZATION.md` — where code lives (server/CLI/library layout)
+- `docs/API_CONVENTIONS.md` — wire format for every HTTP endpoint
+
+The highlights:
+
 ### Zero Warnings
 
 The workspace must compile with zero warnings from `cargo check` and `cargo clippy`. CI fails
