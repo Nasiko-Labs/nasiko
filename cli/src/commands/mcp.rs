@@ -57,6 +57,20 @@ fn parse_headers(raw: &[String]) -> Result<HashMap<String, String>> {
     Ok(out)
 }
 
+/// Parse repeatable `--env "KEY=VALUE"` flags into a map — same format as
+/// `nasiko upload --env`/`nasiko deploy --env` (`commands::upload::parse_env`,
+/// `commands::deploy::parse_env`), but without their `--env-file` support: an
+/// uploaded MCP server's secrets are few enough that inline flags are enough,
+/// and this keeps the upload/upload-github command surface small.
+fn parse_kv_env(raw: &[String]) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    for arg in raw {
+        let (k, v) = arg.split_once('=').ok_or_else(|| anyhow::anyhow!("invalid --env '{arg}' — expected KEY=VALUE"))?;
+        out.insert(k.to_string(), v.to_string());
+    }
+    Ok(out)
+}
+
 fn confirm(prompt: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(true);
@@ -89,7 +103,7 @@ fn b(v: &Value, field: &str) -> bool {
 pub fn catalog(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.get_json("/mcp/catalog")?;
-    let services = resp.get("services").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let services = resp.get("data").and_then(|v| v.get("services")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if services.is_empty() {
@@ -141,6 +155,7 @@ pub fn connect(
         "redirect_url": redirect_url,
     });
     let resp: Value = client.post_json("/mcp/connect", &body)?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
 
     let name = s(&resp, "name");
     match resp.get("status").and_then(|v| v.as_str()) {
@@ -165,7 +180,7 @@ pub fn connections(json: bool) -> Result<()> {
 
 fn connections_with(client: &Client, json: bool) -> Result<()> {
     let resp: Value = client.get_json("/mcp/connections")?;
-    let data = resp.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data = resp.get("data").and_then(|v| v.get("connections")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -189,6 +204,7 @@ fn connections_with(client: &Client, json: bool) -> Result<()> {
 pub fn disconnect(connector_id: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.delete_and_read(&format!("/mcp/connections/{connector_id}"))?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     let mut msg = s(&resp, "message").to_string();
     if b(&resp, "composio_revoked") {
         msg.push_str(" (Composio token revoked.)");
@@ -202,7 +218,7 @@ pub fn disconnect(connector_id: &str) -> Result<()> {
 pub fn toolkit_list(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.get_json("/mcp/auth-configs")?;
-    let data = resp.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data = resp.get("data").and_then(|v| v.get("connectors")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -244,6 +260,7 @@ pub fn toolkit_register(
         "logo_url": logo_url,
     });
     let resp: Value = client.post_json("/mcp/auth-configs", &body)?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!(
         "Registered toolkit '{}' (connector {}, auth-config {}).",
         s(&resp, "toolkit"),
@@ -266,6 +283,7 @@ pub fn toolkit_update(
         "description": description,
     });
     let resp: Value = client.patch_json(&format!("/mcp/auth-configs/{connector_id}"), &body)?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!("Updated toolkit '{}'.", s(&resp, "toolkit"));
     Ok(())
 }
@@ -289,7 +307,7 @@ pub fn toolkit_delete(connector_id: &str, yes: bool) -> Result<()> {
 pub fn connector_list(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.get_json("/mcp/connectors")?;
-    let data = resp.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data = resp.get("data").and_then(|v| v.get("connectors")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -318,6 +336,7 @@ pub fn connector_list(json: bool) -> Result<()> {
 pub fn connector_probe(url: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.post_json("/mcp/connectors/probe", &serde_json::json!({ "url": url }))?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!(
         "{}\n  Detected auth type: {}\n  {}",
         s(&resp, "url"),
@@ -359,6 +378,7 @@ pub fn connector_register(
         "logo_url": logo_url,
     });
     let resp: Value = client.post_json("/mcp/connectors", &body)?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     let connector_id = s(&resp, "connector_id").to_string();
     println!("Registered connector '{}' ({connector_id}). Auth type: {}.", s(&resp, "name"), s(&resp, "auth_type"));
     if auth_type != "none" {
@@ -398,6 +418,7 @@ pub fn connector_update(
         "is_active": active,
     });
     let resp: Value = client.patch_json(&format!("/mcp/connectors/{connector_id}"), &body)?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!("Updated connector '{}' ({connector_id}).", s(&resp, "name"));
     Ok(())
 }
@@ -438,7 +459,7 @@ fn share_target_label(user: Option<&str>, public: bool) -> String {
 pub fn share_list(connector_id: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.get_json(&format!("/mcp/connectors/{connector_id}/share"))?;
-    let data = resp.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data = resp.get("data").and_then(|v| v.get("grants")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -500,6 +521,7 @@ pub fn credential_set(connector_id: &str, value: Option<&str>) -> Result<()> {
 
 fn credential_set_with(client: &Client, connector_id: &str, value: &str) -> Result<()> {
     let resp: Value = client.post_json(&format!("/mcp/connectors/{connector_id}/credential"), &serde_json::json!({ "value": value }))?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!("Credential stored for '{}' ({connector_id}). Connected.", s(&resp, "name"));
     Ok(())
 }
@@ -511,6 +533,7 @@ pub fn credential_status(connector_id: &str, json: bool) -> Result<()> {
 
 fn credential_status_with(client: &Client, connector_id: &str, json: bool) -> Result<()> {
     let resp: Value = client.get_json(&format!("/mcp/connectors/{connector_id}/credential/status"))?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     print_json_or(json, &resp, || {
         println!(
             "{} ({connector_id})\n  Connected:  {}\n  Auth type:  {}",
@@ -538,6 +561,7 @@ pub fn oauth_authorize(connector_id: &str, client_id: Option<&str>, redirect_url
     let client = Client::from_active_cluster()?;
     let body = serde_json::json!({ "client_id": client_id, "redirect_url": redirect_url });
     let resp: Value = client.post_json(&format!("/mcp/connectors/{connector_id}/oauth/authorize"), &body)?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!(
         "Open this URL to authorize '{}':\n\n  {}\n\nThen re-run `nasiko mcp oauth status {connector_id}` to confirm.",
         s(&resp, "name"),
@@ -549,6 +573,7 @@ pub fn oauth_authorize(connector_id: &str, client_id: Option<&str>, redirect_url
 pub fn oauth_status(connector_id: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.get_json(&format!("/mcp/connectors/{connector_id}/oauth/status"))?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     print_json_or(json, &resp, || {
         println!(
             "{} ({connector_id})\n  Authorized: {}\n  Expires:    {}\n  Scope:      {}",
@@ -577,7 +602,7 @@ pub fn agent_tools_connectors(agent: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(&client, agent)?;
     let resp: Value = client.get_json(&format!("/mcp/agents/{agent_id}/connectors"))?;
-    let data = resp.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data = resp.get("data").and_then(|v| v.get("connectors")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -622,7 +647,7 @@ pub fn agent_tools_tools(agent: &str, connector_id: &str, json: bool) -> Result<
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(&client, agent)?;
     let resp: Value = client.get_json(&format!("/mcp/agents/{agent_id}/connectors/{connector_id}/tools"))?;
-    let data = resp.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data = resp.get("data").and_then(|v| v.get("tools")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -641,7 +666,7 @@ pub fn agent_tools_rules(agent: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(&client, agent)?;
     let resp: Value = client.get_json(&format!("/mcp/agents/{agent_id}/tools"))?;
-    let data = resp.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data = resp.get("data").and_then(|v| v.get("rules")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -696,7 +721,7 @@ fn agent_tools_set_rule_with(client: &Client, agent: &str, connector_id: &str, p
     let agent_id = resolve_agent_id(client, agent)?;
 
     let existing: Value = client.get_json(&format!("/mcp/agents/{agent_id}/tools"))?;
-    let existing_rules = existing.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let existing_rules = existing.get("data").and_then(|v| v.get("rules")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let rules = merge_tool_rule(&existing_rules, connector_id, pattern, stance);
 
     let count = rules.len();
@@ -713,10 +738,123 @@ pub fn agent_tools_reset(agent: &str, yes: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(&client, agent)?;
     let resp: Value = client.delete_and_read(&format!("/mcp/agents/{agent_id}/permissions"))?;
+    let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!(
         "Reset agent '{agent}' to full default-allow ({} rule row(s) removed).",
         resp.get("rows_deleted").and_then(|v| v.as_u64()).unwrap_or(0)
     );
+    Ok(())
+}
+
+// ─── Upload-your-own-MCP-server (docs/MCP_UPLOAD_ITERATION_PLAN.md, Step 14) ─
+
+/// Upload a local .zip of your own MCP server's source. The server validates
+/// it (loosely — see `nasiko_mcp_gateway::validation`), builds it into a
+/// hardened container on an isolated network, deploys it, and runs a live
+/// `initialize`+`tools/list` handshake before marking the connector active —
+/// mirrors `nasiko upload`'s agent flow exactly, just for MCP connectors.
+pub fn connector_upload(zip_path: &std::path::Path, name: &str, version_tag: &str, env: &[String]) -> Result<()> {
+    if !zip_path.exists() {
+        bail!("'{}' does not exist", zip_path.display());
+    }
+    let env = parse_kv_env(env)?;
+    let client = Client::from_active_cluster()?;
+    connector_upload_with(&client, zip_path, name, version_tag, &env)
+}
+
+fn connector_upload_with(
+    client: &Client,
+    zip_path: &std::path::Path,
+    name: &str,
+    version_tag: &str,
+    env: &HashMap<String, String>,
+) -> Result<()> {
+    println!("Uploading '{}' as connector '{name}' ({version_tag})...", zip_path.display());
+    let queued = client.upload_mcp_connector_zip(zip_path, name, version_tag, env)?;
+    println!("Queued: connector_id={} build_id={}", queued.connector_id, queued.build_id);
+    println!("Waiting for the server to build and deploy... (this can take a few minutes)");
+    client.poll_mcp_build_status(&queued.connector_id)?;
+    println!("\nConnector '{name}' is live ({}).", queued.connector_id);
+    println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
+    Ok(())
+}
+
+/// Same as [`connector_upload`], but the server clones a GitHub repo instead
+/// of receiving a file — same validation/build/deploy pipeline downstream of
+/// that, just a different source. Reuses the server's own
+/// `validate_github_url` (HTTPS-only + host allowlist), same as `nasiko
+/// deploy`'s GitHub source.
+pub fn connector_upload_github(name: &str, version_tag: &str, github_url: &str, env: &[String]) -> Result<()> {
+    let env = parse_kv_env(env)?;
+    let client = Client::from_active_cluster()?;
+    connector_upload_github_with(&client, name, version_tag, github_url, &env)
+}
+
+fn connector_upload_github_with(
+    client: &Client,
+    name: &str,
+    version_tag: &str,
+    github_url: &str,
+    env: &HashMap<String, String>,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "name": name,
+        "version_tag": version_tag,
+        "github_url": github_url,
+        "env": env,
+    });
+    println!("Queuing build of '{github_url}' as connector '{name}' ({version_tag})...");
+    let raw: serde_json::Value = client.post_json("/mcp/connectors/upload-github", &body)?;
+    let queued: crate::api::McpUploadQueued = crate::api::unwrap_data(raw)?;
+    println!("Queued: connector_id={} build_id={}", queued.connector_id, queued.build_id);
+    println!("Waiting for the server to clone, build, and deploy... (this can take a few minutes)");
+    client.poll_mcp_build_status(&queued.connector_id)?;
+    println!("\nConnector '{name}' is live ({}).", queued.connector_id);
+    println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
+    Ok(())
+}
+
+/// One-shot build status check (no polling loop — `upload`/`upload-github`
+/// already poll to completion; this is for checking back on a build later,
+/// or after closing the terminal a poll was running in).
+pub fn connector_build_status(connector_id: &str, json: bool) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    connector_build_status_with(&client, connector_id, json)
+}
+
+fn connector_build_status_with(client: &Client, connector_id: &str, json: bool) -> Result<()> {
+    let raw: serde_json::Value = client.get_json(&format!("/mcp/connectors/{connector_id}/build-status"))?;
+    let status: crate::api::McpBuildStatus = crate::api::unwrap_data(raw)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        println!("build_status: {}", status.build_status.as_deref().unwrap_or("-"));
+        println!("image_tag:    {}", status.image_tag.as_deref().unwrap_or("-"));
+        if let Some(err) = &status.error_msg {
+            println!("error:        {err}");
+        }
+    }
+    Ok(())
+}
+
+/// Fetch an uploaded connector's container logs (stdout/stderr) — the same
+/// `ContainerRuntime::logs` call the agent logs route already exposes,
+/// scoped to this connector's container.
+pub fn connector_logs(connector_id: &str, tail: u32) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    connector_logs_with(&client, connector_id, tail)
+}
+
+fn connector_logs_with(client: &Client, connector_id: &str, tail: u32) -> Result<()> {
+    let raw: serde_json::Value = client.get_json(&format!("/mcp/connectors/{connector_id}/build-logs?tail={tail}"))?;
+    let lines: Vec<String> = crate::api::unwrap_data(raw)?;
+    if lines.is_empty() {
+        println!("(no log output)");
+        return Ok(());
+    }
+    for line in &lines {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -1025,11 +1163,11 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"data": [
+                r#"{"data": {"rules": [
                     {"connector_id": "conn-a", "tool_pattern": "delete_all_data", "stance": "block"},
                     {"connector_id": "conn-a", "tool_pattern": "echo", "stance": "allow"},
                     {"connector_id": "conn-b", "tool_pattern": "unrelated_tool", "stance": "ask"}
-                ]}"#,
+                ]}}"#,
             )
             .create();
 
@@ -1069,7 +1207,7 @@ mod tests {
         let _get = server
             .mock("GET", format!("/api/mcp/agents/{agent_id}/tools").as_str())
             .with_status(200)
-            .with_body(r#"{"data": []}"#)
+            .with_body(r#"{"data": {"rules": []}}"#)
             .create();
         let _put = server
             .mock("PUT", format!("/api/mcp/agents/{agent_id}/tools").as_str())
@@ -1134,7 +1272,7 @@ mod tests {
             .match_body(Matcher::Json(serde_json::json!({ "value": "secret-123" })))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"name": "my-server"}"#)
+            .with_body(r#"{"data": {"name": "my-server"}}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
         credential_set_with(&client, "conn-a", "secret-123").unwrap();
@@ -1162,9 +1300,113 @@ mod tests {
         let _m = server
             .mock("GET", "/api/mcp/connectors/conn-a/credential/status")
             .with_status(200)
-            .with_body(r#"{"name": "my-server", "connected": false, "auth_type": "bearer"}"#)
+            .with_body(r#"{"data": {"name": "my-server", "connected": false, "auth_type": "bearer"}}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
         credential_status_with(&client, "conn-a", false).unwrap();
+    }
+
+    // ─── parse_kv_env ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_kv_env_parses_repeated_key_value_flags() {
+        let out = parse_kv_env(&["STRIPE_KEY=sk_test".to_string(), "DEBUG=true".to_string()]).unwrap();
+        assert_eq!(out.get("STRIPE_KEY").map(String::as_str), Some("sk_test"));
+        assert_eq!(out.get("DEBUG").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn parse_kv_env_rejects_missing_equals_sign() {
+        let err = parse_kv_env(&["NOVALUE".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("NOVALUE"), "got: {err}");
+    }
+
+    // ─── upload / upload-github / build-status / logs (Step 14) ───────────────
+
+    fn write_temp_zip(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, b"not a real zip, just bytes for the multipart body").unwrap();
+        path
+    }
+
+    #[test]
+    fn connector_upload_with_queues_then_polls_to_running() {
+        let zip_path = write_temp_zip("nasiko-cli-mcp-test-upload.zip");
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/api/mcp/connectors/upload")
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"connector_id":"c-1","build_id":"b-1"},"status_code":202,"message":"MCP server build queued"}"#)
+            .create();
+        server
+            .mock("GET", "/api/mcp/connectors/c-1/build-status")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"build_status":"running"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        connector_upload_with(&client, &zip_path, "my-server", "v1", &HashMap::new()).unwrap();
+        let _ = std::fs::remove_file(&zip_path);
+    }
+
+    #[test]
+    fn connector_upload_github_with_sends_the_expected_body_then_polls_to_running() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/api/mcp/connectors/upload-github")
+            .match_body(Matcher::Json(serde_json::json!({
+                "name": "my-server",
+                "version_tag": "v1",
+                "github_url": "https://github.com/me/my-mcp-server",
+                "env": {},
+            })))
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"connector_id":"c-2","build_id":"b-2"},"status_code":202,"message":"MCP server build queued"}"#)
+            .create();
+        server
+            .mock("GET", "/api/mcp/connectors/c-2/build-status")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"build_status":"running"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        connector_upload_github_with(
+            &client,
+            "my-server",
+            "v1",
+            "https://github.com/me/my-mcp-server",
+            &HashMap::new(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn connector_build_status_with_reports_a_failed_build_with_its_error_message() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/api/mcp/connectors/c-3/build-status")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"build_status":"failed","error_msg":"no Dockerfile found"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        // Human-readable path just prints; only asserting it doesn't error.
+        connector_build_status_with(&client, "c-3", false).unwrap();
+        connector_build_status_with(&client, "c-3", true).unwrap();
+    }
+
+    #[test]
+    fn connector_logs_with_prints_every_line_returned() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/api/mcp/connectors/c-4/build-logs?tail=200")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":["INFO starting up", "INFO ready on :8080"],"status_code":200,"message":"build logs retrieved successfully"}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        connector_logs_with(&client, "c-4", 200).unwrap();
     }
 }

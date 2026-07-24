@@ -28,6 +28,14 @@ fn check_status(resp: &mut ureq::http::Response<ureq::Body>, url: &str) -> Resul
     Ok(())
 }
 
+/// Every MCP management endpoint replies with the shared
+/// `{data, status_code, message}` envelope (`oss/server/src/mcp/mod.rs::ApiResponse`)
+/// instead of a bare body. Unwraps `data` and deserializes it into `T`.
+pub(crate) fn unwrap_data<T: for<'de> Deserialize<'de>>(value: serde_json::Value) -> Result<T> {
+    let data = value.get("data").cloned().unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::from_value(data)?)
+}
+
 /// Client for the control plane API + its OCI registry.
 pub struct Client {
     agent: Agent,
@@ -774,6 +782,139 @@ impl Client {
         }
         Ok(())
     }
+
+    /// Upload a zip file to `POST /api/mcp/connectors/upload` and return the
+    /// queued connector/build ids. Mirrors [`upload_agent`](Client::upload_agent)'s
+    /// multipart body construction exactly (same boundary style, same manual
+    /// `Content-Disposition` framing) — the MCP-server-upload endpoint takes a
+    /// different, smaller field set (`name`/`version_tag`/`env`/`source`, no
+    /// `ports`) but is otherwise the same shape.
+    pub fn upload_mcp_connector_zip(
+        &self,
+        zip_path: &std::path::Path,
+        name: &str,
+        version_tag: &str,
+        env: &std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<McpUploadQueued> {
+        let file_bytes = std::fs::read(zip_path)
+            .with_context(|| format!("cannot read {}", zip_path.display()))?;
+
+        let boundary = "NasikoCloudBoundary1234567890";
+        let mut body: Vec<u8> = Vec::new();
+
+        // name (required)
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\n{name}\r\n").as_bytes(),
+        );
+        // version_tag
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"version_tag\"\r\n\r\n{version_tag}\r\n").as_bytes(),
+        );
+        // env (JSON) — decrypted server-side and injected as container env vars
+        // only at deploy time, per the uploaded server's own secrets (never the
+        // gateway's connector credentials — see build.rs's own doc comment on
+        // `build_secrets_env` for that distinction).
+        if !env.is_empty() {
+            let env_json = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"env\"\r\n\r\n{env_json}\r\n").as_bytes(),
+            );
+        }
+        // source (the zip file) — field name must be "source" or "file", both
+        // accepted by the handler (oss/server/src/mcp/handlers/upload.rs).
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"upload.zip\"\r\nContent-Type: application/zip\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(&file_bytes);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let url = self.api_url("/mcp/connectors/upload");
+        let mut req = self.agent.post(&url).header(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        );
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let _spin = nasiko_utils::term::start_status(format!(
+            "uploading {name} ({} KB)",
+            body.len() / 1024
+        ));
+        let mut resp = req.send(&body).context("upload request failed")?;
+        drop(_spin);
+        if resp.status().as_u16() >= 400 {
+            let b = resp.body_mut().read_to_string().unwrap_or_default();
+            bail!("HTTP {}: {}", resp.status().as_u16(), b);
+        }
+        unwrap_data(resp.body_mut().read_json()?)
+    }
+
+    /// Polls `GET /api/mcp/connectors/{id}/build-status` every 2s until the
+    /// build reaches a terminal state (`running` = success, `failed` =
+    /// failure). Unlike [`poll_build_status`](Client::poll_build_status) (SSE),
+    /// the MCP upload route is deliberately plain polling JSON in v1 — no
+    /// streaming (see `docs/MCP_UPLOAD_ITERATION_PLAN.md` Step 10's "Deferred"
+    /// note) — so this polls on a fixed interval instead of reading a stream.
+    pub fn poll_mcp_build_status(&self, connector_id: &str) -> anyhow::Result<()> {
+        let mut last_status = String::new();
+        let mut spin = Some(nasiko_utils::term::start_status("waiting for build"));
+        let mut succeeded = false;
+        let mut fail_msg = String::new();
+
+        loop {
+            let raw: serde_json::Value = self.get_json(&format!("/mcp/connectors/{connector_id}/build-status"))?;
+            let status: McpBuildStatus = unwrap_data(raw)?;
+            let build_status = status.build_status.unwrap_or_else(|| "pending".to_string());
+            if build_status != last_status {
+                last_status = build_status.clone();
+                spin = None; // Drop first so the spinner line clears before the transition prints.
+                match build_status.as_str() {
+                    "pending" => spin = Some(nasiko_utils::term::start_status("queued")),
+                    "building" => spin = Some(nasiko_utils::term::start_status("building image")),
+                    "running" => {
+                        println!("  build succeeded — connector is live");
+                        succeeded = true;
+                    }
+                    "failed" => {
+                        fail_msg = status.error_msg.unwrap_or_else(|| "(no error message)".to_string());
+                    }
+                    other => println!("  {other}"),
+                }
+            }
+            if succeeded || build_status == "failed" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        drop(spin);
+
+        if !succeeded {
+            bail!("build failed: {fail_msg}");
+        }
+        Ok(())
+    }
+}
+
+// ─── MCP-server-upload API types ────────────────────────────────────────────
+
+/// Response body of both `POST /api/mcp/connectors/upload` and
+/// `POST /api/mcp/connectors/upload-github` (`oss/server/src/mcp/handlers/upload.rs`).
+#[derive(Debug, Deserialize)]
+pub struct McpUploadQueued {
+    pub connector_id: String,
+    pub build_id: String,
+}
+
+/// Response body of `GET /api/mcp/connectors/{id}/build-status`.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct McpBuildStatus {
+    #[serde(default)]
+    pub build_status: Option<String>,
+    #[serde(default)]
+    pub error_msg: Option<String>,
+    #[serde(default)]
+    pub image_tag: Option<String>,
 }
 
 // ─── API types ──────────────────────────────────────────────────────────────
@@ -1066,5 +1207,66 @@ mod tests {
             url,
             "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz&digest=sha256:deadbeef"
         );
+    }
+
+    // ─── upload_mcp_connector_zip / poll_mcp_build_status (Step 14) ────────────
+
+    fn write_temp_zip(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, b"not a real zip, just bytes for the multipart body").unwrap();
+        path
+    }
+
+    #[test]
+    fn upload_mcp_connector_zip_sends_multipart_and_returns_ids() {
+        let zip_path = write_temp_zip("nasiko-cli-test-upload.zip");
+        let mut srv = mockito::Server::new();
+        srv.mock("POST", "/api/mcp/connectors/upload")
+            .match_header("content-type", mockito::Matcher::Regex("multipart/form-data.*".into()))
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"connector_id":"c-1","build_id":"b-1"},"status_code":202,"message":"MCP server build queued"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+        let env = std::collections::HashMap::from([("STRIPE_KEY".to_string(), "sk_test".to_string())]);
+        let queued = client.upload_mcp_connector_zip(&zip_path, "my-server", "v1", &env).unwrap();
+        assert_eq!(queued.connector_id, "c-1");
+        assert_eq!(queued.build_id, "b-1");
+        let _ = std::fs::remove_file(&zip_path);
+    }
+
+    #[test]
+    fn upload_mcp_connector_zip_errors_when_zip_path_missing() {
+        let client = Client::for_test("http://127.0.0.1:1", None);
+        let missing = std::env::temp_dir().join("nasiko-cli-test-does-not-exist.zip");
+        let err = client
+            .upload_mcp_connector_zip(&missing, "my-server", "v1", &std::collections::HashMap::new())
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot read"), "got: {err}");
+    }
+
+    #[test]
+    fn poll_mcp_build_status_returns_ok_once_running() {
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/mcp/connectors/c-1/build-status")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"build_status":"running","image_tag":"my-image:v1"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+        client.poll_mcp_build_status("c-1").unwrap();
+    }
+
+    #[test]
+    fn poll_mcp_build_status_errors_with_message_on_failed() {
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/mcp/connectors/c-1/build-status")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"build_status":"failed","error_msg":"no Dockerfile found"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+        let err = client.poll_mcp_build_status("c-1").unwrap_err();
+        assert!(err.to_string().contains("no Dockerfile found"), "got: {err}");
     }
 }
