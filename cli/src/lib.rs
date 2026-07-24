@@ -843,6 +843,14 @@ pub enum McpSubCommands {
         #[command(subcommand)]
         command: McpAgentToolsCommands,
     },
+    /// Search users to share a connector with
+    #[command(name = "share-targets")]
+    ShareTargets {
+        /// Search query (username prefix or display name)
+        query: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -956,6 +964,98 @@ pub enum McpConnectorCommands {
     Share {
         #[command(subcommand)]
         command: McpConnectorShareCommands,
+    },
+    /// Upload your own MCP server's source (a .zip) — the platform builds and
+    /// deploys it into a container the same way agent uploads work, then
+    /// polls until it's live. See docs/MCP_UPLOAD_ITERATION_PLAN.md for the
+    /// full pipeline (validation → build → hardened deploy → readiness check).
+    Upload {
+        /// Connector name (shown in `nasiko mcp connector list`)
+        #[arg(long)]
+        name: String,
+        /// Build version tag, shown on the connector's build history
+        #[arg(long, visible_alias = "version", default_value = "v1")]
+        version_tag: String,
+        /// Path to a .zip containing your MCP server's source (must include a
+        /// Dockerfile; the server must read $PORT and mount its Streamable
+        /// HTTP endpoint at /mcp — see the upload plan doc for the full contract)
+        #[arg(long)]
+        zip: std::path::PathBuf,
+        /// Secret env var for the uploaded server itself, "KEY=VALUE"
+        /// (repeatable) — encrypted at rest, injected into the container only
+        /// at deploy time. Distinct from a connector's own auth credential
+        /// (`nasiko mcp credential set`), which authenticates the GATEWAY to
+        /// the server, not the server to some third-party API it wraps.
+        #[arg(long = "env")]
+        env: Vec<String>,
+    },
+    /// Same as `upload`, but builds from a GitHub repo instead of a local zip
+    /// — the server clones it (HTTPS + host-allowlisted, same validation
+    /// `nasiko deploy`'s GitHub source uses) rather than receiving a file.
+    UploadGithub {
+        /// Connector name (shown in `nasiko mcp connector list`)
+        #[arg(long)]
+        name: String,
+        /// Build version tag, shown on the connector's build history
+        #[arg(long, visible_alias = "version", default_value = "v1")]
+        version_tag: String,
+        /// HTTPS GitHub URL of the MCP server's source repo
+        #[arg(long)]
+        github_url: String,
+        /// Secret env var for the uploaded server itself, "KEY=VALUE"
+        /// (repeatable) — same semantics as `upload --env`
+        #[arg(long = "env")]
+        env: Vec<String>,
+    },
+    /// Check an uploaded connector's build status (one-shot, no polling) —
+    /// `pending` | `building` | `running` (live) | `failed`
+    BuildStatus {
+        connector_id: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Show an uploaded connector's container logs (stdout/stderr) — the
+    /// same `ContainerRuntime::logs` call the agent logs route already
+    /// exposes, just scoped to this connector's container
+    Logs {
+        connector_id: String,
+        /// Number of trailing log lines to fetch (capped server-side at 10000)
+        #[arg(long, default_value_t = 200)]
+        tail: u32,
+    },
+    /// List agents and users consuming this connector (owner/admin only)
+    Consumers {
+        connector_id: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Pin a connector for quick access
+    Pin { connector_id: String },
+    /// Unpin a connector
+    Unpin { connector_id: String },
+    /// List your pinned connectors
+    Pinned {
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// List recently used connectors
+    Recent {
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Grant connector access to a specific agent (owner/admin only)
+    #[command(name = "grant-agent")]
+    GrantAgent {
+        connector_id: String,
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Revoke connector access from a specific agent (owner/admin only)
+    #[command(name = "revoke-agent")]
+    RevokeAgent {
+        connector_id: String,
+        /// Agent name or ID
+        agent: String,
     },
 }
 
@@ -1136,6 +1236,21 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                     commands::mcp::share_remove(&connector_id, user.as_deref(), public)
                 }
             },
+            McpConnectorCommands::Upload { name, version_tag, zip, env } => {
+                commands::mcp::connector_upload(&zip, &name, &version_tag, &env)
+            }
+            McpConnectorCommands::UploadGithub { name, version_tag, github_url, env } => {
+                commands::mcp::connector_upload_github(&name, &version_tag, &github_url, &env)
+            }
+            McpConnectorCommands::BuildStatus { connector_id, json } => commands::mcp::connector_build_status(&connector_id, json),
+            McpConnectorCommands::Logs { connector_id, tail } => commands::mcp::connector_logs(&connector_id, tail),
+            McpConnectorCommands::Consumers { connector_id, json } => commands::mcp::connector_consumers(&connector_id, json),
+            McpConnectorCommands::Pin { connector_id } => commands::mcp::connector_pin(&connector_id),
+            McpConnectorCommands::Unpin { connector_id } => commands::mcp::connector_unpin(&connector_id),
+            McpConnectorCommands::Pinned { json } => commands::mcp::connector_pinned(json),
+            McpConnectorCommands::Recent { json } => commands::mcp::connector_recent(json),
+            McpConnectorCommands::GrantAgent { connector_id, agent } => commands::mcp::connector_grant_agent(&connector_id, &agent),
+            McpConnectorCommands::RevokeAgent { connector_id, agent } => commands::mcp::connector_revoke_agent(&connector_id, &agent),
         },
         McpSubCommands::Credential { command } => match command {
             McpCredentialCommands::Set { connector_id, value } => commands::mcp::credential_set(&connector_id, value.as_deref()),
@@ -1149,6 +1264,7 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
             McpOauthCommands::Status { connector_id, json } => commands::mcp::oauth_status(&connector_id, json),
             McpOauthCommands::Revoke { connector_id, yes } => commands::mcp::oauth_revoke(&connector_id, yes),
         },
+        McpSubCommands::ShareTargets { query, json } => commands::mcp::share_targets(&query, json),
         McpSubCommands::AgentTools { command } => match command {
             McpAgentToolsCommands::Connectors { agent, json } => commands::mcp::agent_tools_connectors(&agent, json),
             McpAgentToolsCommands::Enable { agent, connector_id } => commands::mcp::agent_tools_enable(&agent, &connector_id),
