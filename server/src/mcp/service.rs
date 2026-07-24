@@ -32,9 +32,6 @@ pub mod catalog {
     pub async fn get_catalog(s: &AppState, user: Uuid) -> R<Value> {
         catalog::get_catalog_view(&s.mcp, user).await
     }
-    pub async fn list_toolkits(s: &AppState, user: Uuid) -> R<Value> {
-        catalog::list_toolkits_view(&s.mcp, user).await
-    }
     pub async fn create_composio(s: &AppState, r: &ComposioReg) -> R<Value> {
         catalog::create_composio_connector(
             &s.mcp,
@@ -207,8 +204,13 @@ pub mod credentials {
 
     pub async fn register(s: &AppState, user: Uuid, connector_id: Uuid, value: &str) -> R<Value> {
         let c = credentials::authorize_connector(&s.mcp, user, connector_id).await?;
-        credentials::register_credential(&s.mcp, user, &c, value).await?;
-        Ok(json!({ "connector_id": c.id, "name": c.name, "connected": true }))
+        let outcome = credentials::register_credential(&s.mcp, user, &c, value).await?;
+        Ok(json!({
+            "connector_id": c.id,
+            "name": c.name,
+            "connected": outcome.verified,
+            "error": outcome.error,
+        }))
     }
     pub async fn status(s: &AppState, user: Uuid, connector_id: Uuid) -> R<Value> {
         let c = credentials::authorize_connector(&s.mcp, user, connector_id).await?;

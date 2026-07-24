@@ -23,7 +23,15 @@ pub async fn register(
     let user_id = parse_user(&claims)?;
     let view =
         service::credentials::register(&state, user_id, connector_id, &body.value).await?;
-    Ok(ApiResponse::created(view, "Credential registered successfully"))
+    // The credential is always stored regardless of outcome (see
+    // register_credential's doc comment) — the message just reflects whether
+    // it was actually proven to work, not merely accepted.
+    let message = if view["connected"].as_bool().unwrap_or(false) {
+        "Credential registered and verified successfully"
+    } else {
+        "Credential stored, but verification failed — see the error field"
+    };
+    Ok(ApiResponse::created(view, message))
 }
 
 /// `GET /api/mcp/connectors/{id}/credential/status` — whether a credential exists.

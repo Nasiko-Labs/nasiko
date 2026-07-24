@@ -18,6 +18,32 @@ use uuid::Uuid;
 /// deliberately leaves it unset).
 const SIGNING_KEY: &str = "test-oauth-signing-key-for-mcp-oauth-rs";
 
+fn allow_private_urls() {
+    // SAFETY: serialized by `#[serial]`.
+    unsafe { std::env::set_var("MCP_ALLOW_PRIVATE_URLS", "true") };
+}
+fn disallow_private_urls() {
+    // SAFETY: serialized by `#[serial]`.
+    unsafe { std::env::remove_var("MCP_ALLOW_PRIVATE_URLS") };
+}
+
+/// A real, live MCP backend that answers any JSON-RPC call with an empty
+/// `tools/list` result — needed so that a successful OAuth exchange's
+/// follow-up live verification call (`verify_connector_live`) actually
+/// succeeds, instead of hitting the connector's placeholder resource URL.
+async fn start_stub_mcp_server_ok() -> String {
+    async fn respond() -> impl IntoResponse {
+        axum::Json(json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}))
+    }
+    let app = Router::new().route("/", post(respond));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://127.0.0.1:{port}/")
+}
+
 /// The public literal `oss/mcp-gateway/src/config.rs:49` falls back to when
 /// `OAUTH_STATE_SIGNING_KEY` is unset — Vuln 2.
 const DEFAULT_SIGNING_KEY: &str = "mcp-gateway-state";
@@ -268,12 +294,25 @@ async fn authorize_on_inaccessible_connector_forbidden() {
 #[tokio::test]
 #[serial]
 async fn callback_round_trips_through_token_exchange() {
+    allow_private_urls();
     set_signing_key(SIGNING_KEY);
     set_gateway_public_url();
     let token_url = start_stub_token_server().await;
     let server = common::TestServer::start().await;
     let (_uid, uuid) = init_admin(&server).await;
     let cid = seed_oauth_connector_with_token_endpoint(&server, uuid, "cb-tool", &token_url).await;
+    // The token exchange succeeds against `token_url` regardless, but a
+    // successful exchange now also triggers a live verification call against
+    // the connector's own resource `url` (`verify_connector_live`) — point it
+    // at a real, working stub instead of the placeholder 'https://example.com'
+    // `seed_connector` uses by default, or that call would (correctly) fail.
+    let resource_url = start_stub_mcp_server_ok().await;
+    sqlx::query("UPDATE mcp_connectors SET url = $2 WHERE id = $1")
+        .bind(cid)
+        .bind(&resource_url)
+        .execute(&server.db)
+        .await
+        .unwrap();
 
     // Same-origin as the configured gateway public URL, so fix #3's
     // `safe_redirect` honors it verbatim (an off-origin target would be
@@ -341,6 +380,7 @@ async fn callback_round_trips_through_token_exchange() {
 
     clear_signing_key();
     clear_gateway_public_url();
+    disallow_private_urls();
     server.cleanup().await;
 }
 

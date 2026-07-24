@@ -1,7 +1,7 @@
 //! Custom MCP connector registration, probe, sharing, and deletion — pure logic
 //! behind `/api/mcp/connectors*`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -33,8 +33,6 @@ pub fn connector_dto(c: &McpConnector) -> Value {
         "logo_url": c.logo_url,
         "is_active": c.active(),
         "oauth_configured": c.oauth_configured(),
-        "source_kind": c.source_kind,
-        "build_status": c.build_status,
         "setup_status": c.setup_status,
         "setup_error": c.setup_error,
         "created_at": c.created_at,
@@ -84,6 +82,11 @@ pub async fn probe_initialize(
         .post(url)
         .timeout(std::time::Duration::from_secs(10))
         .header("Content-Type", "application/json")
+        // Required by the MCP Streamable HTTP transport spec — a spec-compliant
+        // no-auth server (e.g. mcp.deepwiki.com) responds 406 without this and
+        // gets misclassified as requiring a bearer token, for a reason that has
+        // nothing to do with authentication.
+        .header("Accept", "application/json, text/event-stream")
         .body(
             json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -110,6 +113,27 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
     let url = url.trim_end_matches('/').to_string();
     crate::net::validate_public_url(&url).await?;
 
+    // Primary: RFC 9728 direct discovery — the MCP spec's own recommended
+    // method, and deterministic when a server implements it (unlike guessing
+    // from a bare unauthenticated response, which is a real, verified source
+    // of false classifications — see classify_response's doc comment).
+    if crate::oauth::fetch_protected_resource_metadata(&state.guarded_http_client, &url)
+        .await
+        .is_some()
+    {
+        return Ok(json!({
+            "url": url,
+            "auth_type": "oauth2",
+            "requires": "oauth_flow",
+            "hint": "This server publishes OAuth 2.0 Protected Resource Metadata (RFC 9728) \
+                     — it supports OAuth 2.1. You will be redirected to authorize."
+                .to_string(),
+        }));
+    }
+
+    // Fallback: no well-known metadata found (either the server doesn't
+    // support OAuth, or — confirmed live for at least one real server,
+    // Atlassian — it does but doesn't publish RFC 9728 metadata at all).
     // Guarded client: `validate_public_url` is a one-shot pre-check; the probe
     // itself must go through the SSRF/DNS-rebinding-guarded client so a rebinding
     // DNS can't point it at an internal address between the two resolutions.
@@ -186,7 +210,9 @@ pub async fn register_connector(
 
     // `none` needs nothing further; every other auth_type still needs a
     // credential registered (bearer/basic/url_param) or a browser OAuth
-    // round-trip (oauth2) before the connector is actually usable.
+    // round-trip (oauth2) before the connector is actually usable. `basic`
+    // supplied here at registration time is the one exception — it becomes
+    // immediately verifiable, handled below once the connector row exists.
     let initial_setup_status = if input.auth_type == "none" {
         "active"
     } else {
@@ -195,6 +221,7 @@ pub async fn register_connector(
 
     // For basic auth, precompute the Authorization: Basic header into static headers.
     let mut headers = input.headers.clone().unwrap_or_default();
+    let basic_ready = input.auth_type == "basic" && input.basic_username.is_some() && input.basic_password.is_some();
     if input.auth_type == "basic"
         && let (Some(u), Some(p)) = (&input.basic_username, &input.basic_password)
     {
@@ -229,10 +256,20 @@ pub async fn register_connector(
         },
     )
     .await?;
-    repo::set_connector_setup_status(&state.db, connector.id, initial_setup_status, None).await?;
-    tracing::info!(name = %connector.name, %owner_id, "registered mcp connector");
+
+    // `basic` supplied at registration is immediately verifiable — prove it
+    // actually works instead of leaving it marked `pending` indefinitely.
+    let (final_status, final_error) = if basic_ready {
+        let outcome = crate::credentials::verify_connector_live(state, owner_id, &connector).await;
+        if outcome.verified { ("active".to_string(), None) } else { ("failed".to_string(), outcome.error) }
+    } else {
+        (initial_setup_status.to_string(), None)
+    };
+    repo::set_connector_setup_status(&state.db, connector.id, &final_status, final_error.as_deref()).await?;
+    tracing::info!(name = %connector.name, %owner_id, setup_status = %final_status, "registered mcp connector");
     Ok(McpConnector {
-        setup_status: Some(initial_setup_status.to_string()),
+        setup_status: Some(final_status),
+        setup_error: final_error,
         ..connector
     })
 }
@@ -339,115 +376,22 @@ pub async fn update_connector(
     Ok(updated)
 }
 
-/// `GET /api/mcp/connectors` — custom connectors visible to the caller,
-/// grouped into "created_by_you" and "shared_with_you" with per-card
-/// metadata (tool count, connection status, version, author).
+/// `GET /api/mcp/connectors` — custom connectors visible to the caller.
 pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Value> {
     let connectors = state
         .authorizer
         .list_accessible_mcp_connectors(&state.db, user_id)
         .await?;
-
-    let ids: Vec<Uuid> = connectors.iter().map(|c| c.id).collect();
-
-    // Batch-fetch tool counts.
-    let tool_counts: HashMap<Uuid, i64> = if ids.is_empty() {
-        HashMap::new()
-    } else {
-        sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT connector_id, COUNT(*) FROM mcp_connector_tools \
-             WHERE connector_id = ANY($1) GROUP BY connector_id",
-        )
-        .bind(&ids)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-    };
-
-    // Batch-fetch caller's connection status.
-    let connected_set: HashSet<Uuid> = if ids.is_empty() {
-        HashSet::new()
-    } else {
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT connector_id FROM mcp_user_connections \
-             WHERE connector_id = ANY($1) AND user_id = $2 AND status = 'ACTIVE'",
-        )
-        .bind(&ids)
-        .bind(user_id)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-    };
-
-    // Batch-fetch version tags for uploaded connectors.
-    let version_map: HashMap<Uuid, String> = if ids.is_empty() {
-        HashMap::new()
-    } else {
-        sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT DISTINCT ON (connector_id) connector_id, version_tag \
-             FROM mcp_connector_builds WHERE connector_id = ANY($1) \
-             ORDER BY connector_id, created_at DESC",
-        )
-        .bind(&ids)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-    };
-
-    // Batch-fetch owner usernames.
-    let owner_ids: Vec<Uuid> = connectors
+    let data: Vec<Value> = connectors
         .iter()
-        .filter_map(|c| c.owner_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
+        .map(|c| {
+            let mut dto = connector_dto(c);
+            dto["is_owner"] = json!(c.owner_id == Some(user_id));
+            dto
+        })
         .collect();
-    let owner_names: HashMap<Uuid, String> = if owner_ids.is_empty() {
-        HashMap::new()
-    } else {
-        sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, username FROM users WHERE id = ANY($1)",
-        )
-        .bind(&owner_ids)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-    };
-
-    let mut created_by_you = Vec::new();
-    let mut shared_with_you = Vec::new();
-
-    for c in &connectors {
-        let is_owner = c.owner_id == Some(user_id);
-        let mut dto = connector_dto(c);
-        dto["is_owner"] = json!(is_owner);
-        dto["tool_count"] = json!(tool_counts.get(&c.id).copied().unwrap_or(0));
-        dto["is_connected"] = json!(connected_set.contains(&c.id));
-        dto["version"] = json!(version_map.get(&c.id));
-        if let Some(oid) = c.owner_id {
-            dto["owner_username"] = json!(owner_names.get(&oid));
-        }
-
-        if is_owner {
-            created_by_you.push(dto);
-        } else {
-            shared_with_you.push(dto);
-        }
-    }
-
-    let total = created_by_you.len() + shared_with_you.len();
-    Ok(json!({
-        "created_by_you": created_by_you,
-        "shared_with_you": shared_with_you,
-        "total": total,
-    }))
+    let total = data.len();
+    Ok(json!({ "connectors": data, "total": total }))
 }
 
 /// `GET /api/mcp/connectors/{id}` — a single connector. 404s (not 403) when the
@@ -471,88 +415,6 @@ pub async fn get_connector_view(
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
     let mut dto = connector_dto(&connector);
     dto["is_owner"] = json!(connector.owner_id == Some(user_id));
-
-    // Tool count
-    let tool_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
-    dto["tool_count"] = json!(tool_count);
-
-    // Connection count
-    let connection_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mcp_user_connections WHERE connector_id = $1",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
-    dto["connection_count"] = json!(connection_count);
-
-    // Is public
-    let is_public: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM mcp_connector_grants WHERE connector_id = $1 AND grant_type = 'public')",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
-    dto["is_public"] = json!(is_public);
-
-    // Version tag + image tag (uploaded builds only)
-    if connector.source_kind == repo::SourceKind::UploadedBuild {
-        let build_info: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT version_tag, image_reference FROM mcp_connector_builds \
-             WHERE connector_id = $1 ORDER BY created_at DESC LIMIT 1",
-        )
-        .bind(connector_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-        if let Some((version, image)) = build_info {
-            dto["version"] = json!(version);
-            dto["image_tag"] = json!(image);
-        }
-    }
-
-    // Owner username
-    if let Some(owner_id) = connector.owner_id {
-        let owner_name: Option<String> = sqlx::query_scalar(
-            "SELECT username FROM users WHERE id = $1",
-        )
-        .bind(owner_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-        dto["owner_username"] = json!(owner_name);
-    }
-
-    // Caller's credential status
-    let has_credential: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM mcp_credentials WHERE connector_id = $1 AND user_id = $2)",
-    )
-    .bind(connector_id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
-    dto["has_credential"] = json!(has_credential);
-
-    // Agent grant count (how many agents have access)
-    let agent_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mcp_connector_grants WHERE connector_id = $1 AND grant_type = 'agent'",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
-    dto["agent_count"] = json!(agent_count);
-
     Ok(dto)
 }
 
@@ -601,8 +463,8 @@ pub async fn delete_connector(state: &McpState, connector: &McpConnector) -> Res
 
 /// Who a connector is being shared with.
 pub enum ShareTarget {
-    /// A specific user by ID.
-    User(Uuid),
+    /// A specific username.
+    User(String),
     /// Everyone (`'*'`).
     Public,
 }
@@ -680,19 +542,11 @@ async fn resolve_target(
 ) -> Result<(&'static str, String, Option<Uuid>)> {
     match target {
         ShareTarget::Public => Ok((GrantType::Public.as_str(), PUBLIC_GRANTEE.to_string(), None)),
-        ShareTarget::User(user_id) => {
-            // Verify the user exists.
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)",
-            )
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await
-            .map_err(McpError::Database)?;
-            if !exists {
-                return Err(McpError::NotFound(format!("user '{user_id}' not found")));
-            }
-            Ok((GrantType::User.as_str(), user_id.to_string(), Some(user_id)))
+        ShareTarget::User(username) => {
+            let uid = repo::resolve_username_to_user_id(&state.db, &username)
+                .await?
+                .ok_or_else(|| McpError::NotFound(format!("user '{username}' not found")))?;
+            Ok((GrantType::User.as_str(), uid.to_string(), Some(uid)))
         }
     }
 }
@@ -824,38 +678,14 @@ pub async fn list_consumers_view(
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
     let agents = repo::list_configured_agent_consumers(&state.db, connector.id).await?;
 
-    // Total tools for this connector (for "X of Y" display).
-    let total_tools: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
-
     let agents_json: Vec<Value> = agents
         .into_iter()
         .map(|a| {
-            // Count explicitly blocked tools from tool_rules.
-            let blocked_count = a
-                .tool_rules
-                .as_array()
-                .map(|rules| {
-                    rules
-                        .iter()
-                        .filter(|r| r.get("stance").and_then(|s| s.as_str()) == Some("block"))
-                        .count() as i64
-                })
-                .unwrap_or(0);
-            let tools_used = (total_tools - blocked_count).max(0);
-
             json!({
                 "agent_id": a.agent_id,
                 "agent_name": a.agent_name,
                 "agent_owner_id": a.agent_owner_id,
                 "enabled": a.enabled,
-                "tools_used": tools_used,
-                "total_tools": total_tools,
                 "tool_rules": a.tool_rules,
             })
         })
@@ -1006,5 +836,31 @@ mod tests {
             assert!(AUTH_TYPES.contains(&kind));
         }
         assert_eq!(AUTH_TYPES.len(), 5);
+    }
+
+    /// A spec-compliant no-auth Streamable HTTP server (e.g. mcp.deepwiki.com)
+    /// 406s a bare `initialize` unless the client sends this — without it,
+    /// probe misclassified every such server as requiring a bearer token,
+    /// for a reason unrelated to authentication.
+    #[tokio::test]
+    async fn probe_initialize_sends_the_streamable_http_accept_header() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/mcp")
+            .match_header("accept", "application/json, text/event-stream")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (detected, status) = probe_initialize(&client, &format!("{}/mcp", server.url()))
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+        assert_eq!(detected, DetectedAuthType::None);
+        assert_eq!(status, 200);
     }
 }

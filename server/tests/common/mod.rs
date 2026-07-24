@@ -346,6 +346,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL")
             .ok()
             .filter(|s| !s.is_empty()),
+        // None here too: falls back to mcp_gateway_public_url above, which the
+        // oauth callback test already sets to an HTTPS test domain — no
+        // separate override needed for that test to keep passing.
+        mcp_oauth_redirect_base_url: None,
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,

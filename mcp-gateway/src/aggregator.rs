@@ -180,6 +180,7 @@ mod tests {
                 composio_base_url: "http://localhost".to_string(),
                 composio_webhook_secret: None,
                 gateway_public_url: None,
+                oauth_redirect_base_url: None,
                 session_ttl_seconds: 60,
                 perm_cache_ttl_seconds: 60,
                 manifest_ttl_seconds: 60,

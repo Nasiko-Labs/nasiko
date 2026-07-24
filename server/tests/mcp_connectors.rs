@@ -141,6 +141,24 @@ async fn start_stub_mcp_server(
     format!("http://127.0.0.1:{port}/")
 }
 
+/// A real, live MCP backend that answers any JSON-RPC call with an empty
+/// `tools/list` result regardless of what it's asked — used wherever a test
+/// needs the live setup-verification step (`verify_connector_live`) to
+/// actually succeed, as opposed to `start_stub_mcp_server` above, which is
+/// for testing the auth-type *detection* heuristics against error responses.
+async fn start_stub_mcp_server_ok() -> String {
+    async fn respond() -> impl IntoResponse {
+        axum::Json(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}))
+    }
+    let app = Router::new().route("/", post(respond));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://127.0.0.1:{port}/")
+}
+
 // ─── catalog ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -424,11 +442,13 @@ async fn register_connector_is_owned_by_caller() {
 #[tokio::test]
 #[serial]
 async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
+    allow_private_urls();
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    // auth_type='none' (the default) needs nothing further — active immediately.
+    // auth_type='none' (the default) needs nothing further — active immediately,
+    // no live verification call at all (there's no credential to prove works).
     let res = common::as_superuser(
         server.client.post(server.url("/api/mcp/connectors")),
         uid,
@@ -444,12 +464,15 @@ async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
     assert!(body["data"]["setup_error"].is_null());
 
     // auth_type='bearer' needs a credential — pending until one is registered.
+    // Points at a real, live stub backend (not example.com) since registering
+    // the credential now triggers a genuine verification call.
+    let bearer_url = start_stub_mcp_server_ok().await;
     let res = common::as_superuser(
         server.client.post(server.url("/api/mcp/connectors")),
         uid,
         "admin",
     )
-    .json(&json!({"name": "ss-bearer-tool", "url": "https://example.com", "auth_type": "bearer"}))
+    .json(&json!({"name": "ss-bearer-tool", "url": bearer_url, "auth_type": "bearer"}))
     .send()
     .await
     .unwrap();
@@ -505,6 +528,7 @@ async fn setup_status_active_for_none_auth_pending_then_active_for_bearer() {
         "registering a credential must flip setup_status to active: {body:?}"
     );
 
+    disallow_private_urls();
     server.cleanup().await;
 }
 
@@ -995,6 +1019,49 @@ async fn probe_detects_auth_types() {
         "admin",
     )
     .json(&json!({"url": oauth_url}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.json::<Value>().await.unwrap()["data"]["auth_type"], "oauth2");
+
+    disallow_private_urls();
+    server.cleanup().await;
+}
+
+/// RFC 9728 direct discovery must win over the header-sniffing heuristic even
+/// when they'd disagree — the bare `POST /` here returns 200 (which alone
+/// would classify as "none"), but a real OAuth-capable server publishing
+/// well-known metadata should still be detected as oauth2.
+#[tokio::test]
+#[serial]
+async fn probe_prefers_rfc9728_well_known_discovery_over_header_heuristic() {
+    allow_private_urls();
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    async fn well_known() -> impl IntoResponse {
+        axum::Json(json!({ "resource": "x", "authorization_servers": ["https://as.example.com"] }))
+    }
+    let app = Router::new()
+        .route("/", post(|| async { StatusCode::OK }))
+        .route(
+            "/.well-known/oauth-protected-resource",
+            axum::routing::get(well_known),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let url = format!("http://127.0.0.1:{port}/");
+
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors/probe")),
+        uid,
+        "admin",
+    )
+    .json(&json!({"url": url}))
     .send()
     .await
     .unwrap();
