@@ -94,7 +94,9 @@ async fn queue_upload(
     source: McpBuildSourcePayload,
     env: HashMap<String, String>,
 ) -> Result<(Uuid, Uuid), McpError> {
-    let image_tag = format!("mcp-{}:{}", name, version_tag);
+    let image_tag = crate::agents::build_image_tag(
+        &state.config.agent_image_registry, &format!("mcp-{name}"), &version_tag,
+    );
 
     let mut tx = state.db.begin().await?;
 
@@ -304,6 +306,9 @@ pub async fn execute_mcp_server_build(
     mcp_servers_network: String,
     upload_default_port: u16,
     git_clone_allowed_hosts: Vec<String>,
+    agent_runtime: String,
+    agent_image_registry: String,
+    max_replicas: u32,
 ) {
     let _ = owner_id; // kept for signature symmetry with execute_upload_and_deploy; not needed by any query here
     mark_building(&db, build_id, connector_id).await;
@@ -347,13 +352,20 @@ pub async fn execute_mcp_server_build(
         runtime.build(&tar_bytes, &image_tag).await.map_err(|e| format!("docker build: {e}"))?;
 
         // 6-7. Deploy.
-        let spec = build_mcp_server_spec(
+        let mut spec = build_mcp_server_spec(
             connector_id,
             image_tag.clone(),
             build_secrets_env.clone(),
             upload_default_port,
             mcp_servers_network.clone(),
+            max_replicas,
         );
+        // Mint the K8s image-pull Secret exactly as the agent upload path does
+        // (upload.rs:596). No-ops under Docker (short-circuits when
+        // agent_runtime != "kubernetes").
+        crate::agents::attach_pull_credential(
+            &db, &agent_runtime, &agent_image_registry, &mut spec, connector_id,
+        ).await;
         runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
 
         // 8. Resolve the internal endpoint. The platform's own path convention
@@ -443,6 +455,7 @@ fn build_mcp_server_spec(
     mut env: HashMap<String, String>,
     port: u16,
     network: String,
+    max_replicas: u32,
 ) -> DeploymentSpec {
     // The platform's chosen convention — documented to users: "your server
     // must read $PORT and bind 0.0.0.0:$PORT" (the same convention
@@ -456,11 +469,12 @@ fn build_mcp_server_spec(
         env_vars: env,
         resources: None, // DockerRuntime defaults None to ResourceLimits::default()
         min_replicas: 1,
-        max_replicas: 1, // OSS Docker has no scaling story regardless
+        max_replicas,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
         harden: true,
         network_override: Some(network),
+        workload_kind: nasiko_runtime::WorkloadKind::McpConnector,
     }
 }
 
@@ -594,6 +608,7 @@ mod tests {
             env,
             8080,
             "nasiko-mcp-servers-net".to_string(),
+            3,
         );
         assert_eq!(spec.env_vars.get("PORT").map(String::as_str), Some("8080"));
         assert_eq!(spec.env_vars.get("STRIPE_KEY").map(String::as_str), Some("sk_test"));
@@ -601,8 +616,37 @@ mod tests {
         assert!(spec.harden);
         assert_eq!(spec.network_override.as_deref(), Some("nasiko-mcp-servers-net"));
         assert_eq!(spec.min_replicas, 1);
-        assert_eq!(spec.max_replicas, 1);
         assert_eq!(spec.container_id, ContainerId::from_uuid(connector_id));
+    }
+
+    #[test]
+    fn spec_sets_workload_kind_to_mcp_connector() {
+        let spec = build_mcp_server_spec(
+            Uuid::new_v4(),
+            "img:v1".to_string(),
+            HashMap::new(),
+            8080,
+            "net".to_string(),
+            1,
+        );
+        assert_eq!(
+            spec.workload_kind,
+            nasiko_runtime::WorkloadKind::McpConnector,
+            "MCP connector specs must set workload_kind to McpConnector"
+        );
+    }
+
+    #[test]
+    fn spec_max_replicas_comes_from_parameter() {
+        let spec = build_mcp_server_spec(
+            Uuid::new_v4(),
+            "img:v1".to_string(),
+            HashMap::new(),
+            8080,
+            "net".to_string(),
+            5,
+        );
+        assert_eq!(spec.max_replicas, 5, "max_replicas must match the parameter, not be hardcoded");
     }
 
     fn test_server_cfg(url: String) -> MCPServerConfig {

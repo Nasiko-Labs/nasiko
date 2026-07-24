@@ -66,6 +66,7 @@ fn test_spec() -> DeploymentSpec {
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
+        workload_kind: Default::default(),
     }
 }
 
@@ -222,6 +223,7 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
+        workload_kind: Default::default(),
     };
 
     // Deploy
@@ -287,6 +289,7 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
+        workload_kind: Default::default(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -342,6 +345,7 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
+        workload_kind: Default::default(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");

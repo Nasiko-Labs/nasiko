@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bollard::Docker;
+use bollard::container::LogsOptions;
 use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
     RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
@@ -9,18 +11,13 @@ use bollard::container::{
 use bollard::image::{BuildImageOptions, CreateImageOptions};
 use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
 use bollard::network::ConnectNetworkOptions;
-use bollard::container::LogsOptions;
-use bollard::Docker;
 use futures_util::StreamExt;
 use tracing::{instrument, warn};
 
 use crate::{
     ContainerRuntime,
     error::{Result, RuntimeError},
-    types::{
-        ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, RuntimeState,
-        validate_build_inputs,
-    },
+    types::{ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState, validate_build_inputs},
 };
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -123,9 +120,55 @@ impl DockerRuntime {
     fn container_id_from_name(name: &str) -> Option<ContainerId> {
         // Docker names arrive as "/nasiko-agent-{id}" from the list API
         let stripped = name.strip_prefix('/').unwrap_or(name);
-        stripped
-            .strip_prefix("nasiko-agent-")
-            .map(ContainerId::new)
+        stripped.strip_prefix("nasiko-agent-").map(ContainerId::new)
+    }
+
+    /// Idempotently ensures a bridge network named `name` exists. Called once at
+    /// server startup for `MCP_SERVERS_NETWORK` — never per-deploy, to avoid a
+    /// create/create race between concurrent deploys. Inspect-then-create rather
+    /// than `check_duplicate` (Docker networks are keyed by random ID, not name,
+    /// so `check_duplicate` cannot fully guarantee no duplicates are created).
+    pub async fn ensure_network(&self, name: &str) -> Result<()> {
+        match self
+            .client
+            .inspect_network(name, None::<bollard::network::InspectNetworkOptions<String>>)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(ref e) if is_not_found(e) => {
+                self.client
+                    .create_network(bollard::network::CreateNetworkOptions {
+                        name: name.to_owned(),
+                        driver: "bridge".to_owned(),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(map_bollard_err)?;
+                Ok(())
+            }
+            Err(e) => Err(map_bollard_err(e)),
+        }
+    }
+
+    /// Names of every Docker network `container_id`'s container is currently
+    /// attached to. Introspection helper (not part of `ContainerRuntime` — this
+    /// is Docker-specific, used to verify network-segmentation guarantees in
+    /// tests, e.g. that an uploaded MCP server's container is on
+    /// `mcp_servers_network` only, never the default network agents/DB/Redis
+    /// share).
+    pub async fn container_networks(&self, container_id: &ContainerId) -> Result<Vec<String>> {
+        container_id.validate()?;
+        let name = DockerRuntime::container_name(container_id);
+        let info = self
+            .client
+            .inspect_container(&name, None::<InspectContainerOptions>)
+            .await
+            .map_err(|e| if is_not_found(&e) { RuntimeError::ContainerNotFound(container_id.clone()) } else { map_bollard_err(e) })?;
+        Ok(info
+            .network_settings
+            .and_then(|ns| ns.networks)
+            .map(|nets| nets.into_keys().collect())
+            .unwrap_or_default())
     }
 }
 
@@ -212,20 +255,6 @@ fn map_summary_state(state: Option<&str>) -> RuntimeState {
     }
 }
 
-/// Parse Docker's `State.StartedAt`. Returns `None` for the "never started"
-/// sentinel (`"0001-01-01T00:00:00Z"`) or unparseable values.
-fn parse_docker_started_at(raw: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
-    use chrono::Datelike;
-
-    let parsed = chrono::DateTime::parse_from_rfc3339(raw?).ok()?;
-    // Docker reports year 1 for containers that never started; treat anything
-    // implausibly old as the sentinel rather than a real start time.
-    if parsed.year() < 2000 {
-        return None;
-    }
-    Some(parsed.with_timezone(&chrono::Utc))
-}
-
 // ── Port helpers ───────────────────────────────────────────────────────────────
 
 type PortBindingsMap = HashMap<String, Option<Vec<PortBinding>>>;
@@ -254,16 +283,51 @@ fn build_port_config(ports: &[u16], bind_host: &str) -> (PortBindingsMap, Expose
     (port_bindings, exposed_ports)
 }
 
+/// Builds the `HostConfig` for a container, applying OS-level hardening
+/// (read-only rootfs, dropped capabilities, no-new-privileges) when
+/// `spec.harden` is set — see `DeploymentSpec::harden`'s doc comment. Pure and
+/// hermetically testable: no Docker client involved.
+fn build_host_config(spec: &DeploymentSpec, port_bindings: PortBindingsMap) -> HostConfig {
+    let lim = spec.resources.as_ref().cloned().unwrap_or_default();
+    let base = HostConfig {
+        port_bindings: Some(port_bindings),
+        memory: Some(parse_memory_bytes(&lim.memory)),
+        nano_cpus: Some(lim.cpu_milli as i64 * 1_000_000),
+        // Without this, Docker creates every container on the default "bridge"
+        // network first; `create_and_start`'s later `connect_network` call
+        // only ever ADDS the target network, it never removes "bridge" — so a
+        // network-segmented deploy (network_override) ended up dual-homed on
+        // both the isolated network and the default one, defeating the whole
+        // point of segmentation (RUN-11, found via a real isolation test, not
+        // theoretical). Only `network_override` deploys are re-homed this way;
+        // ordinary agent deploys (which never set it) are unaffected.
+        network_mode: spec.network_override.clone(),
+        ..Default::default()
+    };
+    if spec.harden {
+        HostConfig {
+            readonly_rootfs: Some(true),
+            tmpfs: Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())])),
+            cap_drop: Some(vec!["ALL".to_owned()]),
+            security_opt: Some(vec!["no-new-privileges:true".to_owned()]),
+            ..base
+        }
+    } else {
+        base
+    }
+}
+
 /// Extract the first bound host port from a `NetworkSettings.Ports` map.
 /// Ports are sorted numerically so the lowest container port is preferred.
 /// Returns `None` if no bindings are present.
-fn extract_host_port(
-    ports: &HashMap<String, Option<Vec<PortBinding>>>,
-) -> Option<String> {
+fn extract_host_port(ports: &HashMap<String, Option<Vec<PortBinding>>>) -> Option<String> {
     let mut keys: Vec<&String> = ports.keys().collect();
     // Numeric sort: "10000/tcp" < "9000/tcp" lexicographically but 9000 < 10000 numerically
     keys.sort_by_key(|k| {
-        k.split('/').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(0)
+        k.split('/')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(0)
     });
 
     for key in keys {
@@ -285,13 +349,25 @@ fn parse_memory_bytes(s: &str) -> i64 {
     let msg = "parse_memory_bytes called with unvalidated input";
     let overflow = "memory value overflows i64 — validate() should have rejected this";
     if let Some(n) = s.strip_suffix("Gi") {
-        n.parse::<i64>().expect(msg).checked_mul(1024 * 1024 * 1024).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1024 * 1024 * 1024)
+            .expect(overflow)
     } else if let Some(n) = s.strip_suffix("Mi") {
-        n.parse::<i64>().expect(msg).checked_mul(1024 * 1024).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1024 * 1024)
+            .expect(overflow)
     } else if let Some(n) = s.strip_suffix("G") {
-        n.parse::<i64>().expect(msg).checked_mul(1_000_000_000).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1_000_000_000)
+            .expect(overflow)
     } else if let Some(n) = s.strip_suffix("M") {
-        n.parse::<i64>().expect(msg).checked_mul(1_000_000).expect(overflow)
+        n.parse::<i64>()
+            .expect(msg)
+            .checked_mul(1_000_000)
+            .expect(overflow)
     } else {
         s.parse::<i64>().expect(msg)
     }
@@ -326,10 +402,15 @@ fn extract_endpoint(
             if let Some(ports) = ns.ports.as_ref() {
                 let mut keys: Vec<&String> = ports.keys().collect();
                 keys.sort_by_key(|k| {
-                    k.split('/').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(0)
+                    k.split('/')
+                        .next()
+                        .and_then(|p| p.parse::<u16>().ok())
+                        .unwrap_or(0)
                 });
                 for key in keys {
-                    if let Some(container_port) = key.split('/').next().and_then(|p| p.parse::<u16>().ok()) {
+                    if let Some(container_port) =
+                        key.split('/').next().and_then(|p| p.parse::<u16>().ok())
+                    {
                         return Some(format!("http://{ip}:{container_port}"));
                     }
                 }
@@ -358,7 +439,9 @@ const ENV_VARS_LABEL: &str = "nasiko.com/env-vars";
 /// Read back the env vars recorded in [`ENV_VARS_LABEL`] on a running container.
 /// Returns `None` if the label is missing (pre-fix container) or fails to parse —
 /// callers should treat that as "unknown, assume changed" rather than as "unchanged".
-fn stored_env_vars(config: Option<&bollard::models::ContainerConfig>) -> Option<HashMap<String, String>> {
+fn stored_env_vars(
+    config: Option<&bollard::models::ContainerConfig>,
+) -> Option<HashMap<String, String>> {
     config
         .and_then(|c| c.labels.as_ref())
         .and_then(|l| l.get(ENV_VARS_LABEL))
@@ -390,11 +473,16 @@ async fn create_and_start(
             Some(host) if !spec.image.starts_with(host) => format!("{host}/{}", spec.image),
             _ => spec.image.clone(),
         };
-        let opts = CreateImageOptions { from_image: pull_ref.as_str(), ..Default::default() };
+        let opts = CreateImageOptions {
+            from_image: pull_ref.as_str(),
+            ..Default::default()
+        };
         let mut stream = client.create_image(Some(opts), None, None);
         while let Some(res) = stream.next().await {
             if let Err(e) = res {
-                return Err(RuntimeError::ImageNotFound(format!("pull {pull_ref} failed: {e}")));
+                return Err(RuntimeError::ImageNotFound(format!(
+                    "pull {pull_ref} failed: {e}"
+                )));
             }
         }
     }
@@ -407,13 +495,7 @@ async fn create_and_start(
 
     let (port_bindings, exposed_ports) = build_port_config(&spec.ports, bind_host);
 
-    let lim = spec.resources.as_ref().cloned().unwrap_or_default();
-    let host_config = HostConfig {
-        port_bindings: Some(port_bindings),
-        memory: Some(parse_memory_bytes(&lim.memory)),
-        nano_cpus: Some(lim.cpu_milli as i64 * 1_000_000),
-        ..Default::default()
-    };
+    let host_config = build_host_config(spec, port_bindings);
 
     // Record the env vars we actually asked for as a label (see ENV_VARS_LABEL) so a
     // later deploy() can detect changes without being confused by image-baked-in vars
@@ -421,12 +503,17 @@ async fn create_and_start(
     let env_json = serde_json::to_string(&spec.env_vars).unwrap_or_default();
     let labels = HashMap::from([(ENV_VARS_LABEL.to_owned(), env_json)]);
 
+    // Conventional "nobody" uid:gid — same value `ee/k8s-runtime` uses for its
+    // non-root pod security context, kept consistent across editions.
+    let user = spec.harden.then(|| "65534:65534".to_owned());
+
     let config = Config {
         image: Some(spec.image.clone()),
         env: Some(env_vec),
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
         labels: Some(labels),
+        user,
         ..Default::default()
     };
 
@@ -448,7 +535,15 @@ async fn create_and_start(
     .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
     .map_err(map_bollard_err)?;
 
-    if let Some(net) = network {
+    // `network_override` deploys already got `net` as their sole `NetworkMode`
+    // at creation (see `build_host_config`) — connecting again here would just
+    // error "already attached". Only deploys that rely on the runtime's
+    // *default* network (agents, which never set `network_override`) still
+    // need this explicit post-start connect, since their `NetworkMode` at
+    // creation was Docker's own default ("bridge"), not `net`.
+    if let Some(net) = network
+        && spec.network_override.is_none()
+    {
         let connect_opts = ConnectNetworkOptions {
             container: name.as_str(),
             ..Default::default()
@@ -534,17 +629,21 @@ impl ContainerRuntime for DockerRuntime {
 
         let name = DockerRuntime::container_name(&spec.container_id);
         let timeout = self.config.operation_timeout;
+        // Only the MCP-server-upload build path sets `network_override` — every
+        // existing agent deploy falls through to the runtime's default network.
+        let network = spec.network_override.as_deref().or(self.config.network.as_deref());
 
         match tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         {
             Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
             Ok(Err(ref e)) if is_not_found(e) => {
                 // Container does not exist: create and start it
-                create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout, self.config.registry_host.as_deref()).await?;
+                create_and_start(&self.client, spec, &self.config.bind_host, network, timeout, self.config.registry_host.as_deref()).await?;
             }
             Ok(Err(e)) => return Err(map_bollard_err(e)),
             Ok(Ok(existing)) => {
@@ -565,19 +664,23 @@ impl ContainerRuntime for DockerRuntime {
 
                 if existing_image == spec.image && !env_changed {
                     // Same image, same env: ensure the container is running (idempotent)
-                    let current_status = existing
-                        .state
-                        .as_ref()
-                        .and_then(|s| s.status);
+                    let current_status = existing.state.as_ref().and_then(|s| s.status);
 
                     if current_status != Some(ContainerStateStatusEnum::RUNNING) {
                         tokio::time::timeout(
                             timeout,
-                            self.client.start_container(&name, None::<StartContainerOptions<String>>),
+                            self.client
+                                .start_container(&name, None::<StartContainerOptions<String>>),
                         )
                         .await
                         .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
-                        .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+                        .or_else(|e| {
+                            if is_not_modified(&e) {
+                                Ok(())
+                            } else {
+                                Err(map_bollard_err(e))
+                            }
+                        })?;
                     }
                 } else {
                     // Different image or changed env/secrets: stop → remove → recreate.
@@ -586,11 +689,18 @@ impl ContainerRuntime for DockerRuntime {
                     // the container was recreated rather than left running.
                     tokio::time::timeout(
                         timeout,
-                        self.client.stop_container(&name, None::<StopContainerOptions>),
+                        self.client
+                            .stop_container(&name, None::<StopContainerOptions>),
                     )
                     .await
                     .map_err(|_| RuntimeError::Timeout("stop_container".to_owned()))?
-                    .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+                    .or_else(|e| {
+                        if is_not_modified(&e) {
+                            Ok(())
+                        } else {
+                            Err(map_bollard_err(e))
+                        }
+                    })?;
 
                     tokio::time::timeout(
                         timeout,
@@ -606,12 +716,12 @@ impl ContainerRuntime for DockerRuntime {
                     .map_err(|_| RuntimeError::Timeout("remove_container".to_owned()))?
                     .map_err(map_bollard_err)?;
 
-                    create_and_start(&self.client, spec, &self.config.bind_host, self.config.network.as_deref(), timeout, self.config.registry_host.as_deref()).await?;
+                    create_and_start(&self.client, spec, &self.config.bind_host, network, timeout, self.config.registry_host.as_deref()).await?;
                 }
             }
         }
 
-        inspect_to_status(&self.client, &spec.container_id, self.config.network.as_deref(), timeout).await
+        inspect_to_status(&self.client, &spec.container_id, network, timeout).await
     }
 
     #[instrument(skip(self))]
@@ -622,7 +732,8 @@ impl ContainerRuntime for DockerRuntime {
 
         match tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         {
@@ -635,11 +746,18 @@ impl ContainerRuntime for DockerRuntime {
         // Stop first (ignore 304 = already stopped)
         tokio::time::timeout(
             timeout,
-            self.client.stop_container(&name, None::<StopContainerOptions>),
+            self.client
+                .stop_container(&name, None::<StopContainerOptions>),
         )
         .await
         .map_err(|_| RuntimeError::Timeout("stop_container".to_owned()))?
-        .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+        .or_else(|e| {
+            if is_not_modified(&e) {
+                Ok(())
+            } else {
+                Err(map_bollard_err(e))
+            }
+        })?;
 
         tokio::time::timeout(
             timeout,
@@ -671,13 +789,14 @@ impl ContainerRuntime for DockerRuntime {
         // Verify the container exists
         match tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         {
             Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
             Ok(Err(ref e)) if is_not_found(e) => {
-                return Err(RuntimeError::ContainerNotFound(container_id.clone()))
+                return Err(RuntimeError::ContainerNotFound(container_id.clone()));
             }
             Ok(Err(e)) => return Err(map_bollard_err(e)),
             Ok(Ok(_)) => {}
@@ -686,11 +805,18 @@ impl ContainerRuntime for DockerRuntime {
         if replicas == 0 {
             tokio::time::timeout(
                 timeout,
-                self.client.stop_container(&name, None::<StopContainerOptions>),
+                self.client
+                    .stop_container(&name, None::<StopContainerOptions>),
             )
             .await
             .map_err(|_| RuntimeError::Timeout("stop_container".to_owned()))?
-            .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+            .or_else(|e| {
+                if is_not_modified(&e) {
+                    Ok(())
+                } else {
+                    Err(map_bollard_err(e))
+                }
+            })?;
         } else {
             if replicas > 1 {
                 // Docker supports only a single container per name. Scaling to N > 1
@@ -704,11 +830,18 @@ impl ContainerRuntime for DockerRuntime {
             }
             tokio::time::timeout(
                 timeout,
-                self.client.start_container(&name, None::<StartContainerOptions<String>>),
+                self.client
+                    .start_container(&name, None::<StartContainerOptions<String>>),
             )
             .await
             .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
-            .or_else(|e| if is_not_modified(&e) { Ok(()) } else { Err(map_bollard_err(e)) })?;
+            .or_else(|e| {
+                if is_not_modified(&e) {
+                    Ok(())
+                } else {
+                    Err(map_bollard_err(e))
+                }
+            })?;
         }
 
         Ok(())
@@ -722,7 +855,8 @@ impl ContainerRuntime for DockerRuntime {
 
         tokio::time::timeout(
             timeout,
-            self.client.restart_container(&name, None::<RestartContainerOptions>),
+            self.client
+                .restart_container(&name, None::<RestartContainerOptions>),
         )
         .await
         .map_err(|_| RuntimeError::Timeout("restart_container".to_owned()))?
@@ -740,7 +874,13 @@ impl ContainerRuntime for DockerRuntime {
     #[instrument(skip(self))]
     async fn status(&self, container_id: &ContainerId) -> Result<DeploymentStatus> {
         container_id.validate()?;
-        inspect_to_status(&self.client, container_id, self.config.network.as_deref(), self.config.operation_timeout).await
+        inspect_to_status(
+            &self.client,
+            container_id,
+            self.config.network.as_deref(),
+            self.config.operation_timeout,
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -791,86 +931,6 @@ impl ContainerRuntime for DockerRuntime {
         Ok(statuses)
     }
 
-    /// One entry per running `nasiko-agent-*` container, with the Docker
-    /// container ID as `instance_key` and the true `State.StartedAt`.
-    ///
-    /// Error policy: any transport-level failure (list, non-404 inspect) fails
-    /// the whole call — a partial list would make the container-hours meter
-    /// mass-close billing sessions for instances that are still alive. Only a
-    /// container that disappeared between list and inspect (404) is skipped.
-    #[instrument(skip(self))]
-    async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
-        let timeout = self.config.operation_timeout;
-        let mut filters: HashMap<String, Vec<String>> = HashMap::new();
-        // Anchor with ^/ to avoid substring matches (e.g. old-nasiko-agent-foo)
-        filters.insert("name".to_owned(), vec!["^/nasiko-agent-".to_owned()]);
-
-        let options = ListContainersOptions::<String> {
-            all: false, // running containers only — stopped instances are not billable
-            filters,
-            ..Default::default()
-        };
-
-        let containers = tokio::time::timeout(timeout, self.client.list_containers(Some(options)))
-            .await
-            .map_err(|_| RuntimeError::Timeout("list_containers".to_owned()))?
-            .map_err(map_bollard_err)?;
-
-        let mut instances = Vec::with_capacity(containers.len());
-
-        for container in containers {
-            let Some(docker_id) = container.id.as_deref() else {
-                continue;
-            };
-
-            let name = container
-                .names
-                .as_deref()
-                .and_then(|names| names.first())
-                .map(String::as_str)
-                .unwrap_or("");
-
-            let Some(container_id) = DockerRuntime::container_id_from_name(name) else {
-                continue;
-            };
-
-            // Inspect for the true StartedAt and authoritative state. A container
-            // that stopped between list and inspect is skipped, not an error.
-            let info = match tokio::time::timeout(
-                timeout,
-                self.client
-                    .inspect_container(docker_id, None::<InspectContainerOptions>),
-            )
-            .await
-            {
-                Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
-                Ok(Err(ref e)) if is_not_found(e) => continue,
-                Ok(Err(e)) => return Err(map_bollard_err(e)),
-                Ok(Ok(info)) => info,
-            };
-
-            let container_state = info.state.as_ref();
-            let state = map_container_state(
-                container_state.and_then(|s| s.status),
-                container_state.and_then(|s| s.exit_code),
-            );
-            let started_at =
-                parse_docker_started_at(container_state.and_then(|s| s.started_at.as_deref()));
-
-            instances.push(InstanceInfo {
-                container_id,
-                // Docker container ID (64-hex), NOT the name: names are reused across
-                // recreate cycles, and `docker restart` keeps the ID but resets
-                // StartedAt — the (instance_key, started_at) identity the meter keys on.
-                instance_key: docker_id.to_owned(),
-                started_at,
-                ready: state == RuntimeState::Running,
-            });
-        }
-
-        Ok(instances)
-    }
-
     #[instrument(skip(self))]
     async fn endpoint(&self, container_id: &ContainerId) -> Result<String> {
         container_id.validate()?;
@@ -879,7 +939,8 @@ impl ContainerRuntime for DockerRuntime {
 
         let info = tokio::time::timeout(
             timeout,
-            self.client.inspect_container(&name, None::<InspectContainerOptions>),
+            self.client
+                .inspect_container(&name, None::<InspectContainerOptions>),
         )
         .await
         .map_err(|_| RuntimeError::Timeout("inspect_container".to_owned()))?
@@ -891,8 +952,9 @@ impl ContainerRuntime for DockerRuntime {
             }
         })?;
 
-        extract_endpoint(&info.network_settings, self.config.network.as_deref())
-            .ok_or_else(|| RuntimeError::Internal(format!("container {name} has no reachable endpoint")))
+        extract_endpoint(&info.network_settings, self.config.network.as_deref()).ok_or_else(|| {
+            RuntimeError::Internal(format!("container {name} has no reachable endpoint"))
+        })
     }
 
     #[instrument(skip(self))]
@@ -983,27 +1045,48 @@ impl ContainerRuntime for DockerRuntime {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
-mod tests {
+mod hardening_tests {
     use super::*;
 
-    #[test]
-    fn parse_docker_started_at_accepts_valid_rfc3339() {
-        let parsed = parse_docker_started_at(Some("2026-07-21T10:00:05.123456789Z"))
-            .expect("valid RFC3339 timestamp should parse");
-        assert_eq!(parsed.to_rfc3339(), "2026-07-21T10:00:05.123456789+00:00");
+    fn spec(harden: bool) -> DeploymentSpec {
+        DeploymentSpec {
+            container_id: ContainerId::new("test-hardening"),
+            name: "test-hardening".to_owned(),
+            image: "alpine:latest".to_owned(),
+            min_replicas: 1,
+            max_replicas: 1,
+            env_vars: HashMap::new(),
+            ports: vec![8080],
+            resources: None,
+            image_pull_secret_name: None,
+            image_pull_credential_seed: None,
+            harden,
+            network_override: None,
+            workload_kind: Default::default(),
+        }
     }
 
     #[test]
-    fn parse_docker_started_at_rejects_never_started_sentinel() {
-        assert_eq!(parse_docker_started_at(Some("0001-01-01T00:00:00Z")), None);
+    fn harden_true_sets_all_hardening_fields() {
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&spec(true), bindings);
+        assert_eq!(hc.readonly_rootfs, Some(true));
+        assert_eq!(
+            hc.tmpfs,
+            Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())]))
+        );
+        assert_eq!(hc.cap_drop, Some(vec!["ALL".to_owned()]));
+        assert_eq!(hc.security_opt, Some(vec!["no-new-privileges:true".to_owned()]));
     }
 
     #[test]
-    fn parse_docker_started_at_rejects_garbage_and_none() {
-        assert_eq!(parse_docker_started_at(Some("not-a-timestamp")), None);
-        assert_eq!(parse_docker_started_at(None), None);
+    fn harden_false_leaves_hardening_fields_unset() {
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&spec(false), bindings);
+        assert_eq!(hc.readonly_rootfs, None);
+        assert_eq!(hc.tmpfs, None);
+        assert_eq!(hc.cap_drop, None);
+        assert_eq!(hc.security_opt, None);
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use sqlx::PgPool;
@@ -13,13 +14,20 @@ const MAX_ATTEMPTS: i32 = 3;
 const STUCK_JOB_MINS: i64 = 60;
 
 use super::update::{AgentVersionRow, execute_agent_rollback, execute_agent_update};
-use super::upload::{BuildJobPayload, execute_clone_and_deploy, execute_github_clone_and_deploy, execute_upload_and_deploy};
+use super::upload::{
+    BuildJobPayload, McpBuildSourcePayload, execute_clone_and_deploy,
+    execute_github_clone_and_deploy, execute_upload_and_deploy,
+};
 use crate::build::routes::execute_build;
 
+/// A job targets exactly one of an agent or an MCP connector — enforced by
+/// `chk_build_jobs_one_target` (`026_mcp_connector_uploads.sql`), so `agent_id`
+/// and `connector_id` are never both `Some`.
 #[derive(Debug, sqlx::FromRow)]
 struct BuildJob {
     id: Uuid,
-    agent_id: Uuid,
+    agent_id: Option<Uuid>,
+    connector_id: Option<Uuid>,
     payload: serde_json::Value,
     attempt: i32,
 }
@@ -84,12 +92,16 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             // Inline attempt cap: fail immediately if this claim pushed attempt over the limit.
             if old_attempt >= MAX_ATTEMPTS {
                 mark_job(&state.db, job_id, "failed", Some("max attempts exceeded")).await;
-                // Must also terminalize the agent here, not just the job row: once this
-                // row is 'failed' it falls outside recover_stuck_jobs's exhausted-job
-                // query (which only re-scans rows still 'in_progress'), so without this
-                // call the agent would stay 'deploying' forever with no path back to a
-                // terminal state (RUN-4).
-                fail_agent_terminal(&state.db, job.agent_id).await;
+                // Must also terminalize the agent/connector here, not just the job row:
+                // once this row is 'failed' it falls outside recover_stuck_jobs's
+                // exhausted-job query (which only re-scans rows still 'in_progress'), so
+                // without this call the target would stay in a non-terminal state forever
+                // with no path back (RUN-4, extended to MCP connectors).
+                if let Some(agent_id) = job.agent_id {
+                    fail_agent_terminal(&state.db, agent_id).await;
+                } else if let Some(connector_id) = job.connector_id {
+                    crate::mcp::build::fail_mcp_connector_terminal(&state.db, connector_id).await;
+                }
                 tracing::warn!(job_id = %job_id, attempt = old_attempt + 1, "build worker: job exceeded max attempts");
                 continue; // try next job
             }
@@ -118,13 +130,13 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 /// embedding it as a string literal in two separate SQL statements.
 async fn recover_stuck_jobs(db: &PgPool) {
     // Permanently fail exhausted jobs (>= MAX_ATTEMPTS attempts already made).
-    // RETURNING agent_id so we can also drive those agents to a terminal state
-    // (RUN-4) — otherwise agent_builds stays 'building' / agents 'deploying' and
-    // the deploy SSE waits forever.
-    match sqlx::query_as::<_, (Uuid,)>(
+    // RETURNING agent_id, connector_id so we can also drive the target to a
+    // terminal state (RUN-4, extended to MCP connectors) — otherwise its
+    // *_builds row stays 'building' and any waiting SSE/poll waits forever.
+    match sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>)>(
         "UPDATE build_jobs SET status = 'failed', error_msg = 'max attempts exceeded', completed_at = now()
          WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt >= $1
-         RETURNING agent_id",
+         RETURNING agent_id, connector_id",
     )
     .bind(MAX_ATTEMPTS)
     .bind(STUCK_JOB_MINS)
@@ -132,8 +144,12 @@ async fn recover_stuck_jobs(db: &PgPool) {
     .await
     {
         Ok(rows) => {
-            for (agent_id,) in rows {
-                fail_agent_terminal(db, agent_id).await;
+            for (agent_id, connector_id) in rows {
+                if let Some(agent_id) = agent_id {
+                    fail_agent_terminal(db, agent_id).await;
+                } else if let Some(connector_id) = connector_id {
+                    crate::mcp::build::fail_mcp_connector_terminal(db, connector_id).await;
+                }
             }
         }
         Err(e) => tracing::error!(%e, "build worker: exhausted-job recovery query failed"),
@@ -168,7 +184,7 @@ async fn claim_next_job(state: &AppState) -> anyhow::Result<Option<BuildJob>> {
     let mut tx = state.db.begin().await?;
 
     let job = sqlx::query_as::<_, BuildJob>(
-        "SELECT id, agent_id, payload, attempt
+        "SELECT id, agent_id, connector_id, payload, attempt
          FROM build_jobs
          WHERE status = 'pending'
          ORDER BY created_at
@@ -213,7 +229,8 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
 
     tracing::info!(
         job_id = %job.id,
-        agent_id = %job.agent_id,
+        agent_id = ?job.agent_id,
+        connector_id = ?job.connector_id,
         name = %payload.label(),
         "build worker: job claimed"
     );
@@ -412,32 +429,64 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             )
             .await;
         }
+
+        BuildJobPayload::McpServerUpload {
+            build_id: _,
+            connector_id,
+            owner_id,
+            name,
+            source,
+            image_tag,
+            env,
+        } => {
+            let decrypted_env = decrypt_build_secrets(&env, owner_id);
+            let build_source = match source {
+                McpBuildSourcePayload::Zip { zip_path } => {
+                    crate::mcp::build::BuildSource::Zip(std::path::PathBuf::from(zip_path))
+                }
+                McpBuildSourcePayload::Github { url } => crate::mcp::build::BuildSource::Github { url },
+            };
+            crate::mcp::build::execute_mcp_server_build(
+                state.runtime.clone(),
+                state.db.clone(),
+                state.http_client.clone(),
+                build_id,
+                connector_id,
+                owner_id,
+                name,
+                build_source,
+                image_tag,
+                decrypted_env,
+                state.config.mcp_servers_network.clone(),
+                state.config.mcp_upload_default_port,
+                state.config.git_clone_allowed_hosts.clone(),
+                state.config.agent_runtime.clone(),
+                state.config.agent_image_registry.clone(),
+                state.config.mcp_upload_max_replicas,
+            )
+            .await;
+        }
     }
 
-    // Infer success/failure from the agent_builds status written by the execute function.
-    let build_status: Option<String> =
-        sqlx::query_scalar("SELECT status::text FROM agent_builds WHERE id = $1")
-            .bind(build_id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+    // Infer success/failure from the *_builds status written by the execute function.
+    let build_status = infer_build_status(&state.db, build_id, job.connector_id.is_some()).await;
 
     let (status, err) = match build_status.as_deref() {
         Some("success") => {
             tracing::info!(
                 job_id = %job.id,
-                agent_id = %job.agent_id,
+                agent_id = ?job.agent_id,
+                connector_id = ?job.connector_id,
                 duration_ms = start.elapsed().as_millis(),
                 "build worker: job completed"
             );
             ("done", None)
         }
         _ => {
-            tracing::error!(job_id = %job.id, agent_id = %job.agent_id, "build worker: job failed");
+            tracing::error!(job_id = %job.id, agent_id = ?job.agent_id, connector_id = ?job.connector_id, "build worker: job failed");
             (
                 "failed",
-                Some("build or deploy step failed — see agent_builds for details".to_string()),
+                Some("build or deploy step failed — see the relevant *_builds row for details".to_string()),
             )
         }
     };
@@ -455,14 +504,21 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
 async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
     if old_attempt >= MAX_ATTEMPTS {
         mark_job(db, job_id, "failed", Some("job panicked during execution")).await;
-        // Also terminalize the agent/build so the deploy SSE stops waiting (RUN-4).
-        if let Ok(Some((agent_id,))) =
-            sqlx::query_as::<_, (Uuid,)>("SELECT agent_id FROM build_jobs WHERE id = $1")
-                .bind(job_id)
-                .fetch_optional(db)
-                .await
+        // Also terminalize the agent/connector so any waiting SSE/poll stops (RUN-4,
+        // extended to MCP connectors).
+        if let Ok(Some((agent_id, connector_id))) =
+            sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>)>(
+                "SELECT agent_id, connector_id FROM build_jobs WHERE id = $1",
+            )
+            .bind(job_id)
+            .fetch_optional(db)
+            .await
         {
-            fail_agent_terminal(db, agent_id).await;
+            if let Some(agent_id) = agent_id {
+                fail_agent_terminal(db, agent_id).await;
+            } else if let Some(connector_id) = connector_id {
+                crate::mcp::build::fail_mcp_connector_terminal(db, connector_id).await;
+            }
         }
     } else if let Err(e) =
         sqlx::query("UPDATE build_jobs SET status = 'pending', picked_at = NULL WHERE id = $1")
@@ -497,6 +553,29 @@ async fn fail_agent_terminal(db: &PgPool, agent_id: Uuid) {
     super::utils::delete_agent_or_mark_failed(db, agent_id).await;
 }
 
+/// Reads the terminal status of `build_id` from whichever `*_builds` table
+/// actually owns it — `mcp_connector_builds` for an MCP job, `agent_builds`
+/// otherwise. `pub` (not `pub(crate)`) so it's directly testable from an
+/// integration test without needing to drive a job through the full worker
+/// loop just to exercise this branch.
+pub async fn infer_build_status(db: &PgPool, build_id: Uuid, is_mcp_job: bool) -> Option<String> {
+    if is_mcp_job {
+        sqlx::query_scalar("SELECT status FROM mcp_connector_builds WHERE id = $1")
+            .bind(build_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        sqlx::query_scalar("SELECT status::text FROM agent_builds WHERE id = $1")
+            .bind(build_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
 async fn mark_job(db: &PgPool, id: Uuid, status: &str, error: Option<&str>) {
     if let Err(e) = sqlx::query(
         "UPDATE build_jobs SET status = $2, error_msg = $3, completed_at = now() WHERE id = $1",
@@ -508,5 +587,59 @@ async fn mark_job(db: &PgPool, id: Uuid, status: &str, error: Option<&str>) {
     .await
     {
         tracing::error!(job_id = %id, %e, "build worker: failed to update job status");
+    }
+}
+
+/// Decrypts a `BuildJobPayload::McpServerUpload` job's `env` map — encrypted
+/// with the owner's per-user key before being persisted in `build_jobs.payload`
+/// JSONB, never plaintext at rest. Mirrors the "inject secrets at execution,
+/// not persisted in the payload" precedent (RUN-5) already used for agent LLM
+/// secrets. A value that fails to decrypt is dropped, not surfaced as an error
+/// — matches the existing silent-drop precedent in
+/// `catalog::agent_secrets::resolve_agent_env`.
+fn decrypt_build_secrets(env: &HashMap<String, String>, owner_id: Uuid) -> HashMap<String, String> {
+    let crypto = crate::secrets::crypto::SecretsCrypto::for_user(owner_id);
+    env.iter().filter_map(|(k, v)| crypto.decrypt(v).ok().map(|dv| (k.clone(), dv))).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::upload::McpBuildSourcePayload;
+
+    #[test]
+    fn mcp_server_upload_payload_round_trips_through_json() {
+        let payload = BuildJobPayload::McpServerUpload {
+            build_id: Uuid::new_v4(),
+            connector_id: Uuid::new_v4(),
+            owner_id: Uuid::new_v4(),
+            name: "test-connector".to_string(),
+            source: McpBuildSourcePayload::Github { url: "https://github.com/example/repo".to_string() },
+            image_tag: "test:v1".to_string(),
+            env: HashMap::from([("KEY".to_string(), "encrypted-value".to_string())]),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        let restored: BuildJobPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(payload.build_id(), restored.build_id());
+        assert_eq!(payload.label(), restored.label());
+    }
+
+    #[test]
+    fn decrypt_build_secrets_recovers_encrypted_values_and_drops_bad_ones() {
+        // 32 bytes of 0x41 ('A'), base64-encoded — same fixture value used by
+        // oss/server/tests/common/mod.rs's test harness.
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=");
+        }
+        let owner_id = Uuid::new_v4();
+        let crypto = crate::secrets::crypto::SecretsCrypto::for_user(owner_id);
+        let encrypted = HashMap::from([
+            ("STRIPE_KEY".to_string(), crypto.encrypt("sk_live_secret")),
+            ("BAD".to_string(), "not-valid-ciphertext".to_string()),
+        ]);
+
+        let decrypted = decrypt_build_secrets(&encrypted, owner_id);
+        assert_eq!(decrypted.get("STRIPE_KEY").map(String::as_str), Some("sk_live_secret"));
+        assert!(!decrypted.contains_key("BAD"), "undecryptable values must be dropped, not surfaced as garbage");
     }
 }

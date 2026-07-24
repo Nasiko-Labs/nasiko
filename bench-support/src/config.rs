@@ -67,6 +67,10 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
         mcp_toolcount_ttl_seconds: 3600,
+        mcp_upload_max_bytes: 50 * 1024 * 1024,
+        mcp_upload_default_port: 8080,
+        mcp_servers_network: "nasiko-mcp-servers-net".into(),
+        mcp_upload_max_replicas: 1,
         k8s_namespace: "nasiko-bench".into(),
         kubeconfig: None,
         s3_endpoint: s3_ep,
@@ -121,6 +125,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         oidc_client_id: None,
         oidc_client_secret: None,
         oidc_redirect_uri: None,
+        oidc_allowed_redirect_origins: vec![],
         oidc_scopes: "openid profile email".into(),
         oidc_provider_label: "microsoft_entra".into(),
     }

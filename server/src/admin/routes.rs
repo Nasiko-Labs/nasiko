@@ -84,7 +84,6 @@ async fn deploy(
         for (k, v) in resolved {
             env.entry(k).or_insert(v);
         }
-        crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id)).await;
     }
 
     // UUID-key when the name maps to a catalog agent; fall back to name-keying only
@@ -115,6 +114,9 @@ async fn deploy(
         resources: None,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
+        harden: false,
+        network_override: None,
+        workload_kind: Default::default(),
     };
     // Only a name that already maps to a registered catalog agent has an
     // `agents` row to scope a pull credential to (see pull_credentials'
@@ -547,7 +549,7 @@ async fn resolve_full_env(
     owner_id: Uuid,
     agent_id: Uuid,
 ) -> std::collections::HashMap<String, String> {
-    use nasiko_secrets::SecretsCrypto;
+    use crate::secrets::crypto::SecretsCrypto;
 
     let crypto = SecretsCrypto::for_user(owner_id);
     let mut env = std::collections::HashMap::new();

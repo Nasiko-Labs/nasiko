@@ -211,6 +211,7 @@ fn minimal_spec() -> DeploymentSpec {
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
+        workload_kind: Default::default(),
     }
 }
 
@@ -249,6 +250,7 @@ fn deployment_spec_with_all_fields() {
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
+        workload_kind: Default::default(),
     };
 
     assert_eq!(spec.min_replicas, 2);
@@ -430,4 +432,16 @@ fn validate_build_inputs_valid_digest_tag() {
     use nasiko_runtime::validate_build_inputs;
     // sha256 digest reference is valid
     assert!(validate_build_inputs(b"data", "registry/agent@sha256:abc123def456").is_ok());
+}
+
+// ─── WorkloadKind ──────────────────────────────────────────────────────────
+
+#[test]
+fn workload_kind_default_is_agent() {
+    use nasiko_runtime::WorkloadKind;
+    assert_eq!(
+        WorkloadKind::default(),
+        WorkloadKind::Agent,
+        "default must be Agent for backward compatibility with existing callers"
+    );
 }

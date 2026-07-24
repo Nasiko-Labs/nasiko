@@ -159,6 +159,7 @@ mod tests {
             image_pull_credential_seed: None,
             harden: false,
             network_override: None,
+            workload_kind: Default::default(),
         }
     }
 

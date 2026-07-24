@@ -244,12 +244,27 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
     match caller {
         Caller::Session(identity) => check_repo_access(state, identity, repo).await,
         Caller::PullOnly(pull) => {
+            // Check agents first, then fall back to MCP connectors — the
+            // credential's `agent_id` column is effectively a workload_id
+            // that can reference either table.
             let bound_repo: Option<String> =
                 sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL")
                     .bind(pull.agent_id)
                     .fetch_optional(&state.pool)
                     .await
                     .map_err(OciError::Database)?;
+            let bound_repo = match bound_repo {
+                Some(name) => Some(name),
+                None => {
+                    sqlx::query_scalar(
+                        "SELECT 'mcp-' || name FROM mcp_connectors WHERE id = $1",
+                    )
+                    .bind(pull.agent_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map_err(OciError::Database)?
+                }
+            };
             if bound_repo.as_deref() == Some(repo) {
                 Ok(())
             } else {

@@ -19,6 +19,7 @@ pub struct Config {
     /// Registry prefix prepended to agent image tags at build time.
     /// e.g. `"host.docker.internal:5001"` for local K8s dev.
     /// Empty string → no prefix (Docker local mode).
+    /// TODO: this needs to be removed.
     pub agent_image_registry: String,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
@@ -64,6 +65,14 @@ pub struct Config {
     /// Must exactly match the redirect URI registered with the IdP, e.g.
     /// `https://<host>/api/auth/oidc/callback`.
     pub oidc_redirect_uri: Option<String>,
+    /// Full origins (`scheme://host[:port]`) a post-login OIDC `redirect`
+    /// target is allowed to point at, in addition to a same-origin relative
+    /// path — needed when the frontend is a separate deployment on its own
+    /// domain rather than this binary's embedded UI (comma-separated, e.g.
+    /// `"https://app.example.com,http://localhost:5173"`). Empty (the
+    /// default) means only same-origin relative paths are accepted; see
+    /// `ee/server/src/auth.rs::is_safe_redirect_target`.
+    pub oidc_allowed_redirect_origins: Vec<String>,
     pub oidc_scopes: String,
     /// Stored as `user_identities.provider` for OIDC-authenticated users.
     /// Override if fronting a non-Entra OIDC provider.
@@ -101,8 +110,6 @@ pub struct Config {
     /// When set, the Docker runtime pulls images from this registry before creating containers.
     /// Maps to env var `OCI_REGISTRY_HOST`.
     pub oci_registry_host: Option<String>,
-    /// Poll interval in seconds for the container-hours meter. 0 disables metering.
-    pub container_hours_poll_secs: u64,
 
     // ─── MCP Gateway ────────────────────────────────────────────────────────
     /// Composio platform API key. When unset, Composio integration is disabled
@@ -122,6 +129,26 @@ pub struct Config {
     pub mcp_perm_cache_ttl_seconds: u64,
     /// TTL (seconds) for the Redis-cached aggregated tool manifest.
     pub mcp_manifest_ttl_seconds: u64,
+    /// Max upload size for a user's own MCP server zip. MCP_UPLOAD_MAX_BYTES,
+    /// default 50 MiB — deliberately smaller than agents' 100 MiB default,
+    /// since MCP servers are typically much smaller than full agent codebases.
+    pub mcp_upload_max_bytes: u64,
+    /// Port an uploaded MCP server container is expected to bind via `$PORT`.
+    /// MCP_UPLOAD_DEFAULT_PORT, default 8080.
+    pub mcp_upload_default_port: u16,
+    /// Docker network uploaded MCP server containers are deployed onto,
+    /// isolated from the default network (DB/Redis/agents). MCP_SERVERS_NETWORK,
+    /// default "nasiko-mcp-servers-net" (the server's own compose config must
+    /// also join this network — see docker-compose.infra.yml).
+    pub mcp_servers_network: String,
+    /// Maximum replica count for uploaded MCP server pods under Kubernetes
+    /// (KEDA ScaledObject). MCP_UPLOAD_MAX_REPLICAS, default 1 (matches
+    /// agents; set higher when KEDA is installed). Ignored by DockerRuntime.
+    pub mcp_upload_max_replicas: u32,
+    /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
+    /// unconnected catalog cards — changes rarely, so a much longer TTL than
+    /// the permission/session caches.
+    pub mcp_toolcount_ttl_seconds: u64,
 }
 
 impl Config {
@@ -183,10 +210,24 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL").ok().filter(|s| !s.is_empty()),
-            oidc_client_id: std::env::var("OIDC_CLIENT_ID").ok().filter(|s| !s.is_empty()),
-            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
-            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI").ok().filter(|s| !s.is_empty()),
+            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_client_id: std::env::var("OIDC_CLIENT_ID")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_allowed_redirect_origins: std::env::var("OIDC_ALLOWED_REDIRECT_ORIGINS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
@@ -196,9 +237,12 @@ impl Config {
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             app_base_url: env_or("APP_BASE_URL", ""),
-            docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK").ok().filter(|s| !s.is_empty()),
-            oci_registry_host: std::env::var("OCI_REGISTRY_HOST").ok().filter(|s| !s.is_empty()),
-            container_hours_poll_secs: env_parse("CONTAINER_HOURS_POLL_SECS", 60),
+            docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oci_registry_host: std::env::var("OCI_REGISTRY_HOST")
+                .ok()
+                .filter(|s| !s.is_empty()),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')
@@ -220,7 +264,9 @@ impl Config {
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
 
-            composio_api_key: std::env::var("COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
+            composio_api_key: std::env::var("COMPOSIO_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
             composio_base_url: env_or("COMPOSIO_BASE_URL", "https://backend.composio.dev"),
             composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET")
                 .ok()
@@ -231,6 +277,11 @@ impl Config {
             mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
             mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
             mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
+            mcp_upload_max_bytes: env_parse("MCP_UPLOAD_MAX_BYTES", 50 * 1024 * 1024),
+            mcp_upload_default_port: env_parse("MCP_UPLOAD_DEFAULT_PORT", 8080),
+            mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
+            mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
+            mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
         })
     }
 
@@ -266,7 +317,9 @@ mod tests {
 
     #[test]
     fn valid_32_byte_base64_key_passes() {
-        assert!(validate_secrets_key_format("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=").is_ok());
+        assert!(
+            validate_secrets_key_format("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=").is_ok()
+        );
     }
 
     #[test]

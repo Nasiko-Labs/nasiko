@@ -312,6 +312,9 @@ async fn restart_deployment(
             // meaningless to DockerRuntime.
             image_pull_secret_name: None,
             image_pull_credential_seed: None,
+            harden: false,
+            network_override: None,
+            workload_kind: Default::default(),
         };
 
         match state.runtime.deploy(&spec).await {

@@ -4,10 +4,12 @@ mod types;
 #[cfg(feature = "docker")]
 mod docker;
 
+#[cfg(feature = "simulated")]
+mod simulated;
 
 pub use error::{Result, RuntimeError};
-pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState};
 pub use types::validate_build_inputs;
+pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState, WorkloadKind};
 
 // ─── Legacy type aliases (used by server during transition from old orchestrator) ─────
 pub type ContainerSpec = DeploymentSpec;
@@ -39,6 +41,8 @@ pub struct NodeInfo {
 #[cfg(feature = "docker")]
 pub use docker::{DockerRuntime, DockerRuntimeConfig};
 
+#[cfg(feature = "simulated")]
+pub use simulated::SimulatedRuntime;
 
 use async_trait::async_trait;
 
@@ -190,33 +194,6 @@ pub trait ContainerRuntime: Send + Sync {
         _env_vars: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         Ok(())
-    }
-
-    /// Return one entry per currently-existing container instance (Docker
-    /// container, Kubernetes pod) across all agents managed by this runtime.
-    ///
-    /// Used by the container-hours meter. Implementations SHOULD report the
-    /// backend's true start time and MAY omit instances that no longer exist;
-    /// callers must treat only `ready == true` instances as billable.
-    ///
-    /// Default: synthesized from [`list`](ContainerRuntime::list) — one entry
-    /// per live replica with a positional key and no start time. Real backends
-    /// override this with per-instance identity; decorators MUST forward it
-    /// explicitly (see RUN-1 in `InstrumentedRuntime`).
-    async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
-        let statuses = self.list().await?;
-        let mut instances = Vec::new();
-        for status in statuses {
-            for i in 0..status.replicas_live {
-                instances.push(InstanceInfo {
-                    instance_key: format!("{}/{}", status.container_id.as_str(), i),
-                    container_id: status.container_id.clone(),
-                    started_at: None,
-                    ready: true,
-                });
-            }
-        }
-        Ok(instances)
     }
 }
 
