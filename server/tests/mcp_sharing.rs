@@ -1,4 +1,4 @@
-//! Integration tests for v2 connector sharing (`/api/mcp/connectors/{id}/share`)
+//! Integration tests for v2 connector sharing (`/api/mcp/connectors/{id}/grants/*`)
 //! and the audited invariants: revoke cleans up the grantee's connection (fix #2),
 //! deleting an owner is blocked (fix #5), and Layer-1 gates visibility even with a
 //! stale per-agent access row (audited rule #7).
@@ -98,7 +98,7 @@ async fn share_by_username_grants_visibility() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let (owner_id, owner_uuid) = create_user(&server, &admin, "shr-owner").await;
-    let (grantee_id, _) = create_user(&server, &admin, "shr-grantee").await;
+    let (grantee_id, grantee_uuid) = create_user(&server, &admin, "shr-grantee").await;
     let cid = seed_connector(&server, owner_uuid, "shared-tool").await;
 
     // Grantee cannot see it yet.
@@ -119,11 +119,10 @@ async fn share_by_username_grants_visibility() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "shr-owner",
     )
-    .json(&json!({"username": "shr-grantee"}))
     .send()
     .await
     .unwrap();
@@ -161,11 +160,10 @@ async fn only_owner_can_share() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{owner_uuid}"))),
         &other_id,
         "os-other",
     )
-    .json(&json!({"username": "os-owner"}))
     .send()
     .await
     .unwrap();
@@ -186,11 +184,10 @@ async fn public_share_visible_to_everyone() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
         &owner_id,
         "pub-owner",
     )
-    .json(&json!({"public": true}))
     .send()
     .await
     .unwrap();
@@ -228,11 +225,10 @@ async fn revoke_deletes_grantee_connection() {
     common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "rev-owner",
     )
-    .json(&json!({"username": "rev-grantee"}))
     .send()
     .await
     .unwrap();
@@ -242,11 +238,10 @@ async fn revoke_deletes_grantee_connection() {
     let res = common::as_member(
         server
             .client
-            .delete(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .delete(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "rev-owner",
     )
-    .json(&json!({"username": "rev-grantee"}))
     .send()
     .await
     .unwrap();
@@ -298,11 +293,10 @@ async fn revoked_grant_denies_despite_stale_access_row() {
     common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "t2-owner",
     )
-    .json(&json!({"username": "t2-grantee"}))
     .send()
     .await
     .unwrap();
@@ -324,11 +318,10 @@ async fn revoked_grant_denies_despite_stale_access_row() {
     common::as_member(
         server
             .client
-            .delete(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .delete(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "t2-owner",
     )
-    .json(&json!({"username": "t2-grantee"}))
     .send()
     .await
     .unwrap();
@@ -403,17 +396,16 @@ async fn list_shares_includes_granted_by() {
     let admin = init_admin(&server).await;
     let (owner_id, owner_uuid) = create_user(&server, &admin, "gb-owner").await;
     let owner_uuid_str = owner_uuid.to_string();
-    create_user(&server, &admin, "gb-grantee").await;
+    let (_grantee_id, grantee_uuid) = create_user(&server, &admin, "gb-grantee").await;
     let cid = seed_connector(&server, owner_uuid, "gb-tool").await;
 
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "gb-owner",
     )
-    .json(&json!({"username": "gb-grantee"}))
     .send()
     .await
     .unwrap();
@@ -422,7 +414,7 @@ async fn list_shares_includes_granted_by() {
     let body: Value = common::as_member(
         server
             .client
-            .get(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/grants"))),
         &owner_id,
         "gb-owner",
     )
@@ -455,11 +447,10 @@ async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "ar-owner",
     )
-    .json(&json!({"username": "ar-grantee"}))
     .send()
     .await
     .unwrap();
@@ -468,7 +459,7 @@ async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
     let body: Value = common::as_member(
         server
             .client
-            .get(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/grants"))),
         &owner_id,
         "ar-owner",
     )
@@ -501,11 +492,10 @@ async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
         &owner_id,
         "ar-owner",
     )
-    .json(&json!({"public": true}))
     .send()
     .await
     .unwrap();
@@ -514,7 +504,7 @@ async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
     let body: Value = common::as_member(
         server
             .client
-            .get(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/grants"))),
         &owner_id,
         "ar-owner",
     )
@@ -671,11 +661,10 @@ async fn consumers_lists_only_agents_that_configured_the_connector() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"))),
         &owner_id,
         "cons-owner",
     )
-    .json(&json!({"username": "cons-grantee"}))
     .send()
     .await
     .unwrap();
@@ -687,11 +676,10 @@ async fn consumers_lists_only_agents_that_configured_the_connector() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
         &owner_id,
         "cons-owner",
     )
-    .json(&json!({"public": true}))
     .send()
     .await
     .unwrap();

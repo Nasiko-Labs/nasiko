@@ -350,6 +350,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // oauth callback test already sets to an HTTPS test domain — no
         // separate override needed for that test to keep passing.
         mcp_oauth_redirect_base_url: None,
+        composio_callback_base_url: None,
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
@@ -358,6 +359,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         mcp_upload_max_replicas: 1,
         mcp_toolcount_ttl_seconds: 3600,
+        seed_toolkits: vec![],
         app_base_url: "".to_string(),
     }
 }

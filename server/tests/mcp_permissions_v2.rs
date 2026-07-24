@@ -1064,11 +1064,10 @@ async fn tool_block_set_by_one_manager_is_seen_by_a_different_manager() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
         owner_id,
         "shared-owner",
     )
-    .json(&json!({"public": true}))
     .send()
     .await
     .unwrap();
@@ -1144,11 +1143,10 @@ async fn connector_disabled_by_one_manager_is_seen_by_a_different_manager() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
         owner_id,
         "shared-owner2",
     )
-    .json(&json!({"public": true}))
     .send()
     .await
     .unwrap();

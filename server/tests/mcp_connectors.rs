@@ -648,16 +648,22 @@ async fn list_connectors_shows_own_not_others() {
     .await
     .unwrap();
     let body: Value = res.json().await.unwrap();
-    let names: Vec<&str> = body["data"]["connectors"]
+    let created_by_you: Vec<&str> = body["data"]["created_by_you"]
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"alice-tool"), "{names:?}");
+    let shared_with_you: Vec<&str> = body["data"]["shared_with_you"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(created_by_you.contains(&"alice-tool"), "{created_by_you:?}");
     assert!(
-        !names.contains(&"bob-tool"),
-        "must not see bob's connector: {names:?}"
+        !created_by_you.contains(&"bob-tool") && !shared_with_you.contains(&"bob-tool"),
+        "must not see bob's connector: created_by_you={created_by_you:?} shared_with_you={shared_with_you:?}"
     );
 
     server.cleanup().await;
@@ -719,6 +725,51 @@ async fn get_single_connector_by_id_and_404_when_unreachable() {
     .await
     .unwrap();
     assert_eq!(res.status(), 404);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn get_single_connector_reports_has_credential_only_after_a_connection_is_stored() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let alice = create_user(&server, uid, "hc-alice").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let alice_uuid = Uuid::parse_str(alice_id).unwrap();
+
+    let cid = seed_custom_connector(&server, alice_uuid, "hc-tool", "bearer").await;
+
+    let res = common::as_member(
+        server.client.get(server.url(&format!("/api/mcp/connectors/{cid}"))),
+        alice_id,
+        "hc-alice",
+    )
+    .send()
+    .await
+    .unwrap();
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(
+        body["data"]["has_credential"], false,
+        "no connection row yet: {body:?}"
+    );
+
+    seed_connection(&server, alice_uuid, cid).await;
+
+    let res = common::as_member(
+        server.client.get(server.url(&format!("/api/mcp/connectors/{cid}"))),
+        alice_id,
+        "hc-alice",
+    )
+    .send()
+    .await
+    .unwrap();
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(
+        body["data"]["has_credential"], true,
+        "connection row with encrypted_credential now exists: {body:?}"
+    );
 
     server.cleanup().await;
 }
@@ -820,6 +871,55 @@ async fn delete_connector_cleans_up_agent_access() {
     .await
     .unwrap();
     assert_eq!(remaining, 0, "CASCADE must remove per-agent access rows");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn consumers_reports_zero_tools_used_when_connector_disabled_for_agent() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let uuid = Uuid::parse_str(uid).unwrap();
+
+    let cid = seed_custom_connector(&server, uuid, "consumer-tool", "none").await;
+    sqlx::query(
+        "INSERT INTO mcp_connector_tools (connector_id, tool_name) VALUES ($1, 'echo'), ($1, 'add')",
+    )
+    .bind(cid)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    let agent_id = seed_agent(&server, uuid, "consumer-agent").await;
+    sqlx::query(
+        "INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled) VALUES ($1, $2, false)",
+    )
+    .bind(agent_id)
+    .bind(cid)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let res = common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/consumers"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let agents = body["data"]["agents"].as_array().unwrap();
+    let entry = agents.iter().find(|a| a["agent_id"] == agent_id.to_string()).unwrap();
+    assert_eq!(entry["total_tools"], 2);
+    assert_eq!(
+        entry["tools_used"], 0,
+        "connector disabled outright for this agent must report 0 usable tools: {entry:?}"
+    );
 
     server.cleanup().await;
 }

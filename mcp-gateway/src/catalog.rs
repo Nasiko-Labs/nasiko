@@ -61,6 +61,49 @@ pub async fn get_catalog_view(state: &McpState, user_id: Uuid) -> Result<Value> 
     Ok(json!({ "services": services }))
 }
 
+/// `GET /api/mcp/composio/toolkits` — platform Composio toolkits only,
+/// with the caller's connection status and tool count.
+pub async fn list_toolkits_view(state: &McpState, user_id: Uuid) -> Result<Value> {
+    let connectors = state
+        .authorizer
+        .list_accessible_connectors(&state.db, user_id)
+        .await?;
+    let composio: Vec<_> = connectors.iter().filter(|c| c.is_composio()).collect();
+
+    let ids: Vec<Uuid> = composio.iter().map(|c| c.id).collect();
+    let connected_set: std::collections::HashSet<Uuid> = if ids.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT connector_id FROM mcp_user_connections \
+             WHERE connector_id = ANY($1) AND user_id = $2 AND status = 'ACTIVE'",
+        )
+        .bind(&ids)
+        .bind(user_id)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
+    let mut toolkits: Vec<Value> = Vec::with_capacity(composio.len());
+    for c in &composio {
+        let tool_count = composio_tool_count(state, c.id, &c.name).await;
+        toolkits.push(json!({
+            "connector_id": c.id,
+            "name": c.name,
+            "display_name": c.display_name.clone().unwrap_or_else(|| capitalize(&c.name)),
+            "description": c.description,
+            "logo_url": c.logo_url,
+            "auth_flow": auth_flow_for(c),
+            "tool_count": tool_count,
+            "is_connected": connected_set.contains(&c.id),
+        }));
+    }
+    Ok(json!({ "toolkits": toolkits, "total": toolkits.len() }))
+}
+
 /// Cached tool count for a Composio toolkit. `None` if Composio isn't
 /// configured or the lookup fails — never fabricated.
 async fn composio_tool_count(state: &McpState, connector_id: Uuid, toolkit: &str) -> Option<usize> {
@@ -255,6 +298,7 @@ mod tests {
                 composio_webhook_secret: None,
                 gateway_public_url: None,
                 oauth_redirect_base_url: None,
+                composio_callback_base_url: None,
                 session_ttl_seconds: 60,
                 perm_cache_ttl_seconds: 60,
                 manifest_ttl_seconds: 60,

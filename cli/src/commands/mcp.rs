@@ -307,7 +307,14 @@ pub fn toolkit_delete(connector_id: &str, yes: bool) -> Result<()> {
 pub fn connector_list(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let resp: Value = client.get_json("/mcp/connectors")?;
-    let data = resp.get("data").and_then(|v| v.get("connectors")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let data: Vec<Value> = resp
+        .get("data")
+        .map(|d| {
+            let created = d.get("created_by_you").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let shared = d.get("shared_with_you").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            created.into_iter().chain(shared).collect()
+        })
+        .unwrap_or_default();
 
     print_json_or(json, &resp, || {
         if data.is_empty() {
@@ -456,9 +463,27 @@ fn share_target_label(user: Option<&str>, public: bool) -> String {
     if public { "everyone".to_string() } else { user.unwrap_or("?").to_string() }
 }
 
+/// Resolve a username to a user ID via `GET /mcp/share-targets?q=`, since
+/// grants are now keyed by user ID, not username. Requires an exact,
+/// unambiguous username match.
+fn resolve_username_to_user_id(client: &Client, username: &str) -> Result<String> {
+    let encoded: String = username
+        .chars()
+        .flat_map(|c| if c.is_alphanumeric() || "-_.~".contains(c) { vec![c] } else { format!("%{:02X}", c as u32).chars().collect() })
+        .collect();
+    let resp: Value = client.get_json(&format!("/mcp/share-targets?q={encoded}"))?;
+    let users = resp.get("data").and_then(|v| v.get("users")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let matches: Vec<&Value> = users.iter().filter(|u| s(u, "username") == username).collect();
+    match matches.as_slice() {
+        [one] => Ok(s(one, "user_id").to_string()),
+        [] => bail!("no user found with username '{username}'"),
+        _ => bail!("username '{username}' matched more than one user"),
+    }
+}
+
 pub fn share_list(connector_id: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let resp: Value = client.get_json(&format!("/mcp/connectors/{connector_id}/share"))?;
+    let resp: Value = client.get_json(&format!("/mcp/connectors/{connector_id}/grants"))?;
     let data = resp.get("data").and_then(|v| v.get("grants")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
     print_json_or(json, &resp, || {
@@ -490,8 +515,14 @@ pub fn share_add(connector_id: &str, user: Option<&str>, public: bool) -> Result
 }
 
 fn share_add_with(client: &Client, connector_id: &str, user: Option<&str>, public: bool) -> Result<()> {
-    let body = share_target_body(user, public)?;
-    client.post_json_void(&format!("/mcp/connectors/{connector_id}/share"), &body)?;
+    share_target_body(user, public)?; // validate --user/--public combination
+    if public {
+        client.post_json_void(&format!("/mcp/connectors/{connector_id}/grants/public"), &serde_json::json!({}))?;
+    } else {
+        let username = user.expect("share_target_body validated a username is present");
+        let user_id = resolve_username_to_user_id(client, username)?;
+        client.post_json_void(&format!("/mcp/connectors/{connector_id}/grants/users/{user_id}"), &serde_json::json!({}))?;
+    }
     println!("Shared connector {connector_id} with {}.", share_target_label(user, public));
     Ok(())
 }
@@ -502,8 +533,14 @@ pub fn share_remove(connector_id: &str, user: Option<&str>, public: bool) -> Res
 }
 
 fn share_remove_with(client: &Client, connector_id: &str, user: Option<&str>, public: bool) -> Result<()> {
-    let body = share_target_body(user, public)?;
-    client.delete_json_void(&format!("/mcp/connectors/{connector_id}/share"), &body)?;
+    share_target_body(user, public)?; // validate --user/--public combination
+    if public {
+        client.delete(&format!("/mcp/connectors/{connector_id}/grants/public"))?;
+    } else {
+        let username = user.expect("share_target_body validated a username is present");
+        let user_id = resolve_username_to_user_id(client, username)?;
+        client.delete(&format!("/mcp/connectors/{connector_id}/grants/users/{user_id}"))?;
+    }
     println!("Revoked connector {connector_id}'s share with {}.", share_target_label(user, public));
     Ok(())
 }
@@ -1392,11 +1429,10 @@ mod tests {
     }
 
     #[test]
-    fn share_add_public_sends_public_true_body() {
+    fn share_add_public_posts_to_grants_public() {
         let mut server = mockito::Server::new();
         let _m = server
-            .mock("POST", "/api/mcp/connectors/conn-a/share")
-            .match_body(Matcher::Json(serde_json::json!({ "public": true })))
+            .mock("POST", "/api/mcp/connectors/conn-a/grants/public")
             .with_status(200)
             .with_body("{}")
             .create();
@@ -1405,11 +1441,16 @@ mod tests {
     }
 
     #[test]
-    fn share_add_named_user_sends_username_body() {
+    fn share_add_named_user_resolves_username_then_posts_grants_users() {
         let mut server = mockito::Server::new();
+        let _lookup = server
+            .mock("GET", "/api/mcp/share-targets?q=alice")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data": {"users": [{"user_id": "u-alice", "username": "alice", "display_name": "Alice"}]}}"#)
+            .create();
         let _m = server
-            .mock("POST", "/api/mcp/connectors/conn-a/share")
-            .match_body(Matcher::Json(serde_json::json!({ "username": "alice" })))
+            .mock("POST", "/api/mcp/connectors/conn-a/grants/users/u-alice")
             .with_status(200)
             .with_body("{}")
             .create();
@@ -1418,14 +1459,16 @@ mod tests {
     }
 
     #[test]
-    fn share_remove_sends_delete_with_a_json_body() {
-        // DELETE with a body is off-spec — this exercises `force_send_body()`
-        // actually round-tripping through a real HTTP request, not just
-        // compiling.
+    fn share_remove_named_user_resolves_username_then_deletes_grants_users() {
         let mut server = mockito::Server::new();
+        let _lookup = server
+            .mock("GET", "/api/mcp/share-targets?q=alice")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data": {"users": [{"user_id": "u-alice", "username": "alice", "display_name": "Alice"}]}}"#)
+            .create();
         let _m = server
-            .mock("DELETE", "/api/mcp/connectors/conn-a/share")
-            .match_body(Matcher::Json(serde_json::json!({ "username": "alice" })))
+            .mock("DELETE", "/api/mcp/connectors/conn-a/grants/users/u-alice")
             .with_status(200)
             .with_body("{}")
             .create();

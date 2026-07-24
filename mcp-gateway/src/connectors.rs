@@ -1,7 +1,7 @@
 //! Custom MCP connector registration, probe, sharing, and deletion — pure logic
 //! behind `/api/mcp/connectors*`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -33,6 +33,8 @@ pub fn connector_dto(c: &McpConnector) -> Value {
         "logo_url": c.logo_url,
         "is_active": c.active(),
         "oauth_configured": c.oauth_configured(),
+        "source_kind": c.source_kind,
+        "build_status": c.build_status,
         "setup_status": c.setup_status,
         "setup_error": c.setup_error,
         "created_at": c.created_at,
@@ -376,22 +378,115 @@ pub async fn update_connector(
     Ok(updated)
 }
 
-/// `GET /api/mcp/connectors` — custom connectors visible to the caller.
+/// `GET /api/mcp/connectors` — custom connectors visible to the caller,
+/// grouped into "created_by_you" and "shared_with_you" with per-card
+/// metadata (tool count, connection status, version, author).
 pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Value> {
     let connectors = state
         .authorizer
         .list_accessible_mcp_connectors(&state.db, user_id)
         .await?;
-    let data: Vec<Value> = connectors
+
+    let ids: Vec<Uuid> = connectors.iter().map(|c| c.id).collect();
+
+    // Batch-fetch tool counts.
+    let tool_counts: HashMap<Uuid, i64> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (Uuid, i64)>(
+            "SELECT connector_id, COUNT(*) FROM mcp_connector_tools \
+             WHERE connector_id = ANY($1) GROUP BY connector_id",
+        )
+        .bind(&ids)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
+    // Batch-fetch caller's connection status.
+    let connected_set: HashSet<Uuid> = if ids.is_empty() {
+        HashSet::new()
+    } else {
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT connector_id FROM mcp_user_connections \
+             WHERE connector_id = ANY($1) AND user_id = $2 AND status = 'ACTIVE'",
+        )
+        .bind(&ids)
+        .bind(user_id)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
+    // Batch-fetch version tags for uploaded connectors.
+    let version_map: HashMap<Uuid, String> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT DISTINCT ON (connector_id) connector_id, version_tag \
+             FROM mcp_connector_builds WHERE connector_id = ANY($1) \
+             ORDER BY connector_id, created_at DESC",
+        )
+        .bind(&ids)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
+    // Batch-fetch owner usernames.
+    let owner_ids: Vec<Uuid> = connectors
         .iter()
-        .map(|c| {
-            let mut dto = connector_dto(c);
-            dto["is_owner"] = json!(c.owner_id == Some(user_id));
-            dto
-        })
+        .filter_map(|c| c.owner_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
         .collect();
-    let total = data.len();
-    Ok(json!({ "connectors": data, "total": total }))
+    let owner_names: HashMap<Uuid, String> = if owner_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT id, username FROM users WHERE id = ANY($1)",
+        )
+        .bind(&owner_ids)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
+    let mut created_by_you = Vec::new();
+    let mut shared_with_you = Vec::new();
+
+    for c in &connectors {
+        let is_owner = c.owner_id == Some(user_id);
+        let mut dto = connector_dto(c);
+        dto["is_owner"] = json!(is_owner);
+        dto["tool_count"] = json!(tool_counts.get(&c.id).copied().unwrap_or(0));
+        dto["is_connected"] = json!(connected_set.contains(&c.id));
+        dto["version"] = json!(version_map.get(&c.id));
+        if let Some(oid) = c.owner_id {
+            dto["owner_username"] = json!(owner_names.get(&oid));
+        }
+
+        if is_owner {
+            created_by_you.push(dto);
+        } else {
+            shared_with_you.push(dto);
+        }
+    }
+
+    let total = created_by_you.len() + shared_with_you.len();
+    Ok(json!({
+        "created_by_you": created_by_you,
+        "shared_with_you": shared_with_you,
+        "total": total,
+    }))
 }
 
 /// `GET /api/mcp/connectors/{id}` — a single connector. 404s (not 403) when the
@@ -415,6 +510,89 @@ pub async fn get_connector_view(
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
     let mut dto = connector_dto(&connector);
     dto["is_owner"] = json!(connector.owner_id == Some(user_id));
+
+    // Tool count
+    let tool_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1",
+    )
+    .bind(connector_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    dto["tool_count"] = json!(tool_count);
+
+    // Connection count
+    let connection_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM mcp_user_connections WHERE connector_id = $1",
+    )
+    .bind(connector_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    dto["connection_count"] = json!(connection_count);
+
+    // Is public
+    let is_public: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mcp_connector_grants WHERE connector_id = $1 AND grant_type = 'public')",
+    )
+    .bind(connector_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
+    dto["is_public"] = json!(is_public);
+
+    // Version tag + image tag (uploaded builds only)
+    if connector.source_kind == repo::SourceKind::UploadedBuild {
+        let build_info: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT version_tag, image_reference FROM mcp_connector_builds \
+             WHERE connector_id = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(connector_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        if let Some((version, image)) = build_info {
+            dto["version"] = json!(version);
+            dto["image_tag"] = json!(image);
+        }
+    }
+
+    // Owner username
+    if let Some(owner_id) = connector.owner_id {
+        let owner_name: Option<String> = sqlx::query_scalar(
+            "SELECT username FROM users WHERE id = $1",
+        )
+        .bind(owner_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        dto["owner_username"] = json!(owner_name);
+    }
+
+    // Caller's credential status
+    let has_credential: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mcp_user_connections \
+         WHERE connector_id = $1 AND user_id = $2 AND encrypted_credential IS NOT NULL)",
+    )
+    .bind(connector_id)
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
+    dto["has_credential"] = json!(has_credential);
+
+    // Agent grant count (how many agents have access)
+    let agent_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM mcp_connector_grants WHERE connector_id = $1 AND grant_type = 'agent'",
+    )
+    .bind(connector_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    dto["agent_count"] = json!(agent_count);
+
     Ok(dto)
 }
 
@@ -463,8 +641,8 @@ pub async fn delete_connector(state: &McpState, connector: &McpConnector) -> Res
 
 /// Who a connector is being shared with.
 pub enum ShareTarget {
-    /// A specific username.
-    User(String),
+    /// A specific user by ID.
+    User(Uuid),
     /// Everyone (`'*'`).
     Public,
 }
@@ -542,11 +720,19 @@ async fn resolve_target(
 ) -> Result<(&'static str, String, Option<Uuid>)> {
     match target {
         ShareTarget::Public => Ok((GrantType::Public.as_str(), PUBLIC_GRANTEE.to_string(), None)),
-        ShareTarget::User(username) => {
-            let uid = repo::resolve_username_to_user_id(&state.db, &username)
-                .await?
-                .ok_or_else(|| McpError::NotFound(format!("user '{username}' not found")))?;
-            Ok((GrantType::User.as_str(), uid.to_string(), Some(uid)))
+        ShareTarget::User(user_id) => {
+            // Verify the user exists.
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)",
+            )
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(McpError::Database)?;
+            if !exists {
+                return Err(McpError::NotFound(format!("user '{user_id}' not found")));
+            }
+            Ok((GrantType::User.as_str(), user_id.to_string(), Some(user_id)))
         }
     }
 }
@@ -678,14 +864,43 @@ pub async fn list_consumers_view(
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
     let agents = repo::list_configured_agent_consumers(&state.db, connector.id).await?;
 
+    // Total tools for this connector (for "X of Y" display).
+    let total_tools: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1",
+    )
+    .bind(connector_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
     let agents_json: Vec<Value> = agents
         .into_iter()
         .map(|a| {
+            // A connector disabled outright for this agent (Layer-2 toggle) makes
+            // every tool unusable, regardless of per-tool block rules.
+            let tools_used = if !a.enabled {
+                0
+            } else {
+                let blocked_count = a
+                    .tool_rules
+                    .as_array()
+                    .map(|rules| {
+                        rules
+                            .iter()
+                            .filter(|r| r.get("stance").and_then(|s| s.as_str()) == Some("block"))
+                            .count() as i64
+                    })
+                    .unwrap_or(0);
+                (total_tools - blocked_count).max(0)
+            };
+
             json!({
                 "agent_id": a.agent_id,
                 "agent_name": a.agent_name,
                 "agent_owner_id": a.agent_owner_id,
                 "enabled": a.enabled,
+                "tools_used": tools_used,
+                "total_tools": total_tools,
                 "tool_rules": a.tool_rules,
             })
         })
