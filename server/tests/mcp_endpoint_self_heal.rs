@@ -132,6 +132,9 @@ async fn stale_stored_endpoint_self_heals_on_the_next_tool_call() {
         TEST_MCP_NETWORK.to_string(),
         8080,
         vec![],
+        "local".to_string(),
+        String::new(),
+        1,
     )
     .await;
 

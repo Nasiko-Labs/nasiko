@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nasiko_config::Config;
 use nasiko_runtime::{
-    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo,
-    Result as RuntimeResult, RuntimeState,
+    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, Result as RuntimeResult,
+    RuntimeState,
 };
 use nasiko_server::state::AppState;
 use sqlx::PgPool;
@@ -19,13 +19,11 @@ fn pg_admin_url() -> String {
 }
 
 fn redis_url() -> String {
-    std::env::var("TEST_REDIS_URL")
-        .unwrap_or_else(|_| "redis://localhost:6379".into())
+    std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into())
 }
 
 fn s3_endpoint() -> String {
-    std::env::var("TEST_S3_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".into())
+    std::env::var("TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into())
 }
 
 // ─── FakeRuntime ─────────────────────────────────────────────────────────────
@@ -40,19 +38,8 @@ fn s3_endpoint() -> String {
 /// reads it) so tests can exercise `list`'s per-caller filtering without a
 /// real runtime.
 #[derive(Default)]
-pub struct FakeRuntime {
+struct FakeRuntime {
     containers: std::sync::Mutex<std::collections::HashMap<ContainerId, DeploymentStatus>>,
-    /// Instances returned by `list_instances` — set via [`set_instances`] so
-    /// hours-meter tests can script exactly what the reconciler observes.
-    instances: std::sync::Mutex<Vec<InstanceInfo>>,
-}
-
-impl FakeRuntime {
-    /// Replace the instance set the next `list_instances` call reports.
-    #[allow(dead_code)]
-    pub fn set_instances(&self, instances: Vec<InstanceInfo>) {
-        *self.instances.lock().unwrap() = instances;
-    }
 }
 
 fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
@@ -70,7 +57,10 @@ fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
 impl ContainerRuntime for FakeRuntime {
     async fn deploy(&self, spec: &DeploymentSpec) -> RuntimeResult<DeploymentStatus> {
         let status = fake_status(&spec.container_id);
-        self.containers.lock().unwrap().insert(spec.container_id.clone(), status.clone());
+        self.containers
+            .lock()
+            .unwrap()
+            .insert(spec.container_id.clone(), status.clone());
         Ok(status)
     }
 
@@ -95,8 +85,18 @@ impl ContainerRuntime for FakeRuntime {
         Ok(self.containers.lock().unwrap().values().cloned().collect())
     }
 
-    async fn endpoint(&self, _container_id: &ContainerId) -> RuntimeResult<String> {
-        Ok("http://localhost:8000".into())
+    async fn endpoint(&self, container_id: &ContainerId) -> RuntimeResult<String> {
+        // Mirror a real runtime: a container that was never deployed can't
+        // resolve. The agent proxy prefers this live lookup and only falls
+        // back to the stored `agents.url` when it errors, so tests that seed
+        // `agents.url` directly (no runtime deploy) rely on this failing.
+        if self.containers.lock().unwrap().contains_key(container_id) {
+            Ok("http://localhost:8000".into())
+        } else {
+            Err(nasiko_runtime::RuntimeError::ContainerNotFound(
+                container_id.clone(),
+            ))
+        }
     }
 
     async fn logs(&self, _container_id: &ContainerId, _tail: u32) -> RuntimeResult<Vec<String>> {
@@ -105,12 +105,6 @@ impl ContainerRuntime for FakeRuntime {
 
     async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
         Ok(image_tag.to_owned())
-    }
-
-    // Explicit impl (not the trait default) so tests fully control what the
-    // hours-meter reconciler observes.
-    async fn list_instances(&self) -> RuntimeResult<Vec<InstanceInfo>> {
-        Ok(self.instances.lock().unwrap().clone())
     }
 }
 
@@ -125,10 +119,6 @@ pub struct TestServer {
     /// Direct pool access for tests that need to seed or verify DB state.
     #[allow(dead_code)]
     pub db: PgPool,
-    /// The fake runtime backing the server — lets tests script instance
-    /// observations (`set_instances`) and drive the hours meter directly.
-    #[allow(dead_code)]
-    pub runtime: Arc<FakeRuntime>,
     db_name: String,
     admin_pool: PgPool,
 }
@@ -148,6 +138,7 @@ fn minimal_pool_opts() -> PgPoolOptions {
 }
 
 impl TestServer {
+    #[allow(dead_code)]
     pub async fn start() -> Self {
         Self::start_with(|_| {}).await
     }
@@ -158,6 +149,21 @@ impl TestServer {
     /// path, which `test_config()` otherwise always leaves empty.
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
+        Self::start_with_runtime(configure, Arc::new(FakeRuntime::default())).await
+    }
+
+    /// Same as [`start_with`](Self::start_with), but lets the caller supply a
+    /// real `ContainerRuntime` (e.g. a real `DockerRuntime`) instead of
+    /// `FakeRuntime` — needed by tests that must observe a real container's
+    /// lifecycle through the actual HTTP route (not by calling orchestration
+    /// functions directly), such as confirming `DELETE
+    /// /api/mcp/connectors/{id}` really destroys an uploaded connector's
+    /// container.
+    #[allow(dead_code)]
+    pub async fn start_with_runtime(
+        configure: impl FnOnce(&mut Config),
+        runtime: Arc<dyn ContainerRuntime>,
+    ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
@@ -196,16 +202,11 @@ impl TestServer {
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
-        let fake_runtime = Arc::new(FakeRuntime::default());
-        let runtime: Arc<dyn ContainerRuntime> = fake_runtime.clone();
-
         let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
@@ -216,7 +217,6 @@ impl TestServer {
             base_url: format!("http://127.0.0.1:{port}"),
             client: reqwest::Client::new(),
             db: db.clone(),
-            runtime: fake_runtime,
             db_name,
             admin_pool: admin,
         }
@@ -256,7 +256,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         std::env::set_var("S3_SECRET_KEY", "nasiko123");
         std::env::set_var("S3_REGION", "us-east-1");
         // 32 bytes of 0x41 ('A'), base64-encoded — required by SecretsCrypto::load_master_key()
-        std::env::set_var("SECRETS_ENCRYPTION_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=");
+        std::env::set_var(
+            "SECRETS_ENCRYPTION_KEY",
+            "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=",
+        );
     }
 
     Config {
@@ -303,6 +306,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oidc_client_id: None,
         oidc_client_secret: None,
         oidc_redirect_uri: None,
+        oidc_allowed_redirect_origins: vec![],
         oidc_scopes: "openid profile email".into(),
         oidc_provider_label: "microsoft_entra".into(),
         router_shortlist_threshold: 15,
@@ -313,7 +317,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         github_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
-        container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
         git_clone_allowed_hosts: vec![
             "github.com".to_owned(),
             "gitlab.com".to_owned(),
@@ -328,18 +331,29 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // it straight from these two Config fields). Unset in the vast majority of
         // tests, which must keep seeing "Composio not configured" (COMPOSIO_API_KEY
         // unset in production === `composio_api_key: None`).
-        composio_api_key: std::env::var("TEST_COMPOSIO_API_KEY").ok().filter(|s| !s.is_empty()),
+        composio_api_key: std::env::var("TEST_COMPOSIO_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty()),
         composio_base_url: std::env::var("TEST_COMPOSIO_BASE_URL")
             .unwrap_or_else(|_| "https://backend.composio.dev".into()),
-        composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET").ok().filter(|s| !s.is_empty()),
+        composio_webhook_secret: std::env::var("COMPOSIO_WEBHOOK_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty()),
         // Overridable so the MCP OAuth callback round-trip test can exercise the
         // full `exchange_code` path (which needs `oauth_redirect_uri()` to be
         // `Some`). `None` by default, matching every other test's assumption
         // that the gateway's public URL is unconfigured.
-        mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL").ok().filter(|s| !s.is_empty()),
+        mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL")
+            .ok()
+            .filter(|s| !s.is_empty()),
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
+        mcp_upload_max_bytes: 50 * 1024 * 1024,
+        mcp_upload_default_port: 8080,
+        mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
+        mcp_upload_max_replicas: 1,
+        mcp_toolcount_ttl_seconds: 3600,
         app_base_url: "".to_string(),
     }
 }
@@ -363,8 +377,7 @@ pub fn sign_token(user_id: &str, username: &str, is_superuser: bool, _role: &str
         username: username.to_owned(),
         is_superuser,
     };
-    nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity)
-        .expect("test JWT signing failed")
+    nasiko_auth::jwt::encode_jwt(TEST_JWT_SECRET, 3600, &identity).expect("test JWT signing failed")
 }
 
 /// Sign a short-lived agent-typed JWT (as minted by `issue_agent_token`) —

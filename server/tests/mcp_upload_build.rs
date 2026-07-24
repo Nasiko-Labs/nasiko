@@ -156,6 +156,9 @@ async fn upload_builds_deploys_and_serves_real_tools() {
         TEST_MCP_NETWORK.to_string(),
         8080,
         vec![],
+        "local".to_string(),
+        String::new(),
+        1,
     )
     .await;
 
@@ -263,6 +266,9 @@ async fn corrupt_upload_fails_cleanly_with_no_orphaned_container() {
         TEST_MCP_NETWORK.to_string(),
         8080,
         vec![],
+        "local".to_string(),
+        String::new(),
+        1,
     )
     .await;
 

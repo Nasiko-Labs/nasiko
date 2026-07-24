@@ -106,6 +106,9 @@ async fn deleting_an_uploaded_connector_destroys_its_container() {
         TEST_MCP_NETWORK.to_string(),
         8080,
         vec![],
+        "local".to_string(),
+        String::new(),
+        1,
     )
     .await;
 
