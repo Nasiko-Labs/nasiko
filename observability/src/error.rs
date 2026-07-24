@@ -11,6 +11,9 @@ pub enum ObservabilityError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    #[error("bad request: {0}")]
+    BadRequest(String),
+
     #[error("HTTP client error: {0}")]
     Http(#[from] reqwest::Error),
 

@@ -85,6 +85,28 @@ fn parse_iso(iso: Option<&str>) -> Option<DateTime<Utc>> {
     })
 }
 
+/// Strict variant of [`parse_iso`] for query params: an absent value yields
+/// `Ok(None)` (caller applies its default), but a present-but-unparseable value
+/// is a `BadRequest` rather than a silent fallback. `field` names the offending
+/// param in the error so the caller can fix it.
+fn parse_iso_param(
+    field: &str,
+    iso: Option<&str>,
+) -> Result<Option<DateTime<Utc>>, ObservabilityError> {
+    match iso {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => DateTime::parse_from_rfc3339(&s.replace('Z', "+00:00"))
+            .map(|dt| Some(dt.with_timezone(&Utc)))
+            .map_err(|_| {
+                ObservabilityError::BadRequest(format!(
+                    "invalid {field} '{s}': expected RFC 3339 with a timezone, \
+                     e.g. 2026-07-23T00:00:00Z"
+                ))
+            }),
+    }
+}
+
 fn parse_iso_or_default(iso: Option<&str>, default_days_ago: i64) -> DateTime<Utc> {
     parse_iso(iso).unwrap_or_else(|| Utc::now() - Duration::days(default_days_ago))
 }
@@ -578,6 +600,16 @@ pub struct AgentHoursRow {
 pub struct AgentHoursBucket {
     pub start: String,
     pub total_hours: f64,
+    /// Per-agent breakdown for this bucket (only agents with hours in it).
+    pub agents: Vec<AgentHoursBucketAgent>,
+}
+
+#[derive(Serialize)]
+pub struct AgentHoursBucketAgent {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub hours: f64,
+    pub deleted: bool,
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -1267,12 +1299,17 @@ Data: {}"#,
         const MAX_SERIES_BUCKETS: i64 = 1000;
 
         let bucket = bucket.and_then(hours_meter::HoursBucket::parse);
-        let end = parse_iso(end_time).unwrap_or_else(Utc::now);
+
+        // Reject a present-but-unparseable time param with 400 rather than
+        // silently falling back to a default window — on a billing endpoint a
+        // mistyped timestamp must never quietly return the wrong range. An
+        // absent param (None) still uses the documented default below.
+        let end = parse_iso_param("end_time", end_time)?.unwrap_or_else(Utc::now);
         // No start_time means all-time for the plain report (this endpoint is
         // the billing source of truth — silently dropping history would be
         // wrong), but 30 days for a series (an epoch-to-now series is
         // unbounded and gets capped below anyway).
-        let mut start = parse_iso(start_time).unwrap_or_else(|| match bucket {
+        let mut start = parse_iso_param("start_time", start_time)?.unwrap_or_else(|| match bucket {
             Some(_) => end - Duration::days(30),
             None => DateTime::<Utc>::UNIX_EPOCH,
         });
@@ -1288,17 +1325,15 @@ Data: {}"#,
             }
         }
 
-        // An unparseable agent filter must return nothing, not everything —
-        // attributing the whole platform's hours to a mistyped agent would be
-        // a billing error.
+        // A malformed agent_id is rejected with 400 — silently returning an
+        // empty (zero-hours) result for a mistyped UUID would read as "this
+        // agent used nothing", another way to skew a bill.
         let agent_filter = match agent_id {
-            Some(raw) => match uuid::Uuid::parse_str(raw) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    tracing::debug!(agent_id = raw, "agent-hours: invalid agent_id filter");
-                    return Ok(empty_agent_hours_response(start, end, bucket.is_some()));
-                }
-            },
+            Some(raw) => Some(uuid::Uuid::parse_str(raw).map_err(|_| {
+                ObservabilityError::BadRequest(format!(
+                    "invalid agent_id '{raw}': expected a UUID"
+                ))
+            })?),
             None => None,
         };
 
@@ -1323,17 +1358,45 @@ Data: {}"#,
             .collect();
 
         let buckets = match bucket {
-            Some(b) => Some(
-                hours_meter::windowed_hours_series(&self.db, start, end, b, agent_filter)
-                    .await
-                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?
-                    .into_iter()
-                    .map(|row| AgentHoursBucket {
-                        start: fmt_ts(row.bucket_start),
-                        total_hours: round6(row.hours),
-                    })
-                    .collect(),
-            ),
+            Some(b) => {
+                // Canonical bucket timeline (includes idle buckets at 0.0) +
+                // per-agent breakdown (only non-empty (bucket, agent) cells),
+                // stitched together keyed by bucket_start (both come from the
+                // same generate_series, so the timestamps match exactly).
+                let totals =
+                    hours_meter::windowed_hours_series(&self.db, start, end, b, agent_filter)
+                        .await
+                        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+                let per_agent =
+                    hours_meter::windowed_hours_series_by_agent(&self.db, start, end, b, agent_filter)
+                        .await
+                        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+                let mut by_bucket: HashMap<DateTime<Utc>, Vec<AgentHoursBucketAgent>> =
+                    HashMap::new();
+                for r in per_agent {
+                    by_bucket
+                        .entry(r.bucket_start)
+                        .or_default()
+                        .push(AgentHoursBucketAgent {
+                            agent_id: r.agent_id.to_string(),
+                            agent_name: r.agent_name,
+                            hours: round6(r.hours),
+                            deleted: r.deleted,
+                        });
+                }
+
+                Some(
+                    totals
+                        .into_iter()
+                        .map(|row| AgentHoursBucket {
+                            start: fmt_ts(row.bucket_start),
+                            total_hours: round6(row.hours),
+                            agents: by_bucket.remove(&row.bucket_start).unwrap_or_default(),
+                        })
+                        .collect(),
+                )
+            }
             None => None,
         };
 

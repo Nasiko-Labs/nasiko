@@ -21,6 +21,11 @@ fn obs_err(e: ObservabilityError) -> Response {
             // trace 'y'") — not a raw underlying error — so it's fine to return.
             (StatusCode::NOT_FOUND, msg).into_response()
         }
+        ObservabilityError::BadRequest(msg) => {
+            // `msg` is a hand-authored validation message (e.g. an invalid
+            // query param) — safe to return so the caller can correct it.
+            (StatusCode::BAD_REQUEST, msg).into_response()
+        }
         ObservabilityError::Deserialization(_) => {
             tracing::error!(error = %e, "observability: failed to deserialize upstream response");
             (StatusCode::BAD_GATEWAY, "observability backend returned an invalid response").into_response()

@@ -129,6 +129,22 @@ async fn get_agent_hours(server: &common::TestServer, uid: &str, query: &str) ->
     res.json().await.unwrap()
 }
 
+/// Raw HTTP status for the agent-hours endpoint — for asserting 400s.
+async fn agent_hours_status(server: &common::TestServer, uid: &str, query: &str) -> u16 {
+    common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/observability/finops/agent-hours{query}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .status()
+    .as_u16()
+}
+
 fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
@@ -332,15 +348,31 @@ async fn windowed_math_filter_and_bucket_series() {
     assert!((body["data"]["total_hours"].as_f64().unwrap() - 3.5).abs() < 1e-6);
     assert_eq!(body["data"]["agents"].as_array().unwrap().len(), 1);
 
-    // Invalid agent_id filter returns nothing — never everything.
-    let body = get_agent_hours(
-        &server,
-        uid,
-        &format!("?start_time={win_start}&end_time={win_end}&agent_id=not-a-uuid"),
-    )
-    .await;
-    assert_eq!(body["data"]["total_hours"].as_f64().unwrap(), 0.0);
-    assert!(body["data"]["agents"].as_array().unwrap().is_empty());
+    // Bad input is rejected loudly with 400 — never silently defaulted, which
+    // on a billing endpoint would return the wrong window / wrong agent.
+    // (a) malformed agent_id
+    assert_eq!(
+        agent_hours_status(
+            &server,
+            uid,
+            &format!("?start_time={win_start}&end_time={win_end}&agent_id=not-a-uuid"),
+        )
+        .await,
+        400,
+        "malformed agent_id must 400"
+    );
+    // (b) start_time without a timezone (the real-world footgun)
+    assert_eq!(
+        agent_hours_status(&server, uid, "?start_time=2026-07-23T00:00:00").await,
+        400,
+        "timezone-less start_time must 400, not fall back to a default window"
+    );
+    // (c) garbage end_time
+    assert_eq!(
+        agent_hours_status(&server, uid, "?end_time=yesterday").await,
+        400,
+        "unparseable end_time must 400"
+    );
 
     // Epoch default (no start_time): the outside session (1.0h) now counts,
     // and the spanning session regains its pre-window 09:30→10:00 half hour
@@ -371,6 +403,46 @@ async fn windowed_math_filter_and_bucket_series() {
         (sum - body["data"]["total_hours"].as_f64().unwrap()).abs() < 1e-6,
         "series must sum to the window total"
     );
+
+    // Per-agent breakdown within a bucket: the 11:00 bucket (total 2.0) splits
+    // a1 = 1.0 (a1-span) and a2 = 1.0 (a2-inside), each with deleted=false.
+    let b11 = &buckets[1]["agents"].as_array().unwrap();
+    assert_eq!(b11.len(), 2, "11:00 bucket agents: {b11:?}");
+    let a1_cell = b11.iter().find(|a| a["agent_id"] == a1.to_string()).unwrap();
+    let a2_cell = b11.iter().find(|a| a["agent_id"] == a2.to_string()).unwrap();
+    assert!((a1_cell["hours"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+    assert!((a2_cell["hours"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+    assert_eq!(a1_cell["deleted"], json!(false));
+    assert_eq!(a2_cell["deleted"], json!(false));
+    // per-agent cells sum to the bucket total
+    let cell_sum: f64 = b11.iter().map(|a| a["hours"].as_f64().unwrap()).sum();
+    assert!((cell_sum - 2.0).abs() < 1e-6, "per-agent cells must sum to bucket total");
+    // The 12:00 bucket has only a1.
+    let b12 = &buckets[2]["agents"].as_array().unwrap();
+    assert_eq!(b12.len(), 1);
+    assert_eq!(b12[0]["agent_id"], a1.to_string());
+
+    // Regression: an IDLE bucket must report 0.0, not a phantom full bucket.
+    // Postgres LEAST/GREATEST ignore NULLs, so without a FILTER on the SUM a
+    // LEFT-JOIN-miss bucket collapses to (bucket_end - bucket_start) = 1.0h.
+    // Window 07:00–10:00: a2-outside fills 07:00, 08:00–09:00 is empty,
+    // a1-span (starts 09:30) gives 0.5 to 09:00.
+    let body = get_agent_hours(
+        &server,
+        uid,
+        "?start_time=2026-07-20T07:00:00Z&end_time=2026-07-20T10:00:00Z&bucket=hour",
+    )
+    .await;
+    let gap: Vec<f64> = body["data"]["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["total_hours"].as_f64().unwrap())
+        .collect();
+    assert_eq!(gap.len(), 3);
+    assert!((gap[0] - 1.0).abs() < 1e-6, "07:00 bucket: {gap:?}");
+    assert!((gap[1] - 0.0).abs() < 1e-6, "08:00 idle bucket must be 0.0, got {gap:?}");
+    assert!((gap[2] - 0.5).abs() < 1e-6, "09:00 bucket: {gap:?}");
 
     // Unknown bucket value is ignored — no series in the response.
     let body = get_agent_hours(

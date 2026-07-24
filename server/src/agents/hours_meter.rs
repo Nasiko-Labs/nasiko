@@ -422,13 +422,20 @@ pub async fn windowed_hours_series(
     bucket: HoursBucket,
     agent_id: Option<Uuid>,
 ) -> sqlx::Result<Vec<HoursBucketRow>> {
+    // NOTE: the SUM carries `FILTER (WHERE s.id IS NOT NULL)`. Postgres
+    // LEAST/GREATEST *ignore* NULL arguments, so on an empty bucket (LEFT JOIN
+    // miss, all s.* NULL) the overlap expression collapses to
+    // `bucket_end - bucket_start` = one full bucket, i.e. every idle bucket
+    // would otherwise report 1.0h. The FILTER drops the phantom NULL row so an
+    // empty bucket sums to nothing and COALESCE yields 0.
     sqlx::query_as(
         r#"SELECT
                b.bucket_start,
                COALESCE(SUM(GREATEST(EXTRACT(EPOCH FROM (
                     LEAST(COALESCE(s.ended_at, s.last_seen_at),
                           LEAST(b.bucket_start + ($3::text)::interval, $2))
-                  - GREATEST(s.started_at, b.bucket_start))), 0)) / 3600.0, 0)::float8 AS hours
+                  - GREATEST(s.started_at, b.bucket_start))), 0))
+                    FILTER (WHERE s.id IS NOT NULL) / 3600.0, 0)::float8 AS hours
            FROM generate_series($1, $2 - interval '1 microsecond', ($3::text)::interval)
                 AS b(bucket_start)
            LEFT JOIN agent_instance_sessions s
@@ -437,6 +444,62 @@ pub async fn windowed_hours_series(
                  AND ($4::uuid IS NULL OR s.agent_id = $4)
            GROUP BY b.bucket_start
            ORDER BY b.bucket_start"#,
+    )
+    .bind(start)
+    .bind(end)
+    .bind(bucket.interval_sql())
+    .bind(agent_id)
+    .fetch_all(db)
+    .await
+}
+
+/// One `(bucket, agent)` cell of the per-agent time series.
+#[derive(Debug, sqlx::FromRow)]
+pub struct HoursBucketAgentRow {
+    pub bucket_start: DateTime<Utc>,
+    pub agent_id: Uuid,
+    pub agent_name: String,
+    pub hours: f64,
+    pub deleted: bool,
+}
+
+/// Per-agent replica-hours per bucket across `[start, end)`. Unlike
+/// [`windowed_hours_series`] this is an INNER join on sessions, so it emits only
+/// non-empty `(bucket, agent)` cells (idle buckets and idle agents produce no
+/// rows) — the caller stitches these onto the full bucket timeline. Using an
+/// inner join also sidesteps the LEAST/GREATEST NULL-collapse that the bucket
+/// totals query must guard against.
+pub async fn windowed_hours_series_by_agent(
+    db: &PgPool,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    bucket: HoursBucket,
+    agent_id: Option<Uuid>,
+) -> sqlx::Result<Vec<HoursBucketAgentRow>> {
+    sqlx::query_as(
+        r#"SELECT
+               b.bucket_start,
+               s.agent_id,
+               COALESCE(a.display_name, a.name,
+                        (array_agg(s.agent_name ORDER BY s.last_seen_at DESC))[1]) AS agent_name,
+               (SUM(GREATEST(EXTRACT(EPOCH FROM (
+                    LEAST(COALESCE(s.ended_at, s.last_seen_at),
+                          LEAST(b.bucket_start + ($3::text)::interval, $2))
+                  - GREATEST(s.started_at, b.bucket_start))), 0)) / 3600.0)::float8 AS hours,
+               (a.id IS NULL OR a.deleted_at IS NOT NULL) AS deleted
+           FROM generate_series($1, $2 - interval '1 microsecond', ($3::text)::interval)
+                AS b(bucket_start)
+           JOIN agent_instance_sessions s
+                  ON s.started_at < LEAST(b.bucket_start + ($3::text)::interval, $2)
+                 AND COALESCE(s.ended_at, s.last_seen_at) > b.bucket_start
+                 AND ($4::uuid IS NULL OR s.agent_id = $4)
+           LEFT JOIN agents a ON a.id = s.agent_id
+           GROUP BY b.bucket_start, s.agent_id, a.id, a.display_name, a.name, a.deleted_at
+           HAVING SUM(GREATEST(EXTRACT(EPOCH FROM (
+                    LEAST(COALESCE(s.ended_at, s.last_seen_at),
+                          LEAST(b.bucket_start + ($3::text)::interval, $2))
+                  - GREATEST(s.started_at, b.bucket_start))), 0)) > 0
+           ORDER BY b.bucket_start, hours DESC"#,
     )
     .bind(start)
     .bind(end)
