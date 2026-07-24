@@ -20,6 +20,18 @@ pub async fn get_catalog(
     ))
 }
 
+/// `GET /api/mcp/composio/toolkits` — platform Composio toolkits only.
+pub async fn list_toolkits(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> Result<ApiResponse, ApiError> {
+    let user = parse_user(&claims)?;
+    Ok(ApiResponse::ok(
+        service::catalog::list_toolkits(&state, user).await?,
+        "Toolkits retrieved successfully",
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateAuthConfig {
     pub toolkit: String,

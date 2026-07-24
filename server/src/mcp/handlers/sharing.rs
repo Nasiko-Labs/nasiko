@@ -1,4 +1,4 @@
-//! Owner-controlled connector sharing.
+//! Owner-controlled connector sharing — path-based grant/revoke.
 
 use axum::extract::State;
 use serde::Deserialize;
@@ -6,34 +6,11 @@ use uuid::Uuid;
 
 use nasiko_mcp_gateway::McpError;
 
-use super::super::{ApiError, ApiResponse, AppJson, AppPath, AppQuery, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppPath, AppQuery, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
-pub struct ShareRequest {
-    /// Grant to a specific username. Omit + set `public=true` to share with everyone.
-    pub username: Option<String>,
-    #[serde(default)]
-    pub public: bool,
-}
-
-impl ShareRequest {
-    fn into_target(self) -> Result<service::connectors::ShareTarget, ApiError> {
-        use service::connectors::ShareTarget;
-        if self.public {
-            return Ok(ShareTarget::Public);
-        }
-        match self.username {
-            Some(u) if !u.is_empty() => Ok(ShareTarget::User(u)),
-            _ => Err(ApiError(McpError::BadRequest(
-                "provide 'username' or set 'public': true".into(),
-            ))),
-        }
-    }
-}
-
-/// `GET /api/mcp/connectors/{id}/share` — list a connector's grants.
+/// `GET /api/mcp/connectors/{id}/grants` — list a connector's grants.
 pub async fn list(
     State(state): State<AppState>,
     claims: Claims,
@@ -42,35 +19,93 @@ pub async fn list(
     let caller = parse_user(&claims)?;
     Ok(ApiResponse::ok(
         service::connectors::list_shares(&state, caller, claims.is_superuser, id).await?,
-        "Connector shares retrieved successfully",
+        "Connector grants retrieved successfully",
     ))
 }
 
-/// `POST /api/mcp/connectors/{id}/share` — share by username or with everyone.
-pub async fn share(
+/// `POST /api/mcp/connectors/{id}/grants/public` — make connector public.
+pub async fn grant_public(
     State(state): State<AppState>,
     claims: Claims,
     AppPath(id): AppPath<Uuid>,
-    AppJson(body): AppJson<ShareRequest>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
-    let target = body.into_target()?;
-    let view =
-        service::connectors::share(&state, caller, claims.is_superuser, id, target).await?;
-    Ok(ApiResponse::created(view, "Connector shared successfully"))
+    let view = service::connectors::share(
+        &state, caller, claims.is_superuser, id,
+        service::connectors::ShareTarget::Public,
+    ).await?;
+    Ok(ApiResponse::created(view, "Connector made public"))
 }
 
-/// `DELETE /api/mcp/connectors/{id}/share` — revoke a share.
-pub async fn revoke(
+/// `DELETE /api/mcp/connectors/{id}/grants/public` — revoke public access.
+pub async fn revoke_public(
     State(state): State<AppState>,
     claims: Claims,
     AppPath(id): AppPath<Uuid>,
-    AppJson(body): AppJson<ShareRequest>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
-    let target = body.into_target()?;
-    service::connectors::revoke(&state, caller, claims.is_superuser, id, target).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "Connector share revoked successfully"))
+    service::connectors::revoke(
+        &state, caller, claims.is_superuser, id,
+        service::connectors::ShareTarget::Public,
+    ).await?;
+    Ok(ApiResponse::ok(serde_json::Value::Null, "Public access revoked"))
+}
+
+/// `POST /api/mcp/connectors/{id}/grants/users/{user_id}` — grant to a user.
+pub async fn grant_user(
+    State(state): State<AppState>,
+    claims: Claims,
+    AppPath((id, user_id)): AppPath<(Uuid, Uuid)>,
+) -> Result<ApiResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    let view = service::connectors::share(
+        &state, caller, claims.is_superuser, id,
+        service::connectors::ShareTarget::User(user_id),
+    ).await?;
+    Ok(ApiResponse::created(view, "Connector shared with user"))
+}
+
+/// `DELETE /api/mcp/connectors/{id}/grants/users/{user_id}` — revoke from a user.
+pub async fn revoke_user(
+    State(state): State<AppState>,
+    claims: Claims,
+    AppPath((id, user_id)): AppPath<(Uuid, Uuid)>,
+) -> Result<ApiResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    service::connectors::revoke(
+        &state, caller, claims.is_superuser, id,
+        service::connectors::ShareTarget::User(user_id),
+    ).await?;
+    Ok(ApiResponse::ok(serde_json::Value::Null, "User access revoked"))
+}
+
+/// `POST /api/mcp/connectors/{id}/grants/agents/{agent_id}` — grant to an agent.
+pub async fn grant_agent(
+    State(state): State<AppState>,
+    claims: Claims,
+    AppPath((id, agent_id)): AppPath<(Uuid, Uuid)>,
+) -> Result<ApiResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    if !agent_exists(&state, agent_id).await? {
+        return Err(ApiError(McpError::NotFound(format!(
+            "agent '{agent_id}' not found"
+        ))));
+    }
+    let view =
+        service::connectors::grant_agent(&state, caller, claims.is_superuser, id, agent_id)
+            .await?;
+    Ok(ApiResponse::created(view, "Connector granted to agent"))
+}
+
+/// `DELETE /api/mcp/connectors/{id}/grants/agents/{agent_id}` — revoke from an agent.
+pub async fn revoke_agent(
+    State(state): State<AppState>,
+    claims: Claims,
+    AppPath((id, agent_id)): AppPath<(Uuid, Uuid)>,
+) -> Result<ApiResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    service::connectors::revoke_agent(&state, caller, claims.is_superuser, id, agent_id).await?;
+    Ok(ApiResponse::ok(serde_json::Value::Null, "Agent access revoked"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,35 +136,6 @@ pub async fn consumers(
         service::connectors::list_consumers(&state, caller, claims.is_superuser, id).await?,
         "Connector consumers retrieved successfully",
     ))
-}
-
-/// `POST /api/mcp/connectors/{id}/grants/agents/{agent_id}` — share with a specific agent.
-pub async fn grant_agent(
-    State(state): State<AppState>,
-    claims: Claims,
-    AppPath((id, agent_id)): AppPath<(Uuid, Uuid)>,
-) -> Result<ApiResponse, ApiError> {
-    let caller = parse_user(&claims)?;
-    if !agent_exists(&state, agent_id).await? {
-        return Err(ApiError(McpError::NotFound(format!(
-            "agent '{agent_id}' not found"
-        ))));
-    }
-    let view =
-        service::connectors::grant_agent(&state, caller, claims.is_superuser, id, agent_id)
-            .await?;
-    Ok(ApiResponse::created(view, "Connector granted to agent successfully"))
-}
-
-/// `DELETE /api/mcp/connectors/{id}/grants/agents/{agent_id}` — revoke agent grant.
-pub async fn revoke_agent(
-    State(state): State<AppState>,
-    claims: Claims,
-    AppPath((id, agent_id)): AppPath<(Uuid, Uuid)>,
-) -> Result<ApiResponse, ApiError> {
-    let caller = parse_user(&claims)?;
-    service::connectors::revoke_agent(&state, caller, claims.is_superuser, id, agent_id).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "Agent connector grant revoked successfully"))
 }
 
 async fn agent_exists(state: &AppState, agent_id: Uuid) -> nasiko_mcp_gateway::Result<bool> {

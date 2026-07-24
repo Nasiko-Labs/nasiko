@@ -61,6 +61,7 @@ pub fn router() -> Router<AppState> {
         .route("/mcp/connectors/{id}/build-logs", get(handlers::upload::build_logs))
         // Catalog + platform Composio connector registration.
         .route("/mcp/catalog", get(handlers::catalog::get_catalog))
+        .route("/mcp/composio/toolkits", get(handlers::catalog::list_toolkits))
         .route(
             "/mcp/auth-configs",
             get(handlers::catalog::list_auth_configs).post(handlers::catalog::create_auth_config),
@@ -83,26 +84,30 @@ pub fn router() -> Router<AppState> {
             get(handlers::connectors::list).post(handlers::connectors::create),
         )
         .route("/mcp/connectors/probe", post(handlers::connectors::probe))
+        .route("/mcp/connectors/my-uploads", get(handlers::upload::list_my_uploads))
         .route(
             "/mcp/connectors/{id}",
             get(handlers::connectors::get)
                 .patch(handlers::connectors::update)
                 .delete(handlers::connectors::delete),
         )
+        .route("/mcp/connectors/{id}/grants", get(handlers::sharing::list))
         .route(
-            "/mcp/connectors/{id}/share",
-            get(handlers::sharing::list)
-                .post(handlers::sharing::share)
-                .delete(handlers::sharing::revoke),
+            "/mcp/connectors/{id}/grants/public",
+            post(handlers::sharing::grant_public).delete(handlers::sharing::revoke_public),
+        )
+        .route(
+            "/mcp/connectors/{id}/grants/users/{user_id}",
+            post(handlers::sharing::grant_user).delete(handlers::sharing::revoke_user),
+        )
+        .route(
+            "/mcp/connectors/{id}/grants/agents/{agent_id}",
+            post(handlers::sharing::grant_agent).delete(handlers::sharing::revoke_agent),
         )
         .route("/mcp/share-targets", get(handlers::sharing::search_targets))
         .route(
             "/mcp/connectors/{id}/consumers",
             get(handlers::sharing::consumers),
-        )
-        .route(
-            "/mcp/connectors/{id}/grants/agents/{agent_id}",
-            post(handlers::sharing::grant_agent).delete(handlers::sharing::revoke_agent),
         )
         .route(
             "/mcp/connectors/{id}/pin",

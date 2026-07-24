@@ -231,6 +231,7 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
+            crate::seed::seed_toolkits_if_configured(&state).await;
         });
 
         // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).

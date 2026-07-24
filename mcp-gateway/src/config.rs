@@ -19,7 +19,13 @@ pub struct McpConfig {
     /// verification (dev only).
     pub composio_webhook_secret: Option<String>,
     /// Public URL of this gateway, injected into agents as `MCP_GATEWAY_URL`.
+    /// This is the in-cluster URL agents use to reach the gateway.
     pub gateway_public_url: Option<String>,
+    /// Browser-reachable base URL for OAuth callbacks. When set, Composio
+    /// OAuth redirects go here instead of `gateway_public_url` (which may
+    /// be an in-cluster URL unreachable from a browser). Falls back to
+    /// `gateway_public_url` when unset.
+    pub composio_callback_base_url: Option<String>,
     /// TTL for the Redis-cached resolved backend/session list.
     pub session_ttl_seconds: u64,
     /// TTL for the Redis-cached per-agent permission context.
@@ -42,6 +48,7 @@ impl McpConfig {
             composio_base_url: config.composio_base_url.trim_end_matches('/').to_string(),
             composio_webhook_secret: config.composio_webhook_secret.clone(),
             gateway_public_url: config.mcp_gateway_public_url.clone(),
+            composio_callback_base_url: config.composio_callback_base_url.clone(),
             session_ttl_seconds: config.mcp_session_ttl_seconds,
             perm_cache_ttl_seconds: config.mcp_perm_cache_ttl_seconds,
             manifest_ttl_seconds: config.mcp_manifest_ttl_seconds,

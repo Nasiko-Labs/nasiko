@@ -336,13 +336,19 @@ pub async fn disconnect(
 }
 
 /// Build our `/oauth/callback` URL carrying the user + connector for verification.
+/// Prefers `composio_callback_base_url` (browser-reachable) over
+/// `gateway_public_url` (may be in-cluster only).
 fn composio_callback_url(
     state: &McpState,
     user_id: Uuid,
     connector_id: Uuid,
     success_url: Option<&str>,
 ) -> Option<String> {
-    let base = state.config.gateway_public_url.as_ref()?;
+    let base = state
+        .config
+        .composio_callback_base_url
+        .as_ref()
+        .or(state.config.gateway_public_url.as_ref())?;
     let mut origin = reqwest::Url::parse(base).ok()?;
     origin.set_path("/oauth/callback");
     origin.set_query(None);

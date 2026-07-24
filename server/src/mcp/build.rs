@@ -413,11 +413,12 @@ pub async fn execute_mcp_server_build(
     // this one-off config), so a plain unconfigured client is fine as its slot.
     let provider = GenericMcpProvider::new(reqwest::Client::new(), http_client);
 
-    let ready = wait_for_readiness(&provider, &server_cfg, READINESS_RETRIES, READINESS_BACKOFF).await;
+    let tools = wait_for_readiness(&provider, &server_cfg, READINESS_RETRIES, READINESS_BACKOFF).await;
 
-    if ready {
+    if let Some(tools) = tools {
         mark_running(&db, build_id, connector_id, &mcp_url, &image_tag).await;
-        tracing::info!(build_id = %build_id, connector_id = %connector_id, "mcp server build succeeded");
+        sync_tools(&db, connector_id, &tools).await;
+        tracing::info!(build_id = %build_id, connector_id = %connector_id, tool_count = tools.len(), "mcp server build succeeded");
     } else {
         // A failed build must never leave an orphaned container running —
         // mirrors the RUN-4 cleanup guarantee already established for agents.
@@ -438,14 +439,38 @@ async fn wait_for_readiness(
     server: &MCPServerConfig,
     retries: u32,
     backoff: Duration,
-) -> bool {
+) -> Option<Vec<serde_json::Value>> {
     for _ in 0..retries {
         tokio::time::sleep(backoff).await;
-        if provider.list_tools(server, READINESS_CALL_TIMEOUT, None).await.is_ok() {
-            return true;
+        if let Ok(tools) = provider.list_tools(server, READINESS_CALL_TIMEOUT, None).await {
+            return Some(tools);
         }
     }
-    false
+    None
+}
+
+/// Persist the discovered tool list into `mcp_connector_tools` so the detail
+/// view can show tool count + names immediately after deploy.
+async fn sync_tools(db: &sqlx::PgPool, connector_id: Uuid, tools: &[serde_json::Value]) {
+    let parsed: Vec<(String, Option<String>)> = tools
+        .iter()
+        .filter_map(|t| {
+            t.get("name").and_then(|n| n.as_str()).map(|name| {
+                (
+                    name.to_string(),
+                    t.get("description")
+                        .and_then(|d| d.as_str())
+                        .map(str::to_string),
+                )
+            })
+        })
+        .collect();
+    if parsed.is_empty() {
+        return;
+    }
+    if let Err(e) = nasiko_mcp_gateway::repo::upsert_connector_tools(db, connector_id, &parsed).await {
+        tracing::warn!(connector_id = %connector_id, %e, "failed to sync tools after build");
+    }
 }
 
 /// Mirrors `agents::mod::build_agent_spec`'s shape, MCP-specific values.
@@ -698,7 +723,7 @@ mod tests {
 
         let ready = wait_for_readiness(&provider, &server, 5, Duration::from_millis(10)).await;
 
-        assert!(ready, "must succeed once the backend starts responding");
+        assert!(ready.is_some(), "must succeed once the backend starts responding");
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             3,
@@ -716,7 +741,7 @@ mod tests {
 
         let ready = wait_for_readiness(&provider, &server, 3, Duration::from_millis(10)).await;
 
-        assert!(!ready, "must give up, not loop forever, once retries are exhausted");
+        assert!(ready.is_none(), "must give up, not loop forever, once retries are exhausted");
         failure.assert_async().await;
     }
 }

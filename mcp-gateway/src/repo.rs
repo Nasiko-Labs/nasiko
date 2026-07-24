@@ -17,6 +17,23 @@ use crate::types::PUBLIC_GRANTEE;
 
 // ─── Row types ──────────────────────────────────────────────────────────────
 
+/// Where a `mcp_server`-provider connector's `url` came from. Backed by the
+/// Postgres enum `mcp_connector_source_kind` (026_mcp_connector_uploads.sql) —
+/// a real enum type, unlike `provider_type`/`auth_type` (plain TEXT + CHECK),
+/// so it needs `sqlx::Type` for `SELECT *` to decode it automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, sqlx::Type)]
+#[sqlx(type_name = "mcp_connector_source_kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A user typed in the URL of a server already running somewhere else.
+    /// The default for every pre-existing row and every Composio row.
+    #[default]
+    ExternalUrl,
+    /// The platform built this connector's container from uploaded source; its
+    /// `url` was resolved via `ContainerRuntime::endpoint()`, never user-typed.
+    UploadedBuild,
+}
+
 /// One connector — either a Composio toolkit or a custom MCP server.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct McpConnector {
@@ -43,6 +60,10 @@ pub struct McpConnector {
     pub oauth_token_endpoint: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
+    pub source_kind: SourceKind,
+    // uploaded_build-only
+    pub build_status: Option<String>,
+    pub container_image_tag: Option<String>,
     // mcp_server-only — connector-level setup progress for the URL-connect
     // flow (`None` for composio, and for mcp_server rows created before this
     // column existed).
@@ -69,6 +90,12 @@ impl McpConnector {
             && self.oauth_token_endpoint.is_some()
             && self.oauth_client_id.is_some()
     }
+    /// True only for a platform-built-and-deployed MCP server — see
+    /// `SourceKind::UploadedBuild`'s doc comment. Drives the SSRF-guard
+    /// `trusted` split (credentials.rs) and the delete/destroy-container fix.
+    pub fn is_uploaded_build(&self) -> bool {
+        self.source_kind == SourceKind::UploadedBuild
+    }
 }
 
 /// Insert input for [`create_connector`].
@@ -90,6 +117,14 @@ pub struct NewConnector {
     pub credential_header_name: Option<String>,
     pub headers: Option<Value>,
     pub is_active: Option<bool>,
+    /// Defaults to `ExternalUrl` (matches the column's own DB default) — every
+    /// pre-existing caller (`register_connector`) sets this explicitly rather
+    /// than relying on the derived `Default`, so it's never ambiguous at a
+    /// call site which kind of row is being created.
+    pub source_kind: SourceKind,
+    /// `Some("pending")` for a freshly queued `uploaded_build` connector;
+    /// `None` for every `external_url`/composio row (column is nullable).
+    pub build_status: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -165,8 +200,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
              (provider_type, owner_id, name, display_name, logo_url, description,
               auth_config_id, auth_scheme, use_composio_managed,
               url, transport, auth_type, url_param_name, credential_header_name,
-              headers, is_active)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+              headers, is_active, source_kind, build_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
            RETURNING *"#,
     )
     .bind(&c.provider_type)
@@ -185,6 +220,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
     .bind(&c.credential_header_name)
     .bind(&c.headers)
     .bind(c.is_active)
+    .bind(c.source_kind)
+    .bind(&c.build_status)
     .fetch_one(db)
     .await?;
     Ok(row)
@@ -258,10 +295,7 @@ pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Ve
 }
 
 /// Accessible custom (mcp_server) connectors only — for building generic backends.
-pub async fn list_accessible_mcp_connectors(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<McpConnector>> {
+pub async fn list_accessible_mcp_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
         r#"SELECT * FROM mcp_connectors c
            WHERE c.provider_type = 'mcp_server' AND c.is_active = true
@@ -441,10 +475,7 @@ pub async fn create_grant(
     Ok(row)
 }
 
-pub async fn list_grants_for_connector(
-    db: &PgPool,
-    connector_id: Uuid,
-) -> Result<Vec<McpConnectorGrant>> {
+pub async fn list_grants_for_connector(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorGrant>> {
     let rows = sqlx::query_as::<_, McpConnectorGrant>(
         "SELECT * FROM mcp_connector_grants WHERE connector_id = $1 ORDER BY created_at",
     )
@@ -555,8 +586,7 @@ pub async fn revoke_grant_and_connection(
 
     // Only a specific user's connection is removed; a public revoke leaves other
     // users' own connections intact.
-    if grant_type == "user"
-        && grantee_id != PUBLIC_GRANTEE
+    if grant_type == "user" && grantee_id != PUBLIC_GRANTEE
         && let Ok(uid) = Uuid::parse_str(grantee_id)
     {
         sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
@@ -871,10 +901,7 @@ pub async fn upsert_connector_tools(
     Ok(())
 }
 
-pub async fn list_connector_tools(
-    db: &PgPool,
-    connector_id: Uuid,
-) -> Result<Vec<McpConnectorTool>> {
+pub async fn list_connector_tools(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorTool>> {
     let rows = sqlx::query_as::<_, McpConnectorTool>(
         "SELECT * FROM mcp_connector_tools WHERE connector_id = $1 ORDER BY tool_name",
     )
@@ -886,10 +913,7 @@ pub async fn list_connector_tools(
 
 // ─── Composio sessions ──────────────────────────────────────────────────────
 
-pub async fn get_composio_session(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Option<McpComposioSession>> {
+pub async fn get_composio_session(db: &PgPool, user_id: Uuid) -> Result<Option<McpComposioSession>> {
     let row = sqlx::query_as::<_, McpComposioSession>(
         "SELECT * FROM mcp_composio_sessions WHERE user_id = $1",
     )

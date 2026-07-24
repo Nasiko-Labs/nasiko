@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use axum::extract::{Multipart, State};
+use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -161,4 +162,151 @@ pub async fn build_logs(
     let caller = parse_user(&claims)?;
     let logs = crate::mcp::build::get_build_logs(&state.db, &state.runtime, caller, claims.is_superuser, id, q.tail).await?;
     Ok(ApiResponse::ok(json!(logs), "build logs retrieved successfully"))
+}
+
+// ── My uploaded MCP connectors (mirrors /api/agents/my-uploads) ─────────
+
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+struct UploadedConnectorRow {
+    connector_id: Uuid,
+    connector_name: String,
+    build_status: Option<String>,
+    error_msg: Option<String>,
+    url: Option<String>,
+    version_tag: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(serde::Serialize)]
+struct UploadedConnectorResponse {
+    connector_id: String,
+    connector_name: String,
+    icon_url: Option<String>,
+    upload_info: UploadInfoMcp,
+    url: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct UploadInfoMcp {
+    upload_type: &'static str,
+    upload_status: String,
+    status_message: Option<String>,
+    error_detail: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct UploadedConnectorsListResponse {
+    data: Vec<UploadedConnectorResponse>,
+    status_code: u16,
+    message: String,
+}
+
+fn mcp_display_status(build_status: Option<&str>) -> &'static str {
+    match build_status {
+        Some("running") | Some("success") => "Active",
+        Some("pending") | Some("building") => "Deploying",
+        Some("failed") => "Failed",
+        _ => "Unknown",
+    }
+}
+
+fn mcp_status_message(display_status: &str, version: Option<&str>) -> Option<String> {
+    match display_status {
+        "Active" => Some(format!(
+            "MCP server v{} deployed successfully",
+            version.unwrap_or("1"),
+        )),
+        "Deploying" => Some("MCP server is being built...".to_string()),
+        "Failed" => Some("Build failed".to_string()),
+        _ => None,
+    }
+}
+
+/// `GET /api/mcp/connectors/my-uploads` — list uploaded MCP connectors
+/// owned by the caller, mirroring `/api/agents/my-uploads`.
+pub async fn list_my_uploads(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl axum::response::IntoResponse {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let rows: Result<Vec<UploadedConnectorRow>, _> = if claims.is_superuser {
+        sqlx::query_as(
+            r#"SELECT DISTINCT ON (c.id)
+                   c.id           AS connector_id,
+                   c.name         AS connector_name,
+                   c.build_status,
+                   b.error_msg,
+                   c.url,
+                   b.version_tag,
+                   c.created_at
+               FROM mcp_connectors c
+               LEFT JOIN mcp_connector_builds b ON b.connector_id = c.id
+               WHERE c.source_kind = 'uploaded_build'
+               ORDER BY c.id, b.created_at DESC
+               LIMIT 50"#,
+        )
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as(
+            r#"SELECT DISTINCT ON (c.id)
+                   c.id           AS connector_id,
+                   c.name         AS connector_name,
+                   c.build_status,
+                   b.error_msg,
+                   c.url,
+                   b.version_tag,
+                   c.created_at
+               FROM mcp_connectors c
+               LEFT JOIN mcp_connector_builds b ON b.connector_id = c.id
+               WHERE c.source_kind = 'uploaded_build' AND c.owner_id = $1
+               ORDER BY c.id, b.created_at DESC
+               LIMIT 50"#,
+        )
+        .bind(user_id)
+        .fetch_all(&state.db)
+        .await
+    };
+
+    match rows {
+        Ok(rows) => {
+            let count = rows.len();
+            let data = rows
+                .into_iter()
+                .map(|r| {
+                    let display_status = mcp_display_status(r.build_status.as_deref());
+                    let status_message =
+                        mcp_status_message(display_status, r.version_tag.as_deref());
+                    UploadedConnectorResponse {
+                        connector_id: r.connector_id.to_string(),
+                        connector_name: r.connector_name,
+                        icon_url: None,
+                        upload_info: UploadInfoMcp {
+                            upload_type: "mcp_server",
+                            upload_status: display_status.to_string(),
+                            status_message,
+                            error_detail: r.error_msg,
+                        },
+                        url: r.url,
+                        description: None,
+                    }
+                })
+                .collect();
+            axum::Json(UploadedConnectorsListResponse {
+                data,
+                status_code: 200,
+                message: format!("Retrieved {count} uploaded MCP connectors"),
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!(%e, "list_my_uploads db error");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }

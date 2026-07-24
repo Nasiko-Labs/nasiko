@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::catalog::models::Agent;
 use crate::state::AppState;
+use nasiko_mcp_gateway::catalog;
 use nasiko_runtime::{ContainerId, RuntimeState};
 
 const AGENT_PORT: u16 = 8000;
@@ -136,10 +137,6 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             .unwrap_or_else(|_| "http://host.docker.internal:8080".into());
         env.insert("A2A_DISCOVERY_URL".into(), discovery_url);
 
-        // Route the seed agent's LLM SDK through the configured LLM router when set;
-        // otherwise the direct OPENAI_API_KEY/BASE_URL set above remain (best-effort).
-        crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent.id, Some(owner_id)).await;
-
         // UUID-keyed (see agents::build_agent_spec) so a re-seed re-targets the same
         // workload rather than leaving a name-keyed orphan.
         let mut spec = crate::agents::build_agent_spec(
@@ -221,4 +218,84 @@ async fn register_agent(
     .bind(image)
     .fetch_one(db)
     .await
+}
+
+fn toolkit_logo_url(toolkit: &str) -> Option<String> {
+    let domain = match toolkit {
+        "slack" => "slack.com",
+        "gmail" | "googlecalendar" | "googledrive" | "googlesheets" => "google.com",
+        "github" => "github.com",
+        "notion" => "notion.so",
+        "jira" | "confluence" | "bitbucket" => "atlassian.com",
+        "linear" => "linear.app",
+        "asana" => "asana.com",
+        "trello" => "trello.com",
+        "discord" => "discord.com",
+        "dropbox" => "dropbox.com",
+        "salesforce" => "salesforce.com",
+        "hubspot" => "hubspot.com",
+        "zendesk" => "zendesk.com",
+        "intercom" => "intercom.com",
+        "stripe" => "stripe.com",
+        "airtable" => "airtable.com",
+        "clickup" => "clickup.com",
+        "monday" => "monday.com",
+        "gitlab" => "gitlab.com",
+        "pagerduty" => "pagerduty.com",
+        "sentry" => "sentry.io",
+        _ => return None,
+    };
+    Some(format!("https://logo.clearbit.com/{domain}"))
+}
+
+/// Auto-register Composio toolkits from `SEED_TOOLKITS` config.
+/// Runs once at boot — skips toolkits that already exist in the DB.
+/// Requires `COMPOSIO_API_KEY` to be set; silently skips otherwise.
+pub async fn seed_toolkits_if_configured(state: &AppState) {
+    if state.config.seed_toolkits.is_empty() {
+        info!("SEED_TOOLKITS not set, skipping toolkit seeding");
+        return;
+    }
+    if state.config.composio_api_key.is_none() {
+        warn!(
+            "SEED_TOOLKITS is set but COMPOSIO_API_KEY is not — \
+             cannot register Composio toolkits without an API key"
+        );
+        return;
+    }
+
+    let toolkits = &state.config.seed_toolkits;
+    info!(count = toolkits.len(), "SEED_TOOLKITS configured, registering");
+
+    for toolkit in toolkits {
+        let toolkit = toolkit.to_lowercase();
+        // Skip if already registered.
+        if nasiko_mcp_gateway::repo::get_composio_connector_by_name(&state.db, &toolkit)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            info!(toolkit = %toolkit, "toolkit already registered, skipping");
+            continue;
+        }
+        let logo = toolkit_logo_url(&toolkit);
+        match catalog::create_composio_connector(
+            &state.mcp,
+            catalog::CreateComposioInput {
+                toolkit: &toolkit,
+                use_composio_managed: true,
+                client_id: None,
+                client_secret: None,
+                scopes: None,
+                display_name: None,
+                logo_url: logo.as_deref(),
+            },
+        )
+        .await
+        {
+            Ok(_) => info!(toolkit = %toolkit, "seeded composio toolkit"),
+            Err(e) => warn!(toolkit = %toolkit, %e, "failed to seed composio toolkit"),
+        }
+    }
 }

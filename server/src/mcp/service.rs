@@ -32,6 +32,9 @@ pub mod catalog {
     pub async fn get_catalog(s: &AppState, user: Uuid) -> R<Value> {
         catalog::get_catalog_view(&s.mcp, user).await
     }
+    pub async fn list_toolkits(s: &AppState, user: Uuid) -> R<Value> {
+        catalog::list_toolkits_view(&s.mcp, user).await
+    }
     pub async fn create_composio(s: &AppState, r: &ComposioReg) -> R<Value> {
         catalog::create_composio_connector(
             &s.mcp,

@@ -123,6 +123,10 @@ pub struct Config {
     /// Public URL of the MCP gateway, injected into every deployed agent as
     /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
     pub mcp_gateway_public_url: Option<String>,
+    /// Browser-reachable base URL for Composio OAuth callbacks. When set,
+    /// OAuth redirects use this instead of `MCP_GATEWAY_PUBLIC_URL` (which
+    /// may be an in-cluster URL). COMPOSIO_CALLBACK_BASE_URL, optional.
+    pub composio_callback_base_url: Option<String>,
     /// TTL (seconds) for the Redis-cached resolved backend/session list.
     pub mcp_session_ttl_seconds: u64,
     /// TTL (seconds) for the Redis-cached per-agent permission context.
@@ -149,6 +153,9 @@ pub struct Config {
     /// unconnected catalog cards — changes rarely, so a much longer TTL than
     /// the permission/session caches.
     pub mcp_toolcount_ttl_seconds: u64,
+    /// Comma-separated Composio toolkit names to auto-register at first boot.
+    /// SEED_TOOLKITS, default empty. Requires COMPOSIO_API_KEY to be set.
+    pub seed_toolkits: Vec<String>,
 }
 
 impl Config {
@@ -274,6 +281,9 @@ impl Config {
             mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            composio_callback_base_url: std::env::var("COMPOSIO_CALLBACK_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             mcp_session_ttl_seconds: env_parse("MCP_SESSION_TTL_SECONDS", 300),
             mcp_perm_cache_ttl_seconds: env_parse("MCP_PERM_CACHE_TTL_SECONDS", 30),
             mcp_manifest_ttl_seconds: env_parse("MCP_MANIFEST_TTL_SECONDS", 300),
@@ -282,6 +292,12 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
+            seed_toolkits: std::env::var("SEED_TOOLKITS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
         })
     }
 
