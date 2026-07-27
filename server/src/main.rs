@@ -43,7 +43,7 @@ async fn main() {
             Arc::new(nasiko_runtime::SimulatedRuntime::new(sim_agent_url))
         }
         _ => Arc::new(
-            nasiko_server::runtime::build_docker_runtime(&config)
+            nasiko_server::runtime::build_docker_runtime(&config, db.clone())
                 .await
                 .expect("failed to create Docker runtime"),
         ),

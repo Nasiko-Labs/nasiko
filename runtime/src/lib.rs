@@ -9,7 +9,9 @@ mod simulated;
 
 pub use error::{Result, RuntimeError};
 pub use types::validate_build_inputs;
-pub use types::{ContainerId, DeploymentSpec, DeploymentStatus, ResourceLimits, RuntimeState, WorkloadKind};
+pub use types::{
+    ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
+};
 
 // ─── Legacy type aliases (used by server during transition from old orchestrator) ─────
 pub type ContainerSpec = DeploymentSpec;
@@ -195,6 +197,33 @@ pub trait ContainerRuntime: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Return one entry per currently-existing container instance (Docker
+    /// container, Kubernetes pod) across all agents managed by this runtime.
+    ///
+    /// Used by the container-hours meter. Implementations SHOULD report the
+    /// backend's true start time and MAY omit instances that no longer exist;
+    /// callers must treat only `ready == true` instances as billable.
+    ///
+    /// Default: synthesized from [`list`](ContainerRuntime::list) — one entry
+    /// per live replica with a positional key and no start time. Real backends
+    /// override this with per-instance identity; decorators MUST forward it
+    /// explicitly (see RUN-1 in `InstrumentedRuntime`).
+    async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
+        let statuses = self.list().await?;
+        let mut instances = Vec::new();
+        for status in statuses {
+            for i in 0..status.replicas_live {
+                instances.push(InstanceInfo {
+                    instance_key: format!("{}/{}", status.container_id.as_str(), i),
+                    container_id: status.container_id.clone(),
+                    started_at: None,
+                    ready: true,
+                });
+            }
+        }
+        Ok(instances)
+    }
 }
 
 /// Ensures an object-storage bucket exists before first use, abstracting over
@@ -209,4 +238,21 @@ pub trait ContainerRuntime: Send + Sync {
 pub trait BucketProvisioner: Send + Sync {
     /// Idempotent: creates the bucket if it doesn't already exist, otherwise a no-op.
     async fn ensure_bucket(&self) -> anyhow::Result<()>;
+}
+
+/// Supplies image bytes for references the local container daemon doesn't have.
+///
+/// When a `DeploymentSpec` names an image missing from the daemon's cache, a
+/// network pull needs a reachable registry host — configuration a single-node
+/// deployment doesn't otherwise have. Through this seam the composition root
+/// can instead hand the runtime a direct source of image bytes (the embedded
+/// OCI registry in `nasiko-oci` implements it), so a cache miss is satisfied
+/// by a `docker load` with zero registry configuration. Mirrors the
+/// [`BucketProvisioner`] extension pattern.
+#[async_trait]
+pub trait ImageSource: Send + Sync {
+    /// The image as a docker-load–compatible tar archive, tagged exactly
+    /// `image`, or `None` when this source has no such image (the caller
+    /// then falls back to a registry pull).
+    async fn docker_archive(&self, image: &str) -> anyhow::Result<Option<Vec<u8>>>;
 }

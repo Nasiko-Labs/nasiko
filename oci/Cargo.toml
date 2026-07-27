@@ -27,3 +27,5 @@ bytes.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 nasiko-runtime.workspace = true
+tar.workspace = true
+flate2.workspace = true

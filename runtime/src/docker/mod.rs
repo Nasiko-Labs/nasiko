@@ -8,16 +8,20 @@ use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
     RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
 };
-use bollard::image::{BuildImageOptions, CreateImageOptions};
+use bollard::image::{BuildImageOptions, CreateImageOptions, ImportImageOptions};
 use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
 use bollard::network::ConnectNetworkOptions;
 use futures_util::StreamExt;
-use tracing::{instrument, warn};
+use std::sync::Arc;
+use tracing::{info, instrument, warn};
 
 use crate::{
-    ContainerRuntime,
+    ContainerRuntime, ImageSource,
     error::{Result, RuntimeError},
-    types::{ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState, validate_build_inputs},
+    types::{
+        ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, RuntimeState,
+        validate_build_inputs,
+    },
 };
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -75,6 +79,7 @@ impl Default for DockerRuntimeConfig {
 pub struct DockerRuntime {
     client: Docker,
     config: DockerRuntimeConfig,
+    image_source: Option<Arc<dyn ImageSource>>,
 }
 
 impl std::fmt::Debug for DockerRuntime {
@@ -96,7 +101,13 @@ impl DockerRuntime {
         let mut last_err = String::new();
         for attempt in 0u32..3 {
             match client.ping().await {
-                Ok(_) => return Ok(DockerRuntime { client, config }),
+                Ok(_) => {
+                    return Ok(DockerRuntime {
+                        client,
+                        config,
+                        image_source: None,
+                    });
+                }
                 Err(e) => {
                     last_err = e.to_string();
                     if attempt < 2 {
@@ -110,6 +121,14 @@ impl DockerRuntime {
         Err(RuntimeError::BackendUnreachable(last_err))
     }
 
+    /// Satisfy image-cache misses from `source` (via `docker load`) before
+    /// falling back to a registry pull. Wired at the composition root; see
+    /// [`ImageSource`].
+    pub fn with_image_source(mut self, source: Arc<dyn ImageSource>) -> Self {
+        self.image_source = Some(source);
+        self
+    }
+
     /// Deterministic container name for an agent: `nasiko-agent-{container_id}`.
     fn container_name(id: &ContainerId) -> String {
         format!("nasiko-agent-{}", id.as_str())
@@ -121,54 +140,6 @@ impl DockerRuntime {
         // Docker names arrive as "/nasiko-agent-{id}" from the list API
         let stripped = name.strip_prefix('/').unwrap_or(name);
         stripped.strip_prefix("nasiko-agent-").map(ContainerId::new)
-    }
-
-    /// Idempotently ensures a bridge network named `name` exists. Called once at
-    /// server startup for `MCP_SERVERS_NETWORK` — never per-deploy, to avoid a
-    /// create/create race between concurrent deploys. Inspect-then-create rather
-    /// than `check_duplicate` (Docker networks are keyed by random ID, not name,
-    /// so `check_duplicate` cannot fully guarantee no duplicates are created).
-    pub async fn ensure_network(&self, name: &str) -> Result<()> {
-        match self
-            .client
-            .inspect_network(name, None::<bollard::network::InspectNetworkOptions<String>>)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(ref e) if is_not_found(e) => {
-                self.client
-                    .create_network(bollard::network::CreateNetworkOptions {
-                        name: name.to_owned(),
-                        driver: "bridge".to_owned(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(map_bollard_err)?;
-                Ok(())
-            }
-            Err(e) => Err(map_bollard_err(e)),
-        }
-    }
-
-    /// Names of every Docker network `container_id`'s container is currently
-    /// attached to. Introspection helper (not part of `ContainerRuntime` — this
-    /// is Docker-specific, used to verify network-segmentation guarantees in
-    /// tests, e.g. that an uploaded MCP server's container is on
-    /// `mcp_servers_network` only, never the default network agents/DB/Redis
-    /// share).
-    pub async fn container_networks(&self, container_id: &ContainerId) -> Result<Vec<String>> {
-        container_id.validate()?;
-        let name = DockerRuntime::container_name(container_id);
-        let info = self
-            .client
-            .inspect_container(&name, None::<InspectContainerOptions>)
-            .await
-            .map_err(|e| if is_not_found(&e) { RuntimeError::ContainerNotFound(container_id.clone()) } else { map_bollard_err(e) })?;
-        Ok(info
-            .network_settings
-            .and_then(|ns| ns.networks)
-            .map(|nets| nets.into_keys().collect())
-            .unwrap_or_default())
     }
 }
 
@@ -255,6 +226,20 @@ fn map_summary_state(state: Option<&str>) -> RuntimeState {
     }
 }
 
+/// Parse Docker's `State.StartedAt`. Returns `None` for the "never started"
+/// sentinel (`"0001-01-01T00:00:00Z"`) or unparseable values.
+fn parse_docker_started_at(raw: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::Datelike;
+
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw?).ok()?;
+    // Docker reports year 1 for containers that never started; treat anything
+    // implausibly old as the sentinel rather than a real start time.
+    if parsed.year() < 2000 {
+        return None;
+    }
+    Some(parsed.with_timezone(&chrono::Utc))
+}
+
 // ── Port helpers ───────────────────────────────────────────────────────────────
 
 type PortBindingsMap = HashMap<String, Option<Vec<PortBinding>>>;
@@ -281,40 +266,6 @@ fn build_port_config(ports: &[u16], bind_host: &str) -> (PortBindingsMap, Expose
     }
 
     (port_bindings, exposed_ports)
-}
-
-/// Builds the `HostConfig` for a container, applying OS-level hardening
-/// (read-only rootfs, dropped capabilities, no-new-privileges) when
-/// `spec.harden` is set — see `DeploymentSpec::harden`'s doc comment. Pure and
-/// hermetically testable: no Docker client involved.
-fn build_host_config(spec: &DeploymentSpec, port_bindings: PortBindingsMap) -> HostConfig {
-    let lim = spec.resources.as_ref().cloned().unwrap_or_default();
-    let base = HostConfig {
-        port_bindings: Some(port_bindings),
-        memory: Some(parse_memory_bytes(&lim.memory)),
-        nano_cpus: Some(lim.cpu_milli as i64 * 1_000_000),
-        // Without this, Docker creates every container on the default "bridge"
-        // network first; `create_and_start`'s later `connect_network` call
-        // only ever ADDS the target network, it never removes "bridge" — so a
-        // network-segmented deploy (network_override) ended up dual-homed on
-        // both the isolated network and the default one, defeating the whole
-        // point of segmentation (RUN-11, found via a real isolation test, not
-        // theoretical). Only `network_override` deploys are re-homed this way;
-        // ordinary agent deploys (which never set it) are unaffected.
-        network_mode: spec.network_override.clone(),
-        ..Default::default()
-    };
-    if spec.harden {
-        HostConfig {
-            readonly_rootfs: Some(true),
-            tmpfs: Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())])),
-            cap_drop: Some(vec!["ALL".to_owned()]),
-            security_opt: Some(vec!["no-new-privileges:true".to_owned()]),
-            ..base
-        }
-    } else {
-        base
-    }
 }
 
 /// Extract the first bound host port from a `NetworkSettings.Ports` map.
@@ -460,32 +411,11 @@ async fn create_and_start(
     network: Option<&str>,
     timeout: Duration,
     registry_host: Option<&str>,
+    image_source: Option<&dyn ImageSource>,
 ) -> Result<()> {
     let name = DockerRuntime::container_name(&spec.container_id);
 
-    // If the image is not in Docker's local cache, try pulling it.
-    // For local dev the image is already present (built via `docker build`).
-    // Inspect first to avoid an unnecessary pull attempt.
-    let image_present = client.inspect_image(&spec.image).await.is_ok();
-    if !image_present {
-        // Prefer the registry-qualified ref when a registry_host is configured.
-        let pull_ref = match registry_host {
-            Some(host) if !spec.image.starts_with(host) => format!("{host}/{}", spec.image),
-            _ => spec.image.clone(),
-        };
-        let opts = CreateImageOptions {
-            from_image: pull_ref.as_str(),
-            ..Default::default()
-        };
-        let mut stream = client.create_image(Some(opts), None, None);
-        while let Some(res) = stream.next().await {
-            if let Err(e) = res {
-                return Err(RuntimeError::ImageNotFound(format!(
-                    "pull {pull_ref} failed: {e}"
-                )));
-            }
-        }
-    }
+    ensure_image_present(client, &spec.image, registry_host, image_source).await?;
 
     let env_vec: Vec<String> = spec
         .env_vars
@@ -495,7 +425,13 @@ async fn create_and_start(
 
     let (port_bindings, exposed_ports) = build_port_config(&spec.ports, bind_host);
 
-    let host_config = build_host_config(spec, port_bindings);
+    let lim = spec.resources.as_ref().cloned().unwrap_or_default();
+    let host_config = HostConfig {
+        port_bindings: Some(port_bindings),
+        memory: Some(parse_memory_bytes(&lim.memory)),
+        nano_cpus: Some(lim.cpu_milli as i64 * 1_000_000),
+        ..Default::default()
+    };
 
     // Record the env vars we actually asked for as a label (see ENV_VARS_LABEL) so a
     // later deploy() can detect changes without being confused by image-baked-in vars
@@ -503,17 +439,12 @@ async fn create_and_start(
     let env_json = serde_json::to_string(&spec.env_vars).unwrap_or_default();
     let labels = HashMap::from([(ENV_VARS_LABEL.to_owned(), env_json)]);
 
-    // Conventional "nobody" uid:gid — same value `ee/k8s-runtime` uses for its
-    // non-root pod security context, kept consistent across editions.
-    let user = spec.harden.then(|| "65534:65534".to_owned());
-
     let config = Config {
         image: Some(spec.image.clone()),
         env: Some(env_vec),
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
         labels: Some(labels),
-        user,
         ..Default::default()
     };
 
@@ -535,15 +466,7 @@ async fn create_and_start(
     .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
     .map_err(map_bollard_err)?;
 
-    // `network_override` deploys already got `net` as their sole `NetworkMode`
-    // at creation (see `build_host_config`) — connecting again here would just
-    // error "already attached". Only deploys that rely on the runtime's
-    // *default* network (agents, which never set `network_override`) still
-    // need this explicit post-start connect, since their `NetworkMode` at
-    // creation was Docker's own default ("bridge"), not `net`.
-    if let Some(net) = network
-        && spec.network_override.is_none()
-    {
+    if let Some(net) = network {
         let connect_opts = ConnectNetworkOptions {
             container: name.as_str(),
             ..Default::default()
@@ -555,6 +478,111 @@ async fn create_and_start(
     }
 
     Ok(())
+}
+
+/// Make `image` available in the daemon's local cache: a no-op when already
+/// present (local dev builds it via `docker build`), then a `docker load`
+/// from `image_source` when one is wired, and a registry pull as the last
+/// resort.
+async fn ensure_image_present(
+    client: &Docker,
+    image: &str,
+    registry_host: Option<&str>,
+    image_source: Option<&dyn ImageSource>,
+) -> Result<()> {
+    if client.inspect_image(image).await.is_ok() {
+        return Ok(());
+    }
+    if let Some(source) = image_source
+        && load_image_from_source(client, image, source).await
+    {
+        return Ok(());
+    }
+    pull_image(client, image, registry_host).await
+}
+
+/// `docker load` the image from `source`. Every failure degrades to the pull
+/// path — logged, never fatal — so a broken source cannot take down deploys
+/// that a registry pull would have served.
+async fn load_image_from_source(client: &Docker, image: &str, source: &dyn ImageSource) -> bool {
+    let archive = match source.docker_archive(image).await {
+        Ok(Some(archive)) => archive,
+        Ok(None) => return false,
+        Err(e) => {
+            warn!(image, error = %e, "image source failed; falling back to registry pull");
+            return false;
+        }
+    };
+
+    let opts = ImportImageOptions { quiet: true };
+    let mut stream = client.import_image(opts, bytes::Bytes::from(archive), None);
+    while let Some(res) = stream.next().await {
+        if let Err(e) = res {
+            warn!(image, error = %e, "docker load failed; falling back to registry pull");
+            return false;
+        }
+    }
+
+    // Trust the daemon, not the load stream: only a ref that now resolves counts.
+    let loaded = client.inspect_image(image).await.is_ok();
+    if loaded {
+        info!(image, "image loaded from image source");
+    } else {
+        warn!(
+            image,
+            "docker load completed but image still unresolved; falling back to pull"
+        );
+    }
+    loaded
+}
+
+async fn pull_image(client: &Docker, image: &str, registry_host: Option<&str>) -> Result<()> {
+    // Prefer the registry-qualified ref when a registry_host is configured.
+    let pull_ref = match registry_host {
+        Some(host) if !image.starts_with(host) => format!("{host}/{image}"),
+        _ => image.to_owned(),
+    };
+    let opts = CreateImageOptions {
+        from_image: pull_ref.as_str(),
+        ..Default::default()
+    };
+    let mut stream = client.create_image(Some(opts), None, None);
+    while let Some(res) = stream.next().await {
+        if let Err(e) = res {
+            return Err(RuntimeError::ImageNotFound(format!(
+                "pull {pull_ref} failed: {e}"
+            )));
+        }
+    }
+
+    // A qualified pull lands as `{host}/{image}` in the daemon, but the
+    // container is created with the bare `image` ref — without a retag the
+    // create that follows would fail with "no such image".
+    if pull_ref != image {
+        tag_as_bare_ref(client, &pull_ref, image).await?;
+    }
+    Ok(())
+}
+
+/// Tag `pull_ref` so it also resolves as the bare `image` ref.
+async fn tag_as_bare_ref(client: &Docker, pull_ref: &str, image: &str) -> Result<()> {
+    let (repo, tag) = split_repo_tag(image);
+    client
+        .tag_image(
+            pull_ref,
+            Some(bollard::image::TagImageOptions { repo, tag }),
+        )
+        .await
+        .map_err(|e| RuntimeError::ImageNotFound(format!("tag {pull_ref} as {image} failed: {e}")))
+}
+
+/// Split `repo:tag` on the tag separator; a `:` inside the last path segment
+/// only (a colon before a `/` is a registry port, not a tag).
+fn split_repo_tag(image: &str) -> (&str, &str) {
+    match image.rsplit_once(':') {
+        Some((repo, tag)) if !tag.contains('/') => (repo, tag),
+        _ => (image, "latest"),
+    }
 }
 
 /// Inspect a container and build a `DeploymentStatus`. Returns `Unknown` status
@@ -629,9 +657,6 @@ impl ContainerRuntime for DockerRuntime {
 
         let name = DockerRuntime::container_name(&spec.container_id);
         let timeout = self.config.operation_timeout;
-        // Only the MCP-server-upload build path sets `network_override` — every
-        // existing agent deploy falls through to the runtime's default network.
-        let network = spec.network_override.as_deref().or(self.config.network.as_deref());
 
         match tokio::time::timeout(
             timeout,
@@ -643,7 +668,16 @@ impl ContainerRuntime for DockerRuntime {
             Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
             Ok(Err(ref e)) if is_not_found(e) => {
                 // Container does not exist: create and start it
-                create_and_start(&self.client, spec, &self.config.bind_host, network, timeout, self.config.registry_host.as_deref()).await?;
+                create_and_start(
+                    &self.client,
+                    spec,
+                    &self.config.bind_host,
+                    self.config.network.as_deref(),
+                    timeout,
+                    self.config.registry_host.as_deref(),
+                    self.image_source.as_deref(),
+                )
+                .await?;
             }
             Ok(Err(e)) => return Err(map_bollard_err(e)),
             Ok(Ok(existing)) => {
@@ -716,12 +750,27 @@ impl ContainerRuntime for DockerRuntime {
                     .map_err(|_| RuntimeError::Timeout("remove_container".to_owned()))?
                     .map_err(map_bollard_err)?;
 
-                    create_and_start(&self.client, spec, &self.config.bind_host, network, timeout, self.config.registry_host.as_deref()).await?;
+                    create_and_start(
+                        &self.client,
+                        spec,
+                        &self.config.bind_host,
+                        self.config.network.as_deref(),
+                        timeout,
+                        self.config.registry_host.as_deref(),
+                        self.image_source.as_deref(),
+                    )
+                    .await?;
                 }
             }
         }
 
-        inspect_to_status(&self.client, &spec.container_id, network, timeout).await
+        inspect_to_status(
+            &self.client,
+            &spec.container_id,
+            self.config.network.as_deref(),
+            timeout,
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -931,6 +980,86 @@ impl ContainerRuntime for DockerRuntime {
         Ok(statuses)
     }
 
+    /// One entry per running `nasiko-agent-*` container, with the Docker
+    /// container ID as `instance_key` and the true `State.StartedAt`.
+    ///
+    /// Error policy: any transport-level failure (list, non-404 inspect) fails
+    /// the whole call — a partial list would make the container-hours meter
+    /// mass-close billing sessions for instances that are still alive. Only a
+    /// container that disappeared between list and inspect (404) is skipped.
+    #[instrument(skip(self))]
+    async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
+        let timeout = self.config.operation_timeout;
+        let mut filters: HashMap<String, Vec<String>> = HashMap::new();
+        // Anchor with ^/ to avoid substring matches (e.g. old-nasiko-agent-foo)
+        filters.insert("name".to_owned(), vec!["^/nasiko-agent-".to_owned()]);
+
+        let options = ListContainersOptions::<String> {
+            all: false, // running containers only — stopped instances are not billable
+            filters,
+            ..Default::default()
+        };
+
+        let containers = tokio::time::timeout(timeout, self.client.list_containers(Some(options)))
+            .await
+            .map_err(|_| RuntimeError::Timeout("list_containers".to_owned()))?
+            .map_err(map_bollard_err)?;
+
+        let mut instances = Vec::with_capacity(containers.len());
+
+        for container in containers {
+            let Some(docker_id) = container.id.as_deref() else {
+                continue;
+            };
+
+            let name = container
+                .names
+                .as_deref()
+                .and_then(|names| names.first())
+                .map(String::as_str)
+                .unwrap_or("");
+
+            let Some(container_id) = DockerRuntime::container_id_from_name(name) else {
+                continue;
+            };
+
+            // Inspect for the true StartedAt and authoritative state. A container
+            // that stopped between list and inspect is skipped, not an error.
+            let info = match tokio::time::timeout(
+                timeout,
+                self.client
+                    .inspect_container(docker_id, None::<InspectContainerOptions>),
+            )
+            .await
+            {
+                Err(_) => return Err(RuntimeError::Timeout("inspect_container".to_owned())),
+                Ok(Err(ref e)) if is_not_found(e) => continue,
+                Ok(Err(e)) => return Err(map_bollard_err(e)),
+                Ok(Ok(info)) => info,
+            };
+
+            let container_state = info.state.as_ref();
+            let state = map_container_state(
+                container_state.and_then(|s| s.status),
+                container_state.and_then(|s| s.exit_code),
+            );
+            let started_at =
+                parse_docker_started_at(container_state.and_then(|s| s.started_at.as_deref()));
+
+            instances.push(InstanceInfo {
+                container_id,
+                // Docker container ID (64-hex), NOT the name: names are reused across
+                // recreate cycles, and `docker restart` keeps the ID but resets
+                // StartedAt — the (instance_key, started_at) identity the meter keys on.
+                instance_key: docker_id.to_owned(),
+                started_at,
+                ready: state == RuntimeState::Running,
+            });
+        }
+
+        Ok(instances)
+    }
+
     #[instrument(skip(self))]
     async fn endpoint(&self, container_id: &ContainerId) -> Result<String> {
         container_id.validate()?;
@@ -1045,48 +1174,55 @@ impl ContainerRuntime for DockerRuntime {
     }
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
-mod hardening_tests {
+mod tests {
     use super::*;
 
-    fn spec(harden: bool) -> DeploymentSpec {
-        DeploymentSpec {
-            container_id: ContainerId::new("test-hardening"),
-            name: "test-hardening".to_owned(),
-            image: "alpine:latest".to_owned(),
-            min_replicas: 1,
-            max_replicas: 1,
-            env_vars: HashMap::new(),
-            ports: vec![8080],
-            resources: None,
-            image_pull_secret_name: None,
-            image_pull_credential_seed: None,
-            harden,
-            network_override: None,
-            workload_kind: Default::default(),
-        }
+    #[test]
+    fn parse_docker_started_at_accepts_valid_rfc3339() {
+        let parsed = parse_docker_started_at(Some("2026-07-21T10:00:05.123456789Z"))
+            .expect("valid RFC3339 timestamp should parse");
+        assert_eq!(parsed.to_rfc3339(), "2026-07-21T10:00:05.123456789+00:00");
     }
 
     #[test]
-    fn harden_true_sets_all_hardening_fields() {
-        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
-        let hc = build_host_config(&spec(true), bindings);
-        assert_eq!(hc.readonly_rootfs, Some(true));
+    fn parse_docker_started_at_rejects_never_started_sentinel() {
+        assert_eq!(parse_docker_started_at(Some("0001-01-01T00:00:00Z")), None);
+    }
+
+    #[test]
+    fn parse_docker_started_at_rejects_garbage_and_none() {
+        assert_eq!(parse_docker_started_at(Some("not-a-timestamp")), None);
+        assert_eq!(parse_docker_started_at(None), None);
+    }
+
+    #[test]
+    fn split_repo_tag_separates_repo_and_tag() {
         assert_eq!(
-            hc.tmpfs,
-            Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())]))
+            split_repo_tag("nasiko/nutrition:1.0.1"),
+            ("nasiko/nutrition", "1.0.1")
         );
-        assert_eq!(hc.cap_drop, Some(vec!["ALL".to_owned()]));
-        assert_eq!(hc.security_opt, Some(vec!["no-new-privileges:true".to_owned()]));
     }
 
     #[test]
-    fn harden_false_leaves_hardening_fields_unset() {
-        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
-        let hc = build_host_config(&spec(false), bindings);
-        assert_eq!(hc.readonly_rootfs, None);
-        assert_eq!(hc.tmpfs, None);
-        assert_eq!(hc.cap_drop, None);
-        assert_eq!(hc.security_opt, None);
+    fn split_repo_tag_defaults_untagged_to_latest() {
+        assert_eq!(
+            split_repo_tag("nasiko/nutrition"),
+            ("nasiko/nutrition", "latest")
+        );
+    }
+
+    #[test]
+    fn split_repo_tag_ignores_registry_port_colon() {
+        assert_eq!(
+            split_repo_tag("localhost:5000/nutrition"),
+            ("localhost:5000/nutrition", "latest")
+        );
+        assert_eq!(
+            split_repo_tag("localhost:5000/nutrition:2.0"),
+            ("localhost:5000/nutrition", "2.0")
+        );
     }
 }
