@@ -279,8 +279,10 @@ fn extract_template(template: &str, dest: &Path) -> Result<()> {
                 util::extract_tar_gz(&data, dest)?;
                 return Ok(());
             }
-            Err(_) => {
-                println!("  registry: {url} (template not found, using built-in)");
+            Err(e) => {
+                // Say why the registry path lost — a silent fallback makes
+                // "template never comes from the registry" undiagnosable.
+                println!("  registry: {url} ({e:#}) — using built-in template");
             }
         }
     } else {
@@ -322,41 +324,9 @@ fn pull_artifact(repo: &str, dest: &Path) -> Result<()> {
     let url = crate::config::artifact_registry_url()
         .context("no artifact registry configured (set NASIKO_REGISTRY_URL)")?;
     println!("  registry: {url}");
+    println!("  pulling {repo}...");
 
-    let oci = crate::api::OciClient::for_artifact_registry()?
-        .context("failed to connect to artifact registry")?;
-
-    // Resolve the latest tag (artifacts use semver tags, not "latest")
-    let tags_json = oci
-        .list_tags(repo)
-        .with_context(|| format!("artifact '{repo}' not found in registry"))?;
-    let tags: serde_json::Value = serde_json::from_str(&tags_json)?;
-    let tag = tags
-        .get("tags")
-        .and_then(|t| t.as_array())
-        .and_then(|arr| arr.last())
-        .and_then(|t| t.as_str())
-        .context("no tags found for artifact")?;
-
-    println!("  pulling {repo}:{tag}...");
-
-    let manifest_json = oci
-        .pull_manifest(repo, tag)
-        .with_context(|| format!("failed to pull manifest for '{repo}:{tag}'"))?;
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_json)?;
-
-    let layers = manifest
-        .get("layers")
-        .and_then(|l| l.as_array())
-        .context("invalid manifest: no layers")?;
-
-    let layer_digest = layers
-        .first()
-        .and_then(|l| l.get("digest"))
-        .and_then(|d| d.as_str())
-        .context("invalid manifest: no layer digest")?;
-
-    let data = oci.pull_blob(repo, layer_digest)?;
+    let data = crate::oci::pull_artifact_tarball(repo)?;
     util::extract_tar_gz(&data, dest)
 }
 

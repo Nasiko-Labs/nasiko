@@ -55,15 +55,38 @@ pub fn push_image(image: &str, repo: &str, tag: &str) -> Result<()> {
 }
 
 /// Pull a template source archive from the artifact registry.
-/// Templates are stored as single-layer OCI artifacts.
+///
+/// Bare template names resolve to the `nasiko`-owned artifact of that name —
+/// exactly what `nasiko-ee registry publish` creates (`nasiko/<name>`, tagged
+/// with its semver version, no `latest` tag).
 /// Returns Err if registry is not configured or unreachable.
 pub fn pull_template(template_name: &str) -> Result<Vec<u8>> {
+    pull_artifact_tarball(&format!("nasiko/{template_name}"))
+}
+
+/// Pull a source-archive artifact (`owner/name`) from the artifact registry:
+/// resolve the newest tag, fetch the manifest, and return the single layer's
+/// tar.gz bytes.
+pub fn pull_artifact_tarball(repo: &str) -> Result<Vec<u8>> {
     let oci = OciClient::for_artifact_registry()?
         .ok_or_else(|| anyhow::anyhow!("no artifact registry configured"))?;
 
-    let repo = format!("nasiko/templates/{template_name}");
+    // Artifacts are tagged with semver versions, never "latest" — take the
+    // registry's newest tag.
+    let tags_json = oci
+        .list_tags(repo)
+        .with_context(|| format!("artifact '{repo}' not found in registry"))?;
+    let tags: serde_json::Value = serde_json::from_str(&tags_json)?;
+    let tag = tags
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .and_then(|arr| arr.last())
+        .and_then(|t| t.as_str())
+        .with_context(|| format!("no tags found for artifact '{repo}'"))?;
 
-    let manifest_json = oci.pull_manifest(&repo, "latest")?;
+    let manifest_json = oci
+        .pull_manifest(repo, tag)
+        .with_context(|| format!("failed to pull manifest for '{repo}:{tag}'"))?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_json)?;
 
     let layers = manifest
@@ -77,7 +100,7 @@ pub fn pull_template(template_name: &str) -> Result<Vec<u8>> {
         .and_then(|d| d.as_str())
         .context("invalid manifest: no layer digest")?;
 
-    oci.pull_blob(&repo, layer_digest)
+    oci.pull_blob(repo, layer_digest)
 }
 
 // ─── Docker image → OCI conversion ──────────────────────────────────────────
