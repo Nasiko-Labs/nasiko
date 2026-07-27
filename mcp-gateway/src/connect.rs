@@ -67,23 +67,33 @@ pub async fn connect_service(
     }
 
     if connector.is_composio() {
-        return composio_connect(state, user_id, &connector, input.redirect_url.as_deref()).await;
+        let outcome = composio_connect(state, user_id, &connector, input.redirect_url.as_deref()).await?;
+        if matches!(outcome, ConnectOutcome::Connected { .. }) {
+            grant_user_agents_access(&state.db, user_id, connector.id).await;
+        }
+        return Ok(outcome);
     }
 
-    match connector.auth_type.as_deref().unwrap_or("none") {
-        "none" => Ok(ConnectOutcome::Connected {
-            connector_id: connector.id,
-            name: connector.name,
-        }),
+    let outcome = match connector.auth_type.as_deref().unwrap_or("none") {
+        "none" => {
+            // Create the connection record so the connector shows up in the
+            // user's connected list and is included in agent tool aggregation.
+            repo::upsert_connection(&state.db, user_id, connector.id, "ACTIVE").await?;
+            session::invalidate_session_cache(state, user_id).await;
+            ConnectOutcome::Connected {
+                connector_id: connector.id,
+                name: connector.name,
+            }
+        }
         "bearer" | "basic" | "url_param" => {
             let value = input.credential_value.as_deref().ok_or_else(|| {
                 McpError::BadRequest(format!("'{}' requires credentials.value", connector.name))
             })?;
             credentials::register_credential(state, user_id, &connector, value).await?;
-            Ok(ConnectOutcome::Connected {
+            ConnectOutcome::Connected {
                 connector_id: connector.id,
                 name: connector.name,
-            })
+            }
         }
         "oauth2" => {
             let url = oauth::begin_authorization(
@@ -94,15 +104,69 @@ pub async fn connect_service(
                 None,
             )
             .await?;
-            Ok(ConnectOutcome::OAuthRequired {
+            ConnectOutcome::OAuthRequired {
                 connector_id: connector.id,
                 name: connector.name,
                 authorization_url: url,
-            })
+            }
         }
-        other => Err(McpError::BadRequest(format!(
+        other => return Err(McpError::BadRequest(format!(
             "unsupported auth_type '{other}'"
         ))),
+    };
+
+    // Auto-grant all the user's agents access to this connector on connect.
+    if let ConnectOutcome::Connected { connector_id, .. } = &outcome {
+        grant_user_agents_access(&state.db, user_id, *connector_id).await;
+    }
+
+    Ok(outcome)
+}
+
+/// Auto-grant all of `user_id`'s non-deleted agents access to `connector_id`.
+/// Best-effort: failures are logged, never block the connect response.
+pub async fn grant_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connector_id: Uuid) {
+    let agent_ids: Vec<Uuid> = match sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(%user_id, %connector_id, %e, "failed to list agents for auto-grant");
+            return;
+        }
+    };
+    let empty_rules = serde_json::json!([]);
+    for agent_id in agent_ids {
+        if let Err(e) = repo::upsert_agent_connector_access(db, agent_id, connector_id, true, &empty_rules).await {
+            tracing::warn!(%agent_id, %connector_id, %e, "failed to auto-grant agent connector access");
+        }
+    }
+}
+
+/// Remove all of `user_id`'s agents' access rows for `connector_id` on disconnect.
+/// Best-effort: failures are logged, never block the disconnect response.
+async fn revoke_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connector_id: Uuid) {
+    let agent_ids: Vec<Uuid> = match sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(%user_id, %connector_id, %e, "failed to list agents for revoke");
+            return;
+        }
+    };
+    for agent_id in agent_ids {
+        if let Err(e) = repo::delete_agent_connector_access(db, agent_id, connector_id).await {
+            tracing::warn!(%agent_id, %connector_id, %e, "failed to revoke agent connector access");
+        }
     }
 }
 
@@ -292,7 +356,7 @@ pub async fn list_connections_view(state: &McpState, user_id: Uuid) -> Result<Va
         })
         .collect();
     let total = data.len();
-    Ok(json!({ "data": data, "total": total }))
+    Ok(json!({ "connections": data, "total": total }))
 }
 
 /// Outcome of [`disconnect`].
@@ -325,6 +389,7 @@ pub async fn disconnect(
     }
 
     repo::delete_user_connection(&state.db, user_id, connector_id).await?;
+    revoke_user_agents_access(&state.db, user_id, connector_id).await;
     session::invalidate_session_cache(state, user_id).await;
 
     tracing::info!(%user_id, %connector_id, composio_revoked, "disconnected connector");
@@ -336,13 +401,19 @@ pub async fn disconnect(
 }
 
 /// Build our `/oauth/callback` URL carrying the user + connector for verification.
+/// Prefers `composio_callback_base_url` (browser-reachable) over
+/// `gateway_public_url` (may be in-cluster only).
 fn composio_callback_url(
     state: &McpState,
     user_id: Uuid,
     connector_id: Uuid,
     success_url: Option<&str>,
 ) -> Option<String> {
-    let base = state.config.gateway_public_url.as_ref()?;
+    let base = state
+        .config
+        .composio_callback_base_url
+        .as_ref()
+        .or(state.config.gateway_public_url.as_ref())?;
     let mut origin = reqwest::Url::parse(base).ok()?;
     origin.set_path("/oauth/callback");
     origin.set_query(None);
@@ -399,13 +470,17 @@ pub async fn handle_composio_callback(
                 let _ =
                     repo::update_connection_account_id(&state.db, connection.id, account_id).await;
             }
+            grant_user_agents_access(&state.db, user_id, connector_id).await;
             session::invalidate_session_cache(state, user_id).await;
-            // success_url is an unauthenticated query param — never redirect off-origin.
-            let dest = success_url.unwrap_or_else(|| "/".to_string());
-            CallbackOutcome::Redirect(crate::net::safe_redirect(
-                &dest,
-                state.config.gateway_public_url.as_deref(),
-            ))
+            match success_url {
+                // Explicit success_url — redirect there (never off-origin).
+                Some(dest) => CallbackOutcome::Redirect(crate::net::safe_redirect(
+                    &dest,
+                    state.config.gateway_public_url.as_deref(),
+                )),
+                // No success_url (popup flow) — show a self-closing page.
+                None => CallbackOutcome::Message("Connected successfully".to_string()),
+            }
         }
         _ => CallbackOutcome::Message(
             "Authorization is still finalizing — refresh in a moment.".to_string(),

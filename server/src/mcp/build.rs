@@ -310,7 +310,6 @@ pub async fn execute_mcp_server_build(
     agent_image_registry: String,
     max_replicas: u32,
 ) {
-    let _ = owner_id; // kept for signature symmetry with execute_upload_and_deploy; not needed by any query here
     mark_building(&db, build_id, connector_id).await;
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-mcp-build-{build_id}"));
@@ -337,7 +336,13 @@ pub async fn execute_mcp_server_build(
                     .map_err(|e| format!("spawn_blocking extract: {e}"))??;
             }
             BuildSource::Github { url } => {
-                crate::build::routes::clone_repo(url, &git_clone_allowed_hosts, &tmp_dir).await?;
+                crate::build::routes::validate_github_url(url, &git_clone_allowed_hosts)
+                    .map_err(|e| format!("invalid github_url: {e}"))?;
+                // Load the owner's GitHub OAuth token for private repo access.
+                let github_token = load_owner_github_token(&db, owner_id).await;
+                crate::build::routes::download_github_tarball(
+                    &http_client, url, &tmp_dir, github_token.as_deref(),
+                ).await?;
             }
         }
 
@@ -503,6 +508,32 @@ fn build_mcp_server_spec(
     }
 }
 
+/// Best-effort load of the owner's GitHub OAuth token for private repo access.
+/// Returns `None` if GitHub isn't connected or decryption fails — the download
+/// will still be attempted (works for public repos without a token).
+async fn load_owner_github_token(db: &PgPool, owner_id: Uuid) -> Option<String> {
+    let row: Option<(serde_json::Value,)> = sqlx::query_as(
+        "SELECT provider_metadata FROM user_identities \
+         WHERE user_id = $1 AND provider = 'github'",
+    )
+    .bind(owner_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    row.and_then(|(meta,)| {
+        meta.get("access_token")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string())
+    })
+    .and_then(|encrypted| {
+        crate::secrets::crypto::SecretsCrypto::for_user(owner_id)
+            .decrypt(&encrypted)
+            .ok()
+    })
+}
+
 async fn mark_building(db: &PgPool, build_id: Uuid, connector_id: Uuid) {
     if let Err(e) = sqlx::query("UPDATE mcp_connectors SET build_status = 'building' WHERE id = $1")
         .bind(connector_id)
@@ -551,7 +582,7 @@ async fn persist_internal_token(db: &PgPool, connector_id: Uuid, token: &str) {
 
 async fn mark_running(db: &PgPool, build_id: Uuid, connector_id: Uuid, url: &str, image_tag: &str) {
     if let Err(e) = sqlx::query(
-        "UPDATE mcp_connectors SET build_status = 'success', url = $2, is_active = true, \
+        "UPDATE mcp_connectors SET build_status = 'running', url = $2, is_active = true, \
          container_image_tag = $3, updated_at = now() WHERE id = $1",
     )
     .bind(connector_id)

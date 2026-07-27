@@ -5,6 +5,8 @@
 //! strings (already encrypted by the caller). Row structs deliberately do NOT
 //! derive `Serialize`, so a route can never accidentally serialize a secret.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -14,6 +16,23 @@ use crate::error::Result;
 use crate::types::PUBLIC_GRANTEE;
 
 // ─── Row types ──────────────────────────────────────────────────────────────
+
+/// Where a `mcp_server`-provider connector's `url` came from. Backed by the
+/// Postgres enum `mcp_connector_source_kind` (027_mcp_connector_uploads.sql) —
+/// a real enum type, unlike `provider_type`/`auth_type` (plain TEXT + CHECK),
+/// so it needs `sqlx::Type` for `SELECT *` to decode it automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, sqlx::Type)]
+#[sqlx(type_name = "mcp_connector_source_kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A user typed in the URL of a server already running somewhere else.
+    /// The default for every pre-existing row and every Composio row.
+    #[default]
+    ExternalUrl,
+    /// The platform built this connector's container from uploaded source; its
+    /// `url` was resolved via `ContainerRuntime::endpoint()`, never user-typed.
+    UploadedBuild,
+}
 
 /// One connector — either a Composio toolkit or a custom MCP server.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -41,6 +60,15 @@ pub struct McpConnector {
     pub oauth_token_endpoint: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
+    pub source_kind: SourceKind,
+    // uploaded_build-only
+    pub build_status: Option<String>,
+    pub container_image_tag: Option<String>,
+    // mcp_server-only — connector-level setup progress for the URL-connect
+    // flow (`None` for composio, and for mcp_server rows created before this
+    // column existed).
+    pub setup_status: Option<String>,
+    pub setup_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -61,6 +89,12 @@ impl McpConnector {
         self.oauth_authorization_endpoint.is_some()
             && self.oauth_token_endpoint.is_some()
             && self.oauth_client_id.is_some()
+    }
+    /// True only for a platform-built-and-deployed MCP server — see
+    /// `SourceKind::UploadedBuild`'s doc comment. Drives the SSRF-guard
+    /// `trusted` split (credentials.rs) and the delete/destroy-container fix.
+    pub fn is_uploaded_build(&self) -> bool {
+        self.source_kind == SourceKind::UploadedBuild
     }
 }
 
@@ -83,6 +117,14 @@ pub struct NewConnector {
     pub credential_header_name: Option<String>,
     pub headers: Option<Value>,
     pub is_active: Option<bool>,
+    /// Defaults to `ExternalUrl` (matches the column's own DB default) — every
+    /// pre-existing caller (`register_connector`) sets this explicitly rather
+    /// than relying on the derived `Default`, so it's never ambiguous at a
+    /// call site which kind of row is being created.
+    pub source_kind: SourceKind,
+    /// `Some("pending")` for a freshly queued `uploaded_build` connector;
+    /// `None` for every `external_url`/composio row (column is nullable).
+    pub build_status: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -134,7 +176,6 @@ pub struct McpComposioSession {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct McpAgentConnectorAccess {
     pub id: Uuid,
-    pub user_id: Uuid,
     pub agent_id: Uuid,
     pub connector_id: Uuid,
     pub enabled: bool,
@@ -159,8 +200,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
              (provider_type, owner_id, name, display_name, logo_url, description,
               auth_config_id, auth_scheme, use_composio_managed,
               url, transport, auth_type, url_param_name, credential_header_name,
-              headers, is_active)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+              headers, is_active, source_kind, build_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
            RETURNING *"#,
     )
     .bind(&c.provider_type)
@@ -179,6 +220,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
     .bind(&c.credential_header_name)
     .bind(&c.headers)
     .bind(c.is_active)
+    .bind(c.source_kind)
+    .bind(&c.build_status)
     .fetch_one(db)
     .await?;
     Ok(row)
@@ -252,10 +295,7 @@ pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Ve
 }
 
 /// Accessible custom (mcp_server) connectors only — for building generic backends.
-pub async fn list_accessible_mcp_connectors(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<McpConnector>> {
+pub async fn list_accessible_mcp_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
         r#"SELECT * FROM mcp_connectors c
            WHERE c.provider_type = 'mcp_server' AND c.is_active = true
@@ -360,6 +400,25 @@ pub async fn update_connector(db: &PgPool, id: Uuid, u: &UpdateConnector) -> Res
     Ok(row)
 }
 
+/// Set a connector's setup progress for the URL-connect flow (`register_connector`
+/// on creation, `credentials::register_credential`/`oauth::handle_callback` on
+/// completion or failure). Never touches `build_status` — that's the separate
+/// upload-flow column.
+pub async fn set_connector_setup_status(
+    db: &PgPool,
+    connector_id: Uuid,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    sqlx::query("UPDATE mcp_connectors SET setup_status = $2, setup_error = $3 WHERE id = $1")
+        .bind(connector_id)
+        .bind(status)
+        .bind(error)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn update_connector_oauth_config(
     db: &PgPool,
     id: Uuid,
@@ -416,10 +475,7 @@ pub async fn create_grant(
     Ok(row)
 }
 
-pub async fn list_grants_for_connector(
-    db: &PgPool,
-    connector_id: Uuid,
-) -> Result<Vec<McpConnectorGrant>> {
+pub async fn list_grants_for_connector(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorGrant>> {
     let rows = sqlx::query_as::<_, McpConnectorGrant>(
         "SELECT * FROM mcp_connector_grants WHERE connector_id = $1 ORDER BY created_at",
     )
@@ -437,6 +493,77 @@ pub async fn resolve_username_to_user_id(db: &PgPool, username: &str) -> Result<
     .fetch_optional(db)
     .await?;
     Ok(id)
+}
+
+/// Batched `(username, display_name)` lookup for a set of user ids — so a
+/// "who has access" view doesn't need one follow-up query per grantee.
+pub async fn resolve_user_labels(
+    db: &PgPool,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, (String, Option<String>)>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(Uuid, String, Option<String>)> =
+        sqlx::query_as("SELECT id, username, display_name FROM users WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(db)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, username, display_name)| (id, (username, display_name)))
+        .collect())
+}
+
+/// Search users by username substring, for the "who do I share this with"
+/// picker. Username only (never email) — intentionally open to any
+/// authenticated caller, not just admins, so it must never leak more than a
+/// public-facing identity. `visible_ids` is the optional org-visibility
+/// allowlist (`None` = unscoped; `Some(ids)` = restrict to those users;
+/// `Some(empty)` = no one). Query wildcards in `q` are escaped so a `%`/`_`
+/// can't widen the match.
+pub async fn search_users_for_share(
+    db: &PgPool,
+    q: &str,
+    limit: i64,
+    visible_ids: Option<&[Uuid]>,
+) -> Result<Vec<(Uuid, String, Option<String>)>> {
+    let escaped = q
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    match visible_ids {
+        Some([]) => Ok(Vec::new()),
+        Some(ids) => {
+            let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
+                r#"SELECT id, username, display_name FROM users
+                   WHERE deleted_at IS NULL AND id = ANY($3)
+                     AND username ILIKE '%' || $1 || '%' ESCAPE '\'
+                   ORDER BY username
+                   LIMIT $2"#,
+            )
+            .bind(&escaped)
+            .bind(limit)
+            .bind(ids)
+            .fetch_all(db)
+            .await?;
+            Ok(rows)
+        }
+        None => {
+            let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
+                r#"SELECT id, username, display_name FROM users
+                   WHERE deleted_at IS NULL
+                     AND username ILIKE '%' || $1 || '%' ESCAPE '\'
+                   ORDER BY username
+                   LIMIT $2"#,
+            )
+            .bind(&escaped)
+            .bind(limit)
+            .fetch_all(db)
+            .await?;
+            Ok(rows)
+        }
+    }
 }
 
 /// Revoke a grant AND delete the grantee's connection row for the connector, in
@@ -459,8 +586,7 @@ pub async fn revoke_grant_and_connection(
 
     // Only a specific user's connection is removed; a public revoke leaves other
     // users' own connections intact.
-    if grant_type == "user"
-        && grantee_id != PUBLIC_GRANTEE
+    if grant_type == "user" && grantee_id != PUBLIC_GRANTEE
         && let Ok(uid) = Uuid::parse_str(grantee_id)
     {
         sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
@@ -520,6 +646,49 @@ pub async fn list_active_composio_connections(
              AND uc.status = 'ACTIVE' AND uc.connected_account_id IS NOT NULL"#,
     )
     .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// One agent that has an explicit per-agent override row for a connector — an
+/// agent someone has actively configured this connector for. `enabled`/
+/// `tool_rules` come straight from the (always-present) override row.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AgentConsumer {
+    pub agent_id: Uuid,
+    pub agent_name: String,
+    pub agent_display_name: Option<String>,
+    pub agent_owner_id: Uuid,
+    pub owner_username: Option<String>,
+    pub enabled: bool,
+    pub tool_rules: Value,
+}
+
+/// Agents with an explicit `mcp_agent_connector_access` row for this connector.
+/// This table is the single source of truth: rows are seeded on connect
+/// (auto-grant) and removed on explicit revoke. Querying only this table
+/// ensures that an explicitly removed agent stays removed even if its owner
+/// still has an active connection.
+pub async fn list_configured_agent_consumers(
+    db: &PgPool,
+    connector_id: Uuid,
+) -> Result<Vec<AgentConsumer>> {
+    let rows = sqlx::query_as::<_, AgentConsumer>(
+        r#"SELECT a.id AS agent_id,
+                  a.name AS agent_name,
+                  a.display_name AS agent_display_name,
+                  a.owner_id AS agent_owner_id,
+                  u.username AS owner_username,
+                  acc.enabled,
+                  acc.tool_rules
+           FROM mcp_agent_connector_access acc
+           JOIN agents a ON a.id = acc.agent_id AND a.deleted_at IS NULL
+           JOIN users u ON u.id = a.owner_id
+           WHERE acc.connector_id = $1
+           ORDER BY a.name"#,
+    )
+    .bind(connector_id)
     .fetch_all(db)
     .await?;
     Ok(rows)
@@ -605,6 +774,27 @@ pub async fn upsert_composio_connection(
     Ok(row)
 }
 
+/// Create or update a connection with just a status (no credentials).
+/// Used for `auth_type=none` connectors (uploaded MCP servers).
+pub async fn upsert_connection(
+    db: &PgPool,
+    user_id: Uuid,
+    connector_id: Uuid,
+    status: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO mcp_user_connections (user_id, connector_id, status)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, connector_id) DO UPDATE SET status = EXCLUDED.status"#,
+    )
+    .bind(user_id)
+    .bind(connector_id)
+    .bind(status)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_connection_by_account_id(
     db: &PgPool,
     account_id: &str,
@@ -656,6 +846,62 @@ pub async fn delete_user_connection(
     Ok(res.rows_affected() > 0)
 }
 
+// ─── Pins ───────────────────────────────────────────────────────────────────
+
+/// Pin a connector for a user (idempotent — pinning an already-pinned
+/// connector is a no-op, not an error).
+pub async fn pin_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO mcp_connector_pins (user_id, connector_id) VALUES ($1, $2)
+         ON CONFLICT (user_id, connector_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(connector_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Unpin. Returns `false` if it wasn't pinned.
+pub async fn unpin_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
+    let res =
+        sqlx::query("DELETE FROM mcp_connector_pins WHERE user_id = $1 AND connector_id = $2")
+            .bind(user_id)
+            .bind(connector_id)
+            .execute(db)
+            .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// A user's pinned connector ids, most recently pinned first.
+pub async fn list_pinned_connector_ids(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT connector_id FROM mcp_connector_pins WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
+}
+
+/// "Recent" connector ids for a user, derived from real connect/reconnect
+/// activity (`mcp_user_connections.updated_at`) rather than a separate
+/// page-view tracking table.
+pub async fn list_recent_connector_ids(
+    db: &PgPool,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT connector_id FROM mcp_user_connections WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
+}
+
 // ─── Tool catalog ─────────────────────────────────────────────────────────────
 
 /// Replace a connector's synced tool catalog with `tools` (name, description).
@@ -682,10 +928,7 @@ pub async fn upsert_connector_tools(
     Ok(())
 }
 
-pub async fn list_connector_tools(
-    db: &PgPool,
-    connector_id: Uuid,
-) -> Result<Vec<McpConnectorTool>> {
+pub async fn list_connector_tools(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorTool>> {
     let rows = sqlx::query_as::<_, McpConnectorTool>(
         "SELECT * FROM mcp_connector_tools WHERE connector_id = $1 ORDER BY tool_name",
     )
@@ -697,10 +940,7 @@ pub async fn list_connector_tools(
 
 // ─── Composio sessions ──────────────────────────────────────────────────────
 
-pub async fn get_composio_session(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Option<McpComposioSession>> {
+pub async fn get_composio_session(db: &PgPool, user_id: Uuid) -> Result<Option<McpComposioSession>> {
     let row = sqlx::query_as::<_, McpComposioSession>(
         "SELECT * FROM mcp_composio_sessions WHERE user_id = $1",
     )
@@ -740,13 +980,11 @@ pub async fn delete_composio_session(db: &PgPool, user_id: Uuid) -> Result<bool>
 
 pub async fn get_agent_connector_access(
     db: &PgPool,
-    user_id: Uuid,
     agent_id: Uuid,
 ) -> Result<Vec<McpAgentConnectorAccess>> {
     let rows = sqlx::query_as::<_, McpAgentConnectorAccess>(
-        "SELECT * FROM mcp_agent_connector_access WHERE user_id = $1 AND agent_id = $2",
+        "SELECT * FROM mcp_agent_connector_access WHERE agent_id = $1",
     )
-    .bind(user_id)
     .bind(agent_id)
     .fetch_all(db)
     .await?;
@@ -755,14 +993,12 @@ pub async fn get_agent_connector_access(
 
 pub async fn get_agent_connector_access_row(
     db: &PgPool,
-    user_id: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
 ) -> Result<Option<McpAgentConnectorAccess>> {
     let row = sqlx::query_as::<_, McpAgentConnectorAccess>(
-        "SELECT * FROM mcp_agent_connector_access WHERE user_id = $1 AND agent_id = $2 AND connector_id = $3",
+        "SELECT * FROM mcp_agent_connector_access WHERE agent_id = $1 AND connector_id = $2",
     )
-    .bind(user_id)
     .bind(agent_id)
     .bind(connector_id)
     .fetch_optional(db)
@@ -772,20 +1008,18 @@ pub async fn get_agent_connector_access_row(
 
 pub async fn upsert_agent_connector_access(
     db: &PgPool,
-    user_id: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
     enabled: bool,
     tool_rules: &Value,
 ) -> Result<McpAgentConnectorAccess> {
     let row = sqlx::query_as::<_, McpAgentConnectorAccess>(
-        r#"INSERT INTO mcp_agent_connector_access (user_id, agent_id, connector_id, enabled, tool_rules)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (user_id, agent_id, connector_id) DO UPDATE SET
+        r#"INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled, tool_rules)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (agent_id, connector_id) DO UPDATE SET
              enabled = EXCLUDED.enabled, tool_rules = EXCLUDED.tool_rules
            RETURNING *"#,
     )
-    .bind(user_id)
     .bind(agent_id)
     .bind(connector_id)
     .bind(enabled)
@@ -796,27 +1030,75 @@ pub async fn upsert_agent_connector_access(
 }
 
 /// Reset an agent to default (all-allowed) — delete all its access rows.
-pub async fn delete_all_agent_access(db: &PgPool, user_id: Uuid, agent_id: Uuid) -> Result<u64> {
-    let res =
-        sqlx::query("DELETE FROM mcp_agent_connector_access WHERE user_id = $1 AND agent_id = $2")
-            .bind(user_id)
-            .bind(agent_id)
-            .execute(db)
-            .await?;
+pub async fn delete_all_agent_access(db: &PgPool, agent_id: Uuid) -> Result<u64> {
+    let res = sqlx::query("DELETE FROM mcp_agent_connector_access WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(db)
+        .await?;
     Ok(res.rows_affected())
 }
 
-/// Distinct (user_id, agent_id) pairs with access rows for a connector — used to
-/// invalidate permission caches before the connector is deleted.
-pub async fn get_agent_pairs_for_connector(
+/// Remove a single agent's access to a specific connector.
+pub async fn delete_agent_connector_access(
     db: &PgPool,
+    agent_id: Uuid,
     connector_id: Uuid,
-) -> Result<Vec<(Uuid, Uuid)>> {
-    let pairs = sqlx::query_as::<_, (Uuid, Uuid)>(
-        "SELECT user_id, agent_id FROM mcp_agent_connector_access WHERE connector_id = $1",
+) -> Result<bool> {
+    let res = sqlx::query(
+        "DELETE FROM mcp_agent_connector_access WHERE agent_id = $1 AND connector_id = $2",
+    )
+    .bind(agent_id)
+    .bind(connector_id)
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Agent ids with an access row for a connector — used to invalidate
+/// permission caches before the connector is deleted or a grant revoked.
+pub async fn get_agents_for_connector(db: &PgPool, connector_id: Uuid) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT agent_id FROM mcp_agent_connector_access WHERE connector_id = $1",
     )
     .bind(connector_id)
     .fetch_all(db)
     .await?;
-    Ok(pairs)
+    Ok(ids)
+}
+
+/// Connectors granted directly to `agent_id` (`grant_type = 'agent'`),
+/// independent of who owns that agent — lets an agent use a connector its
+/// owner might not otherwise be able to reach. Feeds `list_connectors_view` so
+/// the owner can see and enable it for this specific agent.
+pub async fn list_agent_granted_connectors(
+    db: &PgPool,
+    agent_id: Uuid,
+) -> Result<Vec<McpConnector>> {
+    let rows = sqlx::query_as::<_, McpConnector>(
+        r#"SELECT c.* FROM mcp_connectors c
+           JOIN mcp_connector_grants g ON g.connector_id = c.id
+           WHERE g.grant_type = 'agent' AND g.grantee_id = $1"#,
+    )
+    .bind(agent_id.to_string())
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Does `agent_id` have a direct grant on `connector_id`? Lets whoever manages
+/// that agent configure it via `set_connector_access_view` even without their
+/// own personal reachability to the connector.
+pub async fn agent_has_connector_grant(
+    db: &PgPool,
+    agent_id: Uuid,
+    connector_id: Uuid,
+) -> Result<bool> {
+    let ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM mcp_connector_grants WHERE connector_id = $1 AND grant_type = 'agent' AND grantee_id = $2)",
+    )
+    .bind(connector_id)
+    .bind(agent_id.to_string())
+    .fetch_one(db)
+    .await?;
+    Ok(ok)
 }
