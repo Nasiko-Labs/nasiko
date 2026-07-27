@@ -376,9 +376,6 @@ pub async fn list_connector_tools_view(
         )));
     }
     let perms = load_permission_context(state, agent_id).await?;
-    let connector = repo::get_connector_by_id(&state.db, connector_id)
-        .await?
-        .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
 
     // Read tools from the DB catalog. If empty, trigger a one-time sync
     // (Composio via list_toolkit_tools, custom MCP via live tools/list).
@@ -603,10 +600,18 @@ mod tests {
 
     #[test]
     fn enabled_and_restriction_flags() {
-        let d = Uuid::new_v4();
-        let c = ctx(vec![], &[d]);
+        let a = Uuid::new_v4(); // explicitly enabled, no tool rules
+        let d = Uuid::new_v4(); // never mentioned anywhere
+        let c = PermissionContext {
+            agent_id: Uuid::nil(),
+            enabled_connectors: [a].into_iter().collect(),
+            rules: vec![],
+            hash: String::new(),
+        };
+        assert!(c.is_connector_enabled(a));
+        // Default-deny: a connector that's never been explicitly enabled is
+        // denied, not just one on some old blocklist.
         assert!(!c.is_connector_enabled(d));
-        assert!(c.is_connector_enabled(Uuid::new_v4()));
         assert!(c.has_any_restriction());
         assert!(!ctx(vec![], &[]).has_any_restriction());
     }

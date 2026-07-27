@@ -253,7 +253,6 @@ pub async fn handle_tools_call(
     }
 
     if tool_name == "COMPOSIO_MULTI_EXECUTE_TOOL"
-        && perms.has_any_restriction()
         && let Some(tools_arg) = arguments.get("tools").and_then(|v| v.as_array()).cloned()
         && !tools_arg.is_empty()
     {
@@ -418,13 +417,14 @@ mod tests {
         }
     }
 
-    fn perms(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
-        let all_from_rules: std::collections::HashSet<Uuid> = rules.iter().map(|r| r.connector_id).collect();
-        let disabled_set: std::collections::HashSet<Uuid> = disabled.iter().copied().collect();
-        let enabled = all_from_rules.difference(&disabled_set).copied().collect();
+    /// `enabled` must be given explicitly — under the default-deny allowlist,
+    /// a connector referenced only by `rules` (with no tool rule at all, e.g.
+    /// a bare "this connector is on" case) can't be inferred from `rules`
+    /// alone.
+    fn perms(enabled: &[Uuid], rules: Vec<PermissionRule>) -> PermissionContext {
         PermissionContext {
             agent_id: Uuid::nil(),
-            enabled_connectors: enabled,
+            enabled_connectors: enabled.iter().copied().collect(),
             rules,
             hash: "h".into(),
         }
@@ -535,7 +535,7 @@ mod tests {
         // Port 1 is a well-known refused-connection target — this is a
         // genuine connection-level failure, not an application error.
         let resolved = mcp_session("http://127.0.0.1:1/mcp", cid, true);
-        let p = perms(vec![], &[]);
+        let p = perms(&[cid], vec![]);
         let tool = format!("{}__echo", crate::types::connector_prefix(cid));
 
         let res = handle_tools_call(&state, Uuid::new_v4(), &json!(1), &json!({ "name": tool, "arguments": {} }), &resolved, &p, None).await;
@@ -555,7 +555,7 @@ mod tests {
 
         let cid = Uuid::new_v4();
         let resolved = mcp_session("http://127.0.0.1:1/mcp", cid, false);
-        let p = perms(vec![], &[]);
+        let p = perms(&[cid], vec![]);
         let tool = format!("{}__echo", crate::types::connector_prefix(cid));
 
         let res = handle_tools_call(&state, Uuid::new_v4(), &json!(1), &json!({ "name": tool, "arguments": {} }), &resolved, &p, None).await;
@@ -571,7 +571,7 @@ mod tests {
         // backend call, so this must not hang or error on the network.
         let cid = Uuid::new_v4();
         let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(vec![rule(cid, "GMAIL_SEND_*", Stance::Block)], &[]);
+        let p = perms(&[cid], vec![rule(cid, "GMAIL_SEND_*", Stance::Block)]);
         let res = handle_tools_call(
             &test_state(),
             Uuid::new_v4(),
@@ -589,7 +589,7 @@ mod tests {
     async fn composio_direct_tool_on_disabled_connector_is_denied() {
         let cid = Uuid::new_v4();
         let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(vec![], &[cid]); // whole connector disabled for the agent
+        let p = perms(&[], vec![]); // never enabled for the agent
         let res = handle_tools_call(
             &test_state(),
             Uuid::new_v4(),
@@ -607,7 +607,7 @@ mod tests {
     async fn composio_direct_tool_with_ask_rule_returns_tool_ask() {
         let cid = Uuid::new_v4();
         let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(vec![rule(cid, "*", Stance::Ask)], &[]);
+        let p = perms(&[cid], vec![rule(cid, "*", Stance::Ask)]);
         let res = handle_tools_call(
             &test_state(),
             Uuid::new_v4(),
@@ -635,7 +635,7 @@ mod tests {
 
         let cid = Uuid::new_v4();
         let resolved = gmail_session(&format!("{}/mcp", backend.url()), cid);
-        let p = perms(vec![], &[]); // default allow
+        let p = perms(&[cid], vec![]); // explicitly enabled, no tool rules
         let res = handle_tools_call(
             &test_state(),
             Uuid::new_v4(),
@@ -668,7 +668,7 @@ mod tests {
 
         let cid = Uuid::new_v4();
         let resolved = gmail_session(&format!("{}/mcp", backend.url()), cid);
-        let p = perms(vec![], &[cid]); // gmail disabled — irrelevant to a meta-tool
+        let p = perms(&[], vec![]); // gmail not enabled — irrelevant to a meta-tool
         let res = handle_tools_call(
             &test_state(),
             Uuid::new_v4(),

@@ -148,10 +148,13 @@ mod tests {
         }
     }
 
-    fn empty_perms() -> PermissionContext {
+    /// A permissive baseline for tests that aren't exercising the enable/rule
+    /// model itself — under the default-deny allowlist, a connector must be
+    /// named here to be reachable at all.
+    fn perms_enabling(ids: &[Uuid]) -> PermissionContext {
         PermissionContext {
             agent_id: Uuid::nil(),
-            enabled_connectors: Default::default(),
+            enabled_connectors: ids.iter().copied().collect(),
             rules: vec![],
             hash: "h".into(),
         }
@@ -275,7 +278,7 @@ mod tests {
 
         let state = test_state();
         let merged =
-            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None).await.unwrap();
+            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms_enabling(&[good_id]), None).await.unwrap();
 
         assert_eq!(merged.len(), 1, "only the healthy backend's tool should survive: {merged:?}");
         assert_eq!(merged[0]["name"], json!(format!("{}__good_tool", connector_prefix(good_id))));
@@ -297,7 +300,7 @@ mod tests {
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
         let merged =
-            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None).await.unwrap();
+            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms_enabling(&[id]), None).await.unwrap();
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0]["name"], json!(format!("{}__good_tool", connector_prefix(id))));
@@ -317,7 +320,7 @@ mod tests {
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
         let merged =
-            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None).await.unwrap();
+            aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms_enabling(&[id]), None).await.unwrap();
 
         // Current behavior: the aggregator does not dedupe by tool name —
         // both entries survive namespacing, producing two identically-named
@@ -370,7 +373,7 @@ mod tests {
         let state = test_state();
         let perms = PermissionContext {
             agent_id: Uuid::nil(),
-            enabled_connectors: Default::default(),
+            enabled_connectors: [id].into_iter().collect(),
             rules: vec![PermissionRule { connector_id: id, tool_pattern: "send_*".into(), stance: Stance::Block }],
             hash: "h".into(),
         };

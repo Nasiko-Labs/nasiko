@@ -439,7 +439,7 @@ impl ComposioProvider {
         let mut cursor: Option<String> = None;
 
         for page in 0..50 {
-            let mut query: Vec<(&str, String)> = vec![("limit".into(), "500".into())];
+            let mut query: Vec<(&str, String)> = vec![("limit", "500".into())];
             if let Some(c) = &cursor {
                 query.push(("cursor", c.clone()));
             }
