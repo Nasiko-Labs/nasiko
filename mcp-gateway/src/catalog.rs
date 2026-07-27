@@ -29,10 +29,17 @@ fn auth_flow_for(connector: &repo::McpConnector) -> &'static str {
     }
 }
 
-/// Cached per-connector tool count. Checks Redis first (`mcp:toolcount:{id}`),
-/// on miss queries `mcp_connector_tools` and fills the cache.
+/// The single key format for a connector's cached tool count — shared with
+/// `permissions::sync_connector_tools`, which invalidates this same key
+/// whenever it actually resyncs `mcp_connector_tools`. Keep both in sync.
+pub(crate) fn toolcount_cache_key(connector_id: Uuid) -> String {
+    format!("mcp:toolcount:{connector_id}")
+}
+
+/// Cached per-connector tool count. Checks Redis first, on miss queries
+/// `mcp_connector_tools` and fills the cache.
 async fn cached_tool_count(state: &McpState, connector_id: Uuid) -> i64 {
-    let key = format!("mcp:toolcount:{connector_id}");
+    let key = toolcount_cache_key(connector_id);
     if let Some(n) = cache::get_json::<i64>(&state.redis, &key).await {
         return n;
     }

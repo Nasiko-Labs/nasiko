@@ -467,17 +467,12 @@ pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Val
     for c in &connectors {
         let is_owner = c.owner_id == Some(user_id);
         let owner_username = c.owner_id.and_then(|oid| owner_names.get(&oid));
-        let dto = json!({
-            "connector_id": c.id,
-            "name": c.name,
-            "description": c.description,
-            "logo_url": c.logo_url,
-            "version": version_map.get(&c.id),
-            "tool_count": tool_counts.get(&c.id).copied().unwrap_or(0),
-            "is_connected": connected_set.contains(&c.id),
-            "owner_id": c.owner_id,
-            "owner_username": owner_username,
-        });
+        let mut dto = connector_dto(c);
+        dto["is_owner"] = json!(is_owner);
+        dto["version"] = json!(version_map.get(&c.id));
+        dto["tool_count"] = json!(tool_counts.get(&c.id).copied().unwrap_or(0));
+        dto["is_connected"] = json!(connected_set.contains(&c.id));
+        dto["owner_username"] = json!(owner_username);
 
         if is_owner {
             created_by_you.push(dto);
@@ -547,7 +542,8 @@ pub async fn get_connector_view(
 
     // Upload info — build status, version, image tag, error (uploaded builds only).
     if connector.source_kind == repo::SourceKind::UploadedBuild {
-        let build_row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> =
+        type BuildRow = (Option<String>, Option<String>, Option<String>, Option<String>);
+        let build_row: Option<BuildRow> =
             sqlx::query_as(
                 "SELECT version_tag, image_tag, status, error_msg \
                  FROM mcp_connector_builds WHERE connector_id = $1 \
@@ -730,10 +726,10 @@ pub async fn revoke_share_grant(
     }
     // If revoking an agent grant, also remove its connector access row so
     // it disappears from consumers and loses tool access.
-    if grant_type == "agent" {
-        if let Ok(agent_id) = Uuid::parse_str(grantee_id) {
-            let _ = repo::delete_agent_connector_access(&state.db, agent_id, connector.id).await;
-        }
+    if grant_type == "agent"
+        && let Ok(agent_id) = Uuid::parse_str(grantee_id)
+    {
+        let _ = repo::delete_agent_connector_access(&state.db, agent_id, connector.id).await;
     }
     for aid in repo::get_agents_for_connector(&state.db, connector.id).await? {
         permissions::invalidate_permission_cache(state, aid).await;
