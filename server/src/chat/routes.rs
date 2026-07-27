@@ -7,6 +7,8 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use nasiko_orchestrator::models::{ChatCompletionRequest, ChatMessage as LlmMessage};
+use nasiko_orchestrator::providers::{LLMProvider, ProviderError};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -211,6 +213,15 @@ async fn list_sessions(
     // no backward-paging input at all — a value here would be dead API surface
     // implying a capability that doesn't exist. The UI doesn't read this field
     // (grepped `oss/ui` — no references), so omitting it is a pure cleanup.
+    // Always return the proxy URL derived from agent_id so clients get a
+    // consistent, externally-reachable path regardless of what was stored
+    // (old sessions may have the internal cluster URL).
+    for row in &mut rows {
+        if let Some(id) = row.agent_id {
+            row.agent_url = Some(format!("/api/agents/{id}"));
+        }
+    }
+
     Json(CursorPage {
         data: rows,
         has_more,
@@ -242,27 +253,26 @@ async fn create_session(
         None => (None, None),
         Some(id_or_name) => {
             let row = if let Ok(uuid) = id_or_name.parse::<Uuid>() {
-                sqlx::query_as::<_, (Uuid, Option<String>)>(
-                    "SELECT id, url FROM agents WHERE id = $1",
-                )
-                .bind(uuid)
-                .fetch_optional(&state.db)
-                .await
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE id = $1")
+                    .bind(uuid)
+                    .fetch_optional(&state.db)
+                    .await
             } else {
-                sqlx::query_as::<_, (Uuid, Option<String>)>(
-                    "SELECT id, url FROM agents WHERE name = $1",
-                )
-                .bind(id_or_name)
-                .fetch_optional(&state.db)
-                .await
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
+                    .bind(id_or_name)
+                    .fetch_optional(&state.db)
+                    .await
             };
 
             match row {
-                Ok(Some((id, url))) => {
+                Ok(Some(id)) => {
                     if !crate::acl::can_access_agent(&state, &claims, id).await {
                         return StatusCode::FORBIDDEN.into_response();
                     }
-                    (Some(id), url)
+                    // Store the proxy path so clients can extract the agent id
+                    // from the URL (internal cluster URLs are not accessible from outside).
+                    let proxy_url = format!("/api/agents/{id}");
+                    (Some(id), Some(proxy_url))
                 }
                 Ok(None) => {
                     return (StatusCode::BAD_REQUEST, "agent not found").into_response();
@@ -287,7 +297,7 @@ async fn create_session(
             .await;
             match existing {
                 Ok(Some(session)) if session.user_id == user_id => {
-                    return (StatusCode::OK, Json(session)).into_response();
+                    return (StatusCode::OK, Json(session_response(session))).into_response();
                 }
                 Ok(Some(_)) => {
                     return (StatusCode::CONFLICT, "session_id already in use").into_response();
@@ -301,7 +311,17 @@ async fn create_session(
         }
         _ => format!("ses_{}", Uuid::new_v4().simple()),
     };
-    let title = body.title.unwrap_or_else(|| "New chat".into());
+
+    // tracing::info!(body = ?body, "Received create session request");
+    // Derive the session title from the user's first prompt synchronously: block
+    // on the LLM so the row is inserted with its final title in a single INSERT.
+    // On an empty prompt, an unconfigured provider, or any LLM error,
+    // `title_from_first_prompt` falls back to a truncated form of the prompt (or
+    // "New chat"), so creation never fails on the model.
+    let title = match body.first_prompt.as_deref().map(str::trim) {
+        Some(prompt) if !prompt.is_empty() => title_from_first_prompt(&state, prompt).await,
+        _ => "New chat".to_string(),
+    };
 
     let result = sqlx::query_as::<_, ChatSession>(
         r#"INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title)
@@ -317,7 +337,7 @@ async fn create_session(
     .await;
 
     match result {
-        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
+        Ok(session) => (StatusCode::CREATED, Json(session_response(session))).into_response(),
         Err(e) => {
             // A dangling user_id FK means the (gateway-verified) JWT references
             // a user that no longer exists — e.g. the DB was reseeded after the
@@ -337,28 +357,178 @@ async fn create_session(
     }
 }
 
+// ─── Title generation ─────────────────────────────────────────────────────────
+/// Cap on both the generated and fallback title lengths (chars).
+const MAX_TITLE_CHARS: usize = 80;
+
+/// Derive a short session title from the user's first prompt.
+///
+/// Best-effort: a single LLM call summarizes the prompt into a few words. If the
+/// provider is unconfigured or the call fails, we fall back to a truncated form
+/// of the prompt so session creation never fails on the model — the caller only
+/// passes a non-empty, trimmed `first_prompt`.
+async fn title_from_first_prompt(state: &AppState, first_prompt: &str) -> String {
+    match generate_title(state, first_prompt).await {
+        Ok(title) if !title.is_empty() => title,
+        Ok(_) => truncate_title(first_prompt),
+        Err(e) => {
+            tracing::warn!(%e, "title generation failed; falling back to truncated prompt");
+            truncate_title(first_prompt)
+        }
+    }
+}
+
+/// Single non-streaming LLM call that summarizes `first_prompt` into a title.
+async fn generate_title(state: &AppState, first_prompt: &str) -> Result<String, ProviderError> {
+    let provider = LLMProvider::from_env(state.http_client.clone());
+
+    let request = ChatCompletionRequest {
+        // Reuse the cheap task model already configured for capability
+        // generation (`CAPABILITY_GENERATOR_MODEL`, default gpt-4o-mini) —
+        // titling is a small, low-stakes summarization.
+        model: state.config.capability_generator_model.clone(),
+        messages: vec![
+            LlmMessage {
+                role: "system".to_string(),
+                content: Some(
+                    r#"You generate concise titles for chat conversations.
+
+                    Your task is to summarize the USER'S INTENT, not the content they provide.
+
+                    Rules:
+                    - Generate a title of 3-6 words.
+                    - Focus on what the user wants the assistant to do.
+                    - If the user asks to translate text, make the title about translation (e.g. "English to Spanish Translation"), not the text being translated.
+                    - If the user asks to summarize, emphasize summarization.
+                    - If the user asks to write code, emphasize the coding task.
+                    - If the user asks a question, summarize the question's purpose.
+                    - Do not quote or repeat large parts of the user's input.
+                    - Do not use prefixes like "Title:".
+                    - Do not use surrounding quotes.
+                    - Do not end with punctuation.
+                    - Return ONLY the title."#
+                        .to_string(),
+                ),
+            },
+            LlmMessage {
+                role: "user".to_string(),
+                content: Some(first_prompt.to_string()),
+            },
+        ],
+        stream: false,
+        temperature: Some(0.2),
+        max_tokens: Some(16),
+        response_format: None,
+        stream_options: None,
+    };
+
+    let result = provider.chat_completion(&request).await?;
+    Ok(sanitize_title(&result.content))
+}
+
+/// Trim whitespace, strip a single layer of surrounding quotes the model may add,
+/// and cap the length.
+fn sanitize_title(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed)
+        .trim();
+    truncate_title(unquoted)
+}
+
+/// Cap a title at `MAX_TITLE_CHARS` on a char boundary (never mid-codepoint).
+fn truncate_title(s: &str) -> String {
+    let s = s.trim();
+    match s.char_indices().nth(MAX_TITLE_CHARS) {
+        Some((idx, _)) => s[..idx].trim_end().to_string(),
+        None => s.to_string(),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SessionData {
+    session_id: String,
+    created_at: DateTime<Utc>,
+    title: String,
+    agent_id: Option<Uuid>,
+    agent_url: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct SessionResponse {
+    data: SessionData,
+    status_code: u16,
+    message: String,
+}
+
+fn session_response(s: ChatSession) -> SessionResponse {
+    SessionResponse {
+        data: SessionData {
+            session_id: s.session_id,
+            created_at: s.created_at,
+            title: s.title,
+            agent_id: s.agent_id,
+            agent_url: s.agent_url,
+        },
+        status_code: 201,
+        message: String::new(),
+    }
+}
+
 async fn get_session(
     State(state): State<AppState>,
     claims: Claims,
     Path(session_id): Path<String>,
+    Query(params): Query<ListMessagesParams>,
 ) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
 
-    match sqlx::query_as::<_, ChatSession>(
-        "SELECT * FROM chat_sessions WHERE session_id = $1 AND user_id = $2",
+    let owns = match sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
     )
     .bind(&session_id)
     .bind(user_id)
-    .fetch_optional(&state.db)
+    .fetch_one(&state.db)
     .await
     {
-        Ok(Some(s)) => Json(s).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    if !owns {
+        return StatusCode::NOT_FOUND.into_response();
     }
+
+    let limit = params.limit.clamp(1, 500);
+
+    let messages = match sqlx::query_as::<_, ChatMessage>(
+        r#"SELECT * FROM chat_messages
+           WHERE session_id = $1
+           ORDER BY timestamp ASC, id ASC
+           LIMIT $2"#,
+    )
+    .bind(&session_id)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(%e, session_id, "get_session messages: db error");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    #[derive(serde::Serialize)]
+    struct Response {
+        data: Vec<ChatMessage>,
+    }
+    Json(Response { data: messages }).into_response()
 }
 
 async fn update_session(

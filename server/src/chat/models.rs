@@ -51,8 +51,11 @@ pub struct CreateSession {
     pub agent_id: Option<String>,
     // NOTE: `agent_url` is intentionally NOT a client input (stored-SSRF risk —
     // see `create_session`). The canonical URL is always resolved server-side
-    // from the `agents` table once `agent_id` is validated.
-    pub title: Option<String>,
+    // from the `agents` table once `agent_id` is validated. A client that sends
+    // `agent_url` in the body has that field ignored, not stored.
+    /// The user's first message. The server derives the session title from this
+    /// via a single LLM call (see `create_session`); it is not stored verbatim.
+    pub first_prompt: Option<String>,
     /// Client-chosen session ID (e.g. `nasiko chat --session-id my-run`).
     /// When omitted the server generates one. If a session with this ID
     /// already exists and belongs to the caller, it is returned as-is.
