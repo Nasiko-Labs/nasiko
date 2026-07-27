@@ -19,6 +19,7 @@ pub mod boundary;
 pub mod cache;
 pub mod cells;
 pub mod classifier;
+mod patterns;
 pub mod registry;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
