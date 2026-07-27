@@ -551,7 +551,7 @@ async fn persist_internal_token(db: &PgPool, connector_id: Uuid, token: &str) {
 
 async fn mark_running(db: &PgPool, build_id: Uuid, connector_id: Uuid, url: &str, image_tag: &str) {
     if let Err(e) = sqlx::query(
-        "UPDATE mcp_connectors SET build_status = 'running', url = $2, is_active = true, \
+        "UPDATE mcp_connectors SET build_status = 'success', url = $2, is_active = true, \
          container_image_tag = $3, updated_at = now() WHERE id = $1",
     )
     .bind(connector_id)

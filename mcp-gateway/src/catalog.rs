@@ -4,7 +4,6 @@
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::cache;
 use crate::error::{McpError, Result};
 use crate::repo::{self, NewConnector};
 use crate::state::McpState;
@@ -35,18 +34,25 @@ pub async fn get_catalog_view(state: &McpState, user_id: Uuid) -> Result<Value> 
         .authorizer
         .list_accessible_connectors(&state.db, user_id)
         .await?;
+    let all_ids: Vec<Uuid> = connectors.iter().map(|c| c.id).collect();
+    let tool_counts: std::collections::HashMap<Uuid, i64> = if all_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        sqlx::query_as::<_, (Uuid, i64)>(
+            "SELECT connector_id, COUNT(*) FROM mcp_connector_tools \
+             WHERE connector_id = ANY($1) GROUP BY connector_id",
+        )
+        .bind(&all_ids)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
     let mut services: Vec<Value> = Vec::with_capacity(connectors.len());
     for c in &connectors {
-        // Only Composio toolkits can report a tool count without a live
-        // connection (the platform API key can list them directly). A generic
-        // `mcp_server` connector genuinely requires connecting first to
-        // discover its tools — `null` here means "unknown until connected",
-        // not zero.
-        let tool_count = if c.is_composio() {
-            composio_tool_count(state, c.id, &c.name).await
-        } else {
-            None
-        };
+        let tool_count = tool_counts.get(&c.id).copied().unwrap_or(0);
         services.push(json!({
             "connector_id": c.id,
             "name": c.name,
@@ -87,9 +93,24 @@ pub async fn list_toolkits_view(state: &McpState, user_id: Uuid) -> Result<Value
         .collect()
     };
 
+    let tool_counts: std::collections::HashMap<Uuid, i64> = if ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        sqlx::query_as::<_, (Uuid, i64)>(
+            "SELECT connector_id, COUNT(*) FROM mcp_connector_tools \
+             WHERE connector_id = ANY($1) GROUP BY connector_id",
+        )
+        .bind(&ids)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
     let mut toolkits: Vec<Value> = Vec::with_capacity(composio.len());
     for c in &composio {
-        let tool_count = composio_tool_count(state, c.id, &c.name).await;
+        let tool_count = tool_counts.get(&c.id).copied().unwrap_or(0);
         toolkits.push(json!({
             "connector_id": c.id,
             "name": c.name,
@@ -104,24 +125,6 @@ pub async fn list_toolkits_view(state: &McpState, user_id: Uuid) -> Result<Value
     Ok(json!({ "toolkits": toolkits, "total": toolkits.len() }))
 }
 
-/// Cached tool count for a Composio toolkit. `None` if Composio isn't
-/// configured or the lookup fails — never fabricated.
-async fn composio_tool_count(state: &McpState, connector_id: Uuid, toolkit: &str) -> Option<usize> {
-    let key = format!("mcp:toolcount:{connector_id}");
-    if let Some(n) = cache::get_json::<usize>(&state.redis, &key).await {
-        return Some(n);
-    }
-    let provider = state.providers.composio.as_ref()?;
-    let count = provider.list_toolkit_tools(toolkit).await.ok()?.len();
-    cache::set_json_ex(
-        &state.redis,
-        &key,
-        &count,
-        state.config.toolcount_ttl_seconds,
-    )
-    .await;
-    Some(count)
-}
 
 /// Inputs for registering a platform Composio connector.
 pub struct CreateComposioInput<'a> {
@@ -264,12 +267,7 @@ pub async fn delete_composio_connector(state: &McpState, connector_id: Uuid) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::McpConfig;
-    use crate::provider::composio::ComposioProvider;
-    use crate::provider::{GenericMcpProvider, Providers};
 
     #[test]
     fn capitalize_cases() {
@@ -282,66 +280,4 @@ mod tests {
         assert_eq!(capitalize("123abc"), "123abc");
     }
 
-    /// `db` is a *lazy* pool (never actually connects) — fine here since
-    /// `composio_tool_count` never touches it; only `redis` (degrades
-    /// gracefully to a cache-miss) and `providers.composio`.
-    fn test_state(composio: Option<Arc<dyn crate::provider::ToolProvider>>) -> McpState {
-        let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
-            .expect("lazy pool construction must not touch the network");
-        let redis = redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client");
-        McpState {
-            db,
-            redis,
-            http_client: reqwest::Client::new(),
-            guarded_http_client: reqwest::Client::new(),
-            config: McpConfig {
-                composio_api_key: None,
-                composio_base_url: "http://localhost".to_string(),
-                composio_webhook_secret: None,
-                gateway_public_url: None,
-                oauth_redirect_base_url: None,
-                composio_callback_base_url: None,
-                session_ttl_seconds: 60,
-                perm_cache_ttl_seconds: 60,
-                manifest_ttl_seconds: 60,
-                toolcount_ttl_seconds: 3600,
-                oauth_state_signing_key: "test".to_string(),
-            },
-            providers: Providers {
-                composio,
-                mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
-            },
-            authorizer: Arc::new(crate::authorizer::OssConnectorAuthorizer),
-            endpoint_refresher: Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
-        }
-    }
-
-    #[tokio::test]
-    async fn composio_tool_count_none_when_composio_not_configured() {
-        let state = test_state(None);
-        assert_eq!(
-            composio_tool_count(&state, Uuid::new_v4(), "gmail").await,
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn composio_tool_count_counts_live_tools() {
-        let mut srv = mockito::Server::new_async().await;
-        srv.mock("GET", mockito::Matcher::Regex("^/api/v3/tools".into()))
-            .with_status(200)
-            .with_body(r#"{"items":[{"slug":"GMAIL_SEND","description":"send"},{"slug":"GMAIL_READ","description":"read"}]}"#)
-            .create_async()
-            .await;
-        let provider: Arc<dyn crate::provider::ToolProvider> = Arc::new(ComposioProvider::new(
-            reqwest::Client::new(),
-            "ak_test".into(),
-            srv.url(),
-        ));
-        let state = test_state(Some(provider));
-        assert_eq!(
-            composio_tool_count(&state, Uuid::new_v4(), "gmail").await,
-            Some(2)
-        );
-    }
 }
