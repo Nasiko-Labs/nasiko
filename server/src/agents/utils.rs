@@ -129,12 +129,11 @@ pub(crate) async fn delete_agent_or_mark_failed(db: &sqlx::PgPool, agent_id: Uui
     .unwrap_or(false);
 
     if has_prior_success {
-        let _ = sqlx::query(
-            "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
-        )
-        .bind(agent_id)
-        .execute(db)
-        .await;
+        let _ =
+            sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
+                .bind(agent_id)
+                .execute(db)
+                .await;
     } else {
         let _ = sqlx::query("DELETE FROM agents WHERE id = $1")
             .bind(agent_id)

@@ -2,15 +2,17 @@
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
+    http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, ApiResponse, AppPath, parse_user, service};
+use super::super::{ApiError, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -24,12 +26,12 @@ pub struct AuthorizeRequest {
 pub async fn authorize(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
+    Path(connector_id): Path<Uuid>,
     body: Option<Json<AuthorizeRequest>>,
-) -> Result<ApiResponse, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::oauth::authorize(
             &state,
             user_id,
@@ -38,7 +40,6 @@ pub async fn authorize(
             body.redirect_url,
         )
         .await?,
-        "OAuth authorization URL generated successfully",
     ))
 }
 
@@ -50,7 +51,7 @@ pub struct CallbackQuery {
     pub error_description: Option<String>,
 }
 
-/// `GET /api/mcp/oauth/callback` — public browser redirect target (HTML, not JSON).
+/// `GET /api/mcp/oauth/callback` — public browser redirect target.
 pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>) -> Response {
     match service::oauth::callback(&state, q.code, q.state, q.error, q.error_description).await {
         CallbackOutcome::Redirect(dest) => Redirect::to(&dest).into_response(),
@@ -62,12 +63,11 @@ pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQue
 pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::oauth::status(&state, user_id, connector_id).await?,
-        "OAuth status retrieved successfully",
     ))
 }
 
@@ -75,11 +75,11 @@ pub async fn status(
 pub async fn revoke(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::oauth::revoke(&state, user_id, connector_id).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "OAuth token revoked successfully"))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn error_page(message: &str) -> String {

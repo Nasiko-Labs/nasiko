@@ -121,7 +121,7 @@ async fn connect_none_auth_is_immediately_connected() {
     .await
     .unwrap();
     assert_eq!(res.status(), 200);
-    assert_eq!(res.json::<Value>().await.unwrap()["data"]["status"], "connected");
+    assert_eq!(res.json::<Value>().await.unwrap()["status"], "connected");
 
     server.cleanup().await;
 }
@@ -204,8 +204,8 @@ async fn list_and_disconnect_removes_connection() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["data"]["total"], 1);
-    assert_eq!(body["data"]["connections"][0]["connector_id"], cid.to_string());
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["connector_id"], cid.to_string());
 
     // disconnect.
     let res = common::as_superuser(

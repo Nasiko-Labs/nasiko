@@ -1,10 +1,16 @@
 //! Per-user bearer/basic/url_param credentials for MCP connectors (write-only).
 
-use axum::extract::State;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, AppJson, AppPath, parse_user, service};
+use super::super::{ApiError, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -17,33 +23,23 @@ pub struct RegisterCredential {
 pub async fn register(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-    AppJson(body): AppJson<RegisterCredential>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+    Json(body): Json<RegisterCredential>,
+) -> Result<impl IntoResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    let view =
-        service::credentials::register(&state, user_id, connector_id, &body.value).await?;
-    // The credential is always stored regardless of outcome (see
-    // register_credential's doc comment) — the message just reflects whether
-    // it was actually proven to work, not merely accepted.
-    let message = if view["connected"].as_bool().unwrap_or(false) {
-        "Credential registered and verified successfully"
-    } else {
-        "Credential stored, but verification failed — see the error field"
-    };
-    Ok(ApiResponse::created(view, message))
+    let view = service::credentials::register(&state, user_id, connector_id, &body.value).await?;
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 /// `GET /api/mcp/connectors/{id}/credential/status` — whether a credential exists.
 pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::credentials::status(&state, user_id, connector_id).await?,
-        "Credential status retrieved successfully",
     ))
 }
 
@@ -51,9 +47,9 @@ pub async fn status(
 pub async fn delete(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::credentials::delete(&state, user_id, connector_id).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "Credential deleted successfully"))
+    Ok(StatusCode::NO_CONTENT)
 }

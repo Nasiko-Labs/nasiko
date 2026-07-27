@@ -1,11 +1,16 @@
 //! Per-agent connector access + tool rules. Gated by `ensure_can_manage_agent`.
 
-use axum::extract::State;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, AppJson, AppPath, ensure_can_manage_agent, parse_user, service};
+use super::super::{ApiError, ensure_can_manage_agent, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -13,13 +18,12 @@ use crate::state::AppState;
 pub async fn list_connectors(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(agent_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::permissions::list_connectors(&state, user_id, agent_id).await?,
-        "Agent connectors retrieved successfully",
     ))
 }
 
@@ -32,17 +36,20 @@ pub struct SetConnectorAccess {
 pub async fn set_connector_access(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath((agent_id, connector_id)): AppPath<(Uuid, Uuid)>,
-    AppJson(body): AppJson<SetConnectorAccess>,
-) -> Result<ApiResponse, ApiError> {
+    Path((agent_id, connector_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SetConnectorAccess>,
+) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::permissions::set_connector_access(
-            &state, user_id, agent_id, connector_id, body.enabled,
+            &state,
+            user_id,
+            agent_id,
+            connector_id,
+            body.enabled,
         )
         .await?,
-        "Connector access updated successfully",
     ))
 }
 
@@ -50,14 +57,12 @@ pub async fn set_connector_access(
 pub async fn list_connector_tools(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath((agent_id, connector_id)): AppPath<(Uuid, Uuid)>,
-) -> Result<ApiResponse, ApiError> {
+    Path((agent_id, connector_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
-        service::permissions::list_connector_tools(&state, user_id, agent_id, connector_id)
-            .await?,
-        "Connector tools retrieved successfully",
+    Ok(Json(
+        service::permissions::list_connector_tools(&state, user_id, agent_id, connector_id).await?,
     ))
 }
 
@@ -65,12 +70,12 @@ pub async fn list_connector_tools(
 pub async fn list_tool_rules(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(agent_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
-    Ok(ApiResponse::ok(
-        service::permissions::list_tool_rules(&state, agent_id).await?,
-        "Tool rules retrieved successfully",
+    let user_id = parse_user(&claims)?;
+    Ok(Json(
+        service::permissions::list_tool_rules(&state, user_id, agent_id).await?,
     ))
 }
 
@@ -90,9 +95,9 @@ pub struct BulkToolUpdate {
 pub async fn bulk_update_tools(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(agent_id): AppPath<Uuid>,
-    AppJson(body): AppJson<BulkToolUpdate>,
-) -> Result<ApiResponse, ApiError> {
+    Path(agent_id): Path<Uuid>,
+    Json(body): Json<BulkToolUpdate>,
+) -> Result<Json<Value>, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
     let rules: Vec<service::permissions::ToolRuleInput> = body
@@ -104,9 +109,8 @@ pub async fn bulk_update_tools(
             stance: r.stance,
         })
         .collect();
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::permissions::bulk_update_tools(&state, user_id, agent_id, &rules).await?,
-        "Tool rules updated successfully",
     ))
 }
 
@@ -114,13 +118,10 @@ pub async fn bulk_update_tools(
 pub async fn reset(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(agent_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(agent_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
-    tracing::info!(%agent_id, caller = %claims.sub, "resetting agent tool permissions");
-    let deleted = service::permissions::reset(&state, agent_id).await?;
-    Ok(ApiResponse::ok(
-        json!({ "rows_deleted": deleted }),
-        "Agent permissions reset successfully",
-    ))
+    let user_id = parse_user(&claims)?;
+    let deleted = service::permissions::reset(&state, user_id, agent_id).await?;
+    Ok((StatusCode::OK, Json(json!({ "rows_deleted": deleted }))))
 }

@@ -48,7 +48,15 @@ pub async fn run(
         .await;
 
     // Reclaim messages that were in-flight when the server last crashed
-    reclaim_pending(&mut conn, &db, &http_client, observability.as_ref(), &llm, &consumer).await;
+    reclaim_pending(
+        &mut conn,
+        &db,
+        &http_client,
+        observability.as_ref(),
+        &llm,
+        &consumer,
+    )
+    .await;
 
     info!("MAF worker started, consumer={consumer}, stream={STREAM_KEY}");
 
@@ -74,7 +82,16 @@ pub async fn run(
             Ok(val) => {
                 for (msg_id, fields) in extract_messages(val) {
                     if let Some(job) = parse_job(&fields) {
-                        process_job(job, &msg_id, &mut conn, &db, &http_client, observability.as_ref(), &llm).await;
+                        process_job(
+                            job,
+                            &msg_id,
+                            &mut conn,
+                            &db,
+                            &http_client,
+                            observability.as_ref(),
+                            &llm,
+                        )
+                        .await;
                     } else {
                         // Malformed message — ACK to remove from PEL so it doesn't retry forever
                         warn!("MAF worker: could not parse job from message {msg_id}, discarding");
@@ -106,11 +123,17 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
         // Use continue instead of ? so one malformed field doesn't drop the whole job
         let key = match bulk_str(&fields[i]) {
             Some(k) => k,
-            None => { i += 2; continue; }
+            None => {
+                i += 2;
+                continue;
+            }
         };
         let val = match bulk_str(&fields[i + 1]) {
             Some(v) => v,
-            None => { i += 2; continue; }
+            None => {
+                i += 2;
+                continue;
+            }
         };
         match key.as_str() {
             "execution_id" => execution_id = val.parse().ok(),
@@ -121,7 +144,11 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
         i += 2;
     }
 
-    Some(Job { execution_id: execution_id?, maf_json: maf_json?, user_id: user_id? })
+    Some(Job {
+        execution_id: execution_id?,
+        maf_json: maf_json?,
+        user_id: user_id?,
+    })
 }
 
 fn bulk_str(val: &redis::Value) -> Option<String> {
@@ -231,7 +258,17 @@ async fn process_job(
         }
     };
 
-    match executor::run_maf(http_client, db, observability, execution_id, user_id, &maf_def, llm).await {
+    match executor::run_maf(
+        http_client,
+        db,
+        observability,
+        execution_id,
+        user_id,
+        &maf_def,
+        llm,
+    )
+    .await
+    {
         Ok(result) => {
             let step_json = serde_json::to_value(&result.step_results).unwrap_or_default();
             let step_json_str = step_json.to_string();
@@ -258,7 +295,9 @@ async fn process_job(
             if new_attempt >= max_attempts {
                 mark_failed(db, execution_id, &e).await;
                 ack(conn, msg_id).await;
-                warn!("MAF execution {execution_id} terminal failure after {new_attempt} attempt(s): {e}");
+                warn!(
+                    "MAF execution {execution_id} terminal failure after {new_attempt} attempt(s): {e}"
+                );
             } else {
                 // Reset to pending and re-enqueue for retry
                 let _ = sqlx::query(
@@ -294,8 +333,12 @@ async fn mark_failed(db: &PgPool, execution_id: Uuid, error: &str) {
 }
 
 async fn ack(conn: &mut redis::aio::MultiplexedConnection, msg_id: &str) {
-    let _: redis::RedisResult<()> =
-        redis::cmd("XACK").arg(STREAM_KEY).arg(GROUP_NAME).arg(msg_id).query_async(conn).await;
+    let _: redis::RedisResult<()> = redis::cmd("XACK")
+        .arg(STREAM_KEY)
+        .arg(GROUP_NAME)
+        .arg(msg_id)
+        .query_async(conn)
+        .await;
 }
 
 async fn re_enqueue(
@@ -338,12 +381,10 @@ async fn reclaim_pending(
 
     // XAUTOCLAIM returns [next_id, [[msg_id, fields], ...], [deleted_ids]]
     let messages = match result {
-        Ok(redis::Value::Array(parts)) if parts.len() >= 2 => {
-            match parts.into_iter().nth(1) {
-                Some(redis::Value::Array(msgs)) => msgs,
-                _ => return,
-            }
-        }
+        Ok(redis::Value::Array(parts)) if parts.len() >= 2 => match parts.into_iter().nth(1) {
+            Some(redis::Value::Array(msgs)) => msgs,
+            _ => return,
+        },
         Err(e) => {
             // Stream or group may not exist yet on first boot — not an error
             warn!("MAF worker XAUTOCLAIM skipped (stream may be new): {e}");

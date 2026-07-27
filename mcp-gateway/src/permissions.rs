@@ -35,16 +35,15 @@ pub struct PermissionRule {
     pub stance: Stance,
 }
 
-/// Pre-loaded, immutable permission state for one agent — shared by every
-/// caller who manages it (see `load_permission_context`'s doc).
+/// Pre-loaded, immutable permission state for one `(user_id, agent_id)` pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionContext {
+    pub user_id: Uuid,
     pub agent_id: Uuid,
-    /// Connector ids explicitly enabled (`enabled = true`). Default-off:
-    /// only connectors in this set are allowed; everything else is denied.
-    pub enabled_connectors: HashSet<Uuid>,
+    /// Connector ids explicitly disabled (`enabled = false`).
+    pub disabled_connectors: HashSet<Uuid>,
     pub rules: Vec<PermissionRule>,
-    /// sha256[:16] of the rules + enabled set — the manifest cache-key signal.
+    /// sha256[:16] of the rules + disabled set — the manifest cache-key signal.
     pub hash: String,
 }
 
@@ -64,10 +63,9 @@ pub enum ToolAccess {
 }
 
 impl PermissionContext {
-    /// True only when the connector is explicitly enabled. Default-off:
-    /// connectors must be toggled on per-agent before their tools are visible.
+    /// True unless the connector is explicitly disabled.
     pub fn is_connector_enabled(&self, connector_id: Uuid) -> bool {
-        self.enabled_connectors.contains(&connector_id)
+        !self.disabled_connectors.contains(&connector_id)
     }
 
     /// The full Layer-2 access decision for `(connector, tool)`: connector-enable
@@ -117,7 +115,7 @@ impl PermissionContext {
     }
 
     pub fn has_any_restriction(&self) -> bool {
-        !self.enabled_connectors.is_empty() || !self.rules.is_empty()
+        !self.disabled_connectors.is_empty() || !self.rules.is_empty()
     }
 }
 
@@ -132,31 +130,28 @@ pub fn toolkit_from_composio_slug(slug: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn perm_cache_key(agent_id: Uuid) -> String {
-    format!("mcp:perm:{agent_id}")
+fn perm_cache_key(user_id: Uuid, agent_id: Uuid) -> String {
+    format!("mcp:perm:{user_id}:{agent_id}")
 }
 
-/// Load the permission context for `agent_id` — Redis cached. Shared by every
-/// caller who manages the agent (there is exactly one row per
-/// `(agent_id, connector_id)`, not one per caller) — see
-/// `mcp_agent_connector_access`'s table comment for why.
+/// Load the permission context for `(user_id, agent_id)` — Redis cached.
 pub async fn load_permission_context(
     state: &McpState,
+    user_id: Uuid,
     agent_id: Uuid,
 ) -> Result<PermissionContext> {
-    let key = perm_cache_key(agent_id);
+    let key = perm_cache_key(user_id, agent_id);
     if let Some(ctx) = cache::get_json::<PermissionContext>(&state.redis, &key).await {
         return Ok(ctx);
     }
 
-    let rows = repo::get_agent_connector_access(&state.db, agent_id).await?;
-    let enabled_connectors: HashSet<Uuid> = rows
-        .iter()
-        .filter(|r| r.enabled)
-        .map(|r| r.connector_id)
-        .collect();
+    let rows = repo::get_agent_connector_access(&state.db, user_id, agent_id).await?;
+    let mut disabled_connectors = HashSet::new();
     let mut rules = Vec::new();
-    for row in &rows {
+    for row in rows {
+        if !row.enabled {
+            disabled_connectors.insert(row.connector_id);
+        }
         for tr in parse_tool_rules(&row.tool_rules) {
             if let Some(stance) = Stance::from_str(&tr.stance) {
                 rules.push(PermissionRule {
@@ -168,10 +163,11 @@ pub async fn load_permission_context(
         }
     }
 
-    let hash = compute_hash(&rules, &enabled_connectors);
+    let hash = compute_hash(&rules, &disabled_connectors);
     let ctx = PermissionContext {
+        user_id,
         agent_id,
-        enabled_connectors,
+        disabled_connectors,
         rules,
         hash,
     };
@@ -185,9 +181,9 @@ pub async fn load_permission_context(
     Ok(ctx)
 }
 
-/// Drop the cached permission context for an agent.
-pub async fn invalidate_permission_cache(state: &McpState, agent_id: Uuid) {
-    cache::delete(&state.redis, &perm_cache_key(agent_id)).await;
+/// Drop the cached permission context for a `(user, agent)` pair.
+pub async fn invalidate_permission_cache(state: &McpState, user_id: Uuid, agent_id: Uuid) {
+    cache::delete(&state.redis, &perm_cache_key(user_id, agent_id)).await;
 }
 
 fn parse_tool_rules(raw: &Value) -> Vec<ToolRule> {
@@ -195,7 +191,7 @@ fn parse_tool_rules(raw: &Value) -> Vec<ToolRule> {
 }
 
 /// Deterministic sha256[:16] over the rules + disabled set (order-independent).
-fn compute_hash(rules: &[PermissionRule], enabled: &HashSet<Uuid>) -> String {
+fn compute_hash(rules: &[PermissionRule], disabled: &HashSet<Uuid>) -> String {
     let mut data: Vec<[String; 3]> = rules
         .iter()
         .map(|r| {
@@ -208,10 +204,10 @@ fn compute_hash(rules: &[PermissionRule], enabled: &HashSet<Uuid>) -> String {
         .collect();
     data.sort();
 
-    let mut enabled_sorted: Vec<String> = enabled.iter().map(Uuid::to_string).collect();
-    enabled_sorted.sort();
-    for s in enabled_sorted {
-        data.push(["__enabled__".to_string(), s, "allow".to_string()]);
+    let mut disabled_sorted: Vec<String> = disabled.iter().map(Uuid::to_string).collect();
+    disabled_sorted.sort();
+    for s in disabled_sorted {
+        data.push(["__disabled__".to_string(), s, "block".to_string()]);
     }
 
     let raw = serde_json::to_string(&data).unwrap_or_default();
@@ -270,22 +266,11 @@ pub async fn list_connectors_view(
     user_id: Uuid,
     agent_id: Uuid,
 ) -> Result<Value> {
-    let mut connectors = state
+    let connectors = state
         .authorizer
         .list_accessible_connectors(&state.db, user_id)
         .await?;
-    // Union in connectors granted directly to THIS agent (grant_type="agent"),
-    // independent of the caller's own reachability — so the owner can see and
-    // enable a connector that was shared with their agent specifically.
-    let agent_granted = repo::list_agent_granted_connectors(&state.db, agent_id).await?;
-    let existing: HashSet<Uuid> = connectors.iter().map(|c| c.id).collect();
-    connectors.extend(
-        agent_granted
-            .into_iter()
-            .filter(|c| !existing.contains(&c.id)),
-    );
-
-    let access = repo::get_agent_connector_access(&state.db, agent_id).await?;
+    let access = repo::get_agent_connector_access(&state.db, user_id, agent_id).await?;
     let enabled_map: HashMap<Uuid, bool> = access
         .into_iter()
         .map(|r| (r.connector_id, r.enabled))
@@ -298,25 +283,20 @@ pub async fn list_connectors_view(
 
     let data: Vec<Value> = connectors
         .into_iter()
-        .filter(|c| {
-            // Only show connectors the user has actually connected to,
-            // or custom MCP servers that don't require auth (always reachable).
-            connected.contains(&c.id) || c.auth_type.as_deref() == Some("none")
-        })
         .map(|c| {
+            let is_connected = connected.contains(&c.id) || c.auth_type.as_deref() == Some("none");
             json!({
                 "connector_id": c.id,
                 "provider_type": c.provider_type,
                 "name": c.name,
                 "display_name": c.display_name.unwrap_or_else(|| crate::catalog::capitalize(&c.name)),
-                "description": c.description,
                 "logo_url": c.logo_url,
-                "enabled": enabled_map.get(&c.id).copied().unwrap_or(false),
-                "connected": true,
+                "enabled": enabled_map.get(&c.id).copied().unwrap_or(true),
+                "connected": is_connected,
             })
         })
         .collect();
-    Ok(json!({ "connectors": data }))
+    Ok(json!({ "data": data }))
 }
 
 /// `PUT /agents/{id}/connectors/{connector_id}` — toggle a connector, preserving
@@ -328,33 +308,30 @@ pub async fn set_connector_access_view(
     connector_id: Uuid,
     enabled: bool,
 ) -> Result<Value> {
-    // Reachable either the normal way (caller's own owner/user/public/team/
-    // department grant) OR because the connector was shared directly with
-    // THIS agent (grant_type="agent") — letting whoever manages the agent
-    // configure it even without their own personal reachability.
-    let reachable = state
+    if !state
         .authorizer
         .can_access_connector(&state.db, user_id, connector_id)
         .await?
-        || repo::agent_has_connector_grant(&state.db, agent_id, connector_id).await?;
-    if !reachable {
+    {
         return Err(McpError::NotFound(format!(
             "connector '{connector_id}' not found"
         )));
     }
-    let existing_rules = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
-        .await?
-        .map(|r| r.tool_rules)
-        .unwrap_or_else(|| json!([]));
+    let existing_rules =
+        repo::get_agent_connector_access_row(&state.db, user_id, agent_id, connector_id)
+            .await?
+            .map(|r| r.tool_rules)
+            .unwrap_or_else(|| json!([]));
     let row = repo::upsert_agent_connector_access(
         &state.db,
+        user_id,
         agent_id,
         connector_id,
         enabled,
         &existing_rules,
     )
     .await?;
-    invalidate_permission_cache(state, agent_id).await;
+    invalidate_permission_cache(state, user_id, agent_id).await;
     Ok(json!({ "connector_id": row.connector_id, "enabled": row.enabled }))
 }
 
@@ -375,28 +352,22 @@ pub async fn list_connector_tools_view(
             "connector '{connector_id}' not found"
         )));
     }
-    let perms = load_permission_context(state, agent_id).await?;
+    let perms = load_permission_context(state, user_id, agent_id).await?;
 
-    // Read tools from the DB catalog. If empty, trigger a one-time sync
-    // (Composio via list_toolkit_tools, custom MCP via live tools/list).
     let mut catalog = repo::list_connector_tools(&state.db, connector_id).await?;
     if catalog.is_empty() {
         sync_connector_tools(state, user_id, connector_id).await?;
         catalog = repo::list_connector_tools(&state.db, connector_id).await?;
     }
+
     let out: Vec<Value> = catalog
         .into_iter()
         .map(|t| {
             let stance = perms.get_stance(connector_id, &t.tool_name);
-            json!({
-                "name": t.tool_name,
-                "description": t.description,
-                "stance": stance.as_str(),
-                "last_synced_at": t.last_synced_at,
-            })
+            json!({ "name": t.tool_name, "description": t.description, "stance": stance.as_str() })
         })
         .collect();
-    Ok(json!({ "tools": out }))
+    Ok(json!({ "data": out }))
 }
 
 /// Sync a connector's tool catalog from its live backend into `mcp_connector_tools`.
@@ -446,15 +417,19 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
 }
 
 /// `GET /agents/{id}/tools` view: the agent's current tool rules across connectors.
-pub async fn list_tool_rules_view(state: &McpState, agent_id: Uuid) -> Result<Value> {
-    let rows = repo::get_agent_connector_access(&state.db, agent_id).await?;
+pub async fn list_tool_rules_view(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+) -> Result<Value> {
+    let rows = repo::get_agent_connector_access(&state.db, user_id, agent_id).await?;
     let mut data: Vec<Value> = Vec::new();
     for row in rows {
         for tr in parse_tool_rules(&row.tool_rules) {
             data.push(json!({ "connector_id": row.connector_id, "tool_pattern": tr.pattern, "stance": tr.stance }));
         }
     }
-    Ok(json!({ "rules": data }))
+    Ok(json!({ "data": data }))
 }
 
 /// One rule input for [`bulk_update_tools`].
@@ -500,10 +475,11 @@ pub async fn bulk_update_tools(
                 "connector '{connector_id}' not found"
             )));
         }
-        let enabled = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
-            .await?
-            .map(|r| r.enabled)
-            .unwrap_or(true);
+        let enabled =
+            repo::get_agent_connector_access_row(&state.db, user_id, agent_id, connector_id)
+                .await?
+                .map(|r| r.enabled)
+                .unwrap_or(true);
         let tool_rules: Vec<ToolRule> = patterns
             .iter()
             .map(|(p, s)| ToolRule {
@@ -514,6 +490,7 @@ pub async fn bulk_update_tools(
         let rules_json = serde_json::to_value(&tool_rules)?;
         repo::upsert_agent_connector_access(
             &state.db,
+            user_id,
             agent_id,
             connector_id,
             enabled,
@@ -525,14 +502,14 @@ pub async fn bulk_update_tools(
         }
     }
 
-    invalidate_permission_cache(state, agent_id).await;
-    Ok(json!({ "rules": applied }))
+    invalidate_permission_cache(state, user_id, agent_id).await;
+    Ok(json!({ "data": applied }))
 }
 
 /// `DELETE /agents/{id}/permissions` — reset to all-allowed.
-pub async fn reset(state: &McpState, agent_id: Uuid) -> Result<u64> {
-    let deleted = repo::delete_all_agent_access(&state.db, agent_id).await?;
-    invalidate_permission_cache(state, agent_id).await;
+pub async fn reset(state: &McpState, user_id: Uuid, agent_id: Uuid) -> Result<u64> {
+    let deleted = repo::delete_all_agent_access(&state.db, user_id, agent_id).await?;
+    invalidate_permission_cache(state, user_id, agent_id).await;
     Ok(deleted)
 }
 
@@ -541,19 +518,10 @@ mod tests {
     use super::*;
 
     fn ctx(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
-        // The old test convention passes "disabled" IDs. With the new allowlist
-        // model, "disabled" means "not in enabled_connectors". For tests that
-        // check disabled behavior, we put nothing in enabled. For tests that
-        // need a connector enabled, they pass an empty disabled slice and the
-        // connector is implicitly tested via rules.
-        // To keep existing tests working: extract all connector IDs from rules,
-        // then remove the disabled ones → that's the enabled set.
-        let all_from_rules: HashSet<Uuid> = rules.iter().map(|r| r.connector_id).collect();
-        let disabled_set: HashSet<Uuid> = disabled.iter().copied().collect();
-        let enabled: HashSet<Uuid> = all_from_rules.difference(&disabled_set).copied().collect();
         PermissionContext {
+            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
-            enabled_connectors: enabled,
+            disabled_connectors: disabled.iter().copied().collect(),
             rules,
             hash: String::new(),
         }
@@ -600,18 +568,10 @@ mod tests {
 
     #[test]
     fn enabled_and_restriction_flags() {
-        let a = Uuid::new_v4(); // explicitly enabled, no tool rules
-        let d = Uuid::new_v4(); // never mentioned anywhere
-        let c = PermissionContext {
-            agent_id: Uuid::nil(),
-            enabled_connectors: [a].into_iter().collect(),
-            rules: vec![],
-            hash: String::new(),
-        };
-        assert!(c.is_connector_enabled(a));
-        // Default-deny: a connector that's never been explicitly enabled is
-        // denied, not just one on some old blocklist.
+        let d = Uuid::new_v4();
+        let c = ctx(vec![], &[d]);
         assert!(!c.is_connector_enabled(d));
+        assert!(c.is_connector_enabled(Uuid::new_v4()));
         assert!(c.has_any_restriction());
         assert!(!ctx(vec![], &[]).has_any_restriction());
     }

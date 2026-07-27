@@ -26,15 +26,11 @@ pub mod catalog {
         pub client_secret: Option<String>,
         pub scopes: Option<Vec<String>>,
         pub display_name: Option<String>,
-        pub description: Option<String>,
         pub logo_url: Option<String>,
     }
 
     pub async fn get_catalog(s: &AppState, user: Uuid) -> R<Value> {
         catalog::get_catalog_view(&s.mcp, user).await
-    }
-    pub async fn list_toolkits(s: &AppState, user: Uuid) -> R<Value> {
-        catalog::list_toolkits_view(&s.mcp, user).await
     }
     pub async fn create_composio(s: &AppState, r: &ComposioReg) -> R<Value> {
         catalog::create_composio_connector(
@@ -46,7 +42,6 @@ pub mod catalog {
                 client_secret: r.client_secret.as_deref(),
                 scopes: r.scopes.as_deref(),
                 display_name: r.display_name.as_deref(),
-                description: r.description.as_deref(),
                 logo_url: r.logo_url.as_deref(),
             },
         )
@@ -98,9 +93,6 @@ pub mod connectors {
     pub async fn list(s: &AppState, user: Uuid) -> R<Value> {
         connectors::list_connectors_view(&s.mcp, user).await
     }
-    pub async fn get(s: &AppState, user: Uuid, id: Uuid) -> R<Value> {
-        connectors::get_connector_view(&s.mcp, user, id).await
-    }
     pub async fn create(s: &AppState, owner: Uuid, input: NewConnectorInput) -> R<Value> {
         let c = connectors::register_connector(&s.mcp, owner, input).await?;
         Ok(connectors::connector_dto(&c))
@@ -119,11 +111,13 @@ pub mod connectors {
         connectors::probe_connector_view(&s.mcp, url).await
     }
     pub async fn delete(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<()> {
-        let connector = connectors::authorize_delete(&s.mcp, caller, is_admin, id).await?;
-        if connector.source_kind == nasiko_mcp_gateway::repo::SourceKind::UploadedBuild {
-            crate::mcp::build::destroy_uploaded_connector_container(&s.runtime, id).await;
+        let c = connectors::get_connector_for_deletion(&s.mcp, id).await?;
+        if !is_admin && c.owner_id != Some(caller) {
+            return Err(McpError::Forbidden(
+                "this connector does not belong to you".into(),
+            ));
         }
-        connectors::delete_connector(&s.mcp, &connector).await
+        connectors::delete_connector(&s.mcp, &c).await
     }
     pub async fn share(
         s: &AppState,
@@ -146,61 +140,6 @@ pub mod connectors {
     pub async fn list_shares(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
         connectors::list_shares_view(&s.mcp, caller, is_admin, id).await
     }
-    pub async fn search_share_targets(
-        s: &AppState,
-        claims: crate::auth::Claims,
-        q: &str,
-    ) -> R<Value> {
-        // OSS: `org_visible_user_ids` defaults to `None` → unscoped. EE: members
-        // are restricted to their own team/department, so the share picker can't
-        // enumerate usernames across org boundaries (matches the platform's own
-        // user directory). Non-uuid ids (shouldn't happen) are dropped.
-        let identity: nasiko_auth::Identity = claims.into();
-        let visible_ids = s.auth.org_visible_user_ids(&identity).await.map(|ids| {
-            ids.iter()
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .collect::<Vec<_>>()
-        });
-        connectors::search_share_targets_view(&s.mcp, q, visible_ids).await
-    }
-    pub async fn list_consumers(s: &AppState, caller: Uuid, is_admin: bool, id: Uuid) -> R<Value> {
-        connectors::list_consumers_view(&s.mcp, caller, is_admin, id).await
-    }
-    /// Share a connector directly with a specific agent (grant_type="agent"),
-    /// bypassing `ShareTarget` the same way EE's team/department grants do —
-    /// generic `create_share_grant` needs only the raw grant_type/grantee_id.
-    pub async fn grant_agent(
-        s: &AppState,
-        caller: Uuid,
-        is_admin: bool,
-        id: Uuid,
-        agent_id: Uuid,
-    ) -> R<Value> {
-        connectors::create_share_grant(&s.mcp, caller, is_admin, id, "agent", &agent_id.to_string())
-            .await
-    }
-    pub async fn revoke_agent(
-        s: &AppState,
-        caller: Uuid,
-        is_admin: bool,
-        id: Uuid,
-        agent_id: Uuid,
-    ) -> R<()> {
-        connectors::revoke_share_grant(&s.mcp, caller, is_admin, id, "agent", &agent_id.to_string())
-            .await
-    }
-    pub async fn pin(s: &AppState, user: Uuid, id: Uuid) -> R<()> {
-        connectors::pin_connector_view(&s.mcp, user, id).await
-    }
-    pub async fn unpin(s: &AppState, user: Uuid, id: Uuid) -> R<()> {
-        connectors::unpin_connector_view(&s.mcp, user, id).await
-    }
-    pub async fn list_pinned(s: &AppState, user: Uuid) -> R<Value> {
-        connectors::list_pinned_view(&s.mcp, user).await
-    }
-    pub async fn list_recent(s: &AppState, user: Uuid) -> R<Value> {
-        connectors::list_recent_view(&s.mcp, user).await
-    }
 }
 
 pub mod credentials {
@@ -209,13 +148,8 @@ pub mod credentials {
 
     pub async fn register(s: &AppState, user: Uuid, connector_id: Uuid, value: &str) -> R<Value> {
         let c = credentials::authorize_connector(&s.mcp, user, connector_id).await?;
-        let outcome = credentials::register_credential(&s.mcp, user, &c, value).await?;
-        Ok(json!({
-            "connector_id": c.id,
-            "name": c.name,
-            "connected": outcome.verified,
-            "error": outcome.error,
-        }))
+        credentials::register_credential(&s.mcp, user, &c, value).await?;
+        Ok(json!({ "connector_id": c.id, "name": c.name, "connected": true }))
     }
     pub async fn status(s: &AppState, user: Uuid, connector_id: Uuid) -> R<Value> {
         let c = credentials::authorize_connector(&s.mcp, user, connector_id).await?;
@@ -306,8 +240,8 @@ pub mod permissions {
     ) -> R<Value> {
         permissions::list_connector_tools_view(&s.mcp, user, agent, connector).await
     }
-    pub async fn list_tool_rules(s: &AppState, agent: Uuid) -> R<Value> {
-        permissions::list_tool_rules_view(&s.mcp, agent).await
+    pub async fn list_tool_rules(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
+        permissions::list_tool_rules_view(&s.mcp, user, agent).await
     }
     pub async fn bulk_update_tools(
         s: &AppState,
@@ -317,8 +251,8 @@ pub mod permissions {
     ) -> R<Value> {
         permissions::bulk_update_tools(&s.mcp, user, agent, rules).await
     }
-    pub async fn reset(s: &AppState, agent: Uuid) -> R<u64> {
-        permissions::reset(&s.mcp, agent).await
+    pub async fn reset(s: &AppState, user: Uuid, agent: Uuid) -> R<u64> {
+        permissions::reset(&s.mcp, user, agent).await
     }
 }
 

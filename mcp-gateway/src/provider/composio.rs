@@ -373,116 +373,39 @@ impl ToolProvider for ComposioProvider {
     }
 
     async fn list_toolkit_tools(&self, toolkit: &str) -> Result<Vec<ToolDescriptor>> {
-        // The v3 `toolkit_slugs` filter is unreliable (returns unrelated tools)
-        // and `offset` is ignored — only cursor-based pagination works.
-        // Scan all pages, filter client-side by toolkit slug.
+        // GET /api/v3/tools?toolkit_slugs=<toolkit> → { items: [ { slug, description } ] }.
+        let resp = self
+            .get_json_opt(
+                "/api/v3/tools",
+                &[("toolkit_slugs", &toolkit.to_uppercase())],
+                DEFAULT_TIMEOUT,
+            )
+            .await?;
+        let Some(resp) = resp else {
+            return Ok(Vec::new());
+        };
+        let items = resp
+            .get("items")
+            .and_then(|i| i.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // The v3 `toolkit_slugs` filter has been observed live to be ignored
+        // server-side (returning tools from unrelated toolkits), which would
+        // pollute a connector's permission UI with other toolkits' tools. Scope
+        // client-side too: a Composio tool slug is `TOOLKIT_ACTION`, and items may
+        // also carry an explicit `toolkit` field — keep only matches for `toolkit`.
         let want = toolkit.to_ascii_lowercase();
-        let mut matched = Vec::new();
-        let mut cursor: Option<String> = None;
-        let max_pages = 50; // safety cap (~25k tools)
-
-        for _ in 0..max_pages {
-            let mut query: Vec<(&str, String)> = vec![
-                ("limit", "500".to_string()),
-            ];
-            if let Some(c) = &cursor {
-                query.push(("cursor", c.clone()));
-            }
-            let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            let resp = self
-                .get_json_opt("/api/v3/tools", &query_refs, DEFAULT_TIMEOUT)
-                .await?;
-            let Some(resp) = resp else { break };
-            let items = resp
-                .get("items")
-                .and_then(|i| i.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if items.is_empty() {
-                break;
-            }
-            for it in &items {
-                let Some(name) = first_str(it, &["slug", "name"]) else { continue };
+        Ok(items
+            .iter()
+            .filter_map(|it| {
+                let name = first_str(it, &["slug", "name"])?;
                 let item_toolkit = item_toolkit_slug(it).unwrap_or_else(|| slug_toolkit(&name));
-                if item_toolkit == want {
-                    matched.push(ToolDescriptor {
-                        name,
-                        description: first_str(it, &["description"]),
-                    });
-                }
-            }
-            cursor = resp.get("next_cursor").and_then(|c| c.as_str()).map(str::to_string);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Ok(matched)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-impl ComposioProvider {
-    /// Scan the full Composio tools catalog once, returning tools grouped by
-    /// toolkit slug. Much faster than calling `list_toolkit_tools` N times
-    /// (one pass of ~48 pages vs N × 48).
-    pub async fn list_tools_for_toolkits(
-        &self,
-        toolkit_names: &[String],
-    ) -> std::collections::HashMap<String, Vec<ToolDescriptor>> {
-        let want: std::collections::HashSet<String> =
-            toolkit_names.iter().map(|t| t.to_ascii_lowercase()).collect();
-        let mut result: std::collections::HashMap<String, Vec<ToolDescriptor>> =
-            want.iter().map(|t| (t.clone(), Vec::new())).collect();
-        let mut cursor: Option<String> = None;
-
-        for page in 0..50 {
-            let mut query: Vec<(&str, String)> = vec![("limit", "500".into())];
-            if let Some(c) = &cursor {
-                query.push(("cursor", c.clone()));
-            }
-            let query_refs: Vec<(&str, &str)> =
-                query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            let resp = match self
-                .get_json_opt("/api/v3/tools", &query_refs, DEFAULT_TIMEOUT)
-                .await
-            {
-                Ok(Some(r)) => r,
-                _ => break,
-            };
-            let items = resp
-                .get("items")
-                .and_then(|i| i.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if items.is_empty() {
-                break;
-            }
-            for it in &items {
-                let Some(name) = first_str(it, &["slug", "name"]) else { continue };
-                let tk = item_toolkit_slug(it).unwrap_or_else(|| slug_toolkit(&name));
-                if let Some(tools) = result.get_mut(&tk) {
-                    tools.push(ToolDescriptor {
-                        name,
-                        description: first_str(it, &["description"]),
-                    });
-                }
-            }
-            cursor = resp
-                .get("next_cursor")
-                .and_then(|c| c.as_str())
-                .map(str::to_string);
-            if cursor.is_none() {
-                break;
-            }
-            if page % 10 == 9 {
-                let total: usize = result.values().map(|v| v.len()).sum();
-                tracing::info!(page = page + 1, total, "composio bulk tool scan progress");
-            }
-        }
-        result
+                (item_toolkit == want).then(|| ToolDescriptor {
+                    name,
+                    description: first_str(it, &["description"]),
+                })
+            })
+            .collect())
     }
 }
 

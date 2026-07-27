@@ -1,10 +1,16 @@
 //! Catalog + platform Composio connector registration.
 
-use axum::extract::State;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
-use super::super::{ApiError, ApiResponse, AppJson, AppPath, ensure_admin, parse_user, service};
+use super::super::{ApiError, ensure_admin, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -12,24 +18,9 @@ use crate::state::AppState;
 pub async fn get_catalog(
     State(state): State<AppState>,
     claims: Claims,
-) -> Result<ApiResponse, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let user = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
-        service::catalog::get_catalog(&state, user).await?,
-        "Catalog retrieved successfully",
-    ))
-}
-
-/// `GET /api/mcp/composio/toolkits` — platform Composio toolkits only.
-pub async fn list_toolkits(
-    State(state): State<AppState>,
-    claims: Claims,
-) -> Result<ApiResponse, ApiError> {
-    let user = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
-        service::catalog::list_toolkits(&state, user).await?,
-        "Toolkits retrieved successfully",
-    ))
+    Ok(Json(service::catalog::get_catalog(&state, user).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,7 +32,6 @@ pub struct CreateAuthConfig {
     pub client_secret: Option<String>,
     pub scopes: Option<Vec<String>>,
     pub display_name: Option<String>,
-    pub description: Option<String>,
     pub logo_url: Option<String>,
 }
 
@@ -53,8 +43,8 @@ fn default_true() -> bool {
 pub async fn create_auth_config(
     State(state): State<AppState>,
     claims: Claims,
-    AppJson(body): AppJson<CreateAuthConfig>,
-) -> Result<ApiResponse, ApiError> {
+    Json(body): Json<CreateAuthConfig>,
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin(&claims)?;
     let view = service::catalog::create_composio(
         &state,
@@ -65,24 +55,21 @@ pub async fn create_auth_config(
             client_secret: body.client_secret,
             scopes: body.scopes,
             display_name: body.display_name,
-            description: body.description,
             logo_url: body.logo_url,
         },
     )
     .await?;
-    Ok(ApiResponse::created(view, "Auth config created successfully"))
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 /// `GET /api/mcp/auth-configs` — list platform Composio connectors (admin).
+/// Gated like its create/update/delete siblings on the same resource.
 pub async fn list_auth_configs(
     State(state): State<AppState>,
     claims: Claims,
-) -> Result<ApiResponse, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     ensure_admin(&claims)?;
-    Ok(ApiResponse::ok(
-        service::catalog::list_composio(&state).await?,
-        "Auth configs retrieved successfully",
-    ))
+    Ok(Json(service::catalog::list_composio(&state).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,18 +83,17 @@ pub struct UpdateAuthConfig {
 pub async fn update_auth_config(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-    AppJson(body): AppJson<UpdateAuthConfig>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+    Json(body): Json<UpdateAuthConfig>,
+) -> Result<Json<Value>, ApiError> {
     ensure_admin(&claims)?;
     let meta = service::catalog::ComposioMetadata {
         display_name: body.display_name,
         logo_url: body.logo_url,
         description: body.description,
     };
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::catalog::update_composio(&state, connector_id, meta).await?,
-        "Auth config updated successfully",
     ))
 }
 
@@ -115,9 +101,9 @@ pub async fn update_auth_config(
 pub async fn delete_auth_config(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
     ensure_admin(&claims)?;
     service::catalog::delete_composio(&state, connector_id).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "Auth config deleted successfully"))
+    Ok(StatusCode::NO_CONTENT)
 }

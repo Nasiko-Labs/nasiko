@@ -137,15 +137,33 @@ mod tests {
 
     #[async_trait]
     impl ContainerRuntime for RecordingRuntime {
-        async fn deploy(&self, _s: &DeploymentSpec) -> Result<DeploymentStatus> { unimplemented!() }
-        async fn destroy(&self, _id: &ContainerId) -> Result<()> { Ok(()) }
-        async fn scale(&self, _id: &ContainerId, _r: u32) -> Result<()> { Ok(()) }
-        async fn restart(&self, _id: &ContainerId) -> Result<()> { Ok(()) }
-        async fn status(&self, _id: &ContainerId) -> Result<DeploymentStatus> { unimplemented!() }
-        async fn list(&self) -> Result<Vec<DeploymentStatus>> { Ok(vec![]) }
-        async fn endpoint(&self, _id: &ContainerId) -> Result<String> { Ok(String::new()) }
-        async fn logs(&self, _id: &ContainerId, _t: u32) -> Result<Vec<String>> { Ok(vec![]) }
-        async fn build(&self, _c: &[u8], _t: &str) -> Result<String> { Ok(String::new()) }
+        async fn deploy(&self, _s: &DeploymentSpec) -> Result<DeploymentStatus> {
+            unimplemented!()
+        }
+        async fn destroy(&self, _id: &ContainerId) -> Result<()> {
+            Ok(())
+        }
+        async fn scale(&self, _id: &ContainerId, _r: u32) -> Result<()> {
+            Ok(())
+        }
+        async fn restart(&self, _id: &ContainerId) -> Result<()> {
+            Ok(())
+        }
+        async fn status(&self, _id: &ContainerId) -> Result<DeploymentStatus> {
+            unimplemented!()
+        }
+        async fn list(&self) -> Result<Vec<DeploymentStatus>> {
+            Ok(vec![])
+        }
+        async fn endpoint(&self, _id: &ContainerId) -> Result<String> {
+            Ok(String::new())
+        }
+        async fn logs(&self, _id: &ContainerId, _t: u32) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        async fn build(&self, _c: &[u8], _t: &str) -> Result<String> {
+            Ok(String::new())
+        }
         async fn refresh_secrets(
             &self,
             _id: &ContainerId,
@@ -176,10 +194,12 @@ mod tests {
     async fn refresh_secrets_forwards_to_inner() {
         let flag = Arc::new(AtomicBool::new(false));
         let rt = InstrumentedRuntime::new(
-            RecordingRuntime { refreshed: flag.clone() },
+            RecordingRuntime {
+                refreshed: flag.clone(),
+            },
             NoopInjector,
             "http://collector:4318".to_string(),
-            "http/protobuf".to_string(), 
+            "http/protobuf".to_string(),
             false,
         );
         rt.refresh_secrets(&ContainerId::new("agent"), HashMap::new())
@@ -198,7 +218,9 @@ mod tests {
     #[tokio::test]
     async fn list_instances_forwards_to_inner() {
         let rt = InstrumentedRuntime::new(
-            RecordingRuntime { refreshed: Arc::new(AtomicBool::new(false)) },
+            RecordingRuntime {
+                refreshed: Arc::new(AtomicBool::new(false)),
+            },
             NoopInjector,
             "http://collector:4318".to_string(),
             "http/protobuf".to_string(),

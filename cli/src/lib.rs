@@ -141,9 +141,59 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
+    /// Re-upload source and rebuild an existing deployed agent
+    #[command(
+        after_help = "Version resolution order: --version flag → AgentCard.json → pyproject.toml → Cargo.toml → server auto-patch"
+    )]
+    Reupload {
+        /// Agent UUID (preferred; use --name to look up by name instead)
+        #[arg(conflicts_with = "name")]
+        id: Option<String>,
+        /// Resolve agent by name instead of UUID
+        #[arg(long, short = 'n', conflicts_with = "id")]
+        name: Option<String>,
+        /// Agent directory or .zip file (defaults to current directory)
+        #[arg(default_value = ".")]
+        source: String,
+        /// Explicit version to deploy (semver, e.g. 1.2.0); auto-detected from project files if omitted
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+        /// Optional changelog message for this version
+        #[arg(long)]
+        changelog: Option<String>,
+    },
+    /// List version history for a deployed agent
+    Versions {
+        /// Agent UUID (preferred; use --name to look up by name instead)
+        #[arg(conflicts_with = "name")]
+        id: Option<String>,
+        /// Resolve agent by name instead of UUID
+        #[arg(long, short = 'n', conflicts_with = "id")]
+        name: Option<String>,
+    },
+    /// Roll back a deployed agent to a previous version
+    Rollback {
+        /// Agent UUID (preferred; use --name to look up by name instead)
+        #[arg(conflicts_with = "name")]
+        id: Option<String>,
+        /// Resolve agent by name instead of UUID
+        #[arg(long, short = 'n', conflicts_with = "id")]
+        name: Option<String>,
+        /// Target version to roll back to (omit to roll back to the previous version)
+        #[arg(long, short = 't')]
+        version: Option<String>,
+        /// Optional reason for the rollback (recorded in audit log)
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Terminate + deregister agent
     Rm {
-        agent: String,
+        /// Agent UUID (preferred; use --name to look up by name instead)
+        #[arg(conflicts_with = "name")]
+        id: Option<String>,
+        /// Delete by agent name (resolved to UUID via the CP registry)
+        #[arg(long, short = 'n', conflicts_with = "id")]
+        name: Option<String>,
         #[arg(short, long)]
         force: bool,
     },
@@ -220,160 +270,6 @@ pub enum AgentOpsCommands {
     Secrets {
         #[command(subcommand)]
         command: SecretsCommands,
-    },
-    /// Manage reusable LLM configs and attach them to agents
-    #[command(name = "llm-config")]
-    LlmConfig {
-        #[command(subcommand)]
-        command: LlmConfigCommands,
-    },
-    /// View or set the platform tier→model registry the smart router resolves against
-    #[command(name = "model-registry")]
-    ModelRegistry {
-        #[command(subcommand)]
-        command: ModelRegistryCommands,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum LlmConfigCommands {
-    /// Create a reusable LLM config in your library
-    Create {
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        provider: String,
-        #[arg(long)]
-        model: String,
-        /// Fallback model, repeatable: --fallback a --fallback b
-        #[arg(long = "fallback")]
-        fallback: Vec<String>,
-        #[arg(long)]
-        temperature: Option<f64>,
-        #[arg(long = "max-tokens")]
-        max_tokens: Option<i64>,
-        /// Name of your user-secret holding the provider API key
-        #[arg(long = "api-key-secret")]
-        api_key_secret: Option<String>,
-        /// Plaintext API key to store under --api-key-secret when it doesn't exist yet
-        #[arg(long = "secret-value")]
-        secret_value: Option<String>,
-        /// Pin routing so the smart router never re-selects
-        #[arg(long)]
-        pin: bool,
-        /// Model to pin to (defaults to --model when --pin is set)
-        #[arg(long = "pinned-model")]
-        pinned_model: Option<String>,
-        /// Mark this as your default config
-        #[arg(long)]
-        default: bool,
-    },
-    /// Update an existing config in your library (only the flags you pass change)
-    Update {
-        /// Config name or ID
-        config: String,
-        /// Rename the config
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        provider: Option<String>,
-        #[arg(long)]
-        model: Option<String>,
-        /// Replace the fallback list, repeatable: --fallback a --fallback b
-        #[arg(long = "fallback")]
-        fallback: Vec<String>,
-        /// Empty the fallback list
-        #[arg(long = "clear-fallbacks")]
-        clear_fallbacks: bool,
-        #[arg(long)]
-        temperature: Option<f64>,
-        #[arg(long = "max-tokens")]
-        max_tokens: Option<i64>,
-        /// Name of your user-secret holding the provider API key
-        #[arg(long = "api-key-secret")]
-        api_key_secret: Option<String>,
-        /// Plaintext API key to store under --api-key-secret when it doesn't exist yet
-        #[arg(long = "secret-value")]
-        secret_value: Option<String>,
-        /// Pin routing so the smart router never re-selects
-        #[arg(long)]
-        pin: bool,
-        /// Unpin routing so the smart router can re-select again
-        #[arg(long = "no-pin")]
-        no_pin: bool,
-        /// Model to pin to (defaults to --model / the current model when pinned)
-        #[arg(long = "pinned-model")]
-        pinned_model: Option<String>,
-        /// Reset the pinned model to null (pin falls back to the config's model)
-        #[arg(long = "clear-pinned-model")]
-        clear_pinned_model: bool,
-    },
-    /// Delete a config from your library (must be detached from all agents first)
-    #[command(alias = "rm")]
-    Delete {
-        /// Config name or ID
-        config: String,
-        /// Skip the confirmation prompt
-        #[arg(short, long)]
-        force: bool,
-    },
-    /// List the LLM configs in your library
-    #[command(alias = "ls")]
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Mark one of your configs as your default
-    SetDefault {
-        /// Config name or ID
-        config: String,
-    },
-    /// Attach one of your configs to an agent you own
-    Attach {
-        /// Agent name or ID
-        agent: String,
-        /// Config name or ID
-        config: String,
-        /// SDK format the agent's code speaks: openai | anthropic | gemini
-        #[arg(long = "inbound-format")]
-        inbound_format: Option<String>,
-    },
-    /// Detach the config from an agent (falls back to your default, if any)
-    Detach {
-        /// Agent name or ID
-        agent: String,
-    },
-    /// Show an agent's resolved LLM routing config
-    Get {
-        /// Agent name or ID
-        agent: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// List the provider/model catalog (valid values for `create`)
-    Providers {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ModelRegistryCommands {
-    /// List all configured (provider, tier) → model mappings
-    #[command(alias = "list")]
-    Ls {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Upsert one (provider, tier) → model mapping (superuser only)
-    Set {
-        #[arg(long)]
-        provider: String,
-        /// Model strength tier: 1 = strongest … 3 = smallest
-        #[arg(long)]
-        tier: i16,
-        #[arg(long)]
-        model: String,
     },
 }
 
@@ -696,7 +592,36 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
-        AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
+        AgentOpsCommands::Reupload {
+            id,
+            name,
+            source,
+            version,
+            changelog,
+        } => commands::agents::reupload(
+            id.as_deref(),
+            name.as_deref(),
+            &source,
+            version.as_deref(),
+            changelog.as_deref(),
+        ),
+        AgentOpsCommands::Versions { id, name } => {
+            commands::agents::versions(id.as_deref(), name.as_deref())
+        }
+        AgentOpsCommands::Rollback {
+            id,
+            name,
+            version,
+            reason,
+        } => commands::agents::rollback(
+            id.as_deref(),
+            name.as_deref(),
+            version.as_deref(),
+            reason.as_deref(),
+        ),
+        AgentOpsCommands::Rm { id, name, force } => {
+            commands::agents::rm(id.as_deref(), name.as_deref(), force)
+        }
         AgentOpsCommands::Chat {
             url,
             message,
@@ -843,85 +768,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             SecretsCommands::Get { key, agent } => commands::secrets::get(&key, agent.as_deref()),
             SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
             SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
-        },
-        AgentOpsCommands::LlmConfig { command } => match command {
-            LlmConfigCommands::Create {
-                name,
-                provider,
-                model,
-                fallback,
-                temperature,
-                max_tokens,
-                api_key_secret,
-                secret_value,
-                pin,
-                pinned_model,
-                default,
-            } => commands::llm_config::create(
-                &name,
-                &provider,
-                &model,
-                fallback,
-                temperature,
-                max_tokens,
-                api_key_secret,
-                secret_value,
-                pin,
-                pinned_model,
-                default,
-            ),
-            LlmConfigCommands::Update {
-                config,
-                name,
-                provider,
-                model,
-                fallback,
-                clear_fallbacks,
-                temperature,
-                max_tokens,
-                api_key_secret,
-                secret_value,
-                pin,
-                no_pin,
-                pinned_model,
-                clear_pinned_model,
-            } => commands::llm_config::update(
-                &config,
-                name,
-                provider,
-                model,
-                fallback,
-                clear_fallbacks,
-                temperature,
-                max_tokens,
-                api_key_secret,
-                secret_value,
-                pin,
-                no_pin,
-                pinned_model,
-                clear_pinned_model,
-            ),
-            LlmConfigCommands::Delete { config, force } => {
-                commands::llm_config::delete(&config, force)
-            }
-            LlmConfigCommands::List { json } => commands::llm_config::list(json),
-            LlmConfigCommands::SetDefault { config } => commands::llm_config::set_default(&config),
-            LlmConfigCommands::Attach {
-                agent,
-                config,
-                inbound_format,
-            } => commands::llm_config::attach(&agent, &config, inbound_format),
-            LlmConfigCommands::Detach { agent } => commands::llm_config::detach(&agent),
-            LlmConfigCommands::Get { agent, json } => commands::llm_config::get(&agent, json),
-            LlmConfigCommands::Providers { json } => commands::llm_config::providers(json),
-        },
-        AgentOpsCommands::ModelRegistry { command } => match command {
-            ModelRegistryCommands::Ls { json } => commands::model_registry::ls(json),
-            ModelRegistryCommands::Set {
-                provider,
-                tier,
-                model,
-            } => commands::model_registry::set(&provider, tier, &model),
         },
     }
 }

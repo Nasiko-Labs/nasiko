@@ -48,7 +48,11 @@ pub async fn run(
     let kind = runtime_kind(&agent_runtime);
     let mut interval = tokio::time::interval(poll);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    tracing::info!(poll_secs = poll.as_secs(), runtime = kind, "container-hours meter started");
+    tracing::info!(
+        poll_secs = poll.as_secs(),
+        runtime = kind,
+        "container-hours meter started"
+    );
     loop {
         interval.tick().await;
         match reconcile_once(&db, runtime.as_ref(), kind).await {
@@ -300,7 +304,8 @@ async fn resolve_agent_names(
                 out.insert(id.to_string(), (id, name));
             }
             for id in unresolved {
-                out.entry(id.to_string()).or_insert_with(|| (id, id.to_string()));
+                out.entry(id.to_string())
+                    .or_insert_with(|| (id, id.to_string()));
             }
         }
     }

@@ -2,16 +2,18 @@
 //! browser callback.
 
 use axum::{
-    extract::{Query, State},
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, ApiResponse, AppJson, AppPath, parse_user, service};
+use super::super::{ApiError, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -34,8 +36,8 @@ pub struct ConnectRequest {
 pub async fn connect_service(
     State(state): State<AppState>,
     claims: Claims,
-    AppJson(body): AppJson<ConnectRequest>,
-) -> Result<ApiResponse, ApiError> {
+    Json(body): Json<ConnectRequest>,
+) -> Result<Response, ApiError> {
     use service::connect::{ConnectInput, ConnectOutcome};
     let user_id = parse_user(&claims)?;
     let outcome = service::connect::connect(
@@ -52,18 +54,23 @@ pub async fn connect_service(
     .await?;
 
     Ok(match outcome {
-        ConnectOutcome::Connected { connector_id, name } => ApiResponse::ok(
-            json!({ "status": "connected", "connector_id": connector_id, "name": name }),
-            "Service connected successfully",
-        ),
-        ConnectOutcome::Initiated { connector_id, name, oauth_url } => ApiResponse::created(
-            json!({ "status": "initiated", "connector_id": connector_id, "name": name, "oauth_url": oauth_url }),
-            "OAuth flow initiated",
-        ),
-        ConnectOutcome::OAuthRequired { connector_id, name, authorization_url } => ApiResponse::ok(
-            json!({ "status": "oauth_required", "connector_id": connector_id, "name": name, "authorization_url": authorization_url }),
-            "OAuth authorization required",
-        ),
+        ConnectOutcome::Connected { connector_id, name } => (
+            StatusCode::OK,
+            Json(json!({ "status": "connected", "connector_id": connector_id, "name": name })),
+        )
+            .into_response(),
+        ConnectOutcome::Initiated { connector_id, name, oauth_url } => (
+            StatusCode::CREATED,
+            Json(json!({ "status": "initiated", "connector_id": connector_id, "name": name, "oauth_url": oauth_url })),
+        )
+            .into_response(),
+        ConnectOutcome::OAuthRequired { connector_id, name, authorization_url } => Json(json!({
+            "status": "oauth_required",
+            "connector_id": connector_id,
+            "name": name,
+            "authorization_url": authorization_url,
+        }))
+        .into_response(),
     })
 }
 
@@ -71,11 +78,10 @@ pub async fn connect_service(
 pub async fn list_connections(
     State(state): State<AppState>,
     claims: Claims,
-) -> Result<ApiResponse, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
+    Ok(Json(
         service::connect::list_connections(&state, user_id).await?,
-        "Connections retrieved successfully",
     ))
 }
 
@@ -83,18 +89,15 @@ pub async fn list_connections(
 pub async fn disconnect(
     State(state): State<AppState>,
     claims: Claims,
-    AppPath(connector_id): AppPath<Uuid>,
-) -> Result<ApiResponse, ApiError> {
+    Path(connector_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
     let user_id = parse_user(&claims)?;
     let outcome = service::connect::disconnect(&state, user_id, connector_id).await?;
-    Ok(ApiResponse::ok(
-        json!({
-            "message": outcome.message,
-            "connector_id": outcome.connector_id,
-            "composio_revoked": outcome.composio_revoked,
-        }),
-        "Disconnected successfully",
-    ))
+    Ok(Json(json!({
+        "message": outcome.message,
+        "connector_id": outcome.connector_id,
+        "composio_revoked": outcome.composio_revoked,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,7 +107,7 @@ pub struct ComposioCallbackQuery {
     pub success_url: Option<String>,
 }
 
-/// `GET /oauth/callback` — public Composio redirect target (browser flow, not JSON).
+/// `GET /oauth/callback` — public Composio redirect target.
 pub async fn oauth_callback(
     State(state): State<AppState>,
     Query(q): Query<ComposioCallbackQuery>,
@@ -119,12 +122,9 @@ pub async fn oauth_callback(
 
 fn callback_page(message: &str) -> String {
     format!(
-        r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Connected</title></head>
-<body style="font-family:sans-serif;text-align:center;padding:48px">
-<p style="color:#16a34a;font-size:18px">✓ {}</p>
-<p style="color:#666">This window will close automatically…</p>
-<script>setTimeout(function(){{ window.close(); }}, 1500);</script>
-</body></html>"#,
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Connecting…</title></head>\
+         <body style=\"font-family:sans-serif;text-align:center;padding:48px\">\
+         <p style=\"color:#666\">{}</p></body></html>",
         message.replace('<', "&lt;")
     )
 }

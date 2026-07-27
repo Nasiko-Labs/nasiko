@@ -29,6 +29,11 @@ pub fn start_worker(
     observability: Arc<dyn ObservabilityProvider>,
     llm_config: LlmConfig,
 ) {
-    let llm = LlmClient::new(http_client.clone(), llm_config.api_key, llm_config.base_url, llm_config.model);
+    let llm = LlmClient::new(
+        http_client.clone(),
+        llm_config.api_key,
+        llm_config.base_url,
+        llm_config.model,
+    );
     tokio::spawn(worker::run(db, redis, http_client, observability, llm));
 }

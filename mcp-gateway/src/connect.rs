@@ -71,16 +71,10 @@ pub async fn connect_service(
     }
 
     match connector.auth_type.as_deref().unwrap_or("none") {
-        "none" => {
-            // Create the connection record so the connector shows up in the
-            // user's connected list and is included in agent tool aggregation.
-            repo::upsert_connection(&state.db, user_id, connector.id, "ACTIVE").await?;
-            session::invalidate_session_cache(state, user_id).await;
-            Ok(ConnectOutcome::Connected {
-                connector_id: connector.id,
-                name: connector.name,
-            })
-        }
+        "none" => Ok(ConnectOutcome::Connected {
+            connector_id: connector.id,
+            name: connector.name,
+        }),
         "bearer" | "basic" | "url_param" => {
             let value = input.credential_value.as_deref().ok_or_else(|| {
                 McpError::BadRequest(format!("'{}' requires credentials.value", connector.name))
@@ -298,7 +292,7 @@ pub async fn list_connections_view(state: &McpState, user_id: Uuid) -> Result<Va
         })
         .collect();
     let total = data.len();
-    Ok(json!({ "connections": data, "total": total }))
+    Ok(json!({ "data": data, "total": total }))
 }
 
 /// Outcome of [`disconnect`].
@@ -342,19 +336,13 @@ pub async fn disconnect(
 }
 
 /// Build our `/oauth/callback` URL carrying the user + connector for verification.
-/// Prefers `composio_callback_base_url` (browser-reachable) over
-/// `gateway_public_url` (may be in-cluster only).
 fn composio_callback_url(
     state: &McpState,
     user_id: Uuid,
     connector_id: Uuid,
     success_url: Option<&str>,
 ) -> Option<String> {
-    let base = state
-        .config
-        .composio_callback_base_url
-        .as_ref()
-        .or(state.config.gateway_public_url.as_ref())?;
+    let base = state.config.gateway_public_url.as_ref()?;
     let mut origin = reqwest::Url::parse(base).ok()?;
     origin.set_path("/oauth/callback");
     origin.set_query(None);
@@ -412,15 +400,12 @@ pub async fn handle_composio_callback(
                     repo::update_connection_account_id(&state.db, connection.id, account_id).await;
             }
             session::invalidate_session_cache(state, user_id).await;
-            match success_url {
-                // Explicit success_url — redirect there (never off-origin).
-                Some(dest) => CallbackOutcome::Redirect(crate::net::safe_redirect(
-                    &dest,
-                    state.config.gateway_public_url.as_deref(),
-                )),
-                // No success_url (popup flow) — show a self-closing page.
-                None => CallbackOutcome::Message("Connected successfully".to_string()),
-            }
+            // success_url is an unauthenticated query param — never redirect off-origin.
+            let dest = success_url.unwrap_or_else(|| "/".to_string());
+            CallbackOutcome::Redirect(crate::net::safe_redirect(
+                &dest,
+                state.config.gateway_public_url.as_deref(),
+            ))
         }
         _ => CallbackOutcome::Message(
             "Authorization is still finalizing — refresh in a moment.".to_string(),

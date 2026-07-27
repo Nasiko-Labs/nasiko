@@ -57,20 +57,22 @@ pub fn upload(
     } else if source_path.extension().and_then(|e| e.to_str()) == Some("zip") {
         (source_path.to_path_buf(), false)
     } else {
-        bail!("source must be a directory or a .zip file, got: '{}'", source);
+        bail!(
+            "source must be a directory or a .zip file, got: '{}'",
+            source
+        );
     };
 
     // ── Upload ───────────────────────────────────────────────────────────────
     let client = Client::from_active_cluster()?;
-    println!("Uploading '{}' as {}:{}...", zip_path.display(), resolved_name, resolved_version);
-
-    let result = client.upload_agent(
-        &zip_path,
-        &resolved_name,
-        &resolved_version,
-        &[port],
-        &env,
+    println!(
+        "Uploading '{}' as {}:{}...",
+        zip_path.display(),
+        resolved_name,
+        resolved_version
     );
+
+    let result = client.upload_agent(&zip_path, &resolved_name, &resolved_version, &[port], &env);
 
     if is_temp {
         let _ = fs::remove_file(&zip_path);
@@ -96,7 +98,8 @@ fn resolve_name_version(
     let card_name: Option<String> = if source.is_dir() {
         let card_path = source.join("AgentCard.json");
         if card_path.exists() {
-            fs::read_to_string(&card_path).ok()
+            fs::read_to_string(&card_path)
+                .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|c| c.get("name")?.as_str().map(String::from))
         } else {
@@ -110,7 +113,10 @@ fn resolve_name_version(
         .map(String::from)
         .or(card_name)
         .or_else(|| {
-            source.file_stem().and_then(|n| n.to_str()).map(|n| n.replace([' ', '/'], "-"))
+            source
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .map(|n| n.replace([' ', '/'], "-"))
         })
         .unwrap_or_else(|| "agent".into());
 
@@ -139,7 +145,10 @@ fn parse_env(env_file: Option<&str>, env_args: &[String]) -> Result<HashMap<Stri
                 continue;
             }
             if let Some((key, value)) = line.split_once('=') {
-                env.insert(key.trim().to_string(), value.trim_matches('"').trim_matches('\'').to_string());
+                env.insert(
+                    key.trim().to_string(),
+                    value.trim_matches('"').trim_matches('\'').to_string(),
+                );
             }
         }
     }

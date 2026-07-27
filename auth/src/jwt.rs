@@ -159,3 +159,69 @@ pub fn extract_jti(token: &str) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(str::to_owned)
 }
+
+/// Delegation token TTL: an agent container presents this to `/api/mcp` to
+/// prove "I am agent `act`, acting on behalf of user `sub`". Kept short-lived
+/// since it's minted per-request and never stored.
+pub const DELEGATION_EXPIRY_SECS: u64 = 5 * 60;
+
+const DELEGATION_AUDIENCE: &str = "mcp";
+
+/// Claims for an MCP delegation token — distinct from `JwtClaims` (user/agent
+/// service-account tokens) since this asserts a (user, acting-agent) pair
+/// rather than a single principal.
+#[derive(Debug, Serialize, Deserialize)]
+struct DelegationClaims {
+    sub: String,
+    act: String,
+    aud: String,
+    exp: u64,
+    iat: u64,
+}
+
+/// Mint a short-lived delegation token asserting that `agent_id` is acting on
+/// behalf of `user_id`. Used when the server forwards a request to an agent
+/// container, so the agent can call back into `/api/mcp` with proof of both
+/// identities.
+pub fn mint_delegation_token(
+    secret: &str,
+    user_id: &str,
+    agent_id: &str,
+) -> Result<String, AuthError> {
+    let now = Utc::now().timestamp() as u64;
+    let claims = DelegationClaims {
+        sub: user_id.to_owned(),
+        act: agent_id.to_owned(),
+        aud: DELEGATION_AUDIENCE.to_owned(),
+        exp: now + DELEGATION_EXPIRY_SECS,
+        iat: now,
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|e| AuthError::InvalidToken(e.to_string()))
+}
+
+/// Validate a delegation token minted by `mint_delegation_token`. Returns
+/// `(user_id, agent_id)` on success. Rejects tokens missing the `mcp`
+/// audience so a user/agent service-account JWT can't be replayed here.
+pub fn validate_delegation_token(secret: &str, token: &str) -> Result<(String, String), AuthError> {
+    let mut validation = Validation::default();
+    validation.set_audience(&[DELEGATION_AUDIENCE]);
+    validation.validate_exp = true;
+    validation.leeway = 0;
+
+    let data = decode::<DelegationClaims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map_err(|e| match e.kind() {
+        jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::Expired,
+        _ => AuthError::InvalidToken(e.to_string()),
+    })?;
+
+    Ok((data.claims.sub, data.claims.act))
+}

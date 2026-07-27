@@ -34,97 +34,22 @@ pub async fn get_catalog_view(state: &McpState, user_id: Uuid) -> Result<Value> 
         .authorizer
         .list_accessible_connectors(&state.db, user_id)
         .await?;
-    let all_ids: Vec<Uuid> = connectors.iter().map(|c| c.id).collect();
-    let tool_counts: std::collections::HashMap<Uuid, i64> = if all_ids.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT connector_id, COUNT(*) FROM mcp_connector_tools \
-             WHERE connector_id = ANY($1) GROUP BY connector_id",
-        )
-        .bind(&all_ids)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-    };
-
-    let mut services: Vec<Value> = Vec::with_capacity(connectors.len());
-    for c in &connectors {
-        let tool_count = tool_counts.get(&c.id).copied().unwrap_or(0);
-        services.push(json!({
-            "connector_id": c.id,
-            "name": c.name,
-            "type": c.provider_type,
-            "display_name": c.display_name.clone().unwrap_or_else(|| capitalize(&c.name)),
-            "description": c.description,
-            "logo_url": c.logo_url,
-            "auth_flow": auth_flow_for(c),
-            "tool_count": tool_count,
-        }));
-    }
+    let services: Vec<Value> = connectors
+        .iter()
+        .map(|c| {
+            json!({
+                "connector_id": c.id,
+                "name": c.name,
+                "type": c.provider_type,
+                "display_name": c.display_name.clone().unwrap_or_else(|| capitalize(&c.name)),
+                "description": c.description,
+                "logo_url": c.logo_url,
+                "auth_flow": auth_flow_for(c),
+            })
+        })
+        .collect();
     Ok(json!({ "services": services }))
 }
-
-/// `GET /api/mcp/composio/toolkits` — platform Composio toolkits only,
-/// with the caller's connection status and tool count.
-pub async fn list_toolkits_view(state: &McpState, user_id: Uuid) -> Result<Value> {
-    let connectors = state
-        .authorizer
-        .list_accessible_connectors(&state.db, user_id)
-        .await?;
-    let composio: Vec<_> = connectors.iter().filter(|c| c.is_composio()).collect();
-
-    let ids: Vec<Uuid> = composio.iter().map(|c| c.id).collect();
-    let connected_set: std::collections::HashSet<Uuid> = if ids.is_empty() {
-        std::collections::HashSet::new()
-    } else {
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT connector_id FROM mcp_user_connections \
-             WHERE connector_id = ANY($1) AND user_id = $2 AND status = 'ACTIVE'",
-        )
-        .bind(&ids)
-        .bind(user_id)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-    };
-
-    let tool_counts: std::collections::HashMap<Uuid, i64> = if ids.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT connector_id, COUNT(*) FROM mcp_connector_tools \
-             WHERE connector_id = ANY($1) GROUP BY connector_id",
-        )
-        .bind(&ids)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-    };
-
-    let mut toolkits: Vec<Value> = Vec::with_capacity(composio.len());
-    for c in &composio {
-        let tool_count = tool_counts.get(&c.id).copied().unwrap_or(0);
-        toolkits.push(json!({
-            "connector_id": c.id,
-            "name": c.name,
-            "display_name": c.display_name.clone().unwrap_or_else(|| capitalize(&c.name)),
-            "description": c.description,
-            "logo_url": c.logo_url,
-            "auth_flow": auth_flow_for(c),
-            "tool_count": tool_count,
-            "is_connected": connected_set.contains(&c.id),
-        }));
-    }
-    Ok(json!({ "toolkits": toolkits, "total": toolkits.len() }))
-}
-
 
 /// Inputs for registering a platform Composio connector.
 pub struct CreateComposioInput<'a> {
@@ -134,7 +59,6 @@ pub struct CreateComposioInput<'a> {
     pub client_secret: Option<&'a str>,
     pub scopes: Option<&'a [String]>,
     pub display_name: Option<&'a str>,
-    pub description: Option<&'a str>,
     pub logo_url: Option<&'a str>,
 }
 
@@ -172,7 +96,6 @@ pub async fn create_composio_connector(
             owner_id: None,
             name: toolkit.clone(),
             display_name: input.display_name.map(str::to_string),
-            description: input.description.map(str::to_string),
             logo_url: input.logo_url.map(str::to_string),
             auth_config_id: Some(created.auth_config_id),
             auth_scheme: Some("OAUTH2".to_string()),
@@ -248,7 +171,7 @@ pub async fn list_composio_connectors_view(state: &McpState) -> Result<Value> {
         })
         .collect();
     let total = data.len();
-    Ok(json!({ "connectors": data, "total": total }))
+    Ok(json!({ "data": data, "total": total }))
 }
 
 /// Delete a platform Composio connector by id.
@@ -267,7 +190,7 @@ pub async fn delete_composio_connector(state: &McpState, connector_id: Uuid) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::capitalize;
 
     #[test]
     fn capitalize_cases() {
@@ -279,5 +202,4 @@ mod tests {
         assert_eq!(capitalize("émoji"), "Émoji");
         assert_eq!(capitalize("123abc"), "123abc");
     }
-
 }

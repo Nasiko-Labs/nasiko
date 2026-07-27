@@ -39,18 +39,15 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str) -> Uuid {
-    let agent: Value = common::as_superuser(
-        server.client.post(server.url("/api/agents")),
-        uid,
-        "admin",
-    )
-    .json(&json!({"name": name, "version": "1.0.0"}))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
+    let agent: Value =
+        common::as_superuser(server.client.post(server.url("/api/agents")), uid, "admin")
+            .json(&json!({"name": name, "version": "1.0.0"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
     agent["id"]
         .as_str()
         .unwrap_or_else(|| panic!("agent create response missing id: {agent}"))
@@ -58,7 +55,12 @@ async fn create_agent(server: &common::TestServer, uid: &str, name: &str) -> Uui
         .unwrap()
 }
 
-fn instance(agent_id: Uuid, key: &str, started_at: Option<DateTime<Utc>>, ready: bool) -> InstanceInfo {
+fn instance(
+    agent_id: Uuid,
+    key: &str,
+    started_at: Option<DateTime<Utc>>,
+    ready: bool,
+) -> InstanceInfo {
     InstanceInfo {
         container_id: ContainerId::from_uuid(agent_id),
         instance_key: key.to_owned(),
@@ -289,7 +291,10 @@ async fn sessions_survive_hard_delete_and_api_flags_deleted() {
         .find(|a| a["agent_id"] == agent_id.to_string())
         .expect("deleted agent must still appear in the hours report");
     assert_eq!(row["deleted"], json!(true));
-    assert!(row["hours"].as_f64().unwrap() > 0.9, "one settled hour expected");
+    assert!(
+        row["hours"].as_f64().unwrap() > 0.9,
+        "one settled hour expected"
+    );
 
     server.cleanup().await;
 }
@@ -311,11 +316,39 @@ async fn windowed_math_filter_and_bucket_series() {
 
     // a1: one run spanning all three hour-buckets (09:30 → 13:30, clipped to
     // 3.0h) plus one fully-inside run (10:15 → 10:45 = 0.5h).
-    seed_session(&server, a1, "a1-span", ts("2026-07-20T09:30:00Z"), Some(ts("2026-07-20T13:30:00Z"))).await;
-    seed_session(&server, a1, "a1-inside", ts("2026-07-20T10:15:00Z"), Some(ts("2026-07-20T10:45:00Z"))).await;
+    seed_session(
+        &server,
+        a1,
+        "a1-span",
+        ts("2026-07-20T09:30:00Z"),
+        Some(ts("2026-07-20T13:30:00Z")),
+    )
+    .await;
+    seed_session(
+        &server,
+        a1,
+        "a1-inside",
+        ts("2026-07-20T10:15:00Z"),
+        Some(ts("2026-07-20T10:45:00Z")),
+    )
+    .await;
     // a2: 1h inside the window, plus one entirely outside (must not count).
-    seed_session(&server, a2, "a2-inside", ts("2026-07-20T11:00:00Z"), Some(ts("2026-07-20T12:00:00Z"))).await;
-    seed_session(&server, a2, "a2-outside", ts("2026-07-20T07:00:00Z"), Some(ts("2026-07-20T08:00:00Z"))).await;
+    seed_session(
+        &server,
+        a2,
+        "a2-inside",
+        ts("2026-07-20T11:00:00Z"),
+        Some(ts("2026-07-20T12:00:00Z")),
+    )
+    .await;
+    seed_session(
+        &server,
+        a2,
+        "a2-outside",
+        ts("2026-07-20T07:00:00Z"),
+        Some(ts("2026-07-20T08:00:00Z")),
+    )
+    .await;
 
     // Plain window: a1 = 3.5h, a2 = 1.0h, total 4.5h.
     let body = get_agent_hours(
@@ -395,9 +428,18 @@ async fn windowed_math_filter_and_bucket_series() {
         .iter()
         .map(|b| b["total_hours"].as_f64().unwrap())
         .collect();
-    assert!((bucket_hours[0] - 1.5).abs() < 1e-6, "10:00 bucket: {bucket_hours:?}");
-    assert!((bucket_hours[1] - 2.0).abs() < 1e-6, "11:00 bucket: {bucket_hours:?}");
-    assert!((bucket_hours[2] - 1.0).abs() < 1e-6, "12:00 bucket: {bucket_hours:?}");
+    assert!(
+        (bucket_hours[0] - 1.5).abs() < 1e-6,
+        "10:00 bucket: {bucket_hours:?}"
+    );
+    assert!(
+        (bucket_hours[1] - 2.0).abs() < 1e-6,
+        "11:00 bucket: {bucket_hours:?}"
+    );
+    assert!(
+        (bucket_hours[2] - 1.0).abs() < 1e-6,
+        "12:00 bucket: {bucket_hours:?}"
+    );
     let sum: f64 = bucket_hours.iter().sum();
     assert!(
         (sum - body["data"]["total_hours"].as_f64().unwrap()).abs() < 1e-6,
@@ -408,15 +450,24 @@ async fn windowed_math_filter_and_bucket_series() {
     // a1 = 1.0 (a1-span) and a2 = 1.0 (a2-inside), each with deleted=false.
     let b11 = &buckets[1]["agents"].as_array().unwrap();
     assert_eq!(b11.len(), 2, "11:00 bucket agents: {b11:?}");
-    let a1_cell = b11.iter().find(|a| a["agent_id"] == a1.to_string()).unwrap();
-    let a2_cell = b11.iter().find(|a| a["agent_id"] == a2.to_string()).unwrap();
+    let a1_cell = b11
+        .iter()
+        .find(|a| a["agent_id"] == a1.to_string())
+        .unwrap();
+    let a2_cell = b11
+        .iter()
+        .find(|a| a["agent_id"] == a2.to_string())
+        .unwrap();
     assert!((a1_cell["hours"].as_f64().unwrap() - 1.0).abs() < 1e-6);
     assert!((a2_cell["hours"].as_f64().unwrap() - 1.0).abs() < 1e-6);
     assert_eq!(a1_cell["deleted"], json!(false));
     assert_eq!(a2_cell["deleted"], json!(false));
     // per-agent cells sum to the bucket total
     let cell_sum: f64 = b11.iter().map(|a| a["hours"].as_f64().unwrap()).sum();
-    assert!((cell_sum - 2.0).abs() < 1e-6, "per-agent cells must sum to bucket total");
+    assert!(
+        (cell_sum - 2.0).abs() < 1e-6,
+        "per-agent cells must sum to bucket total"
+    );
     // The 12:00 bucket has only a1.
     let b12 = &buckets[2]["agents"].as_array().unwrap();
     assert_eq!(b12.len(), 1);
@@ -441,7 +492,10 @@ async fn windowed_math_filter_and_bucket_series() {
         .collect();
     assert_eq!(gap.len(), 3);
     assert!((gap[0] - 1.0).abs() < 1e-6, "07:00 bucket: {gap:?}");
-    assert!((gap[1] - 0.0).abs() < 1e-6, "08:00 idle bucket must be 0.0, got {gap:?}");
+    assert!(
+        (gap[1] - 0.0).abs() < 1e-6,
+        "08:00 idle bucket must be 0.0, got {gap:?}"
+    );
     assert!((gap[2] - 0.5).abs() < 1e-6, "09:00 bucket: {gap:?}");
 
     // Unknown bucket value is ignored — no series in the response.
@@ -489,7 +543,9 @@ async fn finops_dashboard_carries_container_hours() {
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
 
-    let total = body["data"]["summary"]["total_container_hours"].as_f64().unwrap();
+    let total = body["data"]["summary"]["total_container_hours"]
+        .as_f64()
+        .unwrap();
     assert!((total - 2.0).abs() < 1e-6, "summary hours: {total}");
     let row = body["data"]["agents"]
         .as_array()

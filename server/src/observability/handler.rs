@@ -1,3 +1,5 @@
+use crate::auth::Claims;
+use crate::state::AppState;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -7,8 +9,6 @@ use axum::{
 use nasiko_observability::ObservabilityError;
 use serde::Deserialize;
 use tracing::instrument;
-use crate::auth::Claims;
-use crate::state::AppState;
 
 use super::service::{InsightsRequest, ObservabilityService};
 
@@ -28,7 +28,11 @@ fn obs_err(e: ObservabilityError) -> Response {
         }
         ObservabilityError::Deserialization(_) => {
             tracing::error!(error = %e, "observability: failed to deserialize upstream response");
-            (StatusCode::BAD_GATEWAY, "observability backend returned an invalid response").into_response()
+            (
+                StatusCode::BAD_GATEWAY,
+                "observability backend returned an invalid response",
+            )
+                .into_response()
         }
         other => {
             // Catches `Internal` and any future variants — these wrap raw
@@ -42,8 +46,6 @@ fn obs_err(e: ObservabilityError) -> Response {
 fn svc(state: &AppState) -> ObservabilityService {
     ObservabilityService::from_state(state)
 }
-
-
 
 // ─── Request params ──────────────────────────────────────────────────────────
 
@@ -75,7 +77,6 @@ pub struct AgentHoursParams {
     /// Optional series granularity: "hour" | "day". Anything else is ignored.
     pub bucket: Option<String>,
 }
-
 
 // ─── 1. GET /v1/observability/session/list ────────────────────────────────────
 #[instrument(skip(state))]
@@ -135,10 +136,7 @@ pub async fn get_span_details(
     _claims: Claims,
     Path((trace_id, span_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match svc(&state)
-        .get_span_details(&trace_id, &span_id)
-        .await
-    {
+    match svc(&state).get_span_details(&trace_id, &span_id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }

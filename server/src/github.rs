@@ -12,6 +12,10 @@ use sqlx::PgPool;
 use tracing::warn;
 use uuid::Uuid;
 
+use std::collections::HashMap;
+
+use crate::agents::upload::BuildJobPayload;
+use crate::agents::utils::set_upload_status;
 use crate::{auth::Claims, secrets::crypto::SecretsCrypto, state::AppState};
 
 /// Public routes — no auth required (GitHub redirects the browser here).
@@ -114,24 +118,24 @@ async fn consume_oauth_state(redis: &redis::Client, raw_state: &str) -> redis::R
 
 /// `GET /api/github/login`
 ///
-/// Builds the GitHub OAuth authorization URL for the authenticated user and
-/// redirects the browser to GitHub's consent page.
+/// Returns the GitHub OAuth authorization URL as JSON so the client can open
+/// it in a new tab/popup for the connect flow.
 async fn github_login(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let Some(svc) = state.github_svc.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "GitHub OAuth not configured",
+            Json(serde_json::json!({"error": "GitHub OAuth not configured"})),
         )
             .into_response();
     };
 
     match svc.authorization_url(&claims.sub) {
-        Ok(url) => Redirect::temporary(&url).into_response(),
+        Ok(url) => Json(serde_json::json!({"auth_url": url})).into_response(),
         Err(e) => {
             warn!(user = %claims.sub, %e, "failed to build GitHub authorization URL");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to generate authorization URL",
+                Json(serde_json::json!({"error": "failed to generate authorization URL"})),
             )
                 .into_response()
         }
@@ -179,11 +183,17 @@ async fn github_token(State(state): State<AppState>, claims: Claims) -> impl Int
     };
 
     let Some(svc) = state.github_svc.as_ref() else {
-        return Json(serde_json::json!({"connected": false, "configured": false})).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"success": false, "message": "GitHub OAuth not configured", "status": "disconnected"})),
+        ).into_response();
     };
 
     let Some(token) = load_github_token(&state.db, user_id).await else {
-        return Json(serde_json::json!({"connected": false, "valid": false})).into_response();
+        return (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({"success": false, "message": "GitHub not connected", "status": "disconnected"})),
+        ).into_response();
     };
 
     // Fetch the GitHub login name from the stored identity row.
@@ -197,7 +207,18 @@ async fn github_token(State(state): State<AppState>, claims: Claims) -> impl Int
     .flatten();
 
     let valid = svc.verify_token(&token).await.unwrap_or(false);
-    Json(serde_json::json!({"connected": true, "valid": valid, "login": login})).into_response()
+    let (success, status, message) = if valid {
+        (true, "connected", "GitHub token is valid")
+    } else {
+        (false, "invalid", "GitHub token is invalid or expired")
+    };
+    Json(serde_json::json!({
+        "success": success,
+        "message": message,
+        "status": status,
+        "username": login,
+    }))
+    .into_response()
 }
 
 /// `GET /api/github/callback`  (public — registered in `public_router`)
@@ -339,7 +360,7 @@ async fn github_callback(
 /// issue a JWT, and redirect with the token in query params.
 async fn github_callback_login(
     state: AppState,
-    _token: nasiko_github::AccessToken,
+    token: nasiko_github::AccessToken,
     github_user: nasiko_github::GitHubUser,
 ) -> axum::response::Response {
     let provider_id = github_user.id.to_string();
@@ -359,6 +380,36 @@ async fn github_callback_login(
                 .into_response();
         }
     };
+
+    // Store the access token so the user appears as GitHub-connected for repo imports.
+    let user_id: Uuid = match result.user_id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            tracing::error!(user_id = %result.user_id, "GitHub SSO login: invalid user_id UUID");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to complete GitHub login",
+            )
+                .into_response();
+        }
+    };
+    let encrypted = SecretsCrypto::for_user(user_id).encrypt(&token.access_token);
+    let meta = serde_json::json!({
+        "access_token": encrypted,
+        "login": github_user.login,
+        "avatar_url": github_user.avatar_url,
+    });
+    if let Err(e) = sqlx::query(
+        "UPDATE user_identities SET provider_metadata = $1 \
+         WHERE user_id = $2 AND provider = 'github'",
+    )
+    .bind(&meta)
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(%e, %user_id, "GitHub SSO login: failed to store access token");
+    }
 
     // Use reqwest::Url for query-param encoding (handles any chars in username safely).
     // APP_BASE_URL overrides the redirect base — useful when the server and the app
@@ -407,10 +458,19 @@ async fn github_status(State(state): State<AppState>, claims: Claims) -> impl In
             .into_response();
     };
 
+    let login: Option<String> = sqlx::query_scalar(
+        "SELECT provider_username FROM user_identities WHERE user_id = $1 AND provider = 'github'",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
     let valid = svc.verify_token(&token).await.unwrap_or(false);
     (
         StatusCode::OK,
-        Json(serde_json::json!({"connected": true, "valid": valid})),
+        Json(serde_json::json!({"connected": true, "valid": valid, "login": login})),
     )
         .into_response()
 }
@@ -490,19 +550,19 @@ async fn github_logout(State(state): State<AppState>, claims: Claims) -> impl In
 #[derive(Deserialize)]
 struct CloneBody {
     /// `"owner/repo"` identifier, e.g. `"acme/my-agent"`.
-    repository: String,
+    repository_full_name: String,
     /// Branch to clone; defaults to `"main"`.
     branch: Option<String>,
+    /// Override agent name; defaults to the repo name portion of `repository_full_name`.
+    agent_name: Option<String>,
 }
 
 #[derive(Serialize)]
 struct CloneResult {
-    agent_id: Uuid,
-    build_id: Option<Uuid>,
-    container_name: Option<String>,
-    s3_key: String,
-    archive_size_bytes: usize,
-    status: String,
+    success: bool,
+    message: String,
+    agent_name: Option<String>,
+    upload_id: Option<String>,
 }
 
 async fn github_clone(
@@ -510,7 +570,8 @@ async fn github_clone(
     claims: Claims,
     Json(body): Json<CloneBody>,
 ) -> impl IntoResponse {
-    let Some(svc) = state.github_svc.as_ref() else {
+    // GitHub service must be configured (needed by the build worker later).
+    if state.github_svc.is_none() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "GitHub OAuth not configured",
@@ -523,82 +584,161 @@ async fn github_clone(
         Err(e) => return e.into_response(),
     };
 
-    let Some(token) = load_github_token(&state.db, user_id).await else {
+    // Verify the user has GitHub connected before queuing — avoids queuing a job
+    // that would immediately fail in the worker.
+    if load_github_token(&state.db, user_id).await.is_none() {
         return (
             StatusCode::FORBIDDEN,
             "GitHub not connected — visit /add-agent.html to connect",
         )
             .into_response();
-    };
+    }
 
     let branch = body.branch.as_deref().unwrap_or("main");
 
-    // Shallow-clone the repository into an in-memory tar.gz archive.
-    let archive = match svc.clone_to_archive(&token, &body.repository, branch).await {
-        Ok(a) => a,
-        Err(e) => {
-            warn!(repo = %body.repository, branch, %e, "git clone failed");
-            return (StatusCode::BAD_GATEWAY, "clone failed").into_response();
-        }
-    };
-
-    let archive_size = archive.archive_bytes.len();
-    let s3_key = archive.s3_key.clone();
-
-    // Upload to S3 for future reference / re-builds without re-cloning.
-    if let Err(e) = state
-        .oci_storage
-        .put_blob(&s3_key, bytes::Bytes::from(archive.archive_bytes.clone()))
-        .await
+    // Validate request format (no network/filesystem access).
+    if let Err(e) =
+        nasiko_github::GitHubService::validate_clone_request(&body.repository_full_name, branch)
     {
-        warn!(s3_key, %e, "failed to upload clone archive to S3 — continuing with build");
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("invalid request: {e}"),
+        )
+            .into_response();
     }
 
-    // Extract + parse on the blocking pool — a large repo archive must not
-    // gzip-decompress + untar on a tokio worker thread.
-    let tmp_dir = std::env::temp_dir().join(format!("nasiko-clone-{}", Uuid::new_v4()));
-    let meta = {
-        let bytes = archive.archive_bytes;
-        let tmp = tmp_dir.clone();
-        match tokio::task::spawn_blocking(move || {
-            crate::build::extract_tar_gzip(&bytes, &tmp)?;
-            crate::catalog::import::read_agent_card(&tmp)
-        })
-        .await
-        {
-            Ok(Ok(m)) => m,
-            Ok(Err(e)) => {
-                let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-                tracing::error!(%e, repo = %body.repository, branch, "failed to import cloned repo");
-                return (StatusCode::BAD_REQUEST, "failed to import cloned repo").into_response();
-            }
-            Err(e) => {
-                let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-                tracing::error!(%e, repo = %body.repository, branch, "extract task failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-            }
+    // Determine agent name: explicit override → repo name.
+    let agent_name = body.agent_name.clone().unwrap_or_else(|| {
+        body.repository_full_name
+            .split('/')
+            .next_back()
+            .unwrap_or(&body.repository_full_name)
+            .to_string()
+    });
+
+    if let Err(e) = crate::build::routes::validate_version_tag(&agent_name) {
+        return (StatusCode::BAD_REQUEST, format!("invalid agent name: {e}")).into_response();
+    }
+
+    let version_tag = "latest".to_string();
+    let image_tag = crate::agents::build_image_tag(
+        &state.config.agent_image_registry,
+        &agent_name,
+        &version_tag,
+    );
+
+    // ── DB transaction: upsert agent + build record + job ────────────────────
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(%e, agent_name = %agent_name, "github_clone: begin transaction failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 
-    let import_result =
-        crate::catalog::import::build_and_deploy(&tmp_dir, &meta, user_id, &state).await;
-    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    let agent_id = match sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO agents (name, owner_id, version, image, status) \
+         VALUES ($1, $2, $3, $4, 'deploying') \
+         ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
+         DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
+                       status = 'deploying', updated_at = now() \
+         RETURNING id",
+    )
+    .bind(&agent_name)
+    .bind(user_id)
+    .bind(&version_tag)
+    .bind(&image_tag)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(%e, agent_name = %agent_name, "github_clone: register agent db error");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
 
-    match import_result {
-        Ok(r) => (
-            StatusCode::CREATED,
-            Json(CloneResult {
-                agent_id: r.agent_id,
-                build_id: r.build_id,
-                container_name: r.container_name,
-                s3_key,
-                archive_size_bytes: archive_size,
-                status: r.status,
-            }),
-        )
-            .into_response(),
-        Err((code, msg)) => (code, msg).into_response(),
+    let build_id = match sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
+         VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(&version_tag)
+    .bind(&image_tag)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "github_clone: create build record db error");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+
+    let upload_id = build_id.to_string();
+    let payload = BuildJobPayload::GithubClone {
+        build_id,
+        agent_id,
+        owner_id: user_id,
+        upload_id: upload_id.clone(),
+        name: agent_name.clone(),
+        repo_full_name: body.repository_full_name.clone(),
+        branch: branch.to_string(),
+        image_tag,
+        ports: vec![8000u16],
+        env: HashMap::new(),
+    };
+
+    let payload_value = match serde_json::to_value(&payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "github_clone: serialize build payload failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+
+    if let Err(e) =
+        sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
+            .bind(agent_id)
+            .bind(user_id)
+            .bind(&payload_value)
+            .execute(&mut *tx)
+            .await
+    {
+        tracing::error!(%e, %agent_id, "github_clone: queue build_jobs db error");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
+
+    if let Err(e) = tx.commit().await {
+        tracing::error!(%e, %agent_id, "github_clone: commit transaction failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    }
+
+    // Notify build worker and seed upload_status with the real agent_id immediately.
+    let _ = state.build_tx.send(()).await;
+    set_upload_status(
+        &state.db,
+        &upload_id,
+        &agent_name,
+        user_id,
+        "initiated",
+        Some(agent_id),
+        None,
+    )
+    .await;
+
+    tracing::info!(%build_id, %agent_id, agent_name = %agent_name, "github clone-and-deploy queued");
+
+    (
+        StatusCode::ACCEPTED,
+        Json(CloneResult {
+            success: true,
+            message: format!("Agent '{}' clone queued", agent_name),
+            agent_name: Some(agent_name),
+            upload_id: Some(upload_id),
+        }),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
