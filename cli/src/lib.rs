@@ -37,7 +37,7 @@ pub enum AgentDevCommands {
         #[arg(default_value = ".")]
         path: String,
         /// Override port
-        #[arg(long, default_value = "5000")]
+        #[arg(long, default_value = "8000")]
         port: u16,
     },
     /// Validate agent directory structure
@@ -67,7 +67,9 @@ pub enum AgentDevCommands {
 #[command(next_help_heading = "Operate")]
 pub enum AgentOpsCommands {
     /// Build + push + deploy to active cluster
-    #[command(after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)")]
+    #[command(
+        after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)"
+    )]
     Deploy {
         /// Local Docker image or agent directory
         image: String,
@@ -75,7 +77,7 @@ pub enum AgentOpsCommands {
         #[arg(long)]
         name: Option<String>,
         /// Container port
-        #[arg(long, default_value = "5000")]
+        #[arg(long, default_value = "8000")]
         port: u16,
         /// Path to .env file with KEY=VALUE pairs
         #[arg(long)]
@@ -93,7 +95,9 @@ pub enum AgentOpsCommands {
         name: Option<String>,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
-    #[command(after_help = "Reads: AgentCard.json (for name/version defaults)\nSource can be a directory (auto-zipped) or a pre-made .zip file")]
+    #[command(
+        after_help = "Reads: AgentCard.json (for name/version defaults)\nSource can be a directory (auto-zipped) or a pre-made .zip file"
+    )]
     Upload {
         /// Agent directory or .zip file (defaults to current directory)
         #[arg(default_value = ".")]
@@ -105,7 +109,7 @@ pub enum AgentOpsCommands {
         #[arg(long, short = 'v')]
         version: Option<String>,
         /// Container port
-        #[arg(long, default_value = "5000")]
+        #[arg(long, default_value = "8000")]
         port: u16,
         /// Path to .env file with KEY=VALUE pairs
         #[arg(long)]
@@ -137,11 +141,6 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
-    /// Deployment-level ops (list/inspect/restart) — distinct from the container-level ps/restart above
-    Deployments {
-        #[command(subcommand)]
-        command: DeploymentsCommands,
-    },
     /// Terminate + deregister agent
     Rm {
         agent: String,
@@ -182,7 +181,7 @@ pub enum AgentOpsCommands {
     /// Create a new chat session on the active cluster
     #[command(name = "create-session")]
     CreateSession {
-        /// A2A agent URL to associate with the session
+        /// Agent name or UUID to associate with the session (omit for the orchestrator)
         #[arg(long)]
         agent: Option<String>,
     },
@@ -221,6 +220,160 @@ pub enum AgentOpsCommands {
     Secrets {
         #[command(subcommand)]
         command: SecretsCommands,
+    },
+    /// Manage reusable LLM configs and attach them to agents
+    #[command(name = "llm-config")]
+    LlmConfig {
+        #[command(subcommand)]
+        command: LlmConfigCommands,
+    },
+    /// View or set the platform tier→model registry the smart router resolves against
+    #[command(name = "model-registry")]
+    ModelRegistry {
+        #[command(subcommand)]
+        command: ModelRegistryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LlmConfigCommands {
+    /// Create a reusable LLM config in your library
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+        /// Fallback model, repeatable: --fallback a --fallback b
+        #[arg(long = "fallback")]
+        fallback: Vec<String>,
+        #[arg(long)]
+        temperature: Option<f64>,
+        #[arg(long = "max-tokens")]
+        max_tokens: Option<i64>,
+        /// Name of your user-secret holding the provider API key
+        #[arg(long = "api-key-secret")]
+        api_key_secret: Option<String>,
+        /// Plaintext API key to store under --api-key-secret when it doesn't exist yet
+        #[arg(long = "secret-value")]
+        secret_value: Option<String>,
+        /// Pin routing so the smart router never re-selects
+        #[arg(long)]
+        pin: bool,
+        /// Model to pin to (defaults to --model when --pin is set)
+        #[arg(long = "pinned-model")]
+        pinned_model: Option<String>,
+        /// Mark this as your default config
+        #[arg(long)]
+        default: bool,
+    },
+    /// Update an existing config in your library (only the flags you pass change)
+    Update {
+        /// Config name or ID
+        config: String,
+        /// Rename the config
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        /// Replace the fallback list, repeatable: --fallback a --fallback b
+        #[arg(long = "fallback")]
+        fallback: Vec<String>,
+        /// Empty the fallback list
+        #[arg(long = "clear-fallbacks")]
+        clear_fallbacks: bool,
+        #[arg(long)]
+        temperature: Option<f64>,
+        #[arg(long = "max-tokens")]
+        max_tokens: Option<i64>,
+        /// Name of your user-secret holding the provider API key
+        #[arg(long = "api-key-secret")]
+        api_key_secret: Option<String>,
+        /// Plaintext API key to store under --api-key-secret when it doesn't exist yet
+        #[arg(long = "secret-value")]
+        secret_value: Option<String>,
+        /// Pin routing so the smart router never re-selects
+        #[arg(long)]
+        pin: bool,
+        /// Unpin routing so the smart router can re-select again
+        #[arg(long = "no-pin")]
+        no_pin: bool,
+        /// Model to pin to (defaults to --model / the current model when pinned)
+        #[arg(long = "pinned-model")]
+        pinned_model: Option<String>,
+        /// Reset the pinned model to null (pin falls back to the config's model)
+        #[arg(long = "clear-pinned-model")]
+        clear_pinned_model: bool,
+    },
+    /// Delete a config from your library (must be detached from all agents first)
+    #[command(alias = "rm")]
+    Delete {
+        /// Config name or ID
+        config: String,
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// List the LLM configs in your library
+    #[command(alias = "ls")]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark one of your configs as your default
+    SetDefault {
+        /// Config name or ID
+        config: String,
+    },
+    /// Attach one of your configs to an agent you own
+    Attach {
+        /// Agent name or ID
+        agent: String,
+        /// Config name or ID
+        config: String,
+        /// SDK format the agent's code speaks: openai | anthropic | gemini
+        #[arg(long = "inbound-format")]
+        inbound_format: Option<String>,
+    },
+    /// Detach the config from an agent (falls back to your default, if any)
+    Detach {
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Show an agent's resolved LLM routing config
+    Get {
+        /// Agent name or ID
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the provider/model catalog (valid values for `create`)
+    Providers {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ModelRegistryCommands {
+    /// List all configured (provider, tier) → model mappings
+    #[command(alias = "list")]
+    Ls {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Upsert one (provider, tier) → model mapping (superuser only)
+    Set {
+        #[arg(long)]
+        provider: String,
+        /// Model strength tier: 1 = strongest … 3 = smallest
+        #[arg(long)]
+        tier: i16,
+        #[arg(long)]
+        model: String,
     },
 }
 
@@ -273,27 +426,11 @@ pub enum AgentsCommands {
     ListUploaded,
     /// Chat directly with a locally running agent
     Chat {
-        #[arg(long, short = 'u', default_value = "http://localhost:5000")]
+        #[arg(long, short = 'u', default_value = "http://localhost:8000")]
         url: String,
         message: Option<String>,
         #[arg(long, short = 's')]
         session_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum DeploymentsCommands {
-    /// List all deployments (crash reason, restart count, etc.)
-    #[command(alias = "list")]
-    Ls,
-    /// Show the current deployment for an agent
-    Get {
-        /// Agent name or ID
-        agent: String,
-    },
-    /// Restart a specific deployment by its deployment ID (see `deployments ls`)
-    Restart {
-        deployment_id: String,
     },
 }
 
@@ -324,17 +461,26 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the reporting window (default: 7 days ago)
         #[arg(long)]
         start_time: Option<String>,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show full detail for a session (traces, tokens, cost)
     Session {
         /// Session ID (trace ID)
         session_id: String,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show span tree and costs for a trace (ObservabilityService)
     #[command(name = "trace-detail")]
     TraceDetail {
         /// Trace ID
         trace_id: String,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show detail for a single span including prompt/completion content
     Span {
@@ -342,6 +488,9 @@ pub enum ObserveCommands {
         trace_id: String,
         /// Span ID
         span_id: String,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show project-level stats for an agent (ObservabilityService)
     #[command(name = "project-stats")]
@@ -351,6 +500,9 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the reporting window (default: 24 h ago)
         #[arg(long)]
         start_time: Option<String>,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show FinOps cost dashboard (ObservabilityService)
     #[command(name = "finops-dashboard")]
@@ -358,6 +510,9 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the cost window (default: 24 h ago)
         #[arg(long)]
         start_time: Option<String>,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Fetch AI-powered cost insights (calls finops-dashboard then LLM)
     Insights {
@@ -484,12 +639,16 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
             Some(t) => commands::scaffold::new_agent(&t, name.as_deref().unwrap_or(&t)),
             None => commands::scaffold::new_agent_interactive(name.as_deref()),
         },
-        AgentDevCommands::Build { directory, tag, platform } => {
-            commands::build::build(&directory, tag.as_deref(), platform.as_deref())
-        }
+        AgentDevCommands::Build {
+            directory,
+            tag,
+            platform,
+        } => commands::build::build(&directory, tag.as_deref(), platform.as_deref()),
         AgentDevCommands::Run { path, port } => commands::dev::run(&path, port),
         AgentDevCommands::Validate { directory } => commands::validate::validate(&directory),
-        AgentDevCommands::Card { description, dir } => commands::card::card(&dir, description.as_deref()),
+        AgentDevCommands::Card { description, dir } => {
+            commands::card::card(&dir, description.as_deref())
+        }
         AgentDevCommands::Skill { command } => match command {
             SkillCommands::Add { name, dir } => commands::skill::add(&name, &dir),
             SkillCommands::Remove { name, dir } => commands::skill::remove(&name, &dir),
@@ -504,30 +663,50 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
 
 pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
     match cmd {
-        AgentOpsCommands::Deploy { image, name, port, env_file, env } => {
-            commands::deploy::deploy(&image, name.as_deref(), port, env_file.as_deref(), &env)
-        }
-        AgentOpsCommands::Push { image, name } => {
-            commands::push::push(&image, name.as_deref())
-        }
-        AgentOpsCommands::Upload { source, name, version, port, env_file, env } => {
-            commands::upload::upload(&source, name.as_deref(), version.as_deref(), port, env_file.as_deref(), &env)
-        }
+        AgentOpsCommands::Deploy {
+            image,
+            name,
+            port,
+            env_file,
+            env,
+        } => commands::deploy::deploy(&image, name.as_deref(), port, env_file.as_deref(), &env),
+        AgentOpsCommands::Push { image, name } => commands::push::push(&image, name.as_deref()),
+        AgentOpsCommands::Upload {
+            source,
+            name,
+            version,
+            port,
+            env_file,
+            env,
+        } => commands::upload::upload(
+            &source,
+            name.as_deref(),
+            version.as_deref(),
+            port,
+            env_file.as_deref(),
+            &env,
+        ),
         AgentOpsCommands::Ps { json } => commands::agents::ps(json),
-        AgentOpsCommands::Logs { agent, tail, follow } => commands::agents::logs(&agent, tail, follow),
+        AgentOpsCommands::Logs {
+            agent,
+            tail,
+            follow,
+        } => commands::agents::logs(&agent, tail, follow),
         AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
         AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
-        AgentOpsCommands::Deployments { command } => match command {
-            DeploymentsCommands::Ls => commands::deployments::ls(),
-            DeploymentsCommands::Get { agent } => commands::deployments::get(&agent),
-            DeploymentsCommands::Restart { deployment_id } => commands::deployments::restart(&deployment_id),
-        },
-        AgentOpsCommands::Chat { url, message, agent, tui, resume, session_id } => {
+        AgentOpsCommands::Chat {
+            url,
+            message,
+            agent,
+            tui,
+            resume,
+            session_id,
+        } => {
             // `nasiko chat "some message"` — a lone positional *containing
-            // a space* is a natural-language message for the orchestrator,
+            // whitespace* is a natural-language message for the orchestrator,
             // not a resolvable target. Targets (a URL, an agent UUID/name,
             // or "orchestrator") are always a single token, so checking
             // for whitespace — not "isn't an http(s) URL" — is what
@@ -537,7 +716,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             // the message to the orchestrator instead of resolving it as
             // the chat target.
             let (url, message) = match (url, message) {
-                (Some(u), None) if u.contains(' ') => (None, Some(u)),
+                (Some(u), None) if u.contains(char::is_whitespace) => (None, Some(u)),
                 other => other,
             };
             let target_label = agent.as_deref().unwrap_or("").to_string();
@@ -561,20 +740,25 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 }
             };
             if tui || resume.is_some() {
-                commands::tui::run_tui(&resolved, resume.as_deref())
+                commands::tui::run_tui(&resolved, resume.as_deref(), &target_label)
             } else {
-                commands::chat::chat(&resolved, message.as_deref(), session_id.as_deref(), &target_label)
+                commands::chat::chat(
+                    &resolved,
+                    message.as_deref(),
+                    session_id.as_deref(),
+                    &target_label,
+                )
             }
         }
-        AgentOpsCommands::Sessions { endpoint, cursor, limit } => {
-            commands::tui::list_sessions(endpoint.as_deref(), cursor.as_deref(), limit)
-        }
+        AgentOpsCommands::Sessions {
+            endpoint,
+            cursor,
+            limit,
+        } => commands::tui::list_sessions(endpoint.as_deref(), cursor.as_deref(), limit),
         AgentOpsCommands::CreateSession { agent } => {
             commands::tui::create_session(agent.as_deref())
         }
-        AgentOpsCommands::History { session_id } => {
-            commands::tui::session_history(&session_id)
-        }
+        AgentOpsCommands::History { session_id } => commands::tui::session_history(&session_id),
         AgentOpsCommands::DeleteSession { session_id, yes } => {
             commands::tui::delete_session(&session_id, yes)
         }
@@ -589,52 +773,155 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         },
         AgentOpsCommands::Agents { command } => match command {
             AgentsCommands::Ls => commands::agents::cmd_ls(),
-            AgentsCommands::Get { agent_id, name, format } => {
-                commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format)
-            }
+            AgentsCommands::Get {
+                agent_id,
+                name,
+                format,
+            } => commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format),
             AgentsCommands::Deploy { source, name } => {
                 commands::agents::cmd_deploy(&source, name.as_deref())
             }
-            AgentsCommands::Search { query, artifact_type, framework, tags, owner, limit } => {
-                commands::agents::cmd_search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), tags.as_deref(), owner.as_deref(), limit)
-            }
-            AgentsCommands::Info { name, owner, version } => {
-                commands::agents::cmd_info(&name, &owner, version.as_deref())
-            }
+            AgentsCommands::Search {
+                query,
+                artifact_type,
+                framework,
+                tags,
+                owner,
+                limit,
+            } => commands::agents::cmd_search(
+                query.as_deref(),
+                artifact_type.as_deref(),
+                framework.as_deref(),
+                tags.as_deref(),
+                owner.as_deref(),
+                limit,
+            ),
+            AgentsCommands::Info {
+                name,
+                owner,
+                version,
+            } => commands::agents::cmd_info(&name, &owner, version.as_deref()),
             AgentsCommands::Frameworks => commands::agents::cmd_frameworks(),
             AgentsCommands::ListUploaded => commands::agents::cmd_list_uploaded(),
-            AgentsCommands::Chat { url, message, session_id } => {
-                commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref())
-            }
+            AgentsCommands::Chat {
+                url,
+                message,
+                session_id,
+            } => commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref()),
         },
         AgentOpsCommands::Observe { command } => match command {
-            ObserveCommands::Sessions { start_time } => {
-                commands::observe::sessions(start_time.as_deref())
+            ObserveCommands::Sessions { start_time, json } => {
+                commands::observe::sessions(start_time.as_deref(), json)
             }
-            ObserveCommands::Session { session_id } => {
-                commands::observe::session_detail(&session_id)
+            ObserveCommands::Session { session_id, json } => {
+                commands::observe::session_detail(&session_id, json)
             }
-            ObserveCommands::TraceDetail { trace_id } => {
-                commands::observe::trace_detail(&trace_id)
+            ObserveCommands::TraceDetail { trace_id, json } => {
+                commands::observe::trace_detail(&trace_id, json)
             }
-            ObserveCommands::Span { trace_id, span_id } => {
-                commands::observe::span_detail(&trace_id, &span_id)
-            }
-            ObserveCommands::ProjectStats { agent_id, start_time } => {
-                commands::observe::project_stats(&agent_id, start_time.as_deref())
-            }
-            ObserveCommands::FinopsDashboard { start_time } => {
-                commands::observe::finops_dashboard(start_time.as_deref())
+            ObserveCommands::Span {
+                trace_id,
+                span_id,
+                json,
+            } => commands::observe::span_detail(&trace_id, &span_id, json),
+            ObserveCommands::ProjectStats {
+                agent_id,
+                start_time,
+                json,
+            } => commands::observe::project_stats(&agent_id, start_time.as_deref(), json),
+            ObserveCommands::FinopsDashboard { start_time, json } => {
+                commands::observe::finops_dashboard(start_time.as_deref(), json)
             }
             ObserveCommands::Insights { start_time } => {
                 commands::observe::insights(start_time.as_deref())
             }
         },
         AgentOpsCommands::Secrets { command } => match command {
-            SecretsCommands::Set { key, value, agent } => commands::secrets::set(&key, &value, agent.as_deref()),
+            SecretsCommands::Set { key, value, agent } => {
+                commands::secrets::set(&key, &value, agent.as_deref())
+            }
             SecretsCommands::Get { key, agent } => commands::secrets::get(&key, agent.as_deref()),
             SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
             SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
+        },
+        AgentOpsCommands::LlmConfig { command } => match command {
+            LlmConfigCommands::Create {
+                name,
+                provider,
+                model,
+                fallback,
+                temperature,
+                max_tokens,
+                api_key_secret,
+                secret_value,
+                pin,
+                pinned_model,
+                default,
+            } => commands::llm_config::create(
+                &name,
+                &provider,
+                &model,
+                fallback,
+                temperature,
+                max_tokens,
+                api_key_secret,
+                secret_value,
+                pin,
+                pinned_model,
+                default,
+            ),
+            LlmConfigCommands::Update {
+                config,
+                name,
+                provider,
+                model,
+                fallback,
+                clear_fallbacks,
+                temperature,
+                max_tokens,
+                api_key_secret,
+                secret_value,
+                pin,
+                no_pin,
+                pinned_model,
+                clear_pinned_model,
+            } => commands::llm_config::update(
+                &config,
+                name,
+                provider,
+                model,
+                fallback,
+                clear_fallbacks,
+                temperature,
+                max_tokens,
+                api_key_secret,
+                secret_value,
+                pin,
+                no_pin,
+                pinned_model,
+                clear_pinned_model,
+            ),
+            LlmConfigCommands::Delete { config, force } => {
+                commands::llm_config::delete(&config, force)
+            }
+            LlmConfigCommands::List { json } => commands::llm_config::list(json),
+            LlmConfigCommands::SetDefault { config } => commands::llm_config::set_default(&config),
+            LlmConfigCommands::Attach {
+                agent,
+                config,
+                inbound_format,
+            } => commands::llm_config::attach(&agent, &config, inbound_format),
+            LlmConfigCommands::Detach { agent } => commands::llm_config::detach(&agent),
+            LlmConfigCommands::Get { agent, json } => commands::llm_config::get(&agent, json),
+            LlmConfigCommands::Providers { json } => commands::llm_config::providers(json),
+        },
+        AgentOpsCommands::ModelRegistry { command } => match command {
+            ModelRegistryCommands::Ls { json } => commands::model_registry::ls(json),
+            ModelRegistryCommands::Set {
+                provider,
+                tier,
+                model,
+            } => commands::model_registry::set(&provider, tier, &model),
         },
     }
 }
@@ -644,12 +931,25 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
         RegistrySubCommands::Connect { url } => commands::registry::connect(&url),
         RegistrySubCommands::Disconnect => commands::registry::disconnect(),
         RegistrySubCommands::Status => commands::registry::status(),
-        RegistrySubCommands::Search { query, artifact_type, framework, top, min_score, json } => {
-            commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), top, min_score, json)
-        }
-        RegistrySubCommands::List { artifact_type, json } => {
-            commands::registry::list(artifact_type.as_deref(), json)
-        }
+        RegistrySubCommands::Search {
+            query,
+            artifact_type,
+            framework,
+            top,
+            min_score,
+            json,
+        } => commands::registry::search(
+            query.as_deref(),
+            artifact_type.as_deref(),
+            framework.as_deref(),
+            top,
+            min_score,
+            json,
+        ),
+        RegistrySubCommands::List {
+            artifact_type,
+            json,
+        } => commands::registry::list(artifact_type.as_deref(), json),
     }
 }
 
@@ -688,9 +988,7 @@ pub enum McpSubCommands {
         json: bool,
     },
     /// Disconnect from a connector
-    Disconnect {
-        connector_id: String,
-    },
+    Disconnect { connector_id: String },
     /// Manage Composio toolkit auth-configs (admin)
     Toolkit {
         #[command(subcommand)]
@@ -951,90 +1249,189 @@ pub enum McpAgentToolsCommands {
 pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
     match cmd {
         McpSubCommands::Catalog { json } => commands::mcp::catalog(json),
-        McpSubCommands::Connect { connector_id, toolkit, url, value, redirect_url, yes } => {
-            commands::mcp::connect(
-                connector_id.as_deref(),
-                toolkit.as_deref(),
-                url.as_deref(),
-                value.as_deref(),
-                redirect_url.as_deref(),
-                yes,
-            )
-        }
+        McpSubCommands::Connect {
+            connector_id,
+            toolkit,
+            url,
+            value,
+            redirect_url,
+            yes,
+        } => commands::mcp::connect(
+            connector_id.as_deref(),
+            toolkit.as_deref(),
+            url.as_deref(),
+            value.as_deref(),
+            redirect_url.as_deref(),
+            yes,
+        ),
         McpSubCommands::Connections { json } => commands::mcp::connections(json),
         McpSubCommands::Disconnect { connector_id } => commands::mcp::disconnect(&connector_id),
         McpSubCommands::Toolkit { command } => match command {
             McpToolkitCommands::List { json } => commands::mcp::toolkit_list(json),
-            McpToolkitCommands::Register { toolkit, client_id, client_secret, scopes, display_name, logo_url } => {
-                commands::mcp::toolkit_register(
-                    &toolkit,
-                    client_id.as_deref(),
-                    client_secret.as_deref(),
-                    &scopes,
-                    display_name.as_deref(),
-                    logo_url.as_deref(),
-                )
+            McpToolkitCommands::Register {
+                toolkit,
+                client_id,
+                client_secret,
+                scopes,
+                display_name,
+                logo_url,
+            } => commands::mcp::toolkit_register(
+                &toolkit,
+                client_id.as_deref(),
+                client_secret.as_deref(),
+                &scopes,
+                display_name.as_deref(),
+                logo_url.as_deref(),
+            ),
+            McpToolkitCommands::Update {
+                connector_id,
+                display_name,
+                logo_url,
+                description,
+            } => commands::mcp::toolkit_update(
+                &connector_id,
+                display_name.as_deref(),
+                logo_url.as_deref(),
+                description.as_deref(),
+            ),
+            McpToolkitCommands::Delete { connector_id, yes } => {
+                commands::mcp::toolkit_delete(&connector_id, yes)
             }
-            McpToolkitCommands::Update { connector_id, display_name, logo_url, description } => {
-                commands::mcp::toolkit_update(&connector_id, display_name.as_deref(), logo_url.as_deref(), description.as_deref())
-            }
-            McpToolkitCommands::Delete { connector_id, yes } => commands::mcp::toolkit_delete(&connector_id, yes),
         },
         McpSubCommands::Connector { command } => match command {
             McpConnectorCommands::List { json } => commands::mcp::connector_list(json),
             McpConnectorCommands::Probe { url } => commands::mcp::connector_probe(&url),
             McpConnectorCommands::Register {
-                name, url, transport, auth_type, url_param_name, credential_header_name,
-                headers, basic_username, basic_password, description, display_name, logo_url,
+                name,
+                url,
+                transport,
+                auth_type,
+                url_param_name,
+                credential_header_name,
+                headers,
+                basic_username,
+                basic_password,
+                description,
+                display_name,
+                logo_url,
             } => commands::mcp::connector_register(
-                &name, &url, &transport, &auth_type,
-                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
-                basic_username.as_deref(), basic_password.as_deref(),
-                description.as_deref(), display_name.as_deref(), logo_url.as_deref(),
+                &name,
+                &url,
+                &transport,
+                &auth_type,
+                url_param_name.as_deref(),
+                credential_header_name.as_deref(),
+                &headers,
+                basic_username.as_deref(),
+                basic_password.as_deref(),
+                description.as_deref(),
+                display_name.as_deref(),
+                logo_url.as_deref(),
             ),
             McpConnectorCommands::Update {
-                connector_id, name, url, transport, auth_type, url_param_name, credential_header_name,
-                headers, description, display_name, logo_url, active,
+                connector_id,
+                name,
+                url,
+                transport,
+                auth_type,
+                url_param_name,
+                credential_header_name,
+                headers,
+                description,
+                display_name,
+                logo_url,
+                active,
             } => commands::mcp::connector_update(
-                &connector_id, name.as_deref(), url.as_deref(), transport.as_deref(), auth_type.as_deref(),
-                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
-                description.as_deref(), display_name.as_deref(), logo_url.as_deref(), active,
+                &connector_id,
+                name.as_deref(),
+                url.as_deref(),
+                transport.as_deref(),
+                auth_type.as_deref(),
+                url_param_name.as_deref(),
+                credential_header_name.as_deref(),
+                &headers,
+                description.as_deref(),
+                display_name.as_deref(),
+                logo_url.as_deref(),
+                active,
             ),
-            McpConnectorCommands::Delete { connector_id, yes } => commands::mcp::connector_delete(&connector_id, yes),
+            McpConnectorCommands::Delete { connector_id, yes } => {
+                commands::mcp::connector_delete(&connector_id, yes)
+            }
             McpConnectorCommands::Share { command } => match command {
-                McpConnectorShareCommands::List { connector_id, json } => commands::mcp::share_list(&connector_id, json),
-                McpConnectorShareCommands::Add { connector_id, user, public } => {
-                    commands::mcp::share_add(&connector_id, user.as_deref(), public)
+                McpConnectorShareCommands::List { connector_id, json } => {
+                    commands::mcp::share_list(&connector_id, json)
                 }
-                McpConnectorShareCommands::Remove { connector_id, user, public } => {
-                    commands::mcp::share_remove(&connector_id, user.as_deref(), public)
-                }
+                McpConnectorShareCommands::Add {
+                    connector_id,
+                    user,
+                    public,
+                } => commands::mcp::share_add(&connector_id, user.as_deref(), public),
+                McpConnectorShareCommands::Remove {
+                    connector_id,
+                    user,
+                    public,
+                } => commands::mcp::share_remove(&connector_id, user.as_deref(), public),
             },
         },
         McpSubCommands::Credential { command } => match command {
-            McpCredentialCommands::Set { connector_id, value } => commands::mcp::credential_set(&connector_id, value.as_deref()),
-            McpCredentialCommands::Status { connector_id, json } => commands::mcp::credential_status(&connector_id, json),
-            McpCredentialCommands::Delete { connector_id, yes } => commands::mcp::credential_delete(&connector_id, yes),
+            McpCredentialCommands::Set {
+                connector_id,
+                value,
+            } => commands::mcp::credential_set(&connector_id, value.as_deref()),
+            McpCredentialCommands::Status { connector_id, json } => {
+                commands::mcp::credential_status(&connector_id, json)
+            }
+            McpCredentialCommands::Delete { connector_id, yes } => {
+                commands::mcp::credential_delete(&connector_id, yes)
+            }
         },
         McpSubCommands::Oauth { command } => match command {
-            McpOauthCommands::Authorize { connector_id, client_id, redirect_url } => {
-                commands::mcp::oauth_authorize(&connector_id, client_id.as_deref(), redirect_url.as_deref())
+            McpOauthCommands::Authorize {
+                connector_id,
+                client_id,
+                redirect_url,
+            } => commands::mcp::oauth_authorize(
+                &connector_id,
+                client_id.as_deref(),
+                redirect_url.as_deref(),
+            ),
+            McpOauthCommands::Status { connector_id, json } => {
+                commands::mcp::oauth_status(&connector_id, json)
             }
-            McpOauthCommands::Status { connector_id, json } => commands::mcp::oauth_status(&connector_id, json),
-            McpOauthCommands::Revoke { connector_id, yes } => commands::mcp::oauth_revoke(&connector_id, yes),
+            McpOauthCommands::Revoke { connector_id, yes } => {
+                commands::mcp::oauth_revoke(&connector_id, yes)
+            }
         },
         McpSubCommands::AgentTools { command } => match command {
-            McpAgentToolsCommands::Connectors { agent, json } => commands::mcp::agent_tools_connectors(&agent, json),
-            McpAgentToolsCommands::Enable { agent, connector_id } => commands::mcp::agent_tools_enable(&agent, &connector_id),
-            McpAgentToolsCommands::Disable { agent, connector_id } => commands::mcp::agent_tools_disable(&agent, &connector_id),
-            McpAgentToolsCommands::Tools { agent, connector_id, json } => {
-                commands::mcp::agent_tools_tools(&agent, &connector_id, json)
+            McpAgentToolsCommands::Connectors { agent, json } => {
+                commands::mcp::agent_tools_connectors(&agent, json)
             }
-            McpAgentToolsCommands::Rules { agent, json } => commands::mcp::agent_tools_rules(&agent, json),
-            McpAgentToolsCommands::SetRule { agent, connector_id, pattern, stance } => {
-                commands::mcp::agent_tools_set_rule(&agent, &connector_id, &pattern, &stance)
+            McpAgentToolsCommands::Enable {
+                agent,
+                connector_id,
+            } => commands::mcp::agent_tools_enable(&agent, &connector_id),
+            McpAgentToolsCommands::Disable {
+                agent,
+                connector_id,
+            } => commands::mcp::agent_tools_disable(&agent, &connector_id),
+            McpAgentToolsCommands::Tools {
+                agent,
+                connector_id,
+                json,
+            } => commands::mcp::agent_tools_tools(&agent, &connector_id, json),
+            McpAgentToolsCommands::Rules { agent, json } => {
+                commands::mcp::agent_tools_rules(&agent, json)
             }
-            McpAgentToolsCommands::Reset { agent, yes } => commands::mcp::agent_tools_reset(&agent, yes),
+            McpAgentToolsCommands::SetRule {
+                agent,
+                connector_id,
+                pattern,
+                stance,
+            } => commands::mcp::agent_tools_set_rule(&agent, &connector_id, &pattern, &stance),
+            McpAgentToolsCommands::Reset { agent, yes } => {
+                commands::mcp::agent_tools_reset(&agent, yes)
+            }
         },
     }
 }
