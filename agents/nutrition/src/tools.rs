@@ -160,7 +160,11 @@ async fn search_food(arguments: &str) -> Result<String, String> {
         })
         .collect();
 
-    Ok(format!("Found {} foods:\n\n{}", results.len(), results.join("\n\n")))
+    Ok(format!(
+        "Found {} foods:\n\n{}",
+        results.len(),
+        results.join("\n\n")
+    ))
 }
 
 async fn get_nutrition(arguments: &str) -> Result<String, String> {
@@ -246,7 +250,10 @@ async fn open_food_facts(arguments: &str) -> Result<String, String> {
 
     // Check if it looks like a barcode
     let url = if query.chars().all(|c| c.is_ascii_digit()) && query.len() >= 8 {
-        format!("https://world.openfoodfacts.org/api/v2/product/{}.json", query)
+        format!(
+            "https://world.openfoodfacts.org/api/v2/product/{}.json",
+            query
+        )
     } else {
         format!(
             "https://world.openfoodfacts.org/cgi/search.pl?search_terms={}&json=1&page_size=5",
@@ -273,7 +280,11 @@ async fn open_food_facts(arguments: &str) -> Result<String, String> {
         return Ok(format!("No products found for '{query}'."));
     }
 
-    let results: Vec<String> = products.iter().take(5).map(|p| format_off_product(p)).collect();
+    let results: Vec<String> = products
+        .iter()
+        .take(5)
+        .map(|p| format_off_product(p))
+        .collect();
     Ok(results.join("\n\n---\n\n"))
 }
 
@@ -291,7 +302,16 @@ async fn compare_foods(arguments: &str) -> Result<String, String> {
     }
 
     let mut foods: Vec<(String, Vec<(&str, f64)>)> = Vec::new();
-    let compare_nutrients = ["Energy", "Protein", "Total lipid (fat)", "Carbohydrate, by difference", "Fiber, total dietary", "Sodium, Na", "Iron, Fe", "Calcium, Ca"];
+    let compare_nutrients = [
+        "Energy",
+        "Protein",
+        "Total lipid (fat)",
+        "Carbohydrate, by difference",
+        "Fiber, total dietary",
+        "Sodium, Na",
+        "Iron, Fe",
+        "Calcium, Ca",
+    ];
 
     for id in &fdc_ids {
         let url = format!(
@@ -322,8 +342,18 @@ async fn compare_foods(arguments: &str) -> Result<String, String> {
 
     // Build comparison table
     let mut output = String::from("**Nutrition Comparison (per 100g)**\n\n");
-    output.push_str(&format!("| Nutrient | {} |\n", foods.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(" | ")));
-    output.push_str(&format!("|{}|\n", foods.iter().map(|_| "---").collect::<Vec<_>>().join("|")));
+    output.push_str(&format!(
+        "| Nutrient | {} |\n",
+        foods
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    ));
+    output.push_str(&format!(
+        "|{}|\n",
+        foods.iter().map(|_| "---").collect::<Vec<_>>().join("|")
+    ));
 
     for (i, name) in compare_nutrients.iter().enumerate() {
         let unit = match *name {
@@ -331,7 +361,15 @@ async fn compare_foods(arguments: &str) -> Result<String, String> {
             "Sodium, Na" | "Iron, Fe" | "Calcium, Ca" => "mg",
             _ => "g",
         };
-        let vals: Vec<String> = foods.iter().map(|(_, v)| format!("{:.1}{unit}", v[i].1)).collect();
+        // A food whose lookup returned no nutrient data has an empty values
+        // vec — show a dash rather than panicking on the missing index.
+        let vals: Vec<String> = foods
+            .iter()
+            .map(|(_, v)| {
+                v.get(i)
+                    .map_or_else(|| "—".to_string(), |(_, val)| format!("{val:.1}{unit}"))
+            })
+            .collect();
         output.push_str(&format!("| {name} | {} |\n", vals.join(" | ")));
     }
 
@@ -342,7 +380,8 @@ async fn compare_foods(arguments: &str) -> Result<String, String> {
 
 fn find_nutrient(nutrients: &[serde_json::Value], name: &str) -> Option<f64> {
     nutrients.iter().find_map(|n| {
-        let n_name = n["nutrient"]["name"].as_str()
+        let n_name = n["nutrient"]["name"]
+            .as_str()
             .or_else(|| n["nutrientName"].as_str())?;
         if n_name == name {
             n["amount"].as_f64().or_else(|| n["value"].as_f64())
@@ -353,7 +392,9 @@ fn find_nutrient(nutrients: &[serde_json::Value], name: &str) -> Option<f64> {
 }
 
 fn format_off_product(product: &serde_json::Value) -> String {
-    let name = product["product_name"].as_str().unwrap_or("Unknown product");
+    let name = product["product_name"]
+        .as_str()
+        .unwrap_or("Unknown product");
     let brand = product["brands"].as_str().unwrap_or("");
     let nutriscore = product["nutriscore_grade"].as_str().unwrap_or("?");
     let ingredients = product["ingredients_text"].as_str().unwrap_or("");
@@ -368,7 +409,11 @@ fn format_off_product(product: &serde_json::Value) -> String {
     let salt = nutrients["salt_100g"].as_f64().unwrap_or(0.0);
     let saturated = nutrients["saturated-fat_100g"].as_f64().unwrap_or(0.0);
 
-    let brand_str = if brand.is_empty() { String::new() } else { format!(" — {brand}") };
+    let brand_str = if brand.is_empty() {
+        String::new()
+    } else {
+        format!(" — {brand}")
+    };
     let ingredients_short = if ingredients.len() > 200 {
         format!("{}...", &ingredients[..200])
     } else {

@@ -4,7 +4,7 @@
   "description": "this is a test agent",
   "url": "http://localhost:8000/",
   "agentFramework": "",
-  "preferredTransport": "HTTP+JSON",
+  "preferredTransport": "JSONRPC",
   "provider": {
     "organization": "Nasiko",
     "url": "https://nasiko.com"
@@ -13,7 +13,7 @@
   "version": "0.1.0",
   "documentationUrl": "http://localhost:8000/docs",
   "capabilities": {
-    "streaming": false,
+    "streaming": true,
     "pushNotifications": false,
     "stateTransitionHistory": false,
     "chat_agent": false

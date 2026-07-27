@@ -71,7 +71,8 @@ impl NutritionAgent {
             return Err(format!("LLM API {status}: {body}"));
         }
 
-        let response = resp.json::<serde_json::Value>()
+        let response = resp
+            .json::<serde_json::Value>()
             .await
             .map_err(|e| format!("JSON parse: {e}"))?;
 
@@ -90,7 +91,10 @@ impl NutritionAgent {
 }
 
 impl AgentExecutor for NutritionAgent {
-    fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    fn execute(
+        &self,
+        ctx: ExecutorContext,
+    ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         // Join the caller's W3C trace (the platform forwards `traceparent`
         // through the agent proxy/orchestrator). Without adopting it, the OTel
         // SDK mints a fresh root trace id per request and the control plane's
@@ -136,21 +140,21 @@ impl AgentExecutor for NutritionAgent {
             let tool_defs = tools::definitions();
 
             let system = "\
-You are a nutrition expert. You MUST use your tools for every answer — never respond from \
-memory alone. Every claim must be backed by tool output.\n\n\
-Tools:\n\
-- search_food — search USDA database, returns FDC IDs + quick macros per 100g\n\
-- get_nutrition — detailed breakdown (vitamins, minerals, fats) for a specific FDC ID\n\
-- open_food_facts — branded/packaged products, Nutri-Score, ingredients\n\
-- compare_foods — side-by-side comparison table (needs 2-5 FDC IDs)\n\n\
-Rules:\n\
-- ALWAYS call at least one tool before answering\n\
-- For whole foods: search_food first, then get_nutrition for detail\n\
-- For packaged products: use open_food_facts\n\
-- For comparisons: search both foods first to get FDC IDs, then compare_foods\n\
-- Always state whether data is per 100g or per serving\n\
-- Include practical context (% daily value for key nutrients)\n\
-- All numbers must come from tool output, never from memory";
+        You are a nutrition expert. You MUST use your tools for every answer — never respond from \
+        memory alone. Every claim must be backed by tool output.\n\n\
+        Tools:\n\
+        - search_food — search USDA database, returns FDC IDs + quick macros per 100g\n\
+        - get_nutrition — detailed breakdown (vitamins, minerals, fats) for a specific FDC ID\n\
+        - open_food_facts — branded/packaged products, Nutri-Score, ingredients\n\
+        - compare_foods — side-by-side comparison table (needs 2-5 FDC IDs)\n\n\
+        Rules:\n\
+        - ALWAYS call at least one tool before answering\n\
+        - For whole foods: search_food first, then get_nutrition for detail\n\
+        - For packaged products: use open_food_facts\n\
+        - For comparisons: search both foods first to get FDC IDs, then compare_foods\n\
+        - Always state whether data is per 100g or per serving\n\
+        - Include practical context (% daily value for key nutrients)\n\
+        - All numbers must come from tool output, never from memory";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
@@ -273,8 +277,7 @@ async fn main() {
         InMemoryTaskStore::new(),
     ));
 
-    let agent_card_json =
-        include_str!("../AgentCard.json").replace("{{PORT}}", &port.to_string());
+    let agent_card_json = include_str!("../AgentCard.json").replace("{{PORT}}", &port.to_string());
     let agent_card: AgentCard =
         serde_json::from_str(&agent_card_json).expect("invalid embedded AgentCard.json");
 
@@ -336,7 +339,11 @@ fn extract_preview(args: &str) -> String {
         .and_then(|v| {
             v.as_object()?.values().find_map(|val| {
                 val.as_str().map(|s| {
-                    if s.len() > 60 { format!("{}...", &s[..60]) } else { s.to_string() }
+                    if s.len() > 60 {
+                        format!("{}...", &s[..60])
+                    } else {
+                        s.to_string()
+                    }
                 })
             })
         })

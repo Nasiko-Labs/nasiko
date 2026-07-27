@@ -1,6 +1,5 @@
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-pydantic>=2.0.0
+a2a-sdk[http-server]==1.1.1
+uvicorn[standard]>=0.30.0
 opentelemetry-api>=1.25.0
 opentelemetry-sdk>=1.25.0
 opentelemetry-exporter-otlp-proto-grpc>=1.25.0

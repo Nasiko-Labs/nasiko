@@ -2,6 +2,9 @@
   "name": "Nutrition Assistant",
   "description": "Look up nutrition facts, compare foods, and answer diet questions using USDA and Open Food Facts data",
   "version": "1.0.0",
+  "protocolVersion": "0.2.9",
+  "url": "http://localhost:8000/",
+  "preferredTransport": "JSONRPC",
   "provider": {
     "organization": "Nasiko",
     "url": "https://nasiko.io"
