@@ -419,9 +419,12 @@ mod tests {
     }
 
     fn perms(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
+        let all_from_rules: std::collections::HashSet<Uuid> = rules.iter().map(|r| r.connector_id).collect();
+        let disabled_set: std::collections::HashSet<Uuid> = disabled.iter().copied().collect();
+        let enabled = all_from_rules.difference(&disabled_set).copied().collect();
         PermissionContext {
             agent_id: Uuid::nil(),
-            disabled_connectors: disabled.iter().copied().collect(),
+            enabled_connectors: enabled,
             rules,
             hash: "h".into(),
         }

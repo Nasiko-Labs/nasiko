@@ -41,6 +41,7 @@ pub struct CreateAuthConfig {
     pub client_secret: Option<String>,
     pub scopes: Option<Vec<String>>,
     pub display_name: Option<String>,
+    pub description: Option<String>,
     pub logo_url: Option<String>,
 }
 
@@ -64,6 +65,7 @@ pub async fn create_auth_config(
             client_secret: body.client_secret,
             scopes: body.scopes,
             display_name: body.display_name,
+            description: body.description,
             logo_url: body.logo_url,
         },
     )

@@ -768,6 +768,27 @@ pub async fn upsert_composio_connection(
     Ok(row)
 }
 
+/// Create or update a connection with just a status (no credentials).
+/// Used for `auth_type=none` connectors (uploaded MCP servers).
+pub async fn upsert_connection(
+    db: &PgPool,
+    user_id: Uuid,
+    connector_id: Uuid,
+    status: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO mcp_user_connections (user_id, connector_id, status)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, connector_id) DO UPDATE SET status = EXCLUDED.status"#,
+    )
+    .bind(user_id)
+    .bind(connector_id)
+    .bind(status)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_connection_by_account_id(
     db: &PgPool,
     account_id: &str,

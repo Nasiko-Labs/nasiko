@@ -71,10 +71,16 @@ pub async fn connect_service(
     }
 
     match connector.auth_type.as_deref().unwrap_or("none") {
-        "none" => Ok(ConnectOutcome::Connected {
-            connector_id: connector.id,
-            name: connector.name,
-        }),
+        "none" => {
+            // Create the connection record so the connector shows up in the
+            // user's connected list and is included in agent tool aggregation.
+            repo::upsert_connection(&state.db, user_id, connector.id, "ACTIVE").await?;
+            session::invalidate_session_cache(state, user_id).await;
+            Ok(ConnectOutcome::Connected {
+                connector_id: connector.id,
+                name: connector.name,
+            })
+        }
         "bearer" | "basic" | "url_param" => {
             let value = input.credential_value.as_deref().ok_or_else(|| {
                 McpError::BadRequest(format!("'{}' requires credentials.value", connector.name))
@@ -406,12 +412,15 @@ pub async fn handle_composio_callback(
                     repo::update_connection_account_id(&state.db, connection.id, account_id).await;
             }
             session::invalidate_session_cache(state, user_id).await;
-            // success_url is an unauthenticated query param — never redirect off-origin.
-            let dest = success_url.unwrap_or_else(|| "/".to_string());
-            CallbackOutcome::Redirect(crate::net::safe_redirect(
-                &dest,
-                state.config.gateway_public_url.as_deref(),
-            ))
+            match success_url {
+                // Explicit success_url — redirect there (never off-origin).
+                Some(dest) => CallbackOutcome::Redirect(crate::net::safe_redirect(
+                    &dest,
+                    state.config.gateway_public_url.as_deref(),
+                )),
+                // No success_url (popup flow) — show a self-closing page.
+                None => CallbackOutcome::Message("Connected successfully".to_string()),
+            }
         }
         _ => CallbackOutcome::Message(
             "Authorization is still finalizing — refresh in a moment.".to_string(),

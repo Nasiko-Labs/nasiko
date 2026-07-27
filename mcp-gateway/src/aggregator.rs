@@ -128,7 +128,7 @@ fn headers_fingerprint(headers: &std::collections::HashMap<String, String>) -> S
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::*;
     use crate::config::McpConfig;
@@ -151,7 +151,7 @@ mod tests {
     fn empty_perms() -> PermissionContext {
         PermissionContext {
             agent_id: Uuid::nil(),
-            disabled_connectors: Default::default(),
+            enabled_connectors: Default::default(),
             rules: vec![],
             hash: "h".into(),
         }
@@ -347,7 +347,7 @@ mod tests {
         // rule is irrelevant: the whole connector's tools are dropped.
         let perms = PermissionContext {
             agent_id: Uuid::nil(),
-            disabled_connectors: [id].into_iter().collect(),
+            enabled_connectors: HashSet::new(), // connector not enabled → tools dropped
             rules: vec![PermissionRule { connector_id: id, tool_pattern: "*".into(), stance: Stance::Allow }],
             hash: "h".into(),
         };
@@ -370,7 +370,7 @@ mod tests {
         let state = test_state();
         let perms = PermissionContext {
             agent_id: Uuid::nil(),
-            disabled_connectors: Default::default(),
+            enabled_connectors: Default::default(),
             rules: vec![PermissionRule { connector_id: id, tool_pattern: "send_*".into(), stance: Stance::Block }],
             hash: "h".into(),
         };

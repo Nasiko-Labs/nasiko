@@ -131,6 +131,7 @@ pub struct CreateComposioInput<'a> {
     pub client_secret: Option<&'a str>,
     pub scopes: Option<&'a [String]>,
     pub display_name: Option<&'a str>,
+    pub description: Option<&'a str>,
     pub logo_url: Option<&'a str>,
 }
 
@@ -168,6 +169,7 @@ pub async fn create_composio_connector(
             owner_id: None,
             name: toolkit.clone(),
             display_name: input.display_name.map(str::to_string),
+            description: input.description.map(str::to_string),
             logo_url: input.logo_url.map(str::to_string),
             auth_config_id: Some(created.auth_config_id),
             auth_scheme: Some("OAUTH2".to_string()),

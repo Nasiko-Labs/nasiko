@@ -26,11 +26,15 @@ pub mod catalog {
         pub client_secret: Option<String>,
         pub scopes: Option<Vec<String>>,
         pub display_name: Option<String>,
+        pub description: Option<String>,
         pub logo_url: Option<String>,
     }
 
     pub async fn get_catalog(s: &AppState, user: Uuid) -> R<Value> {
         catalog::get_catalog_view(&s.mcp, user).await
+    }
+    pub async fn list_toolkits(s: &AppState, user: Uuid) -> R<Value> {
+        catalog::list_toolkits_view(&s.mcp, user).await
     }
     pub async fn create_composio(s: &AppState, r: &ComposioReg) -> R<Value> {
         catalog::create_composio_connector(
@@ -42,6 +46,7 @@ pub mod catalog {
                 client_secret: r.client_secret.as_deref(),
                 scopes: r.scopes.as_deref(),
                 display_name: r.display_name.as_deref(),
+                description: r.description.as_deref(),
                 logo_url: r.logo_url.as_deref(),
             },
         )

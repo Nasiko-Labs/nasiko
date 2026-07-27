@@ -136,6 +136,10 @@ pub trait ToolProvider: Send + Sync {
 
     /// List the tools in a Composio toolkit (for the per-agent permission UI).
     async fn list_toolkit_tools(&self, toolkit: &str) -> Result<Vec<ToolDescriptor>>;
+
+    /// Downcast support for accessing provider-specific methods (e.g.
+    /// `ComposioProvider::list_tools_for_toolkits`).
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // ─── Registry ───────────────────────────────────────────────────────────────
@@ -159,15 +163,16 @@ impl Providers {
                 config.composio_base_url.clone(),
             )) as Arc<dyn ToolProvider>
         });
-        // The generic transport talks to user-registered backend URLs, so it uses
-        // an SSRF/DNS-rebinding-guarded client (rejects private/internal targets
-        // at resolution time) rather than the platform's shared client, which must
-        // still reach internal hosts. The Composio session URL it also calls is
-        // public, so the guard is transparent there.
-        Self {
-            composio,
-            mcp: GenericMcpProvider::new(crate::net::guarded_http_client()),
-        }
+        // The generic transport talks to user-registered backend URLs by default,
+        // so it uses an SSRF/DNS-rebinding-guarded client (rejects private/internal
+        // targets at resolution time) rather than the platform's shared client,
+        // which must still reach internal hosts. The Composio session URL it also
+        // calls is public, so the guard is transparent there. `http` (the
+        // platform's own client, already passed in for the Composio provider
+        // above) is reused as the `plain` client for `trusted == true` backends —
+        // i.e. uploaded-build MCP-server connectors, whose address the platform
+        // itself resolved, not a user.
+        Self { composio, mcp: GenericMcpProvider::new(crate::net::guarded_http_client(), http) }
     }
 
     /// The Composio provider, or a `NotConfigured` error when no API key is set.

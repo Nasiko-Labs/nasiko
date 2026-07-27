@@ -119,9 +119,12 @@ pub async fn oauth_callback(
 
 fn callback_page(message: &str) -> String {
     format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Connecting…</title></head>\
-         <body style=\"font-family:sans-serif;text-align:center;padding:48px\">\
-         <p style=\"color:#666\">{}</p></body></html>",
+        r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Connected</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:48px">
+<p style="color:#16a34a;font-size:18px">✓ {}</p>
+<p style="color:#666">This window will close automatically…</p>
+<script>setTimeout(function(){{ window.close(); }}, 1500);</script>
+</body></html>"#,
         message.replace('<', "&lt;")
     )
 }
