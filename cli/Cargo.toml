@@ -33,6 +33,8 @@ nasiko-utils.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 chrono.workspace = true
+tabled.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true
+tempfile.workspace = true
