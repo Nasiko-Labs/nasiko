@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
+use nasiko_utils::display::opt_dash;
 use serde::{Deserialize, Serialize};
+use tabled::Tabled;
 use ureq::Agent;
 
 use crate::config;
@@ -284,7 +286,10 @@ impl Client {
                 .build(),
         );
         let url = format!("{}/health", url.trim_end_matches('/'));
-        let resp = agent.get(&url).call().context("cannot reach control plane")?;
+        let resp = agent
+            .get(&url)
+            .call()
+            .context("cannot reach control plane")?;
         if resp.status().as_u16() >= 400 {
             bail!("health check returned HTTP {}", resp.status().as_u16());
         }
@@ -394,7 +399,10 @@ impl OciClient {
 
         // POST to initiate
         let url = self.url(&format!("/v2/{repo}/blobs/uploads/"));
-        let resp = self.post(&url).send(&[] as &[u8]).context("initiate upload failed")?;
+        let resp = self
+            .post(&url)
+            .send(&[] as &[u8])
+            .context("initiate upload failed")?;
         if resp.status().as_u16() >= 400 {
             bail!("initiate upload: HTTP {}", resp.status().as_u16());
         }
@@ -550,7 +558,12 @@ impl RegistryClient {
         })
     }
 
-    pub fn search(&self, query: Option<&str>, artifact_type: Option<&str>, framework: Option<&str>) -> Result<Vec<Artifact>> {
+    pub fn search(
+        &self,
+        query: Option<&str>,
+        artifact_type: Option<&str>,
+        framework: Option<&str>,
+    ) -> Result<Vec<Artifact>> {
         self.search_opts(query, artifact_type, framework, 100, None)
     }
 
@@ -564,7 +577,11 @@ impl RegistryClient {
     ) -> Result<Vec<Artifact>> {
         let path = search_query(query, artifact_type, framework, limit, min_score);
         let url = format!("{}{path}", self.base_url);
-        let mut resp = self.agent.get(&url).call().context("registry search failed")?;
+        let mut resp = self
+            .agent
+            .get(&url)
+            .call()
+            .context("registry search failed")?;
         if resp.status().as_u16() >= 400 {
             bail!("registry search: HTTP {}", resp.status().as_u16());
         }
@@ -599,7 +616,10 @@ impl Client {
 
         // agent_name (required)
         body.extend_from_slice(
-            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"agent_name\"\r\n\r\n{name}\r\n").as_bytes(),
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\n{name}\r\n"
+            )
+            .as_bytes(),
         );
         // version_tag
         body.extend_from_slice(
@@ -607,7 +627,11 @@ impl Client {
         );
         // ports (comma-separated)
         if !ports.is_empty() {
-            let ports_str = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+            let ports_str = ports
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"ports\"\r\n\r\n{ports_str}\r\n").as_bytes(),
             );
@@ -628,8 +652,10 @@ impl Client {
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
         let url = self.api_url("/agents/upload");
-        let mut req = self.agent.post(&url)
-            .header("Content-Type", &format!("multipart/form-data; boundary={boundary}"));
+        let mut req = self.agent.post(&url).header(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        );
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
@@ -638,6 +664,61 @@ impl Client {
             body.len() / 1024
         ));
         let mut resp = req.send(&body).context("upload request failed")?;
+        drop(_spin);
+        if resp.status().as_u16() >= 400 {
+            let b = resp.body_mut().read_to_string().unwrap_or_default();
+            bail!("HTTP {}: {}", resp.status().as_u16(), b);
+        }
+        Ok(resp.body_mut().read_json()?)
+    }
+
+    /// Upload a zip to `PUT /api/agents/{id}/update` (re-upload / server-side rebuild).
+    pub fn update_agent(
+        &self,
+        agent_id: &str,
+        zip_path: &std::path::Path,
+        version: Option<&str>,
+        changelog: Option<&str>,
+    ) -> anyhow::Result<UpdateQueued> {
+        let file_bytes = std::fs::read(zip_path)
+            .with_context(|| format!("cannot read {}", zip_path.display()))?;
+
+        let boundary = "NasikoCloudBoundary1234567890";
+        let mut body: Vec<u8> = Vec::new();
+
+        // `version` field: explicit semver or strategy keyword (auto/patch/minor/major).
+        // Omit entirely to let the server default to auto-patch.
+        if let Some(v) = version {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"version\"\r\n\r\n{v}\r\n").as_bytes(),
+            );
+        }
+        if let Some(c) = changelog {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"changelog\"\r\n\r\n{c}\r\n").as_bytes(),
+            );
+        }
+        // Field name on the update route is "source" (not "file" as on the upload route).
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"upload.zip\"\r\nContent-Type: application/zip\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(&file_bytes);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let url = self.api_url(&format!("/agents/{agent_id}/update"));
+        let mut req = self.agent.put(&url).header(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        );
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let _spin = nasiko_utils::term::start_status(format!(
+            "uploading update ({} KB)",
+            body.len() / 1024
+        ));
+        let mut resp = req.send(&body).context("update request failed")?;
         drop(_spin);
         if resp.status().as_u16() >= 400 {
             let b = resp.body_mut().read_to_string().unwrap_or_default();
@@ -667,19 +748,34 @@ impl Client {
 
         for line in reader.lines() {
             let Ok(line) = line else { break };
-            let Some(data) = line.strip_prefix("data: ") else { continue };
-            let Ok(val) = serde_json::from_str::<serde_json::Value>(data) else { continue };
-            let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
-            if status == last_status { continue; }
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(data) else {
+                continue;
+            };
+            let status = val
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            if status == last_status {
+                continue;
+            }
             last_status = status.to_string();
             // Drop first so the spinner line is cleared before the transition prints.
             spin = None;
             match status {
-                "queued"    => spin = Some(nasiko_utils::term::start_status("queued")),
-                "building"  => spin = Some(nasiko_utils::term::start_status("building image")),
-                "success"   => { println!("  build succeeded"); succeeded = true; }
-                "failed"    => { println!("  build failed"); failed = true; }
-                other       => println!("  {other}"),
+                "queued" => spin = Some(nasiko_utils::term::start_status("queued")),
+                "building" => spin = Some(nasiko_utils::term::start_status("building image")),
+                "success" => {
+                    println!("  build succeeded");
+                    succeeded = true;
+                }
+                "failed" => {
+                    println!("  build failed");
+                    failed = true;
+                }
+                other => println!("  {other}"),
             }
         }
         drop(spin);
@@ -696,23 +792,33 @@ impl Client {
 
 // ─── API types ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Tabled)]
 pub struct AgentRecord {
+    #[tabled(rename = "ID")]
+    #[serde(alias = "agent_id")]
     pub id: String,
+    #[tabled(rename = "NAME")]
     pub name: String,
+    #[tabled(rename = "STATUS", display = "opt_dash")]
     #[serde(default)]
     pub status: Option<String>,
+    #[tabled(rename = "VERSION", display = "opt_dash")]
+    #[serde(default)]
+    pub version: Option<String>,
+    #[tabled(rename = "URL", display = "opt_dash")]
     #[serde(default)]
     pub url: Option<String>,
     /// JSON-RPC path from the agent's card (e.g. "/jsonrpc"), set by the server.
+    #[tabled(skip)]
     #[serde(default)]
     pub transport_path: Option<String>,
+    #[tabled(skip)]
     #[serde(default)]
     pub framework: Option<String>,
-    #[serde(default)]
-    pub version: Option<String>,
+    #[tabled(skip)]
     #[serde(default)]
     pub created_at: Option<String>,
+    #[tabled(skip)]
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -756,24 +862,30 @@ pub struct DeploymentRecord {
     pub restart_count: i32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Tabled, Default)]
 pub struct UploadInfo {
-    #[serde(default)]
-    pub upload_type: Option<String>,
+    #[tabled(rename = "STATUS", display = "opt_dash")]
     #[serde(default)]
     pub upload_status: Option<String>,
+    #[tabled(rename = "TYPE", display = "opt_dash")]
+    #[serde(default)]
+    pub upload_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Tabled)]
 pub struct UploadedAgent {
+    #[tabled(rename = "AGENT ID", display = "opt_dash")]
     #[serde(default)]
     pub agent_id: Option<String>,
+    #[tabled(rename = "NAME", display = "opt_dash")]
     #[serde(default)]
     pub agent_name: Option<String>,
-    #[serde(default)]
-    pub url: Option<String>,
+    #[tabled(inline)]
     #[serde(default)]
     pub upload_info: Option<UploadInfo>,
+    #[tabled(rename = "URL", display = "opt_dash")]
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// Response from `DELETE /agents/{id}` — full teardown: every container for
@@ -797,6 +909,35 @@ pub struct ContainerStatus {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateQueued {
+    pub build_id: String,
+    pub agent_id: String,
+    pub new_version: String,
+    pub previous_version: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize, Tabled)]
+pub struct AgentVersion {
+    #[tabled(rename = "VERSION")]
+    pub version: String,
+    #[tabled(rename = "STATUS")]
+    pub status: String,
+    #[tabled(rename = "ACTIVE")]
+    pub is_active: bool,
+    #[tabled(rename = "CAN ROLLBACK")]
+    pub can_rollback: bool,
+    #[tabled(rename = "PREV VERSION", display = "opt_dash")]
+    #[serde(default)]
+    pub previous_version: Option<String>,
+    #[tabled(rename = "CHANGELOG", display = "opt_dash")]
+    #[serde(default)]
+    pub changelog: Option<String>,
+    #[tabled(rename = "CREATED")]
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -827,7 +968,11 @@ mod tests {
         // A deleted/never-existed resource (e.g. a stale local agent binding after
         // a DB reset) must come back as None so callers can recover, not error.
         let mut srv = mockito::Server::new();
-        let m = srv.mock("GET", "/api/agents/ghost").with_status(404).with_body("not found").create();
+        let m = srv
+            .mock("GET", "/api/agents/ghost")
+            .with_status(404)
+            .with_body("not found")
+            .create();
         let client = Client::for_test(&srv.url(), None);
         let out: Option<serde_json::Value> = client.get_json_optional("/agents/ghost").unwrap();
         assert!(out.is_none());
@@ -851,7 +996,10 @@ mod tests {
     fn get_json_optional_errors_on_500() {
         // Real failures must still surface — only 404 is treated as "absent".
         let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/boom").with_status(500).with_body("boom").create();
+        srv.mock("GET", "/api/agents/boom")
+            .with_status(500)
+            .with_body("boom")
+            .create();
         let client = Client::for_test(&srv.url(), None);
         let out: Result<Option<serde_json::Value>> = client.get_json_optional("/agents/boom");
         assert!(out.is_err());
@@ -879,8 +1027,17 @@ mod tests {
 
     #[test]
     fn search_query_encodes_and_orders_params() {
-        let p = search_query(Some("healthy eating"), Some("skill"), Some("a2a"), 10, Some(0.3));
-        assert_eq!(p, "/v1/search?q=healthy%20eating&type=skill&framework=a2a&min_score=0.3&limit=10");
+        let p = search_query(
+            Some("healthy eating"),
+            Some("skill"),
+            Some("a2a"),
+            10,
+            Some(0.3),
+        );
+        assert_eq!(
+            p,
+            "/v1/search?q=healthy%20eating&type=skill&framework=a2a&min_score=0.3&limit=10"
+        );
     }
 
     #[test]
@@ -904,27 +1061,55 @@ mod tests {
 
     #[test]
     fn blob_put_url_absolute_location_no_query() {
-        let url = blob_put_url("https://cp.example.com", "https://cp.example.com/v2/repo/blobs/uploads/abc", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?digest=sha256:deadbeef");
+        let url = blob_put_url(
+            "https://cp.example.com",
+            "https://cp.example.com/v2/repo/blobs/uploads/abc",
+            "sha256:deadbeef",
+        );
+        assert_eq!(
+            url,
+            "https://cp.example.com/v2/repo/blobs/uploads/abc?digest=sha256:deadbeef"
+        );
     }
 
     #[test]
     fn blob_put_url_absolute_location_with_existing_query() {
         // Regression: registries that return a Location already carrying a query string
         // (e.g. `?_state=xyz`) must get `&digest=...`, not a second `?digest=...`.
-        let url = blob_put_url("https://cp.example.com", "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz&digest=sha256:deadbeef");
+        let url = blob_put_url(
+            "https://cp.example.com",
+            "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz",
+            "sha256:deadbeef",
+        );
+        assert_eq!(
+            url,
+            "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz&digest=sha256:deadbeef"
+        );
     }
 
     #[test]
     fn blob_put_url_relative_location_no_query() {
-        let url = blob_put_url("https://cp.example.com", "/v2/repo/blobs/uploads/abc", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?digest=sha256:deadbeef");
+        let url = blob_put_url(
+            "https://cp.example.com",
+            "/v2/repo/blobs/uploads/abc",
+            "sha256:deadbeef",
+        );
+        assert_eq!(
+            url,
+            "https://cp.example.com/v2/repo/blobs/uploads/abc?digest=sha256:deadbeef"
+        );
     }
 
     #[test]
     fn blob_put_url_relative_location_with_existing_query() {
-        let url = blob_put_url("https://cp.example.com", "/v2/repo/blobs/uploads/abc?_state=xyz", "sha256:deadbeef");
-        assert_eq!(url, "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz&digest=sha256:deadbeef");
+        let url = blob_put_url(
+            "https://cp.example.com",
+            "/v2/repo/blobs/uploads/abc?_state=xyz",
+            "sha256:deadbeef",
+        );
+        assert_eq!(
+            url,
+            "https://cp.example.com/v2/repo/blobs/uploads/abc?_state=xyz&digest=sha256:deadbeef"
+        );
     }
 }
