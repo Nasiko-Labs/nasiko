@@ -198,7 +198,20 @@ impl GenericMcpProvider {
             )));
         }
 
-        Ok(Attempt::Done(parse_jsonrpc(&content_type, &text, &server.name)?))
+        let parsed = parse_jsonrpc(&content_type, &text, &server.name)?;
+        // Some backends don't follow the "400/404 + 'session'" convention
+        // above — they answer with HTTP 200 and a JSON-RPC-level `error`
+        // instead. Recognize that too so the initialize+retry dance still
+        // fires for them, rather than treating the error as a normal response.
+        if let Some(msg) = parsed
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            && msg.to_lowercase().contains("session")
+        {
+            return Ok(Attempt::NeedsSession);
+        }
+        Ok(Attempt::Done(parsed))
     }
 
     /// Perform the MCP `initialize` handshake, returning the negotiated
@@ -285,6 +298,17 @@ impl GenericMcpProvider {
     ) -> Result<Vec<Value>> {
         let body = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}});
         let resp = self.request(server, &body, timeout, traceparent).await?;
+        // A JSON-RPC `error` response has no `result` key at all — treating
+        // that as "zero tools" (the old `unwrap_or_default` behavior) is
+        // indistinguishable from a backend that genuinely has no tools, and
+        // silently hides a real failure. Surface it instead.
+        if let Some(err) = resp.get("error") {
+            let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+            return Err(McpError::Backend(format!(
+                "backend '{}' tools/list failed: {msg}",
+                server.name
+            )));
+        }
         let tools = resp
             .get("result")
             .and_then(|r| r.get("tools"))
