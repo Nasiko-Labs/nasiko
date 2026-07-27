@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nasiko::commands;
-use nasiko::{AgentDevCommands, AgentOpsCommands, RegistrySubCommands};
+use nasiko::{AgentDevCommands, AgentOpsCommands, McpSubCommands, RegistrySubCommands};
 
 /// Nasiko CLI — Build, deploy, and manage AI agents.
 #[derive(Parser)]
@@ -50,8 +50,6 @@ const HELP_TEXT: &str = "\
   restart    Restart agent container
   scale      Scale agent container to N replicas
   rm         Terminate + deregister agent
-  update     Update agent to a new version (rebuild/redeploy)
-  rollback   Roll back agent to a previous version
   deployments  Deployment-level ops (list/get/restart)
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
@@ -65,6 +63,9 @@ const HELP_TEXT: &str = "\
 
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
+
+\x1b[33mMCP:\x1b[0m
+  mcp        MCP Gateway — connectors, connections, sharing, credentials, oauth, agent-tools
 
 \x1b[33mOptions:\x1b[0m
   -h, --help     Print help
@@ -84,6 +85,8 @@ enum Commands {
     Cp(CpCommands),
     #[command(flatten)]
     Reg(RegistryCommands),
+    #[command(flatten)]
+    Mcp(McpCommands),
 }
 
 #[derive(Subcommand)]
@@ -127,6 +130,16 @@ enum RegistryCommands {
 }
 
 #[derive(Subcommand)]
+#[command(next_help_heading = "MCP")]
+enum McpCommands {
+    /// Manage MCP Gateway connectors, connections, and agent tool access
+    Mcp {
+        #[command(subcommand)]
+        command: McpSubCommands,
+    },
+}
+
+#[derive(Subcommand)]
 enum AuthCommands {
     /// Save API token for active cluster
     Login,
@@ -160,6 +173,9 @@ fn main() -> Result<()> {
         },
         Commands::Reg(cmd) => match cmd {
             RegistryCommands::Registry { command } => nasiko::dispatch_registry(command),
+        },
+        Commands::Mcp(cmd) => match cmd {
+            McpCommands::Mcp { command } => nasiko::dispatch_mcp(command),
         },
     }
 }

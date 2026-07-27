@@ -37,7 +37,7 @@ pub enum AgentDevCommands {
         #[arg(default_value = ".")]
         path: String,
         /// Override port
-        #[arg(long, default_value = "8000")]
+        #[arg(long, default_value = "5000")]
         port: u16,
     },
     /// Validate agent directory structure
@@ -67,9 +67,7 @@ pub enum AgentDevCommands {
 #[command(next_help_heading = "Operate")]
 pub enum AgentOpsCommands {
     /// Build + push + deploy to active cluster
-    #[command(
-        after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)"
-    )]
+    #[command(after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)")]
     Deploy {
         /// Local Docker image or agent directory
         image: String,
@@ -77,7 +75,7 @@ pub enum AgentOpsCommands {
         #[arg(long)]
         name: Option<String>,
         /// Container port
-        #[arg(long, default_value = "8000")]
+        #[arg(long, default_value = "5000")]
         port: u16,
         /// Path to .env file with KEY=VALUE pairs
         #[arg(long)]
@@ -95,9 +93,7 @@ pub enum AgentOpsCommands {
         name: Option<String>,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
-    #[command(
-        after_help = "Reads: AgentCard.json (for name/version defaults)\nSource can be a directory (auto-zipped) or a pre-made .zip file"
-    )]
+    #[command(after_help = "Reads: AgentCard.json (for name/version defaults)\nSource can be a directory (auto-zipped) or a pre-made .zip file")]
     Upload {
         /// Agent directory or .zip file (defaults to current directory)
         #[arg(default_value = ".")]
@@ -109,7 +105,7 @@ pub enum AgentOpsCommands {
         #[arg(long, short = 'v')]
         version: Option<String>,
         /// Container port
-        #[arg(long, default_value = "8000")]
+        #[arg(long, default_value = "5000")]
         port: u16,
         /// Path to .env file with KEY=VALUE pairs
         #[arg(long)]
@@ -141,59 +137,14 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
-    /// Re-upload source and rebuild an existing deployed agent
-    #[command(
-        after_help = "Version resolution order: --version flag → AgentCard.json → pyproject.toml → Cargo.toml → server auto-patch"
-    )]
-    Reupload {
-        /// Agent UUID (preferred; use --name to look up by name instead)
-        #[arg(conflicts_with = "name")]
-        id: Option<String>,
-        /// Resolve agent by name instead of UUID
-        #[arg(long, short = 'n', conflicts_with = "id")]
-        name: Option<String>,
-        /// Agent directory or .zip file (defaults to current directory)
-        #[arg(default_value = ".")]
-        source: String,
-        /// Explicit version to deploy (semver, e.g. 1.2.0); auto-detected from project files if omitted
-        #[arg(long, short = 'v')]
-        version: Option<String>,
-        /// Optional changelog message for this version
-        #[arg(long)]
-        changelog: Option<String>,
-    },
-    /// List version history for a deployed agent
-    Versions {
-        /// Agent UUID (preferred; use --name to look up by name instead)
-        #[arg(conflicts_with = "name")]
-        id: Option<String>,
-        /// Resolve agent by name instead of UUID
-        #[arg(long, short = 'n', conflicts_with = "id")]
-        name: Option<String>,
-    },
-    /// Roll back a deployed agent to a previous version
-    Rollback {
-        /// Agent UUID (preferred; use --name to look up by name instead)
-        #[arg(conflicts_with = "name")]
-        id: Option<String>,
-        /// Resolve agent by name instead of UUID
-        #[arg(long, short = 'n', conflicts_with = "id")]
-        name: Option<String>,
-        /// Target version to roll back to (omit to roll back to the previous version)
-        #[arg(long, short = 't')]
-        version: Option<String>,
-        /// Optional reason for the rollback (recorded in audit log)
-        #[arg(long)]
-        reason: Option<String>,
+    /// Deployment-level ops (list/inspect/restart) — distinct from the container-level ps/restart above
+    Deployments {
+        #[command(subcommand)]
+        command: DeploymentsCommands,
     },
     /// Terminate + deregister agent
     Rm {
-        /// Agent UUID (preferred; use --name to look up by name instead)
-        #[arg(conflicts_with = "name")]
-        id: Option<String>,
-        /// Delete by agent name (resolved to UUID via the CP registry)
-        #[arg(long, short = 'n', conflicts_with = "id")]
-        name: Option<String>,
+        agent: String,
         #[arg(short, long)]
         force: bool,
     },
@@ -231,7 +182,7 @@ pub enum AgentOpsCommands {
     /// Create a new chat session on the active cluster
     #[command(name = "create-session")]
     CreateSession {
-        /// Agent name or UUID to associate with the session (omit for the orchestrator)
+        /// A2A agent URL to associate with the session
         #[arg(long)]
         agent: Option<String>,
     },
@@ -322,11 +273,27 @@ pub enum AgentsCommands {
     ListUploaded,
     /// Chat directly with a locally running agent
     Chat {
-        #[arg(long, short = 'u', default_value = "http://localhost:8000")]
+        #[arg(long, short = 'u', default_value = "http://localhost:5000")]
         url: String,
         message: Option<String>,
         #[arg(long, short = 's')]
         session_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DeploymentsCommands {
+    /// List all deployments (crash reason, restart count, etc.)
+    #[command(alias = "list")]
+    Ls,
+    /// Show the current deployment for an agent
+    Get {
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Restart a specific deployment by its deployment ID (see `deployments ls`)
+    Restart {
+        deployment_id: String,
     },
 }
 
@@ -357,26 +324,17 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the reporting window (default: 7 days ago)
         #[arg(long)]
         start_time: Option<String>,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Show full detail for a session (traces, tokens, cost)
     Session {
         /// Session ID (trace ID)
         session_id: String,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Show span tree and costs for a trace (ObservabilityService)
     #[command(name = "trace-detail")]
     TraceDetail {
         /// Trace ID
         trace_id: String,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Show detail for a single span including prompt/completion content
     Span {
@@ -384,9 +342,6 @@ pub enum ObserveCommands {
         trace_id: String,
         /// Span ID
         span_id: String,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Show project-level stats for an agent (ObservabilityService)
     #[command(name = "project-stats")]
@@ -396,9 +351,6 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the reporting window (default: 24 h ago)
         #[arg(long)]
         start_time: Option<String>,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Show FinOps cost dashboard (ObservabilityService)
     #[command(name = "finops-dashboard")]
@@ -406,9 +358,6 @@ pub enum ObserveCommands {
         /// ISO-8601 start of the cost window (default: 24 h ago)
         #[arg(long)]
         start_time: Option<String>,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
     },
     /// Fetch AI-powered cost insights (calls finops-dashboard then LLM)
     Insights {
@@ -535,16 +484,12 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
             Some(t) => commands::scaffold::new_agent(&t, name.as_deref().unwrap_or(&t)),
             None => commands::scaffold::new_agent_interactive(name.as_deref()),
         },
-        AgentDevCommands::Build {
-            directory,
-            tag,
-            platform,
-        } => commands::build::build(&directory, tag.as_deref(), platform.as_deref()),
+        AgentDevCommands::Build { directory, tag, platform } => {
+            commands::build::build(&directory, tag.as_deref(), platform.as_deref())
+        }
         AgentDevCommands::Run { path, port } => commands::dev::run(&path, port),
         AgentDevCommands::Validate { directory } => commands::validate::validate(&directory),
-        AgentDevCommands::Card { description, dir } => {
-            commands::card::card(&dir, description.as_deref())
-        }
+        AgentDevCommands::Card { description, dir } => commands::card::card(&dir, description.as_deref()),
         AgentDevCommands::Skill { command } => match command {
             SkillCommands::Add { name, dir } => commands::skill::add(&name, &dir),
             SkillCommands::Remove { name, dir } => commands::skill::remove(&name, &dir),
@@ -559,59 +504,30 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
 
 pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
     match cmd {
-        AgentOpsCommands::Deploy {
-            image,
-            name,
-            port,
-            env_file,
-            env,
-        } => commands::deploy::deploy(&image, name.as_deref(), port, env_file.as_deref(), &env),
-        AgentOpsCommands::Push { image, name } => commands::push::push(&image, name.as_deref()),
-        AgentOpsCommands::Upload {
-            source,
-            name,
-            version,
-            port,
-            env_file,
-            env,
-        } => commands::upload::upload(
-            &source,
-            name.as_deref(),
-            version.as_deref(),
-            port,
-            env_file.as_deref(),
-            &env,
-        ),
+        AgentOpsCommands::Deploy { image, name, port, env_file, env } => {
+            commands::deploy::deploy(&image, name.as_deref(), port, env_file.as_deref(), &env)
+        }
+        AgentOpsCommands::Push { image, name } => {
+            commands::push::push(&image, name.as_deref())
+        }
+        AgentOpsCommands::Upload { source, name, version, port, env_file, env } => {
+            commands::upload::upload(&source, name.as_deref(), version.as_deref(), port, env_file.as_deref(), &env)
+        }
         AgentOpsCommands::Ps { json } => commands::agents::ps(json),
-        AgentOpsCommands::Logs {
-            agent,
-            tail,
-            follow,
-        } => commands::agents::logs(&agent, tail, follow),
+        AgentOpsCommands::Logs { agent, tail, follow } => commands::agents::logs(&agent, tail, follow),
         AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
-        AgentOpsCommands::Reupload { id, name, source, version, changelog } => {
-            commands::agents::reupload(id.as_deref(), name.as_deref(), &source, version.as_deref(), changelog.as_deref())
-        }
-        AgentOpsCommands::Versions { id, name } => {
-            commands::agents::versions(id.as_deref(), name.as_deref())
-        }
-        AgentOpsCommands::Rollback { id, name, version, reason } => {
-            commands::agents::rollback(id.as_deref(), name.as_deref(), version.as_deref(), reason.as_deref())
-        }
-        AgentOpsCommands::Rm { id, name, force } => commands::agents::rm(id.as_deref(), name.as_deref(), force),
-        AgentOpsCommands::Chat {
-            url,
-            message,
-            agent,
-            tui,
-            resume,
-            session_id,
-        } => {
+        AgentOpsCommands::Rm { agent, force } => commands::agents::rm(&agent, force),
+        AgentOpsCommands::Deployments { command } => match command {
+            DeploymentsCommands::Ls => commands::deployments::ls(),
+            DeploymentsCommands::Get { agent } => commands::deployments::get(&agent),
+            DeploymentsCommands::Restart { deployment_id } => commands::deployments::restart(&deployment_id),
+        },
+        AgentOpsCommands::Chat { url, message, agent, tui, resume, session_id } => {
             // `nasiko chat "some message"` — a lone positional *containing
-            // whitespace* is a natural-language message for the orchestrator,
+            // a space* is a natural-language message for the orchestrator,
             // not a resolvable target. Targets (a URL, an agent UUID/name,
             // or "orchestrator") are always a single token, so checking
             // for whitespace — not "isn't an http(s) URL" — is what
@@ -621,7 +537,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             // the message to the orchestrator instead of resolving it as
             // the chat target.
             let (url, message) = match (url, message) {
-                (Some(u), None) if u.contains(char::is_whitespace) => (None, Some(u)),
+                (Some(u), None) if u.contains(' ') => (None, Some(u)),
                 other => other,
             };
             let target_label = agent.as_deref().unwrap_or("").to_string();
@@ -645,25 +561,20 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 }
             };
             if tui || resume.is_some() {
-                commands::tui::run_tui(&resolved, resume.as_deref(), &target_label)
+                commands::tui::run_tui(&resolved, resume.as_deref())
             } else {
-                commands::chat::chat(
-                    &resolved,
-                    message.as_deref(),
-                    session_id.as_deref(),
-                    &target_label,
-                )
+                commands::chat::chat(&resolved, message.as_deref(), session_id.as_deref(), &target_label)
             }
         }
-        AgentOpsCommands::Sessions {
-            endpoint,
-            cursor,
-            limit,
-        } => commands::tui::list_sessions(endpoint.as_deref(), cursor.as_deref(), limit),
+        AgentOpsCommands::Sessions { endpoint, cursor, limit } => {
+            commands::tui::list_sessions(endpoint.as_deref(), cursor.as_deref(), limit)
+        }
         AgentOpsCommands::CreateSession { agent } => {
             commands::tui::create_session(agent.as_deref())
         }
-        AgentOpsCommands::History { session_id } => commands::tui::session_history(&session_id),
+        AgentOpsCommands::History { session_id } => {
+            commands::tui::session_history(&session_id)
+        }
         AgentOpsCommands::DeleteSession { session_id, yes } => {
             commands::tui::delete_session(&session_id, yes)
         }
@@ -678,73 +589,49 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         },
         AgentOpsCommands::Agents { command } => match command {
             AgentsCommands::Ls => commands::agents::cmd_ls(),
-            AgentsCommands::Get {
-                agent_id,
-                name,
-                format,
-            } => commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format),
+            AgentsCommands::Get { agent_id, name, format } => {
+                commands::agents::cmd_get(agent_id.as_deref(), name.as_deref(), &format)
+            }
             AgentsCommands::Deploy { source, name } => {
                 commands::agents::cmd_deploy(&source, name.as_deref())
             }
-            AgentsCommands::Search {
-                query,
-                artifact_type,
-                framework,
-                tags,
-                owner,
-                limit,
-            } => commands::agents::cmd_search(
-                query.as_deref(),
-                artifact_type.as_deref(),
-                framework.as_deref(),
-                tags.as_deref(),
-                owner.as_deref(),
-                limit,
-            ),
-            AgentsCommands::Info {
-                name,
-                owner,
-                version,
-            } => commands::agents::cmd_info(&name, &owner, version.as_deref()),
+            AgentsCommands::Search { query, artifact_type, framework, tags, owner, limit } => {
+                commands::agents::cmd_search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), tags.as_deref(), owner.as_deref(), limit)
+            }
+            AgentsCommands::Info { name, owner, version } => {
+                commands::agents::cmd_info(&name, &owner, version.as_deref())
+            }
             AgentsCommands::Frameworks => commands::agents::cmd_frameworks(),
             AgentsCommands::ListUploaded => commands::agents::cmd_list_uploaded(),
-            AgentsCommands::Chat {
-                url,
-                message,
-                session_id,
-            } => commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref()),
+            AgentsCommands::Chat { url, message, session_id } => {
+                commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref())
+            }
         },
         AgentOpsCommands::Observe { command } => match command {
-            ObserveCommands::Sessions { start_time, json } => {
-                commands::observe::sessions(start_time.as_deref(), json)
+            ObserveCommands::Sessions { start_time } => {
+                commands::observe::sessions(start_time.as_deref())
             }
-            ObserveCommands::Session { session_id, json } => {
-                commands::observe::session_detail(&session_id, json)
+            ObserveCommands::Session { session_id } => {
+                commands::observe::session_detail(&session_id)
             }
-            ObserveCommands::TraceDetail { trace_id, json } => {
-                commands::observe::trace_detail(&trace_id, json)
+            ObserveCommands::TraceDetail { trace_id } => {
+                commands::observe::trace_detail(&trace_id)
             }
-            ObserveCommands::Span {
-                trace_id,
-                span_id,
-                json,
-            } => commands::observe::span_detail(&trace_id, &span_id, json),
-            ObserveCommands::ProjectStats {
-                agent_id,
-                start_time,
-                json,
-            } => commands::observe::project_stats(&agent_id, start_time.as_deref(), json),
-            ObserveCommands::FinopsDashboard { start_time, json } => {
-                commands::observe::finops_dashboard(start_time.as_deref(), json)
+            ObserveCommands::Span { trace_id, span_id } => {
+                commands::observe::span_detail(&trace_id, &span_id)
+            }
+            ObserveCommands::ProjectStats { agent_id, start_time } => {
+                commands::observe::project_stats(&agent_id, start_time.as_deref())
+            }
+            ObserveCommands::FinopsDashboard { start_time } => {
+                commands::observe::finops_dashboard(start_time.as_deref())
             }
             ObserveCommands::Insights { start_time } => {
                 commands::observe::insights(start_time.as_deref())
             }
         },
         AgentOpsCommands::Secrets { command } => match command {
-            SecretsCommands::Set { key, value, agent } => {
-                commands::secrets::set(&key, &value, agent.as_deref())
-            }
+            SecretsCommands::Set { key, value, agent } => commands::secrets::set(&key, &value, agent.as_deref()),
             SecretsCommands::Get { key, agent } => commands::secrets::get(&key, agent.as_deref()),
             SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
             SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
@@ -757,25 +644,12 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
         RegistrySubCommands::Connect { url } => commands::registry::connect(&url),
         RegistrySubCommands::Disconnect => commands::registry::disconnect(),
         RegistrySubCommands::Status => commands::registry::status(),
-        RegistrySubCommands::Search {
-            query,
-            artifact_type,
-            framework,
-            top,
-            min_score,
-            json,
-        } => commands::registry::search(
-            query.as_deref(),
-            artifact_type.as_deref(),
-            framework.as_deref(),
-            top,
-            min_score,
-            json,
-        ),
-        RegistrySubCommands::List {
-            artifact_type,
-            json,
-        } => commands::registry::list(artifact_type.as_deref(), json),
+        RegistrySubCommands::Search { query, artifact_type, framework, top, min_score, json } => {
+            commands::registry::search(query.as_deref(), artifact_type.as_deref(), framework.as_deref(), top, min_score, json)
+        }
+        RegistrySubCommands::List { artifact_type, json } => {
+            commands::registry::list(artifact_type.as_deref(), json)
+        }
     }
 }
 
@@ -842,14 +716,6 @@ pub enum McpSubCommands {
     AgentTools {
         #[command(subcommand)]
         command: McpAgentToolsCommands,
-    },
-    /// Search users to share a connector with
-    #[command(name = "share-targets")]
-    ShareTargets {
-        /// Search query (username prefix or display name)
-        query: String,
-        #[arg(short = 'j', long)]
-        json: bool,
     },
 }
 
@@ -964,98 +830,6 @@ pub enum McpConnectorCommands {
     Share {
         #[command(subcommand)]
         command: McpConnectorShareCommands,
-    },
-    /// Upload your own MCP server's source (a .zip) — the platform builds and
-    /// deploys it into a container the same way agent uploads work, then
-    /// polls until it's live. See docs/MCP_UPLOAD_ITERATION_PLAN.md for the
-    /// full pipeline (validation → build → hardened deploy → readiness check).
-    Upload {
-        /// Connector name (shown in `nasiko mcp connector list`)
-        #[arg(long)]
-        name: String,
-        /// Build version tag, shown on the connector's build history
-        #[arg(long, visible_alias = "version", default_value = "v1")]
-        version_tag: String,
-        /// Path to a .zip containing your MCP server's source (must include a
-        /// Dockerfile; the server must read $PORT and mount its Streamable
-        /// HTTP endpoint at /mcp — see the upload plan doc for the full contract)
-        #[arg(long)]
-        zip: std::path::PathBuf,
-        /// Secret env var for the uploaded server itself, "KEY=VALUE"
-        /// (repeatable) — encrypted at rest, injected into the container only
-        /// at deploy time. Distinct from a connector's own auth credential
-        /// (`nasiko mcp credential set`), which authenticates the GATEWAY to
-        /// the server, not the server to some third-party API it wraps.
-        #[arg(long = "env")]
-        env: Vec<String>,
-    },
-    /// Same as `upload`, but builds from a GitHub repo instead of a local zip
-    /// — the server clones it (HTTPS + host-allowlisted, same validation
-    /// `nasiko deploy`'s GitHub source uses) rather than receiving a file.
-    UploadGithub {
-        /// Connector name (shown in `nasiko mcp connector list`)
-        #[arg(long)]
-        name: String,
-        /// Build version tag, shown on the connector's build history
-        #[arg(long, visible_alias = "version", default_value = "v1")]
-        version_tag: String,
-        /// HTTPS GitHub URL of the MCP server's source repo
-        #[arg(long)]
-        github_url: String,
-        /// Secret env var for the uploaded server itself, "KEY=VALUE"
-        /// (repeatable) — same semantics as `upload --env`
-        #[arg(long = "env")]
-        env: Vec<String>,
-    },
-    /// Check an uploaded connector's build status (one-shot, no polling) —
-    /// `pending` | `building` | `running` (live) | `failed`
-    BuildStatus {
-        connector_id: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Show an uploaded connector's container logs (stdout/stderr) — the
-    /// same `ContainerRuntime::logs` call the agent logs route already
-    /// exposes, just scoped to this connector's container
-    Logs {
-        connector_id: String,
-        /// Number of trailing log lines to fetch (capped server-side at 10000)
-        #[arg(long, default_value_t = 200)]
-        tail: u32,
-    },
-    /// List agents and users consuming this connector (owner/admin only)
-    Consumers {
-        connector_id: String,
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Pin a connector for quick access
-    Pin { connector_id: String },
-    /// Unpin a connector
-    Unpin { connector_id: String },
-    /// List your pinned connectors
-    Pinned {
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// List recently used connectors
-    Recent {
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
-    /// Grant connector access to a specific agent (owner/admin only)
-    #[command(name = "grant-agent")]
-    GrantAgent {
-        connector_id: String,
-        /// Agent name or ID
-        agent: String,
-    },
-    /// Revoke connector access from a specific agent (owner/admin only)
-    #[command(name = "revoke-agent")]
-    RevokeAgent {
-        connector_id: String,
-        /// Agent name or ID
-        agent: String,
     },
 }
 
@@ -1236,21 +1010,6 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                     commands::mcp::share_remove(&connector_id, user.as_deref(), public)
                 }
             },
-            McpConnectorCommands::Upload { name, version_tag, zip, env } => {
-                commands::mcp::connector_upload(&zip, &name, &version_tag, &env)
-            }
-            McpConnectorCommands::UploadGithub { name, version_tag, github_url, env } => {
-                commands::mcp::connector_upload_github(&name, &version_tag, &github_url, &env)
-            }
-            McpConnectorCommands::BuildStatus { connector_id, json } => commands::mcp::connector_build_status(&connector_id, json),
-            McpConnectorCommands::Logs { connector_id, tail } => commands::mcp::connector_logs(&connector_id, tail),
-            McpConnectorCommands::Consumers { connector_id, json } => commands::mcp::connector_consumers(&connector_id, json),
-            McpConnectorCommands::Pin { connector_id } => commands::mcp::connector_pin(&connector_id),
-            McpConnectorCommands::Unpin { connector_id } => commands::mcp::connector_unpin(&connector_id),
-            McpConnectorCommands::Pinned { json } => commands::mcp::connector_pinned(json),
-            McpConnectorCommands::Recent { json } => commands::mcp::connector_recent(json),
-            McpConnectorCommands::GrantAgent { connector_id, agent } => commands::mcp::connector_grant_agent(&connector_id, &agent),
-            McpConnectorCommands::RevokeAgent { connector_id, agent } => commands::mcp::connector_revoke_agent(&connector_id, &agent),
         },
         McpSubCommands::Credential { command } => match command {
             McpCredentialCommands::Set { connector_id, value } => commands::mcp::credential_set(&connector_id, value.as_deref()),
@@ -1264,7 +1023,6 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
             McpOauthCommands::Status { connector_id, json } => commands::mcp::oauth_status(&connector_id, json),
             McpOauthCommands::Revoke { connector_id, yes } => commands::mcp::oauth_revoke(&connector_id, yes),
         },
-        McpSubCommands::ShareTargets { query, json } => commands::mcp::share_targets(&query, json),
         McpSubCommands::AgentTools { command } => match command {
             McpAgentToolsCommands::Connectors { agent, json } => commands::mcp::agent_tools_connectors(&agent, json),
             McpAgentToolsCommands::Enable { agent, connector_id } => commands::mcp::agent_tools_enable(&agent, &connector_id),

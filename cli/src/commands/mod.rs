@@ -1,15 +1,14 @@
 pub mod agents;
 pub mod auth;
 pub mod build;
+pub mod github;
 pub mod card;
 pub mod chat;
 pub mod cluster;
 pub mod deploy;
+pub mod deployments;
 pub mod dev;
-pub mod github;
-pub mod llm_config;
 pub mod mcp;
-pub mod model_registry;
 pub mod observe;
 pub mod push;
 pub mod registry;
