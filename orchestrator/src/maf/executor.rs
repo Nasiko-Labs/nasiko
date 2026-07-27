@@ -26,8 +26,7 @@ pub async fn run_maf(
     // Generates prompt templates (with <placeholders>), to_extract goals, and
     // the output_generation guideline from the task descriptions.
     // Planning happens on every execution (Python MAF parity).
-    let (step_plans, output_generation, plan_tokens) =
-        plan_execution(&maf_def.steps, llm).await?;
+    let (step_plans, output_generation, plan_tokens) = plan_execution(&maf_def.steps, llm).await?;
     let mut total_tokens = plan_tokens;
 
     // Fill in the prompt template / extraction goal now that planning is
@@ -72,8 +71,10 @@ pub async fn run_maf(
         {
             Ok(v) => v,
             Err(e) => {
-                let err =
-                    format!("step {} (agent '{}') failed: {e}", step.step_index, step.agent_name);
+                let err = format!(
+                    "step {} (agent '{}') failed: {e}",
+                    step.step_index, step.agent_name
+                );
                 step_results[i].status = "failed".to_string();
                 step_results[i].prompt = actual_prompt;
                 step_results[i].error = Some(err.clone());
@@ -112,14 +113,21 @@ pub async fn run_maf(
         // span export, so it's usually not there the instant the call
         // returns) so the persisted step total already reflects LLM + agent
         // cost together, not just MAF's own reasoning cost.
-        let agent_tokens = wait_for_agent_tokens(observability, execution_id, step.step_index).await;
+        let agent_tokens =
+            wait_for_agent_tokens(observability, execution_id, step.step_index).await;
         let step_tokens = llm_tokens + agent_tokens;
         total_tokens += step_tokens;
 
         let new_context = if context.is_empty() {
-            format!("Step {} ({}): {}", step.step_index, step.agent_name, extracted)
+            format!(
+                "Step {} ({}): {}",
+                step.step_index, step.agent_name, extracted
+            )
         } else {
-            format!("{}\nStep {} ({}): {}", context, step.step_index, step.agent_name, extracted)
+            format!(
+                "{}\nStep {} ({}): {}",
+                context, step.step_index, step.agent_name, extracted
+            )
         };
 
         step_results[i].status = "success".to_string();
@@ -140,7 +148,11 @@ pub async fn run_maf(
         .map_err(|e| format!("final output generation failed: {e}"))?;
     total_tokens += output_tokens;
 
-    Ok(ExecutionResult { output, step_results, tokens_used: total_tokens })
+    Ok(ExecutionResult {
+        output,
+        step_results,
+        tokens_used: total_tokens,
+    })
 }
 
 /// Builds a placeholder "pending" entry for a step before planning/execution
@@ -168,7 +180,12 @@ fn pending_result(step: &MafStep) -> StepResult {
 /// Best-effort: a transient write failure here shouldn't abort the run — the
 /// next transition will just overwrite with fresher data, and the final
 /// write in worker.rs remains the source of truth once the run completes.
-async fn persist_progress(db: &PgPool, execution_id: Uuid, step_results: &[StepResult], tokens_used: i64) {
+async fn persist_progress(
+    db: &PgPool,
+    execution_id: Uuid,
+    step_results: &[StepResult],
+    tokens_used: i64,
+) {
     let step_json = serde_json::to_value(step_results).unwrap_or_default();
     let _ = sqlx::query(
         "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2 WHERE id = $3",
@@ -219,7 +236,12 @@ async fn plan_execution(
 
     let step_list = steps
         .iter()
-        .map(|s| format!("Step {} ({}): {}", s.step_index, s.agent_name, s.task_description))
+        .map(|s| {
+            format!(
+                "Step {} ({}): {}",
+                s.step_index, s.agent_name, s.task_description
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -248,12 +270,18 @@ async fn plan_execution(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm.chat_json_schema(vec![
-        ChatMessage::system(system),
-        ChatMessage::user(one_shot_human),
-        ChatMessage::assistant(one_shot_assistant),
-        ChatMessage::user(user),
-    ], "execution_plan", schema).await?;
+    let (json, tokens) = llm
+        .chat_json_schema(
+            vec![
+                ChatMessage::system(system),
+                ChatMessage::user(one_shot_human),
+                ChatMessage::assistant(one_shot_assistant),
+                ChatMessage::user(user),
+            ],
+            "execution_plan",
+            schema,
+        )
+        .await?;
 
     let output_generation = json["output_generation"]
         .as_str()
@@ -351,7 +379,9 @@ async fn generate_step_prompt(
     let user = if effective_context.is_empty() {
         format!("Current Step Prompt Template: {template}")
     } else {
-        format!("Current Step Prompt Template: {template}\n\nContext from Previous Steps:\n{effective_context}")
+        format!(
+            "Current Step Prompt Template: {template}\n\nContext from Previous Steps:\n{effective_context}"
+        )
     };
 
     // Schema matches Python's GeneratedPrompt Pydantic model.
@@ -364,12 +394,18 @@ async fn generate_step_prompt(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm.chat_json_schema(vec![
-        ChatMessage::system(system),
-        ChatMessage::user(one_shot_human),
-        ChatMessage::assistant(one_shot_assistant),
-        ChatMessage::user(user),
-    ], "generated_prompt", schema).await?;
+    let (json, tokens) = llm
+        .chat_json_schema(
+            vec![
+                ChatMessage::system(system),
+                ChatMessage::user(one_shot_human),
+                ChatMessage::assistant(one_shot_assistant),
+                ChatMessage::user(user),
+            ],
+            "generated_prompt",
+            schema,
+        )
+        .await?;
 
     let prompt = json["prompt"]
         .as_str()
@@ -467,12 +503,18 @@ async fn extract_info(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm.chat_json_schema(vec![
-        ChatMessage::system(system),
-        ChatMessage::user(one_shot_human),
-        ChatMessage::assistant(one_shot_assistant),
-        ChatMessage::user(user),
-    ], "extraction_result", schema).await?;
+    let (json, tokens) = llm
+        .chat_json_schema(
+            vec![
+                ChatMessage::system(system),
+                ChatMessage::user(one_shot_human),
+                ChatMessage::assistant(one_shot_assistant),
+                ChatMessage::user(user),
+            ],
+            "extraction_result",
+            schema,
+        )
+        .await?;
 
     let extracted = json["extracted_info"]
         .as_str()
@@ -557,12 +599,18 @@ async fn generate_final_output(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm.chat_json_schema(vec![
-        ChatMessage::system(system),
-        ChatMessage::user(one_shot_human),
-        ChatMessage::assistant(one_shot_assistant),
-        ChatMessage::user(user),
-    ], "final_output", schema).await?;
+    let (json, tokens) = llm
+        .chat_json_schema(
+            vec![
+                ChatMessage::system(system),
+                ChatMessage::user(one_shot_human),
+                ChatMessage::assistant(one_shot_assistant),
+                ChatMessage::user(user),
+            ],
+            "final_output",
+            schema,
+        )
+        .await?;
 
     let output = json["final_output"]
         .as_str()
@@ -730,7 +778,7 @@ fn extract_text(json: &serde_json::Value) -> String {
 /// joined by blank lines, using 1-based step numbering to match Python exactly.
 ///
 /// Format per step:
-/// ```
+/// ```text
 /// --- Step N (AgentName) ---
 /// Prompt Template: <template>
 /// User Prompt Sent: <actual_prompt>

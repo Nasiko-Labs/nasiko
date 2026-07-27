@@ -23,7 +23,7 @@ pub(crate) fn opt_endpoint(endpoint: &str) -> String {
         let n = endpoint.floor_char_boundary(35);
         format!("{}...", &endpoint[..n])
     } else {
-        endpoint.to_owned()
+        endpoint.to_string()
     }
 }
 

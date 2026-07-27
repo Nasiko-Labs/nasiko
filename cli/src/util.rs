@@ -70,34 +70,30 @@ pub fn detect_version_from_source(source: &Path) -> Option<String> {
 fn detect_version_from_dir(source: &Path) -> Option<String> {
     // 1. AgentCard.json
     let card_path = source.join("AgentCard.json");
-    if card_path.exists() {
-        if let Ok(s) = fs::read_to_string(&card_path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-                if let Some(ver) = v.get("version").and_then(|v| v.as_str()) {
-                    return Some(ver.to_string());
-                }
-            }
-        }
+    if card_path.exists()
+        && let Ok(s) = fs::read_to_string(&card_path)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+        && let Some(ver) = v.get("version").and_then(|v| v.as_str())
+    {
+        return Some(ver.to_string());
     }
 
     // 2. pyproject.toml — [project] version or [tool.poetry] version
     let pyproject_path = source.join("pyproject.toml");
-    if pyproject_path.exists() {
-        if let Ok(s) = fs::read_to_string(&pyproject_path) {
-            if let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"]) {
-                return Some(ver);
-            }
-        }
+    if pyproject_path.exists()
+        && let Ok(s) = fs::read_to_string(&pyproject_path)
+        && let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"])
+    {
+        return Some(ver);
     }
 
     // 3. Cargo.toml — [package] version
     let cargo_path = source.join("Cargo.toml");
-    if cargo_path.exists() {
-        if let Ok(s) = fs::read_to_string(&cargo_path) {
-            if let Some(ver) = parse_toml_version(&s, &["package"]) {
-                return Some(ver);
-            }
-        }
+    if cargo_path.exists()
+        && let Ok(s) = fs::read_to_string(&cargo_path)
+        && let Some(ver) = parse_toml_version(&s, &["package"])
+    {
+        return Some(ver);
     }
 
     None
@@ -124,26 +120,25 @@ fn detect_version_from_zip(zip_path: &Path) -> Option<String> {
     };
 
     // 1. AgentCard.json
-    if let Some(s) = read_from_zip("AgentCard.json") {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-            if let Some(ver) = v.get("version").and_then(|v| v.as_str()) {
-                return Some(ver.to_string());
-            }
-        }
+    if let Some(s) = read_from_zip("AgentCard.json")
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+        && let Some(ver) = v.get("version").and_then(|v| v.as_str())
+    {
+        return Some(ver.to_string());
     }
 
     // 2. pyproject.toml
-    if let Some(s) = read_from_zip("pyproject.toml") {
-        if let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"]) {
-            return Some(ver);
-        }
+    if let Some(s) = read_from_zip("pyproject.toml")
+        && let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"])
+    {
+        return Some(ver);
     }
 
     // 3. Cargo.toml
-    if let Some(s) = read_from_zip("Cargo.toml") {
-        if let Some(ver) = parse_toml_version(&s, &["package"]) {
-            return Some(ver);
-        }
+    if let Some(s) = read_from_zip("Cargo.toml")
+        && let Some(ver) = parse_toml_version(&s, &["package"])
+    {
+        return Some(ver);
     }
 
     None
@@ -157,17 +152,15 @@ pub fn parse_toml_version(content: &str, sections: &[&str]) -> Option<String> {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
             let header = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
-            in_section = sections.iter().any(|s| *s == header);
+            in_section = sections.contains(&header);
             continue;
         }
-        if in_section {
-            if let Some(rest) = trimmed.strip_prefix("version") {
-                let rest = rest.trim();
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let ver = rest.trim().trim_matches('"').trim_matches('\'');
-                    if !ver.is_empty() {
-                        return Some(ver.to_string());
-                    }
+        if in_section && let Some(rest) = trimmed.strip_prefix("version") {
+            let rest = rest.trim();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let ver = rest.trim().trim_matches('"').trim_matches('\'');
+                if !ver.is_empty() {
+                    return Some(ver.to_string());
                 }
             }
         }

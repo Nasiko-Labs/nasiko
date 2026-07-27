@@ -94,8 +94,7 @@ fn parse_iso_param(
     iso: Option<&str>,
 ) -> Result<Option<DateTime<Utc>>, ObservabilityError> {
     match iso {
-        None => Ok(None),
-        Some(s) if s.is_empty() => Ok(None),
+        None | Some("") => Ok(None),
         Some(s) => DateTime::parse_from_rfc3339(&s.replace('Z', "+00:00"))
             .map(|dt| Some(dt.with_timezone(&Utc)))
             .map_err(|_| {
@@ -131,7 +130,7 @@ fn build_span_tree(
     spans: &[nasiko_observability::Span],
 ) -> (Vec<SpanNode>, HashMap<String, SpanNode>) {
     let make_node = |s: &nasiko_observability::Span| {
-        let (input, output, _) = extract_token_attrs(&s.attributes);
+        let (input, output, model) = extract_token_attrs(&s.attributes);
         SpanNode {
             id: encode_span_id(&s.span_id),
             span_id: s.span_id.clone(),
@@ -143,6 +142,9 @@ fn build_span_tree(
             parent_id: s.parent_span_id.as_deref().map(encode_span_id),
             latency_ms: s.duration_ms.map(|d| d as f64),
             token_count_total: input + output,
+            input_tokens: input,
+            output_tokens: output,
+            model,
             span_annotation_summaries: vec![],
             children: vec![],
         }
@@ -415,6 +417,9 @@ pub struct SpanNode {
     pub parent_id: Option<String>,
     pub latency_ms: Option<f64>,
     pub token_count_total: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model: Option<String>,
     pub span_annotation_summaries: Vec<Value>,
     pub children: Vec<SpanNode>,
 }
@@ -675,9 +680,9 @@ impl ObservabilityService {
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?
         } else {
-            let caller_uuid: uuid::Uuid = user_id.parse().map_err(|_| {
-                ObservabilityError::Internal("invalid user id in claims".into())
-            })?;
+            let caller_uuid: uuid::Uuid = user_id
+                .parse()
+                .map_err(|_| ObservabilityError::Internal("invalid user id in claims".into()))?;
             sqlx::query_as(
                 "SELECT session_id, agent_id, created_at \
                  FROM chat_sessions \
@@ -714,19 +719,15 @@ impl ObservabilityService {
             match self.provider.get_session(&session_id, start, end).await {
                 Ok(details) => {
                     let total_tokens = details.input_tokens + details.output_tokens;
-                    let started_at = details
-                        .traces
-                        .iter()
-                        .map(|t| t.root_span.started_at)
-                        .min();
+                    let started_at = details.traces.iter().map(|t| t.root_span.started_at).min();
                     let ended_at = details
                         .traces
                         .iter()
                         .filter_map(|t| t.root_span.ended_at)
                         .max();
-                    let duration_ms = started_at.zip(ended_at).map(|(s, e)| {
-                        (e - s).num_milliseconds().max(0) as u64
-                    });
+                    let duration_ms = started_at
+                        .zip(ended_at)
+                        .map(|(s, e)| (e - s).num_milliseconds().max(0) as u64);
                     all_sessions.push(SessionSummary {
                         id: session_id.clone(),
                         session_id,
@@ -790,7 +791,10 @@ impl ObservabilityService {
                 sessions: all_sessions,
                 total_agents: total,
                 successful_agents: successful,
-                pagination: Pagination { end_cursor: None, has_next_page: false },
+                pagination: Pagination {
+                    end_cursor: None,
+                    has_next_page: false,
+                },
             },
         })
     }
@@ -866,7 +870,9 @@ impl ObservabilityService {
                     id: details.session_id.clone(),
                     session_id: details.session_id.clone(),
                     num_traces: details.traces.len(),
-                    token_usage: TokenUsageSummary { total: Some(total_tokens) },
+                    token_usage: TokenUsageSummary {
+                        total: Some(total_tokens),
+                    },
                     cost_summary: FullCostSummary {
                         total: CostWithTokens {
                             cost: details.cost.total_usd,
@@ -883,7 +889,10 @@ impl ObservabilityService {
                     },
                     latency_p50: details.latency_ms_p50,
                     traces: trace_entries,
-                    pagination: Pagination { end_cursor, has_next_page: false },
+                    pagination: Pagination {
+                        end_cursor,
+                        has_next_page: false,
+                    },
                 },
             },
         })
@@ -925,7 +934,7 @@ impl ObservabilityService {
                 span: RootSpanRef {
                     id: s.id.clone(),
                     span_id: s.span_id.clone(),
-                    parent_id: None,
+                    parent_id: s.parent_id.clone(),
                     status_code: s.status_code.clone(),
                 },
             })
@@ -939,9 +948,15 @@ impl ObservabilityService {
                     num_spans,
                     latency_ms: trace_latency_ms,
                     cost_summary: NestedCostSummary {
-                        total: CostOnly { cost: cost.total_usd },
-                        prompt: CostOnly { cost: cost.prompt_usd },
-                        completion: CostOnly { cost: cost.completion_usd },
+                        total: CostOnly {
+                            cost: cost.total_usd,
+                        },
+                        prompt: CostOnly {
+                            cost: cost.prompt_usd,
+                        },
+                        completion: CostOnly {
+                            cost: cost.completion_usd,
+                        },
                     },
                     root_spans: RootSpansWrapper { edges: root_edges },
                     spans: root_nodes,
@@ -1031,7 +1046,9 @@ impl ObservabilityService {
                     latency_ms: span.duration_ms.map(|d| d as f64),
                     token_count_total: input_tokens + output_tokens,
                     cost_summary: SimpleCostSummary {
-                        total: CostEntry { cost: Some(details.cost.total_usd) },
+                        total: CostEntry {
+                            cost: Some(details.cost.total_usd),
+                        },
                     },
                     input: ContentField {
                         value: input_value,
@@ -1066,7 +1083,10 @@ impl ObservabilityService {
         start_time: Option<&str>,
     ) -> Result<AgentStatsResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 1);
-        let stats = self.provider.agent_stats(agent_id, start, Utc::now()).await?;
+        let stats = self
+            .provider
+            .agent_stats(agent_id, start, Utc::now())
+            .await?;
 
         Ok(AgentStatsResponse {
             data: AgentStatsData {
@@ -1074,9 +1094,15 @@ impl ObservabilityService {
                     id: stats.agent_id,
                     trace_count: stats.trace_count,
                     cost_summary: NestedCostSummary {
-                        total: CostOnly { cost: stats.cost.total_usd },
-                        prompt: CostOnly { cost: stats.cost.prompt_usd },
-                        completion: CostOnly { cost: stats.cost.completion_usd },
+                        total: CostOnly {
+                            cost: stats.cost.total_usd,
+                        },
+                        prompt: CostOnly {
+                            cost: stats.cost.prompt_usd,
+                        },
+                        completion: CostOnly {
+                            cost: stats.cost.completion_usd,
+                        },
                     },
                     latency_ms_p50: stats.latency_ms_p50,
                     latency_ms_p99: stats.latency_ms_p99,
@@ -1309,10 +1335,11 @@ Data: {}"#,
         // the billing source of truth — silently dropping history would be
         // wrong), but 30 days for a series (an epoch-to-now series is
         // unbounded and gets capped below anyway).
-        let mut start = parse_iso_param("start_time", start_time)?.unwrap_or_else(|| match bucket {
-            Some(_) => end - Duration::days(30),
-            None => DateTime::<Utc>::UNIX_EPOCH,
-        });
+        let mut start =
+            parse_iso_param("start_time", start_time)?.unwrap_or_else(|| match bucket {
+                Some(_) => end - Duration::days(30),
+                None => DateTime::<Utc>::UNIX_EPOCH,
+            });
         if let Some(b) = bucket {
             let max_span = Duration::seconds(b.seconds() * MAX_SERIES_BUCKETS);
             if end - start > max_span {
@@ -1330,9 +1357,7 @@ Data: {}"#,
         // agent used nothing", another way to skew a bill.
         let agent_filter = match agent_id {
             Some(raw) => Some(uuid::Uuid::parse_str(raw).map_err(|_| {
-                ObservabilityError::BadRequest(format!(
-                    "invalid agent_id '{raw}': expected a UUID"
-                ))
+                ObservabilityError::BadRequest(format!("invalid agent_id '{raw}': expected a UUID"))
             })?),
             None => None,
         };
@@ -1367,10 +1392,15 @@ Data: {}"#,
                     hours_meter::windowed_hours_series(&self.db, start, end, b, agent_filter)
                         .await
                         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-                let per_agent =
-                    hours_meter::windowed_hours_series_by_agent(&self.db, start, end, b, agent_filter)
-                        .await
-                        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+                let per_agent = hours_meter::windowed_hours_series_by_agent(
+                    &self.db,
+                    start,
+                    end,
+                    b,
+                    agent_filter,
+                )
+                .await
+                .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
                 let mut by_bucket: HashMap<DateTime<Utc>, Vec<AgentHoursBucketAgent>> =
                     HashMap::new();
@@ -1437,7 +1467,6 @@ fn empty_agent_hours_response(
 }
 
 // ─── Mapping helpers ──────────────────────────────────────────────────────────
-
 
 fn empty_agent_finops(agent_id: &str) -> AgentFinOps {
     AgentFinOps {

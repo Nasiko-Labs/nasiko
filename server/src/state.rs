@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use nasiko_auth::AuthService;
@@ -13,6 +12,10 @@ use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 use nasiko_config::Config;
 use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
+
+/// (config fingerprint, client) pair for the DB-configured OIDC client — see
+/// `AppState::resolve_oidc_client`.
+type OidcClientCache = Arc<tokio::sync::RwLock<Option<(String, Arc<nasiko_oidc::OidcClient>)>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -46,7 +49,7 @@ pub struct AppState {
     /// Rebuilt only when the stored config actually changes, so a config
     /// change takes effect on the next login without forcing a fresh
     /// discovery/JWKS fetch on every single request. See `resolve_oidc_client`.
-    oidc_dynamic_cache: Arc<tokio::sync::RwLock<Option<(String, Arc<nasiko_oidc::OidcClient>)>>>,
+    oidc_dynamic_cache: OidcClientCache,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
 }
@@ -181,7 +184,12 @@ impl AppState {
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
         // HTTP client — no duplicated infrastructure.
-        let mcp = nasiko_mcp_gateway::McpState::new(db.clone(), redis.clone(), http_client.clone(), &config);
+        let mcp = nasiko_mcp_gateway::McpState::new(
+            db.clone(),
+            redis.clone(),
+            http_client.clone(),
+            &config,
+        );
 
         let state = Self {
             runtime,
@@ -207,6 +215,18 @@ impl AppState {
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
+
+        // Container-hours meter: records per-instance run sessions for billing
+        // (see agents/hours_meter.rs). 0 disables — used by tests that drive
+        // reconcile_once directly.
+        if state.config.container_hours_poll_secs > 0 {
+            tokio::spawn(crate::agents::hours_meter::run(
+                state.db.clone(),
+                state.runtime.clone(),
+                state.config.agent_runtime.clone(),
+                std::time::Duration::from_secs(state.config.container_hours_poll_secs),
+            ));
+        }
 
         state
     }
