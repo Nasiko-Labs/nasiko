@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::error::{McpError, Result};
 use crate::provider::first_str;
+use crate::provider::generic::MCP_PROTOCOL_VERSION;
 use crate::repo::{self, McpConnector, McpUserConnection};
 use crate::state::McpState;
 
@@ -254,7 +255,7 @@ pub async fn discover_oauth_config(
         .body(
             json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
                            "clientInfo": {"name": "mcp-gateway", "version": "1.0"}},
             })
             .to_string(),

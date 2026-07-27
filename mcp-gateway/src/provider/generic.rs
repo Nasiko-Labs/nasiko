@@ -20,9 +20,21 @@ use serde_json::{Value, json};
 use crate::error::{McpError, Result};
 use crate::types::MCPServerConfig;
 
-/// Protocol version advertised in the MCP `initialize` handshake. Servers that
-/// only speak an older revision negotiate down in their response.
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Protocol version advertised in the MCP `initialize` handshake when this
+/// gateway calls OUT to a backend MCP server. Servers that only speak an
+/// older revision negotiate down in their response.
+///
+/// Distinct from `types::PROTOCOL_VERSION`, which is what this gateway
+/// advertises INWARD to agents calling it — a separate concern, correctly
+/// pinned independently. Every other outbound call to a backend (probing,
+/// OAuth discovery) must reuse *this* constant rather than hardcoding its own
+/// copy of the version string: `connectors::probe_initialize` and
+/// `oauth`'s discovery probe both used to hardcode the older "2024-11-05"
+/// after this one was bumped, so a real, spec-compliant, no-auth backend that
+/// only accepts the current version replied 406 to the stale probe — and
+/// `classify_response`'s fallback then misreported that 406 as "requires a
+/// bearer token", for a reason that had nothing to do with authentication.
+pub(crate) const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Default per-request timeout for a `tools/call` forward.
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -40,9 +52,7 @@ async fn read_capped(mut resp: reqwest::Response, server_name: &str) -> Result<S
     if let Some(len) = resp.content_length()
         && len as usize > MAX_RESPONSE_BYTES
     {
-        return Err(McpError::Backend(format!(
-            "backend '{server_name}' response too large ({len} bytes)"
-        )));
+        return Err(McpError::Backend(format!("backend '{server_name}' response too large ({len} bytes)")));
     }
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await? {
@@ -53,8 +63,7 @@ async fn read_capped(mut resp: reqwest::Response, server_name: &str) -> Result<S
         }
         buf.extend_from_slice(&chunk);
     }
-    String::from_utf8(buf)
-        .map_err(|_| McpError::Backend(format!("backend '{server_name}' returned invalid UTF-8")))
+    String::from_utf8(buf).map_err(|_| McpError::Backend(format!("backend '{server_name}' returned invalid UTF-8")))
 }
 
 /// Outcome of one HTTP attempt: a parsed response, or a signal that the backend
@@ -66,7 +75,14 @@ enum Attempt {
 
 #[derive(Clone)]
 pub struct GenericMcpProvider {
-    http: reqwest::Client,
+    /// SSRF/DNS-rebinding-guarded client — used for every backend whose URL a
+    /// user typed in (`server.trusted == false`, the default).
+    guarded: reqwest::Client,
+    /// The platform's own shared client — used only for `server.trusted ==
+    /// true` (an uploaded-build connector's URL, resolved by
+    /// `ContainerRuntime::endpoint()`, never user-typed). See `net.rs`'s
+    /// top-of-file doc comment for why both coexist.
+    plain: reqwest::Client,
     /// Negotiated `Mcp-Session-Id` per backend URL. In-process (not Redis): an
     /// MCP session is bound to the node that initialized it, so sharing it across
     /// horizontally-scaled nodes would be wrong — each node negotiates its own,
@@ -75,11 +91,15 @@ pub struct GenericMcpProvider {
 }
 
 impl GenericMcpProvider {
-    pub fn new(http: reqwest::Client) -> Self {
-        Self {
-            http,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-        }
+    /// `guarded` is used for every backend by default; `plain` only for
+    /// `server.trusted == true` (see the struct's field docs).
+    pub fn new(guarded: reqwest::Client, plain: reqwest::Client) -> Self {
+        Self { guarded, plain, sessions: Arc::new(Mutex::new(HashMap::new())) }
+    }
+
+    /// The client to use for one backend, per its `trusted` flag.
+    fn client_for(&self, server: &MCPServerConfig) -> &reqwest::Client {
+        if server.trusted { &self.plain } else { &self.guarded }
     }
 
     /// POST a JSON-RPC request to an MCP backend and return the parsed response.
@@ -104,26 +124,15 @@ impl GenericMcpProvider {
         let cached = self.sessions.lock().unwrap().get(&server.url).cloned();
         // Fast path: stateless backends (and already-negotiated sessions) return
         // here on the first attempt, exactly like the original bare request.
-        if let Attempt::Done(v) = self
-            .send_once(server, body, timeout, traceparent, cached.as_deref())
-            .await?
-        {
+        if let Attempt::Done(v) = self.send_once(server, body, timeout, traceparent, cached.as_deref()).await? {
             return Ok(v);
         }
         // Stateful backend with no valid session yet: initialize, cache, retry once.
-        let session_id = self
-            .initialize_session(server, timeout, traceparent)
-            .await?;
+        let session_id = self.initialize_session(server, timeout, traceparent).await?;
         if let Some(sid) = &session_id {
-            self.sessions
-                .lock()
-                .unwrap()
-                .insert(server.url.clone(), sid.clone());
+            self.sessions.lock().unwrap().insert(server.url.clone(), sid.clone());
         }
-        match self
-            .send_once(server, body, timeout, traceparent, session_id.as_deref())
-            .await?
-        {
+        match self.send_once(server, body, timeout, traceparent, session_id.as_deref()).await? {
             Attempt::Done(v) => Ok(v),
             Attempt::NeedsSession => Err(McpError::Backend(format!(
                 "backend '{}' still requires a session after initialize",
@@ -146,7 +155,7 @@ impl GenericMcpProvider {
         // `.json()` sets the body and Content-Type. We add Accept for both
         // response encodings, then layer the per-server auth headers on top.
         let mut req = self
-            .http
+            .client_for(server)
             .post(&server.url)
             .timeout(timeout)
             .header("Accept", "application/json, text/event-stream")
@@ -189,11 +198,7 @@ impl GenericMcpProvider {
             )));
         }
 
-        Ok(Attempt::Done(parse_jsonrpc(
-            &content_type,
-            &text,
-            &server.name,
-        )?))
+        Ok(Attempt::Done(parse_jsonrpc(&content_type, &text, &server.name)?))
     }
 
     /// Perform the MCP `initialize` handshake, returning the negotiated
@@ -217,7 +222,7 @@ impl GenericMcpProvider {
         });
 
         let mut req = self
-            .http
+            .client_for(server)
             .post(&server.url)
             .timeout(timeout)
             .header("Accept", "application/json, text/event-stream")
@@ -252,7 +257,7 @@ impl GenericMcpProvider {
         if let Some(sid) = &session_id {
             let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
             let mut n = self
-                .http
+                .client_for(server)
                 .post(&server.url)
                 .timeout(timeout)
                 .header("Accept", "application/json, text/event-stream")

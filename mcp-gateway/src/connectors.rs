@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::error::{McpError, Result};
 use crate::permissions;
+use crate::provider::generic::MCP_PROTOCOL_VERSION;
 use crate::repo::{self, McpConnector, NewConnector};
 use crate::state::McpState;
 use crate::types::{GrantType, PUBLIC_GRANTEE};
@@ -92,7 +93,7 @@ pub async fn probe_initialize(
         .body(
             json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
                            "clientInfo": {"name": "mcp-gateway-probe", "version": "1.0"}},
             })
             .to_string(),
