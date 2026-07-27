@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::Result;
@@ -14,25 +15,29 @@ pub fn card(directory: &str, description: Option<&str>) -> Result<()> {
 
     println!("Agent Card Generator\n");
 
-    // Try LLM generation via CP
-    if try_generate_via_cp(&root, &card_path, description) {
-        return Ok(());
+    // Try LLM generation via CP; fall back to static generation, but tell the
+    // user WHY the CP path was skipped — "CP not available" hiding an auth or
+    // server error makes the real problem undiagnosable.
+    match try_generate_via_cp(&root, &card_path, description) {
+        Ok(()) => Ok(()),
+        Err(reason) => {
+            println!("LLM generation via CP skipped: {reason:#}");
+            println!("Falling back to static generation.\n");
+            generate_static(&root, &card_path, description)
+        }
     }
-
-    // Fallback: static generation
-    println!("CP not available — using static generation.\n");
-    generate_static(&root, &card_path, description)
 }
 
-fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>) -> bool {
-    let client = match crate::api::Client::from_active_cluster() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>) -> Result<()> {
+    let client = crate::api::Client::from_active_cluster()
+        .map_err(|e| anyhow::anyhow!("no active cluster ({e}) — run `nasiko connect`"))?;
 
     let source = collect_source(root);
     if source.is_none() && description.is_none() {
-        return false;
+        anyhow::bail!(
+            "no source files found in '{}' and no description given",
+            root.display()
+        );
     }
 
     let agent_name = root
@@ -51,24 +56,21 @@ fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>)
         body["description"] = serde_json::Value::String(desc.to_string());
     }
 
-    let resp: Result<serde_json::Value, _> = client.post_json("/capabilities/generate", &body);
-    match resp {
-        Ok(resp) => {
-            if let Some(card) = resp.get("card") {
-                let json = serde_json::to_string_pretty(card).unwrap_or_default();
-                if fs::write(card_path, &json).is_ok() {
-                    let tokens = resp
-                        .get("tokens_used")
-                        .and_then(|t| t.as_i64())
-                        .unwrap_or(0);
-                    println!("✓ Wrote AgentCard.json (LLM, {} tokens)", tokens);
-                    return true;
-                }
-            }
-            false
-        }
-        Err(_) => false,
-    }
+    let resp: serde_json::Value = client
+        .post_json("/capabilities/generate", &body)
+        .map_err(|e| anyhow::anyhow!("CP request failed: {e}"))?;
+    let card = resp
+        .get("card")
+        .ok_or_else(|| anyhow::anyhow!("CP response has no 'card' field"))?;
+    let json = serde_json::to_string_pretty(card)?;
+    fs::write(card_path, &json)
+        .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", card_path.display()))?;
+    let tokens = resp
+        .get("tokens_used")
+        .and_then(|t| t.as_i64())
+        .unwrap_or(0);
+    println!("✓ Wrote AgentCard.json (LLM, {} tokens)", tokens);
+    Ok(())
 }
 
 fn collect_source(root: &Path) -> Option<String> {
@@ -123,8 +125,37 @@ fn collect_dir_sources(dir: &Path, out: &mut String) {
     }
 }
 
+/// Ask for a string when stdin is a terminal; otherwise take the default
+/// silently (echoed for the record). `nasiko card` must work in scripts and
+/// CI, where dialoguer's prompts error out with "not a terminal".
+fn prompt_str(interactive: bool, prompt: &str, default: String) -> Result<String> {
+    if !interactive {
+        println!("  {prompt}: {default}");
+        return Ok(default);
+    }
+    Ok(Input::new()
+        .with_prompt(prompt)
+        .default(default)
+        .interact_text()?)
+}
+
+fn prompt_bool(interactive: bool, prompt: &str, default: bool) -> Result<bool> {
+    if !interactive {
+        println!("  {prompt}: {default}");
+        return Ok(default);
+    }
+    Ok(Confirm::new()
+        .with_prompt(prompt)
+        .default(default)
+        .interact()?)
+}
+
 fn generate_static(root: &Path, card_path: &Path, user_description: Option<&str>) -> Result<()> {
     let existing = load_existing_card(card_path);
+    let interactive = std::io::stdin().is_terminal();
+    if !interactive {
+        println!("(non-interactive — using defaults; edit AgentCard.json to adjust)");
+    }
 
     let dir_name = root
         .file_name()
@@ -132,35 +163,36 @@ fn generate_static(root: &Path, card_path: &Path, user_description: Option<&str>
         .to_string_lossy()
         .to_string();
 
-    let name: String = Input::new()
-        .with_prompt("Agent name")
-        .default(existing_str(&existing, "name").unwrap_or(dir_name))
-        .interact_text()?;
+    let name = prompt_str(
+        interactive,
+        "Agent name",
+        existing_str(&existing, "name").unwrap_or(dir_name),
+    )?;
 
     let desc_default = user_description
         .map(String::from)
         .or_else(|| existing_str(&existing, "description"))
         .unwrap_or_default();
 
-    let description: String = Input::new()
-        .with_prompt("Description")
-        .default(desc_default)
-        .interact_text()?;
+    let description = prompt_str(interactive, "Description", desc_default)?;
 
-    let version: String = Input::new()
-        .with_prompt("Version")
-        .default(existing_str(&existing, "version").unwrap_or_else(|| "0.1.0".into()))
-        .interact_text()?;
+    let version = prompt_str(
+        interactive,
+        "Version",
+        existing_str(&existing, "version").unwrap_or_else(|| "0.1.0".into()),
+    )?;
 
-    let url: String = Input::new()
-        .with_prompt("Agent URL")
-        .default(existing_str(&existing, "url").unwrap_or_else(|| "http://localhost:8000/".into()))
-        .interact_text()?;
+    let url = prompt_str(
+        interactive,
+        "Agent URL",
+        existing_str(&existing, "url").unwrap_or_else(|| "http://localhost:8000/".into()),
+    )?;
 
-    let streaming = Confirm::new()
-        .with_prompt("Supports streaming?")
-        .default(existing_bool(&existing, &["capabilities", "streaming"]))
-        .interact()?;
+    let streaming = prompt_bool(
+        interactive,
+        "Supports streaming?",
+        existing_bool(&existing, &["capabilities", "streaming"]),
+    )?;
 
     let framework = detect_framework(root)
         .or_else(|| existing_str(&existing, "agentFramework"))
