@@ -3,6 +3,8 @@ target/
 !target/x86_64-unknown-linux-musl/release/nasiko-cp-cloud
 !target/x86_64-unknown-linux-musl/release/nasiko-registry
 !target/x86_64-unknown-linux-musl/release/nasiko-server-ee
+!target/x86_64-unknown-linux-musl/release/nasiko-tenant-server
+!target/x86_64-unknown-linux-musl/release/nasiko-ee
 !target/x86_64-unknown-linux-musl/release/nasiko-gateway-ee
 !target/x86_64-unknown-linux-musl/release/nasiko-server
 !target/x86_64-unknown-linux-musl/release/nasiko-gateway
