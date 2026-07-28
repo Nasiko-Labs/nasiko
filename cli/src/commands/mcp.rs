@@ -489,15 +489,14 @@ pub fn share_list(connector_id: &str, json: bool) -> Result<()> {
             println!("No grants.");
             return;
         }
-        // `grantee_id` is the grantee's raw user ID, not their username — the
-        // API stores/returns it that way (grants are created by username, but
-        // persisted by ID), and there's no universally-available endpoint this
-        // CLI can call to resolve it back: the one that could (`GET
-        // /users/{id}`) is EE-only and superuser-gated, so relying on it would
+        // `grantee_id` is the raw ID of whatever `grant_type` names — a user,
+        // team, department, or agent ID (or `*` for a public grant) — never
+        // resolved to a display name here: there's no universally-available
+        // endpoint this CLI can call to do that (the one that could, `GET
+        // /users/{id}`, is EE-only and superuser-gated, so relying on it would
         // 404 on OSS and 403 for the common case of a non-admin listing shares
-        // on their own connector. Label the column honestly instead of
-        // guessing wrong.
-        println!("{:<36} {:<8} {:<36} CREATED AT", "GRANT ID", "TYPE", "GRANTEE (user id)");
+        // on their own connector).
+        println!("{:<36} {:<8} {:<36} CREATED AT", "GRANT ID", "TYPE", "GRANTEE ID");
         for g in &data {
             let grantee = s(g, "grantee_id");
             let grantee = if grantee == "*" { "everyone" } else { grantee };
