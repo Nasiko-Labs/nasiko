@@ -295,7 +295,10 @@ pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Ve
 }
 
 /// Accessible custom (mcp_server) connectors only — for building generic backends.
-pub async fn list_accessible_mcp_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
+pub async fn list_accessible_mcp_connectors(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
         r#"SELECT * FROM mcp_connectors c
            WHERE c.provider_type = 'mcp_server' AND c.is_active = true
@@ -475,7 +478,10 @@ pub async fn create_grant(
     Ok(row)
 }
 
-pub async fn list_grants_for_connector(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorGrant>> {
+pub async fn list_grants_for_connector(
+    db: &PgPool,
+    connector_id: Uuid,
+) -> Result<Vec<McpConnectorGrant>> {
     let rows = sqlx::query_as::<_, McpConnectorGrant>(
         "SELECT * FROM mcp_connector_grants WHERE connector_id = $1 ORDER BY created_at",
     )
@@ -586,7 +592,8 @@ pub async fn revoke_grant_and_connection(
 
     // Only a specific user's connection is removed; a public revoke leaves other
     // users' own connections intact.
-    if grant_type == "user" && grantee_id != PUBLIC_GRANTEE
+    if grant_type == "user"
+        && grantee_id != PUBLIC_GRANTEE
         && let Ok(uid) = Uuid::parse_str(grantee_id)
     {
         sqlx::query("DELETE FROM mcp_user_connections WHERE user_id = $1 AND connector_id = $2")
@@ -928,7 +935,10 @@ pub async fn upsert_connector_tools(
     Ok(())
 }
 
-pub async fn list_connector_tools(db: &PgPool, connector_id: Uuid) -> Result<Vec<McpConnectorTool>> {
+pub async fn list_connector_tools(
+    db: &PgPool,
+    connector_id: Uuid,
+) -> Result<Vec<McpConnectorTool>> {
     let rows = sqlx::query_as::<_, McpConnectorTool>(
         "SELECT * FROM mcp_connector_tools WHERE connector_id = $1 ORDER BY tool_name",
     )
@@ -940,7 +950,10 @@ pub async fn list_connector_tools(db: &PgPool, connector_id: Uuid) -> Result<Vec
 
 // ─── Composio sessions ──────────────────────────────────────────────────────
 
-pub async fn get_composio_session(db: &PgPool, user_id: Uuid) -> Result<Option<McpComposioSession>> {
+pub async fn get_composio_session(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Option<McpComposioSession>> {
     let row = sqlx::query_as::<_, McpComposioSession>(
         "SELECT * FROM mcp_composio_sessions WHERE user_id = $1",
     )
@@ -1098,6 +1111,23 @@ pub async fn agent_has_connector_grant(
     )
     .bind(connector_id)
     .bind(agent_id.to_string())
+    .fetch_one(db)
+    .await?;
+    Ok(ok)
+}
+
+/// Does `user_id` own `connector_id`? Narrower than [`can_access_connector`]
+/// (which also passes for composio/user-share/public reachability) — used
+/// where the caller must be the actual owner, not merely someone it's been
+/// shared with (e.g. letting a connector owner configure their own connector
+/// on an agent they don't manage, without extending that right to anyone
+/// they've merely shared the connector with).
+pub async fn is_connector_owner(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
+    let ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM mcp_connectors WHERE id = $1 AND owner_id = $2)",
+    )
+    .bind(connector_id)
+    .bind(user_id)
     .fetch_one(db)
     .await?;
     Ok(ok)

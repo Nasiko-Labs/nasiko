@@ -61,6 +61,41 @@ pub async fn can_manage_agent(
     .unwrap_or(false)
 }
 
+/// True if the caller can manage `connector_id`'s per-agent state on
+/// `agent_id` — either full agent management ([`can_manage_agent`]), or the
+/// caller owns `connector_id` AND it has already been granted directly to
+/// this agent (`grant_type = 'agent'`, see `connector grant-agent`).
+///
+/// This lets a connector owner enable/disable/configure their OWN connector
+/// on someone else's agent once it's been shared with that agent, without
+/// granting them any control over the agent's other connectors or its
+/// agent-wide settings (reset, full connector/rule listing stay
+/// [`can_manage_agent`]-only). Sharing a connector *to yourself* (a user- or
+/// public-share) does not qualify — only the actual owner gets this right.
+pub async fn can_manage_agent_connector(
+    state: &crate::state::AppState,
+    claims: &crate::auth::Claims,
+    agent_id: Uuid,
+    connector_id: Uuid,
+) -> bool {
+    if can_manage_agent(state, claims, agent_id).await {
+        return true;
+    }
+    let Ok(user_id) = claims.user_uuid() else {
+        return false;
+    };
+    let owns_connector =
+        nasiko_mcp_gateway::repo::is_connector_owner(&state.db, user_id, connector_id)
+            .await
+            .unwrap_or(false);
+    if !owns_connector {
+        return false;
+    }
+    nasiko_mcp_gateway::repo::agent_has_connector_grant(&state.db, agent_id, connector_id)
+        .await
+        .unwrap_or(false)
+}
+
 /// Check whether `caller_agent_id` is permitted to invoke `target_agent_id`.
 ///
 /// Default-deny: both caller and target must have an explicit row in `agent_acl`.
