@@ -16,6 +16,15 @@ use crate::OciState;
 use crate::error::{OciError, Result};
 use crate::ops::{blobs, manifests};
 
+/// Ceiling on the assembled archive size. The whole tar is buffered in memory
+/// (and copied once more into the daemon request body), so an unbounded image
+/// could OOM the server during deploy; anything larger degrades to the
+/// registry-pull path. 1 GiB comfortably covers agent images (tens to
+/// hundreds of MB) while bounding worst-case memory to ~2x this value.
+/// Streaming the archive instead would need decompressed layer sizes up front
+/// (tar headers demand them), i.e. spooling layers to disk first.
+const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
+
 #[async_trait]
 impl nasiko_runtime::ImageSource for OciState {
     async fn docker_archive(&self, image: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -29,6 +38,29 @@ impl nasiko_runtime::ImageSource for OciState {
         };
         let image_manifest: serde_json::Value = serde_json::from_str(&manifest.content)
             .map_err(|e| OciError::Storage(format!("manifest {repository}:{tag}: {e}")))?;
+
+        // Fail fast on the manifest's declared sizes before buffering a
+        // single blob. (Sizes are of the stored, possibly compressed, blobs —
+        // the decompression budget below is the authoritative guard.)
+        let declared: u64 = image_manifest
+            .pointer("/layers")
+            .and_then(|l| l.as_array())
+            .map(|layers| {
+                layers
+                    .iter()
+                    .filter_map(|l| l.pointer("/size").and_then(|s| s.as_u64()))
+                    .sum()
+            })
+            .unwrap_or(0);
+        if declared > MAX_ARCHIVE_BYTES {
+            tracing::warn!(
+                image,
+                declared_bytes = declared,
+                limit_bytes = MAX_ARCHIVE_BYTES,
+                "image too large to docker-load; falling back to registry pull"
+            );
+            return Ok(None);
+        }
 
         let config_digest = digest_at(&image_manifest, "/config/digest", &repository, &tag)?;
         let config = blobs::get_blob_bytes(self, &repository, &config_digest).await?;
@@ -56,7 +88,12 @@ impl nasiko_runtime::ImageSource for OciState {
             );
         }
 
-        Ok(Some(build_docker_archive(image, &config, layers)?))
+        Ok(Some(build_docker_archive(
+            image,
+            &config,
+            layers,
+            MAX_ARCHIVE_BYTES,
+        )?))
     }
 }
 
@@ -105,14 +142,26 @@ fn split_image_ref(image: &str) -> Option<(String, String)> {
 /// says) — while the config's `rootfs.diff_ids` always name the uncompressed
 /// bytes. Sniffing the gzip magic and decompressing keeps the archive
 /// consistent with the config for both.
-fn build_docker_archive(repo_tag: &str, config: &[u8], layers: Vec<Vec<u8>>) -> Result<Vec<u8>> {
+///
+/// `max_bytes` bounds the total decompressed layer content — the manifest
+/// only declares compressed sizes, so this is the guard that actually holds
+/// (including against gzip bombs).
+fn build_docker_archive(
+    repo_tag: &str,
+    config: &[u8],
+    layers: Vec<Vec<u8>>,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
     let config_name = format!("{}.json", sha256_hex(config));
 
+    let mut budget = max_bytes;
     let mut layer_names = Vec::with_capacity(layers.len());
     let mut layer_tars = Vec::with_capacity(layers.len());
     for (i, layer) in layers.into_iter().enumerate() {
         layer_names.push(format!("layers/{i}.tar"));
-        layer_tars.push(gunzip_if_gzipped(layer)?);
+        let tar_bytes = gunzip_if_gzipped(layer, budget)?;
+        budget -= tar_bytes.len() as u64;
+        layer_tars.push(tar_bytes);
     }
 
     let manifest = serde_json::json!([{
@@ -144,16 +193,33 @@ fn append_file(archive: &mut tar::Builder<Vec<u8>>, path: &str, data: &[u8]) -> 
         .map_err(|e| OciError::Storage(format!("docker archive entry {path}: {e}")))
 }
 
-fn gunzip_if_gzipped(data: Vec<u8>) -> Result<Vec<u8>> {
+/// Decompress a gzipped layer (pass plain ones through), refusing to produce
+/// more than `limit` bytes — reading through `take(limit + 1)` means a bomb
+/// costs at most `limit` bytes of memory before being rejected.
+fn gunzip_if_gzipped(data: Vec<u8>, limit: u64) -> Result<Vec<u8>> {
     const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
     if !data.starts_with(&GZIP_MAGIC) {
+        if data.len() as u64 > limit {
+            return Err(over_limit(data.len() as u64, limit));
+        }
         return Ok(data);
     }
     let mut decompressed = Vec::new();
     flate2::read::GzDecoder::new(data.as_slice())
+        .take(limit.saturating_add(1))
         .read_to_end(&mut decompressed)
         .map_err(|e| OciError::Storage(format!("layer gunzip: {e}")))?;
+    if decompressed.len() as u64 > limit {
+        return Err(over_limit(decompressed.len() as u64, limit));
+    }
     Ok(decompressed)
+}
+
+fn over_limit(got: u64, limit: u64) -> OciError {
+    OciError::Storage(format!(
+        "layer decompresses past the {limit}-byte docker-load budget (got {got}+ bytes) — \
+         image must be pulled from a registry instead"
+    ))
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -205,9 +271,13 @@ mod tests {
         let plain_layer = b"plain layer tar bytes".to_vec();
         let gzipped_layer = gzip(b"gzipped layer tar bytes");
 
-        let archive =
-            build_docker_archive("nasiko/x:1.0.0", config, vec![plain_layer, gzipped_layer])
-                .unwrap();
+        let archive = build_docker_archive(
+            "nasiko/x:1.0.0",
+            config,
+            vec![plain_layer, gzipped_layer],
+            MAX_ARCHIVE_BYTES,
+        )
+        .unwrap();
 
         let mut entries = std::collections::HashMap::new();
         let mut reader = tar::Archive::new(archive.as_slice());
@@ -227,5 +297,36 @@ mod tests {
         assert_eq!(entries["layers/0.tar"], b"plain layer tar bytes".to_vec());
         // The gzipped layer arrives decompressed, matching config diff_ids.
         assert_eq!(entries["layers/1.tar"], b"gzipped layer tar bytes".to_vec());
+    }
+
+    #[test]
+    fn archive_rejects_layers_past_the_byte_budget() {
+        let config = br#"{"rootfs":{"diff_ids":[]}}"#;
+        let err = build_docker_archive("nasiko/x:1.0.0", config, vec![vec![0u8; 100]], 99)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("docker-load budget"), "{err}");
+    }
+
+    #[test]
+    fn archive_rejects_gzip_bombs_by_decompressed_size() {
+        // 64 bytes compressed, 100 KiB decompressed — the declared/compressed
+        // size passes any sane precheck; only the decompression budget stops it.
+        let bomb = gzip(&vec![0u8; 100 * 1024]);
+        assert!(bomb.len() < 1024);
+        let config = br#"{"rootfs":{"diff_ids":[]}}"#;
+        let err = build_docker_archive("nasiko/x:1.0.0", config, vec![bomb], 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("docker-load budget"), "{err}");
+    }
+
+    #[test]
+    fn budget_spans_layers_cumulatively() {
+        let config = br#"{"rootfs":{"diff_ids":[]}}"#;
+        // Two 60-byte layers under a 100-byte budget: each fits alone, the
+        // pair does not.
+        let layers = vec![vec![0u8; 60], vec![1u8; 60]];
+        assert!(build_docker_archive("nasiko/x:1.0.0", config, layers, 100).is_err());
     }
 }
