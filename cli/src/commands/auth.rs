@@ -13,25 +13,31 @@ pub fn login() -> Result<()> {
         .with_prompt("Password")
         .interact()?;
 
-    let http = ureq::Agent::new_with_defaults();
+    let http = ureq::Agent::new_with_config(
+        ureq::config::Config::builder()
+            .http_status_as_error(false)
+            .build(),
+    );
     let url = format!("{}/api/auth/login", entry.url);
 
-    let resp = http
+    let mut resp = http
         .post(&url)
         .header("Content-Type", "application/json")
         .send_json(serde_json::json!({
             "username": username,
             "password": password,
         }))
-        .context("failed to reach control plane")?;
+        .with_context(|| format!("cannot reach control plane at {}", entry.url))?;
 
-    if resp.status().as_u16() != 200 {
-        let mut resp = resp;
+    let status = resp.status().as_u16();
+    if status == 401 || status == 403 {
+        bail!("invalid credentials — check your username and password");
+    }
+    if status >= 400 {
         let body = resp.body_mut().read_to_string().unwrap_or_default();
-        bail!("login failed (HTTP {}): {}", resp.status().as_u16(), body);
+        bail!("login failed (HTTP {status}): {body}");
     }
 
-    let mut resp = resp;
     let body: serde_json::Value = resp
         .body_mut()
         .read_json()
@@ -105,30 +111,15 @@ pub fn logout() -> Result<()> {
 /// Print the currently authenticated user's profile.
 pub fn whoami() -> Result<()> {
     let (cluster_name, entry) = config::active_cluster()?;
-    let token = entry
-        .token
-        .ok_or_else(|| anyhow::anyhow!("not logged in — run: nasiko auth login"))?;
-    if config::token_expired(&token) == Some(true) {
+    if entry.token.is_none() {
+        bail!("not logged in — run: nasiko auth login");
+    }
+    if config::token_expired(entry.token.as_deref().unwrap_or("")) == Some(true) {
         bail!("session expired — run: nasiko auth login");
     }
 
-    let http = ureq::Agent::new_with_defaults();
-    let url = format!("{}/api/users/me", entry.url);
-
-    let resp = http
-        .get(&url)
-        .header("Authorization", &format!("Bearer {token}"))
-        .call()
-        .context("failed to reach control plane")?;
-
-    if resp.status().as_u16() != 200 {
-        let mut resp = resp;
-        let body = resp.body_mut().read_to_string().unwrap_or_default();
-        bail!("HTTP {}: {}", resp.status().as_u16(), body);
-    }
-
-    let mut resp = resp;
-    let user: serde_json::Value = resp.body_mut().read_json().context("invalid response")?;
+    let client = crate::api::Client::from_active_cluster()?;
+    let user: serde_json::Value = client.get_json("/users/me")?;
 
     println!("Cluster:   {}", cluster_name);
     if let Some(v) = user.get("username").and_then(|v| v.as_str()) {
