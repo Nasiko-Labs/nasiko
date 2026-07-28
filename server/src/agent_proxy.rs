@@ -34,6 +34,11 @@ pub async fn agent_proxy(
         .cloned()
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
+    // TEMP DEBUG: dump the inbound request headers so we can see what identifiers
+    // (traceparent/trace_id, session_id, flow_id, x-nasiko-*) arrive natively vs.
+    // what we mint. Remove once the header audit is done.
+    crate::router::a2a_dispatch::log_inbound_headers("agent_proxy (direct agent)", req.headers());
+
     // Build the forwarded path: everything after /api/agents/{id}
     let full_path = req.uri().path();
     let id_str = agent_id.to_string();
@@ -154,6 +159,33 @@ pub async fn agent_proxy(
             .execute(&db)
             .await;
         });
+    }
+
+    // Register the flow so the model router can classify this request. A direct
+    // agent call opens a real flow too: the caller forwards a `traceparent`, but
+    // only the orchestrator path (`a2a_dispatch.rs`) ever wrote a `flows` row, so
+    // the gateway's `derive_boundary_signals` lookup missed and fell back to
+    // `inert` — the classifier never fired and the resolved/default model was
+    // used. Registering here with default `{}` metadata (⇒ free-flowing mode)
+    // makes the forwarded trace id a *known* flow, so the boundary is fireable,
+    // exactly like the orchestrator. `ON CONFLICT DO NOTHING` leaves nested A2A
+    // cascade calls untouched (their flow was already registered upstream), and
+    // this runs before the request is forwarded so the row is guaranteed present
+    // before the agent can call back into the LLM gateway.
+    if let Ok(user_id) = claims.user_uuid() {
+        let title = persist_info.as_ref().map(|i| i.user_text.clone());
+        let _ = sqlx::query(
+            r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
+               VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
+               ON CONFLICT (flow_id) DO NOTHING"#,
+        )
+        .bind(&flow_ctx.flow_id)
+        .bind(user_id)
+        .bind(agent_id)
+        .bind(&agent.name)
+        .bind(title)
+        .execute(&state.db)
+        .await;
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so

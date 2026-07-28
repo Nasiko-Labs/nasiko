@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Multipart, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{
         IntoResponse, Response,
         sse::{Event, Sse},
@@ -34,6 +34,29 @@ use crate::usage::TokenUsageBuilder;
 // Our handler already returns a stream of StreamResponse — wrap it in the trait impl and let
 // a2a-server handle JSON-RPC envelope, SSE serialization, and /.well-known/agent-card.json.
 
+/// TEMP DEBUG: log every inbound header (redacting `authorization`/`cookie`) so we can
+/// audit which conversation/trace identifiers arrive natively. Remove after the audit.
+pub(crate) fn log_inbound_headers(entry: &str, headers: &HeaderMap) {
+    let dump: Vec<String> = headers
+        .iter()
+        .map(|(name, value)| {
+            let n = name.as_str();
+            let v = if n.eq_ignore_ascii_case("authorization") || n.eq_ignore_ascii_case("cookie") {
+                "<redacted>"
+            } else {
+                value.to_str().unwrap_or("<non-utf8>")
+            };
+            format!("{n}={v}")
+        })
+        .collect();
+    tracing::info!(
+        target: "nasiko::header_audit",
+        entry,
+        headers = %dump.join("  |  "),
+        "inbound request headers"
+    );
+}
+
 /// Server-side A2A dispatch endpoint. Accepts JSONRPC `message/send` or `message/stream`.
 /// Dispatches to the routing engine (no agent_id), ReAct orchestrator (agent_id=orchestrator),
 /// or a specific agent directly.
@@ -43,8 +66,14 @@ use crate::usage::TokenUsageBuilder;
 pub async fn a2a_dispatch_handler(
     State(state): State<AppState>,
     claims: Claims,
+    headers: HeaderMap,
     Json(req): Json<JsonRpcRequest>,
 ) -> Result<Response, A2aDispatchError> {
+    // TEMP DEBUG: dump the inbound request headers so we can see what identifiers
+    // (traceparent/trace_id, session_id, flow_id, x-nasiko-*) arrive natively vs.
+    // what we mint. Remove once the header audit is done.
+    log_inbound_headers("a2a_dispatch (orchestrator)", &headers);
+
     let params: nasiko_types::a2a::SendMessageRequest = serde_json::from_value(
         req.params
             .clone()
@@ -232,6 +261,19 @@ async fn orchestrator_stream(
     .bind(query)
     .execute(&state.db)
     .await;
+
+    // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
+    // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
+    // back to this row (see derive_boundary_signals) — so compare this flow_id against the
+    // gateway's `nasiko::llm_router::boundary` log to spot a broken trace-propagation chain.
+    tracing::info!(
+        target: "nasiko::flow",
+        %flow_id,
+        context_id = %context_id,
+        task_id = %task_id,
+        %traceparent,
+        "orchestrator flow started — registered flows row; forwarding traceparent (trace_id == flow_id) to agents"
+    );
 
     let caller_uuid: Option<Uuid> = None;
     let guard = CpCallGuard::new(
