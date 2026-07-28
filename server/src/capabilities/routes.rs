@@ -191,31 +191,12 @@ async fn resolve_source(
 }
 
 fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
+    use nasiko_utils::source_files::{MAX_SOURCE_FILE_BYTES, is_agent_source_file};
     use std::io::Read;
 
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor)?;
     let mut combined = String::new();
-
-    let code_extensions = [
-        "py",
-        "rs",
-        "ts",
-        "js",
-        "go",
-        "java",
-        "rb",
-        "ex",
-        "exs",
-        "toml",
-        "yaml",
-        "yml",
-        "json",
-        "md",
-        "txt",
-        "dockerfile",
-        "sh",
-    ];
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
@@ -224,14 +205,13 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
         }
 
         let name = file.name().to_string();
-        let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+        let file_name = name.rsplit('/').next().unwrap_or(&name);
 
-        if !code_extensions.contains(&ext.as_str()) && !name.to_lowercase().contains("dockerfile") {
+        if !is_agent_source_file(file_name) {
             continue;
         }
 
-        // Skip large files (>50KB)
-        if file.size() > 50_000 {
+        if file.size() > MAX_SOURCE_FILE_BYTES {
             combined.push_str(&format!("\n--- {name} (skipped, too large) ---\n"));
             continue;
         }

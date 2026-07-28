@@ -1,0 +1,106 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "streaming": true
+  },
+  "default_input_modes": [
+    "text/plain"
+  ],
+  "default_output_modes": [
+    "text/plain"
+  ],
+  "description": "Infrastructure agent that searches Terraform Registry, resolves DNS, checks SSL certificates, and looks up IP geolocation using OpenAI-compatible LLMs.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "infra-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Search the Terraform Registry for modules. Returns module names, versions, descriptions, and download counts.",
+      "examples": [
+        "Find a Terraform module for AWS VPC",
+        "Search for Terraform modules for EKS"
+      ],
+      "id": "terraform-modules",
+      "name": "Terraform Module Search",
+      "tags": [
+        "infrastructure",
+        "terraform",
+        "iac"
+      ]
+    },
+    {
+      "description": "Get information about a Terraform provider from the registry. Returns version, description, source repository, downloads, and tier.",
+      "examples": [
+        "Get details about hashicorp/aws provider",
+        "Look up digitalocean provider info"
+      ],
+      "id": "terraform-provider",
+      "name": "Terraform Provider Info",
+      "tags": [
+        "infrastructure",
+        "terraform",
+        "provider"
+      ]
+    },
+    {
+      "description": "Resolve DNS records (A, AAAA, CNAME, MX, TXT, NS) for any domain using Google's DNS-over-HTTPS.",
+      "examples": [
+        "Resolve A records for github.com",
+        "Look up MX records for example.com"
+      ],
+      "id": "dns-lookup",
+      "name": "DNS Lookup",
+      "tags": [
+        "dns",
+        "networking",
+        "infrastructure"
+      ]
+    },
+    {
+      "description": "Connect to a domain over TLS and inspect its certificate: issuer, subject, validity dates, days until expiry, and trust status.",
+      "examples": [
+        "Check SSL certificate for google.com",
+        "Verify TLS certificate for api.github.com"
+      ],
+      "id": "ssl-check",
+      "name": "SSL Certificate Check",
+      "tags": [
+        "ssl",
+        "tls",
+        "security",
+        "networking"
+      ]
+    },
+    {
+      "description": "Get geolocation and network information for an IP address: country, region, city, ISP, organization, AS number.",
+      "examples": [
+        "Look up geolocation for IP 8.8.8.8",
+        "Get network info for 1.1.1.1"
+      ],
+      "id": "ip-info",
+      "name": "IP Geolocation",
+      "tags": [
+        "ip-geolocation",
+        "networking",
+        "infrastructure"
+      ]
+    }
+  ],
+  "tags": [
+    "infrastructure",
+    "terraform",
+    "dns",
+    "networking",
+    "ssl",
+    "ip-geolocation",
+    "iac"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

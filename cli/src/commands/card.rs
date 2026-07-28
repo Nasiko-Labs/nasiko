@@ -8,6 +8,14 @@ use dialoguer::{Confirm, Input};
 use crate::util;
 
 pub fn card(directory: &str, description: Option<&str>) -> Result<()> {
+    // `nasiko card <path>` is a natural mistake (the positional arg is the
+    // description; the directory is --dir). If the "description" is a path to
+    // an existing directory and --dir was left at its default, the user meant
+    // the directory.
+    let (directory, description) = match description {
+        Some(d) if directory == "." && Path::new(d).is_dir() => (d, None),
+        other => (directory, other),
+    };
     let root = Path::new(directory)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(directory).to_path_buf());
@@ -59,10 +67,11 @@ fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>)
     let resp: serde_json::Value = client
         .post_json("/capabilities/generate", &body)
         .map_err(|e| anyhow::anyhow!("CP request failed: {e}"))?;
-    let card = resp
+    let generated = resp
         .get("card")
         .ok_or_else(|| anyhow::anyhow!("CP response has no 'card' field"))?;
-    let json = serde_json::to_string_pretty(card)?;
+    let card = complete_card(generated, &agent_name, &load_existing_card(card_path));
+    let json = serde_json::to_string_pretty(&card)?;
     fs::write(card_path, &json)
         .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", card_path.display()))?;
     let tokens = resp
@@ -73,30 +82,67 @@ fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>)
     Ok(())
 }
 
+/// The CP's capability generator returns only what it can infer from source
+/// (description, skills, capabilities, modes, framework...). A publishable
+/// A2A card also needs identity fields — merge in `name`, `version`,
+/// `protocolVersion`, `url`, etc., preferring values from a pre-existing
+/// card so regeneration never loses them.
+fn complete_card(
+    generated: &serde_json::Value,
+    agent_name: &str,
+    existing: &Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut card = generated.clone();
+    let Some(map) = card.as_object_mut() else {
+        return card;
+    };
+
+    let keep = |field: &str, default: serde_json::Value| {
+        existing
+            .as_ref()
+            .and_then(|e| e.get(field).cloned())
+            .unwrap_or(default)
+    };
+
+    let mut identity = serde_json::Map::new();
+    identity.insert(
+        "protocolVersion".into(),
+        keep("protocolVersion", "0.2.9".into()),
+    );
+    identity.insert("name".into(), keep("name", agent_name.into()));
+    identity.insert("version".into(), keep("version", "0.1.0".into()));
+    identity.insert("url".into(), keep("url", "http://localhost:8000/".into()));
+    identity.insert(
+        "preferredTransport".into(),
+        keep("preferredTransport", "JSONRPC".into()),
+    );
+    // The generator emits lowercase `framework` (fastapi, axum...); the card
+    // field is `agentFramework`. Prefer the existing card's value.
+    let framework = map
+        .get("framework")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let agent_framework = keep("agentFramework", framework);
+    if !agent_framework.is_null() {
+        identity.insert("agentFramework".into(), agent_framework);
+    }
+
+    for (key, value) in identity {
+        map.entry(key).or_insert(value);
+    }
+    card
+}
+
+/// Cap on total collected source sent to the CP (keeps the request and the
+/// LLM prompt bounded for large repos).
+const MAX_TOTAL_SOURCE_BYTES: usize = 256_000;
+
+/// Collect agent source for capability generation — any language. File
+/// selection rules are shared with the server's archive reader
+/// (nasiko_utils::source_files), so local and uploaded generation agree.
 fn collect_source(root: &Path) -> Option<String> {
     let mut source = String::new();
-
-    // Collect Python sources
-    let src_dir = root.join("src");
-    if src_dir.is_dir() {
-        collect_dir_sources(&src_dir, &mut source);
-    }
-
-    // Collect Go sources
-    let cmd_dir = root.join("cmd");
-    if cmd_dir.is_dir() {
-        collect_dir_sources(&cmd_dir, &mut source);
-    }
-
-    // Main file in root
-    for name in &["main.go", "main.py", "agent.py"] {
-        if let Ok(content) = fs::read_to_string(root.join(name)) {
-            source.push_str(&format!("// --- {name} ---\n"));
-            source.push_str(&content);
-            source.push('\n');
-        }
-    }
-
+    collect_dir_sources(root, root, &mut source);
     if source.is_empty() {
         None
     } else {
@@ -104,23 +150,40 @@ fn collect_source(root: &Path) -> Option<String> {
     }
 }
 
-fn collect_dir_sources(dir: &Path, out: &mut String) {
+fn collect_dir_sources(root: &Path, dir: &Path, out: &mut String) {
+    use nasiko_utils::source_files::{MAX_SOURCE_FILE_BYTES, SKIP_DIRS, is_agent_source_file};
+
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
     for entry in entries.flatten() {
+        if out.len() >= MAX_TOTAL_SOURCE_BYTES {
+            return;
+        }
         let path = entry.path();
-        if path.is_file() {
-            let ext = path.extension().unwrap_or_default().to_string_lossy();
-            if matches!(ext.as_ref(), "py" | "go") {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if let Ok(content) = fs::read_to_string(&path) {
-                    out.push_str(&format!("// --- {name} ---\n"));
-                    out.push_str(&content);
-                    out.push('\n');
-                }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if path.is_dir() {
+            if !SKIP_DIRS.contains(&name.as_ref()) && !name.starts_with('.') {
+                collect_dir_sources(root, &path, out);
             }
+            continue;
+        }
+        if !is_agent_source_file(&name) {
+            continue;
+        }
+        let too_large = entry
+            .metadata()
+            .map(|m| m.len() > MAX_SOURCE_FILE_BYTES)
+            .unwrap_or(true);
+        if too_large {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&path) {
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+            out.push_str(&format!("// --- {rel} ---\n"));
+            out.push_str(&content);
+            out.push('\n');
         }
     }
 }
@@ -245,6 +308,8 @@ fn detect_framework(root: &Path) -> Option<String> {
         fs::read_to_string(&agent_py).ok()?
     } else if root.join("go.mod").exists() {
         return Some("a2a-go".into());
+    } else if root.join("Cargo.toml").exists() {
+        return Some("a2a-rs".into());
     } else {
         return None;
     };

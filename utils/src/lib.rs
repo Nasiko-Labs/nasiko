@@ -1,6 +1,6 @@
 pub mod display;
+pub mod source_files;
 pub mod term;
-pub mod zip;
 
 /// Helper for required env vars — returns clear error message.
 pub fn required_env(key: &str) -> anyhow::Result<String> {
