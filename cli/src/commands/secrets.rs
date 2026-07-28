@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::api::Client;
 
@@ -14,8 +14,10 @@ pub fn set(key: &str, value: &str, agent: Option<&str>) -> Result<()> {
             println!("Set {key} on agent '{name}'");
         }
         None => {
-            let _: serde_json::Value =
-                client.post_json("/secrets", &serde_json::json!({"key": key, "value": value}))?;
+            let _: serde_json::Value = client.post_json(
+                "/secrets",
+                &serde_json::json!({"name": key, "value": value}),
+            )?;
             println!("Set {key} (vault — applies to all agents)");
         }
     }
@@ -26,11 +28,12 @@ pub fn get(key: &str, agent: Option<&str>) -> Result<()> {
     let client = Client::from_active_cluster()?;
     match agent {
         Some(name) => {
-            // No server route decrypts and returns an agent secret's value (only
-            // list/set/delete exist) — agent secrets are write-only by design.
-            bail!(
-                "agent-scoped secrets are write-only — use `secrets ls --agent {name}` to see names, or `secrets set --agent {name}` to overwrite"
-            );
+            let agent_id = resolve_agent_id(&client, name)?;
+            let resp: serde_json::Value =
+                client.get_json(&format!("/agents/{agent_id}/secrets/{key}"))?;
+            if let Some(v) = resp.get("value").and_then(|v| v.as_str()) {
+                println!("{v}");
+            }
         }
         None => {
             let resp: serde_json::Value = client.get_json(&format!("/secrets/{key}"))?;

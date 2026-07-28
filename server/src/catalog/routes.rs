@@ -294,10 +294,39 @@ async fn list(
         .fetch_all(&state.db).await;
 
     match agents {
-        Ok(list) => Json(list).into_response(),
+        Ok(mut list) => {
+            reconcile_running_status(&state, &mut list).await;
+            Json(list).into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "list agents: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
+/// A container that crashed after its last deploy/restart call still reads
+/// `status = 'running'` from the DB — nothing rewrites that column on its own
+/// for Docker-backed agents (the EE crash guardian only reconciles K8s
+/// deployments). Cheap enough to check on every list call: `nasiko ps`-sized
+/// fleets are small, and `runtime.status()` is a single local Docker API call
+/// per agent. Read-only override on the response, not persisted — avoids
+/// racing the crash guardian's own DB writes on K8s, and a stale read here is
+/// harmless where a stale write would linger.
+async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
+    for agent in agents.iter_mut() {
+        if agent.status != "running" {
+            continue;
+        }
+        let container_id = ContainerId::from_uuid(agent.id);
+        if let Ok(live) = state.runtime.status(&container_id).await {
+            use nasiko_runtime::RuntimeState;
+            if matches!(
+                live.state,
+                RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
+            ) {
+                agent.status = live.state.to_string();
+            }
         }
     }
 }
@@ -343,7 +372,6 @@ async fn get_one(
     struct AgentDetailResponse {
         id: Uuid,
         name: String,
-        status: String,
         version: String,
         description: String,
         url: String,
@@ -383,7 +411,6 @@ async fn get_one(
     let data = AgentDetailResponse {
         id: agent.id,
         name: agent.name.clone(),
-        status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),
         url: format!("/api/agents/{}", agent.id),

@@ -39,121 +39,6 @@ pub(crate) fn validate_github_url(url: &str, allowed_hosts: &[String]) -> Result
     Ok(())
 }
 
-/// Shallow-clone `url` into `dest`. Re-validates against `allowed_hosts` as
-/// defence-in-depth (jobs inserted directly into `build_jobs` — admin tooling,
-/// migrations — bypass the HTTP handler's own check). Shared by the agent
-/// build path (`execute_build`) and the MCP-server-upload build path
-/// (`crate::mcp::build::execute_mcp_server_build`) — do not duplicate.
-pub(crate) async fn clone_repo(url: &str, allowed_hosts: &[String], dest: &std::path::Path) -> Result<(), String> {
-    validate_github_url(url, allowed_hosts).map_err(|e| format!("invalid github_url: {e}"))?;
-
-    tokio::fs::create_dir_all(dest).await.map_err(|e| format!("create tmp dir: {e}"))?;
-
-    // dest.to_str() fails only on non-UTF8 paths (exotic OS configs). Falling
-    // back to "." is dangerous: tar_directory would then package the server's
-    // working directory (binaries, env files) into the build context.
-    let dest_str = dest.to_str().ok_or_else(|| "temp path contains non-UTF8 characters".to_string())?;
-
-    let clone_status = tokio::time::timeout(
-        Duration::from_secs(300),
-        tokio::process::Command::new("git")
-            // Restrict git to HTTPS only — prevents protocol-redirect attacks.
-            .env("GIT_ALLOW_PROTOCOL", "https")
-            // Prevent git from blocking the worker waiting for terminal credentials.
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .args(["clone", "--depth=1", url, dest_str])
-            .status(),
-    )
-    .await
-    .map_err(|_| "git clone timed out after 5 minutes".to_string())?
-    .map_err(|e| format!("git clone: {e}"))?;
-
-    if !clone_status.success() {
-        return Err(format!("git clone failed with exit code {}", clone_status.code().unwrap_or(1)));
-    }
-    Ok(())
-}
-
-/// Download a GitHub repo as a tarball via the API (no `git` binary needed).
-/// Uses `token` for private repos; public repos work without one.
-/// URL format: `https://github.com/{owner}/{repo}.git` or `https://github.com/{owner}/{repo}`
-pub(crate) async fn download_github_tarball(
-    client: &reqwest::Client,
-    url: &str,
-    dest: &std::path::Path,
-    token: Option<&str>,
-) -> Result<(), String> {
-    // Parse owner/repo from the URL.
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
-    let segments: Vec<&str> = parsed.path().trim_matches('/').split('/').collect();
-    if segments.len() < 2 {
-        return Err("expected github.com/{owner}/{repo} URL".into());
-    }
-    let owner = segments[0];
-    let repo = segments[1].trim_end_matches(".git");
-
-    // GitHub's tarball endpoint (public repos, no auth needed).
-    let tarball_url = format!("https://api.github.com/repos/{owner}/{repo}/tarball");
-
-    let mut req = client
-        .get(&tarball_url)
-        .header("User-Agent", "nasiko-server")
-        .timeout(Duration::from_secs(300));
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {t}"));
-    }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("github tarball download: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!(
-            "github tarball download failed: HTTP {}",
-            resp.status()
-        ));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("github tarball read: {e}"))?;
-
-    tokio::fs::create_dir_all(dest)
-        .await
-        .map_err(|e| format!("create tmp dir: {e}"))?;
-
-    // Extract the tarball. GitHub tarballs have a top-level directory
-    // ({owner}-{repo}-{sha}/), so we strip the first path component.
-    let dest_path = dest.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let decoder = flate2::read::GzDecoder::new(&bytes[..]);
-        let mut archive = tar::Archive::new(decoder);
-        for entry in archive.entries().map_err(|e| format!("tar entries: {e}"))? {
-            let mut entry = entry.map_err(|e| format!("tar entry: {e}"))?;
-            let path = entry.path().map_err(|e| format!("tar path: {e}"))?.into_owned();
-            // Strip the top-level directory (e.g. "owner-repo-sha7/src/..." → "src/...")
-            let stripped: std::path::PathBuf = path.components().skip(1).collect();
-            if stripped.as_os_str().is_empty() {
-                continue;
-            }
-            let full_path = dest_path.join(&stripped);
-            if let Some(parent) = full_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("create dir {}: {e}", parent.display()))?;
-            }
-            entry
-                .unpack(&full_path)
-                .map_err(|e| format!("unpack {}: {e}", stripped.display()))?;
-        }
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking tar extract: {e}"))??;
-
-    Ok(())
-}
-
 /// Validate an OCI image tag segment.
 /// OCI spec: tag must start with [a-zA-Z0-9_] and contain only [a-zA-Z0-9._-].
 pub(crate) fn validate_version_tag(tag: &str) -> Result<(), String> {
@@ -362,14 +247,46 @@ pub async fn execute_build(
     let image_tag = format!("{agent_name}:{version_tag}");
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-build-{build_id}"));
 
-    let result: Result<(), String> = async {
+    let result = async {
         // Acquire source into tmp_dir
         if let Some(ref url) = github_url {
-            clone_repo(url, &allowed_hosts, &tmp_dir).await?;
+            // Defence-in-depth: re-validate even if the HTTP handler already checked.
+            // Jobs inserted directly into build_jobs (e.g. admin tooling, migrations)
+            // bypass the handler — this ensures the subprocess never runs an arbitrary URL.
+            validate_github_url(url, &allowed_hosts)
+                .map_err(|e| format!("invalid github_url: {e}"))?;
+
+            tokio::fs::create_dir_all(&tmp_dir).await
+                .map_err(|e| format!("create tmp dir: {e}"))?;
+
+            // tmp_dir.to_str() fails only on non-UTF8 paths (exotic OS configs).
+            // Falling back to "." is dangerous: tar_directory would then package the
+            // server's working directory (binaries, env files) into the build context.
+            let tmp_path = tmp_dir.to_str()
+                .ok_or_else(|| "temp path contains non-UTF8 characters".to_string())?;
+
+            let clone_status = tokio::time::timeout(
+                Duration::from_secs(300),
+                tokio::process::Command::new("git")
+                    // Restrict git to HTTPS only — prevents protocol-redirect attacks.
+                    .env("GIT_ALLOW_PROTOCOL", "https")
+                    // Prevent git from blocking the worker waiting for terminal credentials.
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .args(["clone", "--depth=1", url, tmp_path])
+                    .status(),
+            )
+            .await
+            .map_err(|_| "git clone timed out after 5 minutes".to_string())?
+            .map_err(|e| format!("git clone: {e}"))?;
+
+            if !clone_status.success() {
+                return Err(format!("git clone failed with exit code {}", clone_status.code().unwrap_or(1)));
+            }
         } else if let Some(key) = &source_key {
             let data = oci_storage.get_blob(key).await
                 .map_err(|e| format!("fetch source from S3: {e}"))?;
-            extract_zip_to_dir(&data, &tmp_dir).map_err(|e| format!("extract zip: {e}"))?;
+            extract_zip_to_dir(&data, &tmp_dir)
+                .map_err(|e| format!("extract zip: {e}"))?;
         } else {
             return Err("no source provided (neither github_url nor source zip)".into());
         }
@@ -381,8 +298,7 @@ pub async fn execute_build(
         }
 
         // Patch Dockerfile to inject OTel auto-instrumentation (zero-code change for the agent).
-        let original = tokio::fs::read_to_string(&dockerfile_path)
-            .await
+        let original = tokio::fs::read_to_string(&dockerfile_path).await
             .map_err(|e| format!("read Dockerfile: {e}"))?;
         let patched = nasiko_observability::patch_dockerfile_for_otel(&original);
         if patched != original {
@@ -440,10 +356,78 @@ pub async fn execute_build(
     }
 }
 
-// Zip-slip/zip-bomb-safe extraction lives in `nasiko_utils::zip` — moved out of
-// this crate so `oss/mcp-gateway` (which cannot depend on `oss/server`) can reuse
-// the exact same logic for MCP-server-upload validation instead of duplicating it.
-pub use nasiko_utils::zip::{extract_zip_from_file, extract_zip_to_dir};
+const MAX_ZIP_FILES: usize = 1_000;
+const MAX_ZIP_UNCOMPRESSED: u64 = 200 * 1024 * 1024; // 200 MiB
+
+/// Extract a zip archive from a byte slice into `dest`.
+/// Kept for the build/S3 path which already has data in memory.
+pub fn extract_zip_to_dir(data: &[u8], dest: &std::path::Path) -> std::result::Result<(), String> {
+    extract_zip_reader(std::io::Cursor::new(data), dest)
+}
+
+/// Extract a zip archive from a file on disk into `dest`.
+/// Used by the upload path after streaming the zip to disk.
+pub fn extract_zip_from_file(zip_path: &std::path::Path, dest: &std::path::Path) -> std::result::Result<(), String> {
+    let f = std::fs::File::open(zip_path).map_err(|e| format!("open zip: {e}"))?;
+    extract_zip_reader(std::io::BufReader::new(f), dest)
+}
+
+fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    dest: &std::path::Path,
+) -> std::result::Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
+
+    if archive.len() > MAX_ZIP_FILES {
+        return Err(format!("zip contains {} files, limit is {MAX_ZIP_FILES}", archive.len()));
+    }
+
+    let mut uncompressed_total: u64 = 0;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+
+        // Path traversal guard: `enclosed_name()` returns None for any entry whose stored
+        // path contains `..` or an absolute root — zip 2.x `mangled_name()` strips those
+        // components silently, so the Component::ParentDir check would never fire on it.
+        let safe_path = match file.enclosed_name() {
+            Some(p) => p,
+            None => {
+                return Err(format!("zip traversal attempt: {:?}", file.name()));
+            }
+        };
+
+        let path = dest.join(&safe_path);
+
+        // Belt-and-suspenders: verify the resolved path stays inside dest
+        if !path.starts_with(dest) {
+            return Err(format!("zip traversal attempt (join escaped dest): {}", safe_path.display()));
+        }
+
+        if file.is_dir() {
+            std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut out = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+            // Zip-bomb guard: bound the ACTUAL bytes written, not the declared
+            // `file.size()` (a bomb declares 0 while inflating to gigabytes).
+            // Read at most `remaining + 1` so an over-limit entry is detected.
+            let remaining = MAX_ZIP_UNCOMPRESSED.saturating_sub(uncompressed_total);
+            let written = std::io::copy(&mut std::io::Read::take(&mut file, remaining + 1), &mut out)
+                .map_err(|e| e.to_string())?;
+            uncompressed_total = uncompressed_total.saturating_add(written);
+            if uncompressed_total > MAX_ZIP_UNCOMPRESSED {
+                return Err(format!(
+                    "zip uncompressed size exceeds {MAX_ZIP_UNCOMPRESSED} bytes — possible zip bomb"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 // ─── GET /builds/{id} ───────────────────────────────────────────────────────
 
@@ -702,7 +686,7 @@ pub async fn auto_generate_capabilities_pub(
     // hardcoded placeholder.
     let generator = CapabilityGenerator::new(provider, capability_generator_model.to_string());
 
-    match generator.generate(&source, agent_name).await {
+    match generator.generate(&source, agent_name, None).await {
         Ok((card, _)) => {
             let skills_json = serde_json::to_value(&card.skills).unwrap_or_default();
             let caps_json = serde_json::to_value(&card.capabilities).unwrap_or_default();

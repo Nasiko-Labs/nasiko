@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
 struct GenerateRequest {
     source_code: String,
     agent_name: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,7 +42,10 @@ async fn generate(
     let generator = make_generator(&state);
     let agent_name = body.agent_name.as_deref().unwrap_or("unnamed-agent");
 
-    match generator.generate(&body.source_code, agent_name).await {
+    match generator
+        .generate(&body.source_code, agent_name, body.description.as_deref())
+        .await
+    {
         Ok((card, result)) => (
             StatusCode::OK,
             Json(GenerateResponse {
@@ -104,7 +108,7 @@ async fn generate_and_apply(
 
     let generator = make_generator(&state);
 
-    let (card, _result) = match generator.generate(&source_code, &agent_name).await {
+    let (card, _result) = match generator.generate(&source_code, &agent_name, None).await {
         Ok(r) => r,
         Err(e) => return error_response(e),
     };
@@ -191,12 +195,31 @@ async fn resolve_source(
 }
 
 fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
-    use nasiko_utils::source_files::{MAX_SOURCE_FILE_BYTES, is_agent_source_file};
     use std::io::Read;
 
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor)?;
     let mut combined = String::new();
+
+    let code_extensions = [
+        "py",
+        "rs",
+        "ts",
+        "js",
+        "go",
+        "java",
+        "rb",
+        "ex",
+        "exs",
+        "toml",
+        "yaml",
+        "yml",
+        "json",
+        "md",
+        "txt",
+        "dockerfile",
+        "sh",
+    ];
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
@@ -205,13 +228,14 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
         }
 
         let name = file.name().to_string();
-        let file_name = name.rsplit('/').next().unwrap_or(&name);
+        let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
 
-        if !is_agent_source_file(file_name) {
+        if !code_extensions.contains(&ext.as_str()) && !name.to_lowercase().contains("dockerfile") {
             continue;
         }
 
-        if file.size() > MAX_SOURCE_FILE_BYTES {
+        // Skip large files (>50KB)
+        if file.size() > 50_000 {
             combined.push_str(&format!("\n--- {name} (skipped, too large) ---\n"));
             continue;
         }

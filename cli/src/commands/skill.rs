@@ -55,6 +55,15 @@ pub fn add(name: &str, directory: &str) -> Result<()> {
 pub fn remove(name: &str, directory: &str) -> Result<()> {
     let project_dir = Path::new(directory);
 
+    if !skill::is_tracked_skill(project_dir, name) {
+        anyhow::bail!(
+            "'{name}' isn't tracked as an added skill in this project's AgentCard.json — \
+             refusing to remove it. This guards against deleting a scaffold-owned file \
+             (e.g. telemetry.py, which the agent hard-imports) that only looks like a \
+             removable skill from its filename. If you're sure, delete the file by hand."
+        );
+    }
+
     let framework = skill::detect_framework(project_dir).unwrap_or_else(|| "openai".into());
 
     println!("Removing skill: {name}...");
@@ -101,6 +110,13 @@ pub fn list(directory: &str) -> Result<()> {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.ends_with(ext) && !excludes.contains(&name.as_str()) {
             let skill_name = name.trim_end_matches(ext).replace('_', "-");
+            // Only list files AgentCard.json actually tracks as added skills —
+            // otherwise a scaffold-owned file with a non-core name (e.g.
+            // telemetry.py) shows up as "removable" when deleting it would
+            // break the agent (see `skill::is_tracked_skill`'s doc comment).
+            if !skill::is_tracked_skill(project_dir, &skill_name) {
+                continue;
+            }
             let from_registry = available.contains(&skill_name);
             found.push((skill_name, from_registry));
         }

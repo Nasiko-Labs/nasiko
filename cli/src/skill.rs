@@ -416,6 +416,41 @@ pub fn inject_skill(
     Ok(())
 }
 
+/// Skill ids `AgentCard.json` actually tracks — the persisted record of what
+/// `nasiko skill add`/`update_agent_card` added, as opposed to any `.py` file
+/// that happens to sit in `src/`. Used to tell a genuinely-added skill apart
+/// from a scaffold-owned file (e.g. `telemetry.py`, hard-imported by
+/// `__main__.py`) that would otherwise look removable by directory listing
+/// alone.
+pub fn card_skill_ids(project_dir: &Path) -> Vec<String> {
+    let card_path = project_dir.join("AgentCard.json");
+    let Ok(content) = fs::read_to_string(&card_path) else {
+        return Vec::new();
+    };
+    let Ok(card) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    card.get("skills")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.get("id").and_then(|i| i.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `skill_name` is tracked in `AgentCard.json` as an added skill —
+/// checked against both the dash and underscore spelling, since manifest
+/// `id`s aren't consistently one or the other (the scaffold's own built-in
+/// skill declarations vs. `nasiko skill add`-authored manifests differ).
+pub fn is_tracked_skill(project_dir: &Path, skill_name: &str) -> bool {
+    let module_name = skill_name.replace('-', "_");
+    card_skill_ids(project_dir)
+        .iter()
+        .any(|id| id == skill_name || id == &module_name)
+}
+
 pub fn remove_skill(project_dir: &Path, skill_name: &str, framework: &str) -> Result<()> {
     let module_name = skill_name.replace('-', "_");
 
@@ -441,7 +476,30 @@ pub fn remove_skill(project_dir: &Path, skill_name: &str, framework: &str) -> Re
         fs::write(&agent_path, content)?;
     }
 
+    // Drop the AgentCard.json entry so the card doesn't advertise a skill
+    // whose file (and thus implementation) no longer exists.
+    remove_from_agent_card(project_dir, skill_name, &module_name);
+
     Ok(())
+}
+
+fn remove_from_agent_card(project_dir: &Path, skill_name: &str, module_name: &str) {
+    let card_path = project_dir.join("AgentCard.json");
+    let Ok(content) = fs::read_to_string(&card_path) else {
+        return;
+    };
+    let Ok(mut card) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    if let Some(skills) = card.get_mut("skills").and_then(|s| s.as_array_mut()) {
+        skills.retain(|s| {
+            let id = s.get("id").and_then(|i| i.as_str());
+            id != Some(skill_name) && id != Some(module_name)
+        });
+    }
+    if let Ok(pretty) = serde_json::to_string_pretty(&card) {
+        let _ = fs::write(&card_path, pretty);
+    }
 }
 
 fn find_agent_source(project_dir: &Path, framework: &str) -> Option<std::path::PathBuf> {
