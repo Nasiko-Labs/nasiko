@@ -95,13 +95,15 @@ async fn refresh(
 
     // Guarded client: the token endpoint was discovered from the target server's
     // response, so it must be SSRF-checked, not fetched with the internal client.
-    let resp = state
+    let mut req = state
         .guarded_http_client
         .post(token_endpoint)
         .timeout(REFRESH_TIMEOUT)
-        .form(&form)
-        .send()
-        .await;
+        .form(&form);
+    if let (Some(cid), Some(secret)) = (&connector.oauth_client_id, client_secret_plain(connector)) {
+        req = req.basic_auth(cid, Some(secret));
+    }
+    let resp = req.send().await;
     let body: Value = match resp {
         Ok(r) if r.status().is_success() => match r.json().await {
             Ok(v) => v,
@@ -407,12 +409,17 @@ pub async fn exchange_code(
         form.push(("client_secret", secret.to_string()));
     }
 
-    let resp = http
+    let mut req = http
         .post(token_endpoint)
         .timeout(DISCOVERY_TIMEOUT)
-        .form(&form)
-        .send()
-        .await?;
+        .form(&form);
+    // Some providers (e.g. Notion) require client credentials as a Basic auth
+    // header rather than form fields. Send both — providers that use form
+    // fields ignore the header, and those that require Basic auth need it.
+    if let (Some(cid), Some(secret)) = (client_id, client_secret) {
+        req = req.basic_auth(cid, Some(secret));
+    }
+    let resp = req.send().await?;
     if !resp.status().is_success() {
         let code = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
@@ -503,7 +510,7 @@ pub async fn begin_authorization(
             &state.guarded_http_client,
             &server_url,
             &redirect_uri,
-            pre_client_id.as_deref(),
+            pre_client_id.as_deref().or(connector.oauth_client_id.as_deref()),
         )
         .await?;
         // Encrypt the DCR client secret at rest with the owner's key.

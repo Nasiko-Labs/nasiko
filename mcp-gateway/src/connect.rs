@@ -227,6 +227,8 @@ async fn resolve_target(
                 description: None,
                 display_name: None,
                 logo_url: None,
+                oauth_client_id: None,
+                oauth_client_secret: None,
             },
         )
         .await;

@@ -181,6 +181,8 @@ pub struct NewConnectorInput {
     pub description: Option<String>,
     pub display_name: Option<String>,
     pub logo_url: Option<String>,
+    pub oauth_client_id: Option<String>,
+    pub oauth_client_secret: Option<String>,
 }
 
 /// Register a custom MCP connector owned by `owner_id` (private until shared).
@@ -259,6 +261,24 @@ pub async fn register_connector(
         },
     )
     .await?;
+
+    // If the caller supplied an OAuth client_id (for providers that don't
+    // support Dynamic Client Registration, e.g. Notion), persist it now so
+    // the connect flow can skip DCR entirely.
+    if let Some(ref cid) = input.oauth_client_id {
+        let secret_enc = input.oauth_client_secret.as_deref().map(|s| {
+            nasiko_secrets::SecretsCrypto::for_user(owner_id).encrypt(s)
+        }).transpose().map_err(|e| McpError::Internal(format!("encrypt oauth secret: {e}")))?;
+        sqlx::query(
+            "UPDATE mcp_connectors SET oauth_client_id = $2, oauth_client_secret = $3 WHERE id = $1",
+        )
+        .bind(connector.id)
+        .bind(cid)
+        .bind(secret_enc)
+        .execute(&state.db)
+        .await
+        .map_err(McpError::Database)?;
+    }
 
     // `basic` supplied at registration is immediately verifiable — prove it
     // actually works instead of leaving it marked `pending` indefinitely.
@@ -701,6 +721,15 @@ pub async fn create_share_grant(
 ) -> Result<Value> {
     let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
     let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
+    // When granting an agent, also create the access row so the agent
+    // appears in consumers and gets tool access immediately.
+    if grant_type == "agent"
+        && let Ok(agent_id) = Uuid::parse_str(grantee_id)
+    {
+        let _ = repo::upsert_agent_connector_access(
+            &state.db, agent_id, connector.id, true, &serde_json::json!([]),
+        ).await;
+    }
     tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "shared connector");
     Ok(json!({ "id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
 }
