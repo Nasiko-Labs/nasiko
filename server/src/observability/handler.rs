@@ -47,6 +47,19 @@ fn svc(state: &AppState) -> ObservabilityService {
     ObservabilityService::from_state(state)
 }
 
+/// `get_finops_dashboard` degrades to a zeroed response when there's nothing
+/// to query, but `get_agent_stats`/`get_session_details` ask about one
+/// specific entity — there's no honest "zero" to fabricate, so surface a
+/// clear, actionable status instead of letting the provider's connection
+/// failure reach the client as an opaque `internal error`.
+fn observability_unconfigured() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "observability backend not configured (set TEMPO_URL and LOKI_URL)",
+    )
+        .into_response()
+}
+
 // ─── Request params ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +91,7 @@ pub struct AgentHoursParams {
     pub bucket: Option<String>,
 }
 
+
 // ─── 1. GET /v1/observability/session/list ────────────────────────────────────
 #[instrument(skip(state))]
 pub async fn get_all_sessions(
@@ -108,6 +122,9 @@ pub async fn get_session_details(
     _claims: Claims,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
+    if !state.config.observability_enabled {
+        return observability_unconfigured();
+    }
     match svc(&state).get_session_details(&session_id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
@@ -151,6 +168,9 @@ pub async fn get_agent_stats(
     Path(agent_id): Path<String>,
     Query(params): Query<AgentStatsParams>,
 ) -> impl IntoResponse {
+    if !state.config.observability_enabled {
+        return observability_unconfigured();
+    }
     // Tempo's service.name is the agent name (the injector sets
     // OTEL_SERVICE_NAME to the container/agent name); accept a name or UUID
     // here (same contract as the logs endpoints) and query by name.

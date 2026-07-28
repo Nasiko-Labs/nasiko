@@ -10,11 +10,9 @@ use crate::api::Client;
 #[derive(Debug, Deserialize)]
 struct GithubStatus {
     #[serde(default)]
-    connected: bool,
+    status: String,
     #[serde(default)]
-    valid: bool,
-    #[serde(default)]
-    login: Option<String>,
+    username: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Tabled)]
@@ -32,32 +30,41 @@ struct GithubRepo {
     description: Option<String>,
 }
 
-fn repo_name(name: &str, full_name: &Option<String>) -> String {
+fn repo_name(name: &String, full_name: &Option<String>) -> String {
     full_name.as_deref().unwrap_or(name).to_string()
 }
 
 pub fn status() -> Result<()> {
     let client = Client::from_active_cluster()?;
     let s: GithubStatus = client.get_json("/auth/github/token")?;
-    if s.connected && s.valid {
-        println!(
+    match s.status.as_str() {
+        "connected" => println!(
             "GitHub connected (username: {})",
-            s.login.as_deref().unwrap_or("unknown")
-        );
-    } else if s.connected {
-        println!("GitHub token stored but invalid — reconnect with `nasiko github connect`.");
-    } else {
-        println!("GitHub is not connected.");
-        println!("Run `nasiko github connect` to authenticate.");
+            s.username.as_deref().unwrap_or("unknown")
+        ),
+        "invalid" => {
+            println!("GitHub token stored but invalid — reconnect with `nasiko github connect`.")
+        }
+        _ => {
+            println!("GitHub is not connected.");
+            println!("Run `nasiko github connect` to authenticate.");
+        }
     }
     Ok(())
 }
 
 pub fn repos() -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/github/repositories")?;
+    let Some(raw): Option<serde_json::Value> =
+        client.get_json_optional_on_forbidden("/github/repositories")?
+    else {
+        println!("No repositories found. Run `nasiko github connect` first.");
+        return Ok(());
+    };
     let repos: Vec<GithubRepo> = if let Some(arr) = raw.as_array() {
         serde_json::from_value(serde_json::Value::Array(arr.clone()))?
+    } else if let Some(repos) = raw.get("repositories") {
+        serde_json::from_value(repos.clone())?
     } else if let Some(data) = raw.get("data") {
         serde_json::from_value(data.clone())?
     } else {
@@ -80,9 +87,13 @@ pub fn repos() -> Result<()> {
 }
 
 pub fn connect() -> Result<()> {
-    println!("GitHub OAuth connect is not yet implemented in the CLI.");
-    println!();
-    println!("This will be implemented once the backend device-flow contract is confirmed.");
+    let client = Client::from_active_cluster()?;
+    let resp: serde_json::Value = client.get_json("/github/login")?;
+    let url = resp
+        .get("auth_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no auth_url in response"))?;
+    println!("Open this URL in your browser to connect GitHub:\n\n  {url}\n");
     Ok(())
 }
 

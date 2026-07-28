@@ -102,6 +102,6 @@ fn register_agent(
         "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
         "capabilities": card.get("capabilities"),
     });
-    let _: serde_json::Value = client.post_json("/catalog/agents", &create)?;
+    let _: serde_json::Value = client.post_json("/agents", &create)?;
     Ok(())
 }

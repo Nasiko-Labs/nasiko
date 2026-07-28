@@ -224,9 +224,11 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
         body["params"]["metadata"] = serde_json::json!({ "session_id": sid });
     }
 
+    // A real cap, not `None` — an agent that never closes the SSE connection
+    // (e.g. after a protocol error it doesn't report) must not hang forever.
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
-            .timeout_global(None)
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
             .http_status_as_error(false)
             .build(),
     );
@@ -396,12 +398,29 @@ fn handle_sse_stream(
             ) {
                 spin.pause();
                 spin.close_sub();
-                if let Some(t) = handle_task_result(task) {
-                    spin.stdout_dirty = true;
-                    collected.push_str(&t);
+                match handle_task_result(task) {
+                    Some(t) => {
+                        spin.stdout_dirty = true;
+                        collected.push_str(&t);
+                    }
+                    // Failed/canceled with no extractable text — say so
+                    // explicitly rather than silently falling through to
+                    // the interactive prompt as if nothing happened.
+                    None if state != "TASK_STATE_COMPLETED" => {
+                        eprintln!("Error: agent task {} (no details provided)", state);
+                    }
+                    None => {}
                 }
                 is_terminal = true;
             }
+        } else if let Some(err) = event.get("error") {
+            // Top-level JSON-RPC error (e.g. an A2A protocol-version mismatch)
+            // delivered over the SSE stream itself, not wrapped in a task —
+            // without this branch it matches nothing above and the loop just
+            // keeps waiting for a next line that may never come.
+            spin.pause();
+            spin.close_sub();
+            bail!("A2A error: {err}");
         } else if let Some(status_update) = result.get("statusUpdate") {
             handle_status_update(status_update, spin);
             is_terminal = is_terminal_state(status_update);
@@ -490,6 +509,7 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
             spin.pause();
             spin.close_sub();
             spin.break_stdout();
+            let mut printed = false;
             if let Some(parts) = event
                 .pointer("/status/message/parts")
                 .and_then(|p| p.as_array())
@@ -497,8 +517,15 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
                 for part in parts {
                     if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                         eprintln!("  \x1b[31merror: {text}\x1b[0m");
+                        printed = true;
                     }
                 }
+            }
+            // The agent reported failure but sent no error text — say so
+            // explicitly rather than silently falling through to the
+            // interactive prompt as if nothing happened.
+            if !printed {
+                eprintln!("  \x1b[31merror: agent task failed (no details provided)\x1b[0m");
             }
         }
         _ => {}
