@@ -15,7 +15,7 @@
   "description": "Infrastructure agent that searches Terraform Registry, resolves DNS, checks SSL certificates, and looks up IP geolocation using OpenAI-compatible LLMs.",
   "framework": "axum",
   "llm_provider": "openai",
-  "name": "infra-agent",
+  "name": "Infrastructure Manager",
   "preferredTransport": "JSONRPC",
   "protocolVersion": "0.2.9",
   "skills": [
@@ -102,5 +102,5 @@
   ],
   "transport": "http",
   "url": "http://localhost:8000/",
-  "version": "0.1.0"
+  "version": "1.0.0"
 }

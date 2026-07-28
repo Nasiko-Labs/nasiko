@@ -20,65 +20,65 @@ struct Framework {
     language: String,
 }
 
-/// Framework templates are `agent`-type artifacts published under the
-/// `nasiko` owner with `metadata.isFrameworkTemplate = true`. The rest of
-/// `metadata` carries what the interactive picker needs beyond a generic
-/// artifact: `modelProviders` (string array, omit/empty when the framework
-/// hardcodes its provider), `streaming` (bool), and `language`
-/// ("python"/"go"/... — used for skill-injection compatibility and to
-/// finish AgentCard.json).
+/// Frameworks are derived from the `framework` field of published agent
+/// artifacts — every artifact is reusable, there is no separate "template"
+/// flavor. Per-framework attributes come from artifact `metadata`:
+/// `modelProviders` (string array, omit/empty when the framework hardcodes
+/// its provider), `streaming` (bool), and `language` ("python"/"rust"/... —
+/// used for skill-injection compatibility and to finish AgentCard.json).
 fn fetch_frameworks() -> Result<Vec<Framework>> {
     let client = crate::api::RegistryClient::new().context(
         "no registry connected — run `nasiko registry connect <url>` \
-        (nasiko new fetches framework templates from the connected registry)",
+        (nasiko new derives frameworks from the registry's agent artifacts)",
     )?;
     let artifacts = client
         .search(None, Some("agent"), None)
-        .context("failed to fetch framework templates from the registry")?;
+        .context("failed to fetch agent artifacts from the registry")?;
 
-    let frameworks: Vec<Framework> = artifacts
-        .into_iter()
-        .filter(|a| {
-            a.owner == "nasiko"
-                && a.metadata
-                    .get("isFrameworkTemplate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-        })
-        .map(|a| {
-            let model_providers = a
-                .metadata
-                .get("modelProviders")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let streaming = a
-                .metadata
-                .get("streaming")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let language = a
-                .metadata
-                .get("language")
-                .and_then(|v| v.as_str())
-                .unwrap_or("python")
-                .to_string();
-            Framework {
-                label: a.description.clone().unwrap_or_else(|| a.name.clone()),
-                key: a.name,
-                model_providers,
-                streaming,
-                language,
-            }
-        })
-        .collect();
+    let mut frameworks: Vec<Framework> = Vec::new();
+    for a in artifacts {
+        let Some(fw) = a.framework.clone().filter(|f| !f.is_empty()) else {
+            continue;
+        };
+        if frameworks.iter().any(|f| f.key == fw) {
+            continue;
+        }
+        let model_providers = a
+            .metadata
+            .get("modelProviders")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let streaming = a
+            .metadata
+            .get("streaming")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let language = a
+            .metadata
+            .get("language")
+            .and_then(|v| v.as_str())
+            .unwrap_or("python")
+            .to_string();
+        frameworks.push(Framework {
+            label: fw.clone(),
+            key: fw,
+            model_providers,
+            streaming,
+            language,
+        });
+    }
+    frameworks.sort_by(|a, b| a.key.cmp(&b.key));
 
     if frameworks.is_empty() {
-        anyhow::bail!("no framework templates found in the connected registry");
+        anyhow::bail!(
+            "no agent artifacts with a framework found in the connected registry \
+            (publish agents with --framework, or set agentFramework in AgentCard.json)"
+        );
     }
     Ok(frameworks)
 }
