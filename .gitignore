@@ -6,10 +6,11 @@ __pycache__/
 .env.*
 *.env.toml
 !.env.example
-# The Flutter app bundles its dotenv files as browser-served assets (public
-# URLs/tuning only — the import script scans them for credentials).
+# The Flutter app bundles its release dotenv file as a browser-served asset
+# (public URLs/tuning only — the import script scans it for credentials).
+# Deliberately NOT negating .env.* : the import script prunes non-release
+# flavors, and this makes an accidental re-import of one fail its ignore-check.
 !ee/ui/app/assets/.env
-!ee/ui/app/assets/.env.*
 .venv/
 node_modules/
 *.egg-info/
