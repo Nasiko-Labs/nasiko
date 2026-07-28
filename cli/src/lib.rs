@@ -592,36 +592,16 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
-        AgentOpsCommands::Reupload {
-            id,
-            name,
-            source,
-            version,
-            changelog,
-        } => commands::agents::reupload(
-            id.as_deref(),
-            name.as_deref(),
-            &source,
-            version.as_deref(),
-            changelog.as_deref(),
-        ),
+        AgentOpsCommands::Reupload { id, name, source, version, changelog } => {
+            commands::agents::reupload(id.as_deref(), name.as_deref(), &source, version.as_deref(), changelog.as_deref())
+        }
         AgentOpsCommands::Versions { id, name } => {
             commands::agents::versions(id.as_deref(), name.as_deref())
         }
-        AgentOpsCommands::Rollback {
-            id,
-            name,
-            version,
-            reason,
-        } => commands::agents::rollback(
-            id.as_deref(),
-            name.as_deref(),
-            version.as_deref(),
-            reason.as_deref(),
-        ),
-        AgentOpsCommands::Rm { id, name, force } => {
-            commands::agents::rm(id.as_deref(), name.as_deref(), force)
+        AgentOpsCommands::Rollback { id, name, version, reason } => {
+            commands::agents::rollback(id.as_deref(), name.as_deref(), version.as_deref(), reason.as_deref())
         }
+        AgentOpsCommands::Rm { id, name, force } => commands::agents::rm(id.as_deref(), name.as_deref(), force),
         AgentOpsCommands::Chat {
             url,
             message,
@@ -834,7 +814,9 @@ pub enum McpSubCommands {
         json: bool,
     },
     /// Disconnect from a connector
-    Disconnect { connector_id: String },
+    Disconnect {
+        connector_id: String,
+    },
     /// Manage Composio toolkit auth-configs (admin)
     Toolkit {
         #[command(subcommand)]
@@ -860,6 +842,14 @@ pub enum McpSubCommands {
     AgentTools {
         #[command(subcommand)]
         command: McpAgentToolsCommands,
+    },
+    /// Search users to share a connector with
+    #[command(name = "share-targets")]
+    ShareTargets {
+        /// Search query (username prefix or display name)
+        query: String,
+        #[arg(short = 'j', long)]
+        json: bool,
     },
 }
 
@@ -910,7 +900,11 @@ pub enum McpConnectorCommands {
         json: bool,
     },
     /// Detect a URL's auth type before registering
-    Probe { url: String },
+    Probe {
+        url: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Register a custom MCP server
     Register {
         name: String,
@@ -974,6 +968,98 @@ pub enum McpConnectorCommands {
     Share {
         #[command(subcommand)]
         command: McpConnectorShareCommands,
+    },
+    /// Upload your own MCP server's source (a .zip) — the platform builds and
+    /// deploys it into a container the same way agent uploads work, then
+    /// polls until it's live. See docs/MCP_UPLOAD_ITERATION_PLAN.md for the
+    /// full pipeline (validation → build → hardened deploy → readiness check).
+    Upload {
+        /// Connector name (shown in `nasiko mcp connector list`)
+        #[arg(long)]
+        name: String,
+        /// Build version tag, shown on the connector's build history
+        #[arg(long, visible_alias = "version", default_value = "v1")]
+        version_tag: String,
+        /// Path to a .zip containing your MCP server's source (must include a
+        /// Dockerfile; the server must read $PORT and mount its Streamable
+        /// HTTP endpoint at /mcp — see the upload plan doc for the full contract)
+        #[arg(long)]
+        zip: std::path::PathBuf,
+        /// Secret env var for the uploaded server itself, "KEY=VALUE"
+        /// (repeatable) — encrypted at rest, injected into the container only
+        /// at deploy time. Distinct from a connector's own auth credential
+        /// (`nasiko mcp credential set`), which authenticates the GATEWAY to
+        /// the server, not the server to some third-party API it wraps.
+        #[arg(long = "env")]
+        env: Vec<String>,
+    },
+    /// Same as `upload`, but builds from a GitHub repo instead of a local zip
+    /// — the server clones it (HTTPS + host-allowlisted, same validation
+    /// `nasiko deploy`'s GitHub source uses) rather than receiving a file.
+    UploadGithub {
+        /// Connector name (shown in `nasiko mcp connector list`)
+        #[arg(long)]
+        name: String,
+        /// Build version tag, shown on the connector's build history
+        #[arg(long, visible_alias = "version", default_value = "v1")]
+        version_tag: String,
+        /// HTTPS GitHub URL of the MCP server's source repo
+        #[arg(long)]
+        github_url: String,
+        /// Secret env var for the uploaded server itself, "KEY=VALUE"
+        /// (repeatable) — same semantics as `upload --env`
+        #[arg(long = "env")]
+        env: Vec<String>,
+    },
+    /// Check an uploaded connector's build status (one-shot, no polling) —
+    /// `pending` | `building` | `running` (live) | `failed`
+    BuildStatus {
+        connector_id: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Show an uploaded connector's container logs (stdout/stderr) — the
+    /// same `ContainerRuntime::logs` call the agent logs route already
+    /// exposes, just scoped to this connector's container
+    Logs {
+        connector_id: String,
+        /// Number of trailing log lines to fetch (capped server-side at 10000)
+        #[arg(long, default_value_t = 200)]
+        tail: u32,
+    },
+    /// List agents and users consuming this connector (owner/admin only)
+    Consumers {
+        connector_id: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Pin a connector for quick access
+    Pin { connector_id: String },
+    /// Unpin a connector
+    Unpin { connector_id: String },
+    /// List your pinned connectors
+    Pinned {
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// List recently used connectors
+    Recent {
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Grant connector access to a specific agent (owner/admin only)
+    #[command(name = "grant-agent")]
+    GrantAgent {
+        connector_id: String,
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Revoke connector access from a specific agent (owner/admin only)
+    #[command(name = "revoke-agent")]
+    RevokeAgent {
+        connector_id: String,
+        /// Agent name or ID
+        agent: String,
     },
 }
 
@@ -1095,189 +1181,106 @@ pub enum McpAgentToolsCommands {
 pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
     match cmd {
         McpSubCommands::Catalog { json } => commands::mcp::catalog(json),
-        McpSubCommands::Connect {
-            connector_id,
-            toolkit,
-            url,
-            value,
-            redirect_url,
-            yes,
-        } => commands::mcp::connect(
-            connector_id.as_deref(),
-            toolkit.as_deref(),
-            url.as_deref(),
-            value.as_deref(),
-            redirect_url.as_deref(),
-            yes,
-        ),
+        McpSubCommands::Connect { connector_id, toolkit, url, value, redirect_url, yes } => {
+            commands::mcp::connect(
+                connector_id.as_deref(),
+                toolkit.as_deref(),
+                url.as_deref(),
+                value.as_deref(),
+                redirect_url.as_deref(),
+                yes,
+            )
+        }
         McpSubCommands::Connections { json } => commands::mcp::connections(json),
         McpSubCommands::Disconnect { connector_id } => commands::mcp::disconnect(&connector_id),
         McpSubCommands::Toolkit { command } => match command {
             McpToolkitCommands::List { json } => commands::mcp::toolkit_list(json),
-            McpToolkitCommands::Register {
-                toolkit,
-                client_id,
-                client_secret,
-                scopes,
-                display_name,
-                logo_url,
-            } => commands::mcp::toolkit_register(
-                &toolkit,
-                client_id.as_deref(),
-                client_secret.as_deref(),
-                &scopes,
-                display_name.as_deref(),
-                logo_url.as_deref(),
-            ),
-            McpToolkitCommands::Update {
-                connector_id,
-                display_name,
-                logo_url,
-                description,
-            } => commands::mcp::toolkit_update(
-                &connector_id,
-                display_name.as_deref(),
-                logo_url.as_deref(),
-                description.as_deref(),
-            ),
-            McpToolkitCommands::Delete { connector_id, yes } => {
-                commands::mcp::toolkit_delete(&connector_id, yes)
+            McpToolkitCommands::Register { toolkit, client_id, client_secret, scopes, display_name, logo_url } => {
+                commands::mcp::toolkit_register(
+                    &toolkit,
+                    client_id.as_deref(),
+                    client_secret.as_deref(),
+                    &scopes,
+                    display_name.as_deref(),
+                    logo_url.as_deref(),
+                )
             }
+            McpToolkitCommands::Update { connector_id, display_name, logo_url, description } => {
+                commands::mcp::toolkit_update(&connector_id, display_name.as_deref(), logo_url.as_deref(), description.as_deref())
+            }
+            McpToolkitCommands::Delete { connector_id, yes } => commands::mcp::toolkit_delete(&connector_id, yes),
         },
         McpSubCommands::Connector { command } => match command {
             McpConnectorCommands::List { json } => commands::mcp::connector_list(json),
-            McpConnectorCommands::Probe { url } => commands::mcp::connector_probe(&url),
+            McpConnectorCommands::Probe { url, json } => commands::mcp::connector_probe(&url, json),
             McpConnectorCommands::Register {
-                name,
-                url,
-                transport,
-                auth_type,
-                url_param_name,
-                credential_header_name,
-                headers,
-                basic_username,
-                basic_password,
-                description,
-                display_name,
-                logo_url,
+                name, url, transport, auth_type, url_param_name, credential_header_name,
+                headers, basic_username, basic_password, description, display_name, logo_url,
             } => commands::mcp::connector_register(
-                &name,
-                &url,
-                &transport,
-                &auth_type,
-                url_param_name.as_deref(),
-                credential_header_name.as_deref(),
-                &headers,
-                basic_username.as_deref(),
-                basic_password.as_deref(),
-                description.as_deref(),
-                display_name.as_deref(),
-                logo_url.as_deref(),
+                &name, &url, &transport, &auth_type,
+                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
+                basic_username.as_deref(), basic_password.as_deref(),
+                description.as_deref(), display_name.as_deref(), logo_url.as_deref(),
             ),
             McpConnectorCommands::Update {
-                connector_id,
-                name,
-                url,
-                transport,
-                auth_type,
-                url_param_name,
-                credential_header_name,
-                headers,
-                description,
-                display_name,
-                logo_url,
-                active,
+                connector_id, name, url, transport, auth_type, url_param_name, credential_header_name,
+                headers, description, display_name, logo_url, active,
             } => commands::mcp::connector_update(
-                &connector_id,
-                name.as_deref(),
-                url.as_deref(),
-                transport.as_deref(),
-                auth_type.as_deref(),
-                url_param_name.as_deref(),
-                credential_header_name.as_deref(),
-                &headers,
-                description.as_deref(),
-                display_name.as_deref(),
-                logo_url.as_deref(),
-                active,
+                &connector_id, name.as_deref(), url.as_deref(), transport.as_deref(), auth_type.as_deref(),
+                url_param_name.as_deref(), credential_header_name.as_deref(), &headers,
+                description.as_deref(), display_name.as_deref(), logo_url.as_deref(), active,
             ),
-            McpConnectorCommands::Delete { connector_id, yes } => {
-                commands::mcp::connector_delete(&connector_id, yes)
-            }
+            McpConnectorCommands::Delete { connector_id, yes } => commands::mcp::connector_delete(&connector_id, yes),
             McpConnectorCommands::Share { command } => match command {
-                McpConnectorShareCommands::List { connector_id, json } => {
-                    commands::mcp::share_list(&connector_id, json)
+                McpConnectorShareCommands::List { connector_id, json } => commands::mcp::share_list(&connector_id, json),
+                McpConnectorShareCommands::Add { connector_id, user, public } => {
+                    commands::mcp::share_add(&connector_id, user.as_deref(), public)
                 }
-                McpConnectorShareCommands::Add {
-                    connector_id,
-                    user,
-                    public,
-                } => commands::mcp::share_add(&connector_id, user.as_deref(), public),
-                McpConnectorShareCommands::Remove {
-                    connector_id,
-                    user,
-                    public,
-                } => commands::mcp::share_remove(&connector_id, user.as_deref(), public),
+                McpConnectorShareCommands::Remove { connector_id, user, public } => {
+                    commands::mcp::share_remove(&connector_id, user.as_deref(), public)
+                }
             },
+            McpConnectorCommands::Upload { name, version_tag, zip, env } => {
+                commands::mcp::connector_upload(&zip, &name, &version_tag, &env)
+            }
+            McpConnectorCommands::UploadGithub { name, version_tag, github_url, env } => {
+                commands::mcp::connector_upload_github(&name, &version_tag, &github_url, &env)
+            }
+            McpConnectorCommands::BuildStatus { connector_id, json } => commands::mcp::connector_build_status(&connector_id, json),
+            McpConnectorCommands::Logs { connector_id, tail } => commands::mcp::connector_logs(&connector_id, tail),
+            McpConnectorCommands::Consumers { connector_id, json } => commands::mcp::connector_consumers(&connector_id, json),
+            McpConnectorCommands::Pin { connector_id } => commands::mcp::connector_pin(&connector_id),
+            McpConnectorCommands::Unpin { connector_id } => commands::mcp::connector_unpin(&connector_id),
+            McpConnectorCommands::Pinned { json } => commands::mcp::connector_pinned(json),
+            McpConnectorCommands::Recent { json } => commands::mcp::connector_recent(json),
+            McpConnectorCommands::GrantAgent { connector_id, agent } => commands::mcp::connector_grant_agent(&connector_id, &agent),
+            McpConnectorCommands::RevokeAgent { connector_id, agent } => commands::mcp::connector_revoke_agent(&connector_id, &agent),
         },
         McpSubCommands::Credential { command } => match command {
-            McpCredentialCommands::Set {
-                connector_id,
-                value,
-            } => commands::mcp::credential_set(&connector_id, value.as_deref()),
-            McpCredentialCommands::Status { connector_id, json } => {
-                commands::mcp::credential_status(&connector_id, json)
-            }
-            McpCredentialCommands::Delete { connector_id, yes } => {
-                commands::mcp::credential_delete(&connector_id, yes)
-            }
+            McpCredentialCommands::Set { connector_id, value } => commands::mcp::credential_set(&connector_id, value.as_deref()),
+            McpCredentialCommands::Status { connector_id, json } => commands::mcp::credential_status(&connector_id, json),
+            McpCredentialCommands::Delete { connector_id, yes } => commands::mcp::credential_delete(&connector_id, yes),
         },
         McpSubCommands::Oauth { command } => match command {
-            McpOauthCommands::Authorize {
-                connector_id,
-                client_id,
-                redirect_url,
-            } => commands::mcp::oauth_authorize(
-                &connector_id,
-                client_id.as_deref(),
-                redirect_url.as_deref(),
-            ),
-            McpOauthCommands::Status { connector_id, json } => {
-                commands::mcp::oauth_status(&connector_id, json)
+            McpOauthCommands::Authorize { connector_id, client_id, redirect_url } => {
+                commands::mcp::oauth_authorize(&connector_id, client_id.as_deref(), redirect_url.as_deref())
             }
-            McpOauthCommands::Revoke { connector_id, yes } => {
-                commands::mcp::oauth_revoke(&connector_id, yes)
-            }
+            McpOauthCommands::Status { connector_id, json } => commands::mcp::oauth_status(&connector_id, json),
+            McpOauthCommands::Revoke { connector_id, yes } => commands::mcp::oauth_revoke(&connector_id, yes),
         },
+        McpSubCommands::ShareTargets { query, json } => commands::mcp::share_targets(&query, json),
         McpSubCommands::AgentTools { command } => match command {
-            McpAgentToolsCommands::Connectors { agent, json } => {
-                commands::mcp::agent_tools_connectors(&agent, json)
+            McpAgentToolsCommands::Connectors { agent, json } => commands::mcp::agent_tools_connectors(&agent, json),
+            McpAgentToolsCommands::Enable { agent, connector_id } => commands::mcp::agent_tools_enable(&agent, &connector_id),
+            McpAgentToolsCommands::Disable { agent, connector_id } => commands::mcp::agent_tools_disable(&agent, &connector_id),
+            McpAgentToolsCommands::Tools { agent, connector_id, json } => {
+                commands::mcp::agent_tools_tools(&agent, &connector_id, json)
             }
-            McpAgentToolsCommands::Enable {
-                agent,
-                connector_id,
-            } => commands::mcp::agent_tools_enable(&agent, &connector_id),
-            McpAgentToolsCommands::Disable {
-                agent,
-                connector_id,
-            } => commands::mcp::agent_tools_disable(&agent, &connector_id),
-            McpAgentToolsCommands::Tools {
-                agent,
-                connector_id,
-                json,
-            } => commands::mcp::agent_tools_tools(&agent, &connector_id, json),
-            McpAgentToolsCommands::Rules { agent, json } => {
-                commands::mcp::agent_tools_rules(&agent, json)
+            McpAgentToolsCommands::Rules { agent, json } => commands::mcp::agent_tools_rules(&agent, json),
+            McpAgentToolsCommands::SetRule { agent, connector_id, pattern, stance } => {
+                commands::mcp::agent_tools_set_rule(&agent, &connector_id, &pattern, &stance)
             }
-            McpAgentToolsCommands::SetRule {
-                agent,
-                connector_id,
-                pattern,
-                stance,
-            } => commands::mcp::agent_tools_set_rule(&agent, &connector_id, &pattern, &stance),
-            McpAgentToolsCommands::Reset { agent, yes } => {
-                commands::mcp::agent_tools_reset(&agent, yes)
-            }
+            McpAgentToolsCommands::Reset { agent, yes } => commands::mcp::agent_tools_reset(&agent, yes),
         },
     }
 }
