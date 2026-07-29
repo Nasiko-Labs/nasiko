@@ -50,7 +50,10 @@ impl ProviderClient for GeminiProvider {
 
         let resp = self
             .http
-            .post(format!("{}/models/{}:generateContent", self.base, cfg.model))
+            .post(format!(
+                "{}/models/{}:generateContent",
+                self.base, cfg.model
+            ))
             .header("x-goog-api-key", &cfg.api_key)
             .json(&body)
             .send()
@@ -206,7 +209,11 @@ impl ProviderClient for GeminiProvider {
             Value::String(s) => vec![s.clone()],
             Value::Array(arr) => arr
                 .iter()
-                .map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string())
+                })
                 .collect(),
             other => vec![other.to_string()],
         };
@@ -218,7 +225,10 @@ impl ProviderClient for GeminiProvider {
 
         let resp = self
             .http
-            .post(format!("{}/models/{}:batchEmbedContents", self.base, cfg.model))
+            .post(format!(
+                "{}/models/{}:batchEmbedContents",
+                self.base, cfg.model
+            ))
             .header("x-goog-api-key", &cfg.api_key)
             .json(&json!({ "requests": requests }))
             .send()
@@ -365,7 +375,8 @@ fn assistant_to_gemini(m: &Message) -> Value {
     }
     if let Some(tool_calls) = &m.tool_calls {
         for tc in tool_calls {
-            let args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
+            let args: Value =
+                serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
             parts.push(json!({ "functionCall": { "name": tc.function.name, "args": args } }));
         }
     }
@@ -515,7 +526,10 @@ mod tests {
         .unwrap();
         let body = to_gemini_request(&req, &resolved());
 
-        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "You are helpful.");
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"],
+            "You are helpful."
+        );
         assert_eq!(body["contents"].as_array().unwrap().len(), 1); // system not in contents
         assert_eq!(body["contents"][0]["role"], "user");
         assert_eq!(body["contents"][0]["parts"][0]["text"], "hi");
@@ -546,8 +560,14 @@ mod tests {
         assert_eq!(contents.len(), 3);
         // assistant → model functionCall
         assert_eq!(contents[1]["role"], "model");
-        assert_eq!(contents[1]["parts"][0]["functionCall"]["name"], "translate_text");
-        assert_eq!(contents[1]["parts"][0]["functionCall"]["args"]["text"], "hi");
+        assert_eq!(
+            contents[1]["parts"][0]["functionCall"]["name"],
+            "translate_text"
+        );
+        assert_eq!(
+            contents[1]["parts"][0]["functionCall"]["args"]["text"],
+            "hi"
+        );
         // tool → user functionResponse keyed by the recovered NAME, not the id
         assert_eq!(contents[2]["role"], "user");
         let fr = &contents[2]["parts"][0]["functionResponse"];
@@ -593,7 +613,10 @@ mod tests {
             "usageMetadata": { "promptTokenCount": 5, "candidatesTokenCount": 2, "totalTokenCount": 7 }
         });
         let resp = from_gemini_response(&gemini, "gemini-1.5-pro");
-        assert_eq!(resp.choices[0].message.content, Some(Value::String("Hello there".into())));
+        assert_eq!(
+            resp.choices[0].message.content,
+            Some(Value::String("Hello there".into()))
+        );
         assert!(resp.choices[0].message.tool_calls.is_none());
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
     }
@@ -606,7 +629,10 @@ mod tests {
             "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2,\"totalTokenCount\":6}}\n\n",
         );
         server
-            .mock("POST", "/models/gemini-1.5-pro:streamGenerateContent?alt=sse")
+            .mock(
+                "POST",
+                "/models/gemini-1.5-pro:streamGenerateContent?alt=sse",
+            )
             .match_header("x-goog-api-key", "AIza-test")
             .with_status(200)
             .with_header("content-type", "text/event-stream")
@@ -632,7 +658,9 @@ mod tests {
             .filter_map(|c| c.choices.first().and_then(|ch| ch.delta.content.clone()))
             .collect();
         assert_eq!(text, "Hello");
-        let finish = chunks.iter().find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
+        let finish = chunks
+            .iter()
+            .find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
         assert_eq!(finish.as_deref(), Some("stop"));
         let usage = chunks.iter().find_map(|c| c.usage.clone()).unwrap();
         assert_eq!(usage.total_tokens, Some(6));
@@ -643,7 +671,10 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         let sse = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"translate_text\",\"args\":{\"text\":\"hi\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n\n";
         server
-            .mock("POST", "/models/gemini-1.5-pro:streamGenerateContent?alt=sse")
+            .mock(
+                "POST",
+                "/models/gemini-1.5-pro:streamGenerateContent?alt=sse",
+            )
             .with_status(200)
             .with_header("content-type", "text/event-stream")
             .with_body(sse)
@@ -651,9 +682,10 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(reqwest::Client::new(), server.url());
-        let req: ChatRequest =
-            serde_json::from_value(json!({ "stream": true, "messages": [{ "role": "user", "content": "translate" }] }))
-                .unwrap();
+        let req: ChatRequest = serde_json::from_value(
+            json!({ "stream": true, "messages": [{ "role": "user", "content": "translate" }] }),
+        )
+        .unwrap();
         let chunks: Vec<ChatChunk> = provider
             .chat_stream(&req, &resolved())
             .await
@@ -665,7 +697,11 @@ mod tests {
         let mut name = String::new();
         let mut args = String::new();
         for c in &chunks {
-            if let Some(tcs) = c.choices.first().and_then(|ch| ch.delta.tool_calls.as_ref()) {
+            if let Some(tcs) = c
+                .choices
+                .first()
+                .and_then(|ch| ch.delta.tool_calls.as_ref())
+            {
                 for tc in tcs {
                     if let Some(f) = &tc.function {
                         if let Some(n) = &f.name {
@@ -681,7 +717,9 @@ mod tests {
         assert_eq!(name, "translate_text");
         assert_eq!(serde_json::from_str::<Value>(&args).unwrap()["text"], "hi");
         // STOP overridden to tool_calls because a call was emitted
-        let finish = chunks.iter().find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
+        let finish = chunks
+            .iter()
+            .find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
         assert_eq!(finish.as_deref(), Some("tool_calls"));
     }
 
@@ -700,7 +738,8 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                json!({ "embeddings": [ { "values": [0.1, 0.2] }, { "values": [0.3, 0.4] } ] }).to_string(),
+                json!({ "embeddings": [ { "values": [0.1, 0.2] }, { "values": [0.3, 0.4] } ] })
+                    .to_string(),
             )
             .create_async()
             .await;

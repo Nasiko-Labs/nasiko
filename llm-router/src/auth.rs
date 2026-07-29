@@ -52,11 +52,9 @@ pub fn verify_agent_jwt(
     validation.validate_aud = false; // no audience claim in our tokens
 
     let key = DecodingKey::from_secret(cfg.agent_jwt_secret.as_bytes());
-    let data = decode::<AgentClaims>(token, &key, &validation).map_err(|e| {
-        match e.kind() {
-            jsonwebtoken::errors::ErrorKind::ExpiredSignature => GatewayError::TokenExpired,
-            _ => GatewayError::InvalidToken(e.to_string()),
-        }
+    let data = decode::<AgentClaims>(token, &key, &validation).map_err(|e| match e.kind() {
+        jsonwebtoken::errors::ErrorKind::ExpiredSignature => GatewayError::TokenExpired,
+        _ => GatewayError::InvalidToken(e.to_string()),
     })?;
 
     let agent_id = data
@@ -167,8 +165,8 @@ mod tests {
 
     #[test]
     fn valid_token_yields_agent_and_owner() {
-        let token = mint_agent_token("agent-123", "owner-abc", SECRET, 3600, Algorithm::HS256)
-            .unwrap();
+        let token =
+            mint_agent_token("agent-123", "owner-abc", SECRET, 3600, Algorithm::HS256).unwrap();
         let (agent_id, owner_id) = verify_agent_jwt(Some(&bearer(&token)), &cfg(SECRET)).unwrap();
         assert_eq!(agent_id, "agent-123");
         assert_eq!(owner_id, "owner-abc");
@@ -193,8 +191,15 @@ mod tests {
     fn expired_token_says_expired() {
         // exp well in the past (beyond jsonwebtoken's default 60s leeway).
         let now = now_unix();
-        let token =
-            mint_with_times("a", "o", SECRET, now - 10_000, now - 5_000, Algorithm::HS256).unwrap();
+        let token = mint_with_times(
+            "a",
+            "o",
+            SECRET,
+            now - 10_000,
+            now - 5_000,
+            Algorithm::HS256,
+        )
+        .unwrap();
         let err = verify_agent_jwt(Some(&bearer(&token)), &cfg(SECRET)).unwrap_err();
         assert!(matches!(err, GatewayError::TokenExpired));
         assert!(err.to_string().to_lowercase().contains("expired"));
@@ -220,7 +225,11 @@ mod tests {
         let now = now_unix();
         let token = encode(
             &Header::new(Algorithm::HS256),
-            &NoAgent { owner_id: "o".into(), iat: now, exp: now + 3600 },
+            &NoAgent {
+                owner_id: "o".into(),
+                iat: now,
+                exp: now + 3600,
+            },
             &EncodingKey::from_secret(SECRET.as_bytes()),
         )
         .unwrap();

@@ -218,6 +218,8 @@ async fn upload_and_deploy(
     let mut zip_path: Option<PathBuf> = None;
     let mut ports: Vec<u16> = vec![];
     let mut env: HashMap<String, String> = HashMap::new();
+    // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
+    let mut inbound_format: Option<String> = None;
 
     // Build a temporary directory early so we have a path to stream into.
     // The worker cleans this up after the job completes.
@@ -227,6 +229,7 @@ async fn upload_and_deploy(
         match field.name().unwrap_or("") {
             "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
+            "inbound_format" => inbound_format = field.text().await.ok(),
             "source" | "file" => {
                 // Stream zip to disk rather than buffering it all in RAM. Key the
                 // temp dir on a fresh UUID, never the agent name (RUN-10) — two
@@ -305,6 +308,12 @@ async fn upload_and_deploy(
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
     let version_tag = version_tag.unwrap_or_else(|| "latest".to_string());
+    // Accept only the supported SDK formats; anything else falls back to openai.
+    let inbound_format = match inbound_format.as_deref() {
+        Some("anthropic") => "anthropic",
+        Some("gemini") => "gemini",
+        _ => "openai",
+    };
 
     // Validate name + version_tag charset (RUN-10): both flow into the OCI image
     // reference `{name}:{tag}`; unvalidated values allow push-target redirection
@@ -382,10 +391,11 @@ async fn upload_and_deploy(
     // concurrent same-name uploads create duplicate rows (SRV-2).
     let agent_id = {
         match sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO agents (name, owner_id, version, image, status) \
-             VALUES ($1, $2, $3, $4, 'deploying') \
+            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format) \
+             VALUES ($1, $2, $3, $4, 'deploying', $5) \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
+                           inbound_format = EXCLUDED.inbound_format, \
                            status = 'deploying', updated_at = now() \
              RETURNING id",
         )
@@ -393,6 +403,7 @@ async fn upload_and_deploy(
         .bind(owner_id)
         .bind(&version_tag)
         .bind(&image_tag)
+        .bind(inbound_format)
         .fetch_one(&mut *tx)
         .await
         {
@@ -423,6 +434,12 @@ async fn upload_and_deploy(
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
+
+    // Wire the agent's LLM SDK through the gateway (mint JWT + inject base-URL/key per the
+    // agent's inbound_format). Best-effort; skipped (with a warning) if the gateway isn't
+    // configured. Injected before the build job is enqueued so the worker deploys with it.
+    crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id))
+        .await;
 
     let upload_id = build_id.to_string();
 
@@ -986,7 +1003,7 @@ pub async fn execute_github_clone_and_deploy(
 
     // Load the owner's GitHub access token from the DB.
     let token: Option<String> = {
-        use crate::secrets::crypto::SecretsCrypto;
+        use nasiko_secrets::SecretsCrypto;
         let row: Option<(serde_json::Value,)> = sqlx::query_as(
             "SELECT provider_metadata FROM user_identities \
              WHERE user_id = $1 AND provider = 'github'",

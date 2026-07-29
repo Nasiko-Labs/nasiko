@@ -78,7 +78,13 @@ pub async fn execute_chat_stream(
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
     req: &ChatRequest,
-) -> Result<(BoxStream<'static, Result<ChatChunk, ProviderError>>, Effective), GatewayError> {
+) -> Result<
+    (
+        BoxStream<'static, Result<ChatChunk, ProviderError>>,
+        Effective,
+    ),
+    GatewayError,
+> {
     let attempts = build_attempts(primary, cfg);
     let mut last: Option<GatewayError> = None;
     let total = attempts.len();
@@ -319,7 +325,10 @@ mod tests {
 
     #[test]
     fn same_provider_fallback_reuses_key_cross_provider_uses_platform() {
-        let p = primary("anthropic", vec!["anthropic/claude-haiku", "openai/gpt-4o-mini"]);
+        let p = primary(
+            "anthropic",
+            vec!["anthropic/claude-haiku", "openai/gpt-4o-mini"],
+        );
         let attempts = build_attempts(&p, &cfg("sk-platform"));
         assert_eq!(attempts.len(), 3);
         // primary
@@ -391,8 +400,9 @@ mod tests {
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
 
-        let (resp, (provider, model)) =
-            execute_chat(&reqwest::Client::new(), &cfg, &primary, &req).await.unwrap();
+        let (resp, (provider, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap();
         assert_eq!(provider, "openai"); // effective = the fallback
         assert_eq!(model, "gpt-4o-mini");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
@@ -438,7 +448,9 @@ mod tests {
             serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
 
         let (resp, (provider, model)) =
-            execute_embeddings(&reqwest::Client::new(), &cfg, &primary, &req).await.unwrap();
+            execute_embeddings(&reqwest::Client::new(), &cfg, &primary, &req)
+                .await
+                .unwrap();
         assert_eq!(provider, "openai"); // effective = the fallback
         assert_eq!(model, "text-embedding-3-small");
         assert_eq!(resp.data.len(), 1);
@@ -620,7 +632,9 @@ mod tests {
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        let err = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req).await.unwrap_err();
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap_err();
         assert!(matches!(err, GatewayError::Upstream(_)));
         assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
     }

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Claims;
 use crate::auth::rbac::require_superuser;
-use crate::secrets::crypto::SecretsCrypto;
 use crate::state::AppState;
+use nasiko_secrets::SecretsCrypto;
 
 pub fn router() -> Router<AppState> {
     let write_settings = Router::new()

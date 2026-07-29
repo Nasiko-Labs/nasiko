@@ -30,6 +30,9 @@ mod tests {
         assert_eq!(data[0]["id"], "openai/gpt-4o");
         assert_eq!(data[2]["provider"], "anthropic");
         // every entry has an id and a provider
-        assert!(data.iter().all(|e| e["id"].is_string() && e["provider"].is_string()));
+        assert!(
+            data.iter()
+                .all(|e| e["id"].is_string() && e["provider"].is_string())
+        );
     }
 }

@@ -35,6 +35,46 @@ pub enum AgentStreamEvent {
     Content(String),
 }
 
+/// A2A method-name / message-shape dialect.
+///
+/// Standard JSON-RPC agents (`preferredTransport: JSONRPC`, e.g. a2a-sdk) use
+/// `message/send`/`message/stream` with `role: "user"` and typed
+/// `{"kind":"text"}` parts. Some endpoints (notably the control-plane registry)
+/// instead expose the gRPC/proto method names over JSON-RPC, with `role:
+/// "ROLE_USER"` and untyped `{"text":…}` parts. `AgentInfo` doesn't carry the
+/// transport, so the client attempts [`Dialect::JsonRpc`] first and falls back
+/// to [`Dialect::Proto`] on `-32601` (method not found).
+#[derive(Clone, Copy, Debug)]
+enum Dialect {
+    JsonRpc,
+    Proto,
+}
+
+impl Dialect {
+    fn method(self, streaming: bool) -> &'static str {
+        match (self, streaming) {
+            (Dialect::JsonRpc, false) => "message/send",
+            (Dialect::JsonRpc, true) => "message/stream",
+            (Dialect::Proto, false) => "SendMessage",
+            (Dialect::Proto, true) => "SendStreamingMessage",
+        }
+    }
+
+    fn role(self) -> &'static str {
+        match self {
+            Dialect::JsonRpc => "user",
+            Dialect::Proto => "ROLE_USER",
+        }
+    }
+
+    fn text_part(self, text: &str) -> serde_json::Value {
+        match self {
+            Dialect::JsonRpc => serde_json::json!({"kind": "text", "text": text}),
+            Dialect::Proto => serde_json::json!({"text": text}),
+        }
+    }
+}
+
 impl Default for A2aClient {
     fn default() -> Self {
         Self::new()
@@ -77,7 +117,59 @@ impl A2aClient {
         self
     }
 
+    /// The forwarded `traceparent` header value (used only for flow-correlation logs),
+    /// or `"<none>"` when the client wasn't given one. The trace id inside it is the
+    /// platform flow/conversation id the gateway maps back to a `flows` row.
+    fn forwarded_traceparent(&self) -> &str {
+        self.extra_headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("traceparent"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("<none>")
+    }
+
+    /// Build the JSON-RPC request body for `message/send`/`message/stream` (or
+    /// their proto-named equivalents), injecting `request_metadata` into
+    /// `params.metadata`.
+    fn build_message_body(
+        &self,
+        dialect: Dialect,
+        streaming: bool,
+        message: &str,
+        ctx: &str,
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": Uuid::new_v4().to_string(),
+            "method": dialect.method(streaming),
+            "params": {
+                "message": {
+                    "messageId": Uuid::new_v4().to_string(),
+                    "role": dialect.role(),
+                    "parts": [dialect.text_part(message)],
+                    "contextId": ctx
+                }
+            }
+        });
+
+        if let Some(ref metadata) = self.request_metadata
+            && let Some(params) = body.get_mut("params")
+        {
+            params
+                .as_object_mut()
+                .map(|p| p.insert("metadata".to_string(), metadata.clone()));
+        }
+
+        body
+    }
+
     /// Send a message to an A2A agent and block until task completion.
+    ///
+    /// Tries the standard A2A JSON-RPC dialect (`message/send`) first; if the
+    /// agent doesn't recognize that method (`-32601`), retries with the
+    /// gRPC/proto method name (`SendMessage`). This lets the orchestrator talk
+    /// to both `preferredTransport: JSONRPC` agents and proto-name endpoints
+    /// (e.g. the control-plane registry) without a prior capability lookup.
     pub async fn send_message(
         &self,
         endpoint: &str,
@@ -102,25 +194,39 @@ impl A2aClient {
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let mut body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": Uuid::new_v4().to_string(),
-            // gRPC-style JSON-RPC method/role names — what every example
-            // agent's installed `a2a-sdk` actually registers in its dispatch
-            // table (confirmed against a real deployed `oss/agents/translator`
-            // build; the spec names `message/send`/`"user"` returned
-            // -32601 Method not found unless the agent opts into
-            // `enable_v0_3_compat`, which none of them do).
-            "method": "SendMessage",
-            "params": {
-                "message": {
-                    "messageId": Uuid::new_v4().to_string(),
-                    "role": "ROLE_USER",
-                    "parts": [{"text": message}],
-                    "contextId": ctx
-                }
+        tracing::debug!(
+            target: "nasiko::flow",
+            endpoint,
+            context_id = %ctx,
+            traceparent = self.forwarded_traceparent(),
+            "a2a send_message → forwarding to agent (trace_id in traceparent = flow/conversation id)"
+        );
+
+        match self
+            .send_message_dialect(endpoint, message, &ctx, per_call_headers, Dialect::JsonRpc)
+            .await
+        {
+            Err(A2aClientError::A2aProtocol { code: -32601, .. }) => {
+                tracing::debug!(
+                    endpoint,
+                    "agent rejected JSON-RPC method (-32601); retrying with proto method name"
+                );
+                self.send_message_dialect(endpoint, message, &ctx, per_call_headers, Dialect::Proto)
+                    .await
             }
-        });
+            other => other,
+        }
+    }
+
+    async fn send_message_dialect(
+        &self,
+        endpoint: &str,
+        message: &str,
+        ctx: &str,
+        per_call_headers: &[(String, String)],
+        dialect: Dialect,
+    ) -> Result<A2aResponse, A2aClientError> {
+        let mut body = self.build_message_body(dialect, false, message, ctx);
 
         if let Some(ref metadata) = self.request_metadata
             && let Some(params) = body.get_mut("params")
@@ -167,7 +273,8 @@ impl A2aClient {
         Ok(a2a_resp)
     }
 
-    /// Send a message via `message/stream` and consume the SSE stream.
+    /// Send a message via `message/stream` (proto: `SendStreamingMessage`) and
+    /// consume the SSE stream.
     ///
     /// Live events are relayed through `progress` (if provided): the agent's
     /// working-status updates (its internal tool activity) and its reply text
@@ -185,26 +292,64 @@ impl A2aClient {
         progress: Option<tokio::sync::mpsc::Sender<AgentStreamEvent>>,
         per_call_headers: &[(String, String)],
     ) -> Result<String, A2aClientError> {
-        use futures::StreamExt as _;
-
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let mut body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": Uuid::new_v4().to_string(),
-            // See the naming note in `send_message_with_headers` above.
-            "method": "SendStreamingMessage",
-            "params": {
-                "message": {
-                    "messageId": Uuid::new_v4().to_string(),
-                    "role": "ROLE_USER",
-                    "parts": [{"text": message}],
-                    "contextId": ctx
-                }
+        tracing::debug!(
+            target: "nasiko::flow",
+            endpoint,
+            context_id = %ctx,
+            traceparent = self.forwarded_traceparent(),
+            "a2a send_message_streaming → forwarding to agent (trace_id in traceparent = flow/conversation id)"
+        );
+
+        // Try standard JSON-RPC (`message/stream`) first, falling back to the
+        // proto method name on `-32601`. A method-not-found reply arrives as a
+        // plain JSON error before any SSE event, so no `progress` events are
+        // emitted on the failed attempt and the retry is clean.
+        match self
+            .send_message_streaming_dialect(
+                endpoint,
+                message,
+                &ctx,
+                progress.clone(),
+                per_call_headers,
+                Dialect::JsonRpc,
+            )
+            .await
+        {
+            Err(A2aClientError::A2aProtocol { code: -32601, .. }) => {
+                tracing::debug!(
+                    endpoint,
+                    "agent rejected JSON-RPC streaming method (-32601); retrying with proto method name"
+                );
+                self.send_message_streaming_dialect(
+                    endpoint,
+                    message,
+                    &ctx,
+                    progress,
+                    per_call_headers,
+                    Dialect::Proto,
+                )
+                .await
             }
-        });
+            other => other,
+        }
+    }
+
+    async fn send_message_streaming_dialect(
+        &self,
+        endpoint: &str,
+        message: &str,
+        ctx: &str,
+        progress: Option<tokio::sync::mpsc::Sender<AgentStreamEvent>>,
+        per_call_headers: &[(String, String)],
+        dialect: Dialect,
+    ) -> Result<String, A2aClientError> {
+        use futures::StreamExt as _;
+
+        let mut body = self.build_message_body(dialect, true, message, ctx);
 
         if let Some(ref metadata) = self.request_metadata
             && let Some(params) = body.get_mut("params")
@@ -406,6 +551,41 @@ fn collect_text_parts<'a>(parts_arrays: impl Iterator<Item = &'a serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jsonrpc_dialect_uses_standard_method_role_and_typed_parts() {
+        let client = A2aClient::new();
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1");
+        assert_eq!(body["method"], "message/send");
+        assert_eq!(body["params"]["message"]["role"], "user");
+        assert_eq!(body["params"]["message"]["parts"][0]["kind"], "text");
+        assert_eq!(body["params"]["message"]["parts"][0]["text"], "hi");
+        assert_eq!(body["params"]["message"]["contextId"], "ctx-1");
+
+        let stream = client.build_message_body(Dialect::JsonRpc, true, "hi", "ctx-1");
+        assert_eq!(stream["method"], "message/stream");
+    }
+
+    #[test]
+    fn proto_dialect_uses_grpc_method_role_and_untyped_parts() {
+        let client = A2aClient::new();
+        let body = client.build_message_body(Dialect::Proto, false, "hi", "ctx-1");
+        assert_eq!(body["method"], "SendMessage");
+        assert_eq!(body["params"]["message"]["role"], "ROLE_USER");
+        // Proto parts carry no `kind` discriminator.
+        assert!(body["params"]["message"]["parts"][0].get("kind").is_none());
+        assert_eq!(body["params"]["message"]["parts"][0]["text"], "hi");
+
+        let stream = client.build_message_body(Dialect::Proto, true, "hi", "ctx-1");
+        assert_eq!(stream["method"], "SendStreamingMessage");
+    }
+
+    #[test]
+    fn request_metadata_is_injected_into_params() {
+        let client = A2aClient::new().with_metadata(serde_json::json!({"traceparent": "abc"}));
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1");
+        assert_eq!(body["params"]["metadata"]["traceparent"], "abc");
+    }
 
     #[test]
     fn extracts_v1_task_artifact_text() {

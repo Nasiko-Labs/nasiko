@@ -101,7 +101,10 @@ pub struct PgTierRegistry {
 
 impl PgTierRegistry {
     pub fn new(db: PgPool) -> Self {
-        Self { db, fallback: StaticTierRegistry }
+        Self {
+            db,
+            fallback: StaticTierRegistry,
+        }
     }
 }
 
@@ -153,15 +156,30 @@ mod tests {
 
     #[test]
     fn anthropic_tiers_map_to_expected_models() {
-        assert_eq!(StaticTierRegistry::seed("anthropic", Tier::Tier1), Some("claude-opus-4-8"));
-        assert_eq!(StaticTierRegistry::seed("anthropic", Tier::Tier2), Some("claude-sonnet-4-6"));
-        assert_eq!(StaticTierRegistry::seed("anthropic", Tier::Tier3), Some("claude-haiku-4-5"));
+        assert_eq!(
+            StaticTierRegistry::seed("anthropic", Tier::Tier1),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(
+            StaticTierRegistry::seed("anthropic", Tier::Tier2),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            StaticTierRegistry::seed("anthropic", Tier::Tier3),
+            Some("claude-haiku-4-5")
+        );
     }
 
     #[test]
     fn openai_tiers_map_to_expected_models() {
-        assert_eq!(StaticTierRegistry::seed("openai", Tier::Tier1), Some("gpt-5.5"));
-        assert_eq!(StaticTierRegistry::seed("OpenAI", Tier::Tier3), Some("gpt-4o-mini"));
+        assert_eq!(
+            StaticTierRegistry::seed("openai", Tier::Tier1),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            StaticTierRegistry::seed("OpenAI", Tier::Tier3),
+            Some("gpt-4o-mini")
+        );
     }
 
     #[test]
@@ -180,7 +198,10 @@ mod tests {
     #[tokio::test]
     async fn static_registry_trait_delegates_to_seed() {
         let r = StaticTierRegistry;
-        assert_eq!(r.model_for("anthropic", Tier::Tier1).await.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(
+            r.model_for("anthropic", Tier::Tier1).await.as_deref(),
+            Some("claude-opus-4-8")
+        );
         assert_eq!(r.model_for("gemini", Tier::Tier1).await, None);
     }
 }

@@ -132,7 +132,9 @@ mod tests {
     }
 
     async fn body_json(resp: Response) -> Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -143,7 +145,9 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         server
             .mock("POST", "/embeddings")
-            .match_body(mockito::Matcher::PartialJson(json!({ "model": "text-embedding-3-large" })))
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "model": "text-embedding-3-large" }),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -159,9 +163,12 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let token = crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
+        let token =
+            crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
         let body = json!({ "model": "text-embedding-3-large", "input": "hello" });
-        let resp = embeddings_core(&ctx, &Store, &auth_headers(&token), body).await.unwrap();
+        let resp = embeddings_core(&ctx, &Store, &auth_headers(&token), body)
+            .await
+            .unwrap();
 
         let v = body_json(resp).await;
         assert_eq!(v["object"], "list");

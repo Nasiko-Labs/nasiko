@@ -303,7 +303,10 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     }
     flush_tool_results(&mut pending_tool_results, &mut messages);
 
-    let max_tokens = cfg.max_tokens.or(req.max_tokens).unwrap_or(DEFAULT_MAX_TOKENS);
+    let max_tokens = cfg
+        .max_tokens
+        .or(req.max_tokens)
+        .unwrap_or(DEFAULT_MAX_TOKENS);
     let mut body = json!({
         "model": cfg.model,
         "max_tokens": max_tokens,
@@ -343,7 +346,8 @@ fn assistant_to_anthropic(m: &Message) -> Value {
     if let Some(tool_calls) = &m.tool_calls {
         for tc in tool_calls {
             // arguments is a JSON string → Anthropic `input` must be an object.
-            let input: Value = serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
+            let input: Value =
+                serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
             blocks.push(json!({
                 "type": "tool_use",
                 "id": tc.id,
@@ -690,7 +694,10 @@ mod tests {
             "usage": { "input_tokens": 531, "output_tokens": 42 }
         });
         let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022");
-        assert_eq!(resp.choices[0].message.content, Some(Value::String("Here is the translation.".into())));
+        assert_eq!(
+            resp.choices[0].message.content,
+            Some(Value::String("Here is the translation.".into()))
+        );
         assert!(resp.choices[0].message.tool_calls.is_none());
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
     }
@@ -798,7 +805,9 @@ mod tests {
             .filter_map(|c| c.choices.first().and_then(|ch| ch.delta.content.clone()))
             .collect();
         assert_eq!(text, "Hello");
-        let finish = chunks.iter().find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
+        let finish = chunks
+            .iter()
+            .find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
         assert_eq!(finish.as_deref(), Some("stop"));
     }
 

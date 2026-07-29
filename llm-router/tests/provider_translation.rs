@@ -189,7 +189,11 @@ fn openai_request(s: &Scenario, model: &str) -> Value {
             "type": "function",
             "function": { "name": t.name, "description": t.description, "parameters": t.parameters },
         }]);
-        body["tool_choice"] = if t.force { json!("required") } else { json!("auto") };
+        body["tool_choice"] = if t.force {
+            json!("required")
+        } else {
+            json!("auto")
+        };
     }
     body
 }
@@ -208,7 +212,11 @@ fn anthropic_request(s: &Scenario, model: &str) -> Value {
         body["tools"] = json!([{
             "name": t.name, "description": t.description, "input_schema": t.parameters,
         }]);
-        body["tool_choice"] = if t.force { json!({ "type": "any" }) } else { json!({ "type": "auto" }) };
+        body["tool_choice"] = if t.force {
+            json!({ "type": "any" })
+        } else {
+            json!({ "type": "auto" })
+        };
     }
     body
 }
@@ -346,7 +354,10 @@ fn summarize_openai(v: &Value) -> Summary {
         .unwrap_or_default()
         .to_string();
     let mut tool_calls = Vec::new();
-    if let Some(arr) = msg.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array()) {
+    if let Some(arr) = msg
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(|t| t.as_array())
+    {
         for tc in arr {
             let f = tc.get("function");
             let name = f
@@ -401,7 +412,10 @@ fn summarize_anthropic(v: &Value) -> Summary {
     Summary {
         text,
         tool_calls,
-        finish_reason: v.get("stop_reason").and_then(|s| s.as_str()).map(String::from),
+        finish_reason: v
+            .get("stop_reason")
+            .and_then(|s| s.as_str())
+            .map(String::from),
         usage: v.get("usage").cloned().unwrap_or(Value::Null),
     }
 }
@@ -551,7 +565,10 @@ fn verbose() -> bool {
 }
 
 fn dump_json(client: Provider, backend: Provider, cases: &[CaseReport]) {
-    let dir = env_or("NASIKO_TRANSLATION_REPORT_DIR", "target/provider_translation_report");
+    let dir = env_or(
+        "NASIKO_TRANSLATION_REPORT_DIR",
+        "target/provider_translation_report",
+    );
     if let Err(e) = fs::create_dir_all(&dir) {
         eprintln!("could not create report dir {dir}: {e}");
         return;

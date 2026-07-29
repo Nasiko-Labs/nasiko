@@ -9,11 +9,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
-use axum::Json;
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::Value;
@@ -67,7 +67,15 @@ pub async fn gemini_generate(
         .map(|m| m.eq_ignore_ascii_case("streamGenerateContent"))
         .unwrap_or(false);
     let store = PgRegistry::new(ctx.db.clone());
-    chat_core(&ctx, &store, &headers, body, InboundFormat::Gemini, Some(stream)).await
+    chat_core(
+        &ctx,
+        &store,
+        &headers,
+        body,
+        InboundFormat::Gemini,
+        Some(stream),
+    )
+    .await
 }
 
 /// Storage-agnostic core of the chat handler. `format` selects the inbound parser/
@@ -180,7 +188,9 @@ async fn chat_core(
         let (stream, (provider, model)) =
             fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
         let renderer = inbound.chat_stream_renderer();
-        return stream_chat(ctx, renderer, stream, provider, model, agent_id, owner_id, started);
+        return stream_chat(
+            ctx, renderer, stream, provider, model, agent_id, owner_id, started,
+        );
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
@@ -240,7 +250,10 @@ async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> Boun
             .await;
     match row {
         Ok(Some((mode,))) => {
-            let mode = mode.as_deref().map(Mode::from_label).unwrap_or(Mode::FreeFlowing);
+            let mode = mode
+                .as_deref()
+                .map(Mode::from_label)
+                .unwrap_or(Mode::FreeFlowing);
             let signals = BoundarySignals::in_flow(flow_id.clone(), mode);
             tracing::info!(
                 target: "nasiko::llm_router::boundary",
@@ -376,7 +389,6 @@ impl Drop for UsageGuard {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,7 +470,9 @@ mod tests {
     }
 
     async fn body_string(resp: Response) -> String {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
@@ -487,7 +501,16 @@ mod tests {
         let ctx = ctx_with(server.url());
         let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
-        let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, InboundFormat::OpenAi, None).await.unwrap();
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
 
         let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
         assert_eq!(v["model"], "gpt-4o");
@@ -518,7 +541,9 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store { config: Some(openai_config()) };
+        let store = Store {
+            config: Some(openai_config()),
+        };
         // Anthropic Messages request shape: top-level system + max_tokens.
         let body = json!({
             "model": "claude-3-5-sonnet-20241022",
@@ -526,9 +551,16 @@ mod tests {
             "system": "You are helpful.",
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, InboundFormat::Anthropic, None)
-            .await
-            .unwrap();
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
 
         let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
         // Anthropic-shaped response, not OpenAI.
@@ -563,15 +595,24 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store { config: Some(openai_config()) };
+        let store = Store {
+            config: Some(openai_config()),
+        };
         // Gemini Messages request shape: systemInstruction + contents.
         let body = json!({
             "systemInstruction": { "parts": [{ "text": "sys" }] },
             "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }]
         });
-        let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, InboundFormat::Gemini, Some(false))
-            .await
-            .unwrap();
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap();
 
         let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
         assert_eq!(v["candidates"][0]["content"]["role"], "model");
@@ -600,7 +641,16 @@ mod tests {
         let ctx = ctx_with(server.url());
         let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "stream": true, "messages": [{ "role": "user", "content": "hi" }] });
-        let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, InboundFormat::OpenAi, None).await.unwrap();
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             resp.headers().get(CONTENT_TYPE).unwrap(),
             "text/event-stream"
@@ -618,7 +668,16 @@ mod tests {
         let ctx = ctx_with("http://unused".into());
         let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "messages": [] });
-        let err = chat_core(&ctx, &store, &HeaderMap::new(), body, InboundFormat::OpenAi, None).await.unwrap_err();
+        let err = chat_core(
+            &ctx,
+            &store,
+            &HeaderMap::new(),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, GatewayError::MissingAuthHeader));
     }
 
@@ -647,7 +706,16 @@ mod tests {
             }),
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
-        let err = chat_core(&ctx, &store, &auth_headers(&token()), body, InboundFormat::OpenAi, None).await.unwrap_err();
+        let err = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, GatewayError::Internal(_)));
     }
 }

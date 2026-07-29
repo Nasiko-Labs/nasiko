@@ -243,7 +243,10 @@ mod tests {
         let req: ChatRequest = serde_json::from_value(body).unwrap();
         assert_eq!(req.model.as_deref(), Some("gpt-4o"));
         assert_eq!(req.messages.len(), 2);
-        assert_eq!(req.tools.as_ref().unwrap()[0].function.name, "translate_text");
+        assert_eq!(
+            req.tools.as_ref().unwrap()[0].function.name,
+            "translate_text"
+        );
         assert_eq!(req.temperature, Some(0.1));
         assert!(!req.is_streaming());
         // Unknown params land in `extra` and survive a round-trip.
@@ -288,7 +291,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(a.text().as_deref(), Some("foobar"));
-        let n: Message = serde_json::from_value(json!({"role":"assistant","content":null})).unwrap();
+        let n: Message =
+            serde_json::from_value(json!({"role":"assistant","content":null})).unwrap();
         assert_eq!(n.text(), None);
     }
 

@@ -2,6 +2,8 @@ pub mod acl;
 pub mod build_worker;
 pub mod deployments;
 pub mod grants;
+pub mod hours_meter;
+pub mod llm_config;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
@@ -173,9 +175,6 @@ pub(crate) fn build_agent_spec(
         resources,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
-        harden: false,
-        network_override: None,
-        workload_kind: Default::default(),
     }
 }
 
@@ -183,6 +182,7 @@ pub fn router() -> Router<AppState> {
     upload::router()
         .merge(deployments::router())
         .merge(update::router())
+        .merge(llm_config::router())
     // `grants::router()` is deliberately NOT merged here: EE's `build_ee_app`
     // builds on top of this router and mounts its own richer grants router
     // (team/department grants + the live, CLI-consumed request shapes in

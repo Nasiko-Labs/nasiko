@@ -69,7 +69,9 @@ fn extract_data(event: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn bytes_stream(chunks: Vec<&'static str>) -> impl Stream<Item = reqwest::Result<&'static [u8]>> {
+    fn bytes_stream(
+        chunks: Vec<&'static str>,
+    ) -> impl Stream<Item = reqwest::Result<&'static [u8]>> {
         futures::stream::iter(chunks.into_iter().map(|s| Ok(s.as_bytes())))
     }
 

@@ -45,7 +45,9 @@ impl InboundParser for AnthropicInbound {
             match role {
                 "assistant" => oa_messages.push(assistant_from_anthropic(content)),
                 "user" => append_user_from_anthropic(content, &mut oa_messages),
-                other => oa_messages.push(json!({ "role": other, "content": anthropic_text(content) })),
+                other => {
+                    oa_messages.push(json!({ "role": other, "content": anthropic_text(content) }))
+                }
             }
         }
 
@@ -94,7 +96,10 @@ impl InboundParser for AnthropicInbound {
             }
         }
 
-        let stop_reason = finish.as_deref().map(reverse_stop_reason).unwrap_or("end_turn");
+        let stop_reason = finish
+            .as_deref()
+            .map(reverse_stop_reason)
+            .unwrap_or("end_turn");
         let mut out = json!({
             "id": id,
             "type": "message",
@@ -155,7 +160,9 @@ fn assistant_from_anthropic(content: &Value) -> Value {
             let mut tool_calls: Vec<Value> = Vec::new();
             for b in blocks {
                 match b.get("type").and_then(Value::as_str) {
-                    Some("text") => text.push_str(b.get("text").and_then(Value::as_str).unwrap_or_default()),
+                    Some("text") => {
+                        text.push_str(b.get("text").and_then(Value::as_str).unwrap_or_default())
+                    }
                     Some("tool_use") => {
                         let arguments = b
                             .get("input")
@@ -179,7 +186,11 @@ fn assistant_from_anthropic(content: &Value) -> Value {
             } else {
                 msg["tool_calls"] = json!(tool_calls);
                 // OpenAI: content is null on a pure tool-call turn.
-                msg["content"] = if text.is_empty() { Value::Null } else { json!(text) };
+                msg["content"] = if text.is_empty() {
+                    Value::Null
+                } else {
+                    json!(text)
+                };
             }
             msg
         }
@@ -196,7 +207,9 @@ fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) {
             let mut text = String::new();
             for b in blocks {
                 match b.get("type").and_then(Value::as_str) {
-                    Some("text") => text.push_str(b.get("text").and_then(Value::as_str).unwrap_or_default()),
+                    Some("text") => {
+                        text.push_str(b.get("text").and_then(Value::as_str).unwrap_or_default())
+                    }
                     Some("tool_result") => {
                         let result = b.get("content").map(anthropic_text).unwrap_or_default();
                         out.push(json!({
@@ -426,7 +439,10 @@ impl ChatStreamRenderer for AnthropicStreamRenderer {
             out.push(self.message_start_event());
         }
         self.close_block(&mut out);
-        let stop_reason = self.stop_reason.clone().unwrap_or_else(|| "end_turn".to_string());
+        let stop_reason = self
+            .stop_reason
+            .clone()
+            .unwrap_or_else(|| "end_turn".to_string());
         out.push(event(
             "message_delta",
             json!({
@@ -468,14 +484,20 @@ mod tests {
         // system became the first message; user follows.
         assert_eq!(req.messages.len(), 2);
         assert_eq!(req.messages[0].role, "system");
-        assert_eq!(req.messages[0].text().as_deref(), Some("You are a Translation agent."));
+        assert_eq!(
+            req.messages[0].text().as_deref(),
+            Some("You are a Translation agent.")
+        );
         assert_eq!(req.messages[1].role, "user");
         assert_eq!(req.max_tokens, Some(1024));
         assert_eq!(req.temperature, Some(0.1));
         // input_schema → parameters; no Anthropic-only fields leak.
         let tool = &req.tools.as_ref().unwrap()[0];
         assert_eq!(tool.function.name, "translate_text");
-        assert_eq!(tool.function.parameters.as_ref().unwrap()["properties"]["text"]["type"], "string");
+        assert_eq!(
+            tool.function.parameters.as_ref().unwrap()["properties"]["text"]["type"],
+            "string"
+        );
         assert_eq!(req.tool_choice, Some(json!("auto")));
     }
 
@@ -585,7 +607,10 @@ mod tests {
             model: "claude-3-5-sonnet-20241022".into(),
             choices: vec![ChunkChoice {
                 index: 0,
-                delta: Delta { content: Some(text.into()), ..Delta::default() },
+                delta: Delta {
+                    content: Some(text.into()),
+                    ..Delta::default()
+                },
                 finish_reason: None,
             }],
             usage: None,

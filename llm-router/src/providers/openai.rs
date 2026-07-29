@@ -96,8 +96,10 @@ impl ProviderClient for OpenAiProvider {
         }
         out.stream = Some(true);
         // Ask OpenAI to emit a final usage chunk (off by default when streaming).
-        out.extra
-            .insert("stream_options".to_string(), json!({ "include_usage": true }));
+        out.extra.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
 
         let resp = self
             .http
@@ -306,7 +308,10 @@ mod tests {
             "max_tokens": 256
         }))
         .unwrap();
-        let resp = provider.chat(&req, &resolved("gpt-4o-mini", Some(0.2))).await.unwrap();
+        let resp = provider
+            .chat(&req, &resolved("gpt-4o-mini", Some(0.2)))
+            .await
+            .unwrap();
 
         m.assert_async().await;
         assert_eq!(resp.model, "gpt-4o-mini"); // bare resolved id, not the echoed dated one
@@ -320,7 +325,9 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         server
             .mock("POST", "/embeddings")
-            .match_body(mockito::Matcher::PartialJson(json!({ "model": "text-embedding-3-small" })))
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "model": "text-embedding-3-small" }),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -337,7 +344,10 @@ mod tests {
         let provider = OpenAiProvider::new(reqwest::Client::new(), server.url());
         let req: crate::ir::EmbeddingsRequest =
             serde_json::from_value(json!({ "model": "whatever", "input": "hi" })).unwrap();
-        let resp = provider.embeddings(&req, &resolved("text-embedding-3-small", None)).await.unwrap();
+        let resp = provider
+            .embeddings(&req, &resolved("text-embedding-3-small", None))
+            .await
+            .unwrap();
         assert_eq!(resp.model, "text-embedding-3-small"); // bare resolved
         assert_eq!(resp.data[0].embedding[0], 0.5);
     }
@@ -355,8 +365,17 @@ mod tests {
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        let err = provider.chat(&req, &resolved("gpt-4o-mini", None)).await.unwrap_err();
-        assert!(matches!(err, ProviderError::Status { retryable: true, .. }));
+        let err = provider
+            .chat(&req, &resolved("gpt-4o-mini", None))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ProviderError::Status {
+                retryable: true,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -370,7 +389,9 @@ mod tests {
         );
         server
             .mock("POST", "/chat/completions")
-            .match_body(mockito::Matcher::PartialJson(json!({ "stream": true, "stream_options": { "include_usage": true } })))
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "stream": true, "stream_options": { "include_usage": true } }),
+            ))
             .with_status(200)
             .with_header("content-type", "text/event-stream")
             .with_body(sse)
@@ -383,7 +404,10 @@ mod tests {
             "messages": [{ "role": "user", "content": "hi" }]
         }))
         .unwrap();
-        let stream = provider.chat_stream(&req, &resolved("gpt-4o-mini", None)).await.unwrap();
+        let stream = provider
+            .chat_stream(&req, &resolved("gpt-4o-mini", None))
+            .await
+            .unwrap();
         let chunks: Vec<ChatChunk> = stream.filter_map(|r| async { r.ok() }).collect().await;
 
         assert_eq!(chunks.len(), 3);
@@ -407,7 +431,17 @@ mod tests {
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        let err = provider.chat(&req, &resolved("gpt-4o-mini", None)).await.unwrap_err();
-        assert!(matches!(err, ProviderError::Status { retryable: false, status: 400, .. }));
+        let err = provider
+            .chat(&req, &resolved("gpt-4o-mini", None))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ProviderError::Status {
+                retryable: false,
+                status: 400,
+                ..
+            }
+        ));
     }
 }

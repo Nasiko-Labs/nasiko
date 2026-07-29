@@ -272,15 +272,15 @@ pub(crate) async fn build_and_deploy(
     // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
     // existing workload on re-import and can't collide cross-team on the name.
     let mut env_vars = std::collections::HashMap::new();
-    crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env_vars, agent_id, Some(owner_id)).await;
-    let mut spec = crate::agents::build_agent_spec(
+    crate::llm_router::wiring::inject_agent_llm_env(
+        &state.db,
+        &mut env_vars,
         agent_id,
-        &meta.name,
-        image_tag,
-        vec![],
-        env_vars,
-        None,
-    );
+        Some(owner_id),
+    )
+    .await;
+    let mut spec =
+        crate::agents::build_agent_spec(agent_id, &meta.name, image_tag, vec![], env_vars, None);
     crate::agents::attach_pull_credential(
         &state.db,
         &state.config.agent_runtime,
@@ -802,7 +802,13 @@ async fn import_registry(
 
         // Deploy — UUID-keyed (see build_agent_spec).
         let mut env_vars = std::collections::HashMap::new();
-        crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env_vars, agent_id, Some(owner_id)).await;
+        crate::llm_router::wiring::inject_agent_llm_env(
+            &state.db,
+            &mut env_vars,
+            agent_id,
+            Some(owner_id),
+        )
+        .await;
         let mut spec = crate::agents::build_agent_spec(
             agent_id,
             &agent_name,

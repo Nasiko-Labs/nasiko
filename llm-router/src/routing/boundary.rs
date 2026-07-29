@@ -113,15 +113,27 @@ impl BoundarySignals {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let phase = get(HEADER_PHASE).map(Phase::from_label).unwrap_or(Phase::Continue);
-        let mode = get(HEADER_MODE).map(Mode::from_label).unwrap_or(Mode::FreeFlowing);
-        Self { conv_id, phase, mode }
+        let phase = get(HEADER_PHASE)
+            .map(Phase::from_label)
+            .unwrap_or(Phase::Continue);
+        let mode = get(HEADER_MODE)
+            .map(Mode::from_label)
+            .unwrap_or(Mode::FreeFlowing);
+        Self {
+            conv_id,
+            phase,
+            mode,
+        }
     }
 
     /// Signals that never fire the router — the safe default when there's no usable trace
     /// context or the flow is unknown (behaviour identical to before this layer existed).
     pub fn inert() -> Self {
-        Self { conv_id: None, phase: Phase::Continue, mode: Mode::FreeFlowing }
+        Self {
+            conv_id: None,
+            phase: Phase::Continue,
+            mode: Mode::FreeFlowing,
+        }
     }
 
     /// Signals for a call inside a known flow: a **fireable boundary** with the flow's mode.
@@ -130,7 +142,11 @@ impl BoundarySignals {
     /// from the agent call-chain (that finer phase is deferred — it only changes behaviour
     /// under a cache miss, and needs the flow-guard chain state).
     pub fn in_flow(flow_id: String, mode: Mode) -> Self {
-        Self { conv_id: Some(flow_id), phase: Phase::Switch, mode }
+        Self {
+            conv_id: Some(flow_id),
+            phase: Phase::Switch,
+            mode,
+        }
     }
 
     /// Whether this request sits at a boundary where re-selecting the model is safe:

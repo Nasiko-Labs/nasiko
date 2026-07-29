@@ -21,7 +21,9 @@ use serde_json::{Value, json};
 
 use super::{ChatStreamRenderer, InboundParser};
 use crate::error::GatewayError;
-use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, Usage};
+use crate::ir::{
+    ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, Usage,
+};
 
 pub struct GeminiInbound;
 
@@ -29,7 +31,10 @@ impl InboundParser for GeminiInbound {
     fn parse_chat(&self, body: Value) -> Result<ChatRequest, GatewayError> {
         let mut oa_messages: Vec<Value> = Vec::new();
 
-        if let Some(si) = body.get("systemInstruction").or_else(|| body.get("system_instruction")) {
+        if let Some(si) = body
+            .get("systemInstruction")
+            .or_else(|| body.get("system_instruction"))
+        {
             let text = parts_text(si.get("parts"));
             if !text.is_empty() {
                 oa_messages.push(json!({ "role": "system", "content": text }));
@@ -47,7 +52,10 @@ impl InboundParser for GeminiInbound {
             .into_iter()
             .flatten()
         {
-            let role = content.get("role").and_then(Value::as_str).unwrap_or("user");
+            let role = content
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user");
             let parts = content.get("parts").and_then(Value::as_array);
 
             if role == "model" {
@@ -57,7 +65,11 @@ impl InboundParser for GeminiInbound {
                     if let Some(t) = part.get("text").and_then(Value::as_str) {
                         text.push_str(t);
                     } else if let Some(fc) = part.get("functionCall") {
-                        let name = fc.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                        let name = fc
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
                         let id = format!("call_{name}_{call_counter}");
                         call_counter += 1;
                         name_to_id.insert(name.clone(), id.clone());
@@ -77,7 +89,11 @@ impl InboundParser for GeminiInbound {
                     msg["content"] = json!(text);
                 } else {
                     msg["tool_calls"] = json!(tool_calls);
-                    msg["content"] = if text.is_empty() { Value::Null } else { json!(text) };
+                    msg["content"] = if text.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(text)
+                    };
                 }
                 oa_messages.push(msg);
             } else {
@@ -86,7 +102,10 @@ impl InboundParser for GeminiInbound {
                 for part in parts.into_iter().flatten() {
                     if let Some(fr) = part.get("functionResponse") {
                         let name = fr.get("name").and_then(Value::as_str).unwrap_or_default();
-                        let id = name_to_id.get(name).cloned().unwrap_or_else(|| name.to_string());
+                        let id = name_to_id
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| name.to_string());
                         oa_messages.push(json!({
                             "role": "tool",
                             "tool_call_id": id,
@@ -106,7 +125,12 @@ impl InboundParser for GeminiInbound {
         if let Some(tools) = body.get("tools").and_then(Value::as_array) {
             let mut decls: Vec<Value> = Vec::new();
             for t in tools {
-                for fd in t.get("functionDeclarations").and_then(Value::as_array).into_iter().flatten() {
+                for fd in t
+                    .get("functionDeclarations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     let mut function = json!({ "name": fd.get("name").and_then(Value::as_str).unwrap_or_default() });
                     if let Some(d) = fd.get("description") {
                         function["description"] = d.clone();
@@ -153,12 +177,17 @@ impl InboundParser for GeminiInbound {
                 for tc in tool_calls {
                     let args: Value =
                         serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
-                    parts.push(json!({ "functionCall": { "name": tc.function.name, "args": args } }));
+                    parts.push(
+                        json!({ "functionCall": { "name": tc.function.name, "args": args } }),
+                    );
                 }
             }
         }
 
-        let finish_reason = finish.as_deref().map(gemini_finish_reason).unwrap_or("STOP");
+        let finish_reason = finish
+            .as_deref()
+            .map(gemini_finish_reason)
+            .unwrap_or("STOP");
         let mut out = json!({
             "candidates": [{
                 "content": { "role": "model", "parts": parts },
@@ -291,7 +320,10 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
             if let Some(tool_calls) = &delta.tool_calls {
                 for tc in tool_calls {
                     let pos = *self.tool_pos.entry(tc.index).or_insert_with(|| {
-                        self.tools.push(ToolAccum { name: String::new(), args: String::new() });
+                        self.tools.push(ToolAccum {
+                            name: String::new(),
+                            args: String::new(),
+                        });
                         self.tools.len() - 1
                     });
                     if let Some(f) = &tc.function {
@@ -323,7 +355,10 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
             })
             .collect();
 
-        let finish_reason = self.finish_reason.clone().unwrap_or_else(|| "STOP".to_string());
+        let finish_reason = self
+            .finish_reason
+            .clone()
+            .unwrap_or_else(|| "STOP".to_string());
         let mut event = json!({
             "candidates": [{
                 "content": { "role": "model", "parts": parts },
@@ -368,7 +403,10 @@ mod tests {
         assert_eq!(req.max_tokens, Some(512));
         let tool = &req.tools.as_ref().unwrap()[0];
         assert_eq!(tool.function.name, "translate_text");
-        assert_eq!(tool.function.parameters.as_ref().unwrap()["properties"]["text"]["type"], "string");
+        assert_eq!(
+            tool.function.parameters.as_ref().unwrap()["properties"]["text"]["type"],
+            "string"
+        );
         assert_eq!(req.tool_choice, Some(json!("auto")));
     }
 
@@ -415,7 +453,10 @@ mod tests {
                 "toolConfig": { "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": ["f"] } }
             }))
             .unwrap();
-        assert_eq!(req.tool_choice, Some(json!({ "type": "function", "function": { "name": "f" } })));
+        assert_eq!(
+            req.tool_choice,
+            Some(json!({ "type": "function", "function": { "name": "f" } }))
+        );
     }
 
     // ── render_chat_response (IR → Gemini response) ───────────────────────────
@@ -430,7 +471,10 @@ mod tests {
         .unwrap();
         let v = GeminiInbound.render_chat_response(resp);
         assert_eq!(v["candidates"][0]["content"]["role"], "model");
-        assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "Hello there");
+        assert_eq!(
+            v["candidates"][0]["content"]["parts"][0]["text"],
+            "Hello there"
+        );
         assert_eq!(v["candidates"][0]["finishReason"], "STOP");
         assert_eq!(v["usageMetadata"]["promptTokenCount"], 5);
         assert_eq!(v["usageMetadata"]["totalTokenCount"], 7);
@@ -464,7 +508,10 @@ mod tests {
             model: "gemini-1.5-pro".into(),
             choices: vec![ChunkChoice {
                 index: 0,
-                delta: Delta { content: Some(text.into()), ..Delta::default() },
+                delta: Delta {
+                    content: Some(text.into()),
+                    ..Delta::default()
+                },
                 finish_reason: None,
             }],
             usage: None,
@@ -484,7 +531,11 @@ mod tests {
         let mut finish_chunk = text_chunk("");
         finish_chunk.choices[0].delta = Delta::default();
         finish_chunk.choices[0].finish_reason = Some("stop".into());
-        finish_chunk.usage = Some(Usage { prompt_tokens: Some(4), completion_tokens: Some(2), total_tokens: Some(6) });
+        finish_chunk.usage = Some(Usage {
+            prompt_tokens: Some(4),
+            completion_tokens: Some(2),
+            total_tokens: Some(6),
+        });
         let _ = r.render(finish_chunk);
 
         let fin = r.finish().join("");
@@ -533,7 +584,10 @@ mod tests {
                         index: 0,
                         id: None,
                         kind: None,
-                        function: Some(FunctionCallDelta { name: None, arguments: Some(partial.into()) }),
+                        function: Some(FunctionCallDelta {
+                            name: None,
+                            arguments: Some(partial.into()),
+                        }),
                     }]),
                     ..Delta::default()
                 },

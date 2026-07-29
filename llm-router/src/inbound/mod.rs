@@ -108,7 +108,10 @@ mod tests {
 
     #[test]
     fn from_label_maps_known_and_defaults_unknown() {
-        assert_eq!(InboundFormat::from_label("anthropic"), InboundFormat::Anthropic);
+        assert_eq!(
+            InboundFormat::from_label("anthropic"),
+            InboundFormat::Anthropic
+        );
         assert_eq!(InboundFormat::from_label("GEMINI"), InboundFormat::Gemini);
         assert_eq!(InboundFormat::from_label("openai"), InboundFormat::OpenAi);
         assert_eq!(InboundFormat::from_label("cohere"), InboundFormat::OpenAi);
@@ -119,7 +122,9 @@ mod tests {
     fn inbound_for_openai_parses_an_openai_chat_body() {
         let parser = inbound_for(InboundFormat::OpenAi);
         let req = parser
-            .parse_chat(json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] }))
+            .parse_chat(
+                json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] }),
+            )
             .unwrap();
         assert_eq!(req.messages.len(), 1);
     }

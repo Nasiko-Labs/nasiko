@@ -9,11 +9,7 @@
 //! - `PUT  /api/model-registry` — upsert one `(provider, tier)` → model mapping (superuser).
 
 use axum::{
-    Json, Router,
-    extract::State,
-    http::StatusCode,
-    middleware,
-    response::IntoResponse,
+    Json, Router, extract::State, http::StatusCode, middleware, response::IntoResponse,
     routing::get,
 };
 use serde::{Deserialize, Serialize};

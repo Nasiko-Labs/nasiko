@@ -74,7 +74,11 @@ pub(crate) fn delta_chunk(id: &str, model: &str, delta: Delta) -> ChatChunk {
         object: "chat.completion.chunk".to_string(),
         created: Some(now_unix()),
         model: model.to_string(),
-        choices: vec![ChunkChoice { index: 0, delta, finish_reason: None }],
+        choices: vec![ChunkChoice {
+            index: 0,
+            delta,
+            finish_reason: None,
+        }],
         usage: None,
         extra: Map::new(),
     }
@@ -187,11 +191,20 @@ mod tests {
         assert!(ProviderError::Transport("timeout".into()).retryable());
         assert!(!ProviderError::Parse("bad json".into()).retryable());
         assert!(
-            ProviderError::Status { status: 503, message: "x".into(), retryable: true }.retryable()
+            ProviderError::Status {
+                status: 503,
+                message: "x".into(),
+                retryable: true
+            }
+            .retryable()
         );
         assert!(
-            !ProviderError::Status { status: 400, message: "x".into(), retryable: false }
-                .retryable()
+            !ProviderError::Status {
+                status: 400,
+                message: "x".into(),
+                retryable: false
+            }
+            .retryable()
         );
     }
 

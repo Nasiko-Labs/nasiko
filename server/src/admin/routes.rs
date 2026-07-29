@@ -84,6 +84,13 @@ async fn deploy(
         for (k, v) in resolved {
             env.entry(k).or_insert(v);
         }
+        crate::llm_router::wiring::inject_agent_llm_env(
+            &state.db,
+            &mut env,
+            agent_id,
+            Some(owner_id),
+        )
+        .await;
     }
 
     // UUID-key when the name maps to a catalog agent; fall back to name-keying only
@@ -141,19 +148,18 @@ async fn deploy(
                 let endpoint =
                     crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id)
                         .await;
-                let image = spec.image.clone();
                 tokio::spawn(async move {
-                    // Write the live endpoint URL + running status + image back to
-                    // the catalog, so restart (which needs `image` to redeploy) works
-                    // for agents deployed through this ad-hoc path too.
-                    let _ = sqlx::query(
-                        "UPDATE agents SET url = COALESCE(NULLIF($1, ''), url), image = $2, status = 'running', updated_at = now() WHERE id = $3",
-                    )
-                    .bind(&endpoint)
-                    .bind(&image)
-                    .bind(agent_id)
-                    .execute(&db)
-                    .await;
+                    // Write the live endpoint URL + running status back to the catalog.
+                    if !endpoint.is_empty() {
+                        let url = endpoint;
+                        let _ = sqlx::query(
+                            "UPDATE agents SET url = $1, status = 'running', updated_at = now() WHERE id = $2",
+                        )
+                        .bind(&url)
+                        .bind(agent_id)
+                        .execute(&db)
+                        .await;
+                    }
 
                     let build_id: Option<Uuid> = sqlx::query_scalar(
                         "SELECT id FROM agent_builds WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
@@ -166,13 +172,12 @@ async fn deploy(
 
                     if let Some(build_id) = build_id {
                         let _ = sqlx::query(
-                            "INSERT INTO agent_deployments (agent_id, build_id, status, k8s_deployment_name, spec_image)
-                             VALUES ($1, $2, 'running', $3, $4)",
+                            "INSERT INTO agent_deployments (agent_id, build_id, status, k8s_deployment_name)
+                             VALUES ($1, $2, 'running', $3)",
                         )
                         .bind(agent_id)
                         .bind(build_id)
                         .bind(agent_id.to_string())
-                        .bind(&image)
                         .execute(&db)
                         .await;
                     }
@@ -548,7 +553,7 @@ async fn resolve_full_env(
     owner_id: Uuid,
     agent_id: Uuid,
 ) -> std::collections::HashMap<String, String> {
-    use crate::secrets::crypto::SecretsCrypto;
+    use nasiko_secrets::SecretsCrypto;
 
     let crypto = SecretsCrypto::for_user(owner_id);
     let mut env = std::collections::HashMap::new();
