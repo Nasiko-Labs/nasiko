@@ -174,9 +174,21 @@ pub async fn agent_proxy(
     // before the agent can call back into the LLM gateway.
     if let Ok(user_id) = claims.user_uuid() {
         let title = persist_info.as_ref().map(|i| i.user_text.clone());
+        // Carry the A2A context_id (the session id `ensure_chat_session` minted
+        // or adopted) on the flow row so the LLM gateway can key its decision
+        // cache on the *conversation*, not this turn's trace id. The CLI re-mints
+        // the traceparent every turn, so a trace-id key would never survive to
+        // the next turn; `derive_boundary_signals` reads `metadata->>'context_id'`
+        // and uses it as the sticky key, so turn 2+ reuse the model chosen at the
+        // turn-1 cold start. Written on the same synchronous, pre-forward insert
+        // so the value is guaranteed present before the agent calls back.
+        let metadata = match persist_info.as_ref() {
+            Some(i) => serde_json::json!({ "context_id": i.session_id }),
+            None => serde_json::json!({}),
+        };
         let _ = sqlx::query(
             r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-               VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
+               VALUES ($1, $2, $3, $4, $5, 'running', $6)
                ON CONFLICT (flow_id) DO NOTHING"#,
         )
         .bind(&flow_ctx.flow_id)
@@ -184,6 +196,7 @@ pub async fn agent_proxy(
         .bind(agent_id)
         .bind(&agent.name)
         .bind(title)
+        .bind(&metadata)
         .execute(&state.db)
         .await;
     }

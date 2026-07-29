@@ -251,14 +251,19 @@ async fn orchestrator_stream(
     let traceparent = flow_ctx.to_traceparent();
     state.flow_guard.init_flow(&flow_ctx, "orchestrator").await;
 
+    // Carry the A2A context_id so the LLM gateway keys its decision cache on the
+    // conversation, not this turn's trace id — mirrors the direct-agent proxy
+    // (`agent_proxy.rs`). `derive_boundary_signals` reads `metadata->>'context_id'`.
+    let flow_metadata = serde_json::json!({ "context_id": context_id });
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, 'orchestrator', $3, 'running', '{}'::jsonb)
+           VALUES ($1, $2, 'orchestrator', $3, 'running', $4)
            ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&flow_id)
     .bind(user_id)
     .bind(query)
+    .bind(&flow_metadata)
     .execute(&state.db)
     .await;
 

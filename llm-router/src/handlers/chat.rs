@@ -137,9 +137,6 @@ async fn chat_core(
             fallback_model: &resolved.model,
             has_llm_config: resolved.has_llm_config,
             pinned_model: resolved.pinned_model.as_deref(),
-            tier1_model: resolved.tier1_model.as_deref(),
-            tier2_model: resolved.tier2_model.as_deref(),
-            tier3_model: resolved.tier3_model.as_deref(),
             signals: &signals,
             query: query.as_deref(),
         },
@@ -246,21 +243,31 @@ async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> Boun
         %flow_id, "derive_boundary_signals: parsed flow_id from traceparent; looking up flow in DB"
     );
 
-    let row: Result<Option<(Option<String>,)>, sqlx::Error> =
-        sqlx::query_as("SELECT metadata->>'mode' FROM flows WHERE flow_id = $1")
-            .bind(&flow_id)
-            .fetch_optional(db)
-            .await;
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT metadata->>'mode', metadata->>'context_id' FROM flows WHERE flow_id = $1",
+    )
+    .bind(&flow_id)
+    .fetch_optional(db)
+    .await;
     match row {
-        Ok(Some((mode,))) => {
+        Ok(Some((mode, context_id))) => {
             let mode = mode
                 .as_deref()
                 .map(Mode::from_label)
                 .unwrap_or(Mode::FreeFlowing);
-            let signals = BoundarySignals::in_flow(flow_id.clone(), mode);
+            // Key the decision cache on the conversation's stable context_id, not
+            // the flow_id (= this turn's traceparent trace id, which the CLI
+            // re-mints every turn). The proxy/orchestrator writes context_id onto
+            // the flow row; turn 1 (cold start) writes the sticky decision under
+            // it and turn 2+ hit it. Fall back to flow_id for older flow rows (or
+            // a caller) that never set context_id — behaviour identical to before.
+            let conv_id = context_id
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| flow_id.clone());
+            let signals = BoundarySignals::in_flow(conv_id.clone(), mode);
             tracing::info!(
                 target: "nasiko::llm_router::boundary",
-                %flow_id, mode = ?mode, phase = ?signals.phase,
+                %flow_id, %conv_id, mode = ?mode, phase = ?signals.phase,
                 is_fireable_boundary = signals.is_fireable_boundary(),
                 "derive_boundary_signals: known flow → IN-FLOW signals (router may re-select the model at this boundary)"
             );
@@ -462,16 +469,13 @@ mod tests {
     fn openai_config() -> LLMConfig {
         LLMConfig {
             provider: "openai".into(),
-            model: Some("gpt-4o-mini".into()),
+            model: "gpt-4o-mini".into(),
             fallback_models: vec![],
             temperature: None,
             max_tokens: None,
             api_key_secret_name: None,
             pinned: false,
             pinned_model: None,
-            tier1_model: None,
-            tier2_model: None,
-            tier3_model: None,
         }
     }
 
@@ -702,16 +706,13 @@ mod tests {
         let store = Store {
             config: Some(LLMConfig {
                 provider: "cohere".into(),
-                model: Some("command-r".into()),
+                model: "command-r".into(),
                 fallback_models: vec![],
                 temperature: None,
                 max_tokens: None,
                 api_key_secret_name: None,
                 pinned: false,
                 pinned_model: None,
-                tier1_model: None,
-                tier2_model: None,
-                tier3_model: None,
             }),
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
