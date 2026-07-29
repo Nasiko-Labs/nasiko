@@ -7,12 +7,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use crate::secrets::crypto::SecretsCrypto;
 use crate::secrets::validate_secret_name;
 use crate::state::AppState;
+use nasiko_secrets::SecretsCrypto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -30,19 +31,32 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-#[derive(Serialize)]
-struct SecretListEntry {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct SecretListEntry {
     name: String,
     updated_at: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct SetSecretRequest {
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct SetSecretRequest {
     name: String,
     value: String,
 }
 
-async fn list_secrets(
+/// List an agent's secret names (never decrypted values). Owner-or-superuser only.
+#[utoipa::path(
+    get,
+    path = "/api/agents/{agent_id}/secrets",
+    tag = "catalog",
+    params(
+        ("agent_id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "The agent's secret names", body = [SecretListEntry]),
+        (status = 403, description = "Caller cannot manage this agent"),
+    ),
+)]
+pub(crate) async fn list_secrets(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
@@ -77,7 +91,23 @@ async fn list_secrets(
     Json(names).into_response()
 }
 
-async fn set_secret(
+/// Create or overwrite one of an agent's secrets. Owner-or-superuser only.
+#[utoipa::path(
+    post,
+    path = "/api/agents/{agent_id}/secrets",
+    tag = "catalog",
+    params(
+        ("agent_id" = Uuid, Path, description = "Agent id"),
+    ),
+    request_body = SetSecretRequest,
+    responses(
+        (status = 201, description = "Secret set"),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No agent with this id"),
+        (status = 422, description = "Invalid secret name"),
+    ),
+)]
+pub(crate) async fn set_secret(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
@@ -116,7 +146,22 @@ async fn set_secret(
     }
 }
 
-async fn delete_secret(
+/// Delete one of an agent's secrets. Owner-or-superuser only.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{agent_id}/secrets/{name}",
+    tag = "catalog",
+    params(
+        ("agent_id" = Uuid, Path, description = "Agent id"),
+        ("name" = String, Path, description = "Secret name"),
+    ),
+    responses(
+        (status = 204, description = "Secret deleted"),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No agent or secret with this name"),
+    ),
+)]
+pub(crate) async fn delete_secret(
     State(state): State<AppState>,
     claims: Claims,
     Path((agent_id, name)): Path<(Uuid, String)>,
@@ -146,12 +191,32 @@ async fn delete_secret(
     }
 }
 
-#[derive(Deserialize)]
-struct ImportSecretsRequest {
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct ImportSecretsRequest {
     secret_names: Vec<String>,
 }
 
-async fn import_secrets(
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ImportSecretsResponse {
+    imported: usize,
+}
+
+/// Copy a subset of the caller's own user-scoped secrets into an agent's
+/// secrets_env, re-encrypting them under the agent's key. Owner-or-superuser only.
+#[utoipa::path(
+    post,
+    path = "/api/agents/{agent_id}/secrets/import",
+    tag = "catalog",
+    params(
+        ("agent_id" = Uuid, Path, description = "Agent id"),
+    ),
+    request_body = ImportSecretsRequest,
+    responses(
+        (status = 200, description = "Secrets imported", body = ImportSecretsResponse),
+        (status = 403, description = "Caller cannot manage this agent"),
+    ),
+)]
+pub(crate) async fn import_secrets(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,

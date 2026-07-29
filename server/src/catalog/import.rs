@@ -6,6 +6,7 @@ use axum::{
     routing::post,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -21,12 +22,21 @@ pub fn router() -> Router<AppState> {
 
 // ─── Response ───────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub(crate) struct ImportResult {
     pub(crate) agent_id: Uuid,
     pub(crate) build_id: Option<Uuid>,
     pub(crate) container_name: Option<String>,
     pub(crate) status: String,
+}
+
+/// Multipart form for `POST /api/import/upload` — a single `package` file
+/// field holding a zip/tar.gz with `AgentCard.json` + `Dockerfile` at its root.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ImportUploadForm {
+    #[schema(value_type = String, format = Binary)]
+    package: Vec<u8>,
 }
 
 // ─── Shared Pipeline ────────────────────────────────────────────────────────
@@ -334,6 +344,8 @@ pub(crate) async fn build_and_deploy(
 
 // ─── POST /import/upload ────────────────────────────────────────────────────
 
+/// Upload a source archive and synchronously build + deploy it as an agent.
+///
 /// Meant to be quick and direct, not production-grade robust: unlike its
 /// sibling `/api/agents/upload` (`oss/server/src/agents/upload.rs`), which is
 /// asynchronous, tracked via `upload_status`, and retried on failure through
@@ -341,7 +353,18 @@ pub(crate) async fn build_and_deploy(
 /// synchronously inside the request handler, with no progress tracking and
 /// no retry — you get a response once the build either finishes or fails,
 /// and that's it.
-async fn import_upload(
+#[utoipa::path(
+    post,
+    path = "/api/import/upload",
+    tag = "catalog",
+    request_body(content = ImportUploadForm, content_type = "multipart/form-data"),
+    responses(
+        (status = 201, description = "Agent registered, built, and deployed", body = ImportResult),
+        (status = 400, description = "Missing package file or invalid archive"),
+        (status = 413, description = "Upload exceeds 200 MB limit"),
+    ),
+)]
+pub(crate) async fn import_upload(
     State(state): State<AppState>,
     claims: Claims,
     mut multipart: Multipart,
@@ -407,12 +430,26 @@ async fn import_upload(
 
 // ─── POST /import/github ────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-struct GithubImportRequest {
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct GithubImportRequest {
+    /// `"owner/repo"` — the caller's GitHub connection must already be authorized for it.
     repository: String,
 }
 
-async fn import_github(
+/// Clone a GitHub repo (via the caller's stored OAuth token), then build and deploy it.
+#[utoipa::path(
+    post,
+    path = "/api/import/github",
+    tag = "catalog",
+    request_body = GithubImportRequest,
+    responses(
+        (status = 201, description = "Agent registered, built, and deployed", body = ImportResult),
+        (status = 400, description = "Invalid repository format or archive"),
+        (status = 403, description = "GitHub not connected"),
+        (status = 502, description = "Failed to download the repository archive"),
+    ),
+)]
+pub(crate) async fn import_github(
     State(state): State<AppState>,
     claims: Claims,
     Json(req): Json<GithubImportRequest>,
@@ -509,8 +546,10 @@ async fn import_github(
 
 // ─── POST /import/registry ──────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-struct RegistryImportRequest {
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct RegistryImportRequest {
+    /// OCI reference: `"registry.host/owner/name[:tag]"`. The host must be in
+    /// `REGISTRY_IMPORT_ALLOWED_HOSTS`.
     reference: String,
 }
 
@@ -538,7 +577,24 @@ fn validate_registry_host(host: &str, allowed: &[String]) -> Result<(), (StatusC
     Ok(())
 }
 
-async fn import_registry(
+/// Import an agent from an OCI registry: a source-tarball layer is built and
+/// deployed like `/import/upload`; a plain container image is pulled and
+/// deployed directly.
+#[utoipa::path(
+    post,
+    path = "/api/import/registry",
+    tag = "catalog",
+    request_body = RegistryImportRequest,
+    responses(
+        (status = 201, description = "Agent registered and deployed", body = ImportResult),
+        (status = 400, description = "Invalid reference or oversized blob"),
+        (status = 403, description = "Registry import disabled or host not allowed"),
+        (status = 422, description = "Registry host not in the allowed list"),
+        (status = 502, description = "Registry unreachable or returned an error"),
+        (status = 504, description = "docker pull timed out"),
+    ),
+)]
+pub(crate) async fn import_registry(
     State(state): State<AppState>,
     claims: Claims,
     Json(req): Json<RegistryImportRequest>,

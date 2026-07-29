@@ -8,9 +8,11 @@ use axum::{
     },
 };
 use futures::StreamExt;
+use serde::Serialize;
 use serde_json::json;
 use std::convert::Infallible;
 use std::time::Instant;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use nasiko_react_agent::{
@@ -28,6 +30,46 @@ use crate::auth::Claims;
 use crate::state::AppState;
 use crate::usage::TokenUsageBuilder;
 
+/// Doc-only stand-in for the real request type (`nasiko_types::a2a::JsonRpcRequest`,
+/// re-exported from the external `a2a-lf` crate, which has no `ToSchema` impl and
+/// can't be given one here). Mirrors its actual JSON-RPC 2.0 shape: `method` is
+/// `"message/send"` or `"message/stream"`; `params` is a `SendMessageRequest` —
+/// see `oss/docs/A2A_PROTOCOL.md` for the full parts/metadata schema.
+/// `metadata.agent_id` selects the dispatch target: absent or `"orchestrator"`
+/// routes through the routing engine/ReAct orchestrator, anything else proxies
+/// directly to that agent (UUID or name).
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct A2aJsonRpcRequest {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    method: String,
+    params: serde_json::Value,
+}
+
+/// Doc-only stand-in for the JSON-RPC error envelope `A2aDispatchError` renders.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct JsonRpcErrorBody {
+    code: i32,
+    message: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct JsonRpcErrorResponse {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    error: JsonRpcErrorBody,
+}
+
+/// Multipart form for `POST /api/orchestrator/a2a/upload` — a required `query`
+/// text field, plus any number of additional fields treated as file attachments
+/// (each base64-encoded and forwarded to the orchestrator alongside the query).
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct A2aUploadForm {
+    query: String,
+}
+
 // TODO: Implement `AgentExecutor` trait from a2a-server-lf to replace manual Axum routing.
 // The trait has two methods: execute(&self, ctx: ExecutorContext) -> BoxStream<StreamResponse>
 // and cancel(&self, ctx: ExecutorContext) -> BoxStream<StreamResponse>.
@@ -40,6 +82,20 @@ use crate::usage::TokenUsageBuilder;
 ///
 /// No gateway required: the server validates the JWT and enforces authorization itself
 /// (see `require_auth`/`Claims`). This handler is the production A2A path.
+#[utoipa::path(
+    post,
+    path = "/api/orchestrator/a2a",
+    tag = "orchestrator",
+    request_body = A2aJsonRpcRequest,
+    responses(
+        (status = 200, description = "A2A event stream (status/artifact updates, completion)", content_type = "text/event-stream"),
+        (status = 400, description = "Missing/invalid params, or an empty message", body = JsonRpcErrorResponse),
+        (status = 403, description = "Caller cannot access the targeted agent"),
+        (status = 404, description = "Target agent not found or not running", body = JsonRpcErrorResponse),
+        (status = 500, description = "Internal error", body = JsonRpcErrorResponse),
+        (status = 503, description = "No agents available for routing-engine dispatch", body = JsonRpcErrorResponse),
+    ),
+)]
 pub async fn a2a_dispatch_handler(
     State(state): State<AppState>,
     claims: Claims,
@@ -144,14 +200,6 @@ async fn orchestrator_stream(
     user_id: Uuid,
     is_superuser: bool,
 ) -> Result<Response, A2aDispatchError> {
-    // Orchestrator-routed chats never had a `chat_sessions` row, unlike
-    // `agent_proxy.rs`'s `ensure_chat_session` for direct agent chat — so
-    // `nasiko sessions`/`history` couldn't find them and `--session-id`
-    // resume had no history to actually resume. `agent_id` is NULL here
-    // (unlike agent_proxy's fixed target) since the orchestrator can route
-    // to a different agent on every turn of the same session.
-    ensure_orchestrator_chat_session(state, context_id, user_id, query).await;
-
     let all_agents = AgentSelector::fetch_active_agents(&state.db)
         .await
         .map_err(|e| A2aDispatchError::Internal(e.to_string()))?;
@@ -241,20 +289,6 @@ async fn orchestrator_stream(
     .execute(&state.db)
     .await;
 
-    // `flow_id` doubles as the trace id (see comment below) — index it against
-    // the session so `nasiko history`'s Tempo-miss fallback
-    // (`PgSessionIdResolver::traces_for_session`) can find it, the same way
-    // `agent_proxy.rs` indexes every direct-agent call.
-    let _ = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, NULL, 'orchestrator') \
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(context_id)
-    .bind(&flow_id)
-    .execute(&state.db)
-    .await;
-
     // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
     // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
     // back to this row (see derive_boundary_signals) — so compare this flow_id against the
@@ -308,7 +342,6 @@ async fn orchestrator_stream(
     let genai_metrics = state.genai_metrics.clone();
     let orchestrator_model = state.config.openai_model.clone();
     let orchestrator_start = Instant::now();
-    let mut full_reply = String::new();
 
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
@@ -438,7 +471,6 @@ async fn orchestrator_stream(
                             );
                         }
                         OrchestratorEvent::Content { content } => {
-                            full_reply.push_str(&content);
                             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                                 &task_id, &context_id, &artifact_id, &content, content_started, false,
                             ))));
@@ -449,20 +481,6 @@ async fn orchestrator_stream(
                                 yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                                     &task_id, &context_id, &artifact_id, "", true, true,
                                 ))));
-                            }
-
-                            // Mirrors `agent_proxy.rs` persisting the agent's reply after
-                            // a completed turn — without this, `--session-id` resume has
-                            // no recorded history to actually resume, even though the
-                            // session row and user message (above) now exist.
-                            if !full_reply.is_empty() {
-                                let _ = sqlx::query(
-                                    "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'assistant', $2)",
-                                )
-                                .bind(&context_id)
-                                .bind(&full_reply)
-                                .execute(&db)
-                                .await;
                             }
 
                             // Record overall operation duration in OTel
@@ -732,8 +750,38 @@ async fn agent_stream(
 
 // ─── Router Stats ─────────────────────────────────────────────────────────────
 
-/// `GET /api/orchestrator/stats` — admin-only.
-/// Returns aggregated rows from the `agent_selection_stats` materialized view.
+/// One row of `RouterStatsResponse` — mirrors the ad hoc `serde_json::json!`
+/// object the handler builds per row (numeric averages are stringified to
+/// preserve `rust_decimal` precision through JSON).
+#[derive(Serialize, ToSchema)]
+pub(crate) struct RouterStatsRow {
+    agent_name: Option<String>,
+    selection_count: Option<i64>,
+    successful_calls: Option<i64>,
+    failed_calls: Option<i64>,
+    avg_agent_latency_ms: Option<String>,
+    avg_selection_latency_ms: Option<String>,
+    avg_stage1_candidates: Option<String>,
+    avg_stage2_candidates: Option<String>,
+    date: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct RouterStatsResponse {
+    data: Vec<RouterStatsRow>,
+    total: usize,
+}
+
+/// Aggregated agent-selection stats from the `agent_selection_stats`
+/// materialized view (newest date, most-selected agent first; max 200 rows).
+#[utoipa::path(
+    get,
+    path = "/api/orchestrator/stats",
+    tag = "orchestrator",
+    responses(
+        (status = 200, description = "Routing/selection stats", body = RouterStatsResponse),
+    ),
+)]
 pub async fn router_stats_handler(
     State(state): State<AppState>,
     _claims: Claims,
@@ -807,6 +855,18 @@ struct StatsRow {
 /// - Any number of additional fields treated as file attachments
 ///
 /// Each file is base64-encoded and forwarded alongside the query to the orchestrator.
+#[utoipa::path(
+    post,
+    path = "/api/orchestrator/a2a/upload",
+    tag = "orchestrator",
+    request_body(content = A2aUploadForm, content_type = "multipart/form-data"),
+    responses(
+        (status = 200, description = "A2A event stream (status/artifact updates, completion)", content_type = "text/event-stream"),
+        (status = 400, description = "Missing/invalid multipart, or an empty query field", body = JsonRpcErrorResponse),
+        (status = 500, description = "Internal error", body = JsonRpcErrorResponse),
+        (status = 503, description = "No agents available", body = JsonRpcErrorResponse),
+    ),
+)]
 pub async fn a2a_upload_handler(
     State(state): State<AppState>,
     claims: Claims,
@@ -871,55 +931,6 @@ pub async fn a2a_upload_handler(
 
 fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
-}
-
-/// Upsert a `chat_sessions` row and persist the user's message for an
-/// orchestrator-routed chat, mirroring what `agent_proxy.rs`'s
-/// `ensure_chat_session` already does for direct agent chat. `agent_id` is
-/// left `NULL` (unlike agent_proxy's fixed target) since the orchestrator
-/// can route to a different agent on every turn of the same session.
-/// Fire-and-forget: session bookkeeping here is a nice-to-have for
-/// `sessions`/`history`/resume, not a security boundary like agent_proxy's
-/// version (which also authorizes access to an existing session).
-async fn ensure_orchestrator_chat_session(
-    state: &AppState,
-    context_id: &str,
-    user_id: Uuid,
-    query: &str,
-) {
-    let title = {
-        let t = query.trim();
-        if t.is_empty() {
-            "New chat".to_string()
-        } else if t.len() > 60 {
-            let mut n = 60;
-            while !t.is_char_boundary(n) {
-                n -= 1;
-            }
-            format!("{}…", &t[..n])
-        } else {
-            t.to_string()
-        }
-    };
-
-    let _ = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, NULL, '/api/orchestrator/a2a', $3) \
-         ON CONFLICT (session_id) DO NOTHING",
-    )
-    .bind(context_id)
-    .bind(user_id)
-    .bind(&title)
-    .execute(&state.db)
-    .await;
-
-    let _ = sqlx::query(
-        "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)",
-    )
-    .bind(context_id)
-    .bind(query)
-    .execute(&state.db)
-    .await;
 }
 
 async fn resolve_endpoint(

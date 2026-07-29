@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, FromRow)]
 pub struct Agent {
     pub id: Uuid,
     pub name: String,
@@ -16,12 +17,18 @@ pub struct Agent {
     pub protocol_version: String,
     pub preferred_transport: String,
     pub documentation_url: Option<String>,
+    #[schema(value_type = serde_json::Value)]
     pub capabilities: sqlx::types::Json<serde_json::Value>,
+    #[schema(value_type = serde_json::Value)]
     pub security_schemes: sqlx::types::Json<serde_json::Value>,
+    #[schema(value_type = Vec<String>)]
     pub default_input_modes: sqlx::types::Json<Vec<String>>,
+    #[schema(value_type = Vec<String>)]
     pub default_output_modes: sqlx::types::Json<Vec<String>>,
+    #[schema(value_type = Vec<Skill>)]
     pub skills: sqlx::types::Json<Vec<Skill>>,
     pub tags: Vec<String>,
+    #[schema(value_type = serde_json::Value)]
     pub metadata: sqlx::types::Json<serde_json::Value>,
     pub status: String,
     pub image: Option<String>,
@@ -33,7 +40,7 @@ pub struct Agent {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Skill {
     pub id: String,
     pub name: String,
@@ -45,7 +52,7 @@ pub struct Skill {
 }
 
 /// Lightweight projection returned by the by-skill discovery endpoint.
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
 pub struct AgentSummary {
     pub id: Uuid,
     pub name: String,
@@ -71,7 +78,7 @@ pub struct Capabilities {
     pub chat_agent: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateAgent {
     pub name: String,
     pub display_name: Option<String>,
@@ -84,13 +91,9 @@ pub struct CreateAgent {
     pub skills: Option<Vec<Skill>>,
     pub tags: Option<Vec<String>>,
     pub metadata: Option<serde_json::Value>,
-    /// `push`/`deploy` already send this; previously silently dropped since
-    /// this struct had no field to catch it, leaving `agents.image` NULL
-    /// until the first update/reupload set it.
-    pub image: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateAgent {
     pub display_name: Option<String>,
     pub description: Option<String>,
@@ -106,7 +109,7 @@ pub struct UpdateAgent {
     pub image: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, FromRow)]
 pub struct AgentVersion {
     pub id: Uuid,
     pub agent_id: Uuid,

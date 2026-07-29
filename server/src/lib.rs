@@ -13,7 +13,9 @@ pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
 pub mod mcp;
+pub mod multipart_util;
 pub mod observability;
+pub mod openapi;
 pub mod pool;
 pub mod rate_limit;
 pub mod registry_a2a;
@@ -185,6 +187,15 @@ where
             auth::rbac::require_deployer,
         ));
 
+    // MCP-server-upload MUTATIONS (build a container from user-supplied
+    // source): deployer+ only, same reasoning as `build_routes` above —
+    // building a container is a privileged, resource-consuming operation.
+    // Build-status/build-logs reads stay in `mcp::router()` below, at plain
+    // `require_auth` (ownership-checked inside the handler).
+    let mcp_upload_routes = mcp::upload_mutation_router(state.config.mcp_upload_max_bytes).layer(
+        middleware::from_fn_with_state(state.clone(), auth::rbac::require_deployer),
+    );
+
     // GET routes pulled out from the require_deployer-gated groups above —
     // each handler checks `can_deploy` (and any resource-ownership check
     // that already existed) itself, returning `nasiko_server::unavailable()`
@@ -238,6 +249,7 @@ where
         .merge(auth::login::protected_router())
         .merge(transcribe::router())
         .merge(mcp::router())
+        .merge(mcp_upload_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -297,6 +309,7 @@ where
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
+        .merge(openapi::router())
         .merge(auth::login::non_login_public_router(non_login_limiter))
         .merge(github::public_router())
         .merge(mcp::composio_callback_router())

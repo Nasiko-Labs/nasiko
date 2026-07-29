@@ -6,6 +6,7 @@ use axum::{
     routing::{post, put},
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use nasiko_runtime::DeploymentStatus;
@@ -31,8 +32,8 @@ pub fn router() -> Router<AppState> {
         .layer(axum::extract::DefaultBodyLimit::max(MAX_UPDATE_BYTES))
 }
 
-#[derive(Debug, Serialize)]
-struct UpdateAgentResponse {
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct UpdateAgentResponse {
     build_id: Uuid,
     agent_id: Uuid,
     new_version: String,
@@ -40,14 +41,14 @@ struct UpdateAgentResponse {
     status: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
-struct RollbackRequest {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct RollbackRequest {
     target_version: Option<String>,
     reason: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct RollbackResponse {
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct RollbackResponse {
     build_id: Uuid,
     agent_id: Uuid,
     rolled_back_to: String,
@@ -62,9 +63,40 @@ pub struct AgentVersionRow {
     pub can_rollback: bool,
 }
 
+/// Multipart form for `PUT /{id}/update` — a `.zip` `source` file plus optional
+/// `version` (a strategy keyword `auto`/`patch`/`minor`/`major`, or an explicit
+/// semver string greater than the current version) and `changelog` fields.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct UpdateAgentForm {
+    #[schema(value_type = String, format = Binary)]
+    source: Vec<u8>,
+    version: Option<String>,
+    changelog: Option<String>,
+}
+
 // ─── PUT /{id}/update ─────────────────────────────────────────────────────────
 
-async fn update_agent(
+/// Rebuild and redeploy an agent from a new source archive, bumping its
+/// version. Runs the build asynchronously (poll via `/uploads/{id}` SSE or
+/// `/deploys/{build_id}/stream`). Owner-or-superuser only.
+#[utoipa::path(
+    put,
+    path = "/api/agents/{id}/update",
+    tag = "agents",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    request_body(content = UpdateAgentForm, content_type = "multipart/form-data"),
+    responses(
+        (status = 202, description = "Build queued", body = UpdateAgentResponse),
+        (status = 400, description = "Invalid version/strategy or non-.zip source"),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No such agent"),
+        (status = 409, description = "Version already exists or is not greater than current"),
+    ),
+)]
+pub(crate) async fn update_agent(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
@@ -643,7 +675,27 @@ pub async fn execute_agent_update(
 
 // ─── POST /{id}/rollback ──────────────────────────────────────────────────────
 
-async fn rollback_agent(
+/// Roll back to a previous rollback-eligible version (defaults to the most
+/// recent one) — a synthetic build record so the same SSE polling path works,
+/// no image rebuild. Owner-or-superuser only.
+#[utoipa::path(
+    post,
+    path = "/api/agents/{id}/rollback",
+    tag = "agents",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    request_body(content = RollbackRequest, description = "Optional; omit or send an empty body to use defaults"),
+    responses(
+        (status = 202, description = "Rollback queued", body = RollbackResponse),
+        (status = 400, description = "Target version is not rollback-eligible"),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No such agent, or no such target version"),
+        (status = 409, description = "No eligible rollback version"),
+        (status = 422, description = "Invalid JSON body"),
+    ),
+)]
+pub(crate) async fn rollback_agent(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
@@ -836,17 +888,11 @@ pub async fn execute_agent_rollback(
         .await;
 
     let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
-    // `agent_versions.image_tag` for OCI-push deploys stores the registry-relative
-    // `nasiko/{name}:{tag}` as-is, which pulls from docker.io if applied unqualified
-    // — qualify exactly as the ad-hoc deploy and restart paths do (no-op for refs
-    // outside the `nasiko/` convention, e.g. upload/reupload's already-qualified tags).
-    let image =
-        crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &target.image_tag);
     // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &agent_name,
-        image.clone(),
+        target.image_tag.clone(),
         vec![],
         secrets,
         None,
@@ -895,7 +941,7 @@ pub async fn execute_agent_rollback(
             .bind(agent_id)
             .bind(&agent_url)
             .bind(&target.version)
-            .bind(&image)
+            .bind(&target.image_tag)
             .execute(db)
             .await;
             // Refresh card-derived fields (skills, description, transport_path)
@@ -916,7 +962,7 @@ pub async fn execute_agent_rollback(
             .bind(rollback_build_id)
             .bind(caller_id)
             .bind(agent_id.to_string())
-            .bind(&image)
+            .bind(&target.image_tag)
             .bind(&spec_ports)
             .execute(db)
             .await;

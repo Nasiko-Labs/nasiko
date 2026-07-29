@@ -8,6 +8,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::Paginated;
@@ -100,8 +101,8 @@ pub fn management_router() -> Router<AppState> {
         )
 }
 
-#[derive(Debug, Serialize, FromRow)]
-struct UserRow {
+#[derive(Debug, Serialize, ToSchema, FromRow)]
+pub(crate) struct UserRow {
     id: Uuid,
     username: String,
     email: String,
@@ -117,8 +118,8 @@ struct UserRow {
     last_login: Option<DateTime<Utc>>,
 }
 
-#[derive(Deserialize)]
-struct ListQuery {
+#[derive(Deserialize, IntoParams)]
+pub(crate) struct ListQuery {
     #[serde(default)]
     q: Option<String>,
     #[serde(default = "default_limit")]
@@ -131,7 +132,27 @@ fn default_limit() -> i64 {
     20
 }
 
-async fn list_users(
+/// Response envelope for `GET /users` — the JSON shape of `Paginated<UserRow>`,
+/// spelled out concretely since `Paginated<T>`'s generic isn't monomorphized
+/// for `ToSchema` here.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct UserListResponse {
+    data: Vec<UserRow>,
+    total: usize,
+}
+
+/// List users (superuser-only; EE additionally exposes a role/org-scoped
+/// listing at `/api/org/users` — see `ee/server/src/org_users.rs`).
+#[utoipa::path(
+    get,
+    path = "/api/users",
+    tag = "users",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "Users, newest first", body = UserListResponse),
+    ),
+)]
+pub(crate) async fn list_users(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
@@ -201,7 +222,23 @@ async fn list_users(
     }
 }
 
-async fn get_user(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+/// Get a user by id (superuser-only).
+#[utoipa::path(
+    get,
+    path = "/api/users/{id}",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 200, description = "User", body = UserRow),
+        (status = 404, description = "No such user"),
+    ),
+)]
+pub(crate) async fn get_user(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
     let result: Result<Option<UserRow>, _> = sqlx::query_as::<_, UserRow>(
         r#"SELECT u.id, u.username, u.email, u.display_name, u.is_superuser,
                   u.is_active, u.role::text as role,
@@ -223,23 +260,39 @@ async fn get_user(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl I
     }
 }
 
-#[derive(Deserialize)]
-struct CreateUser {
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct CreateUser {
     username: String,
     email: String,
     display_name: Option<String>,
     role: Option<String>,
-    /// Separate from `role` — `role` is a `user_role` enum value
-    /// (admin/department_manager/team_lead/team_member/member), never
-    /// "superuser". This is the one flag that actually grants unrestricted
-    /// access (bypasses org-visibility scoping, gates superuser-only routes
-    /// like MCP toolkit registration) — see CLAUDE.md's `role` vs
-    /// `is_superuser` note.
-    #[serde(default)]
-    is_superuser: bool,
 }
 
-async fn create_user(
+/// One-time credential material — the only time `access_secret` is ever
+/// returned; the server stores only its hash from here on.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct CreateUserResponse {
+    id: Uuid,
+    username: String,
+    access_key: String,
+    access_secret: String,
+    message: String,
+}
+
+/// Create a user. No password is taken — a one-time `access_key`/
+/// `access_secret` pair is minted and returned once; the secret doubles as
+/// the user's login password (see `nasiko-user-creation-contract`).
+#[utoipa::path(
+    post,
+    path = "/api/users",
+    tag = "users",
+    request_body = CreateUser,
+    responses(
+        (status = 201, description = "User created", body = CreateUserResponse),
+        (status = 409, description = "Username or email already exists"),
+    ),
+)]
+pub(crate) async fn create_user(
     State(state): State<AppState>,
     Json(body): Json<CreateUser>,
 ) -> impl IntoResponse {
@@ -257,13 +310,12 @@ async fn create_user(
     let id = Uuid::new_v4();
     let result = sqlx::query(
         r#"INSERT INTO users (id, username, email, display_name, is_superuser, is_active, role)
-           VALUES ($1, $2, $3, $4, $5, true, $6::user_role)"#,
+           VALUES ($1, $2, $3, $4, false, true, $5::user_role)"#,
     )
     .bind(id)
     .bind(&body.username)
     .bind(&body.email)
     .bind(&body.display_name)
-    .bind(body.is_superuser)
     .bind(role)
     .execute(&state.db)
     .await;
@@ -309,7 +361,7 @@ async fn create_user(
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, ToSchema)]
 pub struct UpdateUser {
     pub username: Option<String>,
     pub email: Option<String>,
@@ -320,11 +372,32 @@ pub struct UpdateUser {
     pub role: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ChangeRoleRequest {
     pub role: String,
 }
 
+/// Update a user's own-editable fields (superuser-only; EE overrides this
+/// route to additionally accept `department_id`/`team_id` — see
+/// `ee/server/src/users.rs::ee_update_user`). An `is_active: false`
+/// transition here runs the same self-deactivate/last-admin guards as the
+/// dedicated `/deactivate` route.
+#[utoipa::path(
+    put,
+    path = "/api/users/{id}",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    request_body = UpdateUser,
+    responses(
+        (status = 200, description = "Updated user", body = UserRow),
+        (status = 400, description = "Empty username/email or password too short"),
+        (status = 403, description = "Cannot deactivate your own account"),
+        (status = 404, description = "No such user"),
+        (status = 409, description = "Username/email already taken, cannot deactivate the last admin, or user has no local credentials to set a password for"),
+    ),
+)]
 pub async fn update_user(
     State(state): State<AppState>,
     claims: Claims,
@@ -468,7 +541,23 @@ pub async fn update_user(
     }
 }
 
-async fn delete_user(
+/// Delete a user. Rejects self-deletion, deleting a superuser, or a user who
+/// still owns agents (reassign or delete those first).
+#[utoipa::path(
+    delete,
+    path = "/api/users/{id}",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 403, description = "Cannot delete your own account or a superuser"),
+        (status = 404, description = "No such user"),
+        (status = 409, description = "User still owns agents"),
+    ),
+)]
+pub(crate) async fn delete_user(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -541,7 +630,23 @@ async fn delete_user(
 
 // ─── POST /users/{id}/deactivate ────────────────────────────────────────────
 
-async fn deactivate(
+/// Deactivate a user and revoke their live tokens. Rejects self-deactivation
+/// and deactivating the last admin.
+#[utoipa::path(
+    post,
+    path = "/api/users/{id}/deactivate",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 204, description = "Deactivated"),
+        (status = 403, description = "Cannot deactivate your own account"),
+        (status = 404, description = "No such user"),
+        (status = 409, description = "Cannot deactivate the last admin"),
+    ),
+)]
+pub(crate) async fn deactivate(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -584,7 +689,23 @@ async fn deactivate(
 
 // ─── POST /users/{id}/reinstate ─────────────────────────────────────────────
 
-async fn reinstate(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+/// Reactivate a previously deactivated user.
+#[utoipa::path(
+    post,
+    path = "/api/users/{id}/reinstate",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 204, description = "Reinstated"),
+        (status = 404, description = "No such user"),
+    ),
+)]
+pub(crate) async fn reinstate(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
     match sqlx::query("UPDATE users SET is_active = true WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
         .execute(&state.db)
@@ -605,7 +726,29 @@ async fn reinstate(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl 
 
 // ─── POST /users/{id}/regenerate-credentials ────────────────────────────────
 
-async fn regenerate_credentials(
+/// One-time credential material — the only time `access_secret` is ever
+/// returned; the server stores only its hash from here on.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct RegenerateCredentialsResponse {
+    access_key: String,
+    access_secret: String,
+    message: String,
+}
+
+/// Mint a fresh `access_key`/`access_secret` pair for a user, replacing any
+/// existing credential, and revoke their live tokens.
+#[utoipa::path(
+    post,
+    path = "/api/users/{id}/regenerate-credentials",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 200, description = "New credentials", body = RegenerateCredentialsResponse),
+    ),
+)]
+pub(crate) async fn regenerate_credentials(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
@@ -661,7 +804,25 @@ async fn regenerate_credentials(
 
 // ─── PUT /users/{id}/role ────────────────────────────────────────────────────
 
-/// Change a user's role and immediately revoke their live tokens.
+/// Change a user's role and immediately revoke their live tokens. EE wraps
+/// this with a leadership-displacement cascade — see
+/// `ee/server/src/users.rs::ee_change_role`.
+#[utoipa::path(
+    put,
+    path = "/api/users/{id}/role",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    request_body = ChangeRoleRequest,
+    responses(
+        (status = 204, description = "Role changed (or unchanged, a no-op)"),
+        (status = 400, description = "Invalid role"),
+        (status = 403, description = "Cannot change your own role"),
+        (status = 404, description = "No such user"),
+        (status = 409, description = "Cannot demote the last admin"),
+    ),
+)]
 pub async fn change_role(
     State(state): State<AppState>,
     claims: Claims,
@@ -749,15 +910,33 @@ pub async fn change_role(
 
 // ─── GET /users/admins ───────────────────────────────────────────────────────
 
-async fn list_admins(State(state): State<AppState>) -> impl IntoResponse {
-    #[derive(Serialize, FromRow)]
-    struct AdminUser {
-        id: Uuid,
-        username: String,
-        email: Option<String>,
-        is_active: bool,
-        created_at: DateTime<Utc>,
-    }
+#[derive(Serialize, ToSchema, FromRow)]
+pub(crate) struct AdminUser {
+    id: Uuid,
+    username: String,
+    email: Option<String>,
+    is_active: bool,
+    created_at: DateTime<Utc>,
+}
+
+/// Response envelope for `GET /users/admins` — the JSON shape of
+/// `Paginated<AdminUser>` spelled out concretely (see `UserListResponse`).
+#[derive(Serialize, ToSchema)]
+pub(crate) struct AdminListResponse {
+    data: Vec<AdminUser>,
+    total: usize,
+}
+
+/// List every admin (`role = 'admin'`) user.
+#[utoipa::path(
+    get,
+    path = "/api/users/admins",
+    tag = "users",
+    responses(
+        (status = 200, description = "Admin users", body = AdminListResponse),
+    ),
+)]
+pub(crate) async fn list_admins(State(state): State<AppState>) -> impl IntoResponse {
     match sqlx::query_as::<_, AdminUser>(
         "SELECT id, username, email, is_active, created_at FROM users WHERE role = 'admin' AND deleted_at IS NULL ORDER BY username",
     )
@@ -774,7 +953,21 @@ async fn list_admins(State(state): State<AppState>) -> impl IntoResponse {
 
 // ─── GET /users/{id}/accessible-agents ──────────────────────────────────────
 
-async fn accessible_agents_for_user(
+/// Agents accessible to a user (owner ∪ public ∪ direct user-grant; EE's
+/// override in `ee/server/src/users.rs` additionally checks team/department
+/// grants).
+#[utoipa::path(
+    get,
+    path = "/api/users/{id}/accessible-agents",
+    tag = "users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 200, description = "Accessible agents", body = AccessibleAgentsResponse),
+    ),
+)]
+pub(crate) async fn accessible_agents_for_user(
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
 ) -> impl IntoResponse {
@@ -783,7 +976,19 @@ async fn accessible_agents_for_user(
 
 // ─── GET /users/me/accessible-agents ────────────────────────────────────────
 
-async fn my_accessible_agents(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+/// Agents accessible to the caller — see `accessible_agents_for_user`.
+#[utoipa::path(
+    get,
+    path = "/api/users/me/accessible-agents",
+    tag = "users",
+    responses(
+        (status = 200, description = "Accessible agents", body = AccessibleAgentsResponse),
+    ),
+)]
+pub(crate) async fn my_accessible_agents(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -793,7 +998,18 @@ async fn my_accessible_agents(State(state): State<AppState>, claims: Claims) -> 
 
 // ─── GET /users/me ──────────────────────────────────────────────────────────
 
-async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+/// The caller's own user record (superuser-only route; EE overrides this
+/// with the same EE-aware shape as `get_user` — see `ee/server/src/users.rs`).
+#[utoipa::path(
+    get,
+    path = "/api/users/me",
+    tag = "users",
+    responses(
+        (status = 200, description = "The caller's user record", body = UserRow),
+        (status = 404, description = "No such user"),
+    ),
+)]
+pub(crate) async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -821,8 +1037,8 @@ async fn get_me(State(state): State<AppState>, claims: Claims) -> impl IntoRespo
 
 // ─── shared helper ──────────────────────────────────────────────────────────
 
-#[derive(Serialize, FromRow)]
-struct AccessibleAgent {
+#[derive(Serialize, ToSchema, FromRow)]
+pub(crate) struct AccessibleAgent {
     id: Uuid,
     name: String,
     description: Option<String>,
@@ -830,6 +1046,14 @@ struct AccessibleAgent {
     owner_id: Option<Uuid>,
     // Consumed by the EE CLI's access my-agents/user-agents PUBLIC column.
     is_public: bool,
+}
+
+/// Response envelope for the `accessible-agents` routes — the JSON shape of
+/// `Paginated<AccessibleAgent>` spelled out concretely (see `UserListResponse`).
+#[derive(Serialize, ToSchema)]
+pub(crate) struct AccessibleAgentsResponse {
+    data: Vec<AccessibleAgent>,
+    total: usize,
 }
 
 async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::response::Response {

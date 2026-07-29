@@ -35,6 +35,8 @@ nasiko-llm-router.workspace = true
 tokio = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
@@ -50,7 +52,7 @@ async-stream = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
 rust_decimal = { workspace = true }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { workspace = true }
 semver = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }

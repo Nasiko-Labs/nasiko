@@ -6,6 +6,8 @@ use axum::{
     routing::{get, post},
 };
 use serde::Serialize;
+use std::collections::HashMap;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use nasiko_runtime::{ContainerId, DeploymentSpec};
@@ -22,12 +24,24 @@ pub fn router() -> Router<AppState> {
         .route("/dev-env", get(dev_env))
 }
 
-/// `GET /agents/dev-env` (deployer+, via `router()`'s gate) — the platform
-/// fallback env vars the CP injects into every deployment (OPENAI_* today).
-/// Consumed by `nasiko run` so a local container starts with the same
-/// defaults a CP deployment would get. Deployer-gated: anyone who can deploy
-/// already receives these values inside the containers they deploy.
-async fn dev_env(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct DevEnvResponse {
+    env: HashMap<String, String>,
+}
+
+/// The platform fallback env vars the CP injects into every deployment
+/// (OPENAI_* today). Consumed by `nasiko run` so a local container starts
+/// with the same defaults a CP deployment would get. Deployer-gated: anyone
+/// who can deploy already receives these values inside the containers they deploy.
+#[utoipa::path(
+    get,
+    path = "/api/agents/dev-env",
+    tag = "agents",
+    responses(
+        (status = 200, description = "Platform fallback env vars", body = DevEnvResponse),
+    ),
+)]
+pub(crate) async fn dev_env(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
     axum::Json(serde_json::json!({ "env": state.platform_fallback_env() }))
 }
 
@@ -41,8 +55,8 @@ pub fn degradable_router() -> Router<AppState> {
         .route("/{id}/deployment", get(get_agent_deployment))
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-struct DeploymentRow {
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct DeploymentRow {
     id: Uuid,
     agent_id: Uuid,
     build_id: Uuid,
@@ -79,7 +93,21 @@ struct AgentDeployInfo {
 
 // ─── GET /deployments ────────────────────────────────────────────────────────
 
-async fn list_deployments(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+/// List the caller's deployments (superuser → all, newest 50 first). Callers
+/// below deployer role get `200 {"available": false}` instead of an error —
+/// see `nasiko_server::unavailable`.
+#[utoipa::path(
+    get,
+    path = "/api/agents/deployments",
+    tag = "agents",
+    responses(
+        (status = 200, description = "Deployments, or `{\"available\": false}` if the caller can't deploy", body = [DeploymentRow]),
+    ),
+)]
+pub(crate) async fn list_deployments(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
     let identity: nasiko_auth::Identity = claims.clone().into();
     if !state.auth.can_deploy(&identity).await {
         return crate::unavailable();
@@ -130,7 +158,21 @@ async fn list_deployments(State(state): State<AppState>, claims: Claims) -> impl
 
 // ─── GET /{id}/deployment ────────────────────────────────────────────────────
 
-async fn get_agent_deployment(
+/// Get an agent's current (non-stopped) deployment. Callers who can't deploy
+/// or can't access the agent get `200 {"available": false}` instead of an error.
+#[utoipa::path(
+    get,
+    path = "/api/agents/{id}/deployment",
+    tag = "agents",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "Deployment, or `{\"available\": false}`", body = DeploymentRow),
+        (status = 404, description = "No non-stopped deployment for this agent"),
+    ),
+)]
+pub(crate) async fn get_agent_deployment(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
@@ -186,7 +228,33 @@ async fn revert_starting_status(state: &AppState, deployment_id: Uuid, original_
 
 // ─── POST /deployment/{id}/restart ──────────────────────────────────────────
 
-async fn restart_deployment(
+/// Response envelope for `restart_deployment` — documents the shape of the ad
+/// hoc `serde_json::json!` object the handler returns. `deployment_id` is
+/// omitted if the runtime restart succeeded but bookkeeping failed;
+/// `warnings` is omitted entirely when empty.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct RestartDeploymentResponse {
+    deployment_id: Option<Uuid>,
+    warnings: Option<Vec<String>>,
+}
+
+/// Restart an agent's deployment (K8s: scale-to-1; Docker: destroy + recreate).
+/// Owner-or-superuser only.
+#[utoipa::path(
+    post,
+    path = "/api/agents/deployment/{deployment_id}/restart",
+    tag = "agents",
+    params(
+        ("deployment_id" = Uuid, Path, description = "Deployment id"),
+    ),
+    responses(
+        (status = 200, description = "Restarted", body = RestartDeploymentResponse),
+        (status = 403, description = "Caller does not own this deployment"),
+        (status = 404, description = "No such deployment"),
+        (status = 409, description = "Deployment is already running or starting"),
+    ),
+)]
+pub(crate) async fn restart_deployment(
     State(state): State<AppState>,
     claims: Claims,
     Path(deployment_id): Path<Uuid>,
@@ -323,6 +391,9 @@ async fn restart_deployment(
             // meaningless to DockerRuntime.
             image_pull_secret_name: None,
             image_pull_credential_seed: None,
+            harden: false,
+            network_override: None,
+            workload_kind: Default::default(),
         };
 
         match state.runtime.deploy(&spec).await {

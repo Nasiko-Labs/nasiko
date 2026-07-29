@@ -5,8 +5,9 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -96,9 +97,36 @@ async fn resolve_agent_config(
 
 // ─── GET /{id}/llm-config ─────────────────────────────────────────────────────
 
-/// `GET /{id}/llm-config` — the agent's **resolved** routing config (attached → owner default →
-/// none), which config is attached, its source, and the inbound format (owner/superuser).
-async fn get_llm_config(
+/// Response envelope for `GET /{id}/llm-config` — documents the shape of the
+/// ad hoc `serde_json::json!` object the handler returns.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct LlmConfigResponse {
+    agent_id: Uuid,
+    /// Which config is attached; `null` ⇒ owner default / none.
+    llm_config_id: Option<Uuid>,
+    /// The resolved config the router will actually use, or `null`.
+    llm_config: Option<Value>,
+    /// `"attached"` | `"owner-default"` | `"none"`.
+    source: String,
+    inbound_format: String,
+}
+
+/// The agent's **resolved** routing config (attached → owner default →
+/// none), which config is attached, its source, and the inbound format. Owner-or-superuser only.
+#[utoipa::path(
+    get,
+    path = "/api/agents/{id}/llm-config",
+    tag = "agents",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "Resolved LLM routing config", body = LlmConfigResponse),
+        (status = 403, description = "Caller is not the agent owner"),
+        (status = 404, description = "No such agent"),
+    ),
+)]
+pub(crate) async fn get_llm_config(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,
@@ -156,11 +184,12 @@ where
 /// Attach/detach a reusable LLM config to an agent, and optionally change the inbound format.
 /// A config can only be attached if it belongs to the agent owner (per-user ownership keeps the
 /// referenced secret in the owner's store). Owner-only (or superuser).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AttachLlmConfigRequest {
     /// Double-option distinguishes the three cases: absent ⇒ leave unchanged; `null` ⇒ detach
     /// (fall back to the owner's default); a UUID ⇒ attach that config.
     #[serde(default, deserialize_with = "deserialize_present")]
+    #[schema(value_type = Option<Uuid>)]
     pub llm_config_id: Option<Option<Uuid>>,
     /// Optionally change which SDK the agent's code speaks (drives deploy injection).
     #[serde(default)]
@@ -171,7 +200,35 @@ pub struct AttachLlmConfigRequest {
     pub pinned_model: Option<Option<String>>,
 }
 
-async fn update_llm_config(
+/// Response envelope for `PATCH /{id}/llm-config` — documents the shape of
+/// the ad hoc `serde_json::json!` object the handler returns.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct LlmConfigUpdateResponse {
+    agent_id: Uuid,
+    llm_config_id: Option<Uuid>,
+    llm_config: Option<Value>,
+    source: String,
+}
+
+/// Attach/detach a reusable LLM config to an agent, and optionally change the
+/// inbound SDK format. A config can only be attached if it belongs to the
+/// agent owner. Owner-or-superuser only.
+#[utoipa::path(
+    patch,
+    path = "/api/agents/{id}/llm-config",
+    tag = "agents",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    request_body = AttachLlmConfigRequest,
+    responses(
+        (status = 200, description = "Updated, with the freshly resolved config", body = LlmConfigUpdateResponse),
+        (status = 400, description = "Config not found/not owned, or unsupported inbound_format"),
+        (status = 403, description = "Caller is not the agent owner"),
+        (status = 404, description = "No such agent"),
+    ),
+)]
+pub(crate) async fn update_llm_config(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,

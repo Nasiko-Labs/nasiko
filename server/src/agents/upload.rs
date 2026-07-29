@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use nasiko_runtime::DeploymentStatus;
@@ -51,7 +52,7 @@ pub fn status_router() -> Router<AppState> {
     Router::new().route("/upload-status", get(list_upload_status))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UploadQueuedData {
     pub success: bool,
     pub agent_name: String,
@@ -63,15 +64,32 @@ pub struct UploadQueuedData {
     pub validation_errors: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UploadAndDeployResponse {
     pub data: UploadQueuedData,
     pub status_code: u16,
     pub message: String,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-struct UploadStatusRow {
+/// Multipart form for `POST /agents/upload` — a `.zip` `source`/`file` field
+/// (an `AgentCard.json` + `Dockerfile` package) plus agent metadata fields.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct UploadAndDeployForm {
+    #[schema(value_type = String, format = Binary)]
+    source: Vec<u8>,
+    name: String,
+    version_tag: Option<String>,
+    /// `openai` (default) | `anthropic` | `gemini` — which SDK the agent's code speaks.
+    inbound_format: Option<String>,
+    /// Comma-separated container ports (defaults to `8000`).
+    ports: Option<String>,
+    /// JSON object of extra env vars, e.g. `{"FOO":"bar"}`.
+    env: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct UploadStatusRow {
     id: Uuid,
     upload_id: String,
     agent_id: Option<Uuid>,
@@ -227,7 +245,21 @@ const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB
 
 // ─── POST /upload-and-deploy ─────────────────────────────────────────────────
 
-async fn upload_and_deploy(
+/// Register a new agent from a source zip and queue an asynchronous
+/// build-and-deploy job (poll via `/uploads/{upload_id}` or
+/// `/deploys/{build_id}/stream`). Deployer role required.
+#[utoipa::path(
+    post,
+    path = "/api/agents/upload",
+    tag = "agents",
+    request_body(content = UploadAndDeployForm, content_type = "multipart/form-data"),
+    responses(
+        (status = 202, description = "Build queued", body = UploadAndDeployResponse),
+        (status = 400, description = "Missing/invalid name, version_tag, or source zip"),
+        (status = 413, description = "Upload exceeds 100 MiB limit"),
+    ),
+)]
+pub(crate) async fn upload_and_deploy(
     State(state): State<AppState>,
     claims: Claims,
     mut multipart: Multipart,
@@ -699,52 +731,15 @@ pub async fn execute_upload_and_deploy(
                 None,
             )
             .await;
-            // `upload` upserts by (owner_id, name) — a second `upload` against an
-            // already-deployed agent must land here too. Fetch the currently active
-            // version first: it becomes this new version's `previous_version` and,
-            // once archived, gets marked `can_rollback = true` — mirroring
-            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
-            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
-            // first upload (nothing to archive or roll back to yet).
-            let prev_version: Option<String> = sqlx::query_scalar(
-                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
             let _ = sqlx::query(
-                "UPDATE agent_versions SET is_active = false, status = 'archived' \
-                 WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .execute(&db)
-            .await;
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions \
-                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
-                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
-                 FROM agent_builds WHERE id = $1 \
+                "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
+                 SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
                  ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
-                       is_active = true, status = 'active', \
-                       previous_version = EXCLUDED.previous_version",
+                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag",
             )
             .bind(build_id)
-            .bind(&prev_version)
             .execute(&db)
             .await;
-            if let Some(ref pv) = prev_version {
-                let _ = sqlx::query(
-                    "UPDATE agent_versions SET can_rollback = true \
-                     WHERE agent_id = $1 AND version = $2",
-                )
-                .bind(agent_id)
-                .bind(pv)
-                .execute(&db)
-                .await;
-            }
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -937,52 +932,15 @@ pub async fn execute_clone_and_deploy(
                 None,
             )
             .await;
-            // `upload` upserts by (owner_id, name) — a second `upload` against an
-            // already-deployed agent must land here too. Fetch the currently active
-            // version first: it becomes this new version's `previous_version` and,
-            // once archived, gets marked `can_rollback = true` — mirroring
-            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
-            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
-            // first upload (nothing to archive or roll back to yet).
-            let prev_version: Option<String> = sqlx::query_scalar(
-                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
             let _ = sqlx::query(
-                "UPDATE agent_versions SET is_active = false, status = 'archived' \
-                 WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .execute(&db)
-            .await;
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions \
-                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
-                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
-                 FROM agent_builds WHERE id = $1 \
+                "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
+                 SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
                  ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
-                       is_active = true, status = 'active', \
-                       previous_version = EXCLUDED.previous_version",
+                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag",
             )
             .bind(build_id)
-            .bind(&prev_version)
             .execute(&db)
             .await;
-            if let Some(ref pv) = prev_version {
-                let _ = sqlx::query(
-                    "UPDATE agent_versions SET can_rollback = true \
-                     WHERE agent_id = $1 AND version = $2",
-                )
-                .bind(agent_id)
-                .bind(pv)
-                .execute(&db)
-                .await;
-            }
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -1197,7 +1155,22 @@ async fn fail_github_clone_terminal(
 
 // ─── GET /deploy-status/{build_id} (SSE) ─────────────────────────────────────
 
-async fn deploy_status_sse(
+/// Server-Sent Events stream of `{"status": ..., "build_id": ...}` on each
+/// status change, polling every 3s until the build reaches `success`/`failed`
+/// (or `{"status": "not_found"}` once, if the build id doesn't exist).
+/// Callers below deployer role get `200 {"available": false}` instead.
+#[utoipa::path(
+    get,
+    path = "/api/agents/deploys/{build_id}/stream",
+    tag = "agents",
+    params(
+        ("build_id" = Uuid, Path, description = "Build id"),
+    ),
+    responses(
+        (status = 200, description = "`text/event-stream` of build status updates, or `{\"available\": false}`", content_type = "text/event-stream"),
+    ),
+)]
+pub(crate) async fn deploy_status_sse(
     State(state): State<AppState>,
     claims: Claims,
     Path(build_id): Path<Uuid>,
@@ -1279,14 +1252,14 @@ fn status_message_str(status: &str, agent_name: &str) -> String {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct SourceInfoJson {
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct SourceInfoJson {
     filename: String,
     content_type: String,
 }
 
-#[derive(Debug, Serialize)]
-struct UploadStatusItem {
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct UploadStatusItem {
     upload_id: String,
     agent_name: String,
     status: String,
@@ -1355,7 +1328,22 @@ fn row_to_status_item(row: UploadStatusRow) -> UploadStatusItem {
 
 // ─── GET /upload-status/{upload_id} ─────────────────────────────────────────
 
-async fn get_upload_status(
+/// Get the status of a single upload/build (by `upload_id`, i.e. the build id
+/// as a string). Callers below deployer role, or a non-owner non-superuser,
+/// get `200 {"available": false}` instead of an error.
+#[utoipa::path(
+    get,
+    path = "/api/agents/uploads/{upload_id}",
+    tag = "agents",
+    params(
+        ("upload_id" = String, Path, description = "Upload/build id"),
+    ),
+    responses(
+        (status = 200, description = "Upload status, or `{\"available\": false}`", body = UploadStatusItem),
+        (status = 404, description = "No such upload"),
+    ),
+)]
+pub(crate) async fn get_upload_status(
     State(state): State<AppState>,
     claims: Claims,
     Path(upload_id): Path<String>,
@@ -1404,8 +1392,8 @@ async fn get_upload_status(
 
 // ─── GET /agents/uploads ─────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct UploadListQuery {
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct UploadListQuery {
     #[serde(default = "default_upload_limit")]
     limit: i64,
     #[serde(default)]
@@ -1416,7 +1404,28 @@ fn default_upload_limit() -> i64 {
     10
 }
 
-async fn list_upload_status(
+/// Response envelope for `GET /upload-status` — documents the shape of the ad
+/// hoc `serde_json::json!` object the handler returns.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct UploadStatusListResponse {
+    data: Vec<UploadStatusItem>,
+    status_code: u16,
+    message: String,
+}
+
+/// List the caller's uploads/builds, newest first (superuser → all). Also
+/// mounted at the top-level `/api/upload-status` alias (`status_router`).
+/// Callers below deployer role get `200 {"available": false}` instead of an error.
+#[utoipa::path(
+    get,
+    path = "/api/agents/uploads",
+    tag = "agents",
+    params(UploadListQuery),
+    responses(
+        (status = 200, description = "Upload statuses, or `{\"available\": false}`", body = UploadStatusListResponse),
+    ),
+)]
+pub(crate) async fn list_upload_status(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<UploadListQuery>,
@@ -1491,16 +1500,16 @@ struct UploadAgentRow {
     agent_status: Option<String>,
 }
 
-#[derive(Serialize)]
-struct UploadInfoResponse {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct UploadInfoResponse {
     upload_type: &'static str,
     upload_status: String,
     status_message: Option<String>,
     error_detail: Option<String>,
 }
 
-#[derive(Serialize)]
-struct UploadAgentResponse {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct UploadAgentResponse {
     agent_id: String,
     agent_name: String,
     icon_url: Option<String>,
@@ -1509,8 +1518,8 @@ struct UploadAgentResponse {
     description: Option<String>,
 }
 
-#[derive(Serialize)]
-struct UploadAgentsListResponse {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct UploadAgentsListResponse {
     data: Vec<UploadAgentResponse>,
     status_code: u16,
     message: String,
@@ -1539,7 +1548,20 @@ fn agent_status_message(display_status: &str, version: Option<&str>) -> Option<S
     }
 }
 
-async fn list_upload_agents(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+/// List agents the caller has uploaded (superuser → all), one row per agent
+/// (most recent upload), joined with live catalog metadata.
+#[utoipa::path(
+    get,
+    path = "/api/agents/my-uploads",
+    tag = "agents",
+    responses(
+        (status = 200, description = "Uploaded agents, newest first (max 50)", body = UploadAgentsListResponse),
+    ),
+)]
+pub(crate) async fn list_upload_agents(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),

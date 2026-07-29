@@ -8,6 +8,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use nasiko_runtime::ContainerId;
@@ -80,8 +81,9 @@ fn agent_access_predicate(user_bind: &str, table_ref: &str) -> String {
     )
 }
 
-#[derive(Deserialize)]
-struct BySkillQuery {
+#[derive(Deserialize, IntoParams)]
+pub(crate) struct BySkillQuery {
+    /// Skill tag to match (case-insensitive).
     tag: String,
     #[serde(default = "default_limit")]
     limit: i64,
@@ -93,7 +95,17 @@ struct BySkillQuery {
 /// (superuser → all; otherwise owner ∪ public ∪ user-grant — see
 /// `agent_access_predicate`). Uses the GIN `idx_agent_skills_tags` via the `@>`
 /// containment operator and `EXISTS` (no join fan-out / DISTINCT).
-async fn by_skill(
+#[utoipa::path(
+    get,
+    path = "/api/agents/by-skill",
+    tag = "catalog",
+    params(BySkillQuery),
+    responses(
+        (status = 200, description = "Agents with a matching skill tag", body = [AgentSummary]),
+        (status = 400, description = "Missing or empty `tag`"),
+    ),
+)]
+pub(crate) async fn by_skill(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<BySkillQuery>,
@@ -150,7 +162,18 @@ async fn by_skill(
     }
 }
 
-async fn create(
+/// Register a new agent in the catalog.
+#[utoipa::path(
+    post,
+    path = "/api/agents",
+    tag = "catalog",
+    request_body = CreateAgent,
+    responses(
+        (status = 201, description = "Agent registered", body = Agent),
+        (status = 409, description = "An agent with this name already exists"),
+    ),
+)]
+pub(crate) async fn create(
     State(state): State<AppState>,
     claims: Claims,
     Json(body): Json<CreateAgent>,
@@ -199,8 +222,8 @@ async fn create(
 
     let result = sqlx
         ::query_as::<_, Agent>(
-            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image)
-           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13)
+            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12)
            RETURNING *"#
         )
         .bind(&body.name)
@@ -215,7 +238,6 @@ async fn create(
         .bind(skills)
         .bind(&tags)
         .bind(meta)
-        .bind(&body.image)
         .fetch_one(&mut *tx).await;
 
     let agent = match result {
@@ -239,29 +261,6 @@ async fn create(
         tracing::error!(%e, agent_id = %agent.id, "create agent: sync skills failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
     }
-
-    // Seed the version history with this agent's starting version. Without
-    // this, `push`/`deploy`-registered agents have zero rows in
-    // `agent_versions` until their first `reupload` — which then has nothing
-    // active to archive, so `rollback` has no eligible target until a
-    // *second* reupload. `nasiko upload`'s build pipeline seeds its own row
-    // separately (`agents/upload.rs`, `build/routes.rs`) once the build
-    // completes; this covers the `push`/`deploy` path, which registers
-    // before any build job exists.
-    if let Err(e) = sqlx::query(
-        "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, status) \
-         VALUES ($1, $2, $3, true, 'active')",
-    )
-    .bind(agent.id)
-    .bind(&agent.version)
-    .bind(agent.image.clone().unwrap_or_default())
-    .execute(&mut *tx)
-    .await
-    {
-        tracing::error!(%e, agent_id = %agent.id, "create agent: seed initial version failed");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
-    }
-
     if let Err(e) = tx.commit().await {
         tracing::error!(%e, "create agent: commit failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
@@ -270,8 +269,8 @@ async fn create(
     (StatusCode::CREATED, Json(agent)).into_response()
 }
 
-#[derive(Deserialize)]
-struct ListQuery {
+#[derive(Deserialize, IntoParams)]
+pub(crate) struct ListQuery {
     owner: Option<Uuid>,
     status: Option<String>,
     #[serde(default = "default_limit")]
@@ -283,7 +282,18 @@ fn default_limit() -> i64 {
     50
 }
 
-async fn list(
+/// List agents visible to the caller (superuser → all; otherwise owner ∪
+/// public ∪ user-grant — see `agent_access_predicate`).
+#[utoipa::path(
+    get,
+    path = "/api/agents",
+    tag = "catalog",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "Agents visible to the caller", body = [Agent]),
+    ),
+)]
+pub(crate) async fn list(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<ListQuery>,
@@ -321,10 +331,7 @@ async fn list(
         .await;
 
     match agents {
-        Ok(mut list) => {
-            reconcile_running_status(&state, &mut list).await;
-            Json(list).into_response()
-        }
+        Ok(list) => Json(list).into_response(),
         Err(e) => {
             tracing::error!(%e, "list agents: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
@@ -332,33 +339,57 @@ async fn list(
     }
 }
 
-/// A container that crashed after its last deploy/restart call still reads
-/// `status = 'running'` from the DB — nothing rewrites that column on its own
-/// for Docker-backed agents (the EE crash guardian only reconciles K8s
-/// deployments). Cheap enough to check on every list call: `nasiko ps`-sized
-/// fleets are small, and `runtime.status()` is a single local Docker API call
-/// per agent. Read-only override on the response, not persisted — avoids
-/// racing the crash guardian's own DB writes on K8s, and a stale read here is
-/// harmless where a stale write would linger.
-async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
-    for agent in agents.iter_mut() {
-        if agent.status != "running" {
-            continue;
-        }
-        let container_id = ContainerId::from_uuid(agent.id);
-        if let Ok(live) = state.runtime.status(&container_id).await {
-            use nasiko_runtime::RuntimeState;
-            if matches!(
-                live.state,
-                RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
-            ) {
-                agent.status = live.state.to_string();
-            }
-        }
-    }
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDetailResponse {
+    id: Uuid,
+    name: String,
+    version: String,
+    description: String,
+    url: String,
+    preferred_transport: String,
+    protocol_version: String,
+    provider: Option<serde_json::Value>,
+    icon_url: Option<String>,
+    documentation_url: Option<String>,
+    capabilities: serde_json::Value,
+    security_schemes: serde_json::Value,
+    security: Vec<serde_json::Value>,
+    default_input_modes: Vec<String>,
+    default_output_modes: Vec<String>,
+    skills: Vec<serde_json::Value>,
+    tags: Vec<String>,
+    supports_authenticated_extended_card: bool,
+    signatures: Vec<serde_json::Value>,
+    additional_interfaces: Option<serde_json::Value>,
+    #[serde(rename = "created_at")]
+    created_at: DateTime<Utc>,
+    #[serde(rename = "updated_at")]
+    updated_at: DateTime<Utc>,
 }
 
-async fn get_one(
+#[derive(Serialize, ToSchema)]
+pub(crate) struct SingleResponse {
+    data: AgentDetailResponse,
+    status_code: u16,
+    message: String,
+}
+
+/// Fetch a single agent by UUID or name, rendered as an A2A AgentCard-shaped envelope.
+#[utoipa::path(
+    get,
+    path = "/api/agents/{id}",
+    tag = "catalog",
+    params(
+        ("id" = String, Path, description = "Agent UUID or name"),
+    ),
+    responses(
+        (status = 200, description = "Agent card", body = SingleResponse),
+        (status = 403, description = "Caller cannot access this agent"),
+        (status = 404, description = "No agent with this id/name"),
+    ),
+)]
+pub(crate) async fn get_one(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<String>,
@@ -391,42 +422,6 @@ async fn get_one(
 
     if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
         return StatusCode::FORBIDDEN.into_response();
-    }
-
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct AgentDetailResponse {
-        id: Uuid,
-        name: String,
-        version: String,
-        description: String,
-        url: String,
-        preferred_transport: String,
-        protocol_version: String,
-        provider: Option<serde_json::Value>,
-        icon_url: Option<String>,
-        documentation_url: Option<String>,
-        capabilities: serde_json::Value,
-        security_schemes: serde_json::Value,
-        security: Vec<serde_json::Value>,
-        default_input_modes: Vec<String>,
-        default_output_modes: Vec<String>,
-        skills: Vec<serde_json::Value>,
-        tags: Vec<String>,
-        supports_authenticated_extended_card: bool,
-        signatures: Vec<serde_json::Value>,
-        additional_interfaces: Option<serde_json::Value>,
-        #[serde(rename = "created_at")]
-        created_at: DateTime<Utc>,
-        #[serde(rename = "updated_at")]
-        updated_at: DateTime<Utc>,
-    }
-
-    #[derive(Serialize)]
-    struct SingleResponse {
-        data: AgentDetailResponse,
-        status_code: u16,
-        message: String,
     }
 
     let skills: Vec<serde_json::Value> = agent
@@ -469,7 +464,22 @@ async fn get_one(
     .into_response()
 }
 
-async fn update(
+/// Update an agent's catalog metadata. Owner-or-superuser only.
+#[utoipa::path(
+    put,
+    path = "/api/agents/{id}",
+    tag = "catalog",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    request_body = UpdateAgent,
+    responses(
+        (status = 200, description = "Updated agent", body = Agent),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No agent with this id"),
+    ),
+)]
+pub(crate) async fn update(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -583,15 +593,30 @@ async fn update(
     }
 }
 
-#[derive(Serialize)]
-struct DeletedAgent {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct DeletedAgent {
     deleted: bool,
     agent_id: Uuid,
     containers_stopped: usize,
     runtime_errors: Vec<String>,
 }
 
-async fn delete(
+/// Delete an agent and tear down its running containers (best-effort).
+/// Owner-or-superuser only.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{id}",
+    tag = "catalog",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "Deleted", body = DeletedAgent),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No agent with this id"),
+    ),
+)]
+pub(crate) async fn delete(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -683,7 +708,20 @@ async fn delete(
     }
 }
 
-async fn list_versions(
+/// List an agent's build/version history.
+#[utoipa::path(
+    get,
+    path = "/api/agents/{id}/versions",
+    tag = "catalog",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "Version history, newest first", body = [AgentVersion]),
+        (status = 403, description = "Caller cannot access this agent"),
+    ),
+)]
+pub(crate) async fn list_versions(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -710,7 +748,24 @@ async fn list_versions(
 
 // ── DELETE /agents/{id}/versions/{version} ────────────────────────────────────
 
-async fn delete_version(
+/// Delete a specific version record. Rejects deleting the currently active
+/// version — roll back to another version first. Owner-or-superuser only.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{id}/versions/{version}",
+    tag = "catalog",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+        ("version" = String, Path, description = "Version tag to delete"),
+    ),
+    responses(
+        (status = 204, description = "Version deleted"),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No such version"),
+        (status = 409, description = "Cannot delete the active version"),
+    ),
+)]
+pub(crate) async fn delete_version(
     State(state): State<AppState>,
     claims: Claims,
     Path((agent_id, version)): Path<(Uuid, String)>,
@@ -847,8 +902,9 @@ fn escape_like(s: &str) -> String {
 
 // ── /agents/search ────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-struct SearchQuery {
+#[derive(Deserialize, IntoParams)]
+pub(crate) struct SearchQuery {
+    /// Search term, minimum 2 characters.
     q: String,
     #[serde(default = "default_search_limit")]
     limit: i64,
@@ -863,8 +919,8 @@ fn default_search_limit() -> i64 {
 /// One agent search hit: all agent fields plus its computed relevance `score`.
 /// `_total` is the pre-limit match count (window function) — carried per row and
 /// hoisted into the response envelope, not serialized on each item.
-#[derive(Serialize, sqlx::FromRow)]
-struct AgentSearchResult {
+#[derive(Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct AgentSearchResult {
     #[serde(flatten)]
     #[sqlx(flatten)]
     agent: Agent,
@@ -877,8 +933,8 @@ struct AgentSearchResult {
 
 /// Agent search envelope — mirrors Python's `{agents, total, max_score}` and the
 /// existing `UserSearchResponse` shape so both search surfaces are consistent.
-#[derive(Serialize)]
-struct AgentSearchResponse {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct AgentSearchResponse {
     agents: Vec<AgentSearchResult>,
     total: i64,
     max_score: f64,
@@ -886,7 +942,17 @@ struct AgentSearchResponse {
 
 /// Agent-only search.  Scoring: GREATEST across (name×2.8, description×2.0, tag score) with tiered
 /// exact/prefix/contains scoring.  Minimum query length: 2 chars.
-async fn search(
+#[utoipa::path(
+    get,
+    path = "/api/search/agents",
+    tag = "catalog",
+    params(SearchQuery),
+    responses(
+        (status = 200, description = "Ranked agent search hits", body = AgentSearchResponse),
+        (status = 400, description = "`q` shorter than 2 characters"),
+    ),
+)]
+pub(crate) async fn search(
     State(state): State<AppState>,
     claims: Claims,
     Query(sq): Query<SearchQuery>,
@@ -950,8 +1016,9 @@ async fn search(
 
 // ── /search/users ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-struct UserSearchQuery {
+#[derive(Deserialize, IntoParams)]
+pub(crate) struct UserSearchQuery {
+    /// Search term, minimum 2 characters.
     q: String,
 }
 
@@ -959,8 +1026,8 @@ struct UserSearchQuery {
 /// Scoring: exact (100×boost) > prefix (90×boost) > contains (70×boost).
 /// Minimum query length: 2 chars. Sort: score DESC, username ASC.
 /// Returns all matching users (no limit).
-#[derive(Serialize, sqlx::FromRow)]
-struct UserSearchResult {
+#[derive(Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct UserSearchResult {
     id: Uuid,
     username: String,
     display_name: String,
@@ -969,7 +1036,29 @@ struct UserSearchResult {
     score: f64,
 }
 
-async fn search_users(
+/// Response envelope for `/search/users` — documents the shape of the ad hoc
+/// `serde_json::json!` object the handler returns.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct UserSearchResponse {
+    data: Vec<UserSearchResult>,
+    query: String,
+    total_matches: usize,
+    showing: usize,
+}
+
+/// Search the user directory. Superuser only — usernames/emails are sensitive (CAT-4).
+#[utoipa::path(
+    get,
+    path = "/api/search/users",
+    tag = "catalog",
+    params(UserSearchQuery),
+    responses(
+        (status = 200, description = "Ranked user search hits (max 50)", body = UserSearchResponse),
+        (status = 400, description = "`q` shorter than 2 characters"),
+        (status = 403, description = "Caller is not a superuser"),
+    ),
+)]
+pub(crate) async fn search_users(
     State(state): State<AppState>,
     claims: Claims,
     Query(sq): Query<UserSearchQuery>,
@@ -1029,8 +1118,8 @@ async fn search_users(
 
 // ── GET /registry/user/agents ─────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-struct RegistryUserAgentsQuery {
+#[derive(Deserialize, IntoParams)]
+pub(crate) struct RegistryUserAgentsQuery {
     q: Option<String>,
     status: Option<String>,
     #[serde(default = "default_limit")]
@@ -1039,10 +1128,37 @@ struct RegistryUserAgentsQuery {
     offset: i64,
 }
 
+#[derive(Serialize, ToSchema)]
+pub(crate) struct RegistryUserAgentSummary {
+    agent_id: Uuid,
+    name: String,
+    icon_url: Option<String>,
+    tags: Vec<String>,
+    description: Option<String>,
+    owner_id: Uuid,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct RegistryUserAgentsResponse {
+    data: Vec<RegistryUserAgentSummary>,
+    status_code: u16,
+    message: String,
+}
+
 /// Returns agents accessible to the current user: owned + public + explicitly granted.
 /// Supports optional `?q` (name/description search), `?status`, `?limit`, `?offset`.
 /// Superusers see all agents.
-async fn registry_user_agents(
+#[utoipa::path(
+    get,
+    path = "/api/registry/user/agents",
+    tag = "catalog",
+    params(RegistryUserAgentsQuery),
+    responses(
+        (status = 200, description = "Agents accessible to the caller", body = RegistryUserAgentsResponse),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn registry_user_agents(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<RegistryUserAgentsQuery>,
@@ -1102,24 +1218,9 @@ async fn registry_user_agents(
 
     match agents {
         Ok(list) => {
-            #[derive(serde::Serialize)]
-            struct SimpleAgent {
-                agent_id: Uuid,
-                name: String,
-                icon_url: Option<String>,
-                tags: Vec<String>,
-                description: Option<String>,
-                owner_id: Uuid,
-            }
-            #[derive(serde::Serialize)]
-            struct Response {
-                data: Vec<SimpleAgent>,
-                status_code: u16,
-                message: String,
-            }
             let data = list
                 .into_iter()
-                .map(|a| SimpleAgent {
+                .map(|a| RegistryUserAgentSummary {
                     agent_id: a.id,
                     name: a.name,
                     icon_url: a.icon_url,
@@ -1128,7 +1229,7 @@ async fn registry_user_agents(
                     owner_id: a.owner_id,
                 })
                 .collect();
-            Json(Response {
+            Json(RegistryUserAgentsResponse {
                 data,
                 status_code: 200,
                 message: "success".to_string(),
@@ -1147,7 +1248,20 @@ async fn registry_user_agents(
 /// Look up an agent by its UUID or name (registry-entry lookup).
 /// Equivalent to GET /agents/{id} but exposed at the /registries/ path for
 /// clients that use the registry-centric URL scheme.
-async fn get_by_registry_id(
+#[utoipa::path(
+    get,
+    path = "/api/registries/{id}",
+    tag = "catalog",
+    params(
+        ("id" = String, Path, description = "Agent UUID or name"),
+    ),
+    responses(
+        (status = 200, description = "Agent card", body = SingleResponse),
+        (status = 403, description = "Caller cannot access this agent"),
+        (status = 404, description = "No agent with this id/name"),
+    ),
+)]
+pub(crate) async fn get_by_registry_id(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<String>,

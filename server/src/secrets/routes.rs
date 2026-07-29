@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -69,32 +70,45 @@ pub(crate) fn validate_secret_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-struct SecretEntry {
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct SecretEntry {
     id: Uuid,
     name: String,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Deserialize)]
-struct CreateSecret {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct CreateSecret {
     name: String,
     value: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct UpdateSecret {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct UpdateSecret {
     value: String,
 }
 
-#[derive(Debug, Serialize)]
-struct SecretValue {
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct SecretValue {
     name: String,
     value: String,
 }
 
-async fn list_secrets(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+/// List the caller's secrets (names + metadata only — never decrypted values).
+#[utoipa::path(
+    get,
+    path = "/api/secrets",
+    tag = "secrets",
+    responses(
+        (status = 200, description = "The caller's secrets", body = [SecretEntry]),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn list_secrets(
+    State(state): State<AppState>,
+    claims: Claims,
+) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -117,7 +131,18 @@ async fn list_secrets(State(state): State<AppState>, claims: Claims) -> impl Int
     }
 }
 
-async fn create_secret(
+/// Create a secret, or overwrite the value if one with this name already exists.
+#[utoipa::path(
+    post,
+    path = "/api/secrets",
+    tag = "secrets",
+    request_body = CreateSecret,
+    responses(
+        (status = 201, description = "Secret created (or overwritten)", body = SecretEntry),
+        (status = 422, description = "Invalid secret name — see `oss/docs` for the naming rule"),
+    ),
+)]
+pub(crate) async fn create_secret(
     State(state): State<AppState>,
     claims: Claims,
     Json(body): Json<CreateSecret>,
@@ -157,7 +182,20 @@ async fn create_secret(
     }
 }
 
-async fn get_secret(
+/// Fetch and decrypt a single secret's value.
+#[utoipa::path(
+    get,
+    path = "/api/secrets/{name}",
+    tag = "secrets",
+    params(
+        ("name" = String, Path, description = "Secret name"),
+    ),
+    responses(
+        (status = 200, description = "Decrypted secret value", body = SecretValue),
+        (status = 404, description = "No secret with this name"),
+    ),
+)]
+pub(crate) async fn get_secret(
     State(state): State<AppState>,
     claims: Claims,
     Path(name): Path<String>,
@@ -196,7 +234,21 @@ async fn get_secret(
     }
 }
 
-async fn update_secret(
+/// Overwrite an existing secret's value.
+#[utoipa::path(
+    put,
+    path = "/api/secrets/{name}",
+    tag = "secrets",
+    params(
+        ("name" = String, Path, description = "Secret name"),
+    ),
+    request_body = UpdateSecret,
+    responses(
+        (status = 204, description = "Secret updated"),
+        (status = 404, description = "No secret with this name"),
+    ),
+)]
+pub(crate) async fn update_secret(
     State(state): State<AppState>,
     claims: Claims,
     Path(name): Path<String>,
@@ -231,7 +283,20 @@ async fn update_secret(
     }
 }
 
-async fn delete_secret(
+/// Delete a secret.
+#[utoipa::path(
+    delete,
+    path = "/api/secrets/{name}",
+    tag = "secrets",
+    params(
+        ("name" = String, Path, description = "Secret name"),
+    ),
+    responses(
+        (status = 204, description = "Secret deleted"),
+        (status = 404, description = "No secret with this name"),
+    ),
+)]
+pub(crate) async fn delete_secret(
     State(state): State<AppState>,
     claims: Claims,
     Path(name): Path<String>,
