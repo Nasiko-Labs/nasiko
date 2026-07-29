@@ -365,9 +365,31 @@ pub fn connector_register(
     description: Option<&str>,
     display_name: Option<&str>,
     logo_url: Option<&str>,
+    oauth_client_id: Option<&str>,
+    oauth_client_secret: Option<&str>,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let headers = parse_headers(headers)?;
+
+    // Prompt for OAuth credentials when auth_type is oauth2 and none were supplied.
+    let (oauth_client_id, oauth_client_secret) = if auth_type == "oauth2" && oauth_client_id.is_none() {
+        let cid: String = dialoguer::Input::new()
+            .with_prompt("OAuth client ID (leave empty for Dynamic Client Registration)")
+            .allow_empty(true)
+            .interact_text()?;
+        if cid.is_empty() {
+            (None, None)
+        } else {
+            let secret: String = dialoguer::Password::new()
+                .with_prompt("OAuth client secret")
+                .interact()?;
+            let secret = if secret.is_empty() { None } else { Some(secret) };
+            (Some(cid), secret)
+        }
+    } else {
+        (oauth_client_id.map(str::to_string), oauth_client_secret.map(str::to_string))
+    };
+
     let body = serde_json::json!({
         "name": name,
         "url": url,
@@ -381,12 +403,16 @@ pub fn connector_register(
         "description": description,
         "display_name": display_name,
         "logo_url": logo_url,
+        "oauth_client_id": oauth_client_id,
+        "oauth_client_secret": oauth_client_secret,
     });
     let resp: Value = client.post_json("/mcp/connectors", &body)?;
     let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     let connector_id = s(&resp, "connector_id").to_string();
     println!("Registered connector '{}' ({connector_id}). Auth type: {}.", s(&resp, "name"), s(&resp, "auth_type"));
-    if auth_type != "none" {
+    if auth_type == "oauth2" {
+        println!("Run 'nasiko mcp connect --connector-id {connector_id}' to start the OAuth flow.");
+    } else if auth_type != "none" {
         println!("Run 'nasiko mcp credential set {connector_id}' if this server requires a credential.");
     }
     Ok(())
