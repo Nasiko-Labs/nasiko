@@ -248,8 +248,14 @@ async fn create(
     if req.name.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "name must not be empty").into_response();
     }
-    let has_any_tier = req.tier1_model.is_some() || req.tier2_model.is_some() || req.tier3_model.is_some();
-    if let Err(msg) = validate(&req.provider, req.model.as_deref(), &req.pinned_model, has_any_tier) {
+    let has_any_tier =
+        req.tier1_model.is_some() || req.tier2_model.is_some() || req.tier3_model.is_some();
+    if let Err(msg) = validate(
+        &req.provider,
+        req.model.as_deref(),
+        &req.pinned_model,
+        has_any_tier,
+    ) {
         return (StatusCode::BAD_REQUEST, msg).into_response();
     }
     if config_name_taken(&state.db, user_id, &req.name).await {
@@ -362,27 +368,31 @@ async fn update(
         return (StatusCode::NOT_FOUND, "llm config not found").into_response();
     }
     // Validate only the fields that are present.
-    if let Some(provider) = &req.provider {
-        if !SUPPORTED_PROVIDERS.contains(&provider.as_str()) {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "unsupported provider '{provider}' (expected one of: {})",
-                    SUPPORTED_PROVIDERS.join(", ")
-                ),
-            )
-                .into_response();
-        }
+    if let Some(provider) = &req.provider
+        && !SUPPORTED_PROVIDERS.contains(&provider.as_str())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "unsupported provider '{provider}' (expected one of: {})",
+                SUPPORTED_PROVIDERS.join(", ")
+            ),
+        )
+            .into_response();
     }
-    if let Some(model) = &req.model {
-        if model.trim().is_empty() {
-            return (StatusCode::BAD_REQUEST, "model must not be empty when provided").into_response();
-        }
+    if let Some(model) = &req.model
+        && model.trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "model must not be empty when provided",
+        )
+            .into_response();
     }
-    if let Some(pm) = &req.pinned_model {
-        if pm.trim().is_empty() {
-            return (StatusCode::BAD_REQUEST, "pinned_model must not be empty").into_response();
-        }
+    if let Some(pm) = &req.pinned_model
+        && pm.trim().is_empty()
+    {
+        return (StatusCode::BAD_REQUEST, "pinned_model must not be empty").into_response();
     }
     if let Some(name) = req.name.as_deref() {
         if name.trim().is_empty() {
@@ -429,7 +439,7 @@ async fn update(
     .bind(&req.name)
     .bind(&req.provider)
     .bind(&req.model)
-    .bind(req.fallback_models.as_ref().map(|f| sqlx::types::Json(f)))
+    .bind(req.fallback_models.as_ref().map(sqlx::types::Json))
     .bind(req.temperature)
     .bind(req.max_tokens)
     .bind(&req.api_key_secret_name)
@@ -489,9 +499,7 @@ async fn delete_config(
     .execute(&state.db)
     .await;
     match result {
-        Ok(_) => {
-            ApiResponse::ok(json!(null), "LLM config deleted successfully").into_response()
-        }
+        Ok(_) => ApiResponse::ok(json!(null), "LLM config deleted successfully").into_response(),
         Err(e) => db_error("delete", e),
     }
 }
@@ -540,9 +548,7 @@ async fn set_default(
         return db_error("commit", e);
     }
     match fetch_config(&state.db, id, user_id).await {
-        Some(cfg) => {
-            ApiResponse::ok(cfg, "LLM config set as default successfully").into_response()
-        }
+        Some(cfg) => ApiResponse::ok(cfg, "LLM config set as default successfully").into_response(),
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
     }
 }
@@ -594,7 +600,15 @@ mod tests {
 
     #[test]
     fn accepts_supported_provider() {
-        assert!(validate("anthropic", Some("claude-3-5-sonnet-20241022"), &None, false).is_ok());
+        assert!(
+            validate(
+                "anthropic",
+                Some("claude-3-5-sonnet-20241022"),
+                &None,
+                false
+            )
+            .is_ok()
+        );
         assert!(validate("openai", Some("gpt-4o-mini"), &None, false).is_ok());
     }
 

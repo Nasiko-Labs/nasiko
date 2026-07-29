@@ -28,7 +28,9 @@ const CONFIG_JSON: &str = "json_build_object(\
 pub fn router() -> Router<AppState> {
     Router::new().route(
         "/{id}/llm-config",
-        get(get_llm_config).patch(update_llm_config),
+        get(get_llm_config)
+            .patch(update_llm_config)
+            .delete(delete_llm_config),
     )
 }
 
@@ -111,8 +113,8 @@ async fn get_llm_config(
         Err(resp) => return resp,
     };
 
-    let row: Option<(Option<Uuid>, String)> = sqlx::query_as(
-        "SELECT llm_config_id, inbound_format FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    let row: Option<(Option<Uuid>, String, Option<String>)> = sqlx::query_as(
+        "SELECT llm_config_id, inbound_format, pinned_model FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&state.db)
@@ -120,17 +122,18 @@ async fn get_llm_config(
     .ok()
     .flatten();
 
-    let Some((attached, inbound_format)) = row else {
+    let Some((attached, inbound_format, agent_pin)) = row else {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     };
     let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
     ApiResponse::ok(
         json!({
             "agent_id": agent_id,
-            "llm_config_id": attached,   // which config is attached (null ⇒ owner default / none)
-            "llm_config": config,        // the resolved config the router will use (or null)
-            "source": source,            // "attached" | "owner-default" | "none"
+            "llm_config_id": attached,
+            "llm_config": config,
+            "source": source,
             "inbound_format": inbound_format,
+            "pinned_model": agent_pin,
         }),
         "Agent LLM config retrieved successfully",
     )
@@ -162,6 +165,10 @@ pub struct AttachLlmConfigRequest {
     /// Optionally change which SDK the agent's code speaks (drives deploy injection).
     #[serde(default)]
     pub inbound_format: Option<String>,
+    /// Agent-level model pin. Overrides the config's `pinned_model`. Double-option:
+    /// absent ⇒ leave unchanged; `null` ⇒ clear pin; string ⇒ set pin.
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub pinned_model: Option<Option<String>>,
 }
 
 async fn update_llm_config(
@@ -201,8 +208,9 @@ async fn update_llm_config(
                 )
                     .into_response();
             }
+            // Config change clears the agent-level pin (it was set in the old config's context).
             if let Err(e) = sqlx::query(
-                "UPDATE agents SET llm_config_id = $2, updated_at = now() WHERE id = $1",
+                "UPDATE agents SET llm_config_id = $2, pinned_model = NULL, updated_at = now() WHERE id = $1",
             )
             .bind(agent_id)
             .bind(config_id)
@@ -213,8 +221,9 @@ async fn update_llm_config(
             }
         }
         Some(None) => {
+            // Detach clears the agent-level pin too.
             if let Err(e) = sqlx::query(
-                "UPDATE agents SET llm_config_id = NULL, updated_at = now() WHERE id = $1",
+                "UPDATE agents SET llm_config_id = NULL, pinned_model = NULL, updated_at = now() WHERE id = $1",
             )
             .bind(agent_id)
             .execute(&state.db)
@@ -224,6 +233,41 @@ async fn update_llm_config(
             }
         }
         None => {}
+    }
+
+    // Agent-level pin: absent ⇒ leave unchanged; null ⇒ clear; string ⇒ set.
+    // Only applied when the config was NOT just changed (config change already clears it).
+    if req.llm_config_id.is_none() {
+        match &req.pinned_model {
+            Some(Some(model)) => {
+                if model.trim().is_empty() {
+                    return (StatusCode::BAD_REQUEST, "pinned_model must not be empty")
+                        .into_response();
+                }
+                if let Err(e) = sqlx::query(
+                    "UPDATE agents SET pinned_model = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(agent_id)
+                .bind(model)
+                .execute(&state.db)
+                .await
+                {
+                    return db_error("set pinned_model", e);
+                }
+            }
+            Some(None) => {
+                if let Err(e) = sqlx::query(
+                    "UPDATE agents SET pinned_model = NULL, updated_at = now() WHERE id = $1",
+                )
+                .bind(agent_id)
+                .execute(&state.db)
+                .await
+                {
+                    return db_error("clear pinned_model", e);
+                }
+            }
+            None => {}
+        }
     }
 
     if let Some(fmt) = req.inbound_format.as_deref() {
@@ -249,13 +293,14 @@ async fn update_llm_config(
     }
 
     // Return the freshly resolved config so the caller sees the effect immediately.
-    let attached: Option<Uuid> =
-        sqlx::query_scalar("SELECT llm_config_id FROM agents WHERE id = $1")
+    let row: Option<(Option<Uuid>, Option<String>)> =
+        sqlx::query_as("SELECT llm_config_id, pinned_model FROM agents WHERE id = $1")
             .bind(agent_id)
             .fetch_optional(&state.db)
             .await
             .ok()
             .flatten();
+    let (attached, agent_pin) = row.unwrap_or((None, None));
     let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
     ApiResponse::ok(
         json!({
@@ -263,10 +308,41 @@ async fn update_llm_config(
             "llm_config_id": attached,
             "llm_config": config,
             "source": source,
+            "pinned_model": agent_pin,
         }),
         "Agent LLM config updated successfully",
     )
     .into_response()
+}
+
+// ─── DELETE /{id}/llm-config ──────────────────────────────────────────────────
+
+/// Detach the config and clear the agent-level pin in one call.
+async fn delete_llm_config(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    if let Err(resp) =
+        agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
+    {
+        return resp;
+    }
+    if let Err(e) = sqlx::query(
+        "UPDATE agents SET llm_config_id = NULL, pinned_model = NULL, updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .execute(&state.db)
+    .await
+    {
+        return db_error("delete", e);
+    }
+    ApiResponse::ok(json!(null), "Agent LLM config removed successfully").into_response()
 }
 
 fn db_error(op: &str, e: sqlx::Error) -> axum::response::Response {

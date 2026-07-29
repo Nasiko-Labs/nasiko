@@ -76,7 +76,7 @@ async fn embeddings_core(
 mod tests {
     use super::*;
     use crate::config::GatewayConfig;
-    use crate::resolver::{ConfigCache, LLMConfig};
+    use crate::resolver::{AgentConfigResult, ConfigCache, LLMConfig};
     use async_trait::async_trait;
     use jsonwebtoken::Algorithm;
     use serde_json::json;
@@ -95,10 +95,13 @@ mod tests {
         async fn fetch_llm_config(
             &self,
             _: Uuid,
-        ) -> Result<Option<Option<LLMConfig>>, sqlx::Error> {
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
             // No llm_config ⇒ passthrough: provider openai (the embeddings surface) + the
             // request's own model, defaults only as the safety net.
-            Ok(Some(None))
+            Ok(Some(AgentConfigResult {
+                config: None,
+                agent_pinned_model: None,
+            }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
