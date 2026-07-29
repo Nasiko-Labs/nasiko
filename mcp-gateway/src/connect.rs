@@ -67,7 +67,8 @@ pub async fn connect_service(
     }
 
     if connector.is_composio() {
-        let outcome = composio_connect(state, user_id, &connector, input.redirect_url.as_deref()).await?;
+        let outcome =
+            composio_connect(state, user_id, &connector, input.redirect_url.as_deref()).await?;
         if matches!(outcome, ConnectOutcome::Connected { .. }) {
             grant_user_agents_access(&state.db, user_id, connector.id).await;
         }
@@ -110,9 +111,11 @@ pub async fn connect_service(
                 authorization_url: url,
             }
         }
-        other => return Err(McpError::BadRequest(format!(
-            "unsupported auth_type '{other}'"
-        ))),
+        other => {
+            return Err(McpError::BadRequest(format!(
+                "unsupported auth_type '{other}'"
+            )));
+        }
     };
 
     // Auto-grant all the user's agents access to this connector on connect.
@@ -141,7 +144,10 @@ pub async fn grant_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connecto
     };
     let empty_rules = serde_json::json!([]);
     for agent_id in agent_ids {
-        if let Err(e) = repo::upsert_agent_connector_access(db, agent_id, connector_id, true, &empty_rules).await {
+        if let Err(e) =
+            repo::upsert_agent_connector_access(db, agent_id, connector_id, true, &empty_rules)
+                .await
+        {
             tracing::warn!(%agent_id, %connector_id, %e, "failed to auto-grant agent connector access");
         }
     }
@@ -194,6 +200,13 @@ async fn resolve_target(
     }
 
     if let Some(url) = input.url.as_deref() {
+        // Reuse an existing connector at this URL instead of always minting a
+        // new one — `connect --url` means "get me using this", the same as
+        // the connector-id/service branches above, not "register something
+        // new every time I run this against a URL I've already got".
+        if let Some(existing) = repo::get_owned_connector_by_url(&state.db, user_id, url).await? {
+            return Ok(existing);
+        }
         crate::net::validate_public_url(url).await?;
         // Guarded client (SSRF/DNS-rebinding): same reasoning as the /probe route.
         let detected = match connectors::probe_initialize(&state.guarded_http_client, url).await {

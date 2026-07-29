@@ -274,6 +274,27 @@ pub async fn get_owned_connector_by_name(
     Ok(row)
 }
 
+/// A user-owned connector already pointing at `url` (ignoring a trailing
+/// slash) — lets `connect --url` reuse an existing registration instead of
+/// always minting a duplicate connector at the same address. If more than one
+/// already exists at this URL (e.g. from earlier auth-type testing), picks
+/// the oldest deterministically rather than an arbitrary DB-ordered row.
+pub async fn get_owned_connector_by_url(
+    db: &PgPool,
+    owner_id: Uuid,
+    url: &str,
+) -> Result<Option<McpConnector>> {
+    let row = sqlx::query_as::<_, McpConnector>(
+        "SELECT * FROM mcp_connectors WHERE owner_id = $1 AND rtrim(url, '/') = rtrim($2, '/') \
+         ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(owner_id)
+    .bind(url)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
 /// Every connector the user can reach (Layer 1): composio ∪ owned ∪ granted.
 pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
