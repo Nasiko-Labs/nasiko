@@ -20,6 +20,7 @@ use crate::injector::{AgentContext, InstrumentationInjector};
 ///     "http://otel-collector.nasiko-infra:4317".into(),
 ///     "grpc".into(),
 ///     false,
+///     None,
 /// );
 /// ```
 pub struct InstrumentedRuntime<R, I> {
@@ -28,6 +29,7 @@ pub struct InstrumentedRuntime<R, I> {
     otel_collector_endpoint: String,
     otel_protocol: String,
     capture_content: bool,
+    tenant_id: Option<String>,
 }
 
 impl<R: ContainerRuntime, I: InstrumentationInjector> InstrumentedRuntime<R, I> {
@@ -37,6 +39,7 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> InstrumentedRuntime<R, I> 
         otel_collector_endpoint: String,
         otel_protocol: String,
         capture_content: bool,
+        tenant_id: Option<String>,
     ) -> Self {
         Self {
             inner,
@@ -44,6 +47,7 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> InstrumentedRuntime<R, I> 
             otel_collector_endpoint,
             otel_protocol,
             capture_content,
+            tenant_id,
         }
     }
 }
@@ -56,7 +60,7 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         let mut patched = spec.clone();
         let ctx = AgentContext {
             agent_id: spec.name.clone(),
-            tenant_id: None,
+            tenant_id: self.tenant_id.clone(),
             version: None,
             capture_content: self.capture_content,
             otel_collector_endpoint: self.otel_collector_endpoint.clone(),
@@ -126,8 +130,10 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
 mod tests {
     use super::*;
     use crate::injector::AgentContext;
+    use nasiko_runtime::RuntimeState;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Inner runtime that records whether `refresh_secrets` reached it.
@@ -137,8 +143,15 @@ mod tests {
 
     #[async_trait]
     impl ContainerRuntime for RecordingRuntime {
-        async fn deploy(&self, _s: &DeploymentSpec) -> Result<DeploymentStatus> {
-            unimplemented!()
+        async fn deploy(&self, s: &DeploymentSpec) -> Result<DeploymentStatus> {
+            Ok(DeploymentStatus {
+                container_id: s.container_id.clone(),
+                state: RuntimeState::Running,
+                replicas_live: s.min_replicas,
+                endpoint: None,
+                message: None,
+                restart_count: 0,
+            })
         }
         async fn destroy(&self, _id: &ContainerId) -> Result<()> {
             Ok(())
@@ -187,6 +200,79 @@ mod tests {
         fn inject(&self, _env: &mut HashMap<String, String>, _ctx: &AgentContext) {}
     }
 
+    /// Records the `tenant_id` it was given, so a test can assert on it
+    /// without depending on `OtelInjector`'s specific env-var encoding.
+    struct CapturingInjector {
+        seen_tenant_id: Arc<Mutex<Option<String>>>,
+    }
+    impl InstrumentationInjector for CapturingInjector {
+        fn inject(&self, _env: &mut HashMap<String, String>, ctx: &AgentContext) {
+            *self.seen_tenant_id.lock().unwrap() = ctx.tenant_id.clone();
+        }
+    }
+
+    fn minimal_spec() -> DeploymentSpec {
+        DeploymentSpec {
+            container_id: ContainerId::new("agent"),
+            name: "agent".to_string(),
+            image: "example/agent:latest".to_string(),
+            min_replicas: 1,
+            max_replicas: 1,
+            env_vars: HashMap::new(),
+            ports: vec![8080],
+            resources: None,
+            image_pull_secret_name: None,
+            image_pull_credential_seed: None,
+        }
+    }
+
+    /// Regression guard: `InstrumentedRuntime::deploy` must pass its own
+    /// configured `tenant_id` through to `AgentContext`, not the hardcoded
+    /// `None` this decorator used before tenant_id was wired up.
+    #[tokio::test]
+    async fn deploy_passes_configured_tenant_id_to_agent_context() {
+        let seen = Arc::new(Mutex::new(None));
+        let rt = InstrumentedRuntime::new(
+            RecordingRuntime {
+                refreshed: Arc::new(AtomicBool::new(false)),
+            },
+            CapturingInjector {
+                seen_tenant_id: seen.clone(),
+            },
+            "http://collector:4318".to_string(),
+            "http/protobuf".to_string(),
+            false,
+            Some("tenant-abc".to_string()),
+        );
+        rt.deploy(&minimal_spec())
+            .await
+            .expect("deploy should succeed");
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("tenant-abc"));
+    }
+
+    /// A runtime with no configured tenant_id must still deploy with `None`
+    /// (a standalone, non-multi-tenant deployment) — not silently invent one.
+    #[tokio::test]
+    async fn deploy_passes_none_tenant_id_when_unconfigured() {
+        let seen = Arc::new(Mutex::new(Some("should-be-overwritten".to_string())));
+        let rt = InstrumentedRuntime::new(
+            RecordingRuntime {
+                refreshed: Arc::new(AtomicBool::new(false)),
+            },
+            CapturingInjector {
+                seen_tenant_id: seen.clone(),
+            },
+            "http://collector:4318".to_string(),
+            "http/protobuf".to_string(),
+            false,
+            None,
+        );
+        rt.deploy(&minimal_spec())
+            .await
+            .expect("deploy should succeed");
+        assert_eq!(*seen.lock().unwrap(), None);
+    }
+
     /// RUN-1 regression guard: the decorator must forward `refresh_secrets` to the
     /// inner runtime, not fall through to the trait's no-op default (which would
     /// silently drop a K8s secret rotation).
@@ -201,6 +287,7 @@ mod tests {
             "http://collector:4318".to_string(),
             "http/protobuf".to_string(),
             false,
+            None,
         );
         rt.refresh_secrets(&ContainerId::new("agent"), HashMap::new())
             .await
@@ -225,6 +312,7 @@ mod tests {
             "http://collector:4318".to_string(),
             "http/protobuf".to_string(),
             false,
+            None,
         );
         let instances = rt
             .list_instances()

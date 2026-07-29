@@ -50,6 +50,12 @@ pub struct Config {
     /// answer this). Everything that gates on observability reads this flag
     /// rather than re-inspecting env, so no two code paths can disagree.
     pub observability_enabled: bool,
+    /// Opaque identifier for the tenant this deployment belongs to, added as
+    /// a `tenant.id` OTel resource attribute on every agent this instance
+    /// deploys — see `InstrumentedRuntime`. `None` for a standalone/non-
+    /// multi-tenant deployment. This crate has no notion of what a "tenant"
+    /// is; it only passes the value through.
+    pub tenant_id: Option<String>,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -173,13 +179,20 @@ impl Config {
             )
             .map(|v| v == "true")
             .unwrap_or(true),
-            tempo_url: env_or("TEMPO_URL", ""),
-            loki_url: env_or("LOKI_URL", ""),
+            tempo_url: env_or(
+                "TEMPO_URL",
+                "http://tempo.nasiko-infra.svc.cluster.local:3200",
+            ),
+            loki_url: env_or(
+                "LOKI_URL",
+                "http://loki.nasiko-infra.svc.cluster.local:3100",
+            ),
             // Enabled only when BOTH backends are explicitly configured; a
             // partial config is treated as disabled. Computed here, the one place
             // env is read, so every consumer agrees on whether it's enabled.
             observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
                 && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
+            tenant_id: std::env::var("TENANT_ID").ok(),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),

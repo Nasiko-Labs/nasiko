@@ -33,6 +33,7 @@ pub fn instrument<R: ContainerRuntime>(
         config.otel_collector_endpoint.clone(),
         config.otel_protocol.clone(),
         config.otel_capture_content,
+        config.tenant_id.clone(),
     );
     InstrumentedRuntime::new(
         otel_instrumented,
@@ -42,6 +43,7 @@ pub fn instrument<R: ContainerRuntime>(
         config.otel_collector_endpoint.clone(),
         config.otel_protocol.clone(),
         config.otel_capture_content,
+        config.tenant_id.clone(),
     )
 }
 

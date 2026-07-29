@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nasiko_config::Config;
 use nasiko_runtime::{
-    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, Result as RuntimeResult,
-    RuntimeState,
+    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo,
+    Result as RuntimeResult, RuntimeState,
 };
 use nasiko_server::state::AppState;
 use sqlx::PgPool;
@@ -38,8 +38,19 @@ fn s3_endpoint() -> String {
 /// reads it) so tests can exercise `list`'s per-caller filtering without a
 /// real runtime.
 #[derive(Default)]
-struct FakeRuntime {
+pub struct FakeRuntime {
     containers: std::sync::Mutex<std::collections::HashMap<ContainerId, DeploymentStatus>>,
+    /// Instances returned by `list_instances` — set via [`set_instances`] so
+    /// hours-meter tests can script exactly what the reconciler observes.
+    instances: std::sync::Mutex<Vec<InstanceInfo>>,
+}
+
+impl FakeRuntime {
+    /// Replace the instance set the next `list_instances` call reports.
+    #[allow(dead_code)]
+    pub fn set_instances(&self, instances: Vec<InstanceInfo>) {
+        *self.instances.lock().unwrap() = instances;
+    }
 }
 
 fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
@@ -106,6 +117,12 @@ impl ContainerRuntime for FakeRuntime {
     async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
         Ok(image_tag.to_owned())
     }
+
+    // Explicit impl (not the trait default) so tests fully control what the
+    // hours-meter reconciler observes.
+    async fn list_instances(&self) -> RuntimeResult<Vec<InstanceInfo>> {
+        Ok(self.instances.lock().unwrap().clone())
+    }
 }
 
 // ─── TestServer ──────────────────────────────────────────────────────────────
@@ -119,6 +136,10 @@ pub struct TestServer {
     /// Direct pool access for tests that need to seed or verify DB state.
     #[allow(dead_code)]
     pub db: PgPool,
+    /// The fake runtime backing the server — lets tests script instance
+    /// observations (`set_instances`) and drive the hours meter directly.
+    #[allow(dead_code)]
+    pub runtime: Arc<FakeRuntime>,
     db_name: String,
     admin_pool: PgPool,
 }
@@ -138,7 +159,6 @@ fn minimal_pool_opts() -> PgPoolOptions {
 }
 
 impl TestServer {
-    #[allow(dead_code)]
     pub async fn start() -> Self {
         Self::start_with(|_| {}).await
     }
@@ -149,21 +169,6 @@ impl TestServer {
     /// path, which `test_config()` otherwise always leaves empty.
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
-        Self::start_with_runtime(configure, Arc::new(FakeRuntime::default())).await
-    }
-
-    /// Same as [`start_with`](Self::start_with), but lets the caller supply a
-    /// real `ContainerRuntime` (e.g. a real `DockerRuntime`) instead of
-    /// `FakeRuntime` — needed by tests that must observe a real container's
-    /// lifecycle through the actual HTTP route (not by calling orchestration
-    /// functions directly), such as confirming `DELETE
-    /// /api/mcp/connectors/{id}` really destroys an uploaded connector's
-    /// container.
-    #[allow(dead_code)]
-    pub async fn start_with_runtime(
-        configure: impl FnOnce(&mut Config),
-        runtime: Arc<dyn ContainerRuntime>,
-    ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
@@ -202,6 +207,9 @@ impl TestServer {
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
+        let fake_runtime = Arc::new(FakeRuntime::default());
+        let runtime: Arc<dyn ContainerRuntime> = fake_runtime.clone();
+
         let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
@@ -217,6 +225,7 @@ impl TestServer {
             base_url: format!("http://127.0.0.1:{port}"),
             client: reqwest::Client::new(),
             db: db.clone(),
+            runtime: fake_runtime,
             db_name,
             admin_pool: admin,
         }
@@ -296,6 +305,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
+        tenant_id: None,
         flow_max_depth: 5,
         flow_max_fan_out: 20,
         flow_max_tokens: 100_000,
@@ -317,6 +327,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         github_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
+        container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
         git_clone_allowed_hosts: vec![
             "github.com".to_owned(),
             "gitlab.com".to_owned(),
@@ -346,20 +357,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL")
             .ok()
             .filter(|s| !s.is_empty()),
-        // None here too: falls back to mcp_gateway_public_url above, which the
-        // oauth callback test already sets to an HTTPS test domain — no
-        // separate override needed for that test to keep passing.
-        mcp_oauth_redirect_base_url: None,
-        composio_callback_base_url: None,
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
-        mcp_upload_max_bytes: 50 * 1024 * 1024,
-        mcp_upload_default_port: 8080,
-        mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
-        mcp_upload_max_replicas: 1,
-        mcp_toolcount_ttl_seconds: 3600,
-        seed_toolkits: vec![],
         app_base_url: "".to_string(),
     }
 }
