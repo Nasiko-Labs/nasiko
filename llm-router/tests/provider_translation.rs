@@ -307,6 +307,9 @@ async fn translated_call(
         max_tokens: Some(MAX_TOKENS),
         has_llm_config: false,
         pinned_model: None,
+        tier1_model: None,
+        tier2_model: None,
+        tier3_model: None,
     };
 
     let provider = provider_for(backend.label(), http, cfg)
