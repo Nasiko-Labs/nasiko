@@ -6,12 +6,14 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::Claims;
+use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
-use super::crypto::SecretsCrypto;
+use nasiko_secrets::SecretsCrypto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -105,7 +107,9 @@ async fn list_secrets(State(state): State<AppState>, claims: Claims) -> impl Int
     .fetch_all(&state.db)
     .await
     {
-        Ok(secrets) => Json(secrets).into_response(),
+        Ok(secrets) => {
+            ApiResponse::ok(json!(secrets), "Secrets retrieved successfully").into_response()
+        }
         Err(e) => {
             tracing::error!(%e, %user_id, "list_secrets: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -143,7 +147,9 @@ async fn create_secret(
     .await;
 
     match result {
-        Ok(entry) => (StatusCode::CREATED, Json(entry)).into_response(),
+        Ok(entry) => {
+            ApiResponse::created(json!(entry), "Secret created successfully").into_response()
+        }
         Err(e) => {
             tracing::error!(%e, %user_id, "create_secret: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -175,7 +181,11 @@ async fn get_secret(
         Some(enc) => {
             let crypto = SecretsCrypto::for_user(user_id);
             match crypto.decrypt(&enc) {
-                Ok(value) => Json(SecretValue { name, value }).into_response(),
+                Ok(value) => ApiResponse::ok(
+                    json!(SecretValue { name, value }),
+                    "Secret retrieved successfully",
+                )
+                .into_response(),
                 Err(e) => {
                     tracing::error!(%e, %user_id, "get_secret: decrypt failed");
                     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -210,7 +220,9 @@ async fn update_secret(
     .await;
 
     match result {
-        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            ApiResponse::ok(json!(null), "Secret updated successfully").into_response()
+        }
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %user_id, %name, "update_secret: db error");
@@ -236,7 +248,9 @@ async fn delete_secret(
         .await;
 
     match result {
-        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            ApiResponse::ok(json!(null), "Secret deleted successfully").into_response()
+        }
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %user_id, %name, "delete_secret: db error");

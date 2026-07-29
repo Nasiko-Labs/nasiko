@@ -13,9 +13,11 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::auth::Claims;
 use crate::auth::rbac::require_superuser;
+use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -53,7 +55,9 @@ async fn list_mappings(State(state): State<AppState>, _claims: Claims) -> impl I
     .await;
 
     match rows {
-        Ok(r) => Json(r).into_response(),
+        Ok(r) => {
+            ApiResponse::ok(json!(r), "Model registry retrieved successfully").into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "list_mappings: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -93,7 +97,9 @@ async fn upsert_mapping(
     .await;
 
     match result {
-        Ok(m) => Json(m).into_response(),
+        Ok(m) => {
+            ApiResponse::ok(json!(m), "Model mapping upserted successfully").into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "upsert_mapping: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()

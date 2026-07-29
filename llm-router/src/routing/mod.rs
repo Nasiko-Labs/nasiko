@@ -62,6 +62,11 @@ pub struct RouteInputs<'a> {
     /// The pinned model, if the agent's config is compliance-locked (Level 1). `None`
     /// until S4 wires the real field.
     pub pinned_model: Option<&'a str>,
+    /// Per-config tier→model overrides from the user's `llm_configs` row. When set, the
+    /// router checks these before the global `model_registry` at Level 3.
+    pub tier1_model: Option<&'a str>,
+    pub tier2_model: Option<&'a str>,
+    pub tier3_model: Option<&'a str>,
     /// Per-request boundary tags (phase/mode/conv_id).
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
@@ -195,7 +200,27 @@ pub async fn route_model(
                 let mut rng = rand::rng();
                 classify(query, inputs.provider, &learned, &mut rng)
             };
-            match registry.model_for(inputs.provider, tier).await {
+            // Per-config tier override takes priority over the global registry.
+            let config_override = match tier {
+                Tier::Tier1 => inputs.tier1_model.map(str::to_string),
+                Tier::Tier2 => inputs.tier2_model.map(str::to_string),
+                Tier::Tier3 => inputs.tier3_model.map(str::to_string),
+            };
+            let tier_model = match config_override {
+                Some(ref m) => {
+                    tracing::info!(
+                        target: "nasiko::llm_router::routing",
+                        agent_id = %inputs.agent_id,
+                        provider = %inputs.provider,
+                        tier = ?tier,
+                        model = %m,
+                        "route_model: LEVEL 3 — using per-config tier override"
+                    );
+                    Some(m.clone())
+                }
+                None => registry.model_for(inputs.provider, tier).await,
+            };
+            match tier_model {
                 Some(model) => {
                     let decision = CachedDecision {
                         model,
@@ -378,6 +403,9 @@ mod tests {
             fallback_model: "cfg-model",
             has_llm_config: true,
             pinned_model: pinned,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
             signals,
             query: Some("hello"),
         }

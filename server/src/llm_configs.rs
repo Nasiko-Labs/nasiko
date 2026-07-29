@@ -18,10 +18,11 @@ use axum::{
 };
 use nasiko_secrets::SecretsCrypto;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::Claims;
+use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 /// Outbound providers the LLM router can translate to — used to validate config writes.
@@ -32,7 +33,9 @@ const CONFIG_JSON: &str = "json_build_object(\
      'id', id, 'name', name, 'provider', provider, 'model', model, \
      'fallback_models', fallback_models, 'temperature', temperature, \
      'max_tokens', max_tokens, 'api_key_secret_name', api_key_secret_name, \
-     'pinned', pinned, 'pinned_model', pinned_model, 'is_default', is_default, \
+     'pinned', pinned, 'pinned_model', pinned_model, \
+     'tier1_model', tier1_model, 'tier2_model', tier2_model, 'tier3_model', tier3_model, \
+     'is_default', is_default, \
      'created_at', created_at, 'updated_at', updated_at)";
 
 pub fn router() -> Router<AppState> {
@@ -49,7 +52,8 @@ pub fn router() -> Router<AppState> {
 pub struct CreateLlmConfigRequest {
     pub name: String,
     pub provider: String,
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub fallback_models: Vec<String>,
     #[serde(default)]
@@ -68,21 +72,31 @@ pub struct CreateLlmConfigRequest {
     pub pinned: bool,
     #[serde(default)]
     pub pinned_model: Option<String>,
+    /// Per-config tier→model overrides. When set, the smart router uses these instead of
+    /// the global `model_registry` for this config's provider.
+    #[serde(default)]
+    pub tier1_model: Option<String>,
+    #[serde(default)]
+    pub tier2_model: Option<String>,
+    #[serde(default)]
+    pub tier3_model: Option<String>,
     /// Mark this as the caller's default (clears any prior default).
     #[serde(default)]
     pub is_default: bool,
 }
 
-/// A full replacement of the config's routing fields (`name` optionally renames). `is_default`
-/// is not touched here — use `POST /llm-configs/{id}/default`.
+/// Partial update — every field is optional. Absent fields keep their current value.
+/// `is_default` is not touched here — use `POST /llm-configs/{id}/default`.
 #[derive(Debug, Deserialize)]
 pub struct UpdateLlmConfigRequest {
     #[serde(default)]
     pub name: Option<String>,
-    pub provider: String,
-    pub model: String,
     #[serde(default)]
-    pub fallback_models: Vec<String>,
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub fallback_models: Option<Vec<String>>,
     #[serde(default)]
     pub temperature: Option<f64>,
     #[serde(default)]
@@ -92,21 +106,44 @@ pub struct UpdateLlmConfigRequest {
     #[serde(default)]
     pub secret_value: Option<String>,
     #[serde(default)]
-    pub pinned: bool,
+    pub pinned: Option<bool>,
     #[serde(default)]
     pub pinned_model: Option<String>,
+    #[serde(default)]
+    pub tier1_model: Option<String>,
+    #[serde(default)]
+    pub tier2_model: Option<String>,
+    #[serde(default)]
+    pub tier3_model: Option<String>,
 }
 
 /// Validate the fields that don't need the DB. Shared by create/update.
-fn validate(provider: &str, model: &str, pinned_model: &Option<String>) -> Result<(), String> {
+///
+/// `model` may be `None` when the user relies entirely on tier-based routing; it is required
+/// only when no tier model is set (otherwise the router has no fallback).
+fn validate(
+    provider: &str,
+    model: Option<&str>,
+    pinned_model: &Option<String>,
+    has_any_tier: bool,
+) -> Result<(), String> {
     if !SUPPORTED_PROVIDERS.contains(&provider) {
         return Err(format!(
             "unsupported provider '{provider}' (expected one of: {})",
             SUPPORTED_PROVIDERS.join(", ")
         ));
     }
-    if model.trim().is_empty() {
-        return Err("model must not be empty".to_string());
+    match model {
+        Some(m) if m.trim().is_empty() => {
+            return Err("model must not be empty when provided".to_string());
+        }
+        None if !has_any_tier => {
+            return Err(
+                "either model or at least one tier model (tier1_model, tier2_model, tier3_model) is required"
+                    .to_string(),
+            );
+        }
+        _ => {}
     }
     if let Some(pm) = pinned_model
         && pm.trim().is_empty()
@@ -194,7 +231,7 @@ async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoRespons
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
-    (StatusCode::OK, Json(rows)).into_response()
+    ApiResponse::ok(json!(rows), "LLM configs retrieved successfully").into_response()
 }
 
 // ─── POST /llm-configs ───────────────────────────────────────────────────────
@@ -211,7 +248,8 @@ async fn create(
     if req.name.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "name must not be empty").into_response();
     }
-    if let Err(msg) = validate(&req.provider, &req.model, &req.pinned_model) {
+    let has_any_tier = req.tier1_model.is_some() || req.tier2_model.is_some() || req.tier3_model.is_some();
+    if let Err(msg) = validate(&req.provider, req.model.as_deref(), &req.pinned_model, has_any_tier) {
         return (StatusCode::BAD_REQUEST, msg).into_response();
     }
     if config_name_taken(&state.db, user_id, &req.name).await {
@@ -252,8 +290,9 @@ async fn create(
     let inserted: Result<(Uuid,), _> = sqlx::query_as(
         "INSERT INTO llm_configs \
          (created_by, name, provider, model, fallback_models, temperature, max_tokens, \
-          api_key_secret_name, pinned, pinned_model, is_default) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
+          api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, \
+          is_default) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id",
     )
     .bind(user_id)
     .bind(&req.name)
@@ -265,6 +304,9 @@ async fn create(
     .bind(&req.api_key_secret_name)
     .bind(req.pinned)
     .bind(&req.pinned_model)
+    .bind(&req.tier1_model)
+    .bind(&req.tier2_model)
+    .bind(&req.tier3_model)
     .bind(req.is_default)
     .fetch_one(&mut *tx)
     .await;
@@ -278,7 +320,7 @@ async fn create(
     }
 
     match fetch_config(&state.db, id, user_id).await {
-        Some(cfg) => (StatusCode::CREATED, Json(cfg)).into_response(),
+        Some(cfg) => ApiResponse::created(cfg, "LLM config created successfully").into_response(),
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "config vanished after create",
@@ -299,7 +341,7 @@ async fn get_one(
         Err(e) => return e.into_response(),
     };
     match fetch_config(&state.db, id, user_id).await {
-        Some(cfg) => (StatusCode::OK, Json(cfg)).into_response(),
+        Some(cfg) => ApiResponse::ok(cfg, "LLM config retrieved successfully").into_response(),
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
     }
 }
@@ -319,8 +361,28 @@ async fn update(
     if fetch_config(&state.db, id, user_id).await.is_none() {
         return (StatusCode::NOT_FOUND, "llm config not found").into_response();
     }
-    if let Err(msg) = validate(&req.provider, &req.model, &req.pinned_model) {
-        return (StatusCode::BAD_REQUEST, msg).into_response();
+    // Validate only the fields that are present.
+    if let Some(provider) = &req.provider {
+        if !SUPPORTED_PROVIDERS.contains(&provider.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "unsupported provider '{provider}' (expected one of: {})",
+                    SUPPORTED_PROVIDERS.join(", ")
+                ),
+            )
+                .into_response();
+        }
+    }
+    if let Some(model) = &req.model {
+        if model.trim().is_empty() {
+            return (StatusCode::BAD_REQUEST, "model must not be empty when provided").into_response();
+        }
+    }
+    if let Some(pm) = &req.pinned_model {
+        if pm.trim().is_empty() {
+            return (StatusCode::BAD_REQUEST, "pinned_model must not be empty").into_response();
+        }
     }
     if let Some(name) = req.name.as_deref() {
         if name.trim().is_empty() {
@@ -347,9 +409,19 @@ async fn update(
 
     let result = sqlx::query(
         "UPDATE llm_configs SET \
-         name = COALESCE($3, name), provider = $4, model = $5, fallback_models = $6, \
-         temperature = $7, max_tokens = $8, api_key_secret_name = $9, pinned = $10, \
-         pinned_model = $11, updated_at = now() \
+         name = COALESCE($3, name), \
+         provider = COALESCE($4, provider), \
+         model = COALESCE($5, model), \
+         fallback_models = COALESCE($6, fallback_models), \
+         temperature = COALESCE($7, temperature), \
+         max_tokens = COALESCE($8, max_tokens), \
+         api_key_secret_name = COALESCE($9, api_key_secret_name), \
+         pinned = COALESCE($10, pinned), \
+         pinned_model = COALESCE($11, pinned_model), \
+         tier1_model = COALESCE($12, tier1_model), \
+         tier2_model = COALESCE($13, tier2_model), \
+         tier3_model = COALESCE($14, tier3_model), \
+         updated_at = now() \
          WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -357,12 +429,15 @@ async fn update(
     .bind(&req.name)
     .bind(&req.provider)
     .bind(&req.model)
-    .bind(sqlx::types::Json(&req.fallback_models))
+    .bind(req.fallback_models.as_ref().map(|f| sqlx::types::Json(f)))
     .bind(req.temperature)
     .bind(req.max_tokens)
     .bind(&req.api_key_secret_name)
     .bind(req.pinned)
     .bind(&req.pinned_model)
+    .bind(&req.tier1_model)
+    .bind(&req.tier2_model)
+    .bind(&req.tier3_model)
     .execute(&state.db)
     .await;
 
@@ -370,7 +445,7 @@ async fn update(
         return db_error("update", e);
     }
     match fetch_config(&state.db, id, user_id).await {
-        Some(cfg) => (StatusCode::OK, Json(cfg)).into_response(),
+        Some(cfg) => ApiResponse::ok(cfg, "LLM config updated successfully").into_response(),
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
     }
 }
@@ -414,7 +489,9 @@ async fn delete_config(
     .execute(&state.db)
     .await;
     match result {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            ApiResponse::ok(json!(null), "LLM config deleted successfully").into_response()
+        }
         Err(e) => db_error("delete", e),
     }
 }
@@ -463,7 +540,9 @@ async fn set_default(
         return db_error("commit", e);
     }
     match fetch_config(&state.db, id, user_id).await {
-        Some(cfg) => (StatusCode::OK, Json(cfg)).into_response(),
+        Some(cfg) => {
+            ApiResponse::ok(cfg, "LLM config set as default successfully").into_response()
+        }
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
     }
 }
@@ -515,25 +594,36 @@ mod tests {
 
     #[test]
     fn accepts_supported_provider() {
-        assert!(validate("anthropic", "claude-3-5-sonnet-20241022", &None).is_ok());
-        assert!(validate("openai", "gpt-4o-mini", &None).is_ok());
+        assert!(validate("anthropic", Some("claude-3-5-sonnet-20241022"), &None, false).is_ok());
+        assert!(validate("openai", Some("gpt-4o-mini"), &None, false).is_ok());
+    }
+
+    #[test]
+    fn accepts_no_model_when_tiers_set() {
+        assert!(validate("anthropic", None, &None, true).is_ok());
+    }
+
+    #[test]
+    fn rejects_no_model_and_no_tiers() {
+        let err = validate("openai", None, &None, false).unwrap_err();
+        assert!(err.contains("either model or at least one tier model"));
     }
 
     #[test]
     fn rejects_unsupported_provider() {
-        let err = validate("cohere", "command-r", &None).unwrap_err();
+        let err = validate("cohere", Some("command-r"), &None, false).unwrap_err();
         assert!(err.contains("unsupported provider"));
     }
 
     #[test]
     fn rejects_empty_model() {
-        let err = validate("openai", "   ", &None).unwrap_err();
+        let err = validate("openai", Some("   "), &None, false).unwrap_err();
         assert!(err.contains("model must not be empty"));
     }
 
     #[test]
     fn rejects_empty_pinned_model() {
-        let err = validate("openai", "gpt-4o", &Some("  ".to_string())).unwrap_err();
+        let err = validate("openai", Some("gpt-4o"), &Some("  ".to_string()), false).unwrap_err();
         assert!(err.contains("pinned_model must not be empty"));
     }
 }

@@ -35,7 +35,8 @@ pub use cache::ConfigCache;
 #[derive(Debug, Clone, Deserialize)]
 pub struct LLMConfig {
     pub provider: String,
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub fallback_models: Vec<String>,
     #[serde(default)]
@@ -53,6 +54,15 @@ pub struct LLMConfig {
     /// i.e. "lock whatever is configured; don't let the router change it".
     #[serde(default)]
     pub pinned_model: Option<String>,
+    /// Per-config tier→model overrides. When set, the smart router uses these instead of
+    /// the global `model_registry` for tier-based routing. `None` = fall through to the
+    /// global registry.
+    #[serde(default)]
+    pub tier1_model: Option<String>,
+    #[serde(default)]
+    pub tier2_model: Option<String>,
+    #[serde(default)]
+    pub tier3_model: Option<String>,
 }
 
 /// The resolved call configuration handed to the provider client.
@@ -73,6 +83,11 @@ pub struct ResolvedConfig {
     /// The compliance-locked model (Level 1), or `None` when the agent isn't pinned. When
     /// `Some`, the router returns it directly and the chat handler disables fallbacks.
     pub pinned_model: Option<String>,
+    /// Per-config tier→model overrides from the user's `llm_configs` row. When set, the
+    /// smart router checks these before the global `model_registry`.
+    pub tier1_model: Option<String>,
+    pub tier2_model: Option<String>,
+    pub tier3_model: Option<String>,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -124,18 +139,21 @@ impl PgRegistry {
 /// A row of the `llm_configs` library, in column order — mapped into [`LLMConfig`].
 type ConfigRow = (
     String,                         // provider
-    String,                         // model
+    Option<String>,                 // model
     sqlx::types::Json<Vec<String>>, // fallback_models (JSONB)
     Option<f64>,                    // temperature
     Option<i64>,                    // max_tokens
     Option<String>,                 // api_key_secret_name
     bool,                           // pinned
     Option<String>,                 // pinned_model
+    Option<String>,                 // tier1_model
+    Option<String>,                 // tier2_model
+    Option<String>,                 // tier3_model
 );
 
 /// The `llm_configs` columns the resolver reads, in [`ConfigRow`] order.
 const CONFIG_COLS: &str = "provider, model, fallback_models, temperature, max_tokens, \
-     api_key_secret_name, pinned, pinned_model";
+     api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model";
 
 fn row_to_config(r: ConfigRow) -> LLMConfig {
     LLMConfig {
@@ -147,6 +165,9 @@ fn row_to_config(r: ConfigRow) -> LLMConfig {
         api_key_secret_name: r.5,
         pinned: r.6,
         pinned_model: r.7,
+        tier1_model: r.8,
+        tier2_model: r.9,
+        tier3_model: r.10,
     }
 }
 
@@ -254,6 +275,9 @@ pub async fn resolve(
         max_tokens: plan.max_tokens,
         has_llm_config,
         pinned_model: plan.pinned_model,
+        tier1_model: plan.tier1_model,
+        tier2_model: plan.tier2_model,
+        tier3_model: plan.tier3_model,
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
@@ -352,6 +376,9 @@ struct ConfigPlan {
     max_tokens: Option<i64>,
     api_key_secret_name: Option<String>,
     pinned_model: Option<String>,
+    tier1_model: Option<String>,
+    tier2_model: Option<String>,
+    tier3_model: Option<String>,
 }
 
 fn plan_config(
@@ -362,18 +389,30 @@ fn plan_config(
     match llm_config {
         Some(c) => {
             // Configured agent: the config is authoritative — the request hint is ignored.
-            // Pinned ⇒ lock to `pinned_model`, or the configured `model` if unspecified.
+            // When `model` is None (user relies on tier routing), pick the first available
+            // tier model as the Level 4/5 fallback so the router always has something.
+            let fallback = c
+                .model
+                .clone()
+                .or_else(|| c.tier2_model.clone())
+                .or_else(|| c.tier1_model.clone())
+                .or_else(|| c.tier3_model.clone())
+                .unwrap_or_else(|| cfg.default_model.clone());
+            // Pinned ⇒ lock to `pinned_model`, or the fallback model if unspecified.
             let pinned_model = c
                 .pinned
-                .then(|| c.pinned_model.clone().unwrap_or_else(|| c.model.clone()));
+                .then(|| c.pinned_model.clone().unwrap_or_else(|| fallback.clone()));
             ConfigPlan {
                 provider: c.provider,
-                model: c.model,
+                model: fallback,
                 fallback_models: c.fallback_models,
                 temperature: c.temperature,
                 max_tokens: c.max_tokens,
                 api_key_secret_name: c.api_key_secret_name,
                 pinned_model,
+                tier1_model: c.tier1_model,
+                tier2_model: c.tier2_model,
+                tier3_model: c.tier3_model,
             }
         }
         // No config: honor what the request asked for (provider from the SDK surface, model
@@ -394,6 +433,9 @@ fn plan_config(
             max_tokens: None,
             api_key_secret_name: None,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
         },
     }
 }
@@ -485,13 +527,16 @@ mod tests {
     fn llm_config(provider: &str, model: &str, secret_name: Option<&str>) -> LLMConfig {
         LLMConfig {
             provider: provider.into(),
-            model: model.into(),
+            model: Some(model.into()),
             fallback_models: vec!["openai/gpt-4o-mini".into()],
             temperature: Some(0.5),
             max_tokens: Some(1024),
             api_key_secret_name: secret_name.map(str::to_string),
             pinned: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
         }
     }
 

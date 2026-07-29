@@ -7,13 +7,15 @@
 //! prices, currency, notes, and the temporal window. No metadata beyond what the DB
 //! already stores is invented here.
 
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde::Serialize;
+use serde_json::json;
 
 use crate::auth::Claims;
+use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -82,7 +84,11 @@ async fn list_providers(State(state): State<AppState>, _claims: Claims) -> impl 
         }
     };
 
-    Json(group_by_provider(rows)).into_response()
+    ApiResponse::ok(
+        json!(group_by_provider(rows)),
+        "Providers retrieved successfully",
+    )
+    .into_response()
 }
 
 /// Collapse provider-ordered rows into per-provider groups. Relies on the query's

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::Claims;
+use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 /// The inbound SDK formats the LLM router can parse — used to validate `inbound_format`.
@@ -20,7 +21,9 @@ const CONFIG_JSON: &str = "json_build_object(\
      'id', id, 'name', name, 'provider', provider, 'model', model, \
      'fallback_models', fallback_models, 'temperature', temperature, \
      'max_tokens', max_tokens, 'api_key_secret_name', api_key_secret_name, \
-     'pinned', pinned, 'pinned_model', pinned_model, 'is_default', is_default)";
+     'pinned', pinned, 'pinned_model', pinned_model, \
+     'tier1_model', tier1_model, 'tier2_model', tier2_model, 'tier3_model', tier3_model, \
+     'is_default', is_default)";
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
@@ -121,17 +124,17 @@ async fn get_llm_config(
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     };
     let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
-    (
-        StatusCode::OK,
-        Json(json!({
+    ApiResponse::ok(
+        json!({
             "agent_id": agent_id,
             "llm_config_id": attached,   // which config is attached (null ⇒ owner default / none)
             "llm_config": config,        // the resolved config the router will use (or null)
             "source": source,            // "attached" | "owner-default" | "none"
             "inbound_format": inbound_format,
-        })),
+        }),
+        "Agent LLM config retrieved successfully",
     )
-        .into_response()
+    .into_response()
 }
 
 // ─── PATCH /{id}/llm-config ───────────────────────────────────────────────────
@@ -254,16 +257,16 @@ async fn update_llm_config(
             .ok()
             .flatten();
     let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
-    (
-        StatusCode::OK,
-        Json(json!({
+    ApiResponse::ok(
+        json!({
             "agent_id": agent_id,
             "llm_config_id": attached,
             "llm_config": config,
             "source": source,
-        })),
+        }),
+        "Agent LLM config updated successfully",
     )
-        .into_response()
+    .into_response()
 }
 
 fn db_error(op: &str, e: sqlx::Error) -> axum::response::Response {

@@ -137,6 +137,9 @@ async fn chat_core(
             fallback_model: &resolved.model,
             has_llm_config: resolved.has_llm_config,
             pinned_model: resolved.pinned_model.as_deref(),
+            tier1_model: resolved.tier1_model.as_deref(),
+            tier2_model: resolved.tier2_model.as_deref(),
+            tier3_model: resolved.tier3_model.as_deref(),
             signals: &signals,
             query: query.as_deref(),
         },
@@ -459,13 +462,16 @@ mod tests {
     fn openai_config() -> LLMConfig {
         LLMConfig {
             provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
+            model: Some("gpt-4o-mini".into()),
             fallback_models: vec![],
             temperature: None,
             max_tokens: None,
             api_key_secret_name: None,
             pinned: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
         }
     }
 
@@ -696,13 +702,16 @@ mod tests {
         let store = Store {
             config: Some(LLMConfig {
                 provider: "cohere".into(),
-                model: "command-r".into(),
+                model: Some("command-r".into()),
                 fallback_models: vec![],
                 temperature: None,
                 max_tokens: None,
                 api_key_secret_name: None,
                 pinned: false,
                 pinned_model: None,
+                tier1_model: None,
+                tier2_model: None,
+                tier3_model: None,
             }),
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
