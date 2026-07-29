@@ -2,8 +2,8 @@
 //!
 //! Two levels: (1) is a connector enabled for this agent at all, (2) per-tool
 //! stance `allow | ask | block` with glob patterns (`*`, `GMAIL_*`,
-//! `GMAIL_SEND_EMAIL`), priority `block > ask > allow`. Default (no row): every
-//! connector enabled, every tool allowed. The [`PermissionContext`] is computed
+//! `GMAIL_SEND_EMAIL`), priority `block > ask > allow`. Default (no row): connector
+//! disabled (default-deny), every tool allowed once the connector is enabled. The [`PermissionContext`] is computed
 //! once per request, Redis-cached, and dropped on any permission write. Its
 //! `hash` feeds the manifest cache key.
 
@@ -444,7 +444,11 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
         // The catalog's cached tool count (catalog::cached_tool_count) would
         // otherwise keep serving whatever it saw before this sync — most
         // commonly a stale `0` — for up to toolcount_ttl_seconds.
-        cache::delete(&state.redis, &crate::catalog::toolcount_cache_key(connector_id)).await;
+        cache::delete(
+            &state.redis,
+            &crate::catalog::toolcount_cache_key(connector_id),
+        )
+        .await;
     }
     Ok(())
 }
