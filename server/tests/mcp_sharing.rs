@@ -1,4 +1,4 @@
-//! Integration tests for v2 connector sharing (`/api/mcp/connectors/{id}/share`)
+//! Integration tests for v2 connector sharing (`/api/mcp/connectors/{id}/grants/*`)
 //! and the audited invariants: revoke cleans up the grantee's connection (fix #2),
 //! deleting an owner is blocked (fix #5), and Layer-1 gates visibility even with a
 //! stale per-agent access row (audited rule #7).
@@ -74,11 +74,22 @@ async fn seed_connection(server: &common::TestServer, user: Uuid, connector: Uui
 }
 
 fn catalog_has(body: &Value, name: &str) -> bool {
-    body["services"]
+    body["data"]["services"]
         .as_array()
         .unwrap()
         .iter()
         .any(|s| s["name"] == name)
+}
+
+async fn seed_agent(server: &common::TestServer, owner: Uuid, name: &str) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO agents (name, owner_id, image, status, is_public) VALUES ($1, $2, 'x:1', 'stopped', false) RETURNING id",
+    )
+    .bind(name)
+    .bind(owner)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -87,7 +98,7 @@ async fn share_by_username_grants_visibility() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let (owner_id, owner_uuid) = create_user(&server, &admin, "shr-owner").await;
-    let (grantee_id, _) = create_user(&server, &admin, "shr-grantee").await;
+    let (grantee_id, grantee_uuid) = create_user(&server, &admin, "shr-grantee").await;
     let cid = seed_connector(&server, owner_uuid, "shared-tool").await;
 
     // Grantee cannot see it yet.
@@ -106,13 +117,12 @@ async fn share_by_username_grants_visibility() {
 
     // Owner shares with the grantee.
     let res = common::as_member(
-        server
-            .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
         &owner_id,
         "shr-owner",
     )
-    .json(&json!({"username": "shr-grantee"}))
     .send()
     .await
     .unwrap();
@@ -148,13 +158,12 @@ async fn only_owner_can_share() {
     let cid = seed_connector(&server, owner_uuid, "owned-tool").await;
 
     let res = common::as_member(
-        server
-            .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{owner_uuid}"
+        ))),
         &other_id,
         "os-other",
     )
-    .json(&json!({"username": "os-owner"}))
     .send()
     .await
     .unwrap();
@@ -175,11 +184,10 @@ async fn public_share_visible_to_everyone() {
     let res = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
         &owner_id,
         "pub-owner",
     )
-    .json(&json!({"public": true}))
     .send()
     .await
     .unwrap();
@@ -215,13 +223,12 @@ async fn revoke_deletes_grantee_connection() {
 
     // Share, then the grantee connects (seed a connection row).
     common::as_member(
-        server
-            .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
         &owner_id,
         "rev-owner",
     )
-    .json(&json!({"username": "rev-grantee"}))
     .send()
     .await
     .unwrap();
@@ -229,17 +236,16 @@ async fn revoke_deletes_grantee_connection() {
 
     // Revoke.
     let res = common::as_member(
-        server
-            .client
-            .delete(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server.client.delete(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
         &owner_id,
         "rev-owner",
     )
-    .json(&json!({"username": "rev-grantee"}))
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
 
     // Fix #2: the grantee's connection row must be gone.
     let conns: i64 = sqlx::query_scalar(
@@ -285,13 +291,12 @@ async fn revoked_grant_denies_despite_stale_access_row() {
 
     // Share, grantee has an agent with an explicit enabled=true access row.
     common::as_member(
-        server
-            .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
         &owner_id,
         "t2-owner",
     )
-    .json(&json!({"username": "t2-grantee"}))
     .send()
     .await
     .unwrap();
@@ -302,8 +307,7 @@ async fn revoked_grant_denies_despite_stale_access_row() {
     .fetch_one(&server.db)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO mcp_agent_connector_access (user_id, agent_id, connector_id, enabled) VALUES ($1, $2, $3, true)")
-        .bind(grantee_uuid)
+    sqlx::query("INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled) VALUES ($1, $2, true)")
         .bind(agent_id)
         .bind(cid)
         .execute(&server.db)
@@ -312,13 +316,12 @@ async fn revoked_grant_denies_despite_stale_access_row() {
 
     // Revoke the grant.
     common::as_member(
-        server
-            .client
-            .delete(server.url(&format!("/api/mcp/connectors/{cid}/share"))),
+        server.client.delete(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
         &owner_id,
         "t2-owner",
     )
-    .json(&json!({"username": "t2-grantee"}))
     .send()
     .await
     .unwrap();
@@ -381,6 +384,655 @@ async fn deleting_owner_is_restricted_not_cascaded() {
     assert_eq!(
         survived, 1,
         "the connector must survive the blocked owner deletion"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn list_shares_includes_granted_by() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "gb-owner").await;
+    let owner_uuid_str = owner_uuid.to_string();
+    let (_grantee_id, grantee_uuid) = create_user(&server, &admin, "gb-grantee").await;
+    let cid = seed_connector(&server, owner_uuid, "gb-tool").await;
+
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
+        &owner_id,
+        "gb-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let body: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/grants"))),
+        &owner_id,
+        "gb-owner",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let grants = body["data"]["grants"].as_array().unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(
+        grants[0]["granted_by"], owner_uuid_str,
+        "the grant response must include who created it: {grants:?}"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn list_shares_access_reasons_cover_owner_and_direct_grant_not_public() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "ar-owner").await;
+    let (_grantee_id, grantee_uuid) = create_user(&server, &admin, "ar-grantee").await;
+    let (_stranger_id, _) = create_user(&server, &admin, "ar-stranger").await;
+    let cid = seed_connector(&server, owner_uuid, "ar-tool").await;
+
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
+        &owner_id,
+        "ar-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let body: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/grants"))),
+        &owner_id,
+        "ar-owner",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(body["data"]["is_public"], false);
+    let reasons = body["data"]["access_reasons"].as_array().unwrap();
+    assert_eq!(
+        reasons.len(),
+        2,
+        "owner + one direct grantee, no public row: {reasons:?}"
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r["user_id"] == owner_uuid.to_string() && r["via"] == "owner")
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r["user_id"] == grantee_uuid.to_string() && r["via"] == "direct")
+    );
+
+    // Make it public too — access_reasons must stay exactly the same two
+    // people (public is a flag, not a third "everyone" reason).
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
+        &owner_id,
+        "ar-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let body: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/grants"))),
+        &owner_id,
+        "ar-owner",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(body["data"]["is_public"], true);
+    assert_eq!(
+        body["data"]["access_reasons"].as_array().unwrap().len(),
+        2,
+        "public must not add a per-person reason row"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn share_target_search_works_for_any_authenticated_user_and_validates_query() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    // Not an admin/superuser — proves the endpoint isn't admin-gated like the
+    // platform's general `/users?q=` directory.
+    let (caller_id, _) = create_user(&server, &admin, "sts-caller").await;
+    create_user(&server, &admin, "sts-target-alice").await;
+    create_user(&server, &admin, "sts-target-bob").await;
+    create_user(&server, &admin, "sts-other").await;
+
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url("/api/mcp/share-targets?q=sts-target")),
+        &caller_id,
+        "sts-caller",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let names: Vec<&str> = body["data"]["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["username"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"sts-target-alice"), "{names:?}");
+    assert!(names.contains(&"sts-target-bob"), "{names:?}");
+    assert!(
+        !names.contains(&"sts-other"),
+        "must not match an unrelated username: {names:?}"
+    );
+
+    // A soft-deleted user must never surface as a share target.
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE username = $1")
+        .bind("sts-target-bob")
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url("/api/mcp/share-targets?q=sts-target")),
+        &caller_id,
+        "sts-caller",
+    )
+    .send()
+    .await
+    .unwrap();
+    let body: Value = res.json().await.unwrap();
+    let names: Vec<&str> = body["data"]["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["username"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"sts-target-alice"),
+        "live user still matches: {names:?}"
+    );
+    assert!(
+        !names.contains(&"sts-target-bob"),
+        "soft-deleted user must be excluded: {names:?}"
+    );
+
+    // Query too short is rejected (prevents a full-directory dump via q=).
+    let res = common::as_member(
+        server.client.get(server.url("/api/mcp/share-targets?q=s")),
+        &caller_id,
+        "sts-caller",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400);
+
+    server.cleanup().await;
+}
+
+/// Configure `agent`'s override row for `cid` (as `member`), which is what makes
+/// an agent a "consumer" of the connector.
+async fn configure_agent_connector(
+    server: &common::TestServer,
+    member_id: &str,
+    member_name: &str,
+    agent: Uuid,
+    cid: Uuid,
+) {
+    let res = common::as_member(
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent}/connectors/{cid}"))),
+        member_id,
+        member_name,
+    )
+    .json(&json!({"enabled": false}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "configure {member_name}'s agent for the connector"
+    );
+}
+
+/// Consumers = agents that have actually CONFIGURED this connector (have an
+/// override row), regardless of how the owner reaches it. Crucially this stays
+/// correct for a PUBLIC connector: a public-only user's configured agent still
+/// appears (regression guard for the access_reasons-driven gap).
+#[tokio::test]
+#[serial]
+async fn consumers_lists_only_agents_that_configured_the_connector() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "cons-owner").await;
+    let (grantee_id, grantee_uuid) = create_user(&server, &admin, "cons-grantee").await;
+    let (_stranger_id, stranger_uuid) = create_user(&server, &admin, "cons-stranger").await;
+    let (public_id, public_uuid) = create_user(&server, &admin, "cons-public").await;
+
+    let cid = seed_connector(&server, owner_uuid, "cons-tool").await;
+    let owner_agent = seed_agent(&server, owner_uuid, "cons-owner-agent").await;
+    let grantee_agent = seed_agent(&server, grantee_uuid, "cons-grantee-agent").await;
+    let _stranger_agent = seed_agent(&server, stranger_uuid, "cons-stranger-agent").await;
+    let public_agent = seed_agent(&server, public_uuid, "cons-public-agent").await;
+
+    // Owner configures their own agent → a consumer.
+    configure_agent_connector(&server, &owner_id, "cons-owner", owner_agent, cid).await;
+
+    // Share directly with the grantee, who then configures their agent.
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
+        &owner_id,
+        "cons-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+    configure_agent_connector(&server, &grantee_id, "cons-grantee", grantee_agent, cid).await;
+
+    // Make the connector public; a public-ONLY user (no direct grant) configures
+    // their agent — this is the case the old access_reasons path silently dropped.
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
+        &owner_id,
+        "cons-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+    configure_agent_connector(&server, &public_id, "cons-public", public_agent, cid).await;
+
+    let body: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/consumers"))),
+        &owner_id,
+        "cons-owner",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    let agent_ids: Vec<&str> = body["data"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["agent_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        agent_ids.contains(&owner_agent.to_string().as_str()),
+        "{agent_ids:?}"
+    );
+    assert!(
+        agent_ids.contains(&grantee_agent.to_string().as_str()),
+        "{agent_ids:?}"
+    );
+    assert!(
+        agent_ids.contains(&public_agent.to_string().as_str()),
+        "public-only user's configured agent must appear: {agent_ids:?}"
+    );
+    assert_eq!(
+        agent_ids.len(),
+        3,
+        "the unconfigured stranger agent must not appear: {agent_ids:?}"
+    );
+
+    // Direct-user grant (the "cons-grantee" share above) shows up as a consumer;
+    // the public flag does NOT synthesize a "users" row (that's `is_public` on
+    // the share endpoint, not a specific consumer here).
+    let usernames: Vec<&str> = body["data"]["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["username"].as_str().unwrap())
+        .collect();
+    assert_eq!(usernames, vec!["cons-grantee"], "{usernames:?}");
+
+    // OSS has no team/department concept — always empty via the authorizer seam.
+    assert_eq!(body["data"]["teams"].as_array().unwrap().len(), 0);
+    assert_eq!(body["data"]["departments"].as_array().unwrap().len(), 0);
+
+    // A non-owner, non-admin caller must not be able to view consumers.
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{cid}/consumers"))),
+        &grantee_id,
+        "cons-grantee",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 403);
+
+    server.cleanup().await;
+}
+
+/// Sharing a connector directly with an AGENT (grant_type="agent") lets
+/// whoever manages that agent configure it, even with zero personal
+/// reachability to the connector otherwise — the gap this closes vs. the
+/// existing user/team/department grant kinds. Covers the full lifecycle:
+/// invisible before the grant, visible + configurable after, gone after
+/// revoke, and a true stranger (zero reachability to the connector) may not
+/// grant it. (Someone who merely has *some* reachability to the connector —
+/// e.g. a user-share — but doesn't own it CAN grant-agent; see
+/// [`connector_reachable_non_owner_can_grant_agent`] for that case.)
+#[tokio::test]
+#[serial]
+async fn agent_grant_lets_owner_configure_connector_without_personal_reachability() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "ag-owner").await;
+    let (agent_owner_id, agent_owner_uuid) = create_user(&server, &admin, "ag-agent-owner").await;
+    let (stranger_id, _stranger_uuid) = create_user(&server, &admin, "ag-stranger").await;
+
+    let cid = seed_connector(&server, owner_uuid, "ag-tool").await;
+    let agent_id = seed_agent(&server, agent_owner_uuid, "ag-agent").await;
+
+    // Before any grant: agent_owner has no reachability at all, so the
+    // connector doesn't show up in their agent's connector list...
+    let before: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &agent_owner_id,
+        "ag-agent-owner",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        !before["data"]["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["connector_id"] == cid.to_string()),
+        "connector must not be visible before any grant: {before:?}"
+    );
+    // ...and trying to configure it outright fails.
+    let res = common::as_member(
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        &agent_owner_id,
+        "ag-agent-owner",
+    )
+    .json(&json!({"enabled": true}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        404,
+        "no reachability yet, configure must fail"
+    );
+
+    // A true stranger (zero reachability to the connector — not owner, not
+    // admin, not shared with) cannot grant it to the agent. 404, not 403 —
+    // matching every other Layer-1 reachability check in this file, which
+    // hide existence rather than confirm it to someone with no access at all.
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
+        ))),
+        &stranger_id,
+        "ag-stranger",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        404,
+        "a caller with zero reachability to the connector may not grant it"
+    );
+
+    // A nonexistent agent id is rejected, not silently accepted.
+    let bogus_agent = Uuid::new_v4();
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/agents/{bogus_agent}"
+        ))),
+        &owner_id,
+        "ag-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 404, "nonexistent agent id must be rejected");
+
+    // Owner grants the connector directly to the agent.
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
+        ))),
+        &owner_id,
+        "ag-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        201,
+        "owner sharing with the agent should succeed"
+    );
+
+    // Now it's visible in the agent's connector list...
+    let after: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &agent_owner_id,
+        "ag-agent-owner",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        after["data"]["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["connector_id"] == cid.to_string()),
+        "connector must be visible after the agent grant: {after:?}"
+    );
+    // ...and the agent's own owner can now configure it, despite having no
+    // personal grant on the connector themselves.
+    let res = common::as_member(
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        &agent_owner_id,
+        "ag-agent-owner",
+    )
+    .json(&json!({"enabled": true}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "agent grant should unlock configuring it"
+    );
+
+    // Revoke: owner removes the agent grant.
+    let res = common::as_member(
+        server.client.delete(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
+        ))),
+        &owner_id,
+        "ag-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "owner revoking the agent grant should succeed"
+    );
+
+    // Revoking twice reports "no matching share to revoke" (not idempotent-success).
+    let res = common::as_member(
+        server.client.delete(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
+        ))),
+        &owner_id,
+        "ag-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        404,
+        "revoking an already-revoked grant must not silently succeed"
+    );
+
+    server.cleanup().await;
+}
+
+/// A caller who does NOT own a connector, but has been given reachability to
+/// it via a plain user-share, can still grant it directly to an agent (theirs
+/// or someone else's) — attaching a connector you can already use to an agent
+/// is a narrower act than sharing it with a new person, so it's gated by
+/// reachability, not ownership. It's still off by default: the grant alone
+/// doesn't enable it, and revoking works the same way.
+#[tokio::test]
+#[serial]
+async fn connector_reachable_non_owner_can_grant_agent() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "rg-owner").await;
+    let (sharee_id, sharee_uuid) = create_user(&server, &admin, "rg-sharee").await;
+
+    let cid = seed_connector(&server, owner_uuid, "rg-tool").await;
+    let agent_id = seed_agent(&server, sharee_uuid, "rg-agent").await;
+
+    // Owner shares the connector with the sharee (a plain user-grant — not
+    // ownership).
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{sharee_uuid}"
+        ))),
+        &owner_id,
+        "rg-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    // The sharee doesn't own the connector, but can still grant it to their
+    // own agent.
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
+        ))),
+        &sharee_id,
+        "rg-sharee",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        201,
+        "a non-owner with reachability to the connector should be able to grant it to an agent"
+    );
+
+    // The grant alone doesn't enable it — still needs an explicit enable.
+    let after: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &sharee_id,
+        "rg-sharee",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        after["data"]["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["connector_id"] == cid.to_string()),
+        "connector must be visible after the agent grant: {after:?}"
+    );
+
+    // The same non-owner sharee can also revoke the grant they made.
+    let res = common::as_member(
+        server.client.delete(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
+        ))),
+        &sharee_id,
+        "rg-sharee",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "a non-owner with reachability should also be able to revoke their own agent grant"
     );
 
     server.cleanup().await;

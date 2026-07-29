@@ -708,9 +708,49 @@ async fn owned_shareable(
     Ok(connector)
 }
 
+/// Load a connector and confirm `caller` can at least reach it (Layer 1:
+/// owner, composio, user/public grant — EE additionally: team/department).
+/// Used only for the "agent" grant kind: attaching a connector you can
+/// already use yourself to an agent is a much narrower act than sharing it
+/// with a new person/team/department (which stays owner-only via
+/// [`owned_shareable`]) — it only makes the connector reachable *from* that
+/// agent, exactly as if the agent's own owner had used `connect` to reach
+/// the same connector. The agent's owner (or, per the agent-scoped
+/// permission fix, the connector's own owner) still has to separately
+/// `agent-tools enable` it before it does anything — this only creates the
+/// grant, never turns it on.
+async fn reachable_shareable(
+    state: &McpState,
+    caller: Uuid,
+    is_admin: bool,
+    connector_id: Uuid,
+) -> Result<McpConnector> {
+    let connector = repo::get_connector_by_id(&state.db, connector_id)
+        .await?
+        .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
+    if !connector.is_mcp_server() {
+        return Err(McpError::BadRequest(
+            "only custom MCP connectors can be shared".into(),
+        ));
+    }
+    if !is_admin
+        && !state
+            .authorizer
+            .can_access_connector(&state.db, caller, connector_id)
+            .await?
+    {
+        return Err(McpError::NotFound(format!(
+            "connector '{connector_id}' not found"
+        )));
+    }
+    Ok(connector)
+}
+
 /// Owner/admin-gated grant write, generic over `grant_type`/`grantee_id` (raw
 /// strings) so an edition can add grant kinds without this crate knowing them.
 /// `grantee_id` must already be resolved (a target id, or '*' for public).
+/// The "agent" kind is the one exception to "owner/admin-gated" — see
+/// [`reachable_shareable`].
 pub async fn create_share_grant(
     state: &McpState,
     caller: Uuid,
@@ -719,7 +759,11 @@ pub async fn create_share_grant(
     grant_type: &str,
     grantee_id: &str,
 ) -> Result<Value> {
-    let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
+    let connector = if grant_type == "agent" {
+        reachable_shareable(state, caller, is_admin, connector_id).await?
+    } else {
+        owned_shareable(state, caller, is_admin, connector_id).await?
+    };
     let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
     // When granting an agent, also create the access row so the agent
     // appears in consumers and gets tool access immediately.
@@ -738,7 +782,8 @@ pub async fn create_share_grant(
 /// connection (fix #2), then drops affected permission caches. Generic over
 /// `grant_type`/`grantee_id`. Invalidates every pair referencing the connector
 /// (a safe superset — covers multi-user grant kinds without resolving members;
-/// access itself is a live DB read, so this only keeps caches fresh).
+/// access itself is a live DB read, so this only keeps caches fresh). Same
+/// "agent" exception as [`create_share_grant`] — see [`reachable_shareable`].
 pub async fn revoke_share_grant(
     state: &McpState,
     caller: Uuid,
@@ -747,7 +792,11 @@ pub async fn revoke_share_grant(
     grant_type: &str,
     grantee_id: &str,
 ) -> Result<()> {
-    let connector = owned_shareable(state, caller, is_admin, connector_id).await?;
+    let connector = if grant_type == "agent" {
+        reachable_shareable(state, caller, is_admin, connector_id).await?
+    } else {
+        owned_shareable(state, caller, is_admin, connector_id).await?
+    };
     let removed =
         repo::revoke_grant_and_connection(&state.db, connector.id, grant_type, grantee_id).await?;
     if !removed {
