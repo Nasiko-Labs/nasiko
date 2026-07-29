@@ -636,15 +636,15 @@ impl ObservabilityService {
         }
     }
 
-    /// Returns Vec<(id, name, display_name)> for all agents in the DB. `name`
+    /// Returns Vec<(id, name, display_name, version)> for all agents in the DB. `name`
     /// doubles as the Tempo `service.name` (the injector sets OTEL_SERVICE_NAME
     /// to the agent name); `id` is the UUID reported to callers.
     /// OSS: returns all agents (NoopAuthorizer). EE adds RBAC at a higher layer.
     async fn get_agent_names(
         &self,
-    ) -> Result<Vec<(uuid::Uuid, String, String)>, ObservabilityError> {
-        sqlx::query_as::<_, (uuid::Uuid, String, String)>(
-            "SELECT id, name, COALESCE(display_name, name) FROM agents ORDER BY name",
+    ) -> Result<Vec<(uuid::Uuid, String, String, String)>, ObservabilityError> {
+        sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
+            "SELECT id, name, COALESCE(display_name, name), version FROM agents ORDER BY name",
         )
         .fetch_all(&self.db)
         .await
@@ -701,7 +701,7 @@ impl ObservabilityService {
         let total = agents.len();
         let agent_name_by_id: std::collections::HashMap<uuid::Uuid, String> = agents
             .into_iter()
-            .map(|(id, name, _display)| (id, name))
+            .map(|(id, name, _display, _version)| (id, name))
             .collect();
 
         // 3. Enrich each DB session from Tempo (by session_id). For agents
@@ -1156,7 +1156,7 @@ impl ObservabilityService {
         let mut total_ops_24h = 0usize;
         let mut active = 0usize;
 
-        for (agent_uuid, agent_name, display_name) in &agents {
+        for (agent_uuid, agent_name, display_name, version) in &agents {
             let finops = self
                 .provider
                 .agent_finops(agent_name, start, now)
@@ -1197,7 +1197,7 @@ impl ObservabilityService {
                 completion_tokens: finops.output_tokens,
                 total_tokens: finops.input_tokens + finops.output_tokens,
                 avg_latency_ms: finops.latency_ms_p50,
-                version: None,
+                version: Some(version.to_string()),
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
             });
         }
