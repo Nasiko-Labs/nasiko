@@ -128,6 +128,13 @@ pub async fn connect_service(
 
 /// Auto-grant all of `user_id`'s non-deleted agents access to `connector_id`.
 /// Best-effort: failures are logged, never block the connect response.
+///
+/// Preserves any existing enabled/tool_rules state per agent — this runs on
+/// every successful `connect` (including reconnecting/refreshing credentials
+/// on an already-connected connector), so it must not silently re-enable a
+/// connector someone disabled for one of their agents, or wipe block/ask
+/// rules they'd configured. Only a genuinely first-time grant (no existing
+/// row for that agent) gets the enabled-by-default, no-rules starting state.
 pub async fn grant_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connector_id: Uuid) {
     let agent_ids: Vec<Uuid> = match sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
@@ -142,11 +149,17 @@ pub async fn grant_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connecto
             return;
         }
     };
-    let empty_rules = serde_json::json!([]);
     for agent_id in agent_ids {
+        let existing = repo::get_agent_connector_access_row(db, agent_id, connector_id)
+            .await
+            .ok()
+            .flatten();
+        let enabled = existing.as_ref().map(|r| r.enabled).unwrap_or(true);
+        let tool_rules = existing
+            .map(|r| r.tool_rules)
+            .unwrap_or_else(|| serde_json::json!([]));
         if let Err(e) =
-            repo::upsert_agent_connector_access(db, agent_id, connector_id, true, &empty_rules)
-                .await
+            repo::upsert_agent_connector_access(db, agent_id, connector_id, enabled, &tool_rules).await
         {
             tracing::warn!(%agent_id, %connector_id, %e, "failed to auto-grant agent connector access");
         }

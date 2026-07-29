@@ -226,7 +226,9 @@ pub async fn register_connector(
 
     // For basic auth, precompute the Authorization: Basic header into static headers.
     let mut headers = input.headers.clone().unwrap_or_default();
-    let basic_ready = input.auth_type == "basic" && input.basic_username.is_some() && input.basic_password.is_some();
+    let basic_ready = input.auth_type == "basic"
+        && input.basic_username.is_some()
+        && input.basic_password.is_some();
     if input.auth_type == "basic"
         && let (Some(u), Some(p)) = (&input.basic_username, &input.basic_password)
     {
@@ -266,9 +268,10 @@ pub async fn register_connector(
     // support Dynamic Client Registration, e.g. Notion), persist it now so
     // the connect flow can skip DCR entirely.
     if let Some(ref cid) = input.oauth_client_id {
-        let secret_enc = input.oauth_client_secret.as_deref().map(|s| {
-            nasiko_secrets::SecretsCrypto::for_user(owner_id).encrypt(s)
-        }).transpose().map_err(|e| McpError::Internal(format!("encrypt oauth secret: {e}")))?;
+        let secret_enc = input
+            .oauth_client_secret
+            .as_deref()
+            .map(|s| nasiko_secrets::SecretsCrypto::for_user(owner_id).encrypt(s));
         sqlx::query(
             "UPDATE mcp_connectors SET oauth_client_id = $2, oauth_client_secret = $3 WHERE id = $1",
         )
@@ -284,11 +287,21 @@ pub async fn register_connector(
     // actually works instead of leaving it marked `pending` indefinitely.
     let (final_status, final_error) = if basic_ready {
         let outcome = crate::credentials::verify_connector_live(state, owner_id, &connector).await;
-        if outcome.verified { ("active".to_string(), None) } else { ("failed".to_string(), outcome.error) }
+        if outcome.verified {
+            ("active".to_string(), None)
+        } else {
+            ("failed".to_string(), outcome.error)
+        }
     } else {
         (initial_setup_status.to_string(), None)
     };
-    repo::set_connector_setup_status(&state.db, connector.id, &final_status, final_error.as_deref()).await?;
+    repo::set_connector_setup_status(
+        &state.db,
+        connector.id,
+        &final_status,
+        final_error.as_deref(),
+    )
+    .await?;
     tracing::info!(name = %connector.name, %owner_id, setup_status = %final_status, "registered mcp connector");
     Ok(McpConnector {
         setup_status: Some(final_status),
@@ -470,15 +483,13 @@ pub async fn list_connectors_view(state: &McpState, user_id: Uuid) -> Result<Val
     let owner_names: HashMap<Uuid, String> = if owner_ids.is_empty() {
         HashMap::new()
     } else {
-        sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, username FROM users WHERE id = ANY($1)",
-        )
-        .bind(&owner_ids)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
+        sqlx::query_as::<_, (Uuid, String)>("SELECT id, username FROM users WHERE id = ANY($1)")
+            .bind(&owner_ids)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
     };
 
     let mut created_by_you = Vec::new();
@@ -532,7 +543,9 @@ pub async fn get_connector_view(
     dto["is_owner"] = json!(connector.owner_id == Some(user_id));
 
     // Tools — full list with names and descriptions.
-    let tools = repo::list_connector_tools(&state.db, connector_id).await.unwrap_or_default();
+    let tools = repo::list_connector_tools(&state.db, connector_id)
+        .await
+        .unwrap_or_default();
     let tools_json: Vec<Value> = tools
         .iter()
         .map(|t| json!({ "name": t.tool_name, "description": t.description }))
@@ -541,13 +554,12 @@ pub async fn get_connector_view(
     dto["tool_count"] = json!(tools.len());
 
     // Connection count
-    let connection_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mcp_user_connections WHERE connector_id = $1",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let connection_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM mcp_user_connections WHERE connector_id = $1")
+            .bind(connector_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
     dto["connection_count"] = json!(connection_count);
 
     // Is public
@@ -562,20 +574,23 @@ pub async fn get_connector_view(
 
     // Upload info — build status, version, image tag, error (uploaded builds only).
     if connector.source_kind == repo::SourceKind::UploadedBuild {
-        type BuildRow = (Option<String>, Option<String>, Option<String>, Option<String>);
-        let build_row: Option<BuildRow> =
-            sqlx::query_as(
-                "SELECT version_tag, image_tag, status, error_msg \
+        type BuildRow = (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let build_row: Option<BuildRow> = sqlx::query_as(
+            "SELECT version_tag, image_tag, status, error_msg \
                  FROM mcp_connector_builds WHERE connector_id = $1 \
                  ORDER BY created_at DESC LIMIT 1",
-            )
-            .bind(connector_id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
-        let (version, image_tag, _build_row_status, error_msg) =
-            build_row.unwrap_or_default();
+        )
+        .bind(connector_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        let (version, image_tag, _build_row_status, error_msg) = build_row.unwrap_or_default();
         dto["upload_info"] = json!({
             "upload_type": connector.source_kind,
             "build_status": connector.build_status,
@@ -587,14 +602,13 @@ pub async fn get_connector_view(
 
     // Owner username
     if let Some(owner_id) = connector.owner_id {
-        let owner_name: Option<String> = sqlx::query_scalar(
-            "SELECT username FROM users WHERE id = $1",
-        )
-        .bind(owner_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
+        let owner_name: Option<String> =
+            sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+                .bind(owner_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
         dto["owner_username"] = json!(owner_name);
     }
 
@@ -708,11 +722,25 @@ async fn owned_shareable(
     Ok(connector)
 }
 
-/// Load a connector and confirm `caller` can at least reach it (Layer 1:
-/// owner, composio, user/public grant — EE additionally: team/department).
+/// Load a connector and confirm `caller` may attach it to `agent_id`.
+///
+/// Two distinct rights, not one: the connector's own owner (or admin) may
+/// attach it to ANY agent, unrestricted — this is the original, pre-existing
+/// behavior ("push my connector wherever I like"), left untouched. Anyone
+/// else who merely has Layer-1 reachability to the connector (owner,
+/// composio, user/public grant — EE additionally: team/department) — someone
+/// it was merely *shared* with, not its owner — may only attach it to an
+/// agent they themselves manage (own, or admin). Without this second half, a
+/// connector reachable via a PUBLIC grant (reachable by literally every
+/// user) could be pushed onto a total stranger's agent by anyone, with zero
+/// relationship to that agent at all — being able to merely USE an agent
+/// (it's public, or invoke-shared to you) does not count here; only actually
+/// managing it does, the same distinction `can_access_agent` vs
+/// `can_manage_agent` already draws elsewhere in this codebase.
+///
 /// Used only for the "agent" grant kind: attaching a connector you can
-/// already use yourself to an agent is a much narrower act than sharing it
-/// with a new person/team/department (which stays owner-only via
+/// already use yourself to an agent you manage is a much narrower act than
+/// sharing it with a new person/team/department (which stays owner-only via
 /// [`owned_shareable`]) — it only makes the connector reachable *from* that
 /// agent, exactly as if the agent's own owner had used `connect` to reach
 /// the same connector. The agent's owner (or, per the agent-scoped
@@ -724,6 +752,7 @@ async fn reachable_shareable(
     caller: Uuid,
     is_admin: bool,
     connector_id: Uuid,
+    agent_id: Uuid,
 ) -> Result<McpConnector> {
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
@@ -733,15 +762,30 @@ async fn reachable_shareable(
             "only custom MCP connectors can be shared".into(),
         ));
     }
-    if !is_admin
-        && !state
-            .authorizer
-            .can_access_connector(&state.db, caller, connector_id)
-            .await?
+    if is_admin || connector.owner_id == Some(caller) {
+        return Ok(connector);
+    }
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, caller, connector_id)
+        .await?
     {
         return Err(McpError::NotFound(format!(
             "connector '{connector_id}' not found"
         )));
+    }
+    let manages_agent: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL)",
+    )
+    .bind(agent_id)
+    .bind(caller)
+    .fetch_one(&state.db)
+    .await
+    .map_err(McpError::Database)?;
+    if !manages_agent {
+        return Err(McpError::Forbidden(
+            "you must manage the target agent to attach a connector you don't own".into(),
+        ));
     }
     Ok(connector)
 }
@@ -760,19 +804,33 @@ pub async fn create_share_grant(
     grantee_id: &str,
 ) -> Result<Value> {
     let connector = if grant_type == "agent" {
-        reachable_shareable(state, caller, is_admin, connector_id).await?
+        let agent_id = Uuid::parse_str(grantee_id)
+            .map_err(|_| McpError::BadRequest("invalid agent id".into()))?;
+        reachable_shareable(state, caller, is_admin, connector_id, agent_id).await?
     } else {
         owned_shareable(state, caller, is_admin, connector_id).await?
     };
     let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
     // When granting an agent, also create the access row so the agent
-    // appears in consumers and gets tool access immediately.
+    // appears in consumers and gets tool access immediately. Preserve any
+    // existing enabled/tool_rules state for this (agent, connector) pair —
+    // a repeat grant (this is an upsert; `create_grant` above never errors on
+    // one) must not silently re-enable a connector someone disabled, or wipe
+    // block/ask rules they configured. Only a genuinely first-time grant
+    // (no existing row) gets the enabled-by-default, no-rules starting state.
     if grant_type == "agent"
         && let Ok(agent_id) = Uuid::parse_str(grantee_id)
     {
-        let _ = repo::upsert_agent_connector_access(
-            &state.db, agent_id, connector.id, true, &serde_json::json!([]),
-        ).await;
+        let existing = repo::get_agent_connector_access_row(&state.db, agent_id, connector.id)
+            .await
+            .ok()
+            .flatten();
+        let enabled = existing.as_ref().map(|r| r.enabled).unwrap_or(true);
+        let tool_rules = existing
+            .map(|r| r.tool_rules)
+            .unwrap_or_else(|| serde_json::json!([]));
+        let _ = repo::upsert_agent_connector_access(&state.db, agent_id, connector.id, enabled, &tool_rules)
+            .await;
     }
     tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "shared connector");
     Ok(json!({ "id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
@@ -793,7 +851,9 @@ pub async fn revoke_share_grant(
     grantee_id: &str,
 ) -> Result<()> {
     let connector = if grant_type == "agent" {
-        reachable_shareable(state, caller, is_admin, connector_id).await?
+        let agent_id = Uuid::parse_str(grantee_id)
+            .map_err(|_| McpError::BadRequest("invalid agent id".into()))?;
+        reachable_shareable(state, caller, is_admin, connector_id, agent_id).await?
     } else {
         owned_shareable(state, caller, is_admin, connector_id).await?
     };
@@ -968,13 +1028,12 @@ pub async fn list_consumers_view(
     let agents = repo::list_configured_agent_consumers(&state.db, connector.id).await?;
 
     // Total tools for this connector (for "X of Y" display).
-    let total_tools: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let total_tools: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1")
+            .bind(connector_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
     let agents_json: Vec<Value> = agents
         .into_iter()
@@ -1030,7 +1089,9 @@ pub async fn list_consumers_view(
         .filter_map(|g| {
             let user_id = Uuid::parse_str(&g.grantee_id).ok()?;
             let (username, display_name) = labels.get(&user_id)?;
-            let granted_by_name = g.granted_by.and_then(|id| labels.get(&id).map(|(u, _)| u.clone()));
+            let granted_by_name = g
+                .granted_by
+                .and_then(|id| labels.get(&id).map(|(u, _)| u.clone()));
             Some(json!({
                 "user_id": user_id,
                 "username": username,
