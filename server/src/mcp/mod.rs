@@ -121,6 +121,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/mcp/share-targets", get(handlers::sharing::search_targets))
         .route(
+            "/mcp/share-targets/resolve",
+            get(handlers::sharing::resolve_target),
+        )
+        .route(
             "/mcp/connectors/{id}/consumers",
             get(handlers::sharing::consumers),
         )

@@ -487,21 +487,24 @@ fn share_target_label(user: Option<&str>, public: bool) -> String {
     if public { "everyone".to_string() } else { user.unwrap_or("?").to_string() }
 }
 
-/// Resolve a username to a user ID via `GET /mcp/share-targets?q=`, since
-/// grants are now keyed by user ID, not username. Requires an exact,
-/// unambiguous username match.
+/// Resolve a username to a user ID via `GET /mcp/share-targets/resolve?username=`,
+/// since grants are keyed by user ID, not username. Exact match, and
+/// deliberately NOT scoped to the caller's own team/department — unlike
+/// `share_targets` below (the browse/search command), sharing itself only
+/// requires connector ownership server-side, so this can target anyone on
+/// the platform by their exact username, not just people the caller could
+/// find via `share-targets`.
 fn resolve_username_to_user_id(client: &Client, username: &str) -> Result<String> {
     let encoded: String = username
         .chars()
         .flat_map(|c| if c.is_alphanumeric() || "-_.~".contains(c) { vec![c] } else { format!("%{:02X}", c as u32).chars().collect() })
         .collect();
-    let resp: Value = client.get_json(&format!("/mcp/share-targets?q={encoded}"))?;
-    let users = resp.get("data").and_then(|v| v.get("users")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let matches: Vec<&Value> = users.iter().filter(|u| s(u, "username") == username).collect();
-    match matches.as_slice() {
-        [one] => Ok(s(one, "user_id").to_string()),
-        [] => bail!("no user found with username '{username}'"),
-        _ => bail!("username '{username}' matched more than one user"),
+    let resp: Value = client.get_json(&format!("/mcp/share-targets/resolve?username={encoded}"))?;
+    let data = resp.get("data").cloned().unwrap_or(Value::Null);
+    let user_id = data.get("user_id").and_then(|v| v.as_str());
+    match user_id {
+        Some(id) => Ok(id.to_string()),
+        None => bail!("no user found with username '{username}'"),
     }
 }
 
