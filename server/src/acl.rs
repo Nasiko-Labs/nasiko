@@ -63,15 +63,23 @@ pub async fn can_manage_agent(
 
 /// True if the caller can manage `connector_id`'s per-agent state on
 /// `agent_id` — either full agent management ([`can_manage_agent`]), or the
-/// caller owns `connector_id` AND it has already been granted directly to
-/// this agent (`grant_type = 'agent'`, see `connector grant-agent`).
+/// caller can reach `connector_id` at all (Layer 1: owner, composio,
+/// user/public grant — EE additionally: team/department) AND it has already
+/// been granted directly to this agent (`grant_type = 'agent'`, see
+/// `connector grant-agent`).
 ///
-/// This lets a connector owner enable/disable/configure their OWN connector
-/// on someone else's agent once it's been shared with that agent, without
-/// granting them any control over the agent's other connectors or its
+/// This lets anyone with reachability to a connector — its owner, or someone
+/// it was merely shared with — enable/disable/configure it on ANY agent
+/// (theirs, shared to them, or with no relationship to them at all) once
+/// it's been granted to that agent, mirroring [`reachable_shareable`]'s same
+/// relaxation for the grant itself (`oss/mcp-gateway/src/connectors.rs`) —
+/// attaching/using a connector you can already reach is narrower than
+/// sharing it with someone new, so it's gated by reachability, not
+/// ownership. It grants no control over the agent's other connectors or its
 /// agent-wide settings (reset, full connector/rule listing stay
-/// [`can_manage_agent`]-only). Sharing a connector *to yourself* (a user- or
-/// public-share) does not qualify — only the actual owner gets this right.
+/// [`can_manage_agent`]-only).
+///
+/// [`reachable_shareable`]: nasiko_mcp_gateway::connectors
 pub async fn can_manage_agent_connector(
     state: &crate::state::AppState,
     claims: &crate::auth::Claims,
@@ -84,11 +92,13 @@ pub async fn can_manage_agent_connector(
     let Ok(user_id) = claims.user_uuid() else {
         return false;
     };
-    let owns_connector =
-        nasiko_mcp_gateway::repo::is_connector_owner(&state.db, user_id, connector_id)
-            .await
-            .unwrap_or(false);
-    if !owns_connector {
+    let can_reach_connector = state
+        .mcp
+        .authorizer
+        .can_access_connector(&state.mcp.db, user_id, connector_id)
+        .await
+        .unwrap_or(false);
+    if !can_reach_connector {
         return false;
     }
     nasiko_mcp_gateway::repo::agent_has_connector_grant(&state.db, agent_id, connector_id)

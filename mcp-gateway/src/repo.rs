@@ -1136,20 +1136,3 @@ pub async fn agent_has_connector_grant(
     .await?;
     Ok(ok)
 }
-
-/// Does `user_id` own `connector_id`? Narrower than [`can_access_connector`]
-/// (which also passes for composio/user-share/public reachability) — used
-/// where the caller must be the actual owner, not merely someone it's been
-/// shared with (e.g. letting a connector owner configure their own connector
-/// on an agent they don't manage, without extending that right to anyone
-/// they've merely shared the connector with).
-pub async fn is_connector_owner(db: &PgPool, user_id: Uuid, connector_id: Uuid) -> Result<bool> {
-    let ok = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM mcp_connectors WHERE id = $1 AND owner_id = $2)",
-    )
-    .bind(connector_id)
-    .bind(user_id)
-    .fetch_one(db)
-    .await?;
-    Ok(ok)
-}
