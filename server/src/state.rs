@@ -336,7 +336,7 @@ impl AppState {
         .await
         .ok()??;
 
-        let secret = crate::secrets::crypto::SecretsCrypto::for_platform_settings()
+        let secret = nasiko_secrets::SecretsCrypto::for_platform_settings()
             .decrypt(row.oidc_client_secret_encrypted.as_deref()?)
             .ok()?;
 
@@ -383,22 +383,31 @@ impl AppState {
         client
     }
 
+    /// Platform-level fallback env vars applied to every agent deployment
+    /// when the agent has no secret of the same name. Also served to the CLI
+    /// (`GET /api/agents/dev-env`, deployer+) so `nasiko run` can give local
+    /// containers the same defaults a CP deployment would get.
+    pub fn platform_fallback_env(&self) -> std::collections::HashMap<String, String> {
+        let mut env = std::collections::HashMap::new();
+        if let Some(ref key) = self.config.openai_api_key {
+            env.insert("OPENAI_API_KEY".into(), key.clone());
+        }
+        if let Some(ref url) = self.config.openai_base_url {
+            env.insert("OPENAI_BASE_URL".into(), url.clone());
+        }
+        env.insert("OPENAI_MODEL".into(), self.config.openai_model.clone());
+        env
+    }
+
     /// Build the full environment for an agent container: platform-level vars + agent-specific secrets.
     pub async fn agent_env(
         &self,
         agent_id: uuid::Uuid,
     ) -> std::collections::HashMap<String, String> {
         let mut env = crate::catalog::agent_secrets::resolve_agent_env(&self.db, agent_id).await;
-        if let Some(ref key) = self.config.openai_api_key {
-            env.entry("OPENAI_API_KEY".into())
-                .or_insert_with(|| key.clone());
+        for (key, value) in self.platform_fallback_env() {
+            env.entry(key).or_insert(value);
         }
-        if let Some(ref url) = self.config.openai_base_url {
-            env.entry("OPENAI_BASE_URL".into())
-                .or_insert_with(|| url.clone());
-        }
-        env.entry("OPENAI_MODEL".into())
-            .or_insert_with(|| self.config.openai_model.clone());
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
         env
     }

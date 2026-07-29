@@ -14,10 +14,21 @@ use crate::auth::Claims;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/deployment/{deployment_id}/restart",
-        post(restart_deployment),
-    )
+    Router::new()
+        .route(
+            "/deployment/{deployment_id}/restart",
+            post(restart_deployment),
+        )
+        .route("/dev-env", get(dev_env))
+}
+
+/// `GET /agents/dev-env` (deployer+, via `router()`'s gate) — the platform
+/// fallback env vars the CP injects into every deployment (OPENAI_* today).
+/// Consumed by `nasiko run` so a local container starts with the same
+/// defaults a CP deployment would get. Deployer-gated: anyone who can deploy
+/// already receives these values inside the containers they deploy.
+async fn dev_env(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
+    axum::Json(serde_json::json!({ "env": state.platform_fallback_env() }))
 }
 
 /// Mounted separately from `router()`, under `require_auth` only — each

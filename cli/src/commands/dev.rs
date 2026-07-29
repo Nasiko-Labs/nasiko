@@ -416,9 +416,20 @@ pub fn run(path: &str, port: u16) -> Result<()> {
         format!("{port}:8000"),
     ];
     let env_file = agent_dir.join(".env");
+    let local_env = load_env_file(&env_file);
     if env_file.exists() {
         run_args.push("--env-file".into());
         run_args.push(env_file.to_string_lossy().into_owned());
+    }
+    // Same platform fallbacks the CP injects at deploy time (agent_env),
+    // fetched from the connected CP so local runs behave like deployed ones.
+    // Explicit `-e` beats `--env-file` in docker/podman, so only pass keys
+    // the local .env doesn't already set — local values stay authoritative.
+    for (key, value) in fetch_cp_fallback_env() {
+        if !local_env.contains_key(&key) {
+            run_args.push("-e".into());
+            run_args.push(format!("{key}={value}"));
+        }
     }
     run_args.push(image.clone());
     let run = Command::new(&bin).args(&run_args).status()?;
@@ -426,55 +437,37 @@ pub fn run(path: &str, port: u16) -> Result<()> {
         bail!("{bin} run failed");
     }
 
-    wait_for_agent_healthy(&bin, name, port);
-
     println!("{name} → http://localhost:{port}");
     Ok(())
 }
 
-/// Poll the freshly-started container for a few seconds — `docker run -d`
-/// only confirms the process launched, not that it stayed up or is actually
-/// serving. Unlike `start()`'s CP health check, this doesn't fail the
-/// command: it's a locally-run dev container the user can inspect directly,
-/// so a warning (with the crash reason when detectable) is more useful than
-/// blocking `nasiko run` on it.
-fn wait_for_agent_healthy(bin: &str, name: &str, port: u16) {
-    // Any HTTP response — not specifically a 200, and not specifically on
-    // one well-known path — is enough evidence the process is alive and
-    // serving: the exact card path differs across a2a-sdk versions (e.g.
-    // `/.well-known/agent.json` vs `/.well-known/agent-card.json`), so
-    // requiring a match on one of them would false-negative on a perfectly
-    // healthy agent using the other. `http_status_as_error(false)` makes a
-    // 404 come back as `Ok` too — only a real connection failure (not
-    // listening yet, or crashed) is `Err`.
-    let http = ureq::Agent::new_with_config(
-        ureq::config::Config::builder()
-            .http_status_as_error(false)
-            .build(),
-    );
-    for _ in 0..10 {
-        thread::sleep(Duration::from_millis(500));
+/// Fetch the platform fallback env vars the CP would inject at deploy time
+/// (`GET /api/agents/dev-env`). Best-effort: local runs must keep working
+/// with no cluster connected or a CP that predates the endpoint, but say why
+/// the fallbacks were skipped so a missing key is diagnosable.
+fn fetch_cp_fallback_env() -> HashMap<String, String> {
+    #[derive(serde::Deserialize)]
+    struct DevEnvResponse {
+        env: HashMap<String, String>,
+    }
 
-        let running = Command::new(bin)
-            .args(["inspect", "-f", "{{.State.Running}}", name])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
-            .unwrap_or(false);
-        if !running {
-            eprintln!("  Warning: container exited immediately — check logs:");
-            eprintln!("    {bin} logs {name}");
-            return;
+    let client = match crate::api::Client::from_active_cluster() {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(), // no cluster connected — purely local run
+    };
+    match client.get_json_optional::<DevEnvResponse>("/agents/dev-env") {
+        Ok(Some(resp)) if !resp.env.is_empty() => {
+            let mut keys: Vec<&str> = resp.env.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            println!("  cp env: {}", keys.join(", "));
+            resp.env
         }
-
-        if http.get(format!("http://localhost:{port}/")).call().is_ok() {
-            return;
+        Ok(_) => HashMap::new(), // older CP without the endpoint, or nothing configured
+        Err(e) => {
+            println!("  cp env: skipped ({e:#})");
+            HashMap::new()
         }
     }
-    eprintln!(
-        "  Warning: container is running but isn't answering HTTP requests on port {port} \
-         after 5s — it may still be starting, or it crashed after binding; check:"
-    );
-    eprintln!("    {bin} logs {name}");
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
