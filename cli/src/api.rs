@@ -54,7 +54,10 @@ fn status_hint(status: u16) -> &'static str {
         401 => "\nhint: session expired or invalid — run: nasiko auth login",
         403 => "\nhint: you don't have permission to do this",
         404 => "\nhint: resource not found — check the ID or name",
-        409 => "\nhint: resource already exists",
+        // No blanket hint for 409: the server's detail message (already shown)
+        // covers several distinct conflicts — name collision, version-not-greater,
+        // rollback-not-eligible, etc. — and a fixed "resource already exists" hint
+        // is actively misleading for the non-name-collision cases.
         422 => "\nhint: request was rejected due to invalid input",
         429 => "\nhint: rate limit exceeded — wait a moment and retry",
         500..=599 => "\nhint: server error — check server logs or try again",
@@ -113,12 +116,6 @@ impl Client {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
-    }
-
-    /// The caller's own user id, decoded locally from the stored JWT's `sub`
-    /// claim. `None` if there's no token, or it's not a JWT this can decode.
-    pub fn current_user_id(&self) -> Option<String> {
-        crate::config::token_subject(self.token.as_deref()?)
     }
 
     fn api_url(&self, path: &str) -> String {
@@ -1021,12 +1018,6 @@ pub struct AgentRecord {
     #[tabled(skip)]
     #[serde(default)]
     pub description: Option<String>,
-    /// Consumed by `agents ps` to split "Created by you" vs "Shared with
-    /// you" (mirrors `nasiko mcp connector list`) — not shown as a column
-    /// itself, since the section header already conveys it.
-    #[tabled(skip)]
-    #[serde(default)]
-    pub owner_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -224,11 +224,9 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
         body["params"]["metadata"] = serde_json::json!({ "session_id": sid });
     }
 
-    // A real cap, not `None` — an agent that never closes the SSE connection
-    // (e.g. after a protocol error it doesn't report) must not hang forever.
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
-            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .timeout_global(None)
             .http_status_as_error(false)
             .build(),
     );
@@ -398,29 +396,12 @@ fn handle_sse_stream(
             ) {
                 spin.pause();
                 spin.close_sub();
-                match handle_task_result(task) {
-                    Some(t) => {
-                        spin.stdout_dirty = true;
-                        collected.push_str(&t);
-                    }
-                    // Failed/canceled with no extractable text — say so
-                    // explicitly rather than silently falling through to
-                    // the interactive prompt as if nothing happened.
-                    None if state != "TASK_STATE_COMPLETED" => {
-                        eprintln!("Error: agent task {} (no details provided)", state);
-                    }
-                    None => {}
+                if let Some(t) = handle_task_result(task) {
+                    spin.stdout_dirty = true;
+                    collected.push_str(&t);
                 }
                 is_terminal = true;
             }
-        } else if let Some(err) = event.get("error") {
-            // Top-level JSON-RPC error (e.g. an A2A protocol-version mismatch)
-            // delivered over the SSE stream itself, not wrapped in a task —
-            // without this branch it matches nothing above and the loop just
-            // keeps waiting for a next line that may never come.
-            spin.pause();
-            spin.close_sub();
-            bail!("A2A error: {err}");
         } else if let Some(status_update) = result.get("statusUpdate") {
             handle_status_update(status_update, spin);
             is_terminal = is_terminal_state(status_update);
@@ -509,7 +490,6 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
             spin.pause();
             spin.close_sub();
             spin.break_stdout();
-            let mut printed = false;
             if let Some(parts) = event
                 .pointer("/status/message/parts")
                 .and_then(|p| p.as_array())
@@ -517,15 +497,8 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
                 for part in parts {
                     if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                         eprintln!("  \x1b[31merror: {text}\x1b[0m");
-                        printed = true;
                     }
                 }
-            }
-            // The agent reported failure but sent no error text — say so
-            // explicitly rather than silently falling through to the
-            // interactive prompt as if nothing happened.
-            if !printed {
-                eprintln!("  \x1b[31merror: agent task failed (no details provided)\x1b[0m");
             }
         }
         _ => {}
@@ -694,109 +667,4 @@ fn handle_artifact_update(event: &serde_json::Value) -> Option<String> {
         }
     }
     if buf.is_empty() { None } else { Some(buf) }
-}
-
-/// Chat directly with a locally running agent via A2A JSON-RPC (used by `nasiko agents chat`).
-pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
-    let base = url.trim_end_matches('/');
-
-    let agent_name = ureq::get(&format!("{}/.well-known/agent.json", base))
-        .call()
-        .ok()
-        .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
-        .and_then(|card| {
-            card.get("name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "Agent".to_string());
-
-    println!("Chatting with '{}' at {}", agent_name, base);
-    if let Some(sid) = session_id {
-        println!("Session: {}", sid);
-    }
-    println!("Type 'exit' to quit.\n");
-
-    let send_msg = |msg: &str, ctx_id: Option<String>| -> Result<Option<String>> {
-        let msg_id = format!(
-            "{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        );
-        let mut payload = serde_json::json!({
-            "jsonrpc": "2.0", "method": "SendMessage", "id": &msg_id,
-            "params": { "message": {
-                "role": "ROLE_USER", "parts": [{ "text": msg }],
-                "messageId": &msg_id,
-            }}
-        });
-        if let Some(ref cid) = ctx_id {
-            payload["params"]["message"]["contextId"] = serde_json::Value::String(cid.clone());
-        }
-        let spin = status::start_status(format!("{agent_name} is thinking"));
-        let mut resp = ureq::post(&format!("{}/", base))
-            .header("Content-Type", "application/json")
-            .header("A2A-Version", "1.0")
-            .send_json(&payload)
-            .map_err(|e| anyhow::anyhow!("failed to reach agent: {}", e))?;
-        drop(spin);
-        let raw: serde_json::Value = resp.body_mut().read_json()?;
-        let result = raw.get("result").cloned().unwrap_or_default();
-        let new_ctx = result
-            .get("contextId")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let text = result
-            .get("artifacts")
-            .and_then(|a| a.as_array())
-            .and_then(|a| a.first())
-            .and_then(|a| a.get("parts"))
-            .and_then(|p| p.as_array())
-            .and_then(|p| {
-                p.iter()
-                    .find(|x| x.get("kind").and_then(|k| k.as_str()) == Some("text"))
-            })
-            .and_then(|p| p.get("text"))
-            .and_then(|t| t.as_str())
-            .or_else(|| {
-                result
-                    .get("status")
-                    .and_then(|s| s.get("message"))
-                    .and_then(|m| m.get("parts"))
-                    .and_then(|p| p.as_array())
-                    .and_then(|p| p.first())
-                    .and_then(|p| p.get("text"))
-                    .and_then(|t| t.as_str())
-            })
-            .unwrap_or("(no response)");
-        println!("Agent: {}\n", text);
-        Ok(new_ctx.or(ctx_id))
-    };
-
-    let initial_ctx = session_id.map(|s| s.to_string());
-    if let Some(msg) = message {
-        send_msg(msg, initial_ctx)?;
-        return Ok(());
-    }
-
-    let mut ctx_id: Option<String> = initial_ctx;
-    // Ctrl-C / Ctrl-D breaks the loop and leaves gracefully instead of erroring out.
-    while let Ok(input) = dialoguer::Input::<String>::new()
-        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-        .allow_empty(true)
-        .interact_text()
-    {
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if input == "exit" || input == "quit" {
-            println!("Goodbye.");
-            break;
-        }
-        ctx_id = send_msg(input, ctx_id)?;
-    }
-    Ok(())
 }

@@ -84,6 +84,10 @@ pub struct CreateAgent {
     pub skills: Option<Vec<Skill>>,
     pub tags: Option<Vec<String>>,
     pub metadata: Option<serde_json::Value>,
+    /// `push`/`deploy` already send this; previously silently dropped since
+    /// this struct had no field to catch it, leaving `agents.image` NULL
+    /// until the first update/reupload set it.
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

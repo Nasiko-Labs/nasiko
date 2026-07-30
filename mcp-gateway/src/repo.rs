@@ -18,7 +18,7 @@ use crate::types::PUBLIC_GRANTEE;
 // ─── Row types ──────────────────────────────────────────────────────────────
 
 /// Where a `mcp_server`-provider connector's `url` came from. Backed by the
-/// Postgres enum `mcp_connector_source_kind` (027_mcp_connector_uploads.sql) —
+/// Postgres enum `mcp_connector_source_kind` (038_mcp_connector_uploads.sql) —
 /// a real enum type, unlike `provider_type`/`auth_type` (plain TEXT + CHECK),
 /// so it needs `sqlx::Type` for `SELECT *` to decode it automatically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, sqlx::Type)]

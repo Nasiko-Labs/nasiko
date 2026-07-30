@@ -100,19 +100,6 @@ pub fn token_expiry(token: &str) -> Option<i64> {
     claims.get("exp")?.as_i64()
 }
 
-/// The JWT's `sub` claim — the caller's own user id. Decoded locally (same
-/// approach as `token_expiry`), so callers needing "is this mine?" (e.g.
-/// `agents ps` splitting owned vs shared) don't need an extra round-trip.
-pub fn token_subject(token: &str) -> Option<String> {
-    use base64::Engine as _;
-    let payload = token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    claims.get("sub")?.as_str().map(str::to_string)
-}
-
 /// Whether a stored JWT is already expired. None when the token's expiry
 /// can't be determined locally (not a JWT, or no `exp` claim).
 pub fn token_expired(token: &str) -> Option<bool> {
@@ -121,14 +108,27 @@ pub fn token_expired(token: &str) -> Option<bool> {
 }
 
 /// Add or update a cluster and set it as active.
+///
+/// Preserves the existing username/token when reconnecting to the same name
+/// *and* URL — otherwise a re-run of `nasiko connect` against an
+/// already-authenticated cluster would silently log the user out. A new URL
+/// under an existing name clears credentials, since a token minted for one
+/// cluster is meaningless against another.
 pub fn connect(name: &str, url: &str) -> Result<()> {
     let mut config = load()?;
+    let url = url.trim_end_matches('/').to_string();
+    let (username, token) = match config.clusters.get(name) {
+        Some(existing) if existing.url == url => {
+            (existing.username.clone(), existing.token.clone())
+        }
+        _ => (None, None),
+    };
     config.clusters.insert(
         name.to_string(),
         ClusterEntry {
-            url: url.trim_end_matches('/').to_string(),
-            username: None,
-            token: None,
+            url,
+            username,
+            token,
         },
     );
     config.active = Some(name.to_string());

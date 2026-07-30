@@ -146,8 +146,8 @@ pub enum AgentOpsCommands {
         after_help = "Version resolution order: --version flag → AgentCard.json → pyproject.toml → Cargo.toml → server auto-patch"
     )]
     Reupload {
-        /// Agent UUID (preferred; use --name to look up by name instead)
-        #[arg(conflicts_with = "name")]
+        /// Agent UUID (use --name to look up by name instead)
+        #[arg(long, conflicts_with = "name")]
         id: Option<String>,
         /// Resolve agent by name instead of UUID
         #[arg(long, short = 'n', conflicts_with = "id")]
@@ -794,8 +794,14 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             // the message, so `nasiko chat my-agent` sent "my-agent" as
             // the message to the orchestrator instead of resolving it as
             // the chat target.
+            // When `--agent` is explicitly given, the target is already known,
+            // so a lone positional is unconditionally the message — even a
+            // single word like "hello" — otherwise it fell through to the
+            // dispatch below as a target and silently discarded `--agent`.
             let (url, message) = match (url, message) {
-                (Some(u), None) if u.contains(char::is_whitespace) => (None, Some(u)),
+                (Some(u), None) if agent.is_some() || u.contains(char::is_whitespace) => {
+                    (None, Some(u))
+                }
                 other => other,
             };
             let target_label = agent.as_deref().unwrap_or("").to_string();
@@ -886,7 +892,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 url,
                 message,
                 session_id,
-            } => commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref()),
+            } => commands::chat::chat(&url, message.as_deref(), session_id.as_deref(), ""),
         },
         AgentOpsCommands::Observe { command } => match command {
             ObserveCommands::Sessions { start_time, json } => {

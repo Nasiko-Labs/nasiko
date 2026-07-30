@@ -464,16 +464,30 @@ pub fn remove_skill(project_dir: &Path, skill_name: &str, framework: &str) -> Re
         fs::remove_file(&skill_file)?;
     }
 
-    // Remove injected lines from agent source
-    let agent_source = find_agent_source(project_dir, framework);
-    if let Some(agent_path) = agent_source {
-        let content = fs::read_to_string(&agent_path)?;
-        let content: String = content
-            .lines()
-            .filter(|line| !line.contains(&module_name))
-            .collect::<Vec<_>>()
-            .join("\n");
-        fs::write(&agent_path, content)?;
+    // Remove exactly the two lines `inject_skill` added (the import line and
+    // the tool-registration entry), never a blanket substring match — a
+    // template can ship its own built-in identifier that happens to contain
+    // the skill's module name (e.g. the openai template's built-in
+    // `web_search` tool vs. the catalog `web-search` skill), and deleting any
+    // line that merely *contains* the module name can sever an unrelated
+    // `def` line, corrupting the file.
+    if let Ok((manifest, _)) = resolve_skill(skill_name) {
+        let import_line = codegen::import_line(&manifest, framework);
+        let tool_entry = codegen::tool_entry(&manifest, framework);
+
+        let agent_source = find_agent_source(project_dir, framework);
+        if let Some(agent_path) = agent_source {
+            let content = fs::read_to_string(&agent_path)?;
+            let content: String = content
+                .lines()
+                .filter(|line| {
+                    let trimmed = line.trim();
+                    trimmed != import_line && trimmed != tool_entry
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(&agent_path, content)?;
+        }
     }
 
     // Drop the AgentCard.json entry so the card doesn't advertise a skill

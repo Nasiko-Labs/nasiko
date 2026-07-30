@@ -92,6 +92,26 @@ fn register_agent(
     image_ref: &str,
     card: &serde_json::Value,
 ) -> Result<()> {
+    // Upsert by name: a prior `push` (or `deploy`) may have already registered
+    // this agent, so blindly POSTing a create would fail with HTTP 409 "agent
+    // name already exists". `GET /agents/{id}` resolves by name or UUID.
+    let existing = client
+        .get_json_optional::<serde_json::Value>(&format!("/agents/{name}"))?
+        .map(|raw| raw.get("data").cloned().unwrap_or(raw));
+    if let Some(existing) = existing {
+        let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        println!("  Updating in catalog: {name}");
+        let update = serde_json::json!({
+            "version": version,
+            "image": image_ref,
+            "description": card.get("description"),
+            "skills": card.get("skills"),
+            "capabilities": card.get("capabilities"),
+        });
+        let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
+        return Ok(());
+    }
+
     println!("  Registering in catalog: {name}");
     let create = serde_json::json!({
         "name": name,
@@ -102,6 +122,6 @@ fn register_agent(
         "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
         "capabilities": card.get("capabilities"),
     });
-    let _: serde_json::Value = client.post_json("/agents", &create)?;
+    let _: serde_json::Value = client.post_json("/catalog/agents", &create)?;
     Ok(())
 }

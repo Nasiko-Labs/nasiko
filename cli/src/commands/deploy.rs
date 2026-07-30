@@ -107,16 +107,34 @@ fn deploy_from_directory(
 
     // Resolve the cached binding, tolerating a stale one: if the cached agent no
     // longer exists server-side (e.g. after a DB reset), `get_json_optional`
-    // returns None and we fall through to registering a fresh agent instead of
+    // returns None and we fall through to a name-based lookup below instead of
     // failing with a 404.
-    let existing = match &existing_id {
+    let mut existing = match &existing_id {
         Some(id) => client
             .get_json_optional::<serde_json::Value>(&format!("/agents/{id}"))?
-            .map(|current| (id.clone(), current)),
+            .map(|raw| (id.clone(), raw.get("data").cloned().unwrap_or(raw))),
         None => None,
     };
     if existing_id.is_some() && existing.is_none() {
-        println!("  ! Cached agent binding is stale — registering a new agent");
+        println!("  ! Cached agent binding is stale — checking by name");
+    }
+
+    // No usable cache (missing, or stale). The agent may still exist
+    // server-side under this name — e.g. registered by a prior `nasiko push`,
+    // which doesn't write `.nasiko/agent.json`. Without this check, deploy
+    // would blindly POST a create and get HTTP 409 "agent name already exists".
+    if existing.is_none() {
+        existing = client
+            .get_json_optional::<serde_json::Value>(&format!("/agents/{agent_name}"))?
+            .map(|raw| {
+                let current = raw.get("data").cloned().unwrap_or(raw);
+                let id = current
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                (id, current)
+            });
     }
 
     let agent_id = match existing {
@@ -142,6 +160,7 @@ fn deploy_from_directory(
                 "capabilities": card.get("capabilities"),
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
+            save_agent_id(&agent_file, &id, &agent_name)?;
             id
         }
         None => {
@@ -206,8 +225,9 @@ fn deploy_from_image(
     oci::push_image(image, &repo, version)?;
 
     // Upsert agent in registry: update if exists, create otherwise.
-    let existing: Option<serde_json::Value> =
-        client.get_json(&format!("/agents/{agent_name}")).ok();
+    let existing: Option<serde_json::Value> = client
+        .get_json_optional(&format!("/agents/{agent_name}"))?
+        .map(|raw: serde_json::Value| raw.get("data").cloned().unwrap_or(raw));
     if let Some(existing) = existing {
         let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
         println!("  Updating agent: {agent_name}");

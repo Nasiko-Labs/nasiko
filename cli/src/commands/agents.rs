@@ -31,35 +31,7 @@ pub fn ps(json: bool) -> Result<()> {
         println!("No agents registered.");
         return Ok(());
     }
-    let base = client.base_url().trim_end_matches('/').to_string();
-
-    // Split "created by you" vs "shared with you" (mirrors `nasiko mcp
-    // connector list`) — only when we actually know our own id; if the
-    // token can't be decoded locally, fall back to one flat list rather
-    // than mislabeling everything as "shared".
-    match client.current_user_id() {
-        Some(my_id) => {
-            let (created, shared): (Vec<&AgentRecord>, Vec<&AgentRecord>) = agents
-                .iter()
-                .partition(|a| a.owner_id.as_deref() == Some(my_id.as_str()));
-            if !created.is_empty() {
-                println!("Created by you ({}):", created.len());
-                print_ps_table(&created, &base);
-            }
-            if !shared.is_empty() {
-                if !created.is_empty() {
-                    println!();
-                }
-                println!("Shared with you ({}):", shared.len());
-                print_ps_table(&shared, &base);
-            }
-        }
-        None => print_ps_table(&agents.iter().collect::<Vec<_>>(), &base),
-    }
-    Ok(())
-}
-
-fn print_ps_table(agents: &[&AgentRecord], base: &str) {
+    let base = client.base_url().trim_end_matches('/');
     let rows: Vec<PsTableRow> = agents
         .iter()
         .map(|a| {
@@ -67,7 +39,7 @@ fn print_ps_table(agents: &[&AgentRecord], base: &str) {
             // transport_path comes from the agent's own card (persisted at deploy
             // time); the proxy route requires the agent UUID, not the name.
             let path = a.transport_path.as_deref().unwrap_or("/");
-            let url = format!("{base}/api/agents/{}{path}", a.id);
+            let url = format!("{}/api/agents/{}{}", base, a.id, path);
             PsTableRow {
                 name: a.name.clone(),
                 status: status.to_string(),
@@ -82,6 +54,7 @@ fn print_ps_table(agents: &[&AgentRecord], base: &str) {
             .with(Style::blank())
             .with(Alignment::left())
     );
+    Ok(())
 }
 
 #[derive(Tabled)]
@@ -792,10 +765,21 @@ pub fn reupload(
 pub fn versions(id: Option<&str>, name: Option<&str>) -> Result<()> {
     let (agent_id, label) = resolve_id_or_name(id, name)?;
     let client = Client::from_active_cluster()?;
-    let versions: Vec<AgentVersion> = client.get_json(&format!("/agents/{agent_id}/versions"))?;
+    let mut versions: Vec<AgentVersion> =
+        client.get_json(&format!("/agents/{agent_id}/versions"))?;
     if versions.is_empty() {
         println!("No versions found for '{label}'.");
         return Ok(());
+    }
+    // The active version is never a valid rollback target — `nasiko rollback`
+    // only ever considers archived rows — so showing a stale `can_rollback`
+    // flag (left over from before it was last activated) on the active row
+    // reads as "you can roll back" when you can't. Normalize it to false here
+    // rather than teach the server or the Tabled layout about this.
+    for v in &mut versions {
+        if v.is_active {
+            v.can_rollback = false;
+        }
     }
     println!(
         "{}",

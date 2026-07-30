@@ -699,15 +699,52 @@ pub async fn execute_upload_and_deploy(
                 None,
             )
             .await;
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
-                 SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
-                 ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag",
+            // `upload` upserts by (owner_id, name) — a second `upload` against an
+            // already-deployed agent must land here too. Fetch the currently active
+            // version first: it becomes this new version's `previous_version` and,
+            // once archived, gets marked `can_rollback = true` — mirroring
+            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
+            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
+            // first upload (nothing to archive or roll back to yet).
+            let prev_version: Option<String> = sqlx::query_scalar(
+                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
             )
-            .bind(build_id)
+            .bind(agent_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            let _ = sqlx::query(
+                "UPDATE agent_versions SET is_active = false, status = 'archived' \
+                 WHERE agent_id = $1 AND is_active = true",
+            )
+            .bind(agent_id)
             .execute(&db)
             .await;
+            let _ = sqlx::query(
+                "INSERT INTO agent_versions \
+                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
+                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
+                 FROM agent_builds WHERE id = $1 \
+                 ON CONFLICT (agent_id, version) DO UPDATE \
+                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
+                       is_active = true, status = 'active', \
+                       previous_version = EXCLUDED.previous_version",
+            )
+            .bind(build_id)
+            .bind(&prev_version)
+            .execute(&db)
+            .await;
+            if let Some(ref pv) = prev_version {
+                let _ = sqlx::query(
+                    "UPDATE agent_versions SET can_rollback = true \
+                     WHERE agent_id = $1 AND version = $2",
+                )
+                .bind(agent_id)
+                .bind(pv)
+                .execute(&db)
+                .await;
+            }
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -900,15 +937,52 @@ pub async fn execute_clone_and_deploy(
                 None,
             )
             .await;
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions (agent_id, build_id, version, image_tag, is_active) \
-                 SELECT agent_id, $1, version_tag, image_reference, false FROM agent_builds WHERE id = $1 \
-                 ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag",
+            // `upload` upserts by (owner_id, name) — a second `upload` against an
+            // already-deployed agent must land here too. Fetch the currently active
+            // version first: it becomes this new version's `previous_version` and,
+            // once archived, gets marked `can_rollback = true` — mirroring
+            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
+            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
+            // first upload (nothing to archive or roll back to yet).
+            let prev_version: Option<String> = sqlx::query_scalar(
+                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
             )
-            .bind(build_id)
+            .bind(agent_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            let _ = sqlx::query(
+                "UPDATE agent_versions SET is_active = false, status = 'archived' \
+                 WHERE agent_id = $1 AND is_active = true",
+            )
+            .bind(agent_id)
             .execute(&db)
             .await;
+            let _ = sqlx::query(
+                "INSERT INTO agent_versions \
+                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
+                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
+                 FROM agent_builds WHERE id = $1 \
+                 ON CONFLICT (agent_id, version) DO UPDATE \
+                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
+                       is_active = true, status = 'active', \
+                       previous_version = EXCLUDED.previous_version",
+            )
+            .bind(build_id)
+            .bind(&prev_version)
+            .execute(&db)
+            .await;
+            if let Some(ref pv) = prev_version {
+                let _ = sqlx::query(
+                    "UPDATE agent_versions SET can_rollback = true \
+                     WHERE agent_id = $1 AND version = $2",
+                )
+                .bind(agent_id)
+                .bind(pv)
+                .execute(&db)
+                .await;
+            }
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,

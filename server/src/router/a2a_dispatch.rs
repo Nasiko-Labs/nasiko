@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Multipart, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{
         IntoResponse, Response,
         sse::{Event, Sse},
@@ -34,29 +34,6 @@ use crate::usage::TokenUsageBuilder;
 // Our handler already returns a stream of StreamResponse — wrap it in the trait impl and let
 // a2a-server handle JSON-RPC envelope, SSE serialization, and /.well-known/agent-card.json.
 
-/// TEMP DEBUG: log every inbound header (redacting `authorization`/`cookie`) so we can
-/// audit which conversation/trace identifiers arrive natively. Remove after the audit.
-pub(crate) fn log_inbound_headers(entry: &str, headers: &HeaderMap) {
-    let dump: Vec<String> = headers
-        .iter()
-        .map(|(name, value)| {
-            let n = name.as_str();
-            let v = if n.eq_ignore_ascii_case("authorization") || n.eq_ignore_ascii_case("cookie") {
-                "<redacted>"
-            } else {
-                value.to_str().unwrap_or("<non-utf8>")
-            };
-            format!("{n}={v}")
-        })
-        .collect();
-    tracing::info!(
-        target: "nasiko::header_audit",
-        entry,
-        headers = %dump.join("  |  "),
-        "inbound request headers"
-    );
-}
-
 /// Server-side A2A dispatch endpoint. Accepts JSONRPC `message/send` or `message/stream`.
 /// Dispatches to the routing engine (no agent_id), ReAct orchestrator (agent_id=orchestrator),
 /// or a specific agent directly.
@@ -66,14 +43,8 @@ pub(crate) fn log_inbound_headers(entry: &str, headers: &HeaderMap) {
 pub async fn a2a_dispatch_handler(
     State(state): State<AppState>,
     claims: Claims,
-    headers: HeaderMap,
     Json(req): Json<JsonRpcRequest>,
 ) -> Result<Response, A2aDispatchError> {
-    // TEMP DEBUG: dump the inbound request headers so we can see what identifiers
-    // (traceparent/trace_id, session_id, flow_id, x-nasiko-*) arrive natively vs.
-    // what we mint. Remove once the header audit is done.
-    log_inbound_headers("a2a_dispatch (orchestrator)", &headers);
-
     let params: nasiko_types::a2a::SendMessageRequest = serde_json::from_value(
         req.params
             .clone()
@@ -173,6 +144,14 @@ async fn orchestrator_stream(
     user_id: Uuid,
     is_superuser: bool,
 ) -> Result<Response, A2aDispatchError> {
+    // Orchestrator-routed chats never had a `chat_sessions` row, unlike
+    // `agent_proxy.rs`'s `ensure_chat_session` for direct agent chat — so
+    // `nasiko sessions`/`history` couldn't find them and `--session-id`
+    // resume had no history to actually resume. `agent_id` is NULL here
+    // (unlike agent_proxy's fixed target) since the orchestrator can route
+    // to a different agent on every turn of the same session.
+    ensure_orchestrator_chat_session(state, context_id, user_id, query).await;
+
     let all_agents = AgentSelector::fetch_active_agents(&state.db)
         .await
         .map_err(|e| A2aDispatchError::Internal(e.to_string()))?;
@@ -251,19 +230,28 @@ async fn orchestrator_stream(
     let traceparent = flow_ctx.to_traceparent();
     state.flow_guard.init_flow(&flow_ctx, "orchestrator").await;
 
-    // Carry the A2A context_id so the LLM gateway keys its decision cache on the
-    // conversation, not this turn's trace id — mirrors the direct-agent proxy
-    // (`agent_proxy.rs`). `derive_boundary_signals` reads `metadata->>'context_id'`.
-    let flow_metadata = serde_json::json!({ "context_id": context_id });
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, 'orchestrator', $3, 'running', $4)
+           VALUES ($1, $2, 'orchestrator', $3, 'running', '{}'::jsonb)
            ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&flow_id)
     .bind(user_id)
     .bind(query)
-    .bind(&flow_metadata)
+    .execute(&state.db)
+    .await;
+
+    // `flow_id` doubles as the trace id (see comment below) — index it against
+    // the session so `nasiko history`'s Tempo-miss fallback
+    // (`PgSessionIdResolver::traces_for_session`) can find it, the same way
+    // `agent_proxy.rs` indexes every direct-agent call.
+    let _ = sqlx::query(
+        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
+         VALUES ($1, $2, NULL, 'orchestrator') \
+         ON CONFLICT (session_id, trace_id) DO NOTHING",
+    )
+    .bind(context_id)
+    .bind(&flow_id)
     .execute(&state.db)
     .await;
 
@@ -320,6 +308,7 @@ async fn orchestrator_stream(
     let genai_metrics = state.genai_metrics.clone();
     let orchestrator_model = state.config.openai_model.clone();
     let orchestrator_start = Instant::now();
+    let mut full_reply = String::new();
 
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
@@ -449,6 +438,7 @@ async fn orchestrator_stream(
                             );
                         }
                         OrchestratorEvent::Content { content } => {
+                            full_reply.push_str(&content);
                             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                                 &task_id, &context_id, &artifact_id, &content, content_started, false,
                             ))));
@@ -459,6 +449,20 @@ async fn orchestrator_stream(
                                 yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                                     &task_id, &context_id, &artifact_id, "", true, true,
                                 ))));
+                            }
+
+                            // Mirrors `agent_proxy.rs` persisting the agent's reply after
+                            // a completed turn — without this, `--session-id` resume has
+                            // no recorded history to actually resume, even though the
+                            // session row and user message (above) now exist.
+                            if !full_reply.is_empty() {
+                                let _ = sqlx::query(
+                                    "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'assistant', $2)",
+                                )
+                                .bind(&context_id)
+                                .bind(&full_reply)
+                                .execute(&db)
+                                .await;
                             }
 
                             // Record overall operation duration in OTel
@@ -867,6 +871,55 @@ pub async fn a2a_upload_handler(
 
 fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
+}
+
+/// Upsert a `chat_sessions` row and persist the user's message for an
+/// orchestrator-routed chat, mirroring what `agent_proxy.rs`'s
+/// `ensure_chat_session` already does for direct agent chat. `agent_id` is
+/// left `NULL` (unlike agent_proxy's fixed target) since the orchestrator
+/// can route to a different agent on every turn of the same session.
+/// Fire-and-forget: session bookkeeping here is a nice-to-have for
+/// `sessions`/`history`/resume, not a security boundary like agent_proxy's
+/// version (which also authorizes access to an existing session).
+async fn ensure_orchestrator_chat_session(
+    state: &AppState,
+    context_id: &str,
+    user_id: Uuid,
+    query: &str,
+) {
+    let title = {
+        let t = query.trim();
+        if t.is_empty() {
+            "New chat".to_string()
+        } else if t.len() > 60 {
+            let mut n = 60;
+            while !t.is_char_boundary(n) {
+                n -= 1;
+            }
+            format!("{}…", &t[..n])
+        } else {
+            t.to_string()
+        }
+    };
+
+    let _ = sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
+         VALUES ($1, $2, NULL, '/api/orchestrator/a2a', $3) \
+         ON CONFLICT (session_id) DO NOTHING",
+    )
+    .bind(context_id)
+    .bind(user_id)
+    .bind(&title)
+    .execute(&state.db)
+    .await;
+
+    let _ = sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)",
+    )
+    .bind(context_id)
+    .bind(query)
+    .execute(&state.db)
+    .await;
 }
 
 async fn resolve_endpoint(

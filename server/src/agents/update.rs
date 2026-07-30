@@ -836,11 +836,17 @@ pub async fn execute_agent_rollback(
         .await;
 
     let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
+    // `agent_versions.image_tag` for OCI-push deploys stores the registry-relative
+    // `nasiko/{name}:{tag}` as-is, which pulls from docker.io if applied unqualified
+    // — qualify exactly as the ad-hoc deploy and restart paths do (no-op for refs
+    // outside the `nasiko/` convention, e.g. upload/reupload's already-qualified tags).
+    let image =
+        crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &target.image_tag);
     // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &agent_name,
-        target.image_tag.clone(),
+        image.clone(),
         vec![],
         secrets,
         None,
@@ -889,7 +895,7 @@ pub async fn execute_agent_rollback(
             .bind(agent_id)
             .bind(&agent_url)
             .bind(&target.version)
-            .bind(&target.image_tag)
+            .bind(&image)
             .execute(db)
             .await;
             // Refresh card-derived fields (skills, description, transport_path)
@@ -910,7 +916,7 @@ pub async fn execute_agent_rollback(
             .bind(rollback_build_id)
             .bind(caller_id)
             .bind(agent_id.to_string())
-            .bind(&target.image_tag)
+            .bind(&image)
             .bind(&spec_ports)
             .execute(db)
             .await;
