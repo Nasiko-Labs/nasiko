@@ -115,6 +115,12 @@ impl Client {
         &self.base_url
     }
 
+    /// The caller's own user id, decoded locally from the stored JWT's `sub`
+    /// claim. `None` if there's no token, or it's not a JWT this can decode.
+    pub fn current_user_id(&self) -> Option<String> {
+        crate::config::token_subject(self.token.as_deref()?)
+    }
+
     fn api_url(&self, path: &str) -> String {
         format!("{}/api{}", self.base_url, path)
     }
@@ -1015,6 +1021,12 @@ pub struct AgentRecord {
     #[tabled(skip)]
     #[serde(default)]
     pub description: Option<String>,
+    /// Consumed by `agents ps` to split "Created by you" vs "Shared with
+    /// you" (mirrors `nasiko mcp connector list`) — not shown as a column
+    /// itself, since the section header already conveys it.
+    #[tabled(skip)]
+    #[serde(default)]
+    pub owner_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
