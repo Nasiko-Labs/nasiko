@@ -15,7 +15,7 @@ use crate::oauth::CallbackOutcome;
 use crate::provider::normalize_connection_status;
 use crate::repo::{self, McpConnector};
 use crate::state::McpState;
-use crate::{connectors, credentials, oauth, session};
+use crate::{credentials, oauth, session};
 
 /// Inputs for [`connect_service`] — one of `connector_id` / `service` / `url`.
 #[derive(Default)]
@@ -190,7 +190,8 @@ async fn revoke_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connector_i
     }
 }
 
-/// Resolve the connector being connected: by id, by service name, or auto-register a URL.
+/// Resolve the connector being connected: by id, by service name, or by an
+/// already-registered URL (never auto-registers — see the `url` branch).
 async fn resolve_target(
     state: &McpState,
     user_id: Uuid,
@@ -210,55 +211,24 @@ async fn resolve_target(
         if let Some(c) = repo::get_owned_connector_by_name(&state.db, user_id, service).await? {
             return Ok(c);
         }
-        // Fall through to URL auto-register if a url was also supplied.
+        // Fall through to the url branch if a url was also supplied.
     }
 
     if let Some(url) = input.url.as_deref() {
-        // Reuse an existing connector at this URL instead of always minting a
-        // new one — `connect --url` means "get me using this", the same as
-        // the connector-id/service branches above, not "register something
-        // new every time I run this against a URL I've already got".
-        if let Some(existing) = repo::get_owned_connector_by_url(&state.db, user_id, url).await? {
-            return Ok(existing);
-        }
-        crate::net::validate_public_url(url).await?;
-        // Guarded client (SSRF/DNS-rebinding): same reasoning as the /probe route.
-        let detected = match connectors::probe_initialize(&state.guarded_http_client, url).await {
-            Ok((d, _, _)) => d.as_str().to_string(),
-            Err(_) => "none".to_string(),
-        };
-        let name = input
-            .service
-            .clone()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                url.rsplit("//")
-                    .next()
-                    .and_then(|h| h.split('/').next())
-                    .unwrap_or(url)
-                    .to_string()
+        // `connect --url` only ever reuses a connector you already own at
+        // this URL (oldest one, if more than one was registered) — the same
+        // "get me using this" contract as the connector-id/service branches
+        // above. It never registers anything: that's a deliberate, explicit
+        // action (`connector register`), not an implicit side effect of
+        // trying to connect to something that isn't there yet.
+        return repo::get_owned_connector_by_url(&state.db, user_id, url)
+            .await?
+            .ok_or_else(|| {
+                McpError::NotFound(format!(
+                    "no connector registered at '{url}' — register one first: \
+                     nasiko mcp connector register <name> {url} --auth-type <none|bearer|basic|url_param|oauth2>"
+                ))
             });
-        return connectors::register_connector(
-            state,
-            user_id,
-            connectors::NewConnectorInput {
-                name,
-                url: url.to_string(),
-                transport: "streamable_http".into(),
-                auth_type: detected,
-                url_param_name: None,
-                credential_header_name: None,
-                headers: None,
-                basic_username: None,
-                basic_password: None,
-                description: None,
-                display_name: None,
-                logo_url: None,
-                oauth_client_id: None,
-                oauth_client_secret: None,
-            },
-        )
-        .await;
     }
 
     Err(McpError::BadRequest(

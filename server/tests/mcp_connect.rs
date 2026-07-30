@@ -121,7 +121,10 @@ async fn connect_none_auth_is_immediately_connected() {
     .await
     .unwrap();
     assert_eq!(res.status(), 200);
-    assert_eq!(res.json::<Value>().await.unwrap()["status"], "connected");
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["data"]["status"],
+        "connected"
+    );
 
     server.cleanup().await;
 }
@@ -204,8 +207,11 @@ async fn list_and_disconnect_removes_connection() {
     .json()
     .await
     .unwrap();
-    assert_eq!(body["total"], 1);
-    assert_eq!(body["data"][0]["connector_id"], cid.to_string());
+    assert_eq!(body["data"]["total"], 1);
+    assert_eq!(
+        body["data"]["connections"][0]["connector_id"],
+        cid.to_string()
+    );
 
     // disconnect.
     let res = common::as_superuser(
@@ -267,6 +273,83 @@ async fn connect_to_unreachable_connector_id_is_not_found() {
     .await
     .unwrap();
     assert_eq!(res.status(), 404);
+
+    server.cleanup().await;
+}
+
+/// `connect --url` must reuse an already-registered connector at that URL,
+/// never register a new one — the same "get me using this" contract as the
+/// connector-id/toolkit branches.
+#[tokio::test]
+#[serial]
+async fn connect_by_url_reuses_existing_connector_not_registers() {
+    let server = common::TestServer::start().await;
+    let (uid, uuid) = init_admin(&server).await;
+    let cid = seed_connector(&server, uuid, "url-reuse-tool", "none").await;
+
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connect")),
+        &uid,
+        "admin",
+    )
+    .json(&json!({"url": "https://example.com"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.json::<Value>().await.unwrap();
+    assert_eq!(body["data"]["status"], "connected");
+    assert_eq!(
+        body["data"]["connector_id"].as_str(),
+        Some(cid.to_string().as_str()),
+        "must reuse the existing connector at this URL, not mint a new one"
+    );
+
+    // Confirm no duplicate was created.
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mcp_connectors WHERE url = 'https://example.com'")
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "connect --url must never create a duplicate");
+
+    server.cleanup().await;
+}
+
+/// `connect --url` to a URL with no registered connector must fail clearly —
+/// never silently auto-register one.
+#[tokio::test]
+#[serial]
+async fn connect_by_url_with_no_existing_connector_is_not_found() {
+    let server = common::TestServer::start().await;
+    let (uid, _) = init_admin(&server).await;
+
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connect")),
+        &uid,
+        "admin",
+    )
+    .json(&json!({"url": "https://never-registered.example.com/mcp"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 404);
+    let body = res.json::<Value>().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("connector register"),
+        "error should point the caller at `connector register`: {body:?}"
+    );
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mcp_connectors WHERE url = 'https://never-registered.example.com/mcp'",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(count, 0, "a failed connect must never register anything");
 
     server.cleanup().await;
 }
