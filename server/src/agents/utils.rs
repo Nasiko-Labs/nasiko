@@ -98,11 +98,12 @@ pub(crate) async fn fetch_agent_card_with_retry(
     agent_id: Uuid,
     agent_url: String,
 ) {
-    for _ in 0..10 {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    for attempt in 1..=30u32 {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         if fetch_and_apply_agent_card(&db, &http, agent_id, &agent_url).await {
             return;
         }
+        tracing::debug!(%agent_id, attempt, "agent card fetch attempt failed");
     }
     tracing::warn!(%agent_id, url = %agent_url, "agent card fetch: giving up after retries");
 }

@@ -299,11 +299,11 @@ impl nasiko_mcp_gateway::endpoint_refresh::EndpointRefresher for RuntimeEndpoint
     }
 }
 
-/// Retry count/backoff for the post-deploy readiness check — mirrors
-/// `agents::utils::fetch_agent_card_with_retry`'s convention exactly, applied
-/// to an MCP `initialize`+`tools/list` handshake instead of an A2A card fetch.
-const READINESS_RETRIES: u32 = 10;
-const READINESS_BACKOFF: Duration = Duration::from_secs(2);
+/// Retry count/backoff for the post-deploy readiness check. Wider window than
+/// the agent card fetch (30 × 3s ≈ 90s) because K8s cold image pulls can
+/// easily exceed the original 20s budget.
+const READINESS_RETRIES: u32 = 30;
+const READINESS_BACKOFF: Duration = Duration::from_secs(3);
 const READINESS_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Executes one MCP-server build+deploy job end to end. Mirrors
@@ -514,13 +514,16 @@ async fn wait_for_readiness(
     retries: u32,
     backoff: Duration,
 ) -> Option<Vec<serde_json::Value>> {
-    for _ in 0..retries {
+    for attempt in 1..=retries {
         tokio::time::sleep(backoff).await;
-        if let Ok(tools) = provider
+        match provider
             .list_tools(server, READINESS_CALL_TIMEOUT, None)
             .await
         {
-            return Some(tools);
+            Ok(tools) => return Some(tools),
+            Err(e) => {
+                tracing::debug!(attempt, retries, %e, url = %server.url, "mcp readiness attempt failed");
+            }
         }
     }
     None

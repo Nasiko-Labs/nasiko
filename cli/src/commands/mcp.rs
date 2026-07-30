@@ -646,7 +646,10 @@ fn share_add_with(
     };
     let target = share_target_label(user, public);
     let data = resp.get("data").cloned().unwrap_or(Value::Null);
-    let was_new = data.get("was_new").and_then(|v| v.as_bool()).unwrap_or(true);
+    let was_new = data
+        .get("was_new")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     if was_new {
         println!("Shared connector {connector_id} with {target}.");
     } else {
@@ -929,7 +932,10 @@ fn connector_grant_agent_with(client: &Client, connector_id: &str, agent: &str) 
         &serde_json::json!({}),
     )?;
     let data = resp.get("data").cloned().unwrap_or(Value::Null);
-    let was_new = data.get("was_new").and_then(|v| v.as_bool()).unwrap_or(true);
+    let was_new = data
+        .get("was_new")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     if was_new {
         println!(
             "Granted connector {connector_id} to agent '{}' (grant {}).",

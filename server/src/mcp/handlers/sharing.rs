@@ -16,7 +16,11 @@ use crate::state::AppState;
 /// the two instead of always reporting "granted" regardless of which
 /// happened. `view` is the JSON `create_share_grant` returns, which always
 /// carries a `was_new` boolean.
-fn grant_response(view: Value, created_msg: &'static str, existing_msg: &'static str) -> ApiResponse {
+fn grant_response(
+    view: Value,
+    created_msg: &'static str,
+    existing_msg: &'static str,
+) -> ApiResponse {
     let was_new = view.get("was_new").and_then(Value::as_bool).unwrap_or(true);
     if was_new {
         ApiResponse::created(view, created_msg)
