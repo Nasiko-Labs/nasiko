@@ -21,6 +21,15 @@ use crate::{
 /// variables.
 pub struct SimulatedRuntime {
     sim_agent_endpoint: String,
+    /// When true, `endpoint()`/`status()` resolve *any* container id to the
+    /// shared sim agent, not just ids deployed through this process. Enables
+    /// load-testing with agents seeded out-of-process (e.g. the `bench_seed`
+    /// CLI, which inserts DB rows but cannot reach this in-memory map): without
+    /// it, live endpoint resolution fails, the proxy/dispatch fallback flips
+    /// those agents to `stopped`, and every proxied request then 503s.
+    /// Off by default (preserves the normal "unknown id ⇒ ContainerNotFound"
+    /// contract); enable with `SIM_RESOLVE_ALL=1`.
+    resolve_all: bool,
     containers: Mutex<HashMap<ContainerId, DeploymentStatus>>,
 }
 
@@ -29,13 +38,18 @@ impl SimulatedRuntime {
     /// process, e.g. `"http://127.0.0.1:9999"`.
     pub fn new(sim_agent_endpoint: impl Into<String>) -> Self {
         let sim_agent_endpoint = sim_agent_endpoint.into();
+        let resolve_all = std::env::var("SIM_RESOLVE_ALL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         tracing::warn!(
             %sim_agent_endpoint,
+            resolve_all,
             "AGENT_RUNTIME=simulated — no real containers will be deployed; \
              agent endpoints resolve to this address. For benchmarking/load-testing only."
         );
         Self {
             sim_agent_endpoint,
+            resolve_all,
             containers: Mutex::new(HashMap::new()),
         }
     }
@@ -102,17 +116,22 @@ impl ContainerRuntime for SimulatedRuntime {
 
     async fn status(&self, container_id: &ContainerId) -> Result<DeploymentStatus> {
         let containers = self.containers.lock().unwrap();
-        Ok(containers
-            .get(container_id)
-            .cloned()
-            .unwrap_or_else(|| DeploymentStatus {
-                container_id: container_id.clone(),
-                state: RuntimeState::Unknown,
-                replicas_live: 0,
-                endpoint: None,
-                message: None,
-                restart_count: 0,
-            }))
+        if let Some(status) = containers.get(container_id) {
+            return Ok(status.clone());
+        }
+        // Unknown id: report running under resolve_all (load-test mode) so
+        // out-of-process-seeded agents aren't treated as down; otherwise Unknown.
+        if self.resolve_all {
+            return Ok(running_status(container_id, &self.sim_agent_endpoint, 1));
+        }
+        Ok(DeploymentStatus {
+            container_id: container_id.clone(),
+            state: RuntimeState::Unknown,
+            replicas_live: 0,
+            endpoint: None,
+            message: None,
+            restart_count: 0,
+        })
     }
 
     async fn list(&self) -> Result<Vec<DeploymentStatus>> {
@@ -121,7 +140,7 @@ impl ContainerRuntime for SimulatedRuntime {
 
     async fn endpoint(&self, container_id: &ContainerId) -> Result<String> {
         let containers = self.containers.lock().unwrap();
-        if !containers.contains_key(container_id) {
+        if !self.resolve_all && !containers.contains_key(container_id) {
             return Err(RuntimeError::ContainerNotFound(container_id.clone()));
         }
         Ok(self.sim_agent_endpoint.clone())
@@ -157,9 +176,6 @@ mod tests {
             resources: None,
             image_pull_secret_name: None,
             image_pull_credential_seed: None,
-            harden: false,
-            network_override: None,
-            workload_kind: Default::default(),
         }
     }
 

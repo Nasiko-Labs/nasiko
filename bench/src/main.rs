@@ -2,13 +2,21 @@
 //!
 //! Reads the manifest written by `bench_seed` (pre-signed JWTs + seeded
 //! agent IDs) so no virtual user ever calls `/api/auth/login` in its hot
-//! path, then drives three scenarios against a running `nasiko-server`
+//! path, then drives four scenarios against a running `nasiko-server`
 //! (paired with `SimulatedRuntime` + `simulated-agent` so responses are
 //! real network round-trips without Docker/K8s/LLM cost):
 //!
-//! - `catalog_list`   — GET  /api/catalog/agents      (pure DB read)
+//! - `catalog_list`   — GET  /api/agents               (pure DB read)
 //! - `agent_proxy`    — POST /api/agents/{id}          (direct proxy → simulated-agent)
 //! - `orchestrator`   — POST /api/orchestrator/a2a     (full routing pipeline)
+//! - `agent_crud`     — POST/GET/PUT/DELETE /api/agents[/{id}] (registry management)
+//!
+//! `agent_crud` creates and tears down its own throwaway agent per call — unlike
+//! the other three transactions, it never touches the shared seeded agents (which
+//! `catalog_list`/`agent_proxy_chat` depend on staying alive for the whole run),
+//! and needs no pre-sized disposable pool the way `oss/server/benches/control_plane.rs`'s
+//! `delete` benchmark does, since a live Goose run has no fixed iteration count to
+//! size a pool against up front.
 //!
 //! Manifest path is read from `BENCH_MANIFEST` (default `bench-manifest.json`).
 //! All other load parameters (users, run-time, host) are goose's own CLI
@@ -17,8 +25,10 @@ use std::sync::Arc;
 
 use goose::prelude::*;
 use nasiko_types::a2a::build_send_request;
+use rand::Rng;
 use rand::seq::IndexedRandom;
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Deserialize, Clone)]
 struct ManifestUser {
@@ -70,14 +80,14 @@ async fn setup_session(user: &mut GooseUser) -> TransactionResult {
     Ok(())
 }
 
-fn auth_header(user: &GooseUser) -> &str {
+fn auth_header<'a>(user: &'a GooseUser) -> &'a str {
     &user.get_session_data_unchecked::<Session>().token
 }
 
 async fn catalog_list(user: &mut GooseUser) -> TransactionResult {
     let token = auth_header(user).to_owned();
     let request_builder = user
-        .get_request_builder(&GooseMethod::Get, "/api/catalog/agents")?
+        .get_request_builder(&GooseMethod::Get, "/api/agents")?
         .header("Authorization", format!("Bearer {token}"));
     let goose_request = GooseRequest::builder()
         .set_request_builder(request_builder)
@@ -105,6 +115,67 @@ async fn agent_proxy_chat(user: &mut GooseUser) -> TransactionResult {
     Ok(())
 }
 
+/// Exercises the agent-registry management API (as opposed to the chat/routing
+/// paths the other three transactions cover): create a throwaway agent owned by
+/// this virtual user, read it back, update it, then delete it — one full
+/// create→get→update→delete cycle per call, entirely self-contained so it never
+/// risks mutating the shared seeded agents the other transactions rely on.
+async fn agent_crud(user: &mut GooseUser) -> TransactionResult {
+    let token = auth_header(user).to_owned();
+    let suffix: u64 = rand::rng().random();
+    let name = format!("bench-crud-{suffix:x}");
+
+    // CREATE
+    let request_builder = user
+        .get_request_builder(&GooseMethod::Post, "/api/agents")?
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({ "name": name }));
+    let goose_request = GooseRequest::builder()
+        .set_request_builder(request_builder)
+        .build();
+    let created = user.request(goose_request).await?;
+    let Ok(response) = created.response else {
+        return Ok(());
+    };
+    let Ok(body) = response.json::<Value>().await else {
+        return Ok(());
+    };
+    let Some(agent_id) = body.get("id").and_then(Value::as_str) else {
+        // Create failed (e.g. name conflict) — nothing to read/update/delete.
+        return Ok(());
+    };
+
+    // GET
+    let request_builder = user
+        .get_request_builder(&GooseMethod::Get, &format!("/api/agents/{agent_id}"))?
+        .header("Authorization", format!("Bearer {token}"));
+    let goose_request = GooseRequest::builder()
+        .set_request_builder(request_builder)
+        .build();
+    user.request(goose_request).await?;
+
+    // UPDATE
+    let request_builder = user
+        .get_request_builder(&GooseMethod::Put, &format!("/api/agents/{agent_id}"))?
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({ "description": "bench crud update" }));
+    let goose_request = GooseRequest::builder()
+        .set_request_builder(request_builder)
+        .build();
+    user.request(goose_request).await?;
+
+    // DELETE
+    let request_builder = user
+        .get_request_builder(&GooseMethod::Delete, &format!("/api/agents/{agent_id}"))?
+        .header("Authorization", format!("Bearer {token}"));
+    let goose_request = GooseRequest::builder()
+        .set_request_builder(request_builder)
+        .build();
+    user.request(goose_request).await?;
+
+    Ok(())
+}
+
 async fn orchestrator_a2a(user: &mut GooseUser) -> TransactionResult {
     let token = auth_header(user).to_owned();
     let body = build_send_request("Summarize the latest agent activity for me.", None);
@@ -127,7 +198,10 @@ async fn main() -> Result<(), GooseError> {
                 .register_transaction(transaction!(setup_session).set_on_start())
                 .register_transaction(transaction!(catalog_list).set_weight(3)?)
                 .register_transaction(transaction!(agent_proxy_chat).set_weight(5)?)
-                .register_transaction(transaction!(orchestrator_a2a).set_weight(1)?),
+                .register_transaction(transaction!(orchestrator_a2a).set_weight(1)?)
+                // Weighted low — CRUD is an occasional admin action, not
+                // high-frequency chat/routing traffic (see module docs).
+                .register_transaction(transaction!(agent_crud).set_weight(1)?),
         )
         .execute()
         .await?;

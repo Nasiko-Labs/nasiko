@@ -27,8 +27,13 @@ async fn main() {
         .expect("invalid SECRETS_ENCRYPTION_KEY at startup");
     let bind = config.bind.clone();
 
-    // Build DB pool early so it can be shared with auth services.
-    let db = sqlx::PgPool::connect(&config.database_url)
+    // Build DB pool early so it can be shared with auth services. Raised from sqlx's
+    // default of 10 — load testing showed 10 saturates under a few hundred concurrent
+    // requests (server CPU stays idle while sqlx's own acquire-timeout logs show
+    // requests queuing tens of seconds for a connection).
+    let db = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(50)
+        .connect(&config.database_url)
         .await
         .expect("failed to connect to postgres");
 
@@ -43,7 +48,7 @@ async fn main() {
             Arc::new(nasiko_runtime::SimulatedRuntime::new(sim_agent_url))
         }
         _ => Arc::new(
-            nasiko_server::runtime::build_docker_runtime(&config, db.clone())
+            nasiko_server::runtime::build_docker_runtime(&config)
                 .await
                 .expect("failed to create Docker runtime"),
         ),
