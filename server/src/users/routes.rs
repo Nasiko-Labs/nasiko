@@ -229,6 +229,14 @@ struct CreateUser {
     email: String,
     display_name: Option<String>,
     role: Option<String>,
+    /// Separate from `role` — `role` is a `user_role` enum value
+    /// (admin/department_manager/team_lead/team_member/member), never
+    /// "superuser". This is the one flag that actually grants unrestricted
+    /// access (bypasses org-visibility scoping, gates superuser-only routes
+    /// like MCP toolkit registration) — see CLAUDE.md's `role` vs
+    /// `is_superuser` note.
+    #[serde(default)]
+    is_superuser: bool,
 }
 
 async fn create_user(
@@ -249,12 +257,13 @@ async fn create_user(
     let id = Uuid::new_v4();
     let result = sqlx::query(
         r#"INSERT INTO users (id, username, email, display_name, is_superuser, is_active, role)
-           VALUES ($1, $2, $3, $4, false, true, $5::user_role)"#,
+           VALUES ($1, $2, $3, $4, $5, true, $6::user_role)"#,
     )
     .bind(id)
     .bind(&body.username)
     .bind(&body.email)
     .bind(&body.display_name)
+    .bind(body.is_superuser)
     .bind(role)
     .execute(&state.db)
     .await;
