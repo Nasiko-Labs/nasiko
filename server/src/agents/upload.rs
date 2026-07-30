@@ -170,6 +170,28 @@ pub enum BuildJobPayload {
         ports: Vec<u16>,
         env: HashMap<String, String>,
     },
+    /// MCP-server-upload build+deploy (POST /api/mcp/connectors/upload or
+    /// /upload-github). `env` is encrypted (owner-scoped) at rest in this
+    /// JSONB payload — see `build_worker::decrypt_build_secrets`, which
+    /// decrypts it immediately before use and never persists the plaintext.
+    McpServerUpload {
+        build_id: Uuid,
+        connector_id: Uuid,
+        owner_id: Uuid,
+        name: String,
+        source: McpBuildSourcePayload,
+        image_tag: String,
+        env: HashMap<String, String>,
+    },
+}
+
+/// Source payload for `BuildJobPayload::McpServerUpload` — mirrors
+/// `crate::mcp::build::BuildSource`, but serializable (that type is
+/// constructed fresh per build and never itself persisted).
+#[derive(Debug, Serialize, Deserialize)]
+pub enum McpBuildSourcePayload {
+    Zip { zip_path: String },
+    Github { url: String },
 }
 
 impl BuildJobPayload {
@@ -179,7 +201,8 @@ impl BuildJobPayload {
             | Self::Update { build_id, .. }
             | Self::StandaloneBuild { build_id, .. }
             | Self::Clone { build_id, .. }
-            | Self::GithubClone { build_id, .. } => *build_id,
+            | Self::GithubClone { build_id, .. }
+            | Self::McpServerUpload { build_id, .. } => *build_id,
             Self::Rollback {
                 rollback_build_id, ..
             } => *rollback_build_id,
@@ -191,7 +214,8 @@ impl BuildJobPayload {
             Self::Upload { name, .. }
             | Self::Update { name, .. }
             | Self::Clone { name, .. }
-            | Self::GithubClone { name, .. } => name,
+            | Self::GithubClone { name, .. }
+            | Self::McpServerUpload { name, .. } => name,
             Self::Rollback { agent_name, .. } | Self::StandaloneBuild { agent_name, .. } => {
                 agent_name
             }
@@ -221,68 +245,41 @@ async fn upload_and_deploy(
     // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
     let mut inbound_format: Option<String> = None;
 
-    // Build a temporary directory early so we have a path to stream into.
-    // The worker cleans this up after the job completes.
-    let tmp_base = std::env::temp_dir();
-
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
             "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "inbound_format" => inbound_format = field.text().await.ok(),
             "source" | "file" => {
-                // Stream zip to disk rather than buffering it all in RAM. Key the
-                // temp dir on a fresh UUID, never the agent name (RUN-10) — two
-                // concurrent uploads of the same name previously shared one dir and
-                // each other's cleanup deleted the peer's source.
-                let upload_dir = tmp_base.join(format!("nasiko-upload-{}", uuid::Uuid::new_v4()));
-                if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
-                    tracing::error!(%e, "upload: create upload dir failed");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-                }
-                let path = upload_dir.join("upload.zip");
-
-                let mut f = match tokio::fs::File::create(&path).await {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::error!(%e, "upload: create zip file failed");
+                use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
+                match stream_field_to_fresh_temp_file(
+                    "nasiko-upload",
+                    "upload.zip",
+                    field,
+                    MAX_UPLOAD_BYTES,
+                )
+                .await
+                {
+                    Ok(path) => zip_path = Some(path),
+                    Err(StreamUploadError::TooLarge) => {
+                        tracing::warn!(
+                            limit = MAX_UPLOAD_BYTES,
+                            "upload rejected: size limit exceeded"
+                        );
+                        return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 100 MiB")
+                            .into_response();
+                    }
+                    Err(StreamUploadError::ReadFailed(e)) => {
+                        tracing::warn!(%e, "upload: read multipart chunk failed");
+                        return (StatusCode::BAD_REQUEST, "failed to read upload stream")
+                            .into_response();
+                    }
+                    Err(StreamUploadError::Io(e)) => {
+                        tracing::error!(%e, "upload: stream to disk failed");
                         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
                             .into_response();
                     }
-                };
-
-                let mut total_bytes: u64 = 0;
-                let mut chunk_stream = field;
-                loop {
-                    match chunk_stream.chunk().await {
-                        Ok(Some(chunk)) => {
-                            total_bytes += chunk.len() as u64;
-                            if total_bytes > MAX_UPLOAD_BYTES {
-                                tracing::warn!(
-                                    total_bytes,
-                                    limit = MAX_UPLOAD_BYTES,
-                                    "upload rejected: size limit exceeded"
-                                );
-                                let _ = tokio::fs::remove_dir_all(&upload_dir).await;
-                                return (StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds 100 MiB")
-                                    .into_response();
-                            }
-                            use tokio::io::AsyncWriteExt;
-                            if let Err(e) = f.write_all(&chunk).await {
-                                tracing::error!(%e, "upload: write chunk failed");
-                                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-                                    .into_response();
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(e) => {
-                            tracing::warn!(%e, "upload: read multipart chunk failed");
-                            return (StatusCode::BAD_REQUEST, "failed to read upload stream")
-                                .into_response();
-                        }
-                    }
                 }
-                zip_path = Some(path);
             }
             "ports" => {
                 if let Ok(text) = field.text().await {
@@ -1489,7 +1486,7 @@ async fn list_upload_agents(State(state): State<AppState>, claims: Claims) -> im
                    a.version,
                    a.status AS agent_status
                FROM upload_status us
-               LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+               JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
                ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
                LIMIT 50"#,
         )
@@ -1508,7 +1505,7 @@ async fn list_upload_agents(State(state): State<AppState>, claims: Claims) -> im
                    a.version,
                    a.status AS agent_status
                FROM upload_status us
-               LEFT JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+               JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
                WHERE us.owner_id = $1
                ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
                LIMIT 50"#,

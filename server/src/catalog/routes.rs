@@ -1,13 +1,12 @@
 use axum::{
-    Json,
-    Router,
-    extract::{ Path, Query, State },
+    Json, Router,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{ get, post, put },
+    routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -16,7 +15,7 @@ use nasiko_runtime::ContainerId;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-use super::models::{ Agent, AgentSummary, AgentVersion, CreateAgent, UpdateAgent };
+use super::models::{Agent, AgentSummary, AgentVersion, CreateAgent, UpdateAgent};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -26,7 +25,10 @@ pub fn router() -> Router<AppState> {
         .route("/agents/{id}", put(update))
         .route("/agents/{id}", axum::routing::delete(delete))
         .route("/agents/{id}/versions", get(list_versions))
-        .route("/agents/{id}/versions/{version}", axum::routing::delete(delete_version))
+        .route(
+            "/agents/{id}/versions/{version}",
+            axum::routing::delete(delete_version),
+        )
         .route("/agents/by-skill", get(by_skill))
         .route("/search/agents", get(search))
         .route("/search/users", get(search_users))
@@ -94,7 +96,7 @@ struct BySkillQuery {
 async fn by_skill(
     State(state): State<AppState>,
     claims: Claims,
-    Query(q): Query<BySkillQuery>
+    Query(q): Query<BySkillQuery>,
 ) -> impl IntoResponse {
     let tag = q.tag.trim();
     if tag.is_empty() {
@@ -131,13 +133,13 @@ async fn by_skill(
         access = agent_access_predicate("$4", "a")
     );
 
-    let result = sqlx
-        ::query_as::<_, AgentSummary>(&sql)
+    let result = sqlx::query_as::<_, AgentSummary>(&sql)
         .bind(&tag_lower)
         .bind(limit)
         .bind(offset)
         .bind(owner_filter)
-        .fetch_all(&state.db).await;
+        .fetch_all(&state.db)
+        .await;
 
     match result {
         Ok(list) => Json(list).into_response(),
@@ -151,19 +153,19 @@ async fn by_skill(
 async fn create(
     State(state): State<AppState>,
     claims: Claims,
-    Json(body): Json<CreateAgent>
+    Json(body): Json<CreateAgent>,
 ) -> impl IntoResponse {
-    let caps = body.capabilities.unwrap_or(
-        serde_json::json!({
+    let caps = body.capabilities.unwrap_or(serde_json::json!({
         "streaming": false,
         "pushNotifications": false,
         "stateTransitionHistory": false,
         "chat_agent": false
-    })
-    );
+    }));
     let skills_vec = body.skills.unwrap_or_default();
     // Normalise tags to lowercase at write time for consistent GIN lookup.
-    let mut tags: Vec<String> = body.tags.unwrap_or_default()
+    let mut tags: Vec<String> = body
+        .tags
+        .unwrap_or_default()
         .into_iter()
         .map(|t| t.to_lowercase())
         .collect();
@@ -260,7 +262,7 @@ fn default_limit() -> i64 {
 async fn list(
     State(state): State<AppState>,
     claims: Claims,
-    Query(q): Query<ListQuery>
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
@@ -276,7 +278,8 @@ async fn list(
 
     let sql = format!(
         r#"SELECT * FROM agents
-           WHERE ($1::uuid IS NULL OR owner_id = $1)
+           WHERE deleted_at IS NULL
+             AND ($1::uuid IS NULL OR owner_id = $1)
              AND ({access})
              AND ($2::text IS NULL OR status = $2)
            ORDER BY created_at DESC
@@ -284,20 +287,17 @@ async fn list(
         access = agent_access_predicate("$3", "agents")
     );
 
-    let agents = sqlx
-        ::query_as::<_, Agent>(&sql)
+    let agents = sqlx::query_as::<_, Agent>(&sql)
         .bind(q.owner)
         .bind(&q.status)
         .bind(owner_filter)
         .bind(limit)
         .bind(offset)
-        .fetch_all(&state.db).await;
+        .fetch_all(&state.db)
+        .await;
 
     match agents {
-        Ok(mut list) => {
-            reconcile_running_status(&state, &mut list).await;
-            Json(list).into_response()
-        }
+        Ok(list) => Json(list).into_response(),
         Err(e) => {
             tracing::error!(%e, "list agents: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
@@ -305,50 +305,23 @@ async fn list(
     }
 }
 
-/// A container that crashed after its last deploy/restart call still reads
-/// `status = 'running'` from the DB — nothing rewrites that column on its own
-/// for Docker-backed agents (the EE crash guardian only reconciles K8s
-/// deployments). Cheap enough to check on every list call: `nasiko ps`-sized
-/// fleets are small, and `runtime.status()` is a single local Docker API call
-/// per agent. Read-only override on the response, not persisted — avoids
-/// racing the crash guardian's own DB writes on K8s, and a stale read here is
-/// harmless where a stale write would linger.
-async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
-    for agent in agents.iter_mut() {
-        if agent.status != "running" {
-            continue;
-        }
-        let container_id = ContainerId::from_uuid(agent.id);
-        if let Ok(live) = state.runtime.status(&container_id).await {
-            use nasiko_runtime::RuntimeState;
-            if matches!(
-                live.state,
-                RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
-            ) {
-                agent.status = live.state.to_string();
-            }
-        }
-    }
-}
-
 async fn get_one(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<String>
+    Path(id): Path<String>,
 ) -> impl IntoResponse {
-
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
-            sqlx
-                ::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
+            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
                 .bind(uuid)
-                .fetch_optional(&state.db).await
+                .fetch_optional(&state.db)
+                .await
         }
         Err(_) => {
-            sqlx
-                ::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
+            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
                 .bind(&id)
-                .fetch_optional(&state.db).await
+                .fetch_optional(&state.db)
+                .await
         }
     };
 
@@ -403,7 +376,9 @@ async fn get_one(
         message: String,
     }
 
-    let skills: Vec<serde_json::Value> = agent.skills.0
+    let skills: Vec<serde_json::Value> = agent
+        .skills
+        .0
         .iter()
         .map(|s| serde_json::to_value(s).unwrap_or_default())
         .collect();
@@ -437,16 +412,16 @@ async fn get_one(
         data,
         status_code: 200,
         message: "Registry retrieved successfully".to_string(),
-    }).into_response()
+    })
+    .into_response()
 }
 
 async fn update(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-    Json(body): Json<UpdateAgent>
+    Json(body): Json<UpdateAgent>,
 ) -> impl IntoResponse {
-
     // Mutation → owner-or-superuser only (an invoke/public grant must not confer edit).
     if !crate::acl::can_manage_agent(&state, &claims, id).await {
         return StatusCode::FORBIDDEN.into_response();
@@ -458,7 +433,10 @@ async fn update(
     // the COALESCE write carries all skill-derived tags alongside any explicit ones.
     // All tags are normalised to lowercase for consistent GIN lookup.
     let merged_tags = if let Some(ref skill_list) = body.skills {
-        let mut tags: Vec<String> = body.tags.clone().unwrap_or_default()
+        let mut tags: Vec<String> = body
+            .tags
+            .clone()
+            .unwrap_or_default()
             .into_iter()
             .map(|t| t.to_lowercase())
             .collect();
@@ -474,7 +452,9 @@ async fn update(
         }
         Some(tags)
     } else {
-        body.tags.as_ref().map(|ts| ts.iter().map(|t| t.to_lowercase()).collect())
+        body.tags
+            .as_ref()
+            .map(|ts| ts.iter().map(|t| t.to_lowercase()).collect())
     };
 
     let mut tx = match state.db.begin().await {
@@ -485,9 +465,8 @@ async fn update(
         }
     };
 
-    let result = sqlx
-        ::query_as::<_, Agent>(
-            r#"UPDATE agents SET
+    let result = sqlx::query_as::<_, Agent>(
+        r#"UPDATE agents SET
              display_name = COALESCE($2, display_name),
              description = COALESCE($3, description),
              url = COALESCE($4, url),
@@ -502,22 +481,27 @@ async fn update(
              image = COALESCE($13, image),
              updated_at = now()
            WHERE id = $1
-           RETURNING *"#
-        )
-        .bind(id)
-        .bind(&body.display_name)
-        .bind(&body.description)
-        .bind(&body.url)
-        .bind(&body.icon_url)
-        .bind(&body.version)
-        .bind(&body.documentation_url)
-        .bind(&body.capabilities)
-        .bind(body.skills.as_ref().and_then(|s| serde_json::to_value(s).ok()))
-        .bind(&merged_tags)
-        .bind(&body.metadata)
-        .bind(&body.status)
-        .bind(&body.image)
-        .fetch_optional(&mut *tx).await;
+           RETURNING *"#,
+    )
+    .bind(id)
+    .bind(&body.display_name)
+    .bind(&body.description)
+    .bind(&body.url)
+    .bind(&body.icon_url)
+    .bind(&body.version)
+    .bind(&body.documentation_url)
+    .bind(&body.capabilities)
+    .bind(
+        body.skills
+            .as_ref()
+            .and_then(|s| serde_json::to_value(s).ok()),
+    )
+    .bind(&merged_tags)
+    .bind(&body.metadata)
+    .bind(&body.status)
+    .bind(&body.image)
+    .fetch_optional(&mut *tx)
+    .await;
 
     let agent = match result {
         Ok(Some(agent)) => agent,
@@ -531,9 +515,8 @@ async fn update(
     };
 
     // Only re-sync the skills projection when skills were actually in the request body.
-    if
-        skills_changed &&
-        let Err(e) = super::skills::sync_agent_skills(&mut tx, agent.id, &agent.skills.0).await
+    if skills_changed
+        && let Err(e) = super::skills::sync_agent_skills(&mut tx, agent.id, &agent.skills.0).await
     {
         tracing::error!(%e, agent_id = %agent.id, "update agent: sync skills failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
@@ -558,20 +541,18 @@ struct DeletedAgent {
 async fn delete(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>
+    Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-
     if !crate::acl::can_manage_agent(&state, &claims, id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
     // Fetch agent name early — gives a clean 404 before touching the runtime,
     // and provides the primary container name needed for teardown.
-    let name: String = match
-        sqlx
-            ::query_scalar("SELECT name FROM agents WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db).await
+    let name: String = match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
     {
         Ok(Some(n)) => n,
         Ok(None) => {
@@ -589,14 +570,14 @@ async fn delete(
     // the K8s namespace (e.g. 'nasiko-agents') and must not be used as a container ID.
     // In Docker OSS, k8s_deployment_name is NULL so no extra entries are added and
     // teardown falls through to the agent name only.
-    let k8s_names: Vec<String> = sqlx
-        ::query_scalar(
-            "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
-         WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL"
-        )
-        .bind(id)
-        .fetch_all(&state.db).await
-        .unwrap_or_default();
+    let k8s_names: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
+         WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
 
     let mut containers_to_stop: Vec<String> = vec![name.clone()];
     for kn in k8s_names {
@@ -609,7 +590,11 @@ async fn delete(
     let mut containers_stopped = 0usize;
     let mut runtime_errors: Vec<String> = vec![];
     for container_name in &containers_to_stop {
-        match state.runtime.destroy(&ContainerId::new(container_name)).await {
+        match state
+            .runtime
+            .destroy(&ContainerId::new(container_name))
+            .await
+        {
             Ok(()) => {
                 containers_stopped += 1;
             }
@@ -621,19 +606,22 @@ async fn delete(
         }
     }
 
-    let result = sqlx::query("DELETE FROM agents WHERE id = $1").bind(id).execute(&state.db).await;
+    let result = sqlx::query("UPDATE agents SET deleted_at = NOW() WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await;
 
     match result {
-        Ok(r) if r.rows_affected() > 0 =>
-            (
-                StatusCode::OK,
-                Json(DeletedAgent {
-                    deleted: true,
-                    agent_id: id,
-                    containers_stopped,
-                    runtime_errors,
-                }),
-            ).into_response(),
+        Ok(r) if r.rows_affected() > 0 => (
+            StatusCode::OK,
+            Json(DeletedAgent {
+                deleted: true,
+                agent_id: id,
+                containers_stopped,
+                runtime_errors,
+            }),
+        )
+            .into_response(),
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(%e, %id, "delete agent: db error");
@@ -645,19 +633,18 @@ async fn delete(
 async fn list_versions(
     State(state): State<AppState>,
     claims: Claims,
-    Path(id): Path<Uuid>
+    Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-
     if !crate::acl::can_access_agent(&state, &claims, id).await {
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let result = sqlx
-        ::query_as::<_, AgentVersion>(
-            "SELECT * FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC"
-        )
-        .bind(id)
-        .fetch_all(&state.db).await;
+    let result = sqlx::query_as::<_, AgentVersion>(
+        "SELECT * FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await;
 
     match result {
         Ok(versions) => Json(versions).into_response(),
@@ -692,16 +679,18 @@ async fn delete_version(
     .unwrap_or(false);
 
     if is_active {
-        return (StatusCode::CONFLICT, "cannot delete the active version — rollback first").into_response();
+        return (
+            StatusCode::CONFLICT,
+            "cannot delete the active version — rollback first",
+        )
+            .into_response();
     }
 
-    match sqlx::query(
-        "DELETE FROM agent_versions WHERE agent_id = $1 AND version = $2",
-    )
-    .bind(agent_id)
-    .bind(&version)
-    .execute(&state.db)
-    .await
+    match sqlx::query("DELETE FROM agent_versions WHERE agent_id = $1 AND version = $2")
+        .bind(agent_id)
+        .bind(&version)
+        .execute(&state.db)
+        .await
     {
         Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
         Ok(_) => (StatusCode::NOT_FOUND, "version not found").into_response(),
@@ -734,8 +723,7 @@ async fn delete_version(
 //   display_name → 2.5  (exact=250, prefix=225, contains=175)
 //   email        → 1.5  (exact=150, prefix=135, contains=105)
 
-const AGENT_SCORE_SQL: &str =
-    r#"
+const AGENT_SCORE_SQL: &str = r#"
     GREATEST(
         CASE
             -- ILIKE $1 is case-insensitive and allows the trigram GIN index to
@@ -772,8 +760,7 @@ const AGENT_SCORE_SQL: &str =
     )
 "#;
 
-const USER_SCORE_SQL: &str =
-    r#"
+const USER_SCORE_SQL: &str = r#"
     GREATEST(
         CASE
             WHEN username ILIKE $1                     THEN 300.0
@@ -800,7 +787,9 @@ const USER_SCORE_SQL: &str =
 /// injected (a bare `%` collapses the scoring CASEs to match-all). Postgres's
 /// default LIKE escape character is backslash, so no `ESCAPE` clause is needed.
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 // ── /agents/search ────────────────────────────────────────────────────────────
@@ -847,7 +836,7 @@ struct AgentSearchResponse {
 async fn search(
     State(state): State<AppState>,
     claims: Claims,
-    Query(sq): Query<SearchQuery>
+    Query(sq): Query<SearchQuery>,
 ) -> impl IntoResponse {
     let q = sq.q.trim().to_string();
     if q.len() < 2 {
@@ -879,12 +868,12 @@ async fn search(
         access = agent_access_predicate("$3", "agents")
     );
 
-    let result = sqlx
-        ::query_as::<_, AgentSearchResult>(&sql)
+    let result = sqlx::query_as::<_, AgentSearchResult>(&sql)
         .bind(escape_like(&q))
         .bind(sq.limit.clamp(1, 50))
         .bind(owner_filter)
-        .fetch_all(&state.db).await;
+        .fetch_all(&state.db)
+        .await;
 
     match result {
         Ok(agents) => {
@@ -892,7 +881,12 @@ async fn search(
             // window count (0 when there are no hits).
             let max_score = agents.first().map(|a| a.score).unwrap_or(0.0);
             let total = agents.first().map(|a| a.total).unwrap_or(0);
-            Json(AgentSearchResponse { agents, total, max_score }).into_response()
+            Json(AgentSearchResponse {
+                agents,
+                total,
+                max_score,
+            })
+            .into_response()
         }
         Err(e) => {
             tracing::error!(%e, "agents search: db error");
@@ -925,7 +919,7 @@ struct UserSearchResult {
 async fn search_users(
     State(state): State<AppState>,
     claims: Claims,
-    Query(sq): Query<UserSearchQuery>
+    Query(sq): Query<UserSearchQuery>,
 ) -> impl IntoResponse {
     // The user directory (usernames + emails) is sensitive — restrict to superusers
     // (CAT-4). Previously any authenticated caller could enumerate every user's email.
@@ -957,10 +951,10 @@ async fn search_users(
            LIMIT 50"#
     );
 
-    let result = sqlx
-        ::query_as::<_, UserSearchResult>(&sql)
+    let result = sqlx::query_as::<_, UserSearchResult>(&sql)
         .bind(escape_like(&q))
-        .fetch_all(&state.db).await;
+        .fetch_all(&state.db)
+        .await;
 
     match result {
         Ok(users) => {
@@ -970,7 +964,8 @@ async fn search_users(
                 "query": q,
                 "total_matches": total,
                 "showing": total,
-            })).into_response()
+            }))
+            .into_response()
         }
         Err(e) => {
             tracing::error!(%e, "search_users: db error");
@@ -1011,7 +1006,8 @@ async fn registry_user_agents(
         let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
         sqlx::query_as::<_, Agent>(
             r#"SELECT * FROM agents
-               WHERE ($1::text IS NULL OR (name ILIKE $1 OR description ILIKE $1))
+               WHERE deleted_at IS NULL
+                 AND ($1::text IS NULL OR (name ILIKE $1 OR description ILIKE $1))
                  AND ($2::text IS NULL OR status = $2)
                ORDER BY created_at DESC
                LIMIT $3 OFFSET $4"#,
@@ -1026,7 +1022,8 @@ async fn registry_user_agents(
         let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
         sqlx::query_as::<_, Agent>(
             r#"SELECT * FROM agents
-               WHERE (
+               WHERE deleted_at IS NULL
+                 AND (
                    owner_id = $1
                    OR is_public = true
                    OR EXISTS (
@@ -1067,15 +1064,23 @@ async fn registry_user_agents(
                 status_code: u16,
                 message: String,
             }
-            let data = list.into_iter().map(|a| SimpleAgent {
-                agent_id: a.id,
-                name: a.name,
-                icon_url: a.icon_url,
-                tags: a.tags,
-                description: a.description,
-                owner_id: a.owner_id,
-            }).collect();
-            Json(Response { data, status_code: 200, message: "success".to_string() }).into_response()
+            let data = list
+                .into_iter()
+                .map(|a| SimpleAgent {
+                    agent_id: a.id,
+                    name: a.name,
+                    icon_url: a.icon_url,
+                    tags: a.tags,
+                    description: a.description,
+                    owner_id: a.owner_id,
+                })
+                .collect();
+            Json(Response {
+                data,
+                status_code: 200,
+                message: "success".to_string(),
+            })
+            .into_response()
         }
         Err(e) => {
             tracing::error!(%e, "registry_user_agents: db error");
