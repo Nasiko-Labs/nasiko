@@ -146,7 +146,7 @@ fn headers_fingerprint(headers: &std::collections::HashMap<String, String>) -> S
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::*;
     use crate::config::McpConfig;
@@ -162,14 +162,17 @@ mod tests {
             url: url.into(),
             headers: HashMap::new(),
             transport: "streamable_http".into(),
+            trusted: false,
         }
     }
 
-    fn empty_perms() -> PermissionContext {
+    /// A permissive baseline for tests that aren't exercising the enable/rule
+    /// model itself — under the default-deny allowlist, a connector must be
+    /// named here to be reachable at all.
+    fn perms_enabling(ids: &[Uuid]) -> PermissionContext {
         PermissionContext {
-            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
-            disabled_connectors: Default::default(),
+            enabled_connectors: ids.iter().copied().collect(),
             rules: vec![],
             hash: "h".into(),
         }
@@ -198,16 +201,22 @@ mod tests {
                 composio_base_url: "http://localhost".to_string(),
                 composio_webhook_secret: None,
                 gateway_public_url: None,
+                oauth_redirect_base_url: None,
+                composio_callback_base_url: None,
                 session_ttl_seconds: 60,
                 perm_cache_ttl_seconds: 60,
                 manifest_ttl_seconds: 60,
+                toolcount_ttl_seconds: 3600,
                 oauth_state_signing_key: "test".to_string(),
+                description_model: "gpt-4o-mini".to_string(),
             },
             providers: Providers {
                 composio: None,
-                mcp: GenericMcpProvider::new(reqwest::Client::new()),
+                mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
+            endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
+            llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
         }
     }
 
@@ -319,9 +328,16 @@ mod tests {
         ];
 
         let state = test_state();
-        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None)
-            .await
-            .unwrap();
+        let merged = aggregate_tools(
+            &state,
+            Uuid::new_v4(),
+            &servers,
+            &[],
+            &perms_enabling(&[good_id]),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             merged.len(),
@@ -349,9 +365,16 @@ mod tests {
         let id = Uuid::new_v4();
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
-        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None)
-            .await
-            .unwrap();
+        let merged = aggregate_tools(
+            &state,
+            Uuid::new_v4(),
+            &servers,
+            &[],
+            &perms_enabling(&[id]),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(merged.len(), 1);
         assert_eq!(
@@ -375,9 +398,16 @@ mod tests {
         let id = Uuid::new_v4();
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
-        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &empty_perms(), None)
-            .await
-            .unwrap();
+        let merged = aggregate_tools(
+            &state,
+            Uuid::new_v4(),
+            &servers,
+            &[],
+            &perms_enabling(&[id]),
+            None,
+        )
+        .await
+        .unwrap();
 
         // Current behavior: the aggregator does not dedupe by tool name —
         // both entries survive namespacing, producing two identically-named
@@ -406,9 +436,8 @@ mod tests {
         // `get_stance()` is ever consulted for this backend's tools, so the
         // rule is irrelevant: the whole connector's tools are dropped.
         let perms = PermissionContext {
-            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
-            disabled_connectors: [id].into_iter().collect(),
+            enabled_connectors: HashSet::new(), // connector not enabled → tools dropped
             rules: vec![PermissionRule {
                 connector_id: id,
                 tool_pattern: "*".into(),
@@ -436,9 +465,8 @@ mod tests {
         let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
         let state = test_state();
         let perms = PermissionContext {
-            user_id: Uuid::nil(),
             agent_id: Uuid::nil(),
-            disabled_connectors: Default::default(),
+            enabled_connectors: [id].into_iter().collect(),
             rules: vec![PermissionRule {
                 connector_id: id,
                 tool_pattern: "send_*".into(),

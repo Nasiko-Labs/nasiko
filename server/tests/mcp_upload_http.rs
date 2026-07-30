@@ -31,14 +31,18 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 async fn create_user(server: &common::TestServer, admin_id: &str, username: &str) -> Value {
-    common::as_superuser(server.client.post(server.url("/api/users")), admin_id, "admin")
-        .json(&json!({"username": username, "email": format!("{username}@test.local")}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()
+    common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": username, "email": format!("{username}@test.local")}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
 }
 
 fn minimal_zip() -> Vec<u8> {
@@ -65,78 +69,116 @@ async fn upload_zip_queues_a_real_build_job() {
     let mut form = reqwest::multipart::Form::new()
         .text("name", format!("http-test-{}", Uuid::new_v4().simple()))
         .text("version_tag", "v1");
-    form = form.part("source", reqwest::multipart::Part::bytes(minimal_zip()).file_name("upload.zip"));
+    form = form.part(
+        "source",
+        reqwest::multipart::Part::bytes(minimal_zip()).file_name("upload.zip"),
+    );
 
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors/upload")), user_id, "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors/upload")),
+        user_id,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
-    let connector_id: Uuid = body["data"]["connector_id"].as_str().unwrap().parse().unwrap();
+    let connector_id: Uuid = body["data"]["connector_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
     let build_id: Uuid = body["data"]["build_id"].as_str().unwrap().parse().unwrap();
 
     // The real build-worker loop (spawned inside AppState — it is NOT a
     // no-op in this test harness) claims this job almost immediately with
     // `FakeRuntime`, whose fake endpoint has nothing real listening behind
     // it — so the exact status is a genuine race (pending → building →
-    // eventually failed once the readiness check exhausts its retries).
-    // These assertions check the identity/relationships Step 10 is actually
-    // responsible for, tolerant of exactly which non-final-success state the
-    // race landed on (it can never reach 'running'/is_active=true here, since
-    // no real MCP server is ever actually reachable).
-    let row: (String, String, bool, String) = sqlx::query_as(
+    // eventually failed once the readiness check exhausts its retries). On
+    // reaching 'failed' with no prior successful build, `fail_mcp_connector`
+    // now DELETES the connector row entirely (mirrors
+    // `agents::utils::delete_agent_or_mark_failed`) rather than leaving it
+    // marked 'failed' — so "the row is gone" is now an equally valid outcome
+    // of this race, alongside the pre-terminal states. These assertions check
+    // the identity/relationships Step 10 is actually responsible for,
+    // tolerant of exactly where in that race (including past its end) things
+    // landed (it can never reach 'running'/is_active=true here, since no real
+    // MCP server is ever actually reachable).
+    let row: Option<(String, String, bool, String)> = sqlx::query_as(
         "SELECT source_kind::text, build_status, is_active, provider_type FROM mcp_connectors WHERE id = $1",
     )
     .bind(connector_id)
-    .fetch_one(&server.db)
+    .fetch_optional(&server.db)
     .await
     .unwrap();
-    assert_eq!(row.0, "uploaded_build");
-    assert!(
-        ["pending", "building", "failed"].contains(&row.1.as_str()),
-        "unexpected build_status: {}",
-        row.1
-    );
-    assert!(!row.2, "must never become active against a fake, unreachable endpoint");
-    assert_eq!(row.3, "mcp_server");
+    match row {
+        Some(row) => {
+            assert_eq!(row.0, "uploaded_build");
+            assert!(
+                ["pending", "building", "failed"].contains(&row.1.as_str()),
+                "unexpected build_status: {}",
+                row.1
+            );
+            assert!(
+                !row.2,
+                "must never become active against a fake, unreachable endpoint"
+            );
+            assert_eq!(row.3, "mcp_server");
+        }
+        None => {
+            // The race landed past the terminal failure — `mcp_connector_builds`
+            // and `build_jobs` must have cascade-deleted along with it (ON
+            // DELETE CASCADE on both), not been left orphaned.
+            let orphaned_build: Option<Uuid> =
+                sqlx::query_scalar("SELECT connector_id FROM mcp_connector_builds WHERE id = $1")
+                    .bind(build_id)
+                    .fetch_optional(&server.db)
+                    .await
+                    .unwrap();
+            assert!(
+                orphaned_build.is_none(),
+                "build row must cascade-delete with its connector, not be left orphaned"
+            );
+            let orphaned_job: Option<Uuid> =
+                sqlx::query_scalar("SELECT connector_id FROM build_jobs WHERE connector_id = $1")
+                    .bind(connector_id)
+                    .fetch_optional(&server.db)
+                    .await
+                    .unwrap();
+            assert!(
+                orphaned_job.is_none(),
+                "build_jobs row must cascade-delete with its connector, not be left orphaned"
+            );
+        }
+    }
 
-    let build_row: (Uuid, String) =
-        sqlx::query_as("SELECT connector_id, status FROM mcp_connector_builds WHERE id = $1")
-            .bind(build_id)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(build_row.0, connector_id);
-    assert!(["pending", "building", "failed"].contains(&build_row.1.as_str()));
-
-    let job: (Option<Uuid>, Option<Uuid>, String) =
-        sqlx::query_as("SELECT agent_id, connector_id, status FROM build_jobs WHERE connector_id = $1")
-            .bind(connector_id)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(job.0, None, "an MCP job must never set agent_id");
-    assert_eq!(job.1, Some(connector_id));
-    assert!(["pending", "in_progress", "failed"].contains(&job.2.as_str()));
-
-    // build-status polling reflects the same (racy but bounded) state.
+    // build-status polling reflects the same (racy but bounded) state — a 404
+    // (connector deleted after a first-time failure) is just as valid an
+    // outcome now as a 200 with a pre-terminal/failed status.
     let status_res = common::as_superuser(
-        server.client.get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-status"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-status"))),
         user_id,
         "admin",
     )
     .send()
     .await
     .unwrap();
-    assert_eq!(status_res.status(), 200);
-    let status_body: Value = status_res.json().await.unwrap();
-    let build_status = status_body["data"]["build_status"].as_str().unwrap();
-    assert!(
-        ["pending", "building", "failed"].contains(&build_status),
-        "unexpected build_status in response: {status_body}"
-    );
+    let status_code = status_res.status();
+    if status_code == 404 {
+        // Connector already deleted — consistent with the `row.is_none()` branch above.
+    } else {
+        assert_eq!(status_code, 200);
+        let status_body: Value = status_res.json().await.unwrap();
+        let build_status = status_body["data"]["build_status"].as_str().unwrap();
+        assert!(
+            ["pending", "building", "failed"].contains(&build_status),
+            "unexpected build_status in response: {status_body}"
+        );
+    }
 
     server.cleanup().await;
 }
@@ -149,13 +191,20 @@ async fn upload_zip_requires_name() {
     let user_id = admin["user_id"].as_str().unwrap();
 
     let mut form = reqwest::multipart::Form::new().text("version_tag", "v1");
-    form = form.part("source", reqwest::multipart::Part::bytes(minimal_zip()).file_name("upload.zip"));
+    form = form.part(
+        "source",
+        reqwest::multipart::Part::bytes(minimal_zip()).file_name("upload.zip"),
+    );
 
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors/upload")), user_id, "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors/upload")),
+        user_id,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 400);
 
     server.cleanup().await;
@@ -168,13 +217,19 @@ async fn upload_zip_requires_source() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let form = reqwest::multipart::Form::new().text("name", "no-source-test").text("version_tag", "v1");
+    let form = reqwest::multipart::Form::new()
+        .text("name", "no-source-test")
+        .text("version_tag", "v1");
 
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors/upload")), user_id, "admin")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors/upload")),
+        user_id,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 400);
 
     server.cleanup().await;
@@ -187,15 +242,21 @@ async fn upload_github_rejects_disallowed_host() {
     let admin = init_admin(&server).await;
     let user_id = admin["user_id"].as_str().unwrap();
 
-    let res = common::as_superuser(server.client.post(server.url("/api/mcp/connectors/upload-github")), user_id, "admin")
-        .json(&json!({
-            "name": "github-test",
-            "version_tag": "v1",
-            "github_url": "https://evil.example.com/repo.git",
-        }))
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server
+            .client
+            .post(server.url("/api/mcp/connectors/upload-github")),
+        user_id,
+        "admin",
+    )
+    .json(&json!({
+        "name": "github-test",
+        "version_tag": "v1",
+        "github_url": "https://evil.example.com/repo.git",
+    }))
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 400);
 
     // Nothing should have been queued for a rejected URL.
@@ -223,18 +284,27 @@ async fn build_status_and_build_logs_require_ownership() {
     let mut form = reqwest::multipart::Form::new()
         .text("name", format!("owned-{}", Uuid::new_v4().simple()))
         .text("version_tag", "v1");
-    form = form.part("source", reqwest::multipart::Part::bytes(minimal_zip()).file_name("upload.zip"));
-    let upload_res = common::as_member(server.client.post(server.url("/api/mcp/connectors/upload")), alice_id, "up-alice")
-        .multipart(form)
-        .send()
-        .await
-        .unwrap();
+    form = form.part(
+        "source",
+        reqwest::multipart::Part::bytes(minimal_zip()).file_name("upload.zip"),
+    );
+    let upload_res = common::as_member(
+        server.client.post(server.url("/api/mcp/connectors/upload")),
+        alice_id,
+        "up-alice",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
     let body: Value = upload_res.json().await.unwrap();
     let connector_id = body["data"]["connector_id"].as_str().unwrap();
 
     // Bob (a real, non-admin, non-owning user) must be forbidden from both routes.
     let status_res = common::as_member(
-        server.client.get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-status"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-status"))),
         bob_id,
         "up-bob",
     )
@@ -244,7 +314,9 @@ async fn build_status_and_build_logs_require_ownership() {
     assert_eq!(status_res.status(), 403);
 
     let logs_res = common::as_member(
-        server.client.get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-logs"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-logs"))),
         bob_id,
         "up-bob",
     )
@@ -256,7 +328,9 @@ async fn build_status_and_build_logs_require_ownership() {
     // Alice (the real owner, not an admin) can still reach both — proves this
     // is a genuine ownership check, not just an admin bypass.
     let owner_status_res = common::as_member(
-        server.client.get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-status"))),
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/connectors/{connector_id}/build-status"))),
         alice_id,
         "up-alice",
     )

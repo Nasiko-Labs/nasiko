@@ -38,6 +38,10 @@ pub struct McpState {
     /// `ContainerRuntime`-backed impl at `AppState` construction, same swap
     /// pattern as `authorizer` above.
     pub endpoint_refresher: Arc<dyn EndpointRefresher>,
+    /// Best-effort LLM fallback for connector/tool descriptions the native
+    /// source didn't provide — see `description_backfill`. Never used when a
+    /// native description is already present.
+    pub llm: nasiko_orchestrator::providers::LLMProvider,
 }
 
 impl McpState {
@@ -50,6 +54,7 @@ impl McpState {
     ) -> Self {
         let mcp_config = McpConfig::from_config(config);
         let providers = Providers::new(http_client.clone(), &mcp_config);
+        let llm = nasiko_orchestrator::providers::LLMProvider::from_env(http_client.clone());
         Self {
             db,
             redis,
@@ -59,6 +64,7 @@ impl McpState {
             providers,
             authorizer: Arc::new(OssConnectorAuthorizer),
             endpoint_refresher: Arc::new(NoopEndpointRefresher),
+            llm,
         }
     }
 }

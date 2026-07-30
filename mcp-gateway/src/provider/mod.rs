@@ -74,6 +74,19 @@ pub struct ComposioSession {
 pub struct ToolDescriptor {
     pub name: String,
     pub description: Option<String>,
+    /// The tool's input parameter schema, when the backend provides one —
+    /// used only as LLM-fallback signal (`description_backfill`) when
+    /// `description` is `None`; never persisted.
+    pub input_schema: Option<Value>,
+}
+
+/// A toolkit's own catalog description (distinct from any one tool's
+/// description) — Composio's `GET /toolkits/{slug}` `meta.description`.
+/// Deliberately carries no logo field — logos are the platform's own images,
+/// never fetched from Composio.
+#[derive(Debug, Clone, Default)]
+pub struct ToolkitMetadata {
+    pub description: Option<String>,
 }
 
 // ─── ToolProvider trait (Composio management surface) ───────────────────────
@@ -136,6 +149,10 @@ pub trait ToolProvider: Send + Sync {
 
     /// List the tools in a Composio toolkit (for the per-agent permission UI).
     async fn list_toolkit_tools(&self, toolkit: &str) -> Result<Vec<ToolDescriptor>>;
+
+    /// Downcast support for accessing provider-specific methods (e.g.
+    /// `ComposioProvider::list_tools_for_toolkits`).
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // ─── Registry ───────────────────────────────────────────────────────────────
@@ -159,14 +176,18 @@ impl Providers {
                 config.composio_base_url.clone(),
             )) as Arc<dyn ToolProvider>
         });
-        // The generic transport talks to user-registered backend URLs, so it uses
-        // an SSRF/DNS-rebinding-guarded client (rejects private/internal targets
-        // at resolution time) rather than the platform's shared client, which must
-        // still reach internal hosts. The Composio session URL it also calls is
-        // public, so the guard is transparent there.
+        // The generic transport talks to user-registered backend URLs by default,
+        // so it uses an SSRF/DNS-rebinding-guarded client (rejects private/internal
+        // targets at resolution time) rather than the platform's shared client,
+        // which must still reach internal hosts. The Composio session URL it also
+        // calls is public, so the guard is transparent there. `http` (the
+        // platform's own client, already passed in for the Composio provider
+        // above) is reused as the `plain` client for `trusted == true` backends —
+        // i.e. uploaded-build MCP-server connectors, whose address the platform
+        // itself resolved, not a user.
         Self {
             composio,
-            mcp: GenericMcpProvider::new(crate::net::guarded_http_client()),
+            mcp: GenericMcpProvider::new(crate::net::guarded_http_client(), http),
         }
     }
 
@@ -193,6 +214,13 @@ pub(crate) fn v_str(v: &Value, key: &str) -> Option<String> {
 /// resolve without brittle typed deserialization.
 pub(crate) fn first_str(v: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| v_str(v, k))
+}
+
+/// Same tolerance as [`first_str`], for a field whose value is itself a JSON
+/// object (e.g. a tool's input parameter schema) rather than a string.
+pub(crate) fn first_value(v: &Value, keys: &[&str]) -> Option<Value> {
+    keys.iter()
+        .find_map(|k| v.get(k).filter(|val| !val.is_null()).cloned())
 }
 
 /// Normalize a raw Composio connection status into the three states our

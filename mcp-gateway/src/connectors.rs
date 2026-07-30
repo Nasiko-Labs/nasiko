@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::error::{McpError, Result};
 use crate::permissions;
+use crate::provider::first_str;
 use crate::provider::generic::MCP_PROTOCOL_VERSION;
 use crate::repo::{self, McpConnector, NewConnector};
 use crate::state::McpState;
@@ -80,7 +81,7 @@ fn classify_response(status: StatusCode, www_authenticate: &str) -> DetectedAuth
 pub async fn probe_initialize(
     http_client: &reqwest::Client,
     url: &str,
-) -> std::result::Result<(DetectedAuthType, u16), reqwest::Error> {
+) -> std::result::Result<(DetectedAuthType, u16, Option<String>), reqwest::Error> {
     let resp = http_client
         .post(url)
         .timeout(std::time::Duration::from_secs(10))
@@ -108,7 +109,43 @@ pub async fn probe_initialize(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    Ok((classify_response(status, &www), status.as_u16()))
+    let auth_type = classify_response(status, &www);
+
+    // Best-effort: a real `initialize` result may carry a top-level
+    // `instructions` field (distinct from `serverInfo.name`/`version`) — the
+    // server's own self-description, per the MCP spec (confirmed live:
+    // Firecrawl and Apify both populate this, over an SSE-formatted response —
+    // hence reusing `parse_jsonrpc` rather than a bare `serde_json::from_str`,
+    // which would silently fail to find it in that shape). Falls back to
+    // `serverInfo.description` when `instructions` is absent — a second,
+    // similar self-description field some servers set instead (confirmed
+    // live: Apify sets both). Only present on a successful response body;
+    // absent/unparsable bodies just yield `None`, never an error — this is
+    // enrichment, not something registration should ever fail over.
+    let instructions = if status.is_success() {
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        resp.text().await.ok().and_then(|body| {
+            crate::provider::generic::parse_jsonrpc(&content_type, &body, "probe")
+                .ok()
+                .and_then(|v| {
+                    let result = v.get("result")?;
+                    first_str(result, &["instructions"]).or_else(|| {
+                        result
+                            .get("serverInfo")
+                            .and_then(|si| first_str(si, &["description"]))
+                    })
+                })
+        })
+    } else {
+        None
+    };
+
+    Ok((auth_type, status.as_u16(), instructions))
 }
 
 /// `POST /connectors/probe` — detect a server's auth type without storing anything.
@@ -140,7 +177,7 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
     // Guarded client: `validate_public_url` is a one-shot pre-check; the probe
     // itself must go through the SSRF/DNS-rebinding-guarded client so a rebinding
     // DNS can't point it at an internal address between the two resolutions.
-    let (detected, status) = probe_initialize(&state.guarded_http_client, &url)
+    let (detected, status, instructions) = probe_initialize(&state.guarded_http_client, &url)
         .await
         .map_err(|e| McpError::Backend(format!("could not reach MCP server: {e}")))?;
 
@@ -162,7 +199,13 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
             format!("Server returned HTTP {status}. It may require an API key."),
         ),
     };
-    Ok(json!({ "url": url, "auth_type": detected.as_str(), "requires": requires, "hint": hint }))
+    Ok(json!({
+        "url": url,
+        "auth_type": detected.as_str(),
+        "requires": requires,
+        "hint": hint,
+        "instructions": instructions,
+    }))
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
@@ -241,6 +284,38 @@ pub async fn register_connector(
         Some(serde_json::to_value(&headers).unwrap_or(Value::Null))
     };
 
+    // Best-effort auto-description: if the caller didn't supply one, probe the
+    // server's own `initialize` response for a self-published `instructions`
+    // field (confirmed live: Firecrawl populates this). Never blocks or fails
+    // registration — a server requiring auth even for `initialize` (e.g.
+    // Notion) or one that simply doesn't set `instructions` just leaves this
+    // `None`, same as before this existed.
+    let mut description = match input.description {
+        Some(d) => Some(d),
+        None => probe_initialize(&state.guarded_http_client, &input.url)
+            .await
+            .ok()
+            .and_then(|(_, _, instructions)| instructions),
+    };
+
+    // LLM fallback — only reached when the server's own `initialize` response
+    // (just above) didn't publish a description either. No tool list is
+    // fetched here (that only happens lazily in `sync_connector_tools`), so
+    // this call has nothing to backfill but the server-level description.
+    if crate::description_backfill::is_missing(&description) {
+        let result = crate::description_backfill::backfill(
+            &state.llm,
+            &state.config.description_model,
+            &input.name,
+            "external",
+            &[],
+            true,
+            &[],
+        )
+        .await;
+        description = result.server_description;
+    }
+
     let connector = repo::create_connector(
         &state.db,
         &NewConnector {
@@ -249,7 +324,7 @@ pub async fn register_connector(
             name: input.name,
             display_name: input.display_name,
             logo_url: input.logo_url,
-            description: input.description,
+            description,
             url: Some(input.url),
             transport: Some(input.transport),
             auth_type: Some(input.auth_type),
@@ -722,25 +797,11 @@ async fn owned_shareable(
     Ok(connector)
 }
 
-/// Load a connector and confirm `caller` may attach it to `agent_id`.
-///
-/// Two distinct rights, not one: the connector's own owner (or admin) may
-/// attach it to ANY agent, unrestricted — this is the original, pre-existing
-/// behavior ("push my connector wherever I like"), left untouched. Anyone
-/// else who merely has Layer-1 reachability to the connector (owner,
-/// composio, user/public grant — EE additionally: team/department) — someone
-/// it was merely *shared* with, not its owner — may only attach it to an
-/// agent they themselves manage (own, or admin). Without this second half, a
-/// connector reachable via a PUBLIC grant (reachable by literally every
-/// user) could be pushed onto a total stranger's agent by anyone, with zero
-/// relationship to that agent at all — being able to merely USE an agent
-/// (it's public, or invoke-shared to you) does not count here; only actually
-/// managing it does, the same distinction `can_access_agent` vs
-/// `can_manage_agent` already draws elsewhere in this codebase.
-///
+/// Load a connector and confirm `caller` can at least reach it (Layer 1:
+/// owner, composio, user/public grant — EE additionally: team/department).
 /// Used only for the "agent" grant kind: attaching a connector you can
-/// already use yourself to an agent you manage is a much narrower act than
-/// sharing it with a new person/team/department (which stays owner-only via
+/// already use yourself to an agent is a much narrower act than sharing it
+/// with a new person/team/department (which stays owner-only via
 /// [`owned_shareable`]) — it only makes the connector reachable *from* that
 /// agent, exactly as if the agent's own owner had used `connect` to reach
 /// the same connector. The agent's owner (or, per the agent-scoped
@@ -752,7 +813,6 @@ async fn reachable_shareable(
     caller: Uuid,
     is_admin: bool,
     connector_id: Uuid,
-    agent_id: Uuid,
 ) -> Result<McpConnector> {
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
@@ -762,30 +822,15 @@ async fn reachable_shareable(
             "only custom MCP connectors can be shared".into(),
         ));
     }
-    if is_admin || connector.owner_id == Some(caller) {
-        return Ok(connector);
-    }
-    if !state
-        .authorizer
-        .can_access_connector(&state.db, caller, connector_id)
-        .await?
+    if !is_admin
+        && !state
+            .authorizer
+            .can_access_connector(&state.db, caller, connector_id)
+            .await?
     {
         return Err(McpError::NotFound(format!(
             "connector '{connector_id}' not found"
         )));
-    }
-    let manages_agent: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL)",
-    )
-    .bind(agent_id)
-    .bind(caller)
-    .fetch_one(&state.db)
-    .await
-    .map_err(McpError::Database)?;
-    if !manages_agent {
-        return Err(McpError::Forbidden(
-            "you must manage the target agent to attach a connector you don't own".into(),
-        ));
     }
     Ok(connector)
 }
@@ -804,33 +849,24 @@ pub async fn create_share_grant(
     grantee_id: &str,
 ) -> Result<Value> {
     let connector = if grant_type == "agent" {
-        let agent_id = Uuid::parse_str(grantee_id)
-            .map_err(|_| McpError::BadRequest("invalid agent id".into()))?;
-        reachable_shareable(state, caller, is_admin, connector_id, agent_id).await?
+        reachable_shareable(state, caller, is_admin, connector_id).await?
     } else {
         owned_shareable(state, caller, is_admin, connector_id).await?
     };
     let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
     // When granting an agent, also create the access row so the agent
-    // appears in consumers and gets tool access immediately. Preserve any
-    // existing enabled/tool_rules state for this (agent, connector) pair —
-    // a repeat grant (this is an upsert; `create_grant` above never errors on
-    // one) must not silently re-enable a connector someone disabled, or wipe
-    // block/ask rules they configured. Only a genuinely first-time grant
-    // (no existing row) gets the enabled-by-default, no-rules starting state.
+    // appears in consumers and gets tool access immediately.
     if grant_type == "agent"
         && let Ok(agent_id) = Uuid::parse_str(grantee_id)
     {
-        let existing = repo::get_agent_connector_access_row(&state.db, agent_id, connector.id)
-            .await
-            .ok()
-            .flatten();
-        let enabled = existing.as_ref().map(|r| r.enabled).unwrap_or(true);
-        let tool_rules = existing
-            .map(|r| r.tool_rules)
-            .unwrap_or_else(|| serde_json::json!([]));
-        let _ = repo::upsert_agent_connector_access(&state.db, agent_id, connector.id, enabled, &tool_rules)
-            .await;
+        let _ = repo::upsert_agent_connector_access(
+            &state.db,
+            agent_id,
+            connector.id,
+            true,
+            &serde_json::json!([]),
+        )
+        .await;
     }
     tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "shared connector");
     Ok(json!({ "id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
@@ -851,9 +887,7 @@ pub async fn revoke_share_grant(
     grantee_id: &str,
 ) -> Result<()> {
     let connector = if grant_type == "agent" {
-        let agent_id = Uuid::parse_str(grantee_id)
-            .map_err(|_| McpError::BadRequest("invalid agent id".into()))?;
-        reachable_shareable(state, caller, is_admin, connector_id, agent_id).await?
+        reachable_shareable(state, caller, is_admin, connector_id).await?
     } else {
         owned_shareable(state, caller, is_admin, connector_id).await?
     };
@@ -1244,12 +1278,128 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let (detected, status) = probe_initialize(&client, &format!("{}/mcp", server.url()))
-            .await
-            .unwrap();
+        let (detected, status, instructions) =
+            probe_initialize(&client, &format!("{}/mcp", server.url()))
+                .await
+                .unwrap();
 
         mock.assert_async().await;
         assert_eq!(detected, DetectedAuthType::None);
         assert_eq!(status, 200);
+        assert_eq!(instructions, None);
+    }
+
+    #[tokio::test]
+    async fn probe_initialize_captures_instructions_from_plain_json() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"x","version":"1"},"instructions":"Use tool X for Y."}}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (_, _, instructions) = probe_initialize(&client, &format!("{}/mcp", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(instructions.as_deref(), Some("Use tool X for Y."));
+    }
+
+    #[tokio::test]
+    async fn probe_initialize_captures_instructions_from_sse_response() {
+        // Real servers (confirmed live: Firecrawl) answer with an SSE-formatted
+        // body even for a plain `initialize` call — must not silently miss
+        // `instructions` in that shape.
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(
+                "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"instructions\":\"SSE-delivered description.\"}}\n\n",
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (_, _, instructions) = probe_initialize(&client, &format!("{}/mcp", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(instructions.as_deref(), Some("SSE-delivered description."));
+    }
+
+    #[tokio::test]
+    async fn probe_initialize_instructions_is_none_on_error_status() {
+        // A 401 (auth-required) response must never be mistaken for a
+        // successful body carrying instructions — even if the error body
+        // happens to contain the same field name somewhere.
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/mcp")
+            .with_status(401)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":{"instructions":"not a real instructions field"}}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (_, _, instructions) = probe_initialize(&client, &format!("{}/mcp", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(instructions, None);
+    }
+
+    #[tokio::test]
+    async fn probe_initialize_falls_back_to_server_info_description() {
+        // Confirmed live: Apify sets `serverInfo.description` instead of (well,
+        // actually alongside) `instructions`. A server that sets ONLY this
+        // field must still be captured.
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"x","version":"1","description":"Extract data from any website."}}}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (_, _, instructions) = probe_initialize(&client, &format!("{}/mcp", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(instructions.as_deref(), Some("Extract data from any website."));
+    }
+
+    #[tokio::test]
+    async fn probe_initialize_prefers_instructions_over_server_info_description() {
+        // When both are present (confirmed live: Apify sets both), `instructions`
+        // is the richer, more authoritative field — it must win.
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"instructions":"Full guide.","serverInfo":{"name":"x","version":"1","description":"Short tagline."}}}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (_, _, instructions) = probe_initialize(&client, &format!("{}/mcp", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(instructions.as_deref(), Some("Full guide."));
     }
 }

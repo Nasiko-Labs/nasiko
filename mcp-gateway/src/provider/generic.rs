@@ -20,9 +20,21 @@ use serde_json::{Value, json};
 use crate::error::{McpError, Result};
 use crate::types::MCPServerConfig;
 
-/// Protocol version advertised in the MCP `initialize` handshake. Servers that
-/// only speak an older revision negotiate down in their response.
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Protocol version advertised in the MCP `initialize` handshake when this
+/// gateway calls OUT to a backend MCP server. Servers that only speak an
+/// older revision negotiate down in their response.
+///
+/// Distinct from `types::PROTOCOL_VERSION`, which is what this gateway
+/// advertises INWARD to agents calling it — a separate concern, correctly
+/// pinned independently. Every other outbound call to a backend (probing,
+/// OAuth discovery) must reuse *this* constant rather than hardcoding its own
+/// copy of the version string: `connectors::probe_initialize` and
+/// `oauth`'s discovery probe both used to hardcode the older "2024-11-05"
+/// after this one was bumped, so a real, spec-compliant, no-auth backend that
+/// only accepts the current version replied 406 to the stale probe — and
+/// `classify_response`'s fallback then misreported that 406 as "requires a
+/// bearer token", for a reason that had nothing to do with authentication.
+pub(crate) const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Default per-request timeout for a `tools/call` forward.
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -66,7 +78,14 @@ enum Attempt {
 
 #[derive(Clone)]
 pub struct GenericMcpProvider {
-    http: reqwest::Client,
+    /// SSRF/DNS-rebinding-guarded client — used for every backend whose URL a
+    /// user typed in (`server.trusted == false`, the default).
+    guarded: reqwest::Client,
+    /// The platform's own shared client — used only for `server.trusted ==
+    /// true` (an uploaded-build connector's URL, resolved by
+    /// `ContainerRuntime::endpoint()`, never user-typed). See `net.rs`'s
+    /// top-of-file doc comment for why both coexist.
+    plain: reqwest::Client,
     /// Negotiated `Mcp-Session-Id` per backend URL. In-process (not Redis): an
     /// MCP session is bound to the node that initialized it, so sharing it across
     /// horizontally-scaled nodes would be wrong — each node negotiates its own,
@@ -75,10 +94,22 @@ pub struct GenericMcpProvider {
 }
 
 impl GenericMcpProvider {
-    pub fn new(http: reqwest::Client) -> Self {
+    /// `guarded` is used for every backend by default; `plain` only for
+    /// `server.trusted == true` (see the struct's field docs).
+    pub fn new(guarded: reqwest::Client, plain: reqwest::Client) -> Self {
         Self {
-            http,
+            guarded,
+            plain,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// The client to use for one backend, per its `trusted` flag.
+    fn client_for(&self, server: &MCPServerConfig) -> &reqwest::Client {
+        if server.trusted {
+            &self.plain
+        } else {
+            &self.guarded
         }
     }
 
@@ -146,7 +177,7 @@ impl GenericMcpProvider {
         // `.json()` sets the body and Content-Type. We add Accept for both
         // response encodings, then layer the per-server auth headers on top.
         let mut req = self
-            .http
+            .client_for(server)
             .post(&server.url)
             .timeout(timeout)
             .header("Accept", "application/json, text/event-stream")
@@ -189,11 +220,20 @@ impl GenericMcpProvider {
             )));
         }
 
-        Ok(Attempt::Done(parse_jsonrpc(
-            &content_type,
-            &text,
-            &server.name,
-        )?))
+        let parsed = parse_jsonrpc(&content_type, &text, &server.name)?;
+        // Some backends don't follow the "400/404 + 'session'" convention
+        // above — they answer with HTTP 200 and a JSON-RPC-level `error`
+        // instead. Recognize that too so the initialize+retry dance still
+        // fires for them, rather than treating the error as a normal response.
+        if let Some(msg) = parsed
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            && msg.to_lowercase().contains("session")
+        {
+            return Ok(Attempt::NeedsSession);
+        }
+        Ok(Attempt::Done(parsed))
     }
 
     /// Perform the MCP `initialize` handshake, returning the negotiated
@@ -217,7 +257,7 @@ impl GenericMcpProvider {
         });
 
         let mut req = self
-            .http
+            .client_for(server)
             .post(&server.url)
             .timeout(timeout)
             .header("Accept", "application/json, text/event-stream")
@@ -252,7 +292,7 @@ impl GenericMcpProvider {
         if let Some(sid) = &session_id {
             let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
             let mut n = self
-                .http
+                .client_for(server)
                 .post(&server.url)
                 .timeout(timeout)
                 .header("Accept", "application/json, text/event-stream")
@@ -280,6 +320,20 @@ impl GenericMcpProvider {
     ) -> Result<Vec<Value>> {
         let body = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}});
         let resp = self.request(server, &body, timeout, traceparent).await?;
+        // A JSON-RPC `error` response has no `result` key at all — treating
+        // that as "zero tools" (the old `unwrap_or_default` behavior) is
+        // indistinguishable from a backend that genuinely has no tools, and
+        // silently hides a real failure. Surface it instead.
+        if let Some(err) = resp.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            return Err(McpError::Backend(format!(
+                "backend '{}' tools/list failed: {msg}",
+                server.name
+            )));
+        }
         let tools = resp
             .get("result")
             .and_then(|r| r.get("tools"))
@@ -312,8 +366,10 @@ impl GenericMcpProvider {
 
 /// Parse an MCP response body into a JSON value. The streamable-HTTP transport
 /// may answer with either `application/json` or a `text/event-stream` (SSE) body
-/// carrying one `data:` JSON-RPC frame — handle both.
-fn parse_jsonrpc(content_type: &str, text: &str, server_name: &str) -> Result<Value> {
+/// carrying one `data:` JSON-RPC frame — handle both. `pub(crate)` so
+/// `connectors::probe_initialize` can reuse it (best-effort `instructions`
+/// capture from a raw, possibly-SSE, probe response).
+pub(crate) fn parse_jsonrpc(content_type: &str, text: &str, server_name: &str) -> Result<Value> {
     if content_type.contains("text/event-stream") {
         // Read SSE frames until the first non-empty `data:` payload.
         for raw in text.lines() {

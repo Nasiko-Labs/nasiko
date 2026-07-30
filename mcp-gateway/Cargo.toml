@@ -39,6 +39,9 @@ nasiko-config.workspace = true
 nasiko-utils.workspace = true
 nasiko-secrets.workspace = true
 nasiko-observability.workspace = true
+# LLM description fallback (description_backfill.rs) — reuses the same
+# LLMProvider/ChatCompletionRequest the capability generator already uses.
+nasiko-orchestrator.workspace = true
 
 [dev-dependencies]
 # HTTP mocking for provider (generic MCP + Composio) tests.

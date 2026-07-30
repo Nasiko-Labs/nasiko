@@ -33,7 +33,7 @@ use crate::error::{McpError, Result};
 
 use super::{
     AuthConfigCreated, ComposioSession, ConnectedAccounts, ConnectionInitiated, ConnectionStatus,
-    ToolDescriptor, ToolProvider, first_str, v_str,
+    ToolDescriptor, ToolkitMetadata, ToolProvider, first_str, first_value, v_str,
 };
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -372,40 +372,153 @@ impl ToolProvider for ComposioProvider {
         Ok(ok)
     }
 
+    // v3's `toolkit_slugs` (plural) filter on `/api/v3/tools` was unreliable
+    // (returned unrelated tools) and `offset` was ignored, previously forcing a
+    // full-catalog client-side scan here (confirmed live: 3+ minutes for a
+    // single toolkit). Replaced with v3.1's documented `toolkit_slug`
+    // (singular) filter, applied server-side — see doc comment below for the
+    // live verification result.
     async fn list_toolkit_tools(&self, toolkit: &str) -> Result<Vec<ToolDescriptor>> {
-        // GET /api/v3/tools?toolkit_slugs=<toolkit> → { items: [ { slug, description } ] }.
-        let resp = self
-            .get_json_opt(
-                "/api/v3/tools",
-                &[("toolkit_slugs", &toolkit.to_uppercase())],
-                DEFAULT_TIMEOUT,
-            )
-            .await?;
-        let Some(resp) = resp else {
-            return Ok(Vec::new());
-        };
-        let items = resp
-            .get("items")
-            .and_then(|i| i.as_array())
-            .cloned()
-            .unwrap_or_default();
-        // The v3 `toolkit_slugs` filter has been observed live to be ignored
-        // server-side (returning tools from unrelated toolkits), which would
-        // pollute a connector's permission UI with other toolkits' tools. Scope
-        // client-side too: a Composio tool slug is `TOOLKIT_ACTION`, and items may
-        // also carry an explicit `toolkit` field — keep only matches for `toolkit`.
-        let want = toolkit.to_ascii_lowercase();
-        Ok(items
-            .iter()
-            .filter_map(|it| {
-                let name = first_str(it, &["slug", "name"])?;
-                let item_toolkit = item_toolkit_slug(it).unwrap_or_else(|| slug_toolkit(&name));
-                (item_toolkit == want).then(|| ToolDescriptor {
+        let mut matched = Vec::new();
+        let mut cursor: Option<String> = None;
+        let max_pages = 50; // safety cap; pre-filtered results should be 1 page in practice
+
+        for _ in 0..max_pages {
+            let mut query: Vec<(&str, String)> = vec![
+                ("toolkit_slug", toolkit.to_string()),
+                ("limit", "1000".to_string()),
+            ];
+            if let Some(c) = &cursor {
+                query.push(("cursor", c.clone()));
+            }
+            let query_refs: Vec<(&str, &str)> =
+                query.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let resp = self
+                .get_json_opt("/api/v3.1/tools", &query_refs, DEFAULT_TIMEOUT)
+                .await?;
+            let Some(resp) = resp else { break };
+            let items = resp
+                .get("items")
+                .and_then(|i| i.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if items.is_empty() {
+                break;
+            }
+            for it in &items {
+                let Some(name) = first_str(it, &["slug", "name"]) else {
+                    continue;
+                };
+                matched.push(ToolDescriptor {
                     name,
                     description: first_str(it, &["description"]),
-                })
-            })
-            .collect())
+                    // Exact key unconfirmed in Composio's published docs — try
+                    // every plausible name tolerantly, same stance as `first_str`
+                    // elsewhere in this file. Only consumed as LLM-fallback
+                    // signal when `description` above is `None`.
+                    input_schema: first_value(it, &["input_parameters", "inputSchema", "parameters"]),
+                });
+            }
+            cursor = resp
+                .get("next_cursor")
+                .and_then(|c| c.as_str())
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(matched)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl ComposioProvider {
+    /// Scan the full Composio tools catalog once, returning tools grouped by
+    /// toolkit slug. Much faster than calling `list_toolkit_tools` N times
+    /// (one pass of ~48 pages vs N × 48).
+    pub async fn list_tools_for_toolkits(
+        &self,
+        toolkit_names: &[String],
+    ) -> std::collections::HashMap<String, Vec<ToolDescriptor>> {
+        let want: std::collections::HashSet<String> = toolkit_names
+            .iter()
+            .map(|t| t.to_ascii_lowercase())
+            .collect();
+        let mut result: std::collections::HashMap<String, Vec<ToolDescriptor>> =
+            want.iter().map(|t| (t.clone(), Vec::new())).collect();
+        let mut cursor: Option<String> = None;
+
+        for page in 0..50 {
+            let mut query: Vec<(&str, String)> = vec![("limit", "500".into())];
+            if let Some(c) = &cursor {
+                query.push(("cursor", c.clone()));
+            }
+            let query_refs: Vec<(&str, &str)> =
+                query.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let resp = match self
+                .get_json_opt("/api/v3/tools", &query_refs, DEFAULT_TIMEOUT)
+                .await
+            {
+                Ok(Some(r)) => r,
+                _ => break,
+            };
+            let items = resp
+                .get("items")
+                .and_then(|i| i.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if items.is_empty() {
+                break;
+            }
+            for it in &items {
+                let Some(name) = first_str(it, &["slug", "name"]) else {
+                    continue;
+                };
+                let tk = item_toolkit_slug(it).unwrap_or_else(|| slug_toolkit(&name));
+                if let Some(tools) = result.get_mut(&tk) {
+                    tools.push(ToolDescriptor {
+                        name,
+                        description: first_str(it, &["description"]),
+                        input_schema: first_value(it, &["input_parameters", "inputSchema", "parameters"]),
+                    });
+                }
+            }
+            cursor = resp
+                .get("next_cursor")
+                .and_then(|c| c.as_str())
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+            if page % 10 == 9 {
+                let total: usize = result.values().map(|v| v.len()).sum();
+                tracing::info!(page = page + 1, total, "composio bulk tool scan progress");
+            }
+        }
+        result
+    }
+
+    /// Fetch a toolkit's own catalog description from Composio's
+    /// `GET /toolkits/{slug}` — used to auto-populate a newly registered
+    /// connector's `description` when the caller didn't supply their own.
+    /// Best-effort: any failure (network, 404, missing field) yields an empty
+    /// `ToolkitMetadata`, never an error — this is enrichment, not something
+    /// registration should ever fail over. Deliberately does NOT fetch/store
+    /// Composio's `meta.logo` — logos are the platform's own images, not
+    /// Composio's.
+    pub async fn fetch_toolkit_metadata(&self, toolkit: &str) -> ToolkitMetadata {
+        let resp = match self
+            .get_json_opt(&format!("/api/v3.1/toolkits/{toolkit}"), &[], DEFAULT_TIMEOUT)
+            .await
+        {
+            Ok(Some(r)) => r,
+            _ => return ToolkitMetadata::default(),
+        };
+        let description = resp.get("meta").and_then(|m| first_str(m, &["description"]));
+        ToolkitMetadata { description }
     }
 }
 

@@ -14,17 +14,61 @@ use crate::auth::Claims;
 use crate::state::AppState;
 
 /// `GET /api/mcp/agents/{agent_id}/connectors` — connectors + per-agent status.
+///
+/// Same relaxed gate as `list_tool_rules` below (and `set_connector_access`/
+/// `list_connector_tools`, already relaxed by `a9012ded`/`56e46b07`): a caller
+/// who can't manage the whole agent still sees the connector(s) they
+/// themselves can reach and that have already been granted to this agent
+/// (narrowed, not blocked outright) — otherwise this endpoint (the natural
+/// first call before `agent-tools enable`/`set-rule`) would be the one
+/// sibling still hard-denying the exact caller those other endpoints already
+/// permit, making them undiscoverable in practice.
 pub async fn list_connectors(
     State(state): State<AppState>,
     claims: Claims,
     AppPath(agent_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
-    ensure_can_manage_agent(&state, &claims, agent_id).await?;
     let user_id = parse_user(&claims)?;
-    Ok(ApiResponse::ok(
-        service::permissions::list_connectors(&state, user_id, agent_id).await?,
-        "Agent connectors retrieved successfully",
-    ))
+    let mut data = service::permissions::list_connectors(&state, user_id, agent_id).await?;
+    if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
+        let mut allowed: std::collections::HashMap<Uuid, bool> = std::collections::HashMap::new();
+        if let Some(connectors) = data.get_mut("connectors").and_then(|v| v.as_array_mut()) {
+            let mut kept = Vec::with_capacity(connectors.len());
+            for c in connectors.drain(..) {
+                let Some(connector_id) = c
+                    .get("connector_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<Uuid>().ok())
+                else {
+                    continue;
+                };
+                let ok = match allowed.get(&connector_id) {
+                    Some(v) => *v,
+                    None => {
+                        let v = crate::acl::can_manage_agent_connector(
+                            &state,
+                            &claims,
+                            agent_id,
+                            connector_id,
+                        )
+                        .await;
+                        allowed.insert(connector_id, v);
+                        v
+                    }
+                };
+                if ok {
+                    kept.push(c);
+                }
+            }
+            *connectors = kept;
+        }
+        if allowed.is_empty() || allowed.values().all(|v| !v) {
+            return Err(ApiError(McpError::Forbidden(
+                "you do not have permission to manage this agent".into(),
+            )));
+        }
+    }
+    Ok(ApiResponse::ok(data, "Agent connectors retrieved successfully"))
 }
 
 #[derive(Debug, Deserialize)]

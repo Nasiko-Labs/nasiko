@@ -159,6 +159,7 @@ fn minimal_pool_opts() -> PgPoolOptions {
 }
 
 impl TestServer {
+    #[allow(dead_code)]
     pub async fn start() -> Self {
         Self::start_with(|_| {}).await
     }
@@ -169,6 +170,37 @@ impl TestServer {
     /// path, which `test_config()` otherwise always leaves empty.
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
+        let fake_runtime = Arc::new(FakeRuntime::default());
+        Self::start_with_runtime_and_handle(configure, fake_runtime.clone(), fake_runtime).await
+    }
+
+    /// Same as [`start_with`](Self::start_with), but lets the caller supply a
+    /// real `ContainerRuntime` (e.g. a real `DockerRuntime`) instead of
+    /// `FakeRuntime` — needed by tests that must observe a real container's
+    /// lifecycle through the actual HTTP route (not by calling orchestration
+    /// functions directly), such as confirming `DELETE
+    /// /api/mcp/connectors/{id}` really destroys an uploaded connector's
+    /// container. `TestServer.runtime` is a separate, unrelated `FakeRuntime`
+    /// in this case — fine, since callers of this constructor never use it.
+    #[allow(dead_code)]
+    pub async fn start_with_runtime(
+        configure: impl FnOnce(&mut Config),
+        runtime: Arc<dyn ContainerRuntime>,
+    ) -> Self {
+        Self::start_with_runtime_and_handle(configure, runtime, Arc::new(FakeRuntime::default()))
+            .await
+    }
+
+    /// Shared implementation: `runtime` backs `AppState` (may be fake or
+    /// real); `fake_handle` is stored on `TestServer` so hours-meter tests can
+    /// script instance observations (`set_instances`) — the two must be the
+    /// *same* `Arc` when the caller wants that capability (only [`start_with`]
+    /// guarantees this).
+    async fn start_with_runtime_and_handle(
+        configure: impl FnOnce(&mut Config),
+        runtime: Arc<dyn ContainerRuntime>,
+        fake_handle: Arc<FakeRuntime>,
+    ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
 
@@ -207,9 +239,6 @@ impl TestServer {
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
-        let fake_runtime = Arc::new(FakeRuntime::default());
-        let runtime: Arc<dyn ContainerRuntime> = fake_runtime.clone();
-
         let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
@@ -225,7 +254,7 @@ impl TestServer {
             base_url: format!("http://127.0.0.1:{port}"),
             client: reqwest::Client::new(),
             db: db.clone(),
-            runtime: fake_runtime,
+            runtime: fake_handle,
             db_name,
             admin_pool: admin,
         }
@@ -294,6 +323,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         openai_model: "gpt-4o".into(),
         router_model: "gpt-4o".into(),
         capability_generator_model: "gpt-4o".into(),
+        mcp_description_model: "gpt-4o".into(),
         a2a_discovery_url: None,
         otel_endpoint: None,
         otel_protocol: "grpc".into(),
@@ -305,7 +335,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
-        tenant_id: None,
         flow_max_depth: 5,
         flow_max_fan_out: 20,
         flow_max_tokens: 100_000,
@@ -357,9 +386,20 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_gateway_public_url: std::env::var("TEST_MCP_GATEWAY_PUBLIC_URL")
             .ok()
             .filter(|s| !s.is_empty()),
+        // None here too: falls back to mcp_gateway_public_url above, which the
+        // oauth callback test already sets to an HTTPS test domain — no
+        // separate override needed for that test to keep passing.
+        mcp_oauth_redirect_base_url: None,
+        composio_callback_base_url: None,
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
+        mcp_upload_max_bytes: 50 * 1024 * 1024,
+        mcp_upload_default_port: 8080,
+        mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
+        mcp_upload_max_replicas: 1,
+        mcp_toolcount_ttl_seconds: 3600,
+        seed_toolkits: vec![],
         app_base_url: "".to_string(),
     }
 }

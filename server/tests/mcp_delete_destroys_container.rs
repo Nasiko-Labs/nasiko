@@ -34,12 +34,18 @@ async fn init_admin(server: &common::TestServer) -> Value {
 }
 
 fn zip_fixture() -> std::path::PathBuf {
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
+    let fixture_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
     let zip_path = std::env::temp_dir().join(format!("mcp-echo-server-{}.zip", Uuid::new_v4()));
     let file = std::fs::File::create(&zip_path).unwrap();
     let mut zw = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default();
-    for name in ["Dockerfile", "requirements.txt", "pyproject.toml", "server.py"] {
+    for name in [
+        "Dockerfile",
+        "requirements.txt",
+        "pyproject.toml",
+        "server.py",
+    ] {
         let contents = std::fs::read(fixture_dir.join(name)).unwrap();
         zw.start_file(name, opts).unwrap();
         zw.write_all(&contents).unwrap();
@@ -49,7 +55,10 @@ fn zip_fixture() -> std::path::PathBuf {
 }
 
 async fn ensure_test_network(runtime: &DockerRuntime) {
-    runtime.ensure_network(TEST_MCP_NETWORK).await.expect("create test mcp network");
+    runtime
+        .ensure_network(TEST_MCP_NETWORK)
+        .await
+        .expect("create test mcp network");
 }
 
 async fn insert_pending_upload(db: &sqlx::PgPool, owner_id: Uuid, name: &str) -> (Uuid, Uuid) {
@@ -79,7 +88,9 @@ async fn insert_pending_upload(db: &sqlx::PgPool, owner_id: Uuid, name: &str) ->
 #[tokio::test]
 #[serial]
 async fn deleting_an_uploaded_connector_destroys_its_container() {
-    let docker = DockerRuntime::new(DockerRuntimeConfig::default()).await.expect("Docker must be running");
+    let docker = DockerRuntime::new(DockerRuntimeConfig::default())
+        .await
+        .expect("Docker must be running");
     ensure_test_network(&docker).await;
     let runtime: Arc<dyn ContainerRuntime> = Arc::new(docker);
 
@@ -109,24 +120,42 @@ async fn deleting_an_uploaded_connector_destroys_its_container() {
         "local".to_string(),
         String::new(),
         1,
+        nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
+        "gpt-4o-mini".to_string(),
     )
     .await;
 
     // Confirm the build actually landed as a real, running container before
     // testing deletion — otherwise this test would prove nothing.
     let build_status: String =
-        sqlx::query_scalar("SELECT build_status FROM mcp_connectors WHERE id = $1").bind(connector_id).fetch_one(&server.db).await.unwrap();
-    assert_eq!(build_status, "running", "fixture build must succeed for this test to be meaningful");
+        sqlx::query_scalar("SELECT build_status FROM mcp_connectors WHERE id = $1")
+            .bind(connector_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        build_status, "running",
+        "fixture build must succeed for this test to be meaningful"
+    );
 
     let expected_id = ContainerId::from_uuid(connector_id);
     let list_before = runtime.list().await.unwrap();
-    assert!(list_before.iter().any(|s| s.container_id == expected_id), "container must exist right after a successful build");
+    assert!(
+        list_before.iter().any(|s| s.container_id == expected_id),
+        "container must exist right after a successful build"
+    );
 
     // Delete via the real HTTP endpoint, as the owner.
-    let res = common::as_superuser(server.client.delete(server.url(&format!("/api/mcp/connectors/{connector_id}"))), &owner_id.to_string(), "admin")
-        .send()
-        .await
-        .unwrap();
+    let res = common::as_superuser(
+        server
+            .client
+            .delete(server.url(&format!("/api/mcp/connectors/{connector_id}"))),
+        &owner_id.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200);
 
     // The container must be gone — not just the DB row.
@@ -136,11 +165,12 @@ async fn deleting_an_uploaded_connector_destroys_its_container() {
         "deleting an uploaded_build connector must destroy its container, not just the DB row"
     );
 
-    let row_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mcp_connectors WHERE id = $1)")
-        .bind(connector_id)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
+    let row_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mcp_connectors WHERE id = $1)")
+            .bind(connector_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
     assert!(!row_exists, "the DB row itself must also be gone");
 
     server.cleanup().await;

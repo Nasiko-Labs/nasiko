@@ -84,6 +84,43 @@ fn extract_zip_reader<R: std::io::Read + std::io::Seek>(
             }
         }
     }
+    flatten_single_top_level_dir(dest).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// GUI zip tools (macOS Finder's "Compress", Windows' "Send to > Compressed
+/// folder", GitHub's "Download ZIP") wrap the archived folder's contents in a
+/// single top-level directory, and Finder also injects a `__MACOSX/` sibling
+/// of AppleDouble resource-fork files — neither is a real project file. Left
+/// alone, callers that expect e.g. `Dockerfile` at the extraction root (agent
+/// and MCP-server uploads) reject an otherwise-valid project with "no
+/// Dockerfile found in root of zip". Strip the junk, then if exactly one real
+/// entry remains and it's a directory, promote its contents up to `dest`.
+fn flatten_single_top_level_dir(dest: &std::path::Path) -> std::io::Result<()> {
+    let macosx = dest.join("__MACOSX");
+    if macosx.is_dir() {
+        std::fs::remove_dir_all(&macosx)?;
+    }
+    let ds_store = dest.join(".DS_Store");
+    if ds_store.is_file() {
+        std::fs::remove_file(&ds_store)?;
+    }
+
+    let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dest)?.collect::<Result<_, _>>()?;
+    let [only] = entries.as_slice() else {
+        return Ok(());
+    };
+    if !only.file_type()?.is_dir() {
+        return Ok(());
+    }
+    let wrapper = only.path();
+
+    // Move the wrapper's children up into dest, then remove the now-empty wrapper.
+    for child in std::fs::read_dir(&wrapper)? {
+        let child = child?;
+        std::fs::rename(child.path(), dest.join(child.file_name()))?;
+    }
+    std::fs::remove_dir(&wrapper)?;
     Ok(())
 }
 
@@ -117,6 +154,64 @@ mod tests {
         extract_zip_to_dir(&zip, dest.path()).unwrap();
         assert!(dest.path().join("Dockerfile").exists());
         assert!(dest.path().join("src/main.py").exists());
+    }
+
+    #[test]
+    fn flattens_single_top_level_wrapper_directory() {
+        // macOS Finder "Compress", Windows "Send to > Compressed folder", and
+        // GitHub's "Download ZIP" all produce exactly this shape.
+        let zip = build_zip(&[
+            ("myagent/Dockerfile", b"FROM python:3.12\n"),
+            ("myagent/main.py", b"print(1)"),
+        ]);
+        let dest = tempfile::tempdir().unwrap();
+        extract_zip_to_dir(&zip, dest.path()).unwrap();
+        assert!(dest.path().join("Dockerfile").exists());
+        assert!(dest.path().join("main.py").exists());
+        assert!(!dest.path().join("myagent").exists());
+    }
+
+    #[test]
+    fn strips_macosx_junk_before_flattening() {
+        // Real macOS Finder "Compress" output: a wrapper dir plus a __MACOSX
+        // sibling of AppleDouble resource-fork files — two top-level entries,
+        // not one, so flattening must ignore __MACOSX to still recognize the
+        // single real wrapper directory underneath.
+        let zip = build_zip(&[
+            ("myagent/Dockerfile", b"FROM python:3.12\n"),
+            ("__MACOSX/myagent/._Dockerfile", b"junk"),
+            (".DS_Store", b"junk"),
+        ]);
+        let dest = tempfile::tempdir().unwrap();
+        extract_zip_to_dir(&zip, dest.path()).unwrap();
+        assert!(dest.path().join("Dockerfile").exists());
+        assert!(!dest.path().join("__MACOSX").exists());
+        assert!(!dest.path().join(".DS_Store").exists());
+        assert!(!dest.path().join("myagent").exists());
+    }
+
+    #[test]
+    fn does_not_flatten_when_multiple_real_top_level_entries() {
+        // A genuine multi-item root (e.g. Dockerfile alongside a src/ dir)
+        // must never be mistaken for a single wrapper directory.
+        let zip = build_zip(&[
+            ("Dockerfile", b"FROM python:3.12\n"),
+            ("extra/thing.txt", b"x"),
+        ]);
+        let dest = tempfile::tempdir().unwrap();
+        extract_zip_to_dir(&zip, dest.path()).unwrap();
+        assert!(dest.path().join("Dockerfile").exists());
+        assert!(dest.path().join("extra/thing.txt").exists());
+    }
+
+    #[test]
+    fn does_not_flatten_a_single_top_level_file() {
+        // A single top-level entry that's a FILE (not a directory) is not a
+        // wrapper — must be left exactly where it is, not treated specially.
+        let zip = build_zip(&[("readme.txt", b"just one file")]);
+        let dest = tempfile::tempdir().unwrap();
+        extract_zip_to_dir(&zip, dest.path()).unwrap();
+        assert!(dest.path().join("readme.txt").exists());
     }
 
     #[test]

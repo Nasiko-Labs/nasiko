@@ -63,12 +63,18 @@ async fn seed_agent(server: &common::TestServer, owner: Uuid, name: &str) -> Uui
 }
 
 fn zip_fixture() -> std::path::PathBuf {
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
+    let fixture_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
     let zip_path = std::env::temp_dir().join(format!("mcp-echo-server-{}.zip", Uuid::new_v4()));
     let file = std::fs::File::create(&zip_path).unwrap();
     let mut zw = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default();
-    for name in ["Dockerfile", "requirements.txt", "pyproject.toml", "server.py"] {
+    for name in [
+        "Dockerfile",
+        "requirements.txt",
+        "pyproject.toml",
+        "server.py",
+    ] {
         let contents = std::fs::read(fixture_dir.join(name)).unwrap();
         zw.start_file(name, opts).unwrap();
         zw.write_all(&contents).unwrap();
@@ -104,8 +110,13 @@ async fn insert_pending_upload(db: &sqlx::PgPool, owner_id: Uuid, name: &str) ->
 #[tokio::test]
 #[serial]
 async fn stale_stored_endpoint_self_heals_on_the_next_tool_call() {
-    let docker = DockerRuntime::new(DockerRuntimeConfig::default()).await.expect("Docker must be running");
-    docker.ensure_network(TEST_MCP_NETWORK).await.expect("create test mcp network");
+    let docker = DockerRuntime::new(DockerRuntimeConfig::default())
+        .await
+        .expect("Docker must be running");
+    docker
+        .ensure_network(TEST_MCP_NETWORK)
+        .await
+        .expect("create test mcp network");
     let runtime: Arc<dyn ContainerRuntime> = Arc::new(docker);
 
     let server = common::TestServer::start_with_runtime(|_| {}, runtime.clone()).await;
@@ -135,12 +146,33 @@ async fn stale_stored_endpoint_self_heals_on_the_next_tool_call() {
         "local".to_string(),
         String::new(),
         1,
+        nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
+        "gpt-4o-mini".to_string(),
     )
     .await;
 
-    let real_url: String =
-        sqlx::query_scalar("SELECT url FROM mcp_connectors WHERE id = $1").bind(connector_id).fetch_one(&server.db).await.unwrap();
-    assert!(real_url.ends_with("/mcp"), "fixture build must succeed for this test to be meaningful: {real_url}");
+    let real_url: String = sqlx::query_scalar("SELECT url FROM mcp_connectors WHERE id = $1")
+        .bind(connector_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert!(
+        real_url.ends_with("/mcp"),
+        "fixture build must succeed for this test to be meaningful: {real_url}"
+    );
+
+    // Enable the connector for the agent — required since the default-deny
+    // permission flip (`0ad7a77d`): no `mcp_agent_connector_access` row means
+    // blocked, not allowed, so without this the tool call below 403s before
+    // ever reaching the self-heal logic this test exists to exercise.
+    sqlx::query(
+        "INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled) VALUES ($1, $2, true)",
+    )
+    .bind(agent_id)
+    .bind(connector_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
 
     // Corrupt the stored address — the container itself is never touched and
     // keeps serving at `real_url` for the entire rest of this test. Port 1 is
@@ -152,8 +184,12 @@ async fn stale_stored_endpoint_self_heals_on_the_next_tool_call() {
         .await
         .unwrap();
 
-    let token = mint_delegation_token(common::TEST_JWT_SECRET, &owner_id.to_string(), &agent_id.to_string())
-        .expect("mint delegation token");
+    let token = mint_delegation_token(
+        common::TEST_JWT_SECRET,
+        &owner_id.to_string(),
+        &agent_id.to_string(),
+    )
+    .expect("mint delegation token");
     let tool = format!("{}__echo", connector_prefix(connector_id));
 
     let res = server
@@ -169,16 +205,37 @@ async fn stale_stored_endpoint_self_heals_on_the_next_tool_call() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    assert!(body.get("error").is_none(), "the call must succeed after self-healing past the stale address: {body:?}");
-    let text = body["result"]["structuredContent"]["result"].as_str().unwrap_or_default();
-    assert_eq!(text, "hello", "must be the real fixture server's response, not a stub: {body:?}");
+    assert!(
+        body.get("error").is_none(),
+        "the call must succeed after self-healing past the stale address: {body:?}"
+    );
+    // `mcp[cli]==1.9.4`'s FastMCP only populates `structuredContent` for a
+    // structured return value — this fixture's plain `-> str` echo tool only
+    // appears under `content[0].text`. Check both so a future version
+    // restoring `structuredContent` for plain scalars doesn't silently break this.
+    let text = body["result"]["structuredContent"]["result"]
+        .as_str()
+        .or_else(|| body["result"]["content"][0]["text"].as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        text, "hello",
+        "must be the real fixture server's response, not a stub: {body:?}"
+    );
 
     // The stored row must reflect the correction, not just this one request —
     // proves the fix persisted (mark_running's own write path, reused).
-    let healed_url: String =
-        sqlx::query_scalar("SELECT url FROM mcp_connectors WHERE id = $1").bind(connector_id).fetch_one(&server.db).await.unwrap();
-    assert_eq!(healed_url, real_url, "the corrected address must be persisted back to mcp_connectors.url");
+    let healed_url: String = sqlx::query_scalar("SELECT url FROM mcp_connectors WHERE id = $1")
+        .bind(connector_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        healed_url, real_url,
+        "the corrected address must be persisted back to mcp_connectors.url"
+    );
 
-    let _ = runtime.destroy(&nasiko_runtime::ContainerId::from_uuid(connector_id)).await;
+    let _ = runtime
+        .destroy(&nasiko_runtime::ContainerId::from_uuid(connector_id))
+        .await;
     server.cleanup().await;
 }

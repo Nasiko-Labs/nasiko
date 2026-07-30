@@ -21,8 +21,8 @@ use nasiko_mcp_gateway::validation::validate_mcp_server_zip;
 use nasiko_runtime::{ContainerId, ContainerRuntime, DeploymentSpec};
 
 use crate::agents::upload::{BuildJobPayload, McpBuildSourcePayload};
-use crate::secrets::crypto::SecretsCrypto;
 use crate::state::AppState;
+use nasiko_secrets::SecretsCrypto;
 
 /// Where an uploaded MCP server's source came from.
 pub enum BuildSource {
@@ -53,7 +53,9 @@ pub async fn queue_zip_upload(
         version_tag,
         None,
         Some(source_key.clone()),
-        McpBuildSourcePayload::Zip { zip_path: source_key },
+        McpBuildSourcePayload::Zip {
+            zip_path: source_key,
+        },
         env,
     )
     .await
@@ -95,7 +97,9 @@ async fn queue_upload(
     env: HashMap<String, String>,
 ) -> Result<(Uuid, Uuid), McpError> {
     let image_tag = crate::agents::build_image_tag(
-        &state.config.agent_image_registry, &format!("mcp-{name}"), &version_tag,
+        &state.config.agent_image_registry,
+        &format!("mcp-{name}"),
+        &version_tag,
     );
 
     let mut tx = state.db.begin().await?;
@@ -128,8 +132,10 @@ async fn queue_upload(
     // use (that's the platform's own key, injected separately) — this is the
     // user's own build-time secret.
     let crypto = SecretsCrypto::for_user(owner_id);
-    let encrypted_env: HashMap<String, String> =
-        env.into_iter().map(|(k, v)| (k, crypto.encrypt(&v))).collect();
+    let encrypted_env: HashMap<String, String> = env
+        .into_iter()
+        .map(|(k, v)| (k, crypto.encrypt(&v)))
+        .collect();
 
     let payload = BuildJobPayload::McpServerUpload {
         build_id,
@@ -140,7 +146,8 @@ async fn queue_upload(
         image_tag,
         env: encrypted_env,
     };
-    let payload_value = serde_json::to_value(&payload).map_err(|e| McpError::Internal(e.to_string()))?;
+    let payload_value =
+        serde_json::to_value(&payload).map_err(|e| McpError::Internal(e.to_string()))?;
 
     sqlx::query("INSERT INTO build_jobs (connector_id, owner_id, payload) VALUES ($1, $2, $3)")
         .bind(connector_id)
@@ -163,12 +170,19 @@ async fn queue_upload(
 /// Takes `db`/`runtime` directly (not the whole `AppState`) so it's callable
 /// from a test harness that only has a real Postgres pool + a real
 /// `ContainerRuntime`, without needing a full `McpState`/`AppState`.
-pub async fn get_build_status(db: &PgPool, caller: Uuid, is_admin: bool, connector_id: Uuid) -> Result<serde_json::Value, McpError> {
+pub async fn get_build_status(
+    db: &PgPool,
+    caller: Uuid,
+    is_admin: bool,
+    connector_id: Uuid,
+) -> Result<serde_json::Value, McpError> {
     let connector = nasiko_mcp_gateway::repo::get_connector_by_id(db, connector_id)
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
     if !is_admin && connector.owner_id != Some(caller) {
-        return Err(McpError::Forbidden("this connector does not belong to you".into()));
+        return Err(McpError::Forbidden(
+            "this connector does not belong to you".into(),
+        ));
     }
     let row: (Option<String>, Option<String>) = sqlx::query_as(
         "SELECT status, error_msg FROM mcp_connector_builds WHERE connector_id = $1 ORDER BY created_at DESC LIMIT 1",
@@ -191,7 +205,10 @@ pub async fn get_build_status(db: &PgPool, caller: Uuid, is_admin: bool, connect
 /// the failed-build cleanup path above already treats `destroy` failures as
 /// best-effort). No-op for `external_url`/composio connectors, which never
 /// had a container to begin with.
-pub async fn destroy_uploaded_connector_container(runtime: &Arc<dyn ContainerRuntime>, connector_id: Uuid) {
+pub async fn destroy_uploaded_connector_container(
+    runtime: &Arc<dyn ContainerRuntime>,
+    connector_id: Uuid,
+) {
     if let Err(e) = runtime.destroy(&ContainerId::from_uuid(connector_id)).await {
         tracing::warn!(connector_id = %connector_id, %e, "failed to destroy container while deleting mcp connector");
     }
@@ -212,9 +229,14 @@ pub async fn get_build_logs(
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
     if !is_admin && connector.owner_id != Some(caller) {
-        return Err(McpError::Forbidden("this connector does not belong to you".into()));
+        return Err(McpError::Forbidden(
+            "this connector does not belong to you".into(),
+        ));
     }
-    runtime.logs(&ContainerId::from_uuid(connector_id), tail).await.map_err(|e| McpError::Internal(e.to_string()))
+    runtime
+        .logs(&ContainerId::from_uuid(connector_id), tail)
+        .await
+        .map_err(|e| McpError::Internal(e.to_string()))
 }
 
 /// Self-heal (Step 13): re-resolves an `uploaded_build` connector's live
@@ -230,8 +252,10 @@ pub async fn refresh_uploaded_connector_endpoint(
     db: &PgPool,
     connector_id: Uuid,
 ) -> Result<String, McpError> {
-    let endpoint =
-        runtime.endpoint(&ContainerId::from_uuid(connector_id)).await.map_err(|e| McpError::Internal(e.to_string()))?;
+    let endpoint = runtime
+        .endpoint(&ContainerId::from_uuid(connector_id))
+        .await
+        .map_err(|e| McpError::Internal(e.to_string()))?;
     let fresh_url = format!("{endpoint}/mcp");
 
     if let Err(e) = sqlx::query("UPDATE mcp_connectors SET url = $2, updated_at = now() WHERE id = $1 AND url IS DISTINCT FROM $2")
@@ -309,6 +333,8 @@ pub async fn execute_mcp_server_build(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
+    llm: nasiko_orchestrator::providers::LLMProvider,
+    description_model: String,
 ) {
     mark_building(&db, build_id, connector_id).await;
 
@@ -331,9 +357,11 @@ pub async fn execute_mcp_server_build(
             BuildSource::Zip(zip_path) => {
                 let zp = zip_path.clone();
                 let td = tmp_dir.clone();
-                tokio::task::spawn_blocking(move || nasiko_utils::zip::extract_zip_from_file(&zp, &td))
-                    .await
-                    .map_err(|e| format!("spawn_blocking extract: {e}"))??;
+                tokio::task::spawn_blocking(move || {
+                    nasiko_utils::zip::extract_zip_from_file(&zp, &td)
+                })
+                .await
+                .map_err(|e| format!("spawn_blocking extract: {e}"))??;
             }
             BuildSource::Github { url } => {
                 crate::build::routes::validate_github_url(url, &git_clone_allowed_hosts)
@@ -341,8 +369,12 @@ pub async fn execute_mcp_server_build(
                 // Load the owner's GitHub OAuth token for private repo access.
                 let github_token = load_owner_github_token(&db, owner_id).await;
                 crate::build::routes::download_github_tarball(
-                    &http_client, url, &tmp_dir, github_token.as_deref(),
-                ).await?;
+                    &http_client,
+                    url,
+                    &tmp_dir,
+                    github_token.as_deref(),
+                )
+                .await?;
             }
         }
 
@@ -351,10 +383,14 @@ pub async fn execute_mcp_server_build(
         set_detected_runtime(&db, build_id, detected.as_str()).await;
 
         // 4. Tar the directory.
-        let tar_bytes = crate::build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
+        let tar_bytes =
+            crate::build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
 
         // 5. Build the image.
-        runtime.build(&tar_bytes, &image_tag).await.map_err(|e| format!("docker build: {e}"))?;
+        runtime
+            .build(&tar_bytes, &image_tag)
+            .await
+            .map_err(|e| format!("docker build: {e}"))?;
 
         // 6-7. Deploy.
         let mut spec = build_mcp_server_spec(
@@ -369,9 +405,17 @@ pub async fn execute_mcp_server_build(
         // (upload.rs:596). No-ops under Docker (short-circuits when
         // agent_runtime != "kubernetes").
         crate::agents::attach_pull_credential(
-            &db, &agent_runtime, &agent_image_registry, &mut spec, connector_id,
-        ).await;
-        runtime.deploy(&spec).await.map_err(|e| format!("deploy: {e}"))?;
+            &db,
+            &agent_runtime,
+            &agent_image_registry,
+            &mut spec,
+            connector_id,
+        )
+        .await;
+        runtime
+            .deploy(&spec)
+            .await
+            .map_err(|e| format!("deploy: {e}"))?;
 
         // 8. Resolve the internal endpoint. The platform's own path convention
         // for uploaded servers: the Streamable HTTP endpoint must be at `/mcp`
@@ -418,11 +462,30 @@ pub async fn execute_mcp_server_build(
     // this one-off config), so a plain unconfigured client is fine as its slot.
     let provider = GenericMcpProvider::new(reqwest::Client::new(), http_client);
 
-    let tools = wait_for_readiness(&provider, &server_cfg, READINESS_RETRIES, READINESS_BACKOFF).await;
+    let tools =
+        wait_for_readiness(&provider, &server_cfg, READINESS_RETRIES, READINESS_BACKOFF).await;
 
     if let Some(tools) = tools {
+        let need_server_description: bool = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT description FROM mcp_connectors WHERE id = $1",
+        )
+        .bind(connector_id)
+        .fetch_one(&db)
+        .await
+        .unwrap_or(None)
+        .is_none();
+
         mark_running(&db, build_id, connector_id, &mcp_url, &image_tag).await;
-        sync_tools(&db, connector_id, &tools).await;
+        sync_tools(
+            &db,
+            connector_id,
+            &name,
+            &tools,
+            &llm,
+            &description_model,
+            need_server_description,
+        )
+        .await;
         tracing::info!(build_id = %build_id, connector_id = %connector_id, tool_count = tools.len(), "mcp server build succeeded");
     } else {
         // A failed build must never leave an orphaned container running —
@@ -431,7 +494,13 @@ pub async fn execute_mcp_server_build(
             tracing::warn!(connector_id = %connector_id, %e, "failed to destroy container after readiness check exhausted retries");
         }
         tracing::error!(build_id = %build_id, connector_id = %connector_id, "mcp server readiness check failed after {READINESS_RETRIES} retries");
-        fail_mcp_connector(&db, build_id, connector_id, "readiness check failed after exhausting retries").await;
+        fail_mcp_connector(
+            &db,
+            build_id,
+            connector_id,
+            "readiness check failed after exhausting retries",
+        )
+        .await;
     }
 }
 
@@ -447,7 +516,10 @@ async fn wait_for_readiness(
 ) -> Option<Vec<serde_json::Value>> {
     for _ in 0..retries {
         tokio::time::sleep(backoff).await;
-        if let Ok(tools) = provider.list_tools(server, READINESS_CALL_TIMEOUT, None).await {
+        if let Ok(tools) = provider
+            .list_tools(server, READINESS_CALL_TIMEOUT, None)
+            .await
+        {
             return Some(tools);
         }
     }
@@ -456,8 +528,24 @@ async fn wait_for_readiness(
 
 /// Persist the discovered tool list into `mcp_connector_tools` so the detail
 /// view can show tool count + names immediately after deploy.
-async fn sync_tools(db: &sqlx::PgPool, connector_id: Uuid, tools: &[serde_json::Value]) {
-    let parsed: Vec<(String, Option<String>)> = tools
+///
+/// Also runs the LLM description fallback (best-effort) for whatever the
+/// uploaded server itself didn't describe — both the connector-level
+/// description (an uploaded connector never gets one from any other source;
+/// see `description_backfill`'s module doc) and any individual tool missing
+/// one. Only reached for gaps; a server that already describes everything
+/// never calls the LLM.
+#[allow(clippy::too_many_arguments)]
+async fn sync_tools(
+    db: &sqlx::PgPool,
+    connector_id: Uuid,
+    connector_name: &str,
+    tools: &[serde_json::Value],
+    llm: &nasiko_orchestrator::providers::LLMProvider,
+    description_model: &str,
+    need_server_description: bool,
+) {
+    let mut parsed: Vec<(String, Option<String>, Option<serde_json::Value>)> = tools
         .iter()
         .filter_map(|t| {
             t.get("name").and_then(|n| n.as_str()).map(|name| {
@@ -466,14 +554,74 @@ async fn sync_tools(db: &sqlx::PgPool, connector_id: Uuid, tools: &[serde_json::
                     t.get("description")
                         .and_then(|d| d.as_str())
                         .map(str::to_string),
+                    t.get("inputSchema").cloned(),
                 )
             })
         })
         .collect();
+    if parsed.is_empty() && !need_server_description {
+        return;
+    }
+
+    let missing: Vec<nasiko_mcp_gateway::description_backfill::ToolNeedingDescription> = parsed
+        .iter()
+        .filter(|(_, desc, _)| nasiko_mcp_gateway::description_backfill::is_missing(desc))
+        .map(
+            |(name, _, schema)| nasiko_mcp_gateway::description_backfill::ToolNeedingDescription {
+                name: name.clone(),
+                input_schema: schema.clone(),
+            },
+        )
+        .collect();
+
+    if need_server_description || !missing.is_empty() {
+        let known_tool_names: Vec<String> = parsed
+            .iter()
+            .filter(|(_, desc, _)| !nasiko_mcp_gateway::description_backfill::is_missing(desc))
+            .map(|(name, _, _)| name.clone())
+            .collect();
+        let result = nasiko_mcp_gateway::description_backfill::backfill(
+            llm,
+            description_model,
+            connector_name,
+            "uploaded",
+            &known_tool_names,
+            need_server_description,
+            &missing,
+        )
+        .await;
+
+        if let Some(desc) = result.server_description
+            && let Err(e) = sqlx::query(
+                "UPDATE mcp_connectors SET description = $2 WHERE id = $1 AND description IS NULL",
+            )
+            .bind(connector_id)
+            .bind(desc)
+            .execute(db)
+            .await
+        {
+            tracing::warn!(connector_id = %connector_id, %e, "failed to persist backfilled connector description");
+        }
+
+        for (name, desc, _) in parsed.iter_mut() {
+            if nasiko_mcp_gateway::description_backfill::is_missing(desc)
+                && let Some(generated) = result.tool_descriptions.get(name)
+            {
+                *desc = Some(generated.clone());
+            }
+        }
+    }
+
     if parsed.is_empty() {
         return;
     }
-    if let Err(e) = nasiko_mcp_gateway::repo::upsert_connector_tools(db, connector_id, &parsed).await {
+    let tools_for_db: Vec<(String, Option<String>)> = parsed
+        .into_iter()
+        .map(|(name, desc, _)| (name, desc))
+        .collect();
+    if let Err(e) =
+        nasiko_mcp_gateway::repo::upsert_connector_tools(db, connector_id, &tools_for_db).await
+    {
         tracing::warn!(connector_id = %connector_id, %e, "failed to sync tools after build");
     }
 }
@@ -527,11 +675,7 @@ async fn load_owner_github_token(db: &PgPool, owner_id: Uuid) -> Option<String> 
             .and_then(|t| t.as_str())
             .map(|s| s.to_string())
     })
-    .and_then(|encrypted| {
-        crate::secrets::crypto::SecretsCrypto::for_user(owner_id)
-            .decrypt(&encrypted)
-            .ok()
-    })
+    .and_then(|encrypted| SecretsCrypto::for_user(owner_id).decrypt(&encrypted).ok())
 }
 
 async fn mark_building(db: &PgPool, build_id: Uuid, connector_id: Uuid) {
@@ -554,11 +698,12 @@ async fn mark_building(db: &PgPool, build_id: Uuid, connector_id: Uuid) {
 }
 
 async fn set_detected_runtime(db: &PgPool, build_id: Uuid, detected_runtime: &str) {
-    if let Err(e) = sqlx::query("UPDATE mcp_connector_builds SET detected_runtime = $2 WHERE id = $1")
-        .bind(build_id)
-        .bind(detected_runtime)
-        .execute(db)
-        .await
+    if let Err(e) =
+        sqlx::query("UPDATE mcp_connector_builds SET detected_runtime = $2 WHERE id = $1")
+            .bind(build_id)
+            .bind(detected_runtime)
+            .execute(db)
+            .await
     {
         tracing::error!(build_id = %build_id, %e, "failed to record detected_runtime");
     }
@@ -605,19 +750,11 @@ async fn mark_running(db: &PgPool, build_id: Uuid, connector_id: Uuid, url: &str
     }
 }
 
-/// Marks both the connector and its build row as terminally failed. Public so
+/// Marks the build row terminally failed, then defers to
+/// [`delete_mcp_connector_or_mark_failed`] for the connector row. Public so
 /// `build_worker.rs`'s stuck-job/panic-recovery paths (Step 9) can call it for
 /// an MCP job the same way `fail_agent_terminal` covers an agent job.
 pub async fn fail_mcp_connector_terminal(db: &PgPool, connector_id: Uuid) {
-    if let Err(e) = sqlx::query(
-        "UPDATE mcp_connectors SET build_status = 'failed' WHERE id = $1 AND build_status IN ('pending', 'building')",
-    )
-    .bind(connector_id)
-    .execute(db)
-    .await
-    {
-        tracing::error!(connector_id = %connector_id, %e, "failed to mark connector terminally failed");
-    }
     if let Err(e) = sqlx::query(
         "UPDATE mcp_connector_builds SET status = 'failed', completed_at = now() \
          WHERE connector_id = $1 AND status IN ('pending', 'building')",
@@ -628,16 +765,12 @@ pub async fn fail_mcp_connector_terminal(db: &PgPool, connector_id: Uuid) {
     {
         tracing::error!(connector_id = %connector_id, %e, "failed to mark build terminally failed");
     }
+    delete_mcp_connector_or_mark_failed(db, connector_id).await;
 }
 
+/// Marks the build row failed with `error_msg`, then defers to
+/// [`delete_mcp_connector_or_mark_failed`] for the connector row.
 async fn fail_mcp_connector(db: &PgPool, build_id: Uuid, connector_id: Uuid, error_msg: &str) {
-    if let Err(e) = sqlx::query("UPDATE mcp_connectors SET build_status = 'failed' WHERE id = $1")
-        .bind(connector_id)
-        .execute(db)
-        .await
-    {
-        tracing::error!(connector_id = %connector_id, %e, "failed to mark connector failed");
-    }
     if let Err(e) = sqlx::query(
         "UPDATE mcp_connector_builds SET status = 'failed', error_msg = $2, completed_at = now() WHERE id = $1",
     )
@@ -647,6 +780,54 @@ async fn fail_mcp_connector(db: &PgPool, build_id: Uuid, connector_id: Uuid, err
     .await
     {
         tracing::error!(build_id = %build_id, %e, "failed to mark build failed");
+    }
+    delete_mcp_connector_or_mark_failed(db, connector_id).await;
+}
+
+/// On failure of a first-time upload (no prior successful build for this
+/// connector), deletes the `mcp_connectors` row entirely instead of leaving an
+/// orphaned `build_status='failed'` record — mirrors
+/// `agents::utils::delete_agent_or_mark_failed` exactly (same reasoning: a
+/// connector that has never once worked has no history worth preserving, and
+/// leaving the row behind blocks re-uploading under the same name via the
+/// `uq_mcp_connectors_name_owner` unique constraint). For a re-upload of an
+/// existing, previously-working connector, the row is kept and marked
+/// `failed` (only if still `pending`/`building`, so this can never clobber a
+/// connector that raced ahead to `running` in the meantime) so its history
+/// and grants survive.
+///
+/// Cascade effects of the DELETE path (mirrors the agent path's, same table
+/// shapes): `mcp_connector_builds` `ON DELETE CASCADE` removes the failed
+/// build record too — nothing meaningful is lost, since the whole connector
+/// never had a working build to begin with.
+async fn delete_mcp_connector_or_mark_failed(db: &PgPool, connector_id: Uuid) {
+    let has_prior_success: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mcp_connector_builds WHERE connector_id = $1 AND status = 'success')",
+    )
+    .bind(connector_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if has_prior_success {
+        if let Err(e) = sqlx::query(
+            "UPDATE mcp_connectors SET build_status = 'failed' WHERE id = $1 AND build_status IN ('pending', 'building')",
+        )
+        .bind(connector_id)
+        .execute(db)
+        .await
+        {
+            tracing::error!(connector_id = %connector_id, %e, "failed to mark connector failed");
+        }
+    } else {
+        if let Err(e) = sqlx::query("DELETE FROM mcp_connectors WHERE id = $1")
+            .bind(connector_id)
+            .execute(db)
+            .await
+        {
+            tracing::error!(connector_id = %connector_id, %e, "failed to delete connector after build failure");
+        }
+        tracing::info!(%connector_id, "deleted new-connector row after build failure (no prior successful builds)");
     }
 }
 
@@ -667,10 +848,16 @@ mod tests {
             3,
         );
         assert_eq!(spec.env_vars.get("PORT").map(String::as_str), Some("8080"));
-        assert_eq!(spec.env_vars.get("STRIPE_KEY").map(String::as_str), Some("sk_test"));
+        assert_eq!(
+            spec.env_vars.get("STRIPE_KEY").map(String::as_str),
+            Some("sk_test")
+        );
         assert_eq!(spec.ports, vec![8080]);
         assert!(spec.harden);
-        assert_eq!(spec.network_override.as_deref(), Some("nasiko-mcp-servers-net"));
+        assert_eq!(
+            spec.network_override.as_deref(),
+            Some("nasiko-mcp-servers-net")
+        );
         assert_eq!(spec.min_replicas, 1);
         assert_eq!(spec.container_id, ContainerId::from_uuid(connector_id));
     }
@@ -702,7 +889,10 @@ mod tests {
             "net".to_string(),
             5,
         );
-        assert_eq!(spec.max_replicas, 5, "max_replicas must match the parameter, not be hardcoded");
+        assert_eq!(
+            spec.max_replicas, 5,
+            "max_replicas must match the parameter, not be hardcoded"
+        );
     }
 
     fn test_server_cfg(url: String) -> MCPServerConfig {
@@ -721,7 +911,9 @@ mod tests {
     /// the most-recently-created matching mock always wins regardless of
     /// `.expect()` hit counts, so it can't sequence "fail twice, then
     /// succeed." A tiny axum handler with a shared call counter can.
-    async fn spawn_flaky_backend(fail_times: u32) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+    async fn spawn_flaky_backend(
+        fail_times: u32,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
         use axum::{Json, routing::post};
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let calls_for_handler = calls.clone();
@@ -734,7 +926,8 @@ mod tests {
                     if n < fail_times {
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
                     } else {
-                        Json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":[]}})).into_response()
+                        Json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":[]}}))
+                            .into_response()
                     }
                 }
             }),
@@ -754,7 +947,10 @@ mod tests {
 
         let ready = wait_for_readiness(&provider, &server, 5, Duration::from_millis(10)).await;
 
-        assert!(ready.is_some(), "must succeed once the backend starts responding");
+        assert!(
+            ready.is_some(),
+            "must succeed once the backend starts responding"
+        );
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             3,
@@ -765,14 +961,22 @@ mod tests {
     #[tokio::test]
     async fn wait_for_readiness_gives_up_after_exhausting_retries() {
         let mut srv = mockito::Server::new_async().await;
-        let failure = srv.mock("POST", "/mcp").with_status(500).expect(3).create_async().await;
+        let failure = srv
+            .mock("POST", "/mcp")
+            .with_status(500)
+            .expect(3)
+            .create_async()
+            .await;
 
         let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
         let server = test_server_cfg(format!("{}/mcp", srv.url()));
 
         let ready = wait_for_readiness(&provider, &server, 3, Duration::from_millis(10)).await;
 
-        assert!(ready.is_none(), "must give up, not loop forever, once retries are exhausted");
+        assert!(
+            ready.is_none(),
+            "must give up, not loop forever, once retries are exhausted"
+        );
         failure.assert_async().await;
     }
 }

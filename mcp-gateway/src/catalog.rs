@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::cache;
 use crate::error::{McpError, Result};
+use crate::provider::ComposioProvider;
 use crate::repo::{self, NewConnector};
 use crate::state::McpState;
 
@@ -43,13 +44,12 @@ async fn cached_tool_count(state: &McpState, connector_id: Uuid) -> i64 {
     if let Some(n) = cache::get_json::<i64>(&state.redis, &key).await {
         return n;
     }
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1",
-    )
-    .bind(connector_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM mcp_connector_tools WHERE connector_id = $1")
+            .bind(connector_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
     cache::set_json_ex(
         &state.redis,
         &key,
@@ -127,7 +127,6 @@ pub async fn list_toolkits_view(state: &McpState, user_id: Uuid) -> Result<Value
     Ok(json!({ "toolkits": toolkits, "total": toolkits.len() }))
 }
 
-
 /// Inputs for registering a platform Composio connector.
 pub struct CreateComposioInput<'a> {
     pub toolkit: &'a str,
@@ -167,6 +166,39 @@ pub async fn create_composio_connector(
         )
         .await?;
 
+    // Best-effort auto-fill: only fetched when the caller left description
+    // unset, so an explicit caller-supplied value is never overridden. Logo
+    // is never fetched from Composio — always whatever the caller supplied
+    // (or none), since logos are the platform's own images. The
+    // `ComposioProvider`-specific fetch lives behind `as_any()` (the trait's
+    // documented downcast escape hatch) since `ToolProvider` stays
+    // Composio-agnostic.
+    let mut description = match input.description {
+        Some(d) => Some(d.to_string()),
+        None => match provider.as_any().downcast_ref::<ComposioProvider>() {
+            Some(composio) => composio.fetch_toolkit_metadata(&toolkit).await.description,
+            None => None,
+        },
+    };
+
+    // LLM fallback — only reached when Composio's own toolkit metadata (just
+    // above) didn't have a description either. No tool list is fetched here
+    // (that only happens lazily in `sync_connector_tools`), so this call has
+    // nothing to backfill but the server-level description.
+    if crate::description_backfill::is_missing(&description) {
+        let result = crate::description_backfill::backfill(
+            &state.llm,
+            &state.config.description_model,
+            &toolkit,
+            "composio",
+            &[],
+            true,
+            &[],
+        )
+        .await;
+        description = result.server_description;
+    }
+
     let connector = repo::create_connector(
         &state.db,
         &NewConnector {
@@ -174,7 +206,7 @@ pub async fn create_composio_connector(
             owner_id: None,
             name: toolkit.clone(),
             display_name: input.display_name.map(str::to_string),
-            description: input.description.map(str::to_string),
+            description,
             logo_url: input.logo_url.map(str::to_string),
             auth_config_id: Some(created.auth_config_id),
             auth_scheme: Some("OAUTH2".to_string()),
@@ -281,5 +313,4 @@ mod tests {
         assert_eq!(capitalize("émoji"), "Émoji");
         assert_eq!(capitalize("123abc"), "123abc");
     }
-
 }

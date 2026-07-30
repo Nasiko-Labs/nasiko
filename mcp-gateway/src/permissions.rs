@@ -2,8 +2,8 @@
 //!
 //! Two levels: (1) is a connector enabled for this agent at all, (2) per-tool
 //! stance `allow | ask | block` with glob patterns (`*`, `GMAIL_*`,
-//! `GMAIL_SEND_EMAIL`), priority `block > ask > allow`. Default (no row): connector
-//! disabled (default-deny), every tool allowed once the connector is enabled. The [`PermissionContext`] is computed
+//! `GMAIL_SEND_EMAIL`), priority `block > ask > allow`. Default (no row): every
+//! connector enabled, every tool allowed. The [`PermissionContext`] is computed
 //! once per request, Redis-cached, and dropped on any permission write. Its
 //! `hash` feeds the manifest cache key.
 
@@ -405,13 +405,15 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
         .await?
         .ok_or_else(|| McpError::NotFound(format!("connector '{connector_id}' not found")))?;
 
-    let tools: Vec<(String, Option<String>)> = if connector.is_composio() {
+    // (name, description, input_schema) — schema is only ever used as
+    // LLM-fallback signal below, never persisted.
+    let mut tools: Vec<(String, Option<String>, Option<Value>)> = if connector.is_composio() {
         match &state.providers.composio {
             Some(p) => p
                 .list_toolkit_tools(&connector.name)
                 .await?
                 .into_iter()
-                .map(|t| (t.name, t.description))
+                .map(|t| (t.name, t.description, t.input_schema))
                 .collect(),
             None => Vec::new(),
         }
@@ -431,6 +433,7 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
                             t.get("description")
                                 .and_then(|d| d.as_str())
                                 .map(str::to_string),
+                            t.get("inputSchema").cloned(),
                         )
                     })
                 })
@@ -440,6 +443,51 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
     };
 
     if !tools.is_empty() {
+        // LLM fallback — only reached for the subset that came back from the
+        // live backend above without a description. Never overwrites one
+        // that's already there.
+        let missing: Vec<crate::description_backfill::ToolNeedingDescription> = tools
+            .iter()
+            .filter(|(_, desc, _)| crate::description_backfill::is_missing(desc))
+            .map(|(name, _, schema)| crate::description_backfill::ToolNeedingDescription {
+                name: name.clone(),
+                input_schema: schema.clone(),
+            })
+            .collect();
+        if !missing.is_empty() {
+            let known_tool_names: Vec<String> = tools
+                .iter()
+                .filter(|(_, desc, _)| !crate::description_backfill::is_missing(desc))
+                .map(|(name, _, _)| name.clone())
+                .collect();
+            let provider_type = if connector.is_composio() {
+                "composio"
+            } else {
+                "external"
+            };
+            let result = crate::description_backfill::backfill(
+                &state.llm,
+                &state.config.description_model,
+                &connector.name,
+                provider_type,
+                &known_tool_names,
+                false,
+                &missing,
+            )
+            .await;
+            for (name, desc, _) in tools.iter_mut() {
+                if crate::description_backfill::is_missing(desc)
+                    && let Some(generated) = result.tool_descriptions.get(name)
+                {
+                    *desc = Some(generated.clone());
+                }
+            }
+        }
+
+        let tools: Vec<(String, Option<String>)> = tools
+            .into_iter()
+            .map(|(name, desc, _)| (name, desc))
+            .collect();
         repo::upsert_connector_tools(&state.db, connector_id, &tools).await?;
         // The catalog's cached tool count (catalog::cached_tool_count) would
         // otherwise keep serving whatever it saw before this sync — most

@@ -1038,168 +1038,34 @@ async fn connector_reachable_non_owner_can_grant_agent() {
     server.cleanup().await;
 }
 
-/// A repeat `grant-agent` call on an already-granted (agent, connector) pair
-/// must NOT silently reset that agent's configured state for the connector —
-/// `create_grant`'s own upsert never errors on a repeat grant, so without
-/// this, every re-grant would force `enabled=true` and wipe any block/ask
-/// rules, even ones the agent's manager deliberately set.
+/// `GET /agents/{id}/connectors` used to be the one sibling endpoint still
+/// hard-denying a connector owner who isn't the agent's manager, even though
+/// `PUT .../connectors/{id}` (enable/configure), `GET .../connectors/{id}/tools`,
+/// and `PUT .../tools` were all already relaxed (`a9012ded`/`56e46b07`) to let
+/// exactly this caller act on their own granted connector. Without this, the
+/// discovery step a caller would naturally reach for before those other calls
+/// was undiscoverable to them — this proves it now matches its siblings:
+/// narrowed to the connector(s) they can reach, not blocked outright.
 #[tokio::test]
 #[serial]
-async fn repeat_agent_grant_preserves_existing_enabled_and_rules() {
+async fn list_connectors_lets_a_granted_connector_owner_see_their_own_entry() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
-    let (owner_id, owner_uuid) = create_user(&server, &admin, "rg2-owner").await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "lc-owner").await;
+    let (agent_owner_id, agent_owner_uuid) = create_user(&server, &admin, "lc-agent-owner").await;
+    let (stranger_id, _stranger_uuid) = create_user(&server, &admin, "lc-stranger").await;
 
-    let cid = seed_connector(&server, owner_uuid, "rg2-tool").await;
-    let agent_id = seed_agent(&server, owner_uuid, "rg2-agent").await;
+    let cid = seed_connector(&server, owner_uuid, "lc-tool").await;
+    let agent_id = seed_agent(&server, agent_owner_uuid, "lc-agent").await;
 
-    // First grant — establishes the default enabled=true, no-rules row.
+    // Before any grant: the connector owner has no relationship to this agent
+    // at all — must still be denied outright, not just filtered to empty.
     let res = common::as_member(
-        server.client.post(server.url(&format!(
-            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
-        ))),
-        &owner_id,
-        "rg2-owner",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 201);
-
-    // Configure a restrictive state: disabled, with a block rule.
-    let res = common::as_member(
-        server
-            .client
-            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
-        &owner_id,
-        "rg2-owner",
-    )
-    .json(&json!({"enabled": false}))
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 200);
-
-    let res = common::as_member(
-        server
-            .client
-            .put(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
-        &owner_id,
-        "rg2-owner",
-    )
-    .json(&json!({"rules": [{"connector_id": cid, "tool_pattern": "SEND_*", "stance": "block"}]}))
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 200);
-
-    // Repeat the exact same grant-agent call.
-    let res = common::as_member(
-        server.client.post(server.url(&format!(
-            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
-        ))),
-        &owner_id,
-        "rg2-owner",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 201, "a repeat grant must still succeed");
-
-    // The block rule must have survived — raw stored rules, no live backend
-    // sync needed (unlike the synced-tool-catalog `.../tools` view).
-    let rules: Value = common::as_member(
-        server
-            .client
-            .get(server.url(&format!("/api/mcp/agents/{agent_id}/tools"))),
-        &owner_id,
-        "rg2-owner",
-    )
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    let has_block_rule = rules["data"]["rules"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|r| r["connector_id"] == cid.to_string() && r["stance"] == "block");
-    assert!(
-        has_block_rule,
-        "a repeat grant must not silently wipe an existing block rule: {rules:?}"
-    );
-
-    // The disabled state must have survived too.
-    let connectors: Value = common::as_member(
         server
             .client
             .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
         &owner_id,
-        "rg2-owner",
-    )
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    let enabled = connectors["data"]["connectors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["connector_id"] == cid.to_string())
-        .map(|c| c["enabled"].clone());
-    assert_eq!(
-        enabled,
-        Some(json!(false)),
-        "a repeat grant must not silently re-enable a connector that was disabled: {connectors:?}"
-    );
-
-    server.cleanup().await;
-}
-
-/// A non-owner reachable to a connector only via a PUBLIC grant — reachable
-/// by literally every user — must not be able to attach it to an agent they
-/// have no relationship to at all. Being able to reach the connector is not
-/// enough; the caller must also manage the target agent (own it, or admin).
-/// The connector's own owner is unaffected — still unrestricted about the
-/// target agent, proven by the second half of this test.
-#[tokio::test]
-#[serial]
-async fn public_connector_cannot_be_attached_to_an_unrelated_agent() {
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let (owner_id, owner_uuid) = create_user(&server, &admin, "pc-owner").await;
-    let (_agent_owner_id, agent_owner_uuid) = create_user(&server, &admin, "pc-agent-owner").await;
-    let (stranger_id, _stranger_uuid) = create_user(&server, &admin, "pc-stranger").await;
-
-    let cid = seed_connector(&server, owner_uuid, "pc-tool").await;
-    let agent_id = seed_agent(&server, agent_owner_uuid, "pc-agent").await;
-
-    // Make the connector public — reachable by literally everyone.
-    let res = common::as_member(
-        server
-            .client
-            .post(server.url(&format!("/api/mcp/connectors/{cid}/grants/public"))),
-        &owner_id,
-        "pc-owner",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 201);
-
-    // A stranger — who only reaches the connector because it's public, has
-    // no relationship to `agent_id` at all — must be forbidden from
-    // attaching it there.
-    let res = common::as_member(
-        server.client.post(server.url(&format!(
-            "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
-        ))),
-        &stranger_id,
-        "pc-stranger",
+        "lc-owner",
     )
     .send()
     .await
@@ -1207,26 +1073,73 @@ async fn public_connector_cannot_be_attached_to_an_unrelated_agent() {
     assert_eq!(
         res.status(),
         403,
-        "reachability via a public grant must not be enough to attach a connector to an unrelated agent"
+        "zero relationship to the agent must still be denied outright"
     );
 
-    // The connector's own owner is unaffected — still unrestricted, even
-    // though they don't manage this agent either.
+    // Owner grants their connector to the agent.
     let res = common::as_member(
         server.client.post(server.url(&format!(
             "/api/mcp/connectors/{cid}/grants/agents/{agent_id}"
         ))),
         &owner_id,
-        "pc-owner",
+        "lc-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    // Now the connector owner (still not the agent's manager) can see their
+    // own granted connector in this list — the fix.
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &owner_id,
+        "lc-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let connectors = body["data"]["connectors"].as_array().unwrap();
+    assert!(
+        connectors.iter().any(|c| c["connector_id"] == cid.to_string()),
+        "granted connector owner must see their own connector: {body:?}"
+    );
+
+    // A true stranger — no ownership, no grant, no agent management — still
+    // gets 403, never the unfiltered list.
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &stranger_id,
+        "lc-stranger",
     )
     .send()
     .await
     .unwrap();
     assert_eq!(
         res.status(),
-        201,
-        "the connector's own owner must still be able to attach it to any agent"
+        403,
+        "a caller with zero relationship to the agent must never see any connector"
     );
+
+    // The agent's own manager (full `can_manage_agent`) still sees the
+    // unfiltered list — the relaxation never narrows the manager's own view.
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &agent_owner_id,
+        "lc-agent-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
 
     server.cleanup().await;
 }

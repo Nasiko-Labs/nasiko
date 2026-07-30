@@ -44,12 +44,18 @@ async fn init_admin(server: &common::TestServer) -> Value {
 /// its path. Mirrors what a real multipart upload handler (Step 10) would have
 /// already streamed to disk before calling `execute_mcp_server_build`.
 fn zip_fixture() -> std::path::PathBuf {
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
+    let fixture_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
     let zip_path = std::env::temp_dir().join(format!("mcp-echo-server-{}.zip", Uuid::new_v4()));
     let file = std::fs::File::create(&zip_path).unwrap();
     let mut zw = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default();
-    for name in ["Dockerfile", "requirements.txt", "pyproject.toml", "server.py"] {
+    for name in [
+        "Dockerfile",
+        "requirements.txt",
+        "pyproject.toml",
+        "server.py",
+    ] {
         let contents = std::fs::read(fixture_dir.join(name)).unwrap();
         zw.start_file(name, opts).unwrap();
         zw.write_all(&contents).unwrap();
@@ -60,8 +66,10 @@ fn zip_fixture() -> std::path::PathBuf {
 
 /// Corrupts the fixture by omitting the Dockerfile — used by the failure-path test.
 fn zip_fixture_without_dockerfile() -> std::path::PathBuf {
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
-    let zip_path = std::env::temp_dir().join(format!("mcp-echo-server-broken-{}.zip", Uuid::new_v4()));
+    let fixture_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-echo-server");
+    let zip_path =
+        std::env::temp_dir().join(format!("mcp-echo-server-broken-{}.zip", Uuid::new_v4()));
     let file = std::fs::File::create(&zip_path).unwrap();
     let mut zw = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default();
@@ -75,7 +83,9 @@ fn zip_fixture_without_dockerfile() -> std::path::PathBuf {
 }
 
 async fn real_docker_runtime() -> Arc<dyn ContainerRuntime> {
-    let docker = DockerRuntime::new(DockerRuntimeConfig::default()).await.expect("Docker must be running");
+    let docker = DockerRuntime::new(DockerRuntimeConfig::default())
+        .await
+        .expect("Docker must be running");
     Arc::new(docker)
 }
 
@@ -83,8 +93,13 @@ async fn real_docker_runtime() -> Arc<dyn ContainerRuntime> {
 /// `oss/server/src/runtime.rs::build_docker_runtime` does once at real
 /// server startup (Step 5).
 async fn ensure_test_network() {
-    let docker = DockerRuntime::new(DockerRuntimeConfig::default()).await.expect("Docker must be running");
-    docker.ensure_network(TEST_MCP_NETWORK).await.expect("create test mcp network");
+    let docker = DockerRuntime::new(DockerRuntimeConfig::default())
+        .await
+        .expect("Docker must be running");
+    docker
+        .ensure_network(TEST_MCP_NETWORK)
+        .await
+        .expect("create test mcp network");
 }
 
 /// Every Docker network the given connector's container is currently attached
@@ -96,8 +111,13 @@ async fn ensure_test_network() {
 /// concrete `DockerRuntime` handle rather than the `Arc<dyn ContainerRuntime>`
 /// the rest of this test file uses.
 async fn container_networks(connector_id: Uuid) -> Vec<String> {
-    let docker = DockerRuntime::new(DockerRuntimeConfig::default()).await.expect("Docker must be running");
-    docker.container_networks(&ContainerId::from_uuid(connector_id)).await.expect("inspect container networks")
+    let docker = DockerRuntime::new(DockerRuntimeConfig::default())
+        .await
+        .expect("Docker must be running");
+    docker
+        .container_networks(&ContainerId::from_uuid(connector_id))
+        .await
+        .expect("inspect container networks")
 }
 
 /// Inserts a `mcp_connectors` row + a `mcp_connector_builds` row in the shapes
@@ -159,6 +179,8 @@ async fn upload_builds_deploys_and_serves_real_tools() {
         "local".to_string(),
         String::new(),
         1,
+        nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
+        "gpt-4o-mini".to_string(),
     )
     .await;
 
@@ -171,7 +193,11 @@ async fn upload_builds_deploys_and_serves_real_tools() {
     .await
     .unwrap();
     assert_eq!(row.0, "running", "build_status must be running");
-    assert!(row.1.as_deref().unwrap().ends_with("/mcp"), "url must be resolved and end in /mcp, got {:?}", row.1);
+    assert!(
+        row.1.as_deref().unwrap().ends_with("/mcp"),
+        "url must be resolved and end in /mcp, got {:?}",
+        row.1
+    );
     assert!(row.2, "is_active must be true");
     assert_eq!(row.3.as_deref(), Some(image_tag.as_str()));
 
@@ -182,7 +208,11 @@ async fn upload_builds_deploys_and_serves_real_tools() {
             .await
             .unwrap();
     assert_eq!(build_row.0, "success");
-    assert_eq!(build_row.1.as_deref(), Some("python"), "fixture uses FastMCP — must be detected as python");
+    assert_eq!(
+        build_row.1.as_deref(),
+        Some("python"),
+        "fixture uses FastMCP — must be detected as python"
+    );
 
     // Drive a REAL tools/list and tools/call against the deployed container,
     // exactly like the live gateway would (trusted=true, since this is an
@@ -198,24 +228,51 @@ async fn upload_builds_deploys_and_serves_real_tools() {
         trusted: true,
     };
     let provider = GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new());
-    let tools = provider.list_tools(&cfg, std::time::Duration::from_secs(10), None).await.unwrap();
+    let tools = provider
+        .list_tools(&cfg, std::time::Duration::from_secs(10), None)
+        .await
+        .unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["name"], "echo");
 
     let call = provider
-        .call_tool(&cfg, &json!(1), "echo", &json!({"message": "hello"}), std::time::Duration::from_secs(10), None)
+        .call_tool(
+            &cfg,
+            &json!(1),
+            "echo",
+            &json!({"message": "hello"}),
+            std::time::Duration::from_secs(10),
+            None,
+        )
         .await
         .unwrap();
-    let text = call["result"]["structuredContent"]["result"].as_str().unwrap_or_default();
+    // `mcp[cli]==1.9.4`'s FastMCP only populates `structuredContent` for a
+    // structured (dict/pydantic-model) return value — a plain `-> str` tool
+    // (this fixture's `echo`) only ever appears under `content[0].text`.
+    // Verified live against the real pinned version; check both shapes
+    // anyway so a future version that restores `structuredContent` for plain
+    // scalars doesn't silently break this assertion.
+    let text = call["result"]["structuredContent"]["result"]
+        .as_str()
+        .or_else(|| call["result"]["content"][0]["text"].as_str())
+        .unwrap_or_default();
     assert_eq!(text, "hello", "full response: {call}");
 
     // Step 10's build-logs handler, against the real container this test just
     // deployed — proves it returns genuine stdout/stderr, not a stub.
-    let logs = nasiko_server::mcp::build::get_build_logs(&server.db, &runtime, owner_id, false, connector_id, 200)
-        .await
-        .expect("build-logs should succeed for the owner");
+    let logs = nasiko_server::mcp::build::get_build_logs(
+        &server.db,
+        &runtime,
+        owner_id,
+        false,
+        connector_id,
+        200,
+    )
+    .await
+    .expect("build-logs should succeed for the owner");
     assert!(
-        logs.iter().any(|line| line.contains("Uvicorn running") || line.contains("Application startup complete")),
+        logs.iter().any(|line| line.contains("Uvicorn running")
+            || line.contains("Application startup complete")),
         "expected real FastMCP/uvicorn startup output in the logs, got: {logs:?}"
     );
 
@@ -269,20 +326,39 @@ async fn corrupt_upload_fails_cleanly_with_no_orphaned_container() {
         "local".to_string(),
         String::new(),
         1,
+        nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
+        "gpt-4o-mini".to_string(),
     )
     .await;
 
-    let row: (String, bool) = sqlx::query_as("SELECT build_status, is_active FROM mcp_connectors WHERE id = $1")
-        .bind(connector_id)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    assert_eq!(row.0, "failed");
-    assert!(!row.1);
+    // A first-time upload with no prior successful build deletes the
+    // connector row entirely rather than leaving an orphaned
+    // `build_status='failed'` record — mirrors
+    // `agents::utils::delete_agent_or_mark_failed` exactly (same reasoning:
+    // nothing worth preserving, and a lingering row would block re-uploading
+    // under the same name via `uq_mcp_connectors_name_owner`). The build row
+    // cascades away with it (`ON DELETE CASCADE`).
+    let connector_row: Option<(String, bool)> =
+        sqlx::query_as("SELECT build_status, is_active FROM mcp_connectors WHERE id = $1")
+            .bind(connector_id)
+            .fetch_optional(&server.db)
+            .await
+            .unwrap();
+    assert!(
+        connector_row.is_none(),
+        "a first-time build failure must delete the connector row, not leave it as 'failed'"
+    );
 
-    let build_status: String =
-        sqlx::query_scalar("SELECT status FROM mcp_connector_builds WHERE id = $1").bind(build_id).fetch_one(&server.db).await.unwrap();
-    assert_eq!(build_status, "failed");
+    let build_row: Option<String> =
+        sqlx::query_scalar("SELECT status FROM mcp_connector_builds WHERE id = $1")
+            .bind(build_id)
+            .fetch_optional(&server.db)
+            .await
+            .unwrap();
+    assert!(
+        build_row.is_none(),
+        "the build row must cascade-delete along with its connector"
+    );
 
     // No container should ever have been created for this connector, since
     // validation fails before any image build/deploy is attempted.
