@@ -33,7 +33,7 @@ use crate::error::{McpError, Result};
 
 use super::{
     AuthConfigCreated, ComposioSession, ConnectedAccounts, ConnectionInitiated, ConnectionStatus,
-    ToolDescriptor, ToolkitMetadata, ToolProvider, first_str, first_value, v_str,
+    ToolDescriptor, ToolProvider, ToolkitMetadata, first_str, first_value, v_str,
 };
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -416,7 +416,10 @@ impl ToolProvider for ComposioProvider {
                     // every plausible name tolerantly, same stance as `first_str`
                     // elsewhere in this file. Only consumed as LLM-fallback
                     // signal when `description` above is `None`.
-                    input_schema: first_value(it, &["input_parameters", "inputSchema", "parameters"]),
+                    input_schema: first_value(
+                        it,
+                        &["input_parameters", "inputSchema", "parameters"],
+                    ),
                 });
             }
             cursor = resp
@@ -482,7 +485,10 @@ impl ComposioProvider {
                     tools.push(ToolDescriptor {
                         name,
                         description: first_str(it, &["description"]),
-                        input_schema: first_value(it, &["input_parameters", "inputSchema", "parameters"]),
+                        input_schema: first_value(
+                            it,
+                            &["input_parameters", "inputSchema", "parameters"],
+                        ),
                     });
                 }
             }
@@ -511,13 +517,19 @@ impl ComposioProvider {
     /// Composio's.
     pub async fn fetch_toolkit_metadata(&self, toolkit: &str) -> ToolkitMetadata {
         let resp = match self
-            .get_json_opt(&format!("/api/v3.1/toolkits/{toolkit}"), &[], DEFAULT_TIMEOUT)
+            .get_json_opt(
+                &format!("/api/v3.1/toolkits/{toolkit}"),
+                &[],
+                DEFAULT_TIMEOUT,
+            )
             .await
         {
             Ok(Some(r)) => r,
             _ => return ToolkitMetadata::default(),
         };
-        let description = resp.get("meta").and_then(|m| first_str(m, &["description"]));
+        let description = resp
+            .get("meta")
+            .and_then(|m| first_str(m, &["description"]));
         ToolkitMetadata { description }
     }
 }

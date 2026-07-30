@@ -68,7 +68,10 @@ pub async fn list_connectors(
             )));
         }
     }
-    Ok(ApiResponse::ok(data, "Agent connectors retrieved successfully"))
+    Ok(ApiResponse::ok(
+        data,
+        "Agent connectors retrieved successfully",
+    ))
 }
 
 #[derive(Debug, Deserialize)]

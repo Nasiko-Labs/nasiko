@@ -449,10 +449,12 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
         let missing: Vec<crate::description_backfill::ToolNeedingDescription> = tools
             .iter()
             .filter(|(_, desc, _)| crate::description_backfill::is_missing(desc))
-            .map(|(name, _, schema)| crate::description_backfill::ToolNeedingDescription {
-                name: name.clone(),
-                input_schema: schema.clone(),
-            })
+            .map(
+                |(name, _, schema)| crate::description_backfill::ToolNeedingDescription {
+                    name: name.clone(),
+                    input_schema: schema.clone(),
+                },
+            )
             .collect();
         if !missing.is_empty() {
             let known_tool_names: Vec<String> = tools

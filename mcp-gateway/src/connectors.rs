@@ -797,11 +797,25 @@ async fn owned_shareable(
     Ok(connector)
 }
 
-/// Load a connector and confirm `caller` can at least reach it (Layer 1:
-/// owner, composio, user/public grant — EE additionally: team/department).
+/// Load a connector and confirm `caller` may attach it to `agent_id`.
+///
+/// Two distinct rights, not one: the connector's own owner (or admin) may
+/// attach it to ANY agent, unrestricted — this is the original, pre-existing
+/// behavior ("push my connector wherever I like"), left untouched. Anyone
+/// else who merely has Layer-1 reachability to the connector (owner,
+/// composio, user/public grant — EE additionally: team/department) — someone
+/// it was merely *shared* with, not its owner — may only attach it to an
+/// agent they themselves manage (own, or admin). Without this second half, a
+/// connector reachable via a PUBLIC grant (reachable by literally every
+/// user) could be pushed onto a total stranger's agent by anyone, with zero
+/// relationship to that agent at all — being able to merely USE an agent
+/// (it's public, or invoke-shared to you) does not count here; only actually
+/// managing it does, the same distinction `can_access_agent` vs
+/// `can_manage_agent` already draws elsewhere in this codebase.
+///
 /// Used only for the "agent" grant kind: attaching a connector you can
-/// already use yourself to an agent is a much narrower act than sharing it
-/// with a new person/team/department (which stays owner-only via
+/// already use yourself to an agent you manage is a much narrower act than
+/// sharing it with a new person/team/department (which stays owner-only via
 /// [`owned_shareable`]) — it only makes the connector reachable *from* that
 /// agent, exactly as if the agent's own owner had used `connect` to reach
 /// the same connector. The agent's owner (or, per the agent-scoped
@@ -813,6 +827,7 @@ async fn reachable_shareable(
     caller: Uuid,
     is_admin: bool,
     connector_id: Uuid,
+    agent_id: Uuid,
 ) -> Result<McpConnector> {
     let connector = repo::get_connector_by_id(&state.db, connector_id)
         .await?
@@ -822,15 +837,30 @@ async fn reachable_shareable(
             "only custom MCP connectors can be shared".into(),
         ));
     }
-    if !is_admin
-        && !state
-            .authorizer
-            .can_access_connector(&state.db, caller, connector_id)
-            .await?
+    if is_admin || connector.owner_id == Some(caller) {
+        return Ok(connector);
+    }
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, caller, connector_id)
+        .await?
     {
         return Err(McpError::NotFound(format!(
             "connector '{connector_id}' not found"
         )));
+    }
+    let manages_agent: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL)",
+    )
+    .bind(agent_id)
+    .bind(caller)
+    .fetch_one(&state.db)
+    .await
+    .map_err(McpError::Database)?;
+    if !manages_agent {
+        return Err(McpError::Forbidden(
+            "you must manage the target agent to attach a connector you don't own".into(),
+        ));
     }
     Ok(connector)
 }
@@ -849,22 +879,37 @@ pub async fn create_share_grant(
     grantee_id: &str,
 ) -> Result<Value> {
     let connector = if grant_type == "agent" {
-        reachable_shareable(state, caller, is_admin, connector_id).await?
+        let agent_id = Uuid::parse_str(grantee_id)
+            .map_err(|_| McpError::BadRequest("invalid agent id".into()))?;
+        reachable_shareable(state, caller, is_admin, connector_id, agent_id).await?
     } else {
         owned_shareable(state, caller, is_admin, connector_id).await?
     };
     let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
     // When granting an agent, also create the access row so the agent
-    // appears in consumers and gets tool access immediately.
+    // appears in consumers and gets tool access immediately. Preserve any
+    // existing enabled/tool_rules state for this (agent, connector) pair —
+    // a repeat grant (this is an upsert; `create_grant` above never errors on
+    // one) must not silently re-enable a connector someone disabled, or wipe
+    // block/ask rules they configured. Only a genuinely first-time grant
+    // (no existing row) gets the enabled-by-default, no-rules starting state.
     if grant_type == "agent"
         && let Ok(agent_id) = Uuid::parse_str(grantee_id)
     {
+        let existing = repo::get_agent_connector_access_row(&state.db, agent_id, connector.id)
+            .await
+            .ok()
+            .flatten();
+        let enabled = existing.as_ref().map(|r| r.enabled).unwrap_or(true);
+        let tool_rules = existing
+            .map(|r| r.tool_rules)
+            .unwrap_or_else(|| serde_json::json!([]));
         let _ = repo::upsert_agent_connector_access(
             &state.db,
             agent_id,
             connector.id,
-            true,
-            &serde_json::json!([]),
+            enabled,
+            &tool_rules,
         )
         .await;
     }
@@ -887,7 +932,9 @@ pub async fn revoke_share_grant(
     grantee_id: &str,
 ) -> Result<()> {
     let connector = if grant_type == "agent" {
-        reachable_shareable(state, caller, is_admin, connector_id).await?
+        let agent_id = Uuid::parse_str(grantee_id)
+            .map_err(|_| McpError::BadRequest("invalid agent id".into()))?;
+        reachable_shareable(state, caller, is_admin, connector_id, agent_id).await?
     } else {
         owned_shareable(state, caller, is_admin, connector_id).await?
     };
@@ -1377,7 +1424,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(instructions.as_deref(), Some("Extract data from any website."));
+        assert_eq!(
+            instructions.as_deref(),
+            Some("Extract data from any website.")
+        );
     }
 
     #[tokio::test]

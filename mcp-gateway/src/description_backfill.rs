@@ -116,7 +116,10 @@ pub async fn backfill(
             return Backfill::default();
         }
         Err(_) => {
-            tracing::warn!(connector_name, "mcp description backfill: llm call timed out");
+            tracing::warn!(
+                connector_name,
+                "mcp description backfill: llm call timed out"
+            );
             return Backfill::default();
         }
     };
@@ -179,7 +182,8 @@ fn build_prompt(
     need_server_description: bool,
     missing_tools: &[ToolNeedingDescription],
 ) -> String {
-    let mut prompt = format!("Connector name: {connector_name}\nProvider type: {provider_type}\n\n");
+    let mut prompt =
+        format!("Connector name: {connector_name}\nProvider type: {provider_type}\n\n");
 
     if !known_tool_names.is_empty() {
         prompt.push_str(&format!(
@@ -203,7 +207,9 @@ fn build_prompt(
         );
         for t in missing_tools {
             match &t.input_schema {
-                Some(schema) => prompt.push_str(&format!("- {}: input schema = {schema}\n", t.name)),
+                Some(schema) => {
+                    prompt.push_str(&format!("- {}: input schema = {schema}\n", t.name))
+                }
                 None => prompt.push_str(&format!("- {}\n", t.name)),
             }
         }
@@ -277,21 +283,31 @@ mod tests {
     #[test]
     fn schema_omits_server_description_when_not_needed() {
         let schema = build_schema(false, &[]);
-        assert!(!schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&Value::String("server_description".to_string())));
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("server_description".to_string()))
+        );
         assert!(schema["properties"].get("server_description").is_none());
     }
 
     #[test]
     fn schema_requires_exactly_the_missing_tool_names() {
         let missing = vec![
-            ToolNeedingDescription { name: "tool_a".into(), input_schema: None },
-            ToolNeedingDescription { name: "tool_b".into(), input_schema: None },
+            ToolNeedingDescription {
+                name: "tool_a".into(),
+                input_schema: None,
+            },
+            ToolNeedingDescription {
+                name: "tool_b".into(),
+                input_schema: None,
+            },
         ];
         let schema = build_schema(true, &missing);
-        let tools_required = schema["properties"]["tools"]["required"].as_array().unwrap();
+        let tools_required = schema["properties"]["tools"]["required"]
+            .as_array()
+            .unwrap();
         assert_eq!(tools_required.len(), 2);
         assert!(tools_required.contains(&Value::String("tool_a".to_string())));
         assert!(tools_required.contains(&Value::String("tool_b".to_string())));
@@ -303,11 +319,18 @@ mod tests {
 
     #[test]
     fn parse_result_only_applies_returned_descriptions_for_missing_tools() {
-        let missing = vec![ToolNeedingDescription { name: "tool_a".into(), input_schema: None }];
-        let content = r#"{"server_description":"does stuff","tools":{"tool_a":"describes tool a"}}"#;
+        let missing = vec![ToolNeedingDescription {
+            name: "tool_a".into(),
+            input_schema: None,
+        }];
+        let content =
+            r#"{"server_description":"does stuff","tools":{"tool_a":"describes tool a"}}"#;
         let result = parse_result(content, true, &missing);
         assert_eq!(result.server_description.as_deref(), Some("does stuff"));
-        assert_eq!(result.tool_descriptions.get("tool_a").map(String::as_str), Some("describes tool a"));
+        assert_eq!(
+            result.tool_descriptions.get("tool_a").map(String::as_str),
+            Some("describes tool a")
+        );
         assert_eq!(result.tool_descriptions.len(), 1);
     }
 
@@ -316,7 +339,10 @@ mod tests {
         // Even if the model (incorrectly) returns a description for a tool
         // that wasn't in `missing_tools`, we must never apply it — only
         // entries matching a name we actually asked for are kept.
-        let missing = vec![ToolNeedingDescription { name: "tool_a".into(), input_schema: None }];
+        let missing = vec![ToolNeedingDescription {
+            name: "tool_a".into(),
+            input_schema: None,
+        }];
         let content = r#"{"tools":{"tool_a":"desc a","tool_never_asked_for":"desc x"}}"#;
         let result = parse_result(content, false, &missing);
         assert_eq!(result.tool_descriptions.len(), 1);
