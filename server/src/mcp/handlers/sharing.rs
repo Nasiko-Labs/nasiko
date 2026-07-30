@@ -2,6 +2,7 @@
 
 use axum::extract::State;
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::McpError;
@@ -9,6 +10,20 @@ use nasiko_mcp_gateway::McpError;
 use super::super::{ApiError, ApiResponse, AppPath, AppQuery, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
+
+/// `201 Created` + `created_msg` for a genuinely new grant, `200 OK` +
+/// `existing_msg` for a repeat of one that already existed — distinguishes
+/// the two instead of always reporting "granted" regardless of which
+/// happened. `view` is the JSON `create_share_grant` returns, which always
+/// carries a `was_new` boolean.
+fn grant_response(view: Value, created_msg: &'static str, existing_msg: &'static str) -> ApiResponse {
+    let was_new = view.get("was_new").and_then(Value::as_bool).unwrap_or(true);
+    if was_new {
+        ApiResponse::created(view, created_msg)
+    } else {
+        ApiResponse::ok(view, existing_msg)
+    }
+}
 
 /// `GET /api/mcp/connectors/{id}/grants` — list a connector's grants.
 pub async fn list(
@@ -38,7 +53,11 @@ pub async fn grant_public(
         service::connectors::ShareTarget::Public,
     )
     .await?;
-    Ok(ApiResponse::created(view, "Connector made public"))
+    Ok(grant_response(
+        view,
+        "Connector made public",
+        "Connector is already public",
+    ))
 }
 
 /// `DELETE /api/mcp/connectors/{id}/grants/public` — revoke public access.
@@ -77,7 +96,11 @@ pub async fn grant_user(
         service::connectors::ShareTarget::User(user_id),
     )
     .await?;
-    Ok(ApiResponse::created(view, "Connector shared with user"))
+    Ok(grant_response(
+        view,
+        "Connector shared with user",
+        "Connector is already shared with this user",
+    ))
 }
 
 /// `DELETE /api/mcp/connectors/{id}/grants/users/{user_id}` — revoke from a user.
@@ -115,7 +138,11 @@ pub async fn grant_agent(
     }
     let view =
         service::connectors::grant_agent(&state, caller, claims.is_superuser, id, agent_id).await?;
-    Ok(ApiResponse::created(view, "Connector granted to agent"))
+    Ok(grant_response(
+        view,
+        "Connector granted to agent",
+        "Connector is already granted to this agent",
+    ))
 }
 
 /// `DELETE /api/mcp/connectors/{id}/grants/agents/{agent_id}` — revoke from an agent.

@@ -885,7 +885,8 @@ pub async fn create_share_grant(
     } else {
         owned_shareable(state, caller, is_admin, connector_id).await?
     };
-    let grant = repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
+    let (grant, was_new) =
+        repo::create_grant(&state.db, connector.id, grant_type, grantee_id, caller).await?;
     // When granting an agent, also create the access row so the agent
     // appears in consumers and gets tool access immediately. Preserve any
     // existing enabled/tool_rules state for this (agent, connector) pair —
@@ -913,8 +914,13 @@ pub async fn create_share_grant(
         )
         .await;
     }
-    tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, "shared connector");
-    Ok(json!({ "id": grant.id, "grant_type": grant.grant_type, "grantee_id": grant.grantee_id }))
+    tracing::info!(connector_id = %connector.id, grant_type, grantee = %grantee_id, was_new, "shared connector");
+    Ok(json!({
+        "id": grant.id,
+        "grant_type": grant.grant_type,
+        "grantee_id": grant.grantee_id,
+        "was_new": was_new,
+    }))
 }
 
 /// Owner/admin-gated grant revoke — deletes the grant AND the grantee's

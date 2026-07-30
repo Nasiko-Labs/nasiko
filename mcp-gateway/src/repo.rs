@@ -477,18 +477,25 @@ pub async fn delete_connector(db: &PgPool, id: Uuid) -> Result<bool> {
 
 // ─── Grants ─────────────────────────────────────────────────────────────────
 
+/// Upserts a grant, returning it alongside whether this was a genuinely new
+/// row rather than a repeat of an existing one — Postgres's `xmax = 0` idiom:
+/// a row's `xmax` is always 0 immediately after a fresh INSERT, and non-zero
+/// once touched by an UPDATE (including the one `ON CONFLICT DO UPDATE`
+/// performs here). Callers use this to tell an actual new grant (201) apart
+/// from a harmless repeat of one that already existed (200) instead of
+/// reporting "granted" every time regardless of which happened.
 pub async fn create_grant(
     db: &PgPool,
     connector_id: Uuid,
     grant_type: &str,
     grantee_id: &str,
     granted_by: Uuid,
-) -> Result<McpConnectorGrant> {
-    let row = sqlx::query_as::<_, McpConnectorGrant>(
+) -> Result<(McpConnectorGrant, bool)> {
+    let row: (Uuid, Uuid, String, String, Option<Uuid>, DateTime<Utc>, bool) = sqlx::query_as(
         r#"INSERT INTO mcp_connector_grants (connector_id, grant_type, grantee_id, granted_by)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (connector_id, grant_type, grantee_id) DO UPDATE SET granted_by = EXCLUDED.granted_by
-           RETURNING *"#,
+           RETURNING id, connector_id, grant_type, grantee_id, granted_by, created_at, (xmax = 0) AS was_new"#,
     )
     .bind(connector_id)
     .bind(grant_type)
@@ -496,7 +503,15 @@ pub async fn create_grant(
     .bind(granted_by)
     .fetch_one(db)
     .await?;
-    Ok(row)
+    let grant = McpConnectorGrant {
+        id: row.0,
+        connector_id: row.1,
+        grant_type: row.2,
+        grantee_id: row.3,
+        granted_by: row.4,
+        created_at: row.5,
+    };
+    Ok((grant, row.6))
 }
 
 pub async fn list_grants_for_connector(

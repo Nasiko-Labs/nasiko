@@ -1212,7 +1212,11 @@ async fn repeat_agent_grant_preserves_existing_enabled_and_rules() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 201, "a repeat grant must still succeed");
+    assert_eq!(
+        res.status(),
+        200,
+        "a repeat grant must still succeed, now reported as 200 (already granted) not 201"
+    );
 
     // The block rule must have survived — raw stored rules, no live backend
     // sync needed (unlike the synced-tool-catalog `.../tools` view).
