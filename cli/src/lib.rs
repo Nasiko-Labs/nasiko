@@ -141,11 +141,6 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
-    /// Deployment-level ops (list/inspect/restart) — distinct from the container-level ps/restart above
-    Deployments {
-        #[command(subcommand)]
-        command: DeploymentsCommands,
-    },
     /// Re-upload source and rebuild an existing deployed agent
     #[command(
         after_help = "Version resolution order: --version flag → AgentCard.json → pyproject.toml → Cargo.toml → server auto-patch"
@@ -287,6 +282,11 @@ pub enum AgentOpsCommands {
     ModelRegistry {
         #[command(subcommand)]
         command: ModelRegistryCommands,
+    },
+    /// Multi-agent flow workflows: chain agents into a pipeline, run it, inspect executions
+    Maf {
+        #[command(subcommand)]
+        command: MafCommands,
     },
 }
 
@@ -433,6 +433,121 @@ pub enum ModelRegistryCommands {
 }
 
 #[derive(Subcommand)]
+pub enum MafCommands {
+    /// Manage MAF workflows: create/list/get/update/delete/run, list their executions
+    Workflow {
+        #[command(subcommand)]
+        command: MafWorkflowCommands,
+    },
+    /// Inspect MAF executions (across all workflows, or one by id)
+    Execution {
+        #[command(subcommand)]
+        command: MafExecutionCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MafWorkflowCommands {
+    /// List your MAF workflows
+    #[command(alias = "ls")]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create a workflow from one or more steps
+    #[command(
+        after_help = "Steps run in the order given. Pass --agent once per --step to pin \
+an agent (name or UUID) to that step, or \"-\" to auto-assign it; omit --agent entirely to \
+auto-assign every step via the routing engine."
+    )]
+    Create {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// A workflow step's task description. Repeat in order: --step "..." --step "..."
+        #[arg(long = "step")]
+        steps: Vec<String>,
+        /// Agent (name or UUID) for the step at the same position, or "-" to auto-assign
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+    },
+    /// Show a workflow's steps and metadata
+    Get {
+        /// Workflow name or UUID
+        workflow: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace a workflow's name, description, and/or steps
+    #[command(
+        after_help = "Omitting --step leaves the existing steps untouched; passing any \
+--step replaces the entire step list (the server's update is a full step replace)."
+    )]
+    Update {
+        /// Workflow name or UUID
+        workflow: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// Clear the description (mutually exclusive with --description)
+        #[arg(long = "clear-description", conflicts_with = "description")]
+        clear_description: bool,
+        /// Replaces all steps when given (repeatable, see `create --help`)
+        #[arg(long = "step")]
+        steps: Vec<String>,
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+    },
+    /// Delete a workflow (soft-delete)
+    #[command(alias = "rm")]
+    Delete {
+        /// Workflow name or UUID
+        workflow: String,
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Queue a run of a workflow
+    Run {
+        /// Workflow name or UUID
+        workflow: String,
+        /// Poll until the execution finishes and print its result
+        #[arg(long)]
+        wait: bool,
+    },
+    /// List executions of one workflow
+    Executions {
+        /// Workflow name or UUID
+        workflow: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MafExecutionCommands {
+    /// List every execution you've run, across all workflows
+    #[command(alias = "ls")]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one execution by its UUID
+    Get {
+        execution_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one execution's result by its UUID
+    Result {
+        execution_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AgentsCommands {
     /// List all deployed agents
     #[command(alias = "list")]
@@ -487,20 +602,6 @@ pub enum AgentsCommands {
         #[arg(long, short = 's')]
         session_id: Option<String>,
     },
-}
-
-#[derive(Subcommand)]
-pub enum DeploymentsCommands {
-    /// List all deployments (crash reason, restart count, etc.)
-    #[command(alias = "list")]
-    Ls,
-    /// Show the current deployment for an agent
-    Get {
-        /// Agent name or ID
-        agent: String,
-    },
-    /// Restart a specific deployment by its deployment ID (see `deployments ls`)
-    Restart { deployment_id: String },
 }
 
 #[derive(Subcommand)]
@@ -765,13 +866,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
-        AgentOpsCommands::Deployments { command } => match command {
-            DeploymentsCommands::Ls => commands::deployments::ls(),
-            DeploymentsCommands::Get { agent } => commands::deployments::get(&agent),
-            DeploymentsCommands::Restart { deployment_id } => {
-                commands::deployments::restart(&deployment_id)
-            }
-        },
         AgentOpsCommands::Reupload {
             id,
             name,
@@ -1044,6 +1138,58 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 tier,
                 model,
             } => commands::model_registry::set(&provider, tier, &model),
+        },
+        AgentOpsCommands::Maf { command } => match command {
+            MafCommands::Workflow { command } => match command {
+                MafWorkflowCommands::List { json } => commands::maf::workflow_list(json),
+                MafWorkflowCommands::Create {
+                    name,
+                    description,
+                    steps,
+                    agents,
+                } => commands::maf::workflow_create(
+                    name.as_deref(),
+                    description.as_deref(),
+                    &steps,
+                    &agents,
+                ),
+                MafWorkflowCommands::Get { workflow, json } => {
+                    commands::maf::workflow_get(&workflow, json)
+                }
+                MafWorkflowCommands::Update {
+                    workflow,
+                    name,
+                    description,
+                    clear_description,
+                    steps,
+                    agents,
+                } => commands::maf::workflow_update(
+                    &workflow,
+                    name,
+                    description,
+                    clear_description,
+                    &steps,
+                    &agents,
+                ),
+                MafWorkflowCommands::Delete { workflow, force } => {
+                    commands::maf::workflow_delete(&workflow, force)
+                }
+                MafWorkflowCommands::Run { workflow, wait } => {
+                    commands::maf::workflow_run(&workflow, wait)
+                }
+                MafWorkflowCommands::Executions { workflow, json } => {
+                    commands::maf::workflow_executions(&workflow, json)
+                }
+            },
+            MafCommands::Execution { command } => match command {
+                MafExecutionCommands::List { json } => commands::maf::execution_list(json),
+                MafExecutionCommands::Get { execution_id, json } => {
+                    commands::maf::execution_get(&execution_id, json)
+                }
+                MafExecutionCommands::Result { execution_id, json } => {
+                    commands::maf::execution_result(&execution_id, json)
+                }
+            },
         },
     }
 }

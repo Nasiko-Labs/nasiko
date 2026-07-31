@@ -50,10 +50,10 @@ const HELP_TEXT: &str = "\
   restart    Restart agent container
   scale      Scale agent container to N replicas
   rm         Terminate + deregister agent
-  deployments  Deployment-level ops (list/get/restart)
   secrets    Manage encrypted secrets
   status     Cluster health + metrics
   observe    Observability (stats/traces/trace/finops)
+  maf        Multi-agent flow workflows (create/run/inspect)
 
 \x1b[33mAgents:\x1b[0m
   agents     Manage and browse agents (ls/get/deploy/search/info/frameworks/list-uploaded/chat)

@@ -78,6 +78,8 @@ Operate:
   secrets    Manage encrypted secrets — set / get / ls / rm (vault-wide, or --agent)
   observe    Observability — sessions / session / trace-detail / span /
              project-stats / finops-dashboard / insights
+  maf        Multi-agent flow workflows — workflow (list/create/get/update/delete/run/
+             executions), execution (list/get/result)
 
 Agents (registry + lifecycle):
   agents ls              List all deployed agents
@@ -219,6 +221,7 @@ Commands (`cli/src/commands/`):
 | `deploy.rs` | `deploy` — build + push + deploy pipeline |
 | `dev.rs` | `up` / `down` local stack + `run` (local agent run) |
 | `github.rs` | GitHub integration |
+| `maf.rs` | `maf` — multi-agent flow workflow CRUD + run (`maf workflow ...`), execution inspection (`maf execution ...`) |
 | `mcp.rs` | MCP Gateway — catalog, connect, connectors, toolkits, credentials, oauth, agent-tools |
 | `observe.rs` | `observe` — sessions, trace/span detail, project stats, FinOps dashboard, insights |
 | `push.rs` | `push` — build + push without deploy |
