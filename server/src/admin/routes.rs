@@ -121,6 +121,9 @@ async fn deploy(
         resources: None,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
+        harden: false,
+        network_override: None,
+        workload_kind: Default::default(),
     };
     // Only a name that already maps to a registered catalog agent has an
     // `agents` row to scope a pull credential to (see pull_credentials'
@@ -148,6 +151,8 @@ async fn deploy(
                 let endpoint =
                     crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id)
                         .await;
+                let image = spec.image.clone();
+                let owner_id = claims.user_uuid().ok();
                 tokio::spawn(async move {
                     // Write the live endpoint URL + running status back to the catalog.
                     if !endpoint.is_empty() {
@@ -161,26 +166,14 @@ async fn deploy(
                         .await;
                     }
 
-                    let build_id: Option<Uuid> = sqlx::query_scalar(
-                        "SELECT id FROM agent_builds WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+                    // A first-time deploy-by-image has no agent_builds row (no
+                    // server-side build job ran) — ensure_deployment_tracked
+                    // synthesizes one so the crash-loop guardian (EE) still sees
+                    // this deployment (docs/CRASH_GUARDIAN_REPORT.md §5.1/§5.3).
+                    crate::agents::utils::ensure_deployment_tracked(
+                        &db, agent_id, owner_id, &image,
                     )
-                    .bind(agent_id)
-                    .fetch_optional(&db)
-                    .await
-                    .ok()
-                    .flatten();
-
-                    if let Some(build_id) = build_id {
-                        let _ = sqlx::query(
-                            "INSERT INTO agent_deployments (agent_id, build_id, status, k8s_deployment_name)
-                             VALUES ($1, $2, 'running', $3)",
-                        )
-                        .bind(agent_id)
-                        .bind(build_id)
-                        .bind(agent_id.to_string())
-                        .execute(&db)
-                        .await;
-                    }
+                    .await;
                 });
             }
             (StatusCode::CREATED, Json(status)).into_response()

@@ -90,6 +90,75 @@ pub(crate) async fn fetch_and_apply_agent_card(
     true
 }
 
+/// Ensure a successful `runtime.deploy()` is visible to the crash-loop
+/// guardian (EE) by guaranteeing an `agent_deployments` row exists for this
+/// agent. `agent_deployments.build_id` is a NOT NULL FK to `agent_builds`, so
+/// a deploy path with no real build job (`seed.rs`, or a first-time
+/// deploy-by-image with no prior `agent_builds` row) has nothing to
+/// reference — this synthesizes a minimal `agent_builds` row (status
+/// 'success', no real build artifact) rather than skipping the insert, which
+/// previously left those agents with zero crash-loop protection and no
+/// indication anywhere that this was the case (see
+/// docs/CRASH_GUARDIAN_REPORT.md §5.1/§5.3).
+pub(crate) async fn ensure_deployment_tracked(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+    owner_id: Option<Uuid>,
+    image: &str,
+) {
+    let existing_build_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agent_builds WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    let build_id = match existing_build_id {
+        Some(id) => id,
+        None => {
+            let version_tag = image
+                .rsplit('/')
+                .next()
+                .unwrap_or(image)
+                .rsplit_once(':')
+                .map(|(_, tag)| tag.to_string())
+                .unwrap_or_else(|| "latest".to_string());
+
+            let synthesized: Result<Uuid, sqlx::Error> = sqlx::query_scalar(
+                "INSERT INTO agent_builds (agent_id, version_tag, image_reference, status)
+                 VALUES ($1, $2, $3, 'success')
+                 RETURNING id",
+            )
+            .bind(agent_id)
+            .bind(version_tag)
+            .bind(image)
+            .fetch_one(db)
+            .await;
+
+            match synthesized {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(%e, %agent_id, "failed to synthesize agent_builds row for deployment tracking");
+                    return;
+                }
+            }
+        }
+    };
+
+    let _ = sqlx::query(
+        "INSERT INTO agent_deployments (agent_id, build_id, owner_id, status, k8s_deployment_name)
+         VALUES ($1, $2, $3, 'running', $4)",
+    )
+    .bind(agent_id)
+    .bind(build_id)
+    .bind(owner_id)
+    .bind(agent_id.to_string())
+    .execute(db)
+    .await;
+}
+
 /// Retry wrapper around [`fetch_and_apply_agent_card`] for freshly deployed
 /// containers that need a few seconds to become healthy.
 pub(crate) async fn fetch_agent_card_with_retry(
