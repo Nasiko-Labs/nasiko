@@ -617,13 +617,21 @@ pub async fn get_connector_view(
     let mut dto = connector_dto(&connector);
     dto["is_owner"] = json!(connector.owner_id == Some(user_id));
 
-    // Tools — full list with names and descriptions.
+    // Tools — full list with names and UI-summarized descriptions (see
+    // `permissions::summarize_description`'s doc for why this is shared).
     let tools = repo::list_connector_tools(&state.db, connector_id)
         .await
         .unwrap_or_default();
     let tools_json: Vec<Value> = tools
         .iter()
-        .map(|t| json!({ "name": t.tool_name, "description": t.description }))
+        .map(|t| {
+            json!({
+                "name": t.tool_name,
+                "description": t.description.as_deref().map(|d| {
+                    permissions::summarize_description(d, permissions::DESCRIPTION_SUMMARY_MAX_CHARS)
+                }),
+            })
+        })
         .collect();
     dto["tools"] = json!(tools_json);
     dto["tool_count"] = json!(tools.len());

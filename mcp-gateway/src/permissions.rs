@@ -2,8 +2,8 @@
 //!
 //! Two levels: (1) is a connector enabled for this agent at all, (2) per-tool
 //! stance `allow | ask | block` with glob patterns (`*`, `GMAIL_*`,
-//! `GMAIL_SEND_EMAIL`), priority `block > ask > allow`. Default (no row): every
-//! connector enabled, every tool allowed. The [`PermissionContext`] is computed
+//! `GMAIL_SEND_EMAIL`), priority `block > ask > allow`. Default (no row): connector
+//! disabled (default-deny), every tool allowed once the connector is enabled. The [`PermissionContext`] is computed
 //! once per request, Redis-cached, and dropped on any permission write. Its
 //! `hash` feeds the manifest cache key.
 
@@ -390,13 +390,182 @@ pub async fn list_connector_tools_view(
             let stance = perms.get_stance(connector_id, &t.tool_name);
             json!({
                 "name": t.tool_name,
-                "description": t.description,
+                "description": t.description.as_deref().map(|d| summarize_description(d, DESCRIPTION_SUMMARY_MAX_CHARS)),
                 "stance": stance.as_str(),
                 "last_synced_at": t.last_synced_at,
             })
         })
         .collect();
     Ok(json!({ "tools": out }))
+}
+
+/// UI-facing description length cap — every place that shows a tool
+/// description to a human (agent-scoped and connector-scoped views alike)
+/// summarizes to this. The live agent-facing tool contract in
+/// `aggregator.rs` always forwards the full text unchanged, since the LLM
+/// needs the complete usage rules.
+pub(crate) const DESCRIPTION_SUMMARY_MAX_CHARS: usize = 220;
+
+/// Common abbreviations whose trailing `.` doesn't end a sentence. Checked
+/// case-insensitively against the word immediately before the dot.
+const ABBREVIATIONS: &[&str] = &[
+    "e.g", "i.e", "etc", "vs", "cf", "approx", "fig", "no", "al", "eq", "resp", "dr", "mr", "mrs",
+    "ms", "prof", "inc", "ltd", "st", "u.s", "u.k", "co",
+];
+
+/// Shortens a tool description for UI display: prefers the first paragraph
+/// (most MCP tool descriptions lead with a one-line summary before a blank
+/// line), else the first two sentences, always capped at `max_chars` and cut
+/// on a word boundary. Sentence detection skips decimal numbers, initials,
+/// abbreviations, and ellipses so it doesn't fragment mid-thought. Leaves
+/// short descriptions completely unchanged. Leading Markdown headings (e.g.
+/// `## Overview`, common in Notion's tool descriptions) carry no summary
+/// content on their own, so they're skipped before picking a paragraph.
+///
+/// Shared by every UI-facing tools listing — currently
+/// `list_connector_tools_view` here and `get_connector_view` in
+/// `connectors.rs` — so a connector's tools look the same whether viewed
+/// standalone or through a specific agent.
+pub(crate) fn summarize_description(desc: &str, max_chars: usize) -> String {
+    let desc = strip_leading_markdown_headings(desc.trim());
+
+    // Paragraph preference comes first: a short first paragraph should win
+    // even when the *whole* (multi-section) description would also fit
+    // under `max_chars` — showing every section just because it's short
+    // enough isn't the same as showing a summary.
+    if let Some(idx) = desc.find("\n\n") {
+        let paragraph = desc[..idx].trim();
+        if !paragraph.is_empty() && paragraph.chars().count() <= max_chars {
+            return paragraph.to_string();
+        }
+    }
+
+    if desc.chars().count() <= max_chars {
+        return desc.to_string();
+    }
+
+    let cut_at = match sentence_boundary(desc, 2) {
+        Some(byte_idx) if byte_idx <= char_boundary_at(desc, max_chars) => byte_idx,
+        _ => char_boundary_at(desc, max_chars),
+    };
+
+    let mut truncated = desc[..cut_at].trim_end().to_string();
+    if truncated.len() < desc.trim_end().len() && !truncated.ends_with(['.', '!', '?']) {
+        if let Some(last_space) = truncated.rfind(char::is_whitespace) {
+            truncated.truncate(last_space);
+        }
+        truncated = truncated
+            .trim_end_matches(|c: char| c.is_whitespace() || c == ',')
+            .to_string();
+        truncated.push('…');
+    }
+    truncated
+}
+
+/// Byte index of the `n`th sentence-ending punctuation (`.`/`!`/`?`) in
+/// `text`, or `None` if fewer than `n` real sentence boundaries exist. A `.`
+/// only counts when it's followed by whitespace/end-of-string *and* isn't
+/// part of a decimal number, an abbreviation, or an initial. A run of
+/// consecutive dots (`...`) counts as a single boundary.
+fn sentence_boundary(text: &str, n: usize) -> Option<usize> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut found = 0;
+    let mut i = 0;
+
+    while i < chars.len() {
+        let (byte_idx, ch) = chars[i];
+        if ch != '.' && ch != '!' && ch != '?' {
+            i += 1;
+            continue;
+        }
+
+        // Collapse a run of consecutive dots (ellipsis) into one boundary.
+        let mut run_end = i;
+        while run_end + 1 < chars.len() && chars[run_end + 1].1 == '.' {
+            run_end += 1;
+        }
+        let is_ellipsis = run_end > i;
+
+        let next_char = chars.get(run_end + 1).map(|&(_, c)| c);
+        let followed_by_boundary = matches!(next_char, None | Some(' ') | Some('\n') | Some('\t'));
+        if !followed_by_boundary {
+            i = run_end + 1;
+            continue;
+        }
+
+        if ch == '.' && !is_ellipsis && is_non_terminal_dot(text, byte_idx, next_char) {
+            i = run_end + 1;
+            continue;
+        }
+
+        found += 1;
+        if found >= n {
+            return Some(
+                chars
+                    .get(run_end + 1)
+                    .map(|&(b, _)| b)
+                    .unwrap_or(text.len()),
+            );
+        }
+        i = run_end + 1;
+    }
+    None
+}
+
+/// True when the `.` at `byte_idx` is a decimal point, an initial (single
+/// capital letter), or a known abbreviation — not a real sentence end.
+fn is_non_terminal_dot(text: &str, byte_idx: usize, next_char: Option<char>) -> bool {
+    let prev_char = text[..byte_idx].chars().next_back();
+
+    // Decimal number: digit immediately before and after the dot.
+    if prev_char.is_some_and(|c| c.is_ascii_digit())
+        && next_char.is_some_and(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+
+    let word_start = text[..byte_idx]
+        .rfind(|c: char| c.is_whitespace())
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let word = &text[word_start..byte_idx];
+
+    // Single-letter initial, e.g. "J." in "J. Smith".
+    if word.chars().count() == 1 && word.chars().next().is_some_and(char::is_uppercase) {
+        return true;
+    }
+
+    ABBREVIATIONS.iter().any(|a| a.eq_ignore_ascii_case(word))
+}
+
+/// Byte index of the char boundary at or before the `n`th character of `s`.
+fn char_boundary_at(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map(|(b, _)| b).unwrap_or(s.len())
+}
+
+/// Skips leading paragraphs whose first line is a bare Markdown heading
+/// (`#` through `######` followed by a space, e.g. `## Overview`) — these
+/// are section labels, not summary text, so picking one as "the first
+/// paragraph" would show something meaningless like just `## Overview`.
+fn strip_leading_markdown_headings(desc: &str) -> &str {
+    let mut rest = desc.trim_start();
+    while is_markdown_heading_line(first_line(rest)) {
+        match rest.find("\n\n") {
+            Some(idx) => rest = rest[idx + 2..].trim_start(),
+            None => return "",
+        }
+    }
+    rest
+}
+
+fn first_line(text: &str) -> &str {
+    &text[..text.find('\n').unwrap_or(text.len())]
+}
+
+fn is_markdown_heading_line(line: &str) -> bool {
+    let after_hashes = line.trim_end().trim_start_matches('#');
+    after_hashes.len() != line.trim_end().len() // at least one leading '#'
+        && after_hashes.starts_with(' ')
 }
 
 /// Sync a connector's tool catalog from its live backend into `mcp_connector_tools`.
@@ -919,5 +1088,158 @@ mod tests {
         let c = ctx(vec![rule(a, "日本_*", Stance::Ask)], &[]);
         assert_eq!(c.get_stance(a, "日本_ツール"), Stance::Ask);
         assert_eq!(c.get_stance(a, "other_tool"), Stance::Allow);
+    }
+
+    #[test]
+    fn summarize_description_leaves_short_text_unchanged() {
+        let short = "Add two numbers together.";
+        assert_eq!(summarize_description(short, 220), short);
+    }
+
+    #[test]
+    fn summarize_description_prefers_first_paragraph() {
+        let desc = "Create an attachment and upload it to Notion.\n\nProvide exactly one source:\n- content for small UTF-8 text artifacts such as HTML, Markdown, plain text, CSV, JSON, XML, CSS, YAML, TSV, calendar, GPX, or SVG files.\n- source_url for a file available at a direct, publicly reachable HTTPS URL.";
+        assert_eq!(
+            summarize_description(desc, 220),
+            "Create an attachment and upload it to Notion."
+        );
+    }
+
+    #[test]
+    fn summarize_description_skips_leading_markdown_heading() {
+        // Real shape of Notion's "notion-create-pages" tool description: a
+        // bare "## Overview" heading with nothing else on its line, then the
+        // actual one-line summary, then far more Markdown sections below.
+        let desc = "## Overview\n\nCreates one or more Notion pages, with the specified properties and content.\n\n## Parent\n\nAll pages created with a single call to this tool will have the same parent.";
+        assert_eq!(
+            summarize_description(desc, 220),
+            "Creates one or more Notion pages, with the specified properties and content."
+        );
+    }
+
+    #[test]
+    fn summarize_description_skips_multiple_leading_headings() {
+        let desc = "## Overview\n\n### Details\n\nThe real summary sentence finally appears here after two heading lines.\n\n## More\n\nEven more content follows in later sections of this tool description.";
+        assert_eq!(
+            summarize_description(desc, 220),
+            "The real summary sentence finally appears here after two heading lines."
+        );
+    }
+
+    #[test]
+    fn summarize_description_heading_only_with_no_body_returns_empty() {
+        assert_eq!(summarize_description("## Overview", 220), "");
+    }
+
+    /// Padding long enough to push any two-sentence prefix past the 220-char
+    /// cap, so these tests actually exercise sentence-boundary detection
+    /// instead of hitting the short-circuit for already-short descriptions.
+    const DROP_ME: &str = " This dropped sentence exists purely to push the total description past the summary length cap so the real truncation logic actually runs during this test, instead of returning the whole string unchanged.";
+
+    #[test]
+    fn summarize_description_stops_after_two_real_sentences() {
+        let desc = format!(
+            "Search the workspace and return results. Use it when you need pages to read or cite.{DROP_ME}"
+        );
+        let out = summarize_description(&desc, 220);
+        assert_eq!(
+            out,
+            "Search the workspace and return results. Use it when you need pages to read or cite."
+        );
+    }
+
+    #[test]
+    fn summarize_description_does_not_split_on_abbreviations() {
+        // "e.g." and "etc." sit mid-sentence here (not at a real sentence
+        // boundary) — the cut must land on the two real sentence ends, not
+        // right after either abbreviation.
+        let desc = format!(
+            "This tool supports many formats, e.g. HTML and Markdown, and more. It validates the filename before uploading, avoiding mismatches with the content type, etc., along the way.{DROP_ME}"
+        );
+        let out = summarize_description(&desc, 220);
+        assert!(!out.ends_with("e.g."));
+        assert!(!out.ends_with("etc."));
+        assert_eq!(
+            out,
+            "This tool supports many formats, e.g. HTML and Markdown, and more. It validates the filename before uploading, avoiding mismatches with the content type, etc., along the way."
+        );
+    }
+
+    #[test]
+    fn summarize_description_does_not_split_on_decimal_numbers() {
+        let desc = format!(
+            "Downloads are limited to 5.0 MiB for free workspaces. Paid workspaces get a larger 50.5 MiB limit instead, which is plenty for most attachments in practice.{DROP_ME}"
+        );
+        let out = summarize_description(&desc, 220);
+        assert!(out.contains("5.0 MiB"));
+        assert_eq!(
+            out,
+            "Downloads are limited to 5.0 MiB for free workspaces. Paid workspaces get a larger 50.5 MiB limit instead, which is plenty for most attachments in practice."
+        );
+    }
+
+    #[test]
+    fn summarize_description_treats_ellipsis_as_one_boundary() {
+        let desc = format!("Wait for the operation to finish... This can take a while.{DROP_ME}");
+        let out = summarize_description(&desc, 220);
+        assert_eq!(
+            out,
+            "Wait for the operation to finish... This can take a while."
+        );
+    }
+
+    #[test]
+    fn summarize_description_does_not_split_on_initials() {
+        let desc = format!(
+            "This integration was designed by J. Smith and the Notion platform team. It has since been extended to support many more file types for uploads.{DROP_ME}"
+        );
+        let out = summarize_description(&desc, 220);
+        assert!(out.contains("J. Smith"));
+        assert_eq!(
+            out,
+            "This integration was designed by J. Smith and the Notion platform team. It has since been extended to support many more file types for uploads."
+        );
+    }
+
+    #[test]
+    fn summarize_description_hard_caps_when_sentences_run_long() {
+        // Single sentence far longer than max_chars, no early sentence boundary
+        // to stop at — must still cap length and cut on a word boundary.
+        let desc = "This is one extremely long single sentence that keeps going and going without any period to stop at until finally it just keeps rambling on well past any reasonable UI display length for a short summary line";
+        let out = summarize_description(desc, 100);
+        assert!(
+            out.chars().count() <= 101,
+            "expected <= 101 chars, got {}",
+            out.chars().count()
+        );
+        assert!(out.ends_with('…'));
+        assert!(
+            !out.ends_with(" …"),
+            "must not leave a dangling space before the ellipsis"
+        );
+    }
+
+    #[test]
+    fn summarize_description_caps_even_with_long_first_two_sentences() {
+        let long_sentence_a = "A".repeat(150);
+        let long_sentence_b = "B".repeat(150);
+        let desc = format!("{long_sentence_a}. {long_sentence_b}. Third sentence.");
+        let out = summarize_description(&desc, 220);
+        assert!(out.chars().count() <= 221);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_description_handles_empty_and_whitespace() {
+        assert_eq!(summarize_description("", 220), "");
+        assert_eq!(summarize_description("   ", 220), "");
+    }
+
+    #[test]
+    fn summarize_description_no_terminal_punctuation_falls_back_to_char_cap() {
+        let desc = "a".repeat(300);
+        let out = summarize_description(&desc, 100);
+        assert!(out.chars().count() <= 101);
+        assert!(out.ends_with('…'));
     }
 }
