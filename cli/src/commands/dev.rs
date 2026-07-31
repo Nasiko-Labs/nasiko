@@ -391,6 +391,8 @@ pub fn run(path: &str, port: u16) -> Result<()> {
         bail!("no Dockerfile found in {}", agent_dir.display());
     }
 
+    check_rust_prebuild(&agent_dir)?;
+
     let bin = container_bin();
 
     println!("Building {image}...");
@@ -437,7 +439,79 @@ pub fn run(path: &str, port: u16) -> Result<()> {
         bail!("{bin} run failed");
     }
 
+    // `docker run -d` returning success only means the create+start API call
+    // was accepted — it does not guarantee the container is actually up.
+    // Under contention (a container by this name mid-removal, a port still
+    // held by the previous instance) it can come back stuck in `Created`,
+    // never reaching `running`, while still reporting success here — the
+    // caller would otherwise see a false "ready" message and then get
+    // connection-refused from every subsequent `nasiko chat`. Poll briefly
+    // and surface that failure now, with the known fix, instead of later.
+    if !wait_for_running(&bin, name, Duration::from_secs(5)) {
+        bail!(
+            "{name} did not reach a running state (stuck in Created/exited) — \
+             run `{bin} rm -f {name}` and try `nasiko run` again"
+        );
+    }
+
     println!("{name} → http://localhost:{port}");
+    Ok(())
+}
+
+/// Poll `docker inspect` for a container's `.State.Status` until it reports
+/// `running` or the timeout elapses.
+fn wait_for_running(bin: &str, name: &str, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let output = Command::new(bin)
+            .args(["inspect", "--format", "{{.State.Status}}", name])
+            .output();
+        if let Ok(output) = output
+            && output.status.success()
+            && String::from_utf8_lossy(&output.stdout).trim() == "running"
+        {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    false
+}
+
+/// Fails fast with an actionable message when a Rust (`a2a-server-lf`)
+/// agent's Dockerfile expects an already cross-compiled binary that hasn't
+/// been built yet — `nasiko run` only runs `docker build`, it doesn't invoke
+/// `cargo zigbuild` itself, so the alternative is a confusing raw Docker
+/// "failed to calculate checksum... not found" error at the COPY step.
+fn check_rust_prebuild(agent_dir: &Path) -> Result<()> {
+    let dockerfile = std::fs::read_to_string(agent_dir.join("Dockerfile")).unwrap_or_default();
+    for line in dockerfile.lines() {
+        let line = line.trim();
+        if !line.starts_with("COPY ") {
+            continue;
+        }
+        let Some(src) = line.split_whitespace().nth(1) else {
+            continue;
+        };
+        if !src.contains("target/") || !src.contains("/release/") {
+            continue;
+        }
+        if agent_dir.join(src).exists() {
+            break;
+        }
+        let target_triple = src
+            .split("target/")
+            .nth(1)
+            .and_then(|rest| rest.split("/release/").next())
+            .unwrap_or("<target-triple>");
+        bail!(
+            "missing pre-built binary: {src}\n\n\
+             This is a Rust agent — `nasiko run` builds the Docker image from an already \
+             cross-compiled binary, it doesn't invoke `cargo zigbuild` itself. Build it first:\n\n\
+             \x20\x20cargo zigbuild --release --target {target_triple}\n\n\
+             (one-time setup: `cargo install cargo-zigbuild`, `brew install zig`, \
+             `rustup target add {target_triple}`)"
+        );
+    }
     Ok(())
 }
 

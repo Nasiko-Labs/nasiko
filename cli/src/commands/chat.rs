@@ -114,6 +114,17 @@ pub fn chat(
 
     let endpoint = url.trim_end_matches('/').to_string();
     let is_cp = cp::cp_credentials(&endpoint).is_some();
+    // Direct-agent chats (not routed through a CP orchestrator/proxy, which
+    // already carries its own correct full path) don't all answer at the
+    // bare host:port — e.g. the Go `a2a-go` SDK mounts its handler at
+    // `/a2a`, not `/`. Read the agent's own card to find the right path
+    // instead of assuming root.
+    let endpoint = if is_cp {
+        endpoint
+    } else {
+        let (_, rpc_path) = fetch_agent_card(&endpoint);
+        format!("{endpoint}{rpc_path}")
+    };
     // The session id, once known: passed in via --session-id, or adopted from
     // the server's echo after the first turn (see `fetch_cp_history`'s doc).
     let mut session: Option<String> = session_id.map(str::to_string);
@@ -196,34 +207,36 @@ fn print_resume_hint(is_cp: bool, session: Option<&str>, target_label: &str) {
 /// id this turn belongs to: the one passed in, or — on a first turn — the id
 /// the server minted and echoed back as the response's `contextId`.
 fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<Option<String>> {
-    let mut body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": uuid::Uuid::new_v4().to_string(),
-        // gRPC-style JSON-RPC method/role names — what every example agent's
-        // installed `a2a-sdk` actually registers in its dispatch table
-        // (confirmed against a real deployed `oss/agents/translator` build).
-        // The CP orchestrator route ignores `method` entirely, but this body
-        // is also sent straight through to an agent via the CP agent-proxy
-        // or a direct agent endpoint, where it does matter.
-        "method": "SendStreamingMessage",
-        "params": {
-            "message": {
-                "messageId": uuid::Uuid::new_v4().to_string(),
-                "role": "ROLE_USER",
-                "parts": [{"text": text}]
+    // Agents in this repo disagree on the streaming method name depending on
+    // which `a2a-sdk` version they're pinned to: newer ones accept the
+    // gRPC-style `SendStreamingMessage` (confirmed against a real deployed
+    // `oss/agents/translator` build), older ones only the spec-standard
+    // `message/stream`. Try the spec name first — `send_with_method` below
+    // retries with the other on a JSON-RPC "method not found".
+    let build_body = |method: &str, role: &str, session_id: Option<&str>| {
+        let mut body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": method,
+            "params": {
+                "message": {
+                    "messageId": uuid::Uuid::new_v4().to_string(),
+                    "role": role,
+                    "parts": [{"text": text}]
+                }
             }
+        });
+        if let Some(sid) = session_id {
+            body["params"]["message"]["contextId"] = serde_json::Value::String(sid.to_string());
+            body["params"]["metadata"] = serde_json::json!({ "session_id": sid });
         }
-    });
+        body
+    };
     // A known session rides as the A2A contextId; a first turn sends none and
     // the server (agent proxy / orchestrator) mints and echoes one. The
     // metadata field additionally names the session explicitly so the server
     // loads prior turns as conversation history (it also falls back to
     // contextId, but metadata is the documented contract the web UI uses).
-    if let Some(sid) = session_id {
-        body["params"]["message"]["contextId"] = serde_json::Value::String(sid.to_string());
-        body["params"]["metadata"] = serde_json::json!({ "session_id": sid });
-    }
-
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
             .timeout_global(None)
@@ -252,22 +265,22 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
     let span_id = &trace_id[..16];
     let traceparent = format!("00-{trace_id}-{span_id}-01");
 
-    let mut req = http
-        .post(endpoint)
-        .header("Content-Type", "application/json")
-        .header("A2A-Version", "1.0")
-        .header("traceparent", &traceparent);
-    if let Some(ref t) = token {
-        req = req.header("Authorization", &format!("Bearer {t}"));
-    }
+    let send_once = |body: &serde_json::Value| -> Result<ureq::http::Response<ureq::Body>> {
+        let mut req = http
+            .post(endpoint)
+            .header("Content-Type", "application/json")
+            .header("A2A-Version", "1.0")
+            .header("traceparent", &traceparent);
+        if let Some(ref t) = token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        req.send_json(body).context("failed to reach A2A endpoint")
+    };
 
-    let mut spin = Spinner::new();
-    spin.set("connecting");
-    let mut resp = req
-        .send_json(&body)
-        .context("failed to reach A2A endpoint")?;
-
-    if resp.status().as_u16() >= 400 {
+    let check_http_error = |resp: &mut ureq::http::Response<ureq::Body>| -> Result<()> {
+        if resp.status().as_u16() < 400 {
+            return Ok(());
+        }
         let err_body = resp.body_mut().read_to_string().unwrap_or_default();
         let msg = serde_json::from_str::<serde_json::Value>(&err_body)
             .ok()
@@ -294,14 +307,70 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
             msg,
             hint
         );
-    }
+    };
 
-    let content_type = resp
+    let mut spin = Spinner::new();
+    spin.set("connecting");
+    let mut method = "message/stream";
+    let mut role = "ROLE_USER";
+    let mut resp = send_once(&build_body(method, role, session_id))?;
+    check_http_error(&mut resp)?;
+
+    let mut content_type = resp
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+
+    // A JSON-RPC-level rejection (method not found, a role-enum casing
+    // mismatch, or streaming outright unsupported) always arrives as a plain
+    // JSON body — the server never upgrades to a stream for a request it
+    // rejects outright — so it's safe to read it here and retry with the
+    // other convention before falling into the streaming/non-streaming
+    // response handling below. These SDK disagreements are independent and
+    // can compound, so this loops rather than checking once.
+    let mut resp_json: Option<serde_json::Value> = None;
+    for _ in 0..4 {
+        if content_type.contains("text/event-stream") {
+            break;
+        }
+        let parsed: serde_json::Value = resp
+            .body_mut()
+            .read_json()
+            .context("invalid JSON response")?;
+        let error = parsed.get("error");
+        let is_streaming_method = method == "message/stream" || method == "SendStreamingMessage";
+        let retry_method = method == "message/stream"
+            && error.and_then(|e| e.get("code")).and_then(|c| c.as_i64()) == Some(-32601);
+        let retry_role = role == "ROLE_USER" && error.is_some_and(is_role_casing_error);
+        let retry_streaming =
+            is_streaming_method && error.is_some_and(is_streaming_unsupported_error);
+        if !retry_method && !retry_role && !retry_streaming {
+            resp_json = Some(parsed);
+            break;
+        }
+        if retry_streaming {
+            method = if method == "SendStreamingMessage" {
+                "SendMessage"
+            } else {
+                "message/send"
+            };
+        } else if retry_method {
+            method = "SendStreamingMessage";
+        }
+        if retry_role {
+            role = "user";
+        }
+        resp = send_once(&build_body(method, role, session_id))?;
+        check_http_error(&mut resp)?;
+        content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+    }
 
     let observed_session = if content_type.contains("text/event-stream") {
         spin.set("thinking");
@@ -309,10 +378,13 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
         observed
     } else {
         spin.set("thinking");
-        let resp_json: serde_json::Value = resp
-            .body_mut()
-            .read_json()
-            .context("invalid JSON response")?;
+        let resp_json = match resp_json {
+            Some(v) => v,
+            None => resp
+                .body_mut()
+                .read_json()
+                .context("invalid JSON response")?,
+        };
         spin.pause();
 
         let result = resp_json.get("result").unwrap_or(&resp_json);
@@ -667,4 +739,210 @@ fn handle_artifact_update(event: &serde_json::Value) -> Option<String> {
         }
     }
     if buf.is_empty() { None } else { Some(buf) }
+}
+
+/// Detects the `a2a-sdk` (Python) role-enum casing rejection: some pins only
+/// accept the spec-standard lowercase `"user"`/`"agent"` and reject the
+/// gRPC-style `"ROLE_USER"` this CLI sends by default, as a pydantic
+/// validation error on `params.message.role` — distinct from a JSON-RPC
+/// "method not found" (-32601), so it needs its own detection rather than
+/// piggybacking on that check.
+fn is_role_casing_error(error: &serde_json::Value) -> bool {
+    error.get("code").and_then(|c| c.as_i64()) == Some(-32602)
+        && error
+            .get("data")
+            .and_then(|d| d.as_array())
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("loc")
+                        .and_then(|l| l.as_array())
+                        .is_some_and(|loc| loc.iter().any(|v| v.as_str() == Some("role")))
+                })
+            })
+}
+
+/// Detects an agent rejecting the streaming call outright (some SDKs report
+/// `capabilities.streaming: false` on their card and reject `message/stream`/
+/// `SendStreamingMessage` with a generic internal error rather than just
+/// answering as if `message/send` had been called) — the message text is the
+/// only signal here, there's no dedicated JSON-RPC code for this.
+fn is_streaming_unsupported_error(error: &serde_json::Value) -> bool {
+    error
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(|m| m.to_ascii_lowercase())
+        .is_some_and(|m| {
+            m.contains("stream") && (m.contains("not support") || m.contains("unsupported"))
+        })
+}
+
+/// Extracts the path (and beyond) from an absolute URL, e.g.
+/// `http://localhost:8000/a2a` -> `/a2a`. Falls back to `/` when the input
+/// isn't an absolute URL with a path — agent cards vary on whether they set
+/// this at all, and some report an unreachable host (`0.0.0.0`), so callers
+/// combine this path with their own known-good host rather than trusting the
+/// card's host outright.
+fn path_from_url(url: &str) -> String {
+    let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
+    match after_scheme.find('/') {
+        Some(i) if !after_scheme[i..].is_empty() => after_scheme[i..].to_string(),
+        _ => "/".to_string(),
+    }
+}
+
+/// Fetches an agent's card, trying the current spec path before the legacy
+/// one (footgun: `A2A_PROTOCOL.md` documents both as valid, and different
+/// SDKs in this repo only serve one or the other). Returns the display name
+/// and the JSON-RPC path to actually call, read from the card's own `url`
+/// (or `supportedInterfaces[0].url`) — this is what varies by SDK (`/` vs
+/// `/a2a`) instead of assuming every agent answers at the root path.
+fn fetch_agent_card(base: &str) -> (String, String) {
+    let card = ureq::get(&format!("{base}/.well-known/agent-card.json"))
+        .call()
+        .ok()
+        .or_else(|| {
+            ureq::get(&format!("{base}/.well-known/agent.json"))
+                .call()
+                .ok()
+        })
+        .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok());
+
+    let name = card
+        .as_ref()
+        .and_then(|c| c.get("name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Agent".to_string());
+
+    let rpc_path = card
+        .as_ref()
+        .and_then(|c| {
+            c.get("url").and_then(|u| u.as_str()).or_else(|| {
+                c.get("supportedInterfaces")
+                    .and_then(|i| i.as_array())
+                    .and_then(|i| i.first())
+                    .and_then(|i| i.get("url"))
+                    .and_then(|u| u.as_str())
+            })
+        })
+        .map(path_from_url)
+        .unwrap_or_else(|| "/".to_string());
+
+    (name, rpc_path)
+}
+
+/// Chat directly with a locally running agent via A2A JSON-RPC (used by `nasiko agents chat`).
+pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) -> Result<()> {
+    let base = url.trim_end_matches('/');
+    let (agent_name, rpc_path) = fetch_agent_card(base);
+    let rpc_url = format!("{base}{rpc_path}");
+
+    println!("Chatting with '{}' at {}", agent_name, base);
+    if let Some(sid) = session_id {
+        println!("Session: {}", sid);
+    }
+    println!("Type 'exit' to quit.\n");
+
+    let send_msg = |msg: &str, ctx_id: Option<String>| -> Result<Option<String>> {
+        let msg_id = format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let build_payload = |method: &str, role: &str| {
+            let mut payload = serde_json::json!({
+                "jsonrpc": "2.0", "method": method, "id": &msg_id,
+                "params": { "message": {
+                    "role": role, "parts": [{ "text": msg }],
+                    "messageId": &msg_id,
+                }}
+            });
+            if let Some(ref cid) = ctx_id {
+                payload["params"]["message"]["contextId"] = serde_json::Value::String(cid.clone());
+            }
+            payload
+        };
+        let send_once = |method: &str, role: &str| -> Result<serde_json::Value> {
+            ureq::post(&rpc_url)
+                .header("Content-Type", "application/json")
+                .header("A2A-Version", "1.0")
+                .send_json(build_payload(method, role))
+                .map_err(|e| anyhow::anyhow!("failed to reach agent: {}", e))?
+                .body_mut()
+                .read_json()
+                .map_err(Into::into)
+        };
+
+        let spin = status::start_status(format!("{agent_name} is thinking"));
+        // SDKs in this repo disagree on both the RPC method name (spec-current
+        // `message/send` vs the Go `a2a-go` SDK's `SendMessage`) and the role
+        // enum casing (gRPC-style `ROLE_USER` vs the spec-standard lowercase
+        // `user` some `a2a-sdk` pins require). Try the spec conventions first
+        // and retry with the alternate on the matching JSON-RPC error —
+        // cheaper than guessing from the card, and self-correcting if either
+        // SDK's convention changes. The two mismatches are independent, so
+        // this loops rather than checking once.
+        let mut method = "message/send";
+        let mut role = "ROLE_USER";
+        let mut raw = send_once(method, role)?;
+        for _ in 0..2 {
+            let error = raw.get("error");
+            let retry_method = method == "message/send"
+                && error.and_then(|e| e.get("code")).and_then(|c| c.as_i64()) == Some(-32601);
+            let retry_role = role == "ROLE_USER" && error.is_some_and(is_role_casing_error);
+            if !retry_method && !retry_role {
+                break;
+            }
+            if retry_method {
+                method = "SendMessage";
+            }
+            if retry_role {
+                role = "user";
+            }
+            raw = send_once(method, role)?;
+        }
+        drop(spin);
+        if let Some(err) = raw.get("error") {
+            bail!("A2A error: {}", err);
+        }
+        let result = raw.get("result").cloned().unwrap_or_default();
+        // Shared with `nasiko chat`'s `send_message`: handles both the flat
+        // 0.3.x shape and the 1.0 task-wrapped shape (`result.task.artifacts[]`)
+        // — a hand-rolled chain here previously only checked the flat shape
+        // directly under `result` and silently printed "(no response)" for
+        // any agent (e.g. the Rust `a2a-server-lf` sample) that wraps its
+        // reply in a task.
+        let new_ctx = event_context_id(&result);
+        let text =
+            nasiko_types::a2a::extract_text(&result).unwrap_or_else(|| "(no response)".to_string());
+        println!("Agent: {}\n", text);
+        Ok(new_ctx.or(ctx_id))
+    };
+
+    let initial_ctx = session_id.map(|s| s.to_string());
+    if let Some(msg) = message {
+        send_msg(msg, initial_ctx)?;
+        return Ok(());
+    }
+
+    let mut ctx_id: Option<String> = initial_ctx;
+    // Ctrl-C / Ctrl-D breaks the loop and leaves gracefully instead of erroring out.
+    while let Ok(input) = dialoguer::Input::<String>::new()
+        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+        .allow_empty(true)
+        .interact_text()
+    {
+        let input = input.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if input == "exit" || input == "quit" {
+            println!("Goodbye.");
+            break;
+        }
+        ctx_id = send_msg(input, ctx_id)?;
+    }
+    Ok(())
 }
