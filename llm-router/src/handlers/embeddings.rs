@@ -76,7 +76,7 @@ async fn embeddings_core(
 mod tests {
     use super::*;
     use crate::config::GatewayConfig;
-    use crate::resolver::{AgentConfigResult, ConfigCache, LLMConfig};
+    use crate::resolver::{AgentConfigResult, ConfigCache};
     use async_trait::async_trait;
     use jsonwebtoken::Algorithm;
     use serde_json::json;
