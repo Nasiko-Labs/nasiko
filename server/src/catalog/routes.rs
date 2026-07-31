@@ -791,7 +791,12 @@ pub(crate) async fn list_versions(
     .await;
 
     match result {
-        Ok(versions) => Json(serde_json::json!({ "data": versions })).into_response(),
+        Ok(versions) => Json(serde_json::json!({
+            "data": versions,
+            "status_code": 200,
+            "message": "version history retrieved successfully",
+        }))
+        .into_response(),
         Err(e) => {
             tracing::error!(%e, agent_id = %id, "list_versions: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
