@@ -20,10 +20,12 @@ class RouterConfig(BaseSettings):
     OPENROUTER_API_KEY: Optional[str] = None
     MINIMAX_API_KEY: Optional[str] = None
     MINIMAX_BASE_URL: str = "https://api.minimax.io/v1"
+    ATLASCLOUD_API_KEY: Optional[str] = None
+    ATLASCLOUD_BASE_URL: str = "https://api.atlascloud.ai/v1"
     OLLAMA_SERVER: str = "http://ollama:11434"
 
     # LLM Provider selection for the router
-    # Supported values: "openai", "openrouter", "minimax"
+    # Supported values: "openai", "openrouter", "minimax", "atlascloud"
     ROUTER_LLM_PROVIDER: str = "openai"
     ROUTER_LLM_MODEL: str = "gpt-4o-mini"
 
