@@ -109,6 +109,17 @@ pub(crate) struct LlmConfigResponse {
     /// `"attached"` | `"owner-default"` | `"none"`.
     source: String,
     inbound_format: String,
+    /// Agent-level model pin, overriding the config's own `pinned_model`, or `null`.
+    pinned_model: Option<String>,
+}
+
+/// `crate::mcp::ApiResponse` envelope around [`LlmConfigResponse`].
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct LlmConfigEnvelope {
+    data: LlmConfigResponse,
+    status_code: u16,
+    message: String,
 }
 
 /// The agent's **resolved** routing config (attached → owner default →
@@ -121,7 +132,7 @@ pub(crate) struct LlmConfigResponse {
         ("id" = Uuid, Path, description = "Agent id"),
     ),
     responses(
-        (status = 200, description = "Resolved LLM routing config", body = LlmConfigResponse),
+        (status = 200, description = "Resolved LLM routing config", body = LlmConfigEnvelope),
         (status = 403, description = "Caller is not the agent owner"),
         (status = 404, description = "No such agent"),
     ),
@@ -208,6 +219,17 @@ pub(crate) struct LlmConfigUpdateResponse {
     llm_config_id: Option<Uuid>,
     llm_config: Option<Value>,
     source: String,
+    /// Agent-level model pin after applying this update, or `null`.
+    pinned_model: Option<String>,
+}
+
+/// `crate::mcp::ApiResponse` envelope around [`LlmConfigUpdateResponse`].
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct LlmConfigUpdateEnvelope {
+    data: LlmConfigUpdateResponse,
+    status_code: u16,
+    message: String,
 }
 
 /// Attach/detach a reusable LLM config to an agent, and optionally change the
@@ -222,7 +244,7 @@ pub(crate) struct LlmConfigUpdateResponse {
     ),
     request_body = AttachLlmConfigRequest,
     responses(
-        (status = 200, description = "Updated, with the freshly resolved config", body = LlmConfigUpdateResponse),
+        (status = 200, description = "Updated, with the freshly resolved config", body = LlmConfigUpdateEnvelope),
         (status = 400, description = "Config not found/not owned, or unsupported inbound_format"),
         (status = 403, description = "Caller is not the agent owner"),
         (status = 404, description = "No such agent"),
@@ -374,8 +396,21 @@ pub(crate) async fn update_llm_config(
 
 // ─── DELETE /{id}/llm-config ──────────────────────────────────────────────────
 
-/// Detach the config and clear the agent-level pin in one call.
-async fn delete_llm_config(
+/// Detach the config and clear the agent-level pin in one call. Owner-or-superuser only.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{id}/llm-config",
+    tag = "agents",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "Config detached and pin cleared", body = crate::openapi::EmptyEnvelope),
+        (status = 403, description = "Caller is not the agent owner"),
+        (status = 404, description = "No such agent"),
+    ),
+)]
+pub(crate) async fn delete_llm_config(
     State(state): State<AppState>,
     claims: Claims,
     Path(agent_id): Path<Uuid>,

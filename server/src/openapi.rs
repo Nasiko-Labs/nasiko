@@ -51,6 +51,7 @@ use crate::state::AppState;
         crate::agents::deployments::restart_deployment,
         crate::agents::llm_config::get_llm_config,
         crate::agents::llm_config::update_llm_config,
+        crate::agents::llm_config::delete_llm_config,
         crate::agents::update::update_agent,
         crate::agents::update::rollback_agent,
         crate::agents::upload::upload_and_deploy,
@@ -107,8 +108,10 @@ use crate::state::AppState;
         crate::agents::deployments::DeploymentRow,
         crate::agents::deployments::RestartDeploymentResponse,
         crate::agents::llm_config::LlmConfigResponse,
+        crate::agents::llm_config::LlmConfigEnvelope,
         crate::agents::llm_config::AttachLlmConfigRequest,
         crate::agents::llm_config::LlmConfigUpdateResponse,
+        crate::agents::llm_config::LlmConfigUpdateEnvelope,
         crate::agents::update::UpdateAgentResponse,
         crate::agents::update::UpdateAgentForm,
         crate::agents::update::RollbackRequest,
@@ -139,6 +142,7 @@ use crate::state::AppState;
         crate::users::routes::AdminListResponse,
         crate::users::routes::AccessibleAgent,
         crate::users::routes::AccessibleAgentsResponse,
+        EmptyEnvelope,
     )),
     tags(
         (name = "secrets", description = "Encrypted per-user agent secrets"),
@@ -149,6 +153,19 @@ use crate::state::AppState;
     ),
 )]
 pub struct ApiDoc;
+
+/// Doc-only schema for the standard `ApiResponse` envelope when a handler has
+/// no payload to return (`ApiResponse::ok(json!(null), …)`): `data` is always
+/// JSON null, so only `status_code` and `message` carry information.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub struct EmptyEnvelope {
+    #[schema(value_type = Object, nullable)]
+    pub data: Option<serde_json::Value>,
+    #[schema(example = 200)]
+    pub status_code: u16,
+    pub message: String,
+}
 
 /// Swagger UI at `/api/docs`, raw spec at `/api/openapi.json`. Unauthenticated
 /// like `/health` — it only describes route shapes and schemas, no live data.
