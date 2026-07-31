@@ -222,8 +222,8 @@ pub(crate) async fn create(
 
     let result = sqlx
         ::query_as::<_, Agent>(
-            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12)
+            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image)
+           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13)
            RETURNING *"#
         )
         .bind(&body.name)
@@ -238,6 +238,7 @@ pub(crate) async fn create(
         .bind(skills)
         .bind(&tags)
         .bind(meta)
+        .bind(&body.image)
         .fetch_one(&mut *tx).await;
 
     let agent = match result {
@@ -261,6 +262,29 @@ pub(crate) async fn create(
         tracing::error!(%e, agent_id = %agent.id, "create agent: sync skills failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
     }
+
+    // Seed the version history with this agent's starting version. Without
+    // this, `push`/`deploy`-registered agents have zero rows in
+    // `agent_versions` until their first `reupload` — which then has nothing
+    // active to archive, so `rollback` has no eligible target until a
+    // *second* reupload. `nasiko upload`'s build pipeline seeds its own row
+    // separately (`agents/upload.rs`, `build/routes.rs`) once the build
+    // completes; this covers the `push`/`deploy` path, which registers
+    // before any build job exists.
+    if let Err(e) = sqlx::query(
+        "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, status) \
+         VALUES ($1, $2, $3, true, 'active')",
+    )
+    .bind(agent.id)
+    .bind(&agent.version)
+    .bind(agent.image.clone().unwrap_or_default())
+    .execute(&mut *tx)
+    .await
+    {
+        tracing::error!(%e, agent_id = %agent.id, "create agent: seed initial version failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+    }
+
     if let Err(e) = tx.commit().await {
         tracing::error!(%e, "create agent: commit failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
@@ -331,10 +355,39 @@ pub(crate) async fn list(
         .await;
 
     match agents {
-        Ok(list) => Json(list).into_response(),
+        Ok(mut list) => {
+            reconcile_running_status(&state, &mut list).await;
+            Json(list).into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "list agents: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
+/// A container that crashed after its last deploy/restart call still reads
+/// `status = 'running'` from the DB — nothing rewrites that column on its own
+/// for Docker-backed agents (the EE crash guardian only reconciles K8s
+/// deployments). Cheap enough to check on every list call: `nasiko ps`-sized
+/// fleets are small, and `runtime.status()` is a single local Docker API call
+/// per agent. Read-only override on the response, not persisted — avoids
+/// racing the crash guardian's own DB writes on K8s, and a stale read here is
+/// harmless where a stale write would linger.
+async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
+    for agent in agents.iter_mut() {
+        if agent.status != "running" {
+            continue;
+        }
+        let container_id = ContainerId::from_uuid(agent.id);
+        if let Ok(live) = state.runtime.status(&container_id).await {
+            use nasiko_runtime::RuntimeState;
+            if matches!(
+                live.state,
+                RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
+            ) {
+                agent.status = live.state.to_string();
+            }
         }
     }
 }
@@ -738,7 +791,7 @@ pub(crate) async fn list_versions(
     .await;
 
     match result {
-        Ok(versions) => Json(versions).into_response(),
+        Ok(versions) => Json(serde_json::json!({ "data": versions })).into_response(),
         Err(e) => {
             tracing::error!(%e, agent_id = %id, "list_versions: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
