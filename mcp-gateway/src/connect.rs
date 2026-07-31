@@ -17,6 +17,11 @@ use crate::repo::{self, McpConnector};
 use crate::state::McpState;
 use crate::{credentials, oauth, session};
 
+/// Composio auto-expires an INITIATED connected-account link 10 minutes after
+/// it's issued (per Composio's docs). We treat a stored link as stale a little
+/// before that so we never hand back a link in the last few seconds of its life.
+const COMPOSIO_INITIATED_TTL_SECONDS: i64 = 9 * 60;
+
 /// Inputs for [`connect_service`] — one of `connector_id` / `service` / `url`.
 #[derive(Default)]
 pub struct ConnectInput {
@@ -257,11 +262,26 @@ async fn composio_connect(
                 });
             }
             "INITIATED" => {
-                return Ok(ConnectOutcome::Initiated {
-                    connector_id: connector.id,
-                    name: connector.name.clone(),
-                    oauth_url: existing.oauth_url,
-                });
+                // `updated_at` is bumped by `trg_mcp_user_connections_updated_at` on every
+                // re-initiation, so it tracks "when was this link last (re)issued" —
+                // unlike `created_at`, which stays pinned to the very first attempt.
+                let age_seconds = (chrono::Utc::now() - existing.updated_at).num_seconds();
+                if age_seconds < COMPOSIO_INITIATED_TTL_SECONDS {
+                    return Ok(ConnectOutcome::Initiated {
+                        connector_id: connector.id,
+                        name: connector.name.clone(),
+                        oauth_url: existing.oauth_url,
+                    });
+                }
+                // Stale: Composio has almost certainly expired this link on its side
+                // (10-minute auto-expiry). Fall through and mint a fresh one instead
+                // of handing back a link that will show "Invalid or expired link".
+                tracing::info!(
+                    %user_id,
+                    connector = %connector.name,
+                    age_seconds,
+                    "stale INITIATED composio connection — re-initiating"
+                );
             }
             _ => {}
         }
