@@ -53,6 +53,12 @@ pub struct Config {
     /// answer this). Everything that gates on observability reads this flag
     /// rather than re-inspecting env, so no two code paths can disagree.
     pub observability_enabled: bool,
+    /// Opaque identifier for the tenant this deployment belongs to, added as
+    /// a `tenant.id` OTel resource attribute on every agent this instance
+    /// deploys — see `InstrumentedRuntime`. `None` for a standalone/non-
+    /// multi-tenant deployment. This crate has no notion of what a "tenant"
+    /// is; it only passes the value through.
+    pub tenant_id: Option<String>,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -88,6 +94,13 @@ pub struct Config {
     pub embedding_model: String,
     pub router_agent_timeout_secs: u64,
     pub github_callback_url: Option<String>,
+    /// Central OAuth callback relay URL (multi-tenant deployments): used as the
+    /// GitHub `redirect_uri` for both authorize and token exchange instead of
+    /// `github_callback_url`, so many clusters can share one GitHub OAuth app
+    /// whose single registered callback points at the relay. Includes this
+    /// cluster's tenant-id path suffix. Unset (the default, and always for
+    /// standalone deployments) means GitHub calls this cluster back directly.
+    pub github_central_callback_url: Option<String>,
     /// Base URL to redirect to after a successful OAuth login. In production
     /// this is the same origin as the server. Override via `APP_BASE_URL` in
     /// dev when the server and app run on different ports.
@@ -229,6 +242,7 @@ impl Config {
             // env is read, so every consumer agrees on whether it's enabled.
             observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
                 && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
+            tenant_id: std::env::var("TENANT_ID").ok(),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
@@ -261,6 +275,9 @@ impl Config {
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
+            github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK")
                 .ok()

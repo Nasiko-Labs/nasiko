@@ -142,7 +142,7 @@ impl AppState {
                     oauth_state_secret: signing,
                     callback_url: config.github_callback_url.clone()
                         .expect("GITHUB_CALLBACK_URL must be set when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured"),
-                    central_callback_url: None,
+                    central_callback_url: config.github_central_callback_url.clone(),
                     clone_timeout_secs: 300,
                     clone_max_size_bytes: 500 * 1024 * 1024,
                 };
@@ -184,12 +184,19 @@ impl AppState {
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
         // HTTP client — no duplicated infrastructure.
-        let mcp = nasiko_mcp_gateway::McpState::new(
+        let mut mcp = nasiko_mcp_gateway::McpState::new(
             db.clone(),
             redis.clone(),
             http_client.clone(),
             &config,
         );
+        // Swap in the real, ContainerRuntime-backed endpoint refresher (Step
+        // 13) — the gateway crate's own default is a no-op, since it has no
+        // ContainerRuntime dependency by design.
+        mcp.endpoint_refresher = Arc::new(crate::mcp::build::RuntimeEndpointRefresher::new(
+            runtime.clone(),
+            db.clone(),
+        ));
 
         let state = Self {
             runtime,
@@ -245,6 +252,7 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
+            crate::seed::seed_toolkits_if_configured(&state).await;
         });
 
         // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).
