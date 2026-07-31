@@ -59,7 +59,10 @@ async fn create_user_with_is_superuser_true_actually_sets_it() {
             .await
             .unwrap();
     assert_eq!(role, "admin");
-    assert!(is_superuser, "is_superuser: true in the request must persist");
+    assert!(
+        is_superuser,
+        "is_superuser: true in the request must persist"
+    );
 
     server.cleanup().await;
 }

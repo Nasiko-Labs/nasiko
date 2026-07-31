@@ -2,17 +2,15 @@
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{Query, State},
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
-use serde_json::Value;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
-use super::super::{ApiError, parse_user, service};
+use super::super::{ApiError, ApiResponse, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -26,12 +24,12 @@ pub struct AuthorizeRequest {
 pub async fn authorize(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
+    AppPath(connector_id): AppPath<Uuid>,
     body: Option<Json<AuthorizeRequest>>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::oauth::authorize(
             &state,
             user_id,
@@ -40,6 +38,7 @@ pub async fn authorize(
             body.redirect_url,
         )
         .await?,
+        "OAuth authorization URL generated successfully",
     ))
 }
 
@@ -51,10 +50,13 @@ pub struct CallbackQuery {
     pub error_description: Option<String>,
 }
 
-/// `GET /api/mcp/oauth/callback` — public browser redirect target.
+/// `GET /api/mcp/oauth/callback` — public browser redirect target (HTML, not JSON).
 pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>) -> Response {
     match service::oauth::callback(&state, q.code, q.state, q.error, q.error_description).await {
         CallbackOutcome::Redirect(dest) => Redirect::to(&dest).into_response(),
+        CallbackOutcome::ClosePopup(fallback_url) => {
+            Html(close_popup_page(&fallback_url)).into_response()
+        }
         CallbackOutcome::Message(msg) => Html(error_page(&msg)).into_response(),
     }
 }
@@ -63,11 +65,12 @@ pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQue
 pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
-) -> Result<Json<Value>, ApiError> {
+    AppPath(connector_id): AppPath<Uuid>,
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
-    Ok(Json(
+    Ok(ApiResponse::ok(
         service::oauth::status(&state, user_id, connector_id).await?,
+        "OAuth status retrieved successfully",
     ))
 }
 
@@ -75,11 +78,27 @@ pub async fn status(
 pub async fn revoke(
     State(state): State<AppState>,
     claims: Claims,
-    Path(connector_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+    AppPath(connector_id): AppPath<Uuid>,
+) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::oauth::revoke(&state, user_id, connector_id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(ApiResponse::ok(
+        serde_json::Value::Null,
+        "OAuth token revoked successfully",
+    ))
+}
+
+/// HTML page that closes the popup window. Falls back to a redirect if
+/// `window.close()` is blocked (e.g. flow ran in a top-level tab).
+fn close_popup_page(fallback_url: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Connected</title></head>\
+         <body style=\"font-family:sans-serif;text-align:center;padding:48px\">\
+         <p style=\"color:#666\">Authorization complete. This window will close automatically.</p>\
+         <script>window.close();setTimeout(function(){{location.href=\"{}\"}},1000);</script>\
+         </body></html>",
+        html_escape(fallback_url)
+    )
 }
 
 fn error_page(message: &str) -> String {

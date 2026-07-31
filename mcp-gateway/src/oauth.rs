@@ -565,6 +565,10 @@ pub async fn begin_authorization(
 /// Outcome of the public OAuth callback for the server to render.
 pub enum CallbackOutcome {
     Redirect(String),
+    /// Render an HTML page that closes the popup window, then falls back to a
+    /// redirect if `window.close()` is blocked (e.g. the flow ran in a
+    /// top-level tab instead of a popup).
+    ClosePopup(String),
     Message(String),
 }
 
@@ -681,11 +685,20 @@ pub async fn handle_callback(
         connector = %connector.name, user_id = %oauth_state.user_id, verified = outcome.verified,
         "stored mcp oauth token"
     );
+    // Sync tools eagerly so the frontend shows them immediately instead of
+    // waiting for a lazy sync on the next `tools/list` request.
+    if outcome.verified {
+        if let Err(e) =
+            crate::permissions::sync_connector_tools_by_id(state, oauth_state.user_id, connector.id)
+                .await
+        {
+            tracing::warn!(error = %e, "post-oauth tool sync failed (non-fatal)");
+        }
+    }
+
     let dest = oauth_state.redirect_url.unwrap_or_else(|| "/".to_string());
-    CallbackOutcome::Redirect(crate::net::safe_redirect(
-        &dest,
-        state.config.gateway_public_url.as_deref(),
-    ))
+    let safe_dest = crate::net::safe_redirect(&dest, state.config.gateway_public_url.as_deref());
+    CallbackOutcome::ClosePopup(safe_dest)
 }
 
 /// Parse `resource_metadata="<url>"` out of a `WWW-Authenticate` header value.
@@ -725,7 +738,12 @@ pub async fn as_supports_dcr(http: &reqwest::Client, resource_metadata: &Value) 
         "{}/.well-known/oauth-authorization-server",
         as_url.trim_end_matches('/')
     );
-    let Ok(resp) = http.get(&as_meta_url).timeout(DISCOVERY_TIMEOUT).send().await else {
+    let Ok(resp) = http
+        .get(&as_meta_url)
+        .timeout(DISCOVERY_TIMEOUT)
+        .send()
+        .await
+    else {
         return false;
     };
     let Ok(doc) = resp.json::<Value>().await else {

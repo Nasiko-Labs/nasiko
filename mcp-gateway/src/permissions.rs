@@ -568,6 +568,15 @@ fn is_markdown_heading_line(line: &str) -> bool {
         && after_hashes.starts_with(' ')
 }
 
+/// Public entry point for eager tool sync (e.g. after OAuth callback).
+pub async fn sync_connector_tools_by_id(
+    state: &McpState,
+    user_id: Uuid,
+    connector_id: Uuid,
+) -> Result<()> {
+    sync_connector_tools(state, user_id, connector_id).await
+}
+
 /// Sync a connector's tool catalog from its live backend into `mcp_connector_tools`.
 async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uuid) -> Result<()> {
     let connector = repo::get_connector_by_id(&state.db, connector_id)

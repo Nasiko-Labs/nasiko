@@ -163,8 +163,7 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
         // One extra hop: check the authorization-server metadata for a
         // registration_endpoint so the frontend knows whether client
         // credentials are required or can be obtained via DCR (RFC 7591).
-        let supports_dcr =
-            crate::oauth::as_supports_dcr(&state.guarded_http_client, &rm).await;
+        let supports_dcr = crate::oauth::as_supports_dcr(&state.guarded_http_client, &rm).await;
 
         let hint = if supports_dcr {
             "This server supports OAuth 2.1 with automatic client registration — \
