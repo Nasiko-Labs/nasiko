@@ -8,7 +8,7 @@
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::api::Client;
+use crate::api::{Client, unwrap_data};
 use crate::commands::agents::resolve_agent_id;
 
 /// `nasiko llm-config create --name … --provider … --model …` — add a reusable config.
@@ -55,7 +55,7 @@ pub fn create(
 /// `nasiko llm-config list` — show the configs in your library.
 pub fn list(json_out: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let configs: Vec<Value> = client.get_json("/llm-configs")?;
+    let configs: Vec<Value> = unwrap_data(client.get_json("/llm-configs")?)?;
 
     if json_out {
         println!("{}", serde_json::to_string_pretty(&configs)?);
@@ -278,7 +278,8 @@ pub fn detach(agent: &str) -> Result<()> {
 pub fn get(agent: &str, json_out: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(agent)?;
-    let resp: Value = client.get_json(&format!("/agents/{agent_id}/llm-config"))?;
+    let resp: Value =
+        unwrap_data(client.get_json(&format!("/agents/{agent_id}/llm-config"))?)?;
 
     if json_out {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -329,7 +330,7 @@ pub fn get(agent: &str, json_out: bool) -> Result<()> {
 /// `nasiko llm-config providers` — list the provider/model catalog (valid values for `create`).
 pub fn providers(json_out: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let resp: Vec<Value> = client.get_json("/llm-router/providers")?;
+    let resp: Vec<Value> = unwrap_data(client.get_json("/llm-router/providers")?)?;
 
     if json_out {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -371,7 +372,7 @@ pub fn providers(json_out: bool) -> Result<()> {
 
 /// Fetch one config (full JSON) by name or UUID from the caller's library.
 fn fetch_config_by_ref(client: &Client, config: &str) -> Result<Value> {
-    let configs: Vec<Value> = client.get_json("/llm-configs")?;
+    let configs: Vec<Value> = unwrap_data(client.get_json("/llm-configs")?)?;
     for c in &configs {
         let id = c.get("id").and_then(|v| v.as_str());
         let name = c.get("name").and_then(|v| v.as_str());
