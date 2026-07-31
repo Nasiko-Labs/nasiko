@@ -811,7 +811,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             // ("nasiko chat <label> --session-id ...") land back on the same
             // agent instead of falling through to the orchestrator's
             // `(None, None)` branch (see below) with no target at all.
-            let target_label = agent.as_deref().or(url.as_deref()).unwrap_or("").to_string();
+            let target_label = agent
+                .as_deref()
+                .or(url.as_deref())
+                .unwrap_or("")
+                .to_string();
             let resolved = match (url, agent) {
                 // `url` is documented to accept a full URL, an agent
                 // UUID/name, or "orchestrator" — `resolve_chat_target`
@@ -899,17 +903,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 url,
                 message,
                 session_id,
-            } => {
-                // target_label = the URL itself, not "" — `resolve_chat_target`
-                // passes URLs through unchanged, so the printed resume hint
-                // ("nasiko chat <label> --session-id ...") round-trips back to
-                // this same agent. An empty label instead prints a bare
-                // `--session-id`, which resolves to the *orchestrator* endpoint
-                // (`lib.rs`'s `(None, None)` branch) — silently handing a
-                // resumed conversation to router-selected agents instead of the
-                // one the session actually started with.
-                commands::chat::chat(&url, message.as_deref(), session_id.as_deref(), &url)
-            }
+            } => commands::chat::agent_chat(&url, message.as_deref(), session_id.as_deref()),
         },
         AgentOpsCommands::Observe { command } => match command {
             ObserveCommands::Sessions { start_time, json } => {
