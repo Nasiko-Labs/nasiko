@@ -23,6 +23,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 nasiko-config.workspace = true
 nasiko-types.workspace = true
 nasiko-observability.workspace = true
+nasiko-auth.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true

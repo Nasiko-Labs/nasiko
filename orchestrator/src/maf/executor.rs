@@ -58,12 +58,39 @@ pub async fn run_maf(
 
         // ── Agent call ────────────────────────────────────────────────────────
         let start = Instant::now();
-        let traceparent = build_traceparent(execution_id, step.step_index);
+        let (traceparent, trace_id) = build_traceparent(execution_id, step.step_index);
+
+        // Register this step as a flow so the LLM gateway sees it as IN-FLOW (not
+        // inert) and its tier classifier can fire. The invariant the gateway relies
+        // on (see `derive_boundary_signals`): the trace_id we forward in
+        // `traceparent` IS the `flow_id` in this row — mirroring the orchestrator /
+        // agent-proxy ingress. `context_id = execution_id` is stable across every
+        // step, so the gateway keys its decision cache on the whole MAF run: the
+        // first step writes the tier decision, later steps reuse it. Best-effort —
+        // a failed insert only means this step falls back to the default model.
+        let flow_metadata = serde_json::json!({
+            "context_id": execution_id.to_string(),
+            "mode": "free_flowing",
+        });
+        let _ = sqlx::query(
+            r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
+               VALUES ($1, $2, $3, $4, 'running', $5)
+               ON CONFLICT (flow_id) DO NOTHING"#,
+        )
+        .bind(&trace_id)
+        .bind(user_id)
+        .bind(&step.agent_name)
+        .bind(&step.task_description)
+        .bind(&flow_metadata)
+        .execute(db)
+        .await;
+
         let raw_response = match call_agent(
             client,
             &step.agent_endpoint,
             &execution_id.to_string(),
             &user_id.to_string(),
+            &step.agent_id.to_string(),
             &actual_prompt,
             &traceparent,
         )
@@ -113,8 +140,7 @@ pub async fn run_maf(
         // span export, so it's usually not there the instant the call
         // returns) so the persisted step total already reflects LLM + agent
         // cost together, not just MAF's own reasoning cost.
-        let agent_tokens =
-            wait_for_agent_tokens(observability, execution_id, step.step_index).await;
+        let agent_tokens = wait_for_agent_tokens(observability, &trace_id).await;
         let step_tokens = llm_tokens + agent_tokens;
         total_tokens += step_tokens;
 
@@ -629,34 +655,32 @@ async fn generate_final_output(
 /// than one step. Deterministic (execution_id + step_index) via UUIDv5, so no
 /// new dependency and no random-id bookkeeping is needed to reconstruct it
 /// later when reading the execution back.
-fn build_traceparent(execution_id: Uuid, step_index: i32) -> String {
+///
+/// Returns `(traceparent_header, trace_id)`. The bare `trace_id` (32 hex, no
+/// dashes) is the value both the flow-registration insert and the Tempo token
+/// lookup key on, so it's returned rather than re-derived at each call site.
+fn build_traceparent(execution_id: Uuid, step_index: i32) -> (String, String) {
     let trace_uuid = Uuid::new_v5(&execution_id, step_index.to_string().as_bytes());
     let span_uuid = Uuid::new_v5(&execution_id, format!("{step_index}-span").as_bytes());
     let trace_id = trace_uuid.simple().to_string();
     let span_id = &span_uuid.simple().to_string()[..16];
     // flags=01 (sampled) — otherwise a conforming exporter may decide not to
     // export the span at all, and this whole mechanism would silently no-op.
-    format!("00-{trace_id}-{span_id}-01")
+    let traceparent = format!("00-{trace_id}-{span_id}-01");
+    (traceparent, trace_id)
 }
 
-/// Polls Tempo for this step's trace (same derivation as `build_traceparent`)
-/// and returns its total `gen_ai.usage` tokens, or 0 if nothing shows up
-/// within the timeout — Tempo/the agent being unreachable never fails the
-/// step, it just means this step's persisted total is LLM-only.
-async fn wait_for_agent_tokens(
-    observability: &dyn ObservabilityProvider,
-    execution_id: Uuid,
-    step_index: i32,
-) -> i64 {
-    let trace_id = Uuid::new_v5(&execution_id, step_index.to_string().as_bytes())
-        .simple()
-        .to_string();
-
+/// Polls Tempo for this step's trace (keyed by the `trace_id` that
+/// `build_traceparent` forwarded) and returns its total `gen_ai.usage` tokens,
+/// or 0 if nothing shows up within the timeout — Tempo/the agent being
+/// unreachable never fails the step, it just means this step's persisted total
+/// is LLM-only.
+async fn wait_for_agent_tokens(observability: &dyn ObservabilityProvider, trace_id: &str) -> i64 {
     // Agents commonly batch-export spans every ~5s, so the trace usually
     // isn't queryable the instant the agent call returns — poll rather than
     // check once.
     for _ in 0..10 {
-        if let Ok(trace) = observability.get_trace(&trace_id).await {
+        if let Ok(trace) = observability.get_trace(trace_id).await {
             let (input, output, _model) = trace.token_totals();
             let total = input + output;
             if total > 0 {
@@ -673,6 +697,7 @@ async fn call_agent(
     endpoint: &str,
     context_id: &str,
     user_id: &str,
+    agent_id: &str,
     prompt: &str,
     traceparent: &str,
 ) -> Result<String, String> {
@@ -702,24 +727,40 @@ async fn call_agent(
     let url_jsonrpc = format!("{base}/jsonrpc");
     let url_root = format!("{base}/");
 
+    // Mint a delegation token so this agent can call back into `/api/mcp`
+    // proving "I am agent_id, acting for user_id" — mirrors `agent_proxy.rs`
+    // and `a2a_dispatch.rs`. Best-effort: if JWT_SECRET is unset, MCP
+    // delegation is simply unavailable to this agent rather than failing the
+    // whole MAF step.
+    let delegation_token = std::env::var("JWT_SECRET")
+        .ok()
+        .and_then(|secret| nasiko_auth::jwt::mint_delegation_token(&secret, user_id, agent_id).ok());
+
     let resp = {
-        let r = client
+        let mut r = client
             .post(&url_jsonrpc)
             .header("X-User-Id", user_id)
             .header("A2A-Version", "1.0")
-            .header("traceparent", traceparent)
+            .header("traceparent", traceparent);
+        if let Some(token) = &delegation_token {
+            r = r.header("x-nasiko-agent-token", token);
+        }
+        let r = r
             .json(&body)
             .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
             .map_err(|e| e.to_string())?;
         if r.status() == reqwest::StatusCode::NOT_FOUND {
-            client
+            let mut r2 = client
                 .post(&url_root)
                 .header("X-User-Id", user_id)
                 .header("A2A-Version", "1.0")
-                .header("traceparent", traceparent)
-                .json(&body)
+                .header("traceparent", traceparent);
+            if let Some(token) = &delegation_token {
+                r2 = r2.header("x-nasiko-agent-token", token);
+            }
+            r2.json(&body)
                 .timeout(std::time::Duration::from_secs(300))
                 .send()
                 .await
