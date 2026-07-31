@@ -278,8 +278,7 @@ pub fn detach(agent: &str) -> Result<()> {
 pub fn get(agent: &str, json_out: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(agent)?;
-    let resp: Value =
-        unwrap_data(client.get_json(&format!("/agents/{agent_id}/llm-config"))?)?;
+    let resp: Value = unwrap_data(client.get_json(&format!("/agents/{agent_id}/llm-config"))?)?;
 
     if json_out {
         println!("{}", serde_json::to_string_pretty(&resp)?);
