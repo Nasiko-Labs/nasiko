@@ -27,6 +27,14 @@ spec:
           value: "{{ OPENAI_API_KEY }}"
         - name: OPENROUTER_API_KEY
           value: "{{ OPENROUTER_API_KEY }}"
+        - name: ATLASCLOUD_API_KEY
+          value: "{{ ATLASCLOUD_API_KEY }}"
+        - name: ATLASCLOUD_BASE_URL
+          value: "{{ ATLASCLOUD_BASE_URL }}"
+        - name: ROUTER_LLM_PROVIDER
+          value: "{{ ROUTER_LLM_PROVIDER }}"
+        - name: ROUTER_LLM_MODEL
+          value: "{{ ROUTER_LLM_MODEL }}"
         resources:
           requests:
             memory: "512Mi"
