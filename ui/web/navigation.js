@@ -7,7 +7,9 @@ window.fetchNavigation = async () => [
   { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
   { title: "Sessions", url: "/sessions.html", icon: "clock" },
   { title: "Observability", url: "/observability.html", icon: "eye" },
+  { title: "MCP gateway", url: "/mcp.html", icon: "network" },
   { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
+  { title: "LLM router", url: "/llm-router.html", icon: "settings" },
   { title: "Builds", url: "/builds.html", icon: "cube" },
   { title: "TokenOps", url: "/tokenops.html", icon: "code" },
   { title: "Secrets", url: "/secrets.html", icon: "lock" },
@@ -71,6 +73,33 @@ window.fetchChatSession = async (sessionId) => {
   return fetchApi(`/chat/sessions/${encodeURIComponent(sessionId)}`);
 };
 
+// LLM router — routing configs + provider/model catalog (see /api/docs)
+window.fetchLlmConfigs = async () => {
+  return fetchApi('/llm-configs');
+};
+
+window.createLlmConfig = async (body) => {
+  return fetchApi('/llm-configs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+window.deleteLlmConfig = async (id) => {
+  return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
+window.setDefaultLlmConfig = async (id) => {
+  return fetchApi(`/llm-configs/${encodeURIComponent(id)}/default`, { method: 'POST' });
+};
+
+window.fetchLlmProviders = async () => {
+  return fetchApi('/llm-router/providers');
+};
+
+window.fetchSecretsList = async () => fetchApi('/secrets');
+
 window.fetchUsageSummary = async () => {
   return fetchApi('/usage/summary');
 };
@@ -110,5 +139,125 @@ window.saveSettings = async (settings) => {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
+  });
+};
+
+// ── MCP gateway — connectors, uploads, credentials, per-agent access ─────────
+// Envelope {data, status_code, message}; see /api/docs (tag "mcp").
+window.fetchMcpConnectors = async () => {
+  return fetchApi('/mcp/connectors');
+};
+
+window.registerMcpConnector = async (body) => {
+  return fetchApi('/mcp/connectors', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+window.probeMcpConnector = async (url) => {
+  return fetchApi('/mcp/connectors/probe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+};
+
+window.updateMcpConnector = async (connectorId, body) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+window.deleteMcpConnector = async (connectorId) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}`, { method: 'DELETE' });
+};
+
+window.uploadMcpServerZip = async (formData) => {
+  // Multipart fields: name, version_tag, env (JSON string), file.
+  return fetchApi('/mcp/connectors/upload', { method: 'POST', body: formData });
+};
+
+window.uploadMcpServerGithub = async (body) => {
+  return fetchApi('/mcp/connectors/upload-github', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+window.fetchMcpMyUploads = async () => {
+  return fetchApi('/mcp/connectors/my-uploads');
+};
+
+window.fetchMcpBuildStatus = async (connectorId) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/build-status`);
+};
+
+window.fetchMcpBuildLogs = async (connectorId, tail = 200) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/build-logs?tail=${tail}`);
+};
+
+window.fetchMcpCredentialStatus = async (connectorId) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/credential/status`);
+};
+
+window.setMcpCredential = async (connectorId, value) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/credential`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
+};
+
+window.deleteMcpCredential = async (connectorId) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/credential`, { method: 'DELETE' });
+};
+
+window.authorizeMcpOauth = async (connectorId) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/oauth/authorize`, { method: 'POST' });
+};
+
+window.fetchMcpOauthStatus = async (connectorId) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/oauth/status`);
+};
+
+window.revokeMcpOauthToken = async (connectorId) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/oauth/token`, { method: 'DELETE' });
+};
+
+window.fetchAgentMcpConnectors = async (agentId) => {
+  return fetchApi(`/mcp/agents/${encodeURIComponent(agentId)}/connectors`);
+};
+
+window.setAgentMcpConnectorAccess = async (agentId, connectorId, enabled) => {
+  return fetchApi(
+    `/mcp/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    },
+  );
+};
+
+window.fetchAgentMcpConnectorTools = async (agentId, connectorId) => {
+  return fetchApi(
+    `/mcp/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/tools`,
+  );
+};
+
+window.fetchAgentMcpToolRules = async (agentId) => {
+  return fetchApi(`/mcp/agents/${encodeURIComponent(agentId)}/tools`);
+};
+
+window.saveAgentMcpToolRules = async (agentId, rules) => {
+  return fetchApi(`/mcp/agents/${encodeURIComponent(agentId)}/tools`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rules }),
   });
 };

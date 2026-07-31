@@ -21,6 +21,7 @@ export default {
       { title: "Your Agents", url: "/your-agents.html", icon: "user" },
       { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
       { title: "Sessions", url: "/sessions.html", icon: "clock" },
+      { title: "MCP gateway", url: "/mcp.html", icon: "network" },
       { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
       { title: "Builds", url: "/builds.html", icon: "cube" },
       { title: "TokenOps", url: "/tokenops.html", icon: "code" },

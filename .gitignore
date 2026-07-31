@@ -20,7 +20,6 @@ terraform.tfstate*
 *.tfstate*
 .DS_Store
 uv.lock
-omp.cache
 
 # IDE
 .idea/
@@ -31,3 +30,10 @@ omp.cache
 
 # Local MCP config — contains a registry credential, do not commit
 .mcp.json
+
+# Local-only MCP planning/research docs — not pushed to remote
+/mcp_upload_flow_docs/
+/docs/MCP_GITHUB_IMPORT_UI_GAP_ANALYSIS.md
+/docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
+/docs/MCP_UPLOAD_PLAN_OSS.md
+.preview-shots/
