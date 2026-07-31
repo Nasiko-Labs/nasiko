@@ -7,6 +7,7 @@ use axum::{
     response::Response,
 };
 use nasiko_flow::{FlowContext, TRACEPARENT_HEADER};
+use nasiko_orchestrator::SessionHistory;
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -33,11 +34,6 @@ pub async fn agent_proxy(
         .get::<Claims>()
         .cloned()
         .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    // TEMP DEBUG: dump the inbound request headers so we can see what identifiers
-    // (traceparent/trace_id, session_id, flow_id, x-nasiko-*) arrive natively vs.
-    // what we mint. Remove once the header audit is done.
-    crate::router::a2a_dispatch::log_inbound_headers("agent_proxy (direct agent)", req.headers());
 
     // Build the forwarded path: everything after /api/agents/{id}
     let full_path = req.uri().path();
@@ -159,46 +155,6 @@ pub async fn agent_proxy(
             .execute(&db)
             .await;
         });
-    }
-
-    // Register the flow so the model router can classify this request. A direct
-    // agent call opens a real flow too: the caller forwards a `traceparent`, but
-    // only the orchestrator path (`a2a_dispatch.rs`) ever wrote a `flows` row, so
-    // the gateway's `derive_boundary_signals` lookup missed and fell back to
-    // `inert` — the classifier never fired and the resolved/default model was
-    // used. Registering here with default `{}` metadata (⇒ free-flowing mode)
-    // makes the forwarded trace id a *known* flow, so the boundary is fireable,
-    // exactly like the orchestrator. `ON CONFLICT DO NOTHING` leaves nested A2A
-    // cascade calls untouched (their flow was already registered upstream), and
-    // this runs before the request is forwarded so the row is guaranteed present
-    // before the agent can call back into the LLM gateway.
-    if let Ok(user_id) = claims.user_uuid() {
-        let title = persist_info.as_ref().map(|i| i.user_text.clone());
-        // Carry the A2A context_id (the session id `ensure_chat_session` minted
-        // or adopted) on the flow row so the LLM gateway can key its decision
-        // cache on the *conversation*, not this turn's trace id. The CLI re-mints
-        // the traceparent every turn, so a trace-id key would never survive to
-        // the next turn; `derive_boundary_signals` reads `metadata->>'context_id'`
-        // and uses it as the sticky key, so turn 2+ reuse the model chosen at the
-        // turn-1 cold start. Written on the same synchronous, pre-forward insert
-        // so the value is guaranteed present before the agent calls back.
-        let metadata = match persist_info.as_ref() {
-            Some(i) => serde_json::json!({ "context_id": i.session_id }),
-            None => serde_json::json!({}),
-        };
-        let _ = sqlx::query(
-            r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-               VALUES ($1, $2, $3, $4, $5, 'running', $6)
-               ON CONFLICT (flow_id) DO NOTHING"#,
-        )
-        .bind(&flow_ctx.flow_id)
-        .bind(user_id)
-        .bind(agent_id)
-        .bind(&agent.name)
-        .bind(title)
-        .bind(&metadata)
-        .execute(&state.db)
-        .await;
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
@@ -480,34 +436,72 @@ async fn ensure_chat_session(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Session already existed — it must belong to the caller, otherwise any
-    // authenticated user could graft messages onto someone else's session by
-    // guessing/replaying its contextId.
-    if inserted.rows_affected() == 0 && !claims.is_superuser {
-        let owner: Option<Uuid> = sqlx::query_scalar(
-            "SELECT user_id FROM chat_sessions WHERE session_id = $1",
+    // Session already existed — look up who owns it and which agent it was
+    // opened against. It must belong to the caller (checked for everyone but
+    // superusers), otherwise any authenticated user could graft messages onto
+    // someone else's session by guessing/replaying its contextId. The bound
+    // agent_id also gates history injection below: `contextId` is
+    // caller-supplied and not scoped to an agent, so resuming the same
+    // session against a *different* agent must not leak the first agent's
+    // conversation into the second agent's prompt — checked regardless of
+    // superuser status, since this is about context isolation, not access.
+    let same_agent_session = if inserted.rows_affected() == 0 {
+        let existing: Option<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT user_id, agent_id FROM chat_sessions WHERE session_id = $1",
         )
         .bind(&session_id)
         .fetch_optional(&state.db)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, %session_id, "agent proxy: session owner lookup failed");
+            tracing::error!(error = %e, %session_id, "agent proxy: session lookup failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        if owner != Some(user_id) {
-            return Err(StatusCode::FORBIDDEN);
+        match existing {
+            Some((owner, bound_agent)) => {
+                if !claims.is_superuser && owner != user_id {
+                    return Err(StatusCode::FORBIDDEN);
+                }
+                bound_agent == agent_id
+            }
+            None => true,
         }
-    }
+    } else {
+        true
+    };
 
     let persist_info = Some(PersistInfo {
         session_id: session_id.clone(),
-        user_text,
+        user_text: user_text.clone(),
     });
+
+    // Multi-turn continuity: unlike `a2a_dispatch.rs`'s orchestrator path, this
+    // proxy forwards the caller's message byte-for-byte, so an agent that (like
+    // every example agent) starts a fresh run per call and ignores `contextId`
+    // has zero memory of prior turns — even though those turns are sitting right
+    // here in `chat_messages` under this same session_id. Stitch them into the
+    // outgoing text the same way `a2a_dispatch.rs` already does for the
+    // routing/orchestrator path, so direct `--agent`/`-u` chat gets the
+    // continuity its own "resume with --session-id" hint implies.
+    let mut rewrite_needed = injected;
+    if !user_text.is_empty() && same_agent_session {
+        let history = SessionHistory::fetch(&session_id, &state.db, 20).await;
+        if !history.is_empty()
+            && let Some(part) = message
+                .get_mut("parts")
+                .and_then(|p| p.as_array_mut())
+                .and_then(|parts| parts.iter_mut().find(|p| p.get("text").is_some()))
+        {
+            part["text"] = serde_json::Value::String(history.with_current_query(&user_text));
+            rewrite_needed = true;
+        }
+    }
 
     if injected {
         message["contextId"] = serde_json::Value::String(session_id);
+    }
+    if rewrite_needed {
         let rewritten = serde_json::to_vec(&rpc).map_err(|e| {
-            tracing::error!(error = %e, "agent proxy: failed to re-serialize body after contextId injection");
+            tracing::error!(error = %e, "agent proxy: failed to re-serialize body after contextId/history injection");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
         return Ok((rewritten.into(), persist_info));

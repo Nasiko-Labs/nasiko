@@ -804,7 +804,14 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 }
                 other => other,
             };
-            let target_label = agent.as_deref().unwrap_or("").to_string();
+            // Prefer `--agent`, else the positional target (URL or agent
+            // name/id) if one was given — both round-trip through
+            // `resolve_chat_target`/`resolve_agent_id` below, so reusing
+            // either as the label lets the printed resume hint
+            // ("nasiko chat <label> --session-id ...") land back on the same
+            // agent instead of falling through to the orchestrator's
+            // `(None, None)` branch (see below) with no target at all.
+            let target_label = agent.as_deref().or(url.as_deref()).unwrap_or("").to_string();
             let resolved = match (url, agent) {
                 // `url` is documented to accept a full URL, an agent
                 // UUID/name, or "orchestrator" — `resolve_chat_target`
@@ -892,7 +899,17 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 url,
                 message,
                 session_id,
-            } => commands::chat::chat(&url, message.as_deref(), session_id.as_deref(), ""),
+            } => {
+                // target_label = the URL itself, not "" — `resolve_chat_target`
+                // passes URLs through unchanged, so the printed resume hint
+                // ("nasiko chat <label> --session-id ...") round-trips back to
+                // this same agent. An empty label instead prints a bare
+                // `--session-id`, which resolves to the *orchestrator* endpoint
+                // (`lib.rs`'s `(None, None)` branch) — silently handing a
+                // resumed conversation to router-selected agents instead of the
+                // one the session actually started with.
+                commands::chat::chat(&url, message.as_deref(), session_id.as_deref(), &url)
+            }
         },
         AgentOpsCommands::Observe { command } => match command {
             ObserveCommands::Sessions { start_time, json } => {
