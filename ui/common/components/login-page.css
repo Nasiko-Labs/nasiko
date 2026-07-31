@@ -18,17 +18,14 @@
     margin-bottom: var(--space-xl);
   }
   .brand-icon {
-    width: 36px;
-    height: 36px;
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    /* r12-on-56 proportion of the DS mark, scaled to 36px */
-    border-radius: var(--r-8);
+    width: 40px;
+    height: 40px;
+    color: var(--color-primary);
     display: flex;
     align-items: center;
     justify-content: center;
   }
-  .brand-icon svg { width: 30px; height: 30px; }
+  .brand-icon svg { width: 36px; height: 36px; }
   .brand-text {
     font-family: var(--font-display);
     font-size: var(--font-size-xl);

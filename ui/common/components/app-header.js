@@ -130,6 +130,9 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 
   .brand-link {
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
     font-family: var(--font-display);
     font-size: var(--font-size-base);
     font-weight: 500;
@@ -138,6 +141,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+
+    & .brand-mark { flex-shrink: 0; }
 
     &:hover {
       color: var(--color-text-main);
@@ -628,7 +633,7 @@ export class AppHeader extends HTMLElement {
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
       <header class="bar" role="banner">
         <div class="brand-row">
-          ${brandTitle ? `<a href="${this.#esc(brandUrl)}" class="brand-link">${this.#esc(brandTitle)}</a>` : ""}
+          ${brandTitle ? `<a href="${this.#esc(brandUrl)}" class="brand-link"><img class="brand-mark" src="/common/mark-nasiko.svg" alt="" width="20" height="20" />${this.#esc(brandTitle)}</a>` : ""}
           <button class="sidebar-toggle" data-sidebar-toggle
             aria-label="Toggle sidebar" type="button">
             ${icons.panelLeft("", 18)}
