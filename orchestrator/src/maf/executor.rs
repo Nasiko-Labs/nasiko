@@ -732,9 +732,9 @@ async fn call_agent(
     // and `a2a_dispatch.rs`. Best-effort: if JWT_SECRET is unset, MCP
     // delegation is simply unavailable to this agent rather than failing the
     // whole MAF step.
-    let delegation_token = std::env::var("JWT_SECRET")
-        .ok()
-        .and_then(|secret| nasiko_auth::jwt::mint_delegation_token(&secret, user_id, agent_id).ok());
+    let delegation_token = std::env::var("JWT_SECRET").ok().and_then(|secret| {
+        nasiko_auth::jwt::mint_delegation_token(&secret, user_id, agent_id).ok()
+    });
 
     let resp = {
         let mut r = client
