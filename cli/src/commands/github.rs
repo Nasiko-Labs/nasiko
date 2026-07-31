@@ -7,6 +7,18 @@ use tabled::{Table, Tabled};
 
 use crate::api::Client;
 
+/// Response body of `POST /github/clone` — mirrors the server's `CloneResult`
+/// (`oss/server/src/github.rs`). `success: true` only means the build was
+/// queued, not that it finished — real completion comes from polling
+/// `upload_id` (which doubles as the build id) via SSE.
+#[derive(Debug, Deserialize)]
+struct CloneQueued {
+    success: bool,
+    message: String,
+    agent_name: Option<String>,
+    upload_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GithubStatus {
     #[serde(default)]
@@ -30,7 +42,7 @@ struct GithubRepo {
     description: Option<String>,
 }
 
-fn repo_name(name: &String, full_name: &Option<String>) -> String {
+fn repo_name(name: &str, full_name: &Option<String>) -> String {
     full_name.as_deref().unwrap_or(name).to_string()
 }
 
@@ -143,36 +155,22 @@ pub fn clone(repo: Option<&str>, branch: Option<&str>) -> Result<()> {
     let branch = branch.unwrap_or("main");
     println!("Cloning '{}' (branch: {})...", chosen, branch);
 
-    let result: serde_json::Value = client.post_json(
+    let result: CloneQueued = client.post_json(
         "/github/clone",
         &serde_json::json!({ "repository_full_name": chosen, "branch": branch }),
     )?;
-    let data = result.get("data").cloned().unwrap_or(result.clone());
 
-    let success = data
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if success {
-        let agent_name = data
-            .get("agent_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let status = data
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("uploaded");
-        println!(
-            "Agent '{}' cloned and deployed (status: {}).",
-            agent_name, status
-        );
-    } else {
-        let msg = data
-            .get("status")
-            .or_else(|| result.get("message"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        anyhow::bail!("Clone failed: {}", msg);
+    if !result.success {
+        anyhow::bail!("Clone failed: {}", result.message);
     }
+
+    let agent_name = result.agent_name.as_deref().unwrap_or("unknown");
+    println!("{}", result.message);
+    if let Some(build_id) = &result.upload_id {
+        println!("build_id: {}", build_id);
+        println!("Waiting for server to build and deploy... (this may take a few minutes)");
+        client.poll_build_status(build_id)?;
+    }
+    println!("\nDeployed: {}", agent_name);
     Ok(())
 }
