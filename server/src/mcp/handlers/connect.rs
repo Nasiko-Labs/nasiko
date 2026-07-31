@@ -7,20 +7,22 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
+use super::super::openapi::McpEnvelope;
 use super::super::{ApiError, ApiResponse, AppJson, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct Credentials {
     pub value: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ConnectRequest {
     pub connector_id: Option<Uuid>,
     pub service: Option<String>,
@@ -31,6 +33,17 @@ pub struct ConnectRequest {
 }
 
 /// `POST /api/mcp/connect` — connect any connector type.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connect",
+    tag = "mcp",
+    request_body = ConnectRequest,
+    responses(
+        (status = 200, description = "Connected (or OAuth authorization required) — `data.status` is `connected` or `oauth_required`", body = McpEnvelope),
+        (status = 201, description = "Composio OAuth flow initiated — `data` carries `oauth_url`", body = McpEnvelope),
+        (status = 404, description = "No matching connector/service", body = McpEnvelope),
+    ),
+)]
 pub async fn connect_service(
     State(state): State<AppState>,
     claims: Claims,
@@ -76,6 +89,15 @@ pub async fn connect_service(
 }
 
 /// `GET /api/mcp/connections` — the caller's connections.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connections",
+    tag = "mcp",
+    responses(
+        (status = 200, description = "The caller's active connections", body = McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
 pub async fn list_connections(
     State(state): State<AppState>,
     claims: Claims,
@@ -88,6 +110,16 @@ pub async fn list_connections(
 }
 
 /// `DELETE /api/mcp/connections/{connector_id}` — disconnect the caller's connection.
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/connections/{connector_id}",
+    tag = "mcp",
+    params(("connector_id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Disconnected — `data` is `{message, connector_id, composio_revoked}`", body = McpEnvelope),
+        (status = 404, description = "No connection to remove", body = McpEnvelope),
+    ),
+)]
 pub async fn disconnect(
     State(state): State<AppState>,
     claims: Claims,

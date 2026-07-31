@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -22,8 +23,9 @@ pub fn router() -> Router<AppState> {
 
 // ─── GET /usage/summary ────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct SummaryQuery {
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct SummaryQuery {
+    /// Look-back window in days (default: 30).
     #[serde(default = "default_days")]
     days: i64,
 }
@@ -31,8 +33,8 @@ fn default_days() -> i64 {
     30
 }
 
-#[derive(Debug, Serialize)]
-struct UsageSummaryResponse {
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct UsageSummaryResponse {
     request_count: i64,
     total_input_tokens: i64,
     total_output_tokens: i64,
@@ -42,7 +44,18 @@ struct UsageSummaryResponse {
     period_days: i64,
 }
 
-async fn summary(
+/// Aggregate token usage and cost for the caller over the last `days` days.
+#[utoipa::path(
+    get,
+    path = "/api/usage/summary",
+    tag = "usage",
+    params(SummaryQuery),
+    responses(
+        (status = 200, description = "Aggregate usage for the window", body = UsageSummaryResponse),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn summary(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<SummaryQuery>,
@@ -100,21 +113,33 @@ struct SummaryRow {
 
 // ─── GET /usage/history ────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct HistoryQuery {
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct HistoryQuery {
+    /// Look-back window in days (default: 30).
     #[serde(default = "default_days")]
     days: i64,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-struct DailyUsage {
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct DailyUsage {
     date: chrono::NaiveDate,
     request_count: i64,
     total_tokens: i64,
     total_cost_usd: f64,
 }
 
-async fn history(
+/// Per-day usage breakdown for the caller over the last `days` days.
+#[utoipa::path(
+    get,
+    path = "/api/usage/history",
+    tag = "usage",
+    params(HistoryQuery),
+    responses(
+        (status = 200, description = "One row per day with activity", body = [DailyUsage]),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn history(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<HistoryQuery>,
@@ -153,13 +178,17 @@ async fn history(
 
 // ─── GET /usage/by-agent ───────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct PaginatedQuery {
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct PaginatedQuery {
+    /// Page size (default: 50).
     #[serde(default = "default_limit")]
     limit: i64,
+    /// Page offset (default: 0).
     #[serde(default)]
     offset: i64,
+    /// Substring filter on agent name (`by-agent` only; ignored by `by-model`).
     q: Option<String>,
+    /// Look-back window in days (default: 30).
     #[serde(default = "default_days")]
     days: i64,
 }
@@ -167,8 +196,8 @@ fn default_limit() -> i64 {
     50
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-struct AgentUsage {
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct AgentUsage {
     agent_id: Option<Uuid>,
     agent_name: Option<String>,
     request_count: i64,
@@ -179,7 +208,27 @@ struct AgentUsage {
     avg_latency_ms: Option<f64>,
 }
 
-async fn by_agent(
+/// Doc-only schema for `crate::Paginated<AgentUsage>` (the generic envelope
+/// itself is not utoipa-annotated).
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct AgentUsagePage {
+    pub data: Vec<AgentUsage>,
+    pub total: usize,
+}
+
+/// Per-agent usage breakdown for the caller, ordered by total tokens.
+#[utoipa::path(
+    get,
+    path = "/api/usage/by-agent",
+    tag = "usage",
+    params(PaginatedQuery),
+    responses(
+        (status = 200, description = "Paginated per-agent usage rows", body = AgentUsagePage),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn by_agent(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<PaginatedQuery>,
@@ -228,8 +277,8 @@ async fn by_agent(
 
 // ─── GET /usage/by-model ───────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-struct ModelUsage {
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct ModelUsage {
     provider: String,
     model: String,
     request_count: i64,
@@ -240,7 +289,27 @@ struct ModelUsage {
     avg_latency_ms: Option<f64>,
 }
 
-async fn by_model(
+/// Doc-only schema for `crate::Paginated<ModelUsage>` (the generic envelope
+/// itself is not utoipa-annotated).
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ModelUsagePage {
+    pub data: Vec<ModelUsage>,
+    pub total: usize,
+}
+
+/// Per-provider/model usage breakdown for the caller, ordered by total tokens.
+#[utoipa::path(
+    get,
+    path = "/api/usage/by-model",
+    tag = "usage",
+    params(PaginatedQuery),
+    responses(
+        (status = 200, description = "Paginated per-model usage rows", body = ModelUsagePage),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn by_model(
     State(state): State<AppState>,
     claims: Claims,
     Query(q): Query<PaginatedQuery>,

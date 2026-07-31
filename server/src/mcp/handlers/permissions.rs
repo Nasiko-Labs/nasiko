@@ -4,8 +4,10 @@ use axum::extract::State;
 use nasiko_mcp_gateway::McpError;
 use serde::Deserialize;
 use serde_json::json;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::super::openapi::McpEnvelope;
 use super::super::{
     ApiError, ApiResponse, AppJson, AppPath, ensure_can_manage_agent,
     ensure_can_manage_agent_connector, parse_user, service,
@@ -23,6 +25,16 @@ use crate::state::AppState;
 /// first call before `agent-tools enable`/`set-rule`) would be the one
 /// sibling still hard-denying the exact caller those other endpoints already
 /// permit, making them undiscoverable in practice.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/agents/{agent_id}/connectors",
+    tag = "mcp",
+    params(("agent_id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 200, description = "Connectors + per-agent status — `data.connectors` is a list", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this agent or any granted connector", body = McpEnvelope),
+    ),
+)]
 pub async fn list_connectors(
     State(state): State<AppState>,
     claims: Claims,
@@ -74,7 +86,7 @@ pub async fn list_connectors(
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SetConnectorAccess {
     pub enabled: bool,
 }
@@ -85,6 +97,20 @@ pub struct SetConnectorAccess {
 /// their connector once it's been granted to this agent (see
 /// `ensure_can_manage_agent_connector`) — a connector owner can enable/disable
 /// their own connector on someone else's agent without managing the agent itself.
+#[utoipa::path(
+    put,
+    path = "/api/mcp/agents/{agent_id}/connectors/{connector_id}",
+    tag = "mcp",
+    params(
+        ("agent_id" = Uuid, Path, description = "Agent id"),
+        ("connector_id" = Uuid, Path, description = "Connector id"),
+    ),
+    request_body = SetConnectorAccess,
+    responses(
+        (status = 200, description = "Connector access updated", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this connector on this agent", body = McpEnvelope),
+    ),
+)]
 pub async fn set_connector_access(
     State(state): State<AppState>,
     claims: Claims,
@@ -110,6 +136,19 @@ pub async fn set_connector_access(
 ///
 /// Same relaxed gate as `set_connector_access`: the connector's own owner can
 /// view its tools/stances on this agent once it's been granted here.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/agents/{agent_id}/connectors/{connector_id}/tools",
+    tag = "mcp",
+    params(
+        ("agent_id" = Uuid, Path, description = "Agent id"),
+        ("connector_id" = Uuid, Path, description = "Connector id"),
+    ),
+    responses(
+        (status = 200, description = "The connector's tools + effective stances for this agent", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this connector on this agent", body = McpEnvelope),
+    ),
+)]
 pub async fn list_connector_tools(
     State(state): State<AppState>,
     claims: Claims,
@@ -132,6 +171,16 @@ pub async fn list_connector_tools(
 /// e.g. so `agent-tools set-rule`'s read-modify-write can find that connector's
 /// existing rules. A caller with no such connector still gets the original
 /// 403 — this never turns into "any authenticated user can query any agent".
+#[utoipa::path(
+    get,
+    path = "/api/mcp/agents/{agent_id}/tools",
+    tag = "mcp",
+    params(("agent_id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 200, description = "The agent's tool rules — `data.rules` is a list", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this agent or any granted connector", body = McpEnvelope),
+    ),
+)]
 pub async fn list_tool_rules(
     State(state): State<AppState>,
     claims: Claims,
@@ -197,14 +246,14 @@ pub async fn list_tool_rules(
     Ok(ApiResponse::ok(data, "Tool rules retrieved successfully"))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ToolRule {
     pub connector_id: Uuid,
     pub tool_pattern: String,
     pub stance: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkToolUpdate {
     pub rules: Vec<ToolRule>,
 }
@@ -217,6 +266,17 @@ pub struct BulkToolUpdate {
 /// same relaxed rule as `set_connector_access`. An empty batch still requires
 /// full agent management, since there's no connector to scope a narrower
 /// check to.
+#[utoipa::path(
+    put,
+    path = "/api/mcp/agents/{agent_id}/tools",
+    tag = "mcp",
+    params(("agent_id" = Uuid, Path, description = "Agent id")),
+    request_body = BulkToolUpdate,
+    responses(
+        (status = 200, description = "Tool rules replaced", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage a referenced connector on this agent", body = McpEnvelope),
+    ),
+)]
 pub async fn bulk_update_tools(
     State(state): State<AppState>,
     claims: Claims,
@@ -249,6 +309,16 @@ pub async fn bulk_update_tools(
 }
 
 /// `DELETE /api/mcp/agents/{agent_id}/permissions` — reset to all-allowed.
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/agents/{agent_id}/permissions",
+    tag = "mcp",
+    params(("agent_id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 200, description = "Permissions reset — `data` is `{rows_deleted}`", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this agent", body = McpEnvelope),
+    ),
+)]
 pub async fn reset(
     State(state): State<AppState>,
     claims: Claims,

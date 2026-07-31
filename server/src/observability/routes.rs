@@ -82,8 +82,8 @@ pub fn protected_router() -> Router<AppState> {
 // Query parameter structs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct LogParams {
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub(crate) struct LogParams {
     /// ISO-8601 start time (default: 24 h ago)
     since: Option<String>,
     /// ISO-8601 end time (default: now)
@@ -112,7 +112,20 @@ fn default_limit() -> usize {
 ///   1. Loki (when observability backend is configured)
 ///   2. `proxy_logs` DB table (always)
 ///   3. Container stdout/stderr via the runtime (always)
-async fn agent_logs(
+#[utoipa::path(
+    get,
+    path = "/api/observability/agents/{agent_ref}/logs",
+    tag = "observability",
+    params(
+        ("agent_ref" = String, Path, description = "Agent UUID or name"),
+        LogParams,
+    ),
+    responses(
+        (status = 200, description = "Merged, time-sorted log lines", body = [LogLine]),
+        (status = 404, description = "Agent not found"),
+    ),
+)]
+pub(crate) async fn agent_logs(
     State(state): State<AppState>,
     Path(agent_ref): Path<String>,
     Query(params): Query<LogParams>,
@@ -190,7 +203,19 @@ async fn agent_logs(
 ///   • Immediately emits the last 30 container log lines as historical context.
 ///   • Then polls every 3 s for new `proxy_logs` rows (since stream opened).
 ///   • Sends an SSE comment `keepalive` every cycle so the connection stays alive.
-async fn agent_logs_stream(
+#[utoipa::path(
+    get,
+    path = "/api/observability/agents/{agent_ref}/logs/stream",
+    tag = "observability",
+    params(
+        ("agent_ref" = String, Path, description = "Agent UUID or name"),
+    ),
+    responses(
+        (status = 200, description = "`text/event-stream` of `LogLine` JSON events (1-hour max lifetime)", content_type = "text/event-stream"),
+        (status = 404, description = "Agent not found"),
+    ),
+)]
+pub(crate) async fn agent_logs_stream(
     State(state): State<AppState>,
     Path(agent_ref): Path<String>,
 ) -> Response {

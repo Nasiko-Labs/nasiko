@@ -8,7 +8,7 @@ window.fetchNavigation = async () => [
   { title: "Sessions", url: "/sessions.html", icon: "clock" },
   { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
   { title: "Builds", url: "/builds.html", icon: "cube" },
-  { title: "Usage", url: "/usage.html", icon: "code" },
+  { title: "TokenOps", url: "/tokenops.html", icon: "code" },
   { title: "Secrets", url: "/secrets.html", icon: "lock" },
   { title: "Settings", url: "/settings.html", icon: "settings" },
 ];
@@ -50,6 +50,12 @@ window.fetchTraceDetail = async (traceId) => {
 
 window.fetchUsageSummary = async () => {
   return fetchApi('/usage/summary');
+};
+
+// TokenOps dashboard — GET /api/observability/finops/dashboard
+window.fetchTokenopsDashboard = async (startTime) => {
+  const params = startTime ? `?${new URLSearchParams({ start_time: startTime })}` : '';
+  return fetchApi(`/observability/finops/dashboard${params}`);
 };
 
 window.fetchUsageHistory = async (days = 7) => {

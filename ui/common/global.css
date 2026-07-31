@@ -72,6 +72,13 @@
   --yellow-800: #695104;
   --yellow-900: #463602;
 
+  /* Warm cream canvas ramp — page background + sidebar cards (light theme) */
+  --cream-50:  #F6F2EC;
+  --cream-100: #EFE9E0;
+  --cream-200: #E2DACE;
+  --cream-300: #D6CCBC;
+  --cream-400: #C4B8A4;
+
   --orange-100: #FFEDD5; --orange-300: #FDBA74; --orange-400: #FB923C; --orange-600: #EA580C; --orange-900: #7C2D12;
   --red-100:    #FEE2E2; --red-300:    #FCA5A5; --red-400:    #F87171; --red-600:    #DC2626; --red-900:    #7F1D1D;
   --purple-400: #C084FC; --purple-500: #A855F7;
@@ -170,10 +177,15 @@
   --color-neutral-bg: light-dark(var(--neutral-100), var(--neutral-800));
   --color-neutral-border: var(--border-primary);
 
-  /* Page canvas / raised surfaces. The app layers gray page → white cards,
-     so the legacy names map to DS group/base rather than base/surface. */
-  --color-bg-base: light-dark(var(--neutral-50), var(--neutral-900));
+  /* Page canvas / raised surfaces. The app layers warm-cream canvas → white
+     content panel → white cards, so the legacy names map to canvas/surface. */
+  --color-bg-base: light-dark(var(--cream-200), var(--neutral-900));
   --color-bg-surface: light-dark(var(--white), var(--neutral-800));
+  /* Sidebar nav cards + canvas-toned chrome sitting directly on the canvas */
+  --bg-canvas-card: light-dark(color-mix(in srgb, var(--white) 22%, var(--cream-200)), var(--neutral-800));
+  --border-canvas: light-dark(var(--cream-300), var(--neutral-700));
+  /* Inputs get a faint cream tint so they read as wells on white panels */
+  --bg-input: light-dark(var(--cream-50), var(--neutral-800));
   --color-text-main: var(--fg-primary);
   --color-text-prose: light-dark(var(--neutral-600), var(--neutral-300));
   --color-text-muted: var(--fg-secondary);
@@ -227,8 +239,8 @@
 
   /* Layout */
   --app-header-height: 48px;
-  --app-sidebar-width-expanded: 180px;
-  --app-sidebar-width-collapsed: 52px;
+  --app-sidebar-width-expanded: 216px;
+  --app-sidebar-width-collapsed: 60px;
   --app-sidebar-width: var(--app-sidebar-width-expanded);
   --page-max-width: 75rem;
 }
@@ -312,6 +324,39 @@ main.app-shell {
 
   main.app-shell {
     height: 100dvh;
+  }
+
+  /* Content panel — the page component floats as a white rounded sheet on the
+     cream canvas (sidebar excluded; floating chrome like toasts, dialogs, and
+     the kb palette are plain divs / dedicated tags and are opted out). */
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette),
+  body:has(> app-header) > main {
+    background: var(--color-bg-surface);
+    border: 1px solid var(--border-canvas);
+    border-radius: var(--r-16);
+    margin: var(--s-8) var(--s-8) var(--s-8) 0;
+    min-height: calc(100dvh - 2 * var(--s-8));
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* <main> content pages keep their centered column inside the panel */
+  body:has(> app-header) > main {
+    max-width: none;
+    padding: var(--space-md) var(--space-xl);
+  }
+
+  body:has(> app-header) > main > * {
+    max-width: var(--page-max-width);
+    margin-inline: auto;
+  }
+
+  body:has(> app-header) > main.app-shell {
+    height: calc(100dvh - 2 * var(--s-8));
+    padding: 0;
+  }
+
+  body:has(> app-header) > main.app-shell > * {
+    max-width: none;
   }
 }
 
@@ -470,7 +515,7 @@ label {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   font-size: var(--font-size-base);
-  background: var(--color-bg-surface);
+  background: var(--bg-input);
   color: var(--color-text-main);
   line-height: 1.5;
 

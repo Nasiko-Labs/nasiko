@@ -9,14 +9,42 @@ use axum::extract::{Multipart, State};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::json;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::super::openapi::McpEnvelope;
 use super::super::{ApiError, ApiResponse, AppJson, AppPath, AppQuery, parse_user};
 use crate::auth::Claims;
 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
 use crate::state::AppState;
 
+/// Doc-only schema for the multipart form consumed by `upload_zip`.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub struct UploadZipForm {
+    /// Connector name (required).
+    name: String,
+    /// Version tag; defaults to `v1`.
+    version_tag: Option<String>,
+    /// JSON object of env vars for the built server, as a string field.
+    env: Option<String>,
+    /// Zip archive with the MCP server source (also accepted as `file`).
+    #[schema(value_type = String, format = Binary)]
+    source: Vec<u8>,
+}
+
 /// `POST /api/mcp/connectors/upload` — multipart zip upload.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/upload",
+    tag = "mcp",
+    request_body(content = UploadZipForm, content_type = "multipart/form-data"),
+    responses(
+        (status = 202, description = "Build queued — `data` is `{connector_id, build_id}`", body = McpEnvelope),
+        (status = 400, description = "Missing name/zip or upload too large", body = McpEnvelope),
+        (status = 403, description = "Caller lacks deploy permission"),
+    ),
+)]
 pub async fn upload_zip(
     State(state): State<AppState>,
     claims: Claims,
@@ -58,11 +86,17 @@ pub async fn upload_zip(
                         .into());
                     }
                     Err(StreamUploadError::ReadFailed(e)) => {
-                        return Err(nasiko_mcp_gateway::McpError::BadRequest(format!("failed to read upload stream: {e}")).into());
+                        return Err(nasiko_mcp_gateway::McpError::BadRequest(format!(
+                            "failed to read upload stream: {e}"
+                        ))
+                        .into());
                     }
                     Err(StreamUploadError::Io(e)) => {
                         tracing::error!(%e, "mcp upload: stream to disk failed");
-                        return Err(nasiko_mcp_gateway::McpError::Internal("internal error".into()).into());
+                        return Err(nasiko_mcp_gateway::McpError::Internal(
+                            "internal error".into(),
+                        )
+                        .into());
                     }
                 }
             }
@@ -70,12 +104,16 @@ pub async fn upload_zip(
         }
     }
 
-    let name = name.filter(|n| !n.is_empty()).ok_or_else(|| nasiko_mcp_gateway::McpError::BadRequest("name is required".into()))?;
+    let name = name
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| nasiko_mcp_gateway::McpError::BadRequest("name is required".into()))?;
     let version_tag = version_tag.unwrap_or_else(|| "v1".to_string());
-    let zip_path = zip_path.ok_or_else(|| nasiko_mcp_gateway::McpError::BadRequest("source zip is required".into()))?;
+    let zip_path = zip_path
+        .ok_or_else(|| nasiko_mcp_gateway::McpError::BadRequest("source zip is required".into()))?;
 
     let (connector_id, build_id) =
-        crate::mcp::build::queue_zip_upload(&state, owner, name, version_tag, zip_path, env).await?;
+        crate::mcp::build::queue_zip_upload(&state, owner, name, version_tag, zip_path, env)
+            .await?;
 
     Ok(ApiResponse::accepted(
         json!({ "connector_id": connector_id, "build_id": build_id }),
@@ -83,7 +121,7 @@ pub async fn upload_zip(
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UploadFromGithub {
     pub name: String,
     #[serde(default = "default_version_tag")]
@@ -101,6 +139,17 @@ fn default_version_tag() -> String {
 /// Re-validates `github_url` (HTTPS-only + host allowlist) the same way
 /// `execute_build`/`execute_mcp_server_build` already do at clone time — this
 /// is a defence-in-depth check at the handler layer, not the only one.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/upload-github",
+    tag = "mcp",
+    request_body = UploadFromGithub,
+    responses(
+        (status = 202, description = "Build queued — `data` is `{connector_id, build_id}`", body = McpEnvelope),
+        (status = 400, description = "Missing name or disallowed GitHub URL", body = McpEnvelope),
+        (status = 403, description = "Caller lacks deploy permission"),
+    ),
+)]
 pub async fn upload_github(
     State(state): State<AppState>,
     claims: Claims,
@@ -110,8 +159,11 @@ pub async fn upload_github(
     if body.name.is_empty() {
         return Err(nasiko_mcp_gateway::McpError::BadRequest("name is required".into()).into());
     }
-    crate::build::routes::validate_github_url(&body.github_url, &state.config.git_clone_allowed_hosts)
-        .map_err(nasiko_mcp_gateway::McpError::BadRequest)?;
+    crate::build::routes::validate_github_url(
+        &body.github_url,
+        &state.config.git_clone_allowed_hosts,
+    )
+    .map_err(nasiko_mcp_gateway::McpError::BadRequest)?;
 
     let (connector_id, build_id) = crate::mcp::build::queue_github_upload(
         &state,
@@ -130,6 +182,16 @@ pub async fn upload_github(
 }
 
 /// `GET /api/mcp/connectors/{id}/build-status` — plain polling JSON, no SSE.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/{id}/build-status",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Latest build status for the connector", body = McpEnvelope),
+        (status = 404, description = "No such connector or build", body = McpEnvelope),
+    ),
+)]
 pub async fn build_status(
     State(state): State<AppState>,
     claims: Claims,
@@ -153,6 +215,19 @@ fn default_tail() -> u32 {
 
 /// `GET /api/mcp/connectors/{id}/build-logs` — same ownership check as
 /// `build_status`, real container stdout/stderr via `ContainerRuntime::logs`.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/{id}/build-logs",
+    tag = "mcp",
+    params(
+        ("id" = Uuid, Path, description = "Connector id"),
+        ("tail" = Option<u32>, Query, description = "Number of trailing log lines (default 200)"),
+    ),
+    responses(
+        (status = 200, description = "Build container logs — `data` is the log text", body = McpEnvelope),
+        (status = 404, description = "No such connector or build", body = McpEnvelope),
+    ),
+)]
 pub async fn build_logs(
     State(state): State<AppState>,
     claims: Claims,
@@ -160,8 +235,19 @@ pub async fn build_logs(
     AppQuery(q): AppQuery<LogsQuery>,
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
-    let logs = crate::mcp::build::get_build_logs(&state.db, &state.runtime, caller, claims.is_superuser, id, q.tail).await?;
-    Ok(ApiResponse::ok(json!(logs), "build logs retrieved successfully"))
+    let logs = crate::mcp::build::get_build_logs(
+        &state.db,
+        &state.runtime,
+        caller,
+        claims.is_superuser,
+        id,
+        q.tail,
+    )
+    .await?;
+    Ok(ApiResponse::ok(
+        json!(logs),
+        "build logs retrieved successfully",
+    ))
 }
 
 // ── My uploaded MCP connectors (mirrors /api/agents/my-uploads) ─────────
@@ -177,8 +263,8 @@ struct UploadedConnectorRow {
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(serde::Serialize)]
-struct UploadedConnectorResponse {
+#[derive(serde::Serialize, ToSchema)]
+pub(crate) struct UploadedConnectorResponse {
     connector_id: String,
     connector_name: String,
     icon_url: Option<String>,
@@ -187,16 +273,16 @@ struct UploadedConnectorResponse {
     description: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-struct UploadInfoMcp {
+#[derive(serde::Serialize, ToSchema)]
+pub(crate) struct UploadInfoMcp {
     upload_type: &'static str,
     upload_status: String,
     status_message: Option<String>,
     error_detail: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-struct UploadedConnectorsListResponse {
+#[derive(serde::Serialize, ToSchema)]
+pub(crate) struct UploadedConnectorsListResponse {
     data: Vec<UploadedConnectorResponse>,
     status_code: u16,
     message: String,
@@ -225,6 +311,15 @@ fn mcp_status_message(display_status: &str, version: Option<&str>) -> Option<Str
 
 /// `GET /api/mcp/connectors/my-uploads` — list uploaded MCP connectors
 /// owned by the caller, mirroring `/api/agents/my-uploads`.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/my-uploads",
+    tag = "mcp",
+    responses(
+        (status = 200, description = "The caller's uploaded MCP connectors", body = UploadedConnectorsListResponse),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
 pub async fn list_my_uploads(
     State(state): State<AppState>,
     claims: Claims,

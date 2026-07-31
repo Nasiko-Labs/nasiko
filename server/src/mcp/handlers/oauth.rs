@@ -6,21 +6,34 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
+use super::super::openapi::McpEnvelope;
 use super::super::{ApiError, ApiResponse, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, ToSchema)]
 pub struct AuthorizeRequest {
     pub client_id: Option<String>,
     pub redirect_url: Option<String>,
 }
 
 /// `POST /api/mcp/connectors/{id}/oauth/authorize` — start the OAuth 2.1 flow.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/{id}/oauth/authorize",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    request_body(content = Option<AuthorizeRequest>),
+    responses(
+        (status = 200, description = "Authorization URL generated — `data` is `{connector_id, name, authorization_url}`", body = McpEnvelope),
+        (status = 404, description = "No such OAuth connector", body = McpEnvelope),
+    ),
+)]
 pub async fn authorize(
     State(state): State<AppState>,
     claims: Claims,
@@ -51,6 +64,21 @@ pub struct CallbackQuery {
 }
 
 /// `GET /api/mcp/oauth/callback` — public browser redirect target (HTML, not JSON).
+#[utoipa::path(
+    get,
+    path = "/api/mcp/oauth/callback",
+    tag = "mcp",
+    params(
+        ("code" = Option<String>, Query, description = "OAuth authorization code"),
+        ("state" = Option<String>, Query, description = "Opaque state minted by the authorize step"),
+        ("error" = Option<String>, Query, description = "OAuth error code, if the provider denied"),
+        ("error_description" = Option<String>, Query, description = "Human-readable OAuth error"),
+    ),
+    responses(
+        (status = 200, description = "HTML page closing the popup, or an HTML error page", content_type = "text/html", body = String),
+        (status = 302, description = "Redirect back to the requesting app"),
+    ),
+)]
 pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>) -> Response {
     match service::oauth::callback(&state, q.code, q.state, q.error, q.error_description).await {
         CallbackOutcome::Redirect(dest) => Redirect::to(&dest).into_response(),
@@ -62,6 +90,16 @@ pub async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQue
 }
 
 /// `GET /api/mcp/connectors/{id}/oauth/status` — token presence + expiry.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/{id}/oauth/status",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "OAuth status — `data` is `{connector_id, name, authorized, expires_at, scope}`", body = McpEnvelope),
+        (status = 404, description = "No such OAuth connector", body = McpEnvelope),
+    ),
+)]
 pub async fn status(
     State(state): State<AppState>,
     claims: Claims,
@@ -75,6 +113,16 @@ pub async fn status(
 }
 
 /// `DELETE /api/mcp/connectors/{id}/oauth/token` — remove the caller's token.
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/connectors/{id}/oauth/token",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "OAuth token revoked", body = McpEnvelope),
+        (status = 404, description = "No token to revoke", body = McpEnvelope),
+    ),
+)]
 pub async fn revoke(
     State(state): State<AppState>,
     claims: Claims,

@@ -6,6 +6,7 @@
 
 pub mod build;
 mod handlers;
+pub mod openapi;
 mod service;
 
 use axum::{

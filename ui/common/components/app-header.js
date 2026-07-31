@@ -250,8 +250,9 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     @media (min-width: 1024px) {
       flex-direction: column;
       overflow-x: visible;
-      gap: 0;
+      gap: var(--s-8);
       align-items: stretch;
+      padding: 0 var(--space-sm);
     }
   }
 
@@ -301,20 +302,26 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       align-items: center;
       gap: var(--space-sm);
       text-align: left;
-      white-space: normal;
-      padding: var(--space-xs) var(--space-md);
-      border-radius: var(--radius-md);
-      border: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding: 10px var(--space-sm);
+      border-radius: var(--r-10);
+      background: var(--bg-canvas-card);
+      border: 1px solid var(--border-canvas);
+      color: var(--color-text-main);
+      font-weight: 500;
 
       &:hover {
-        color: var(--color-primary);
-        background-color: color-mix(in srgb, var(--color-primary) 10%, transparent);
+        color: var(--color-text-main);
+        background-color: light-dark(var(--cream-100), var(--neutral-700));
       }
 
       &.is-active {
-        background-color: transparent;
+        background-color: var(--bg-secondary-brand);
+        border-color: light-dark(var(--yellow-200), var(--yellow-800));
         &:hover {
-          background-color: transparent;
+          background-color: var(--bg-secondary-brand);
         }
       }
     }
@@ -338,7 +345,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     view-transition-name: active-nav-pill;
 
     @media (min-width: 1024px) {
-      background-color: color-mix(in srgb, var(--color-primary) 20%, transparent);
+      background-color: transparent;
       border: none;
     }
   }

@@ -17,10 +17,11 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// A single log line returned to the client.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, ToSchema)]
 pub struct LogLine {
     pub timestamp: DateTime<Utc>,
     /// "INFO" | "WARN" | "ERROR" | "DEBUG" — may be None for raw container output
@@ -29,6 +30,7 @@ pub struct LogLine {
     /// Present when the log was emitted in the context of an A2A flow
     pub trace_id: Option<String>,
     /// "proxy" | "container" | "loki"
+    #[schema(value_type = String)]
     pub source: &'static str,
 }
 

@@ -17,6 +17,7 @@ use nasiko_observability::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
+use utoipa::ToSchema;
 
 use crate::agents::hours_meter;
 
@@ -219,12 +220,12 @@ fn build_span_tree(
 
 // ─── Response types ───────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SessionListResponse {
     pub data: SessionListData,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SessionListData {
     pub sessions: Vec<SessionSummary>,
     pub total_agents: usize,
@@ -232,7 +233,7 @@ pub struct SessionListData {
     pub pagination: Pagination,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SessionSummary {
     pub id: String,
     pub session_id: String,
@@ -247,26 +248,28 @@ pub struct SessionSummary {
     pub trace_latency_ms_p50: Option<f64>,
     pub trace_latency_ms_p99: Option<f64>,
     pub cost_summary: SimpleCostSummary,
+    #[schema(value_type = Vec<Object>)]
     pub session_annotations: Vec<Value>,
+    #[schema(value_type = Vec<Object>)]
     pub session_annotation_summaries: Vec<Value>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct TokenUsageSummary {
     pub total: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SimpleCostSummary {
     pub total: CostEntry,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct CostEntry {
     pub cost: Option<f64>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ToSchema)]
 pub struct Pagination {
     pub end_cursor: Option<String>,
     pub has_next_page: bool,
@@ -274,17 +277,17 @@ pub struct Pagination {
 
 // session/{session_id}
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SessionDetailResponse {
     pub data: SessionDetailData,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SessionDetailData {
     pub session: SessionDetail,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SessionDetail {
     pub id: String,
     pub session_id: String,
@@ -296,20 +299,20 @@ pub struct SessionDetail {
     pub pagination: Pagination,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct FullCostSummary {
     pub total: CostWithTokens,
     pub prompt: CostWithTokens,
     pub completion: CostWithTokens,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct CostWithTokens {
     pub cost: f64,
     pub tokens: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct TraceEntry {
     pub id: String,
     pub trace_id: String,
@@ -317,7 +320,7 @@ pub struct TraceEntry {
     pub cursor: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RootSpanEntry {
     pub id: String,
     pub span_id: String,
@@ -325,7 +328,9 @@ pub struct RootSpanEntry {
     pub cumulative_token_count_total: u64,
     pub latency_ms: f64,
     pub start_time: Option<String>,
+    #[schema(value_type = Vec<Object>)]
     pub span_annotations: Vec<Value>,
+    #[schema(value_type = Vec<Object>)]
     pub span_annotation_summaries: Vec<Value>,
     pub project: ProjectRef,
     pub input: ContentField,
@@ -333,37 +338,39 @@ pub struct RootSpanEntry {
     pub trace: TraceRef,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ProjectRef {
     pub id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ContentField {
     pub value: String,
     pub mime_type: String,
+    #[schema(value_type = Option<Object>)]
     pub parsed_value: Option<Value>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct TraceRef {
     pub id: String,
+    #[schema(value_type = Object)]
     pub cost_summary: Value,
 }
 
 // trace/{trace_id}
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct TraceDetailResponse {
     pub data: TraceDetailData,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct TraceDetailData {
     pub trace: TraceDetail,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct TraceDetail {
     pub id: String,
     pub project_session_id: Option<String>,
@@ -375,29 +382,29 @@ pub struct TraceDetail {
     pub span_lookup: HashMap<String, SpanNode>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct NestedCostSummary {
     pub total: CostOnly,
     pub prompt: CostOnly,
     pub completion: CostOnly,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct CostOnly {
     pub cost: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RootSpansWrapper {
     pub edges: Vec<RootSpanEdge>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RootSpanEdge {
     pub span: RootSpanRef,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RootSpanRef {
     pub id: String,
     pub span_id: String,
@@ -405,7 +412,7 @@ pub struct RootSpanRef {
     pub status_code: String,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ToSchema)]
 pub struct SpanNode {
     pub id: String,
     pub span_id: String,
@@ -420,35 +427,40 @@ pub struct SpanNode {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model: Option<String>,
+    #[schema(value_type = Vec<Object>)]
     pub span_annotation_summaries: Vec<Value>,
+    // `no_recursion`: self-referential — without it utoipa's schema builder
+    // recurses infinitely and overflows the stack at startup.
+    #[schema(no_recursion)]
     pub children: Vec<SpanNode>,
 }
 
 // span/{trace_id}/{span_id}
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SpanDetailResponse {
     pub data: SpanDetailData,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SpanDetailData {
     pub span: SpanDetail,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SpanTraceRef {
     pub id: String,
     pub trace_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SpanProjectRef {
     pub id: String,
+    #[schema(value_type = Object)]
     pub annotation_configs: Value,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SpanDetail {
     pub id: String,
     pub span_id: String,
@@ -466,28 +478,34 @@ pub struct SpanDetail {
     pub cost_summary: SimpleCostSummary,
     pub input: ContentField,
     pub output: ContentField,
+    #[schema(value_type = Object)]
     pub attributes: Value,
+    #[schema(value_type = Vec<Object>)]
     pub events: Vec<Value>,
+    #[schema(value_type = Vec<Object>)]
     pub span_annotations: Vec<Value>,
+    #[schema(value_type = Vec<Object>)]
     pub span_annotation_summaries: Vec<Value>,
+    #[schema(value_type = Vec<Object>)]
     pub document_retrieval_metrics: Vec<Value>,
+    #[schema(value_type = Vec<Object>)]
     pub document_evaluations: Vec<Value>,
     pub project: SpanProjectRef,
 }
 
 // agent/{agent_id}/stats
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentStatsResponse {
     pub data: AgentStatsData,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentStatsData {
     pub project: AgentProjectStats,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentProjectStats {
     pub id: String,
     pub trace_count: usize,
@@ -500,21 +518,21 @@ pub struct AgentProjectStats {
 
 // finops/dashboard
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct FinopsDashboardResponse {
     pub data: FinopsDashboardData,
     pub status_code: u16,
     pub message: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct FinopsDashboardData {
     pub summary: FinopsSummary,
     pub agents: Vec<AgentFinopsRow>,
     pub token_usage: FinopsTokenUsage,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct FinopsSummary {
     pub total_cost: f64,
     pub total_operations: usize,
@@ -527,7 +545,7 @@ pub struct FinopsSummary {
     pub total_container_hours: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentFinopsRow {
     pub agent_id: String,
     pub agent_name: String,
@@ -543,7 +561,7 @@ pub struct AgentFinopsRow {
     pub container_hours: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct FinopsTokenUsage {
     pub total_tokens: u64,
     pub prompt_tokens: u64,
@@ -553,27 +571,29 @@ pub struct FinopsTokenUsage {
 
 // finops/insights
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct InsightsRequest {
+    #[schema(value_type = Object)]
     pub kpi: Value,
+    #[schema(value_type = Vec<Object>)]
     pub agent_costs: Vec<Value>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct InsightsResponse {
     pub insights: Vec<String>,
 }
 
 // finops/agent-hours
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentHoursResponse {
     pub data: AgentHoursData,
     pub status_code: u16,
     pub message: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentHoursData {
     /// Replica-hours across all listed agents within the window.
     pub total_hours: f64,
@@ -585,13 +605,13 @@ pub struct AgentHoursData {
     pub buckets: Option<Vec<AgentHoursBucket>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentHoursWindow {
     pub start: String,
     pub end: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentHoursRow {
     pub agent_id: String,
     pub agent_name: String,
@@ -601,7 +621,7 @@ pub struct AgentHoursRow {
     pub deleted: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentHoursBucket {
     pub start: String,
     pub total_hours: f64,
@@ -609,7 +629,7 @@ pub struct AgentHoursBucket {
     pub agents: Vec<AgentHoursBucketAgent>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentHoursBucketAgent {
     pub agent_id: String,
     pub agent_name: String,
@@ -636,15 +656,15 @@ impl ObservabilityService {
         }
     }
 
-    /// Returns Vec<(id, name, display_name, version)> for all agents in the DB. `name`
+    /// Returns Vec<(id, name, display_name)> for all agents in the DB. `name`
     /// doubles as the Tempo `service.name` (the injector sets OTEL_SERVICE_NAME
     /// to the agent name); `id` is the UUID reported to callers.
     /// OSS: returns all agents (NoopAuthorizer). EE adds RBAC at a higher layer.
     async fn get_agent_names(
         &self,
-    ) -> Result<Vec<(uuid::Uuid, String, String, String)>, ObservabilityError> {
-        sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
-            "SELECT id, name, COALESCE(display_name, name), version FROM agents ORDER BY name",
+    ) -> Result<Vec<(uuid::Uuid, String, String)>, ObservabilityError> {
+        sqlx::query_as::<_, (uuid::Uuid, String, String)>(
+            "SELECT id, name, COALESCE(display_name, name) FROM agents ORDER BY name",
         )
         .fetch_all(&self.db)
         .await
@@ -701,7 +721,7 @@ impl ObservabilityService {
         let total = agents.len();
         let agent_name_by_id: std::collections::HashMap<uuid::Uuid, String> = agents
             .into_iter()
-            .map(|(id, name, _display, _version)| (id, name))
+            .map(|(id, name, _display)| (id, name))
             .collect();
 
         // 3. Enrich each DB session from Tempo (by session_id). For agents
@@ -1156,7 +1176,7 @@ impl ObservabilityService {
         let mut total_ops_24h = 0usize;
         let mut active = 0usize;
 
-        for (agent_uuid, agent_name, display_name, version) in &agents {
+        for (agent_uuid, agent_name, display_name) in &agents {
             let finops = self
                 .provider
                 .agent_finops(agent_name, start, now)
@@ -1197,7 +1217,7 @@ impl ObservabilityService {
                 completion_tokens: finops.output_tokens,
                 total_tokens: finops.input_tokens + finops.output_tokens,
                 avg_latency_ms: finops.latency_ms_p50,
-                version: Some(version.to_string()),
+                version: None,
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
             });
         }

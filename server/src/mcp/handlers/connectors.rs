@@ -2,13 +2,15 @@
 
 use axum::extract::State;
 use serde::Deserialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::super::openapi::McpEnvelope;
 use super::super::{ApiError, ApiResponse, AppJson, AppPath, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateConnector {
     pub name: String,
     pub url: String,
@@ -36,6 +38,17 @@ fn default_auth_type() -> String {
 }
 
 /// `POST /api/mcp/connectors` — register a custom MCP connector (owned by caller).
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors",
+    tag = "mcp",
+    request_body = CreateConnector,
+    responses(
+        (status = 201, description = "Connector created — `data` is the connector view", body = McpEnvelope),
+        (status = 400, description = "Invalid request body", body = McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
 pub async fn create(
     State(state): State<AppState>,
     claims: Claims,
@@ -66,7 +79,7 @@ pub async fn create(
     Ok(ApiResponse::created(view, "Connector created successfully"))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateConnector {
     pub name: Option<String>,
     pub url: Option<String>,
@@ -82,6 +95,18 @@ pub struct UpdateConnector {
 }
 
 /// `PATCH /api/mcp/connectors/{id}` — update an owned connector.
+#[utoipa::path(
+    patch,
+    path = "/api/mcp/connectors/{id}",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    request_body = UpdateConnector,
+    responses(
+        (status = 200, description = "Connector updated — `data` is the connector view", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+        (status = 404, description = "No such connector", body = McpEnvelope),
+    ),
+)]
 pub async fn update(
     State(state): State<AppState>,
     claims: Claims,
@@ -109,6 +134,15 @@ pub async fn update(
 }
 
 /// `GET /api/mcp/connectors` — custom connectors visible to the caller.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors",
+    tag = "mcp",
+    responses(
+        (status = 200, description = "Connectors visible to the caller — `data` is a list of connector views", body = McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
 pub async fn list(State(state): State<AppState>, claims: Claims) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     Ok(ApiResponse::ok(
@@ -118,6 +152,16 @@ pub async fn list(State(state): State<AppState>, claims: Claims) -> Result<ApiRe
 }
 
 /// `GET /api/mcp/connectors/{id}` — a single connector, 404 if not reachable.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/{id}",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Connector view", body = McpEnvelope),
+        (status = 404, description = "No such connector (or not visible to the caller)", body = McpEnvelope),
+    ),
+)]
 pub async fn get(
     State(state): State<AppState>,
     claims: Claims,
@@ -131,6 +175,17 @@ pub async fn get(
 }
 
 /// `DELETE /api/mcp/connectors/{id}` — delete an owned connector (or any, if admin).
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/connectors/{id}",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Connector deleted", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+        (status = 404, description = "No such connector", body = McpEnvelope),
+    ),
+)]
 pub async fn delete(
     State(state): State<AppState>,
     claims: Claims,
@@ -138,15 +193,28 @@ pub async fn delete(
 ) -> Result<ApiResponse, ApiError> {
     let caller = parse_user(&claims)?;
     service::connectors::delete(&state, caller, claims.is_superuser, id).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "Connector deleted successfully"))
+    Ok(ApiResponse::ok(
+        serde_json::Value::Null,
+        "Connector deleted successfully",
+    ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ProbeRequest {
     pub url: String,
 }
 
 /// `POST /api/mcp/connectors/probe` — detect a server's auth type.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/probe",
+    tag = "mcp",
+    request_body = ProbeRequest,
+    responses(
+        (status = 200, description = "Probe result — `data` describes the detected transport/auth type", body = McpEnvelope),
+        (status = 400, description = "Unreachable or invalid MCP server URL", body = McpEnvelope),
+    ),
+)]
 pub async fn probe(
     State(state): State<AppState>,
     _claims: Claims,
@@ -159,6 +227,16 @@ pub async fn probe(
 }
 
 /// `POST /api/mcp/connectors/{id}/pin` — pin for quick access.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/{id}/pin",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Connector pinned", body = McpEnvelope),
+        (status = 404, description = "No such connector", body = McpEnvelope),
+    ),
+)]
 pub async fn pin(
     State(state): State<AppState>,
     claims: Claims,
@@ -166,10 +244,23 @@ pub async fn pin(
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::connectors::pin(&state, user_id, id).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "Connector pinned successfully"))
+    Ok(ApiResponse::ok(
+        serde_json::Value::Null,
+        "Connector pinned successfully",
+    ))
 }
 
 /// `DELETE /api/mcp/connectors/{id}/pin` — unpin.
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/connectors/{id}/pin",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Connector unpinned", body = McpEnvelope),
+        (status = 404, description = "No such connector", body = McpEnvelope),
+    ),
+)]
 pub async fn unpin(
     State(state): State<AppState>,
     claims: Claims,
@@ -177,10 +268,22 @@ pub async fn unpin(
 ) -> Result<ApiResponse, ApiError> {
     let user_id = parse_user(&claims)?;
     service::connectors::unpin(&state, user_id, id).await?;
-    Ok(ApiResponse::ok(serde_json::Value::Null, "Connector unpinned successfully"))
+    Ok(ApiResponse::ok(
+        serde_json::Value::Null,
+        "Connector unpinned successfully",
+    ))
 }
 
 /// `GET /api/mcp/connectors/pinned` — the caller's pinned connectors.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/pinned",
+    tag = "mcp",
+    responses(
+        (status = 200, description = "Pinned connectors — `data` is a list of connector views", body = McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
 pub async fn pinned(
     State(state): State<AppState>,
     claims: Claims,
@@ -193,6 +296,15 @@ pub async fn pinned(
 }
 
 /// `GET /api/mcp/connectors/recent` — the caller's recently-used connectors.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/recent",
+    tag = "mcp",
+    responses(
+        (status = 200, description = "Recently-used connectors — `data` is a list of connector views", body = McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
 pub async fn recent(
     State(state): State<AppState>,
     claims: Claims,

@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use nasiko_mcp_gateway::McpError;
 
+use super::super::openapi::McpEnvelope;
 use super::super::{ApiError, ApiResponse, AppPath, AppQuery, parse_user, service};
 use crate::auth::Claims;
 use crate::state::AppState;
@@ -30,6 +31,16 @@ fn grant_response(
 }
 
 /// `GET /api/mcp/connectors/{id}/grants` — list a connector's grants.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/{id}/grants",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "The connector's share grants", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+    ),
+)]
 pub async fn list(
     State(state): State<AppState>,
     claims: Claims,
@@ -43,6 +54,17 @@ pub async fn list(
 }
 
 /// `POST /api/mcp/connectors/{id}/grants/public` — make connector public.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/{id}/grants/public",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 201, description = "Connector made public", body = McpEnvelope),
+        (status = 200, description = "Connector was already public", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+    ),
+)]
 pub async fn grant_public(
     State(state): State<AppState>,
     claims: Claims,
@@ -65,6 +87,16 @@ pub async fn grant_public(
 }
 
 /// `DELETE /api/mcp/connectors/{id}/grants/public` — revoke public access.
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/connectors/{id}/grants/public",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Public access revoked", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+    ),
+)]
 pub async fn revoke_public(
     State(state): State<AppState>,
     claims: Claims,
@@ -86,6 +118,20 @@ pub async fn revoke_public(
 }
 
 /// `POST /api/mcp/connectors/{id}/grants/users/{user_id}` — grant to a user.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/{id}/grants/users/{user_id}",
+    tag = "mcp",
+    params(
+        ("id" = Uuid, Path, description = "Connector id"),
+        ("user_id" = Uuid, Path, description = "Grantee user id"),
+    ),
+    responses(
+        (status = 201, description = "Connector shared with user", body = McpEnvelope),
+        (status = 200, description = "Connector was already shared with this user", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+    ),
+)]
 pub async fn grant_user(
     State(state): State<AppState>,
     claims: Claims,
@@ -108,6 +154,19 @@ pub async fn grant_user(
 }
 
 /// `DELETE /api/mcp/connectors/{id}/grants/users/{user_id}` — revoke from a user.
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/connectors/{id}/grants/users/{user_id}",
+    tag = "mcp",
+    params(
+        ("id" = Uuid, Path, description = "Connector id"),
+        ("user_id" = Uuid, Path, description = "Grantee user id"),
+    ),
+    responses(
+        (status = 200, description = "User access revoked", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+    ),
+)]
 pub async fn revoke_user(
     State(state): State<AppState>,
     claims: Claims,
@@ -129,6 +188,20 @@ pub async fn revoke_user(
 }
 
 /// `POST /api/mcp/connectors/{id}/grants/agents/{agent_id}` — grant to an agent.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/connectors/{id}/grants/agents/{agent_id}",
+    tag = "mcp",
+    params(
+        ("id" = Uuid, Path, description = "Connector id"),
+        ("agent_id" = Uuid, Path, description = "Grantee agent id"),
+    ),
+    responses(
+        (status = 201, description = "Connector granted to agent", body = McpEnvelope),
+        (status = 200, description = "Connector was already granted to this agent", body = McpEnvelope),
+        (status = 404, description = "No such agent", body = McpEnvelope),
+    ),
+)]
 pub async fn grant_agent(
     State(state): State<AppState>,
     claims: Claims,
@@ -150,6 +223,19 @@ pub async fn grant_agent(
 }
 
 /// `DELETE /api/mcp/connectors/{id}/grants/agents/{agent_id}` — revoke from an agent.
+#[utoipa::path(
+    delete,
+    path = "/api/mcp/connectors/{id}/grants/agents/{agent_id}",
+    tag = "mcp",
+    params(
+        ("id" = Uuid, Path, description = "Connector id"),
+        ("agent_id" = Uuid, Path, description = "Grantee agent id"),
+    ),
+    responses(
+        (status = 200, description = "Agent access revoked", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+    ),
+)]
 pub async fn revoke_agent(
     State(state): State<AppState>,
     claims: Claims,
@@ -169,6 +255,16 @@ pub struct SearchShareTargetsQuery {
 }
 
 /// `GET /api/mcp/share-targets?q=` — search users to share a connector with.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/share-targets",
+    tag = "mcp",
+    params(("q" = String, Query, description = "Username search fragment")),
+    responses(
+        (status = 200, description = "Matching share targets", body = McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
 pub async fn search_targets(
     State(state): State<AppState>,
     claims: Claims,
@@ -189,6 +285,16 @@ pub struct ResolveShareTargetQuery {
 /// for `share add`/`share remove` to target someone outside the caller's own
 /// org-visibility scope (unlike `search_targets` above, this is intentionally
 /// NOT scoped — see `service::connectors::resolve_share_target`'s doc comment).
+#[utoipa::path(
+    get,
+    path = "/api/mcp/share-targets/resolve",
+    tag = "mcp",
+    params(("username" = String, Query, description = "Exact username to resolve")),
+    responses(
+        (status = 200, description = "Resolved — `data` is `{user_id, username}`", body = McpEnvelope),
+        (status = 404, description = "No user with this username", body = McpEnvelope),
+    ),
+)]
 pub async fn resolve_target(
     State(state): State<AppState>,
     _claims: Claims,
@@ -201,6 +307,16 @@ pub async fn resolve_target(
 }
 
 /// `GET /api/mcp/connectors/{id}/consumers` — agents that have this connector configured.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/{id}/consumers",
+    tag = "mcp",
+    params(("id" = Uuid, Path, description = "Connector id")),
+    responses(
+        (status = 200, description = "Agents that have this connector configured", body = McpEnvelope),
+        (status = 403, description = "Not the connector's owner", body = McpEnvelope),
+    ),
+)]
 pub async fn consumers(
     State(state): State<AppState>,
     claims: Claims,

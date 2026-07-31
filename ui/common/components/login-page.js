@@ -13,7 +13,7 @@ class LoginPage extends HTMLElement {
     const brandTitle = this.getAttribute('brand-title') || 'Nasiko';
     const subtitle = this.getAttribute('subtitle') || 'Sign in to your workspace';
     const showGithub = !this.hasAttribute('no-github');
-    const showGoogle = !this.hasAttribute('no-google');
+    let showGoogle = !this.hasAttribute('no-google');
     const showCredentials = !this.hasAttribute('no-credentials');
 
     // Microsoft/OIDC is opt-in per deployment (unlike GitHub/Google, which
@@ -33,12 +33,30 @@ class LoginPage extends HTMLElement {
       }
     }
 
+    // Deployments with a Google-only OIDC backend (e.g. the tenant
+    // self-service portal, which has no /api/auth/google route at all) pass
+    // google-href to point the button elsewhere, and google-status-href to
+    // gate its visibility the same way Microsoft's is gated above — default
+    // behavior (always-shown, hardcoded href) is unchanged for every
+    // existing caller.
+    const googleHref = this.getAttribute('google-href') || '/api/auth/google';
+    const googleStatusHref = this.getAttribute('google-status-href');
+    if (showGoogle && googleStatusHref) {
+      try {
+        const res = await fetch(googleStatusHref, { credentials: 'same-origin' });
+        const data = await res.json();
+        showGoogle = Boolean(data?.configured);
+      } catch {
+        showGoogle = false;
+      }
+    }
+
     let oauthSection = '';
     if (showGithub || showGoogle || showMicrosoft) {
       let buttons = '';
       if (showMicrosoft) buttons += `<a href="/api/auth/oidc/login" class="btn-oauth">${icons.microsoft} Continue with Microsoft</a>`;
       if (showGithub) buttons += `<a href="/api/auth/github" class="btn-oauth">${GITHUB_ICON} Continue with GitHub</a>`;
-      if (showGoogle) buttons += `<a href="/api/auth/google" class="btn-oauth">${icons.google} Continue with Google</a>`;
+      if (showGoogle) buttons += `<a href="${googleHref}" class="btn-oauth">${icons.google} Continue with Google</a>`;
       oauthSection = `
         <div class="divider">or</div>
         <div class="oauth-section">${buttons}</div>

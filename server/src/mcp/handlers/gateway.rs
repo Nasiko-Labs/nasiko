@@ -55,6 +55,24 @@ pub async fn require_delegation(mut req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+/// Agent-facing MCP JSON-RPC gateway. Generic `tools/list` / `tools/call`
+/// JSON-RPC 2.0; request and response bodies are protocol-defined, not
+/// REST-shaped, so they are documented as free-form objects.
+#[utoipa::path(
+    post,
+    path = "/api/mcp",
+    tag = "mcp",
+    params(
+        ("x-nasiko-agent-token" = String, Header, description = "Delegation token minted by the agent proxy — replaces session auth for this route"),
+        ("traceparent" = Option<String>, Header, description = "W3C trace context for flow tracking"),
+    ),
+    request_body(content = Object, description = "JSON-RPC 2.0 request: `tools/list` or `tools/call`"),
+    responses(
+        (status = 200, description = "JSON-RPC 2.0 response (result or error object)", body = Object),
+        (status = 202, description = "Notification accepted (no `id` in request); empty object body", body = Object),
+        (status = 401, description = "Missing/invalid delegation token"),
+    ),
+)]
 pub async fn mcp_gateway(
     State(state): State<AppState>,
     claims: Claims,
