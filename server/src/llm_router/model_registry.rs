@@ -14,6 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use utoipa::ToSchema;
 
 use crate::auth::Claims;
 use crate::auth::rbac::require_superuser;
@@ -32,7 +33,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// A single `(provider, tier)` → model row.
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct ModelMapping {
     pub provider: String,
     /// Model strength tier: 1 = strongest … 3 = smallest.
@@ -40,14 +41,46 @@ pub struct ModelMapping {
     pub model: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpsertMappingRequest {
     pub provider: String,
+    /// Model strength tier: 1 = strongest … 3 = smallest.
     pub tier: i16,
     pub model: String,
 }
 
-async fn list_mappings(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
+/// `crate::mcp::ApiResponse` envelope around a list of [`ModelMapping`] rows.
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ModelMappingListEnvelope {
+    data: Vec<ModelMapping>,
+    status_code: u16,
+    message: String,
+}
+
+/// `crate::mcp::ApiResponse` envelope around one [`ModelMapping`].
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ModelMappingEnvelope {
+    data: ModelMapping,
+    status_code: u16,
+    message: String,
+}
+
+/// List every configured tier→model mapping, ordered by provider and tier.
+#[utoipa::path(
+    get,
+    path = "/api/model-registry",
+    tag = "llm-router",
+    responses(
+        (status = 200, description = "All configured mappings", body = ModelMappingListEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn list_mappings(
+    State(state): State<AppState>,
+    _claims: Claims,
+) -> impl IntoResponse {
     let rows = sqlx::query_as::<_, ModelMapping>(
         "SELECT provider, tier, model FROM model_registry ORDER BY provider, tier",
     )
@@ -63,7 +96,20 @@ async fn list_mappings(State(state): State<AppState>, _claims: Claims) -> impl I
     }
 }
 
-async fn upsert_mapping(
+/// Upsert one `(provider, tier)` → model mapping. Superuser only.
+#[utoipa::path(
+    put,
+    path = "/api/model-registry",
+    tag = "llm-router",
+    request_body = UpsertMappingRequest,
+    responses(
+        (status = 200, description = "The stored mapping", body = ModelMappingEnvelope),
+        (status = 400, description = "Missing provider/model, or tier outside 1..=3"),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 403, description = "Caller is not a superuser"),
+    ),
+)]
+pub(crate) async fn upsert_mapping(
     State(state): State<AppState>,
     _claims: Claims,
     Json(body): Json<UpsertMappingRequest>,

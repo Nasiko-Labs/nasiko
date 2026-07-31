@@ -13,6 +13,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde::Serialize;
 use serde_json::json;
+use utoipa::ToSchema;
 
 use crate::auth::Claims;
 use crate::mcp::ApiResponse;
@@ -40,8 +41,8 @@ struct PricingRow {
 }
 
 /// One model within a provider group. Field names mirror the `model_pricing` columns.
-#[derive(Serialize)]
-struct ModelEntry {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ModelEntry {
     model: String,
     input_price_per_1m: f64,
     output_price_per_1m: f64,
@@ -54,13 +55,36 @@ struct ModelEntry {
 }
 
 /// A provider and its models, e.g. `{ "provider": "openai", "models": [...] }`.
-#[derive(Serialize)]
-struct ProviderCatalog {
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ProviderCatalog {
     provider: String,
     models: Vec<ModelEntry>,
 }
 
-async fn list_providers(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
+/// `crate::mcp::ApiResponse` envelope around a list of [`ProviderCatalog`] groups.
+#[derive(Serialize, ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ProviderCatalogEnvelope {
+    data: Vec<ProviderCatalog>,
+    status_code: u16,
+    message: String,
+}
+
+/// List every provider/model with a currently-effective `model_pricing` row,
+/// grouped by provider. Backs the UI provider/model dropdown.
+#[utoipa::path(
+    get,
+    path = "/api/llm-router/providers",
+    tag = "llm-router",
+    responses(
+        (status = 200, description = "Currently-effective model catalog, grouped by provider", body = ProviderCatalogEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn list_providers(
+    State(state): State<AppState>,
+    _claims: Claims,
+) -> impl IntoResponse {
     // One row per (provider, model): the latest window that is effective right now.
     let rows = sqlx::query_as::<_, PricingRow>(
         r#"SELECT DISTINCT ON (provider, model)

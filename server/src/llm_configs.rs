@@ -19,6 +19,7 @@ use axum::{
 use nasiko_secrets::SecretsCrypto;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -48,7 +49,7 @@ pub fn router() -> Router<AppState> {
         .route("/llm-configs/{id}/default", post(set_default))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateLlmConfigRequest {
     pub name: String,
     pub provider: String,
@@ -87,7 +88,7 @@ pub struct CreateLlmConfigRequest {
 
 /// Partial update — every field is optional. Absent fields keep their current value.
 /// `is_default` is not touched here — use `POST /llm-configs/{id}/default`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateLlmConfigRequest {
     #[serde(default)]
     pub name: Option<String>,
@@ -218,7 +219,20 @@ async fn fetch_config(db: &sqlx::PgPool, id: Uuid, user_id: Uuid) -> Option<Valu
 
 // ─── GET /llm-configs ────────────────────────────────────────────────────────
 
-async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
+/// List the caller's LLM configs, ordered by name.
+#[utoipa::path(
+    get,
+    path = "/api/llm-configs",
+    tag = "llm-router",
+    responses(
+        (status = 200, description = "`data` is an array of config objects, each with: \
+            id, name, provider, model, fallback_models, temperature, max_tokens, \
+            api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, \
+            is_default, created_at, updated_at", body = crate::mcp::openapi::McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+    ),
+)]
+pub(crate) async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -236,7 +250,24 @@ async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoRespons
 
 // ─── POST /llm-configs ───────────────────────────────────────────────────────
 
-async fn create(
+/// Create a named LLM config owned by the caller, optionally storing the
+/// referenced API-key secret and/or marking it as the caller's default.
+#[utoipa::path(
+    post,
+    path = "/api/llm-configs",
+    tag = "llm-router",
+    request_body = CreateLlmConfigRequest,
+    responses(
+        (status = 201, description = "`data` is the created config object (id, name, provider, \
+            model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, \
+            pinned_model, tier1_model, tier2_model, tier3_model, is_default, created_at, \
+            updated_at)", body = crate::mcp::openapi::McpEnvelope),
+        (status = 400, description = "Validation failed (name/provider/model/pinned_model/secret)"),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 409, description = "A config with this name already exists"),
+    ),
+)]
+pub(crate) async fn create(
     State(state): State<AppState>,
     claims: Claims,
     Json(req): Json<CreateLlmConfigRequest>,
@@ -337,7 +368,24 @@ async fn create(
 
 // ─── GET /llm-configs/{id} ───────────────────────────────────────────────────
 
-async fn get_one(
+/// Fetch one of the caller's configs; configs the caller doesn't own read as 404.
+#[utoipa::path(
+    get,
+    path = "/api/llm-configs/{id}",
+    tag = "llm-router",
+    params(
+        ("id" = Uuid, Path, description = "LLM config id"),
+    ),
+    responses(
+        (status = 200, description = "`data` is the config object (id, name, provider, model, \
+            fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, \
+            tier1_model, tier2_model, tier3_model, is_default, created_at, updated_at)",
+            body = crate::mcp::openapi::McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 404, description = "Unknown id, or not owned by the caller"),
+    ),
+)]
+pub(crate) async fn get_one(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -354,7 +402,28 @@ async fn get_one(
 
 // ─── PATCH /llm-configs/{id} ─────────────────────────────────────────────────
 
-async fn update(
+/// Partially update one of the caller's configs; absent fields keep their
+/// current value. Use `POST /api/llm-configs/{id}/default` to change the default.
+#[utoipa::path(
+    patch,
+    path = "/api/llm-configs/{id}",
+    tag = "llm-router",
+    params(
+        ("id" = Uuid, Path, description = "LLM config id"),
+    ),
+    request_body = UpdateLlmConfigRequest,
+    responses(
+        (status = 200, description = "`data` is the updated config object (id, name, provider, \
+            model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, \
+            pinned_model, tier1_model, tier2_model, tier3_model, is_default, created_at, \
+            updated_at)", body = crate::mcp::openapi::McpEnvelope),
+        (status = 400, description = "Validation failed (name/provider/model/pinned_model/secret)"),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 404, description = "Unknown id, or not owned by the caller"),
+        (status = 409, description = "Another config with this name already exists"),
+    ),
+)]
+pub(crate) async fn update(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -462,7 +531,23 @@ async fn update(
 
 // ─── DELETE /llm-configs/{id} ────────────────────────────────────────────────
 
-async fn delete_config(
+/// Soft-delete one of the caller's configs. Fails while any live agent still
+/// has the config attached.
+#[utoipa::path(
+    delete,
+    path = "/api/llm-configs/{id}",
+    tag = "llm-router",
+    params(
+        ("id" = Uuid, Path, description = "LLM config id"),
+    ),
+    responses(
+        (status = 200, description = "Config deleted", body = crate::openapi::EmptyEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 404, description = "Unknown id, or not owned by the caller"),
+        (status = 409, description = "Config is attached to one or more agents"),
+    ),
+)]
+pub(crate) async fn delete_config(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
@@ -506,7 +591,24 @@ async fn delete_config(
 
 // ─── POST /llm-configs/{id}/default ──────────────────────────────────────────
 
-async fn set_default(
+/// Mark one of the caller's configs as their default, clearing any prior default.
+#[utoipa::path(
+    post,
+    path = "/api/llm-configs/{id}/default",
+    tag = "llm-router",
+    params(
+        ("id" = Uuid, Path, description = "LLM config id"),
+    ),
+    responses(
+        (status = 200, description = "`data` is the config object now marked as default (id, \
+            name, provider, model, fallback_models, temperature, max_tokens, \
+            api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, \
+            is_default, created_at, updated_at)", body = crate::mcp::openapi::McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 404, description = "Unknown id, or not owned by the caller"),
+    ),
+)]
+pub(crate) async fn set_default(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,

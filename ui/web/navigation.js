@@ -6,6 +6,7 @@ window.fetchNavigation = async () => [
   { title: "Your Agents", url: "/your-agents.html", icon: "user" },
   { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
   { title: "Sessions", url: "/sessions.html", icon: "clock" },
+  { title: "Observability", url: "/observability.html", icon: "eye" },
   { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
   { title: "Builds", url: "/builds.html", icon: "cube" },
   { title: "TokenOps", url: "/tokenops.html", icon: "code" },
@@ -46,6 +47,28 @@ window.fetchTraceDetail = async (traceId) => {
   // Envelope {data:{trace}}; trace.spans is a nested tree (children embedded).
   const resp = await fetchApi(`/observability/trace/${traceId}`);
   return resp.data?.trace ?? resp.trace ?? resp;
+};
+
+// Observability — execution history + per-session traces (see /api/docs)
+window.fetchObservabilitySessions = async () => {
+  return fetchApi('/observability/session/list');
+};
+
+window.fetchObservabilitySession = async (sessionId) => {
+  return fetchApi(`/observability/session/${encodeURIComponent(sessionId)}`);
+};
+
+window.fetchObservabilityTrace = async (traceId) => {
+  const resp = await fetchApi(`/observability/trace/${encodeURIComponent(traceId)}`);
+  return resp.data?.trace ?? resp.trace ?? resp;
+};
+
+window.fetchSpanDetail = async (traceId, spanId) => {
+  return fetchApi(`/observability/span/${encodeURIComponent(traceId)}/${encodeURIComponent(spanId)}`);
+};
+
+window.fetchChatSession = async (sessionId) => {
+  return fetchApi(`/chat/sessions/${encodeURIComponent(sessionId)}`);
 };
 
 window.fetchUsageSummary = async () => {

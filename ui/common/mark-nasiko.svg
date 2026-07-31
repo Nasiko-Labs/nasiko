@@ -1,7 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56" width="56" height="56">
-  <!-- Nasiko DS placeholder mark: Chivo Mono Medium "n" on the brand square.
-       The glyph is outlined (extracted from ChivoMono-Medium.ttf) so the mark
-       renders correctly in favicon contexts, where SVG text cannot load fonts. -->
-  <rect x="0" y="0" width="56" height="56" rx="12" fill="#BB8F06"></rect>
-  <path fill="#FFFFFF" d="M23.88 40L19.24 40L19.24 19.56L23 19.56L23.44 22.32Q24.36 20.68 26 19.92Q27.64 19.16 29.68 19.16Q33 19.16 34.98 21.02Q36.96 22.88 36.96 26.44L36.96 40L32.28 40L32.28 27.64Q32.28 25.08 31.22 23.88Q30.16 22.68 28.24 22.68Q26.92 22.68 25.94 23.34Q24.96 24 24.42 25.16Q23.88 26.32 23.88 27.84Z"></path>
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<!-- Nasiko brand mark (barcode "N") — copied from the design system's
+     nasiko-brand-logo-large.svg so web + Flutter share one identity. -->
+<rect width="3.28807" height="53.743" rx="1.64403" fill="#BB8F06"/>
+<rect x="5.51914" width="3.28807" height="58.4455" rx="1.64403" fill="#BB8F06"/>
+<rect x="11.0384" width="3.28807" height="63.8199" rx="1.64403" fill="#BB8F06"/>
+<rect x="16.5577" width="3.28807" height="63.8199" rx="1.64403" fill="#BB8F06"/>
+<rect x="22.0771" width="3.28807" height="22.8408" rx="1.64403" fill="#BB8F06"/>
+<rect x="27.5963" width="3.28807" height="22.8408" rx="1.64403" fill="#BB8F06"/>
+<rect x="33.1154" width="3.28807" height="27.5433" rx="1.64403" fill="#BB8F06"/>
+<rect x="38.6348" width="3.28807" height="32.2458" rx="1.64403" fill="#BB8F06"/>
+<rect x="44.154" width="3.28807" height="22.8408" rx="1.64403" fill="#BB8F06"/>
+<rect x="49.5559" y="6.02707" width="3.34837" height="16.7418" rx="1.67418" fill="#BB8F06"/>
+<rect x="55.1927" y="10.2568" width="3.28807" height="53.743" rx="1.64403" fill="#BB8F06"/>
+<rect x="60.7119" y="14.8154" width="3.28807" height="49.0405" rx="1.64403" fill="#BB8F06"/>
+<rect x="22.3119" y="53.5633" width="3.34679" height="10.2568" rx="1.67339" fill="#BB8F06"/>
+<rect x="27.8901" y="53.5633" width="3.28807" height="10.0768" rx="1.64403" fill="#BB8F06"/>
+<rect x="33.4677" y="43.3064" width="3.34679" height="20.5136" rx="1.67339" fill="#BB8F06"/>
+<rect x="39.0458" y="47.865" width="3.34679" height="15.955" rx="1.67339" fill="#BB8F06"/>
+<rect x="44.3891" y="53.5633" width="3.34679" height="10.2568" rx="1.67339" fill="#BB8F06"/>
+<rect x="49.9669" y="53.5633" width="3.34679" height="10.2568" rx="1.67339" fill="#BB8F06"/>
 </svg>

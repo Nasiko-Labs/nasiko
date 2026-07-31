@@ -1,0 +1,316 @@
+/* Observability session detail — chat history | trace tree | span detail. */
+observability-session-page:not(:defined) {
+  display: block;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-xl);
+  min-height: 400px;
+}
+
+@scope (observability-session-page) {
+  :scope {
+    display: block;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: var(--space-lg) var(--space-xl);
+  }
+
+  /* ── Header ───────────────────────────────────────────────────────────── */
+  .page-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+  }
+
+  .back-btn {
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
+    flex-shrink: 0;
+
+    &:hover { border-color: var(--border-hover); }
+    & svg { width: 16px; height: 16px; }
+  }
+
+  .page-title {
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    font-family: var(--font-mono);
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ── KPI strip ────────────────────────────────────────────────────────── */
+  .kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    border-block: 1px solid var(--color-border);
+    padding: var(--space-md) 0;
+    margin-bottom: var(--space-lg);
+  }
+
+  .kpi {
+    padding: 0 var(--space-lg);
+    border-left: 1px solid var(--color-border);
+    min-width: 0;
+
+    &:first-child { border-left: none; padding-left: 0; }
+  }
+
+  .kpi-label {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    margin-bottom: var(--space-xs);
+    white-space: nowrap;
+  }
+
+  .kpi-value { font-size: var(--font-size-base); color: var(--color-text-main); }
+
+  /* ── Three panes ──────────────────────────────────────────────────────── */
+  .panes {
+    display: grid;
+    grid-template-columns: minmax(260px, 3fr) minmax(280px, 3fr) minmax(340px, 4fr);
+    gap: var(--space-md);
+    align-items: stretch;
+    min-height: 480px;
+
+    @media (max-width: 1100px) { grid-template-columns: 1fr; }
+  }
+
+  .pane {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-bg-surface);
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    max-height: 72vh;
+    overflow-y: auto;
+  }
+
+  .pane-title {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    margin: 0 0 var(--space-md);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+
+  /* ── Chat history pane ────────────────────────────────────────────────── */
+  .chat-card {
+    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .msg-user {
+    align-self: flex-end;
+    max-width: 90%;
+    background: light-dark(var(--cream-50), var(--neutral-700));
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-10);
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--font-size-sm);
+  }
+
+  .msg-assistant {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .chat-meta {
+    display: flex;
+    gap: var(--space-sm);
+    border-top: 1px solid var(--color-border);
+    padding-top: var(--space-sm);
+    flex-wrap: wrap;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: light-dark(var(--cream-50), var(--neutral-800));
+    font-size: var(--font-size-xs);
+    color: var(--color-text-main);
+    white-space: nowrap;
+
+    & svg { width: 12px; height: 12px; color: var(--color-text-muted); }
+  }
+
+  /* ── Traces pane ──────────────────────────────────────────────────────── */
+  .span-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    text-align: left;
+    padding: var(--space-sm);
+    border: 1px solid transparent;
+    border-radius: var(--r-10);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    background: transparent;
+
+    &:hover { background: light-dark(var(--cream-50), var(--neutral-700)); }
+
+    &.is-selected {
+      background: var(--bg-secondary-brand);
+      border-color: light-dark(var(--yellow-300), var(--yellow-800));
+    }
+  }
+
+  .span-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1px solid var(--color-border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+
+    & svg { width: 14px; height: 14px; }
+  }
+
+  .span-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--fg-success);
+    flex-shrink: 0;
+
+    &.is-error { background: var(--fg-error); }
+  }
+
+  /* ── Span detail pane ─────────────────────────────────────────────────── */
+  .detail-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+
+    & h3 {
+      font-size: var(--font-size-lg);
+      font-weight: 600;
+      font-family: var(--font-sans);
+      margin: 0;
+    }
+  }
+
+  .badge-kind {
+    font-size: var(--font-size-xs);
+    padding: 3px 10px;
+    border-radius: var(--r-6);
+    background: light-dark(var(--neutral-200), var(--neutral-700));
+    color: var(--color-text-muted);
+  }
+
+  .detail-chips {
+    display: flex;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-md);
+  }
+
+  .tabs {
+    display: flex;
+    gap: var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-md);
+  }
+
+  .tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs) 0 var(--space-sm);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+
+    & svg { width: 14px; height: 14px; }
+
+    &.is-active {
+      color: light-dark(var(--yellow-700), var(--yellow-400));
+      border-bottom-color: light-dark(var(--yellow-600), var(--yellow-400));
+    }
+  }
+
+  .detail-section-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    margin: var(--space-md) 0 var(--space-sm);
+    color: var(--color-text-main);
+  }
+
+  .msg-block {
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    padding: var(--space-sm) var(--space-md);
+    margin-bottom: var(--space-sm);
+    font-size: var(--font-size-sm);
+
+    & .msg-role {
+      font-size: var(--font-size-xs);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--color-text-muted);
+      margin-bottom: 4px;
+    }
+
+    & .msg-content {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .raw-json {
+    background: light-dark(var(--cream-50), var(--neutral-900));
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    padding: var(--space-md);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    overflow-x: auto;
+    white-space: pre;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+
+  .pane-empty {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    text-align: center;
+    padding: var(--space-xl) var(--space-md);
+  }
+}
