@@ -687,13 +687,12 @@ pub async fn handle_callback(
     );
     // Sync tools eagerly so the frontend shows them immediately instead of
     // waiting for a lazy sync on the next `tools/list` request.
-    if outcome.verified {
-        if let Err(e) =
+    if outcome.verified
+        && let Err(e) =
             crate::permissions::sync_connector_tools_by_id(state, oauth_state.user_id, connector.id)
                 .await
-        {
-            tracing::warn!(error = %e, "post-oauth tool sync failed (non-fatal)");
-        }
+    {
+        tracing::warn!(error = %e, "post-oauth tool sync failed (non-fatal)");
     }
 
     let dest = oauth_state.redirect_url.unwrap_or_else(|| "/".to_string());
