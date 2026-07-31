@@ -157,17 +157,29 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
     // method, and deterministic when a server implements it (unlike guessing
     // from a bare unauthenticated response, which is a real, verified source
     // of false classifications — see classify_response's doc comment).
-    if crate::oauth::fetch_protected_resource_metadata(&state.guarded_http_client, &url)
-        .await
-        .is_some()
+    if let Some(rm) =
+        crate::oauth::fetch_protected_resource_metadata(&state.guarded_http_client, &url).await
     {
+        // One extra hop: check the authorization-server metadata for a
+        // registration_endpoint so the frontend knows whether client
+        // credentials are required or can be obtained via DCR (RFC 7591).
+        let supports_dcr =
+            crate::oauth::as_supports_dcr(&state.guarded_http_client, &rm).await;
+
+        let hint = if supports_dcr {
+            "This server supports OAuth 2.1 with automatic client registration — \
+             no client credentials needed."
+        } else {
+            "This server uses OAuth 2.1 but does not support automatic registration — \
+             you must provide your own OAuth client ID and secret."
+        };
+
         return Ok(json!({
             "url": url,
             "auth_type": "oauth2",
             "requires": "oauth_flow",
-            "hint": "This server publishes OAuth 2.0 Protected Resource Metadata (RFC 9728) \
-                     — it supports OAuth 2.1. You will be redirected to authorize."
-                .to_string(),
+            "supports_dcr": supports_dcr,
+            "hint": hint,
         }));
     }
 
@@ -181,31 +193,41 @@ pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> 
         .await
         .map_err(|e| McpError::Backend(format!("could not reach MCP server: {e}")))?;
 
-    let (requires, hint) = match detected {
+    let (requires, hint, supports_dcr) = match detected {
         DetectedAuthType::None => (
             "nothing",
             "This server requires no authentication.".to_string(),
+            None,
         ),
         DetectedAuthType::OAuth2 => (
             "oauth_flow",
-            "This server uses OAuth 2.1. You will be redirected to authorize.".to_string(),
+            "This server uses OAuth 2.1 but does not publish discovery metadata — \
+             you must provide your own OAuth client ID and secret."
+                .to_string(),
+            Some(false),
         ),
         DetectedAuthType::Bearer if status == StatusCode::UNAUTHORIZED.as_u16() => (
             "api_key_input",
             "This server requires a Bearer token or API key.".to_string(),
+            None,
         ),
         DetectedAuthType::Bearer => (
             "api_key_input",
             format!("Server returned HTTP {status}. It may require an API key."),
+            None,
         ),
     };
-    Ok(json!({
+    let mut resp = json!({
         "url": url,
         "auth_type": detected.as_str(),
         "requires": requires,
         "hint": hint,
         "instructions": instructions,
-    }))
+    });
+    if let Some(dcr) = supports_dcr {
+        resp["supports_dcr"] = json!(dcr);
+    }
+    Ok(resp)
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────

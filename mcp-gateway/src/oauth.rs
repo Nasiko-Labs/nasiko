@@ -100,7 +100,8 @@ async fn refresh(
         .post(token_endpoint)
         .timeout(REFRESH_TIMEOUT)
         .form(&form);
-    if let (Some(cid), Some(secret)) = (&connector.oauth_client_id, client_secret_plain(connector)) {
+    if let (Some(cid), Some(secret)) = (&connector.oauth_client_id, client_secret_plain(connector))
+    {
         req = req.basic_auth(cid, Some(secret));
     }
     let resp = req.send().await;
@@ -133,12 +134,8 @@ async fn refresh(
         .and_then(|v| v.as_i64())
         .map(|s| Utc::now() + ChronoDuration::seconds(s));
 
-    let access_enc = crypto
-        .encrypt(&new_access)
-        .map_err(|e| McpError::Internal(format!("encrypt access token: {e}")))?;
-    let refresh_enc = crypto
-        .encrypt(&new_refresh)
-        .map_err(|e| McpError::Internal(format!("encrypt refresh token: {e}")))?;
+    let access_enc = crypto.encrypt(&new_access);
+    let refresh_enc = crypto.encrypt(&new_refresh);
     repo::upsert_connection_oauth_token(
         &state.db,
         user_id,
@@ -285,23 +282,32 @@ pub async fn discover_oauth_config(
     // endpoint directly instead of giving up, since that's the spec's own
     // primary discovery method, not really a fallback in principle.
     let rm: Value = if let Some(rm_url) = extract_resource_metadata(&www_auth) {
-        http.get(&rm_url).timeout(DISCOVERY_TIMEOUT).send().await?.json().await?
+        http.get(&rm_url)
+            .timeout(DISCOVERY_TIMEOUT)
+            .send()
+            .await?
+            .json()
+            .await?
     } else {
-        fetch_protected_resource_metadata(http, mcp_url).await.ok_or_else(|| {
-            McpError::Oauth(
-                "401 has no resource_metadata URL in WWW-Authenticate, and no RFC 9728 \
+        fetch_protected_resource_metadata(http, mcp_url)
+            .await
+            .ok_or_else(|| {
+                McpError::Oauth(
+                    "401 has no resource_metadata URL in WWW-Authenticate, and no RFC 9728 \
                  well-known endpoint was found either — this server may not actually \
                  support OAuth 2.1, or doesn't publish discovery metadata"
-                    .to_string(),
-            )
-        })?
+                        .to_string(),
+                )
+            })?
     };
     let as_url = rm
         .get("authorization_servers")
         .and_then(|v| v.as_array())
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
-        .ok_or_else(|| McpError::Oauth("no authorization_servers in resource metadata document".to_string()))?;
+        .ok_or_else(|| {
+            McpError::Oauth("no authorization_servers in resource metadata document".to_string())
+        })?;
 
     let as_meta_url = format!(
         "{}/.well-known/oauth-authorization-server",
@@ -510,16 +516,14 @@ pub async fn begin_authorization(
             &state.guarded_http_client,
             &server_url,
             &redirect_uri,
-            pre_client_id.as_deref().or(connector.oauth_client_id.as_deref()),
+            pre_client_id
+                .as_deref()
+                .or(connector.oauth_client_id.as_deref()),
         )
         .await?;
         // Encrypt the DCR client secret at rest with the owner's key.
         let client_secret_enc = match (discovered.client_secret.as_deref(), connector.owner_id) {
-            (Some(sec), Some(owner)) => Some(
-                SecretsCrypto::for_user(owner)
-                    .encrypt(sec)
-                    .map_err(|e| McpError::Internal(format!("encrypt client secret: {e}")))?,
-            ),
+            (Some(sec), Some(owner)) => Some(SecretsCrypto::for_user(owner).encrypt(sec)),
             _ => None,
         };
         repo::update_connector_oauth_config(
@@ -632,37 +636,8 @@ pub async fn handle_callback(
     let expires_at = tokens
         .expires_in
         .map(|secs| Utc::now() + ChronoDuration::seconds(secs));
-    let access_enc = match crypto.encrypt(&tokens.access_token) {
-        Ok(enc) => enc,
-        Err(e) => {
-            let _ = repo::set_connector_setup_status(
-                &state.db,
-                connector.id,
-                "failed",
-                Some("failed to encrypt token"),
-            )
-            .await;
-            return CallbackOutcome::Message(format!("Failed to encrypt token: {e}"));
-        }
-    };
-    let refresh_enc = match tokens
-        .refresh_token
-        .as_ref()
-        .map(|r| crypto.encrypt(r))
-        .transpose()
-    {
-        Ok(enc) => enc,
-        Err(e) => {
-            let _ = repo::set_connector_setup_status(
-                &state.db,
-                connector.id,
-                "failed",
-                Some("failed to encrypt token"),
-            )
-            .await;
-            return CallbackOutcome::Message(format!("Failed to encrypt token: {e}"));
-        }
-    };
+    let access_enc = crypto.encrypt(&tokens.access_token);
+    let refresh_enc = tokens.refresh_token.as_ref().map(|r| crypto.encrypt(r));
     if let Err(e) = repo::upsert_connection_oauth_token(
         &state.db,
         oauth_state.user_id,
@@ -687,11 +662,19 @@ pub async fn handle_callback(
     // A successful token exchange proves the OAuth handshake worked, not that
     // the resulting access token actually authorizes MCP calls against this
     // server — prove that too before calling the connector active.
-    let outcome = crate::credentials::verify_connector_live(state, oauth_state.user_id, &connector).await;
-    let (status, status_error) = if outcome.verified { ("active", None) } else { ("failed", outcome.error) };
-    let _ = repo::set_connector_setup_status(&state.db, connector.id, status, status_error.as_deref()).await;
+    let outcome =
+        crate::credentials::verify_connector_live(state, oauth_state.user_id, &connector).await;
+    let (status, status_error) = if outcome.verified {
+        ("active", None)
+    } else {
+        ("failed", outcome.error)
+    };
+    let _ =
+        repo::set_connector_setup_status(&state.db, connector.id, status, status_error.as_deref())
+            .await;
     if outcome.verified {
-        crate::connect::grant_user_agents_access(&state.db, oauth_state.user_id, connector.id).await;
+        crate::connect::grant_user_agents_access(&state.db, oauth_state.user_id, connector.id)
+            .await;
     }
     crate::session::invalidate_session_cache(state, oauth_state.user_id).await;
     tracing::info!(
@@ -726,9 +709,39 @@ fn extract_resource_metadata(www_authenticate: &str) -> Option<String> {
 /// hosted MCP server does neither — `/.well-known/oauth-protected-resource`
 /// 404s there entirely, a real, currently-open gap on their side
 /// (atlassian/atlassian-mcp-server#148), not something this can work around.
+/// Check whether the authorization server for an OAuth-protected resource
+/// advertises a `registration_endpoint` (RFC 7591 DCR). Used by the probe
+/// endpoint so the frontend can decide whether to show client-credential fields.
+pub async fn as_supports_dcr(http: &reqwest::Client, resource_metadata: &Value) -> bool {
+    let Some(as_url) = resource_metadata
+        .get("authorization_servers")
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str())
+    else {
+        return false;
+    };
+    let as_meta_url = format!(
+        "{}/.well-known/oauth-authorization-server",
+        as_url.trim_end_matches('/')
+    );
+    let Ok(resp) = http.get(&as_meta_url).timeout(DISCOVERY_TIMEOUT).send().await else {
+        return false;
+    };
+    let Ok(doc) = resp.json::<Value>().await else {
+        return false;
+    };
+    doc.get("registration_endpoint")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+}
+
 /// Returns the parsed resource metadata document, or `None` if no candidate
 /// URL returned a document with a non-empty `authorization_servers` array.
-pub async fn fetch_protected_resource_metadata(http: &reqwest::Client, mcp_url: &str) -> Option<Value> {
+pub async fn fetch_protected_resource_metadata(
+    http: &reqwest::Client,
+    mcp_url: &str,
+) -> Option<Value> {
     let parsed = reqwest::Url::parse(mcp_url).ok()?;
     let origin = format!(
         "{}://{}{}",
@@ -740,7 +753,9 @@ pub async fn fetch_protected_resource_metadata(http: &reqwest::Client, mcp_url: 
 
     let mut candidates = Vec::new();
     if !path.is_empty() {
-        candidates.push(format!("{origin}/.well-known/oauth-protected-resource/{path}"));
+        candidates.push(format!(
+            "{origin}/.well-known/oauth-protected-resource/{path}"
+        ));
     }
     candidates.push(format!("{origin}/.well-known/oauth-protected-resource"));
 
@@ -862,7 +877,8 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let doc = fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
+        let doc =
+            fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
 
         mock.assert_async().await;
         assert!(doc.is_some());
@@ -889,7 +905,8 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let doc = fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
+        let doc =
+            fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
 
         root_mock.assert_async().await;
         assert!(doc.is_some());
@@ -911,7 +928,8 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let doc = fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
+        let doc =
+            fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
 
         assert!(doc.is_none());
     }
@@ -933,8 +951,12 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let doc = fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
+        let doc =
+            fetch_protected_resource_metadata(&client, &format!("{}/mcp", server.url())).await;
 
-        assert!(doc.is_none(), "an empty authorization_servers array must not count as discovery");
+        assert!(
+            doc.is_none(),
+            "an empty authorization_servers array must not count as discovery"
+        );
     }
 }
