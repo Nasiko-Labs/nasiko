@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tabled::settings::{Alignment, Style};
 use tabled::{Table, Tabled};
 
-use crate::api::{AgentRecord, AgentVersion, Client, UpdateQueued, UploadedAgent};
+use crate::api::{AgentRecord, AgentVersion, Client, DeletedAgent, UpdateQueued, UploadedAgent};
 
 #[derive(Debug, Deserialize)]
 struct LogLine {
@@ -31,7 +31,35 @@ pub fn ps(json: bool) -> Result<()> {
         println!("No agents registered.");
         return Ok(());
     }
-    let base = client.base_url().trim_end_matches('/');
+    let base = client.base_url().trim_end_matches('/').to_string();
+
+    // Split "created by you" vs "shared with you" (mirrors `nasiko mcp
+    // connector list`) — only when we actually know our own id; if the
+    // token can't be decoded locally, fall back to one flat list rather
+    // than mislabeling everything as "shared".
+    match client.current_user_id() {
+        Some(my_id) => {
+            let (created, shared): (Vec<&AgentRecord>, Vec<&AgentRecord>) = agents
+                .iter()
+                .partition(|a| a.owner_id.as_deref() == Some(my_id.as_str()));
+            if !created.is_empty() {
+                println!("Created by you ({}):", created.len());
+                print_ps_table(&created, &base);
+            }
+            if !shared.is_empty() {
+                if !created.is_empty() {
+                    println!();
+                }
+                println!("Shared with you ({}):", shared.len());
+                print_ps_table(&shared, &base);
+            }
+        }
+        None => print_ps_table(&agents.iter().collect::<Vec<_>>(), &base),
+    }
+    Ok(())
+}
+
+fn print_ps_table(agents: &[&AgentRecord], base: &str) {
     let rows: Vec<PsTableRow> = agents
         .iter()
         .map(|a| {
@@ -39,8 +67,9 @@ pub fn ps(json: bool) -> Result<()> {
             // transport_path comes from the agent's own card (persisted at deploy
             // time); the proxy route requires the agent UUID, not the name.
             let path = a.transport_path.as_deref().unwrap_or("/");
-            let url = format!("{}/api/agents/{}{}", base, a.id, path);
+            let url = format!("{base}/api/agents/{}{path}", a.id);
             PsTableRow {
+                id: a.id.clone(),
                 name: a.name.clone(),
                 status: status.to_string(),
                 version: a.version.as_deref().unwrap_or("-").to_string(),
@@ -54,11 +83,12 @@ pub fn ps(json: bool) -> Result<()> {
             .with(Style::blank())
             .with(Alignment::left())
     );
-    Ok(())
 }
 
 #[derive(Tabled)]
 struct PsTableRow {
+    #[tabled(rename = "AGENT ID")]
+    id: String,
     #[tabled(rename = "NAME")]
     name: String,
     #[tabled(rename = "STATUS")]
@@ -212,8 +242,18 @@ pub fn rm(id: Option<&str>, name: Option<&str>, force: bool) -> Result<()> {
         }
     }
     let client = Client::from_active_cluster()?;
-    client.delete(&format!("/agents/{agent_id}"))?;
-    println!("Removed: {label}");
+    // `DELETE /agents/{id}` (not `/containers/{agent}`) — it tears down every
+    // container for this agent *and* deletes the catalog row. The container-only
+    // route left the catalog entry behind, so the agent kept showing up in
+    // `ps`/`agents ls` forever after a "successful" removal.
+    let result: DeletedAgent = client.delete_json(&format!("/agents/{agent_id}"))?;
+    for err in &result.runtime_errors {
+        eprintln!("warning: {err}");
+    }
+    println!(
+        "Removed: {label} ({} container(s) stopped)",
+        result.containers_stopped
+    );
     Ok(())
 }
 
@@ -283,13 +323,29 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
     }
 
     let client = Client::from_active_cluster()?;
-    let raw: serde_json::Value = client.get_json("/agents?limit=100")?;
-    let agents = unwrap_agents(raw)?;
 
-    let matches: Vec<&AgentRecord> = agents
-        .iter()
-        .filter(|a| a.name.eq_ignore_ascii_case(name_or_id))
-        .collect();
+    // Page through results — the server clamps `limit` to 100 per request and
+    // defaults to the 50 most-recently-created agents if omitted entirely, so a
+    // single unpaginated call silently misses any agent past the first page.
+    // `q=` pre-filters server-side (name/description ILIKE) to cut down how many
+    // pages a typical name needs to page through; the exact match below is what
+    // actually decides membership.
+    let mut matches: Vec<AgentRecord> = Vec::new();
+    let mut offset = 0i64;
+    loop {
+        let path = format!(
+            "/registry/user/agents?q={}&limit=100&offset={offset}",
+            crate::api::urlencode(name_or_id)
+        );
+        let raw: serde_json::Value = client.get_json(&path)?;
+        let page = unwrap_agents(raw)?;
+        let page_len = page.len();
+        matches.extend(page.into_iter().filter(|a| a.name == name_or_id));
+        if page_len < 100 {
+            break;
+        }
+        offset += 100;
+    }
 
     match matches.as_slice() {
         [one] => Ok(one.id.clone()),

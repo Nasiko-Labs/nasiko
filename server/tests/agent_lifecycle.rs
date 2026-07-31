@@ -203,6 +203,77 @@ async fn get_agent_deployment_returns_seeded_record() {
     server.cleanup().await;
 }
 
+/// The `nasiko` CLI's `DeploymentRecord` (oss/cli/src/api.rs) deserializes
+/// id, agent_id, agent_name, status, replicas, service_url, created_at,
+/// crash_reason, crashed_at, and restart_count out of both this endpoint and
+/// the list endpoint below — assert the full field set round-trips, not just
+/// agent_id/status as the tests above do, so a server-side rename doesn't
+/// silently break the CLI's `deployments get`/`deployments ls` commands.
+#[tokio::test]
+#[serial]
+async fn deployment_endpoints_expose_full_cli_contract_fields() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let uid_uuid: Uuid = uid.parse().unwrap();
+
+    let agent = create_agent(&server, uid, "cli-contract-agent", "1.0.0").await;
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+
+    let build_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
+         VALUES ($1, '1.0.0', 'cli-contract-agent:1.0.0') RETURNING id",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let deployment_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO agent_deployments \
+           (agent_id, build_id, status, owner_id, service_url, crash_reason, crashed_at, restart_count) \
+         VALUES ($1, $2, 'crashed', $3, 'http://example.local:8000', 'OOMKilled', now(), 2) \
+         RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(build_id)
+    .bind(uid_uuid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let assert_full_record = |body: &Value| {
+        assert_eq!(body["id"].as_str().unwrap(), deployment_id.to_string());
+        assert_eq!(body["agent_id"].as_str().unwrap(), agent_id.to_string());
+        assert_eq!(body["agent_name"].as_str().unwrap(), "cli-contract-agent");
+        assert_eq!(body["status"].as_str().unwrap(), "crashed");
+        assert_eq!(body["replicas"].as_i64().unwrap(), 1);
+        assert_eq!(
+            body["service_url"].as_str().unwrap(),
+            "http://example.local:8000"
+        );
+        assert!(body["created_at"].as_str().is_some());
+        assert_eq!(body["crash_reason"].as_str().unwrap(), "OOMKilled");
+        assert!(body["crashed_at"].as_str().is_some());
+        assert_eq!(body["restart_count"].as_i64().unwrap(), 2);
+    };
+
+    // GET /api/agents/{id}/deployment — the `nasiko deployments get <agent>` route.
+    let res = get_as_superuser(&server, uid, &format!("/api/agents/{agent_id}/deployment")).await;
+    assert_eq!(res.status(), 200);
+    assert_full_record(&res.json::<Value>().await.unwrap());
+
+    // GET /api/agents/deployments — the `nasiko deployments ls` route; same record.
+    let res = get_as_superuser(&server, uid, "/api/agents/deployments").await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let records = body.as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_full_record(&records[0]);
+
+    server.cleanup().await;
+}
+
 // ─── GET /api/agents/uploads/{id} ─────────────────────────────────────
 
 #[tokio::test]

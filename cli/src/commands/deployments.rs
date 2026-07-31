@@ -44,7 +44,10 @@ pub fn get(agent: &str) -> Result<()> {
     let d: DeploymentRecord = client.get_json(&format!("/agents/{id}/deployment"))?;
 
     println!("Deployment ID:  {}", d.id);
-    println!("Agent:          {}", d.agent_name.as_deref().unwrap_or(agent));
+    println!(
+        "Agent:          {}",
+        d.agent_name.as_deref().unwrap_or(agent)
+    );
     println!("Status:         {}", d.status);
     println!("Replicas:       {}", d.replicas);
     println!("Created:        {}", d.created_at);
@@ -65,11 +68,18 @@ pub fn get(agent: &str) -> Result<()> {
 /// split out from `restart()` so the parsing/filtering (missing fields,
 /// non-string warning entries) is unit-testable without a live server.
 fn parse_restart_response(resp: &serde_json::Value) -> (Option<String>, Vec<String>) {
-    let new_id = resp.get("deployment_id").and_then(|v| v.as_str()).map(String::from);
+    let new_id = resp
+        .get("deployment_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let warnings = resp
         .get("warnings")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|w| w.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|w| w.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     (new_id, warnings)
 }

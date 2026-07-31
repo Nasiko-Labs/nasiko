@@ -141,6 +141,11 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
+    /// Deployment-level ops (list/inspect/restart) — distinct from the container-level ps/restart above
+    Deployments {
+        #[command(subcommand)]
+        command: DeploymentsCommands,
+    },
     /// Re-upload source and rebuild an existing deployed agent
     #[command(
         after_help = "Version resolution order: --version flag → AgentCard.json → pyproject.toml → Cargo.toml → server auto-patch"
@@ -485,6 +490,20 @@ pub enum AgentsCommands {
 }
 
 #[derive(Subcommand)]
+pub enum DeploymentsCommands {
+    /// List all deployments (crash reason, restart count, etc.)
+    #[command(alias = "list")]
+    Ls,
+    /// Show the current deployment for an agent
+    Get {
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Restart a specific deployment by its deployment ID (see `deployments ls`)
+    Restart { deployment_id: String },
+}
+
+#[derive(Subcommand)]
 pub enum GithubCommands {
     /// Show GitHub connection status
     Status,
@@ -746,6 +765,13 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
+        AgentOpsCommands::Deployments { command } => match command {
+            DeploymentsCommands::Ls => commands::deployments::ls(),
+            DeploymentsCommands::Get { agent } => commands::deployments::get(&agent),
+            DeploymentsCommands::Restart { deployment_id } => {
+                commands::deployments::restart(&deployment_id)
+            }
+        },
         AgentOpsCommands::Reupload {
             id,
             name,
