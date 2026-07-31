@@ -393,7 +393,15 @@ async fn create_maf(
         }
 
         let (agent_id, agent_name, agent_endpoint) = if let Some(aid) = step.agent_id {
-            // Caller provided an agent — look up name and endpoint
+            // Caller provided an agent — must be reachable by this caller (owner ∪
+            // public ∪ user/team/dept grant per edition) before we accept it into a
+            // workflow step. Same "not found" response for both missing and
+            // inaccessible agents — matches a2a_dispatch.rs's enumeration-safe
+            // pattern (a non-grantee can't distinguish "doesn't exist" from
+            // "exists but you can't use it").
+            if !crate::acl::can_access_agent(&state, &claims, aid).await {
+                return forbidden(&format!("agent {aid} not found"));
+            }
             match fetch_agent_info(&state.db, aid).await {
                 Ok(Some((name, url))) => (aid, name, url),
                 Ok(None) => return forbidden(&format!("agent {aid} not found")),
@@ -573,6 +581,11 @@ async fn update_maf(
             }
 
             let (agent_id, name, endpoint) = if let Some(aid) = step.agent_id {
+                // Same access check as create_maf — a caller-supplied agent_id must
+                // be reachable by this caller before it's accepted into a step.
+                if !crate::acl::can_access_agent(&state, &claims, aid).await {
+                    return forbidden(&format!("agent {aid} not found"));
+                }
                 match fetch_agent_info(&state.db, aid).await {
                     Ok(Some((n, u))) => (aid, n, u),
                     Ok(None) => return forbidden(&format!("agent {aid} not found")),
@@ -701,9 +714,12 @@ async fn delete_maf(
         None => return unauthorized(),
     };
 
-    // Ownership check before soft-delete
+    // Ownership check before soft-delete — superuser may delete any workflow (same
+    // owner-or-superuser convention as agent management elsewhere).
     match fetch_maf(&state.db, id).await {
-        Ok(Some(row)) if row.user_id != user_id => return forbidden("not owned by caller"),
+        Ok(Some(row)) if row.user_id != user_id && !claims.is_superuser => {
+            return forbidden("not owned by caller");
+        }
         Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
         Ok(Some(_)) => {}

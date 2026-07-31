@@ -583,6 +583,39 @@ async fn test_ownership_enforced_on_all_endpoints() {
 
 #[tokio::test]
 #[serial]
+async fn test_create_maf_inaccessible_agent_is_403() {
+    // Regression test: a caller-supplied agent_id that *exists* but is private
+    // and owned by someone else must be rejected, same as a nonexistent one —
+    // otherwise any authenticated user could route work through any agent on
+    // the platform by referencing its id directly in a workflow step.
+    let server = common::TestServer::start().await;
+    let owner_id = Uuid::new_v4();
+    let other_user_id = Uuid::new_v4();
+    seed_user(&server, owner_id).await;
+    seed_user(&server, other_user_id).await;
+    let private_agent = seed_agent(&server, owner_id).await;
+
+    let res = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Bypass MAF", private_agent)),
+        other_user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        403,
+        "inaccessible agent_id should yield 403, not be silently accepted"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn test_create_maf_unknown_agent_is_403() {
     let server = common::TestServer::start().await;
     let user_id = Uuid::new_v4();
