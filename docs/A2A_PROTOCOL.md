@@ -637,6 +637,26 @@ The spec supports five authentication mechanisms:
 | `openIdConnect` | OpenID Connect discovery |
 | `mutualTls` | Mutual TLS (mTLS) |
 
+### How Spec-Level Auth Works
+
+The spec's auth model is **declarative**, borrowed from OpenAPI — the protocol itself never
+performs authentication or exchanges credentials in-band:
+
+1. **Declaration** — an agent lists the schemes it accepts in its Agent Card's `securitySchemes`
+   field; `securityRequirements` says which of them (with which OAuth scopes) are required.
+2. **Acquisition is out-of-band** — the client obtains credentials (API key, OAuth token, JWT)
+   through a process "outside the scope of the A2A protocol itself", specific to the scheme and
+   identity provider.
+3. **Transmission** — credentials ride on the transport per binding: standard HTTP headers
+   (`Authorization`, etc.) for JSON-RPC/HTTP, metadata for gRPC.
+4. **In-task secondary auth** — a task may transition to `AUTH_REQUIRED` (an interrupted,
+   non-terminal state) when the agent needs *additional* credentials mid-execution, e.g. to reach
+   a downstream system on the user's behalf; the credential flow again happens out-of-band.
+
+Notably, the spec has **no dedicated agent-to-agent identity primitive**: an agent calling
+another agent is just an ordinary A2A client presenting one of the schemes above (mTLS being the
+closest thing to mutual peer identity).
+
 ### Nasiko Security Model
 
 Nasiko does NOT use A2A-level security schemes. Instead:
