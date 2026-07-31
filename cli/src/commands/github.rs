@@ -145,7 +145,7 @@ pub fn clone(repo: Option<&str>, branch: Option<&str>) -> Result<()> {
 
     let result: serde_json::Value = client.post_json(
         "/github/clone",
-        &serde_json::json!({ "repo": chosen, "branch": branch }),
+        &serde_json::json!({ "repository_full_name": chosen, "branch": branch }),
     )?;
     let data = result.get("data").cloned().unwrap_or(result.clone());
 
