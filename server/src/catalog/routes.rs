@@ -397,6 +397,7 @@ async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
 pub(crate) struct AgentDetailResponse {
     id: Uuid,
     name: String,
+    status: String,
     version: String,
     description: String,
     url: String,
@@ -487,6 +488,7 @@ pub(crate) async fn get_one(
     let data = AgentDetailResponse {
         id: agent.id,
         name: agent.name.clone(),
+        status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),
         url: format!("/api/agents/{}", agent.id),
@@ -695,12 +697,18 @@ pub(crate) async fn delete(
         }
     };
 
-    // Collect all non-stopped deployment container names for this agent.
-    // Collect distinct K8s workload names from non-stopped deployment rows.
-    // k8s_deployment_name is the actual workload/container identifier; namespace is
-    // the K8s namespace (e.g. 'nasiko-agents') and must not be used as a container ID.
-    // In Docker OSS, k8s_deployment_name is NULL so no extra entries are added and
-    // teardown falls through to the agent name only.
+    // Every real deploy path keys the running container on the agent's UUID, never the
+    // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
+    // be tried, not just when an `agent_deployments` row happens to confirm it. Relying
+    // solely on that join left agents deployed before this row existed (or never tracked
+    // for any other reason) permanently un-removable: the name-keyed guess below found
+    // nothing, `destroy` no-op'd successfully, and `nasiko rm` reported success while the
+    // real container kept running.
+    //
+    // Collect distinct K8s workload names from non-stopped deployment rows too — for
+    // pre-UUID-keying legacy containers, `k8s_deployment_name` may be the only place the
+    // real identifier was recorded. `name` is kept as a last-resort fallback for
+    // containers created before UUID-keying existed at all.
     let k8s_names: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
          WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
@@ -710,7 +718,7 @@ pub(crate) async fn delete(
     .await
     .unwrap_or_default();
 
-    let mut containers_to_stop: Vec<String> = vec![name.clone()];
+    let mut containers_to_stop: Vec<String> = vec![id.to_string(), name.clone()];
     for kn in k8s_names {
         if !containers_to_stop.contains(&kn) {
             containers_to_stop.push(kn);
