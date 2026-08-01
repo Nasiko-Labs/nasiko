@@ -306,6 +306,16 @@ where
         state.http_client.clone(),
     ));
 
+    // UI pages: the static fallback is gated server-side — unauthenticated
+    // page navigations get a redirect to /login.html instead of the document
+    // (see `auth::require_page_auth`); non-page assets pass through.
+    let ui_pages = Router::new()
+        .fallback(fallback)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_page_auth,
+        ));
+
     Router::new()
         .route("/health", get(health))
         .merge(observability::router())
@@ -320,7 +330,7 @@ where
         .merge(oci_routes)
         .merge(llm_routes)
         .merge(mcp_agent_gateway)
-        .fallback(fallback)
+        .fallback_service(ui_pages)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
 }

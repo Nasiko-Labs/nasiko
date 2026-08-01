@@ -41,6 +41,39 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
     next.run(req).await
 }
 
+/// Server-side gate for UI **page navigations** (the static-asset fallback).
+///
+/// HTML documents (and extensionless paths, which the static handler resolves
+/// to HTML) are only served to callers with a valid session — everyone else
+/// gets a redirect to `/login.html` from the server, so unauthenticated users
+/// never see a page render at all. Subresource assets (js/css/fonts/svg) stay
+/// public: the login page needs them, and they contain no user data.
+pub async fn require_page_auth(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path();
+    if !is_gated_page(path) || validate_bearer(&state, req.headers()).await.is_ok() {
+        return next.run(req).await;
+    }
+    axum::response::Redirect::to("/login.html").into_response()
+}
+
+/// A path is a gated page when it serves an HTML document: explicit `.html`
+/// paths and extensionless paths (`/`, `/app/`, unknown routes → 404 page).
+/// `/login.html` is the one public page — it's the redirect target.
+fn is_gated_page(path: &str) -> bool {
+    if path == "/login.html" {
+        return false;
+    }
+    if path.ends_with(".html") {
+        return true;
+    }
+    let last_segment = path.rsplit('/').next().unwrap_or("");
+    !last_segment.contains('.')
+}
+
 /// The bearer-token validation core of [`require_auth`], extracted so other
 /// mount points that need to accept a bearer token as ONE of several auth
 /// methods (e.g. the OCI registry's Basic-auth-or-bearer mount, see
@@ -134,5 +167,28 @@ impl<S: Send + Sync> FromRequestParts<S> for Claims {
             .get::<Claims>()
             .cloned()
             .ok_or(AuthRejection(StatusCode::UNAUTHORIZED, "not authenticated"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_gated_page;
+
+    #[test]
+    fn gates_html_documents_and_extensionless_paths() {
+        assert!(is_gated_page("/"));
+        assert!(is_gated_page("/index.html"));
+        assert!(is_gated_page("/agents.html"));
+        assert!(is_gated_page("/app/"));
+        assert!(is_gated_page("/unknown-route"));
+    }
+
+    #[test]
+    fn passes_login_page_and_subresource_assets() {
+        assert!(!is_gated_page("/login.html"));
+        assert!(!is_gated_page("/common/global.css"));
+        assert!(!is_gated_page("/navigation.js"));
+        assert!(!is_gated_page("/common/mark-nasiko.svg"));
+        assert!(!is_gated_page("/common/fonts/departure-mono.woff2"));
     }
 }
