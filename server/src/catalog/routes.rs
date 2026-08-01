@@ -448,29 +448,18 @@ pub(crate) async fn get_one(
     claims: Claims,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // Soft-deleted agents must not resolve here: the `(owner_id, name)` uniqueness
-    // constraint is a partial index scoped to `deleted_at IS NULL`
-    // (`agents_owner_name_active_uniq`, oss/migrations/0001_schema.sql) — the schema's
-    // own intent is that a deleted agent's name is free for a fresh row to reuse.
-    // Without this filter, a caller redeploying under a previously-deleted name (e.g.
-    // `nasiko deploy` re-checking "does this name already exist") found the old
-    // deleted row instead of getting a clean "not found", updated it in place, and
-    // left it permanently invisible to `nasiko ps`/`rm` (which do filter deleted_at)
-    // even though its container was genuinely running again.
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
-            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
                 .bind(uuid)
                 .fetch_optional(&state.db)
                 .await
         }
         Err(_) => {
-            sqlx::query_as::<_, Agent>(
-                "SELECT * FROM agents WHERE name = $1 AND deleted_at IS NULL",
-            )
-            .bind(&id)
-            .fetch_optional(&state.db)
-            .await
+            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
+                .bind(&id)
+                .fetch_optional(&state.db)
+                .await
         }
     };
 
@@ -708,18 +697,12 @@ pub(crate) async fn delete(
         }
     };
 
-    // Every real deploy path keys the running container on the agent's UUID, never the
-    // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
-    // be tried, not just when an `agent_deployments` row happens to confirm it. Relying
-    // solely on that join left agents deployed before this row existed (or never tracked
-    // for any other reason) permanently un-removable: the name-keyed guess below found
-    // nothing, `destroy` no-op'd successfully, and `nasiko rm` reported success while the
-    // real container kept running.
-    //
-    // Collect distinct K8s workload names from non-stopped deployment rows too — for
-    // pre-UUID-keying legacy containers, `k8s_deployment_name` may be the only place the
-    // real identifier was recorded. `name` is kept as a last-resort fallback for
-    // containers created before UUID-keying existed at all.
+    // Collect all non-stopped deployment container names for this agent.
+    // Collect distinct K8s workload names from non-stopped deployment rows.
+    // k8s_deployment_name is the actual workload/container identifier; namespace is
+    // the K8s namespace (e.g. 'nasiko-agents') and must not be used as a container ID.
+    // In Docker OSS, k8s_deployment_name is NULL so no extra entries are added and
+    // teardown falls through to the agent name only.
     let k8s_names: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
          WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
@@ -729,7 +712,7 @@ pub(crate) async fn delete(
     .await
     .unwrap_or_default();
 
-    let mut containers_to_stop: Vec<String> = vec![id.to_string(), name.clone()];
+    let mut containers_to_stop: Vec<String> = vec![name.clone()];
     for kn in k8s_names {
         if !containers_to_stop.contains(&kn) {
             containers_to_stop.push(kn);
@@ -1123,7 +1106,17 @@ pub(crate) struct UserSearchResponse {
     showing: usize,
 }
 
-/// Search the user directory. Superuser only — usernames/emails are sensitive (CAT-4).
+/// Search the user directory. The user directory (usernames + emails) is
+/// sensitive (CAT-4), so results are scoped via `AuthService::org_visible_user_ids`
+/// — OSS returns `None` (unrestricted, no org hierarchy to scope by); EE
+/// restricts non-admin callers to their own department/team, same as the MCP
+/// share-target picker (`oss/mcp-gateway`'s `search_share_targets_view`).
+/// An exact username/display-name match bypasses that scope, mirroring
+/// `resolve_share_target`/`departments.rs::resolve`/`teams.rs::resolve` —
+/// a caller who already knows exactly who they're looking for (e.g. a
+/// connector owner sharing outside their own team) can still find them by
+/// typing the full name, they just can't browse/enumerate people outside
+/// their scope via a partial query.
 #[utoipa::path(
     get,
     path = "/api/search/users",
@@ -1132,7 +1125,6 @@ pub(crate) struct UserSearchResponse {
     responses(
         (status = 200, description = "Ranked user search hits (max 50)", body = UserSearchResponse),
         (status = 400, description = "`q` shorter than 2 characters"),
-        (status = 403, description = "Caller is not a superuser"),
     ),
 )]
 pub(crate) async fn search_users(
@@ -1140,19 +1132,22 @@ pub(crate) async fn search_users(
     claims: Claims,
     Query(sq): Query<UserSearchQuery>,
 ) -> impl IntoResponse {
-    // The user directory (usernames + emails) is sensitive — restrict to superusers
-    // (CAT-4). Previously any authenticated caller could enumerate every user's email.
-    if !claims.is_superuser {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-
     let q = sq.q.trim().to_string();
     if q.len() < 2 {
         return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
     }
 
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    let visible_ids: Option<Vec<Uuid>> = state
+        .auth
+        .org_visible_user_ids(&identity)
+        .await
+        .map(|ids| ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect());
+
     // Escaped term + a hard LIMIT so the endpoint can't be turned into a full-table
-    // dump via a wildcard.
+    // dump via a wildcard. The extra AND clause: unrestricted (superuser/admin),
+    // OR in the caller's visible set, OR an exact username/display_name match —
+    // see the doc comment above for why the exact-match escape hatch exists.
     let sql = format!(
         r#"SELECT id, username,
                   COALESCE(display_name, username) AS display_name,
@@ -1166,12 +1161,16 @@ pub(crate) async fn search_users(
                WHERE deleted_at IS NULL
            ) _s
            WHERE score > 0
+             AND ($2::uuid[] IS NULL OR id = ANY($2)
+                  OR lower(username) = lower($3) OR lower(display_name) = lower($3))
            ORDER BY score DESC, username ASC
            LIMIT 50"#
     );
 
     let result = sqlx::query_as::<_, UserSearchResult>(&sql)
         .bind(escape_like(&q))
+        .bind(&visible_ids)
+        .bind(&q)
         .fetch_all(&state.db)
         .await;
 
