@@ -35,5 +35,10 @@ export default {
       await page.selectOption("#category-filter", "finance");
       await page.waitForTimeout(200);
     },
+    "sidebar-collapsed": async (page) => {
+      await page.waitForSelector(".card-name");
+      await page.click("[data-sidebar-toggle]");
+      await page.waitForTimeout(200);
+    },
   },
 };

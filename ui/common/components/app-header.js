@@ -121,11 +121,24 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: var(--space-xs);
       padding: 0 var(--space-sm);
-      margin-bottom: var(--space-xs);
+      margin-bottom: var(--space-md);
       min-height: 36px;
       flex-shrink: 0;
     }
+  }
+
+  .brand-logo-card {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r-10);
+    background: var(--bg-secondary-brand);
+    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
+    flex-shrink: 0;
   }
 
   .brand-link {
@@ -172,27 +185,33 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 28px;
-      height: 28px;
-      border-radius: var(--radius-sm);
+      width: 34px;
+      height: 34px;
+      border-radius: var(--r-10);
       color: var(--color-text-muted);
-      background: transparent;
-      border: none;
+      background: light-dark(var(--cream-50), var(--neutral-800));
+      border: 1px solid var(--border-canvas);
       cursor: pointer;
       flex-shrink: 0;
 
       &:hover {
         color: var(--color-text-main);
-        background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+        background: light-dark(var(--white), var(--neutral-700));
       }
     }
   }
 
-  :scope.is-collapsed .brand-link {
+  :scope.is-collapsed .brand-row {
     @media (min-width: 1024px) {
-      opacity: 0;
-      width: 0;
-      overflow: hidden;
+      flex-direction: column;
+      justify-content: center;
+      gap: var(--s-8);
+    }
+  }
+
+  :scope.is-collapsed .brand-title-text {
+    @media (min-width: 1024px) {
+      display: none;
     }
   }
 
@@ -255,7 +274,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     @media (min-width: 1024px) {
       flex-direction: column;
       overflow-x: visible;
-      gap: var(--s-8);
+      gap: 6px;
       align-items: stretch;
       padding: 0 var(--space-sm);
     }
@@ -310,21 +329,25 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      padding: 10px var(--space-sm);
+      padding: 9px var(--space-sm);
       border-radius: var(--r-10);
-      background: var(--bg-canvas-card);
-      border: 1px solid var(--border-canvas);
-      color: var(--color-text-main);
+      background: light-dark(var(--cream-50), var(--neutral-800));
+      border: 1px solid light-dark(color-mix(in srgb, var(--cream-300) 55%, transparent), var(--neutral-700));
+      color: light-dark(var(--neutral-700), var(--neutral-200));
       font-weight: 500;
+      transition: background-color 0.15s, border-color 0.15s;
 
       &:hover {
         color: var(--color-text-main);
-        background-color: light-dark(var(--cream-100), var(--neutral-700));
+        background-color: light-dark(var(--white), var(--neutral-700));
+        border-color: var(--border-canvas);
       }
 
       &.is-active {
         background-color: var(--bg-secondary-brand);
         border-color: light-dark(var(--yellow-200), var(--yellow-800));
+        color: var(--color-text-main);
+        font-weight: 600;
         &:hover {
           background-color: var(--bg-secondary-brand);
         }
@@ -343,7 +366,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     @media (min-width: 1024px) {
       justify-content: center;
       gap: 0;
-      padding: 10px 0;
+      padding: 9px 0;
     }
   }
 
@@ -410,16 +433,16 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 
     @media (min-width: 1024px) {
       margin-top: auto;
-      padding: var(--space-xs) var(--space-sm);
-      border-top: 1px solid var(--color-border);
+      padding: var(--space-sm) var(--space-sm) 0;
+      border-top: 1px solid var(--border-canvas);
       display: flex;
       flex-direction: column;
       align-items: stretch;
       align-self: stretch;
       --user-btn-w: 100%;
-      --user-btn-h: 44px;
+      --user-btn-h: 52px;
       --user-btn-justify: flex-start;
-      --user-btn-padding: 0 var(--space-sm);
+      --user-btn-padding: 0 var(--space-xs);
       --user-dropdown-top: auto;
       --user-dropdown-bottom: calc(100% + var(--space-xs));
       --user-dropdown-right: auto;
@@ -430,6 +453,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   :scope.is-collapsed .user {
     @media (min-width: 1024px) {
       --user-name-display: none;
+      --user-btn-justify: center;
+      --user-btn-padding: 0;
     }
   }
 
@@ -648,7 +673,10 @@ export class AppHeader extends HTMLElement {
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
       <header class="bar" role="banner">
         <div class="brand-row">
-          ${brandTitle ? `<a href="${this.#esc(brandUrl)}" class="brand-link"><img class="brand-mark" src="/common/mark-nasiko.svg" alt="" width="20" height="20" />${this.#esc(brandTitle)}</a>` : ""}
+          <a href="${this.#esc(brandUrl)}" class="brand-link" title="${this.#esc(brandTitle || "Nasiko")}">
+            <span class="brand-logo-card"><img class="brand-mark" src="/common/mark-nasiko.svg" alt="" width="20" height="20" /></span>
+            ${brandTitle ? `<span class="brand-title-text">${this.#esc(brandTitle)}</span>` : ""}
+          </a>
           <button class="sidebar-toggle" data-sidebar-toggle
             aria-label="Toggle sidebar" type="button">
             ${icons.panelLeft("", 18)}

@@ -36,7 +36,24 @@ styles.replaceSync(`@scope (app-user-menu) {
 
       @media (min-width: 1024px) {
         gap: var(--space-sm);
-        & svg:last-child { display: var(--user-name-display, block); margin-left: auto; flex-shrink: 0; }
+        border: 1px solid transparent;
+        border-radius: var(--r-10);
+        &:hover {
+          border-color: transparent;
+          background: light-dark(var(--cream-50), var(--neutral-800));
+          box-shadow: none;
+        }
+        &:active, &.is-open {
+          border-color: var(--border-canvas);
+          background: light-dark(var(--cream-50), var(--neutral-800));
+          box-shadow: none;
+        }
+        & svg:last-child {
+          display: var(--user-name-display, block);
+          margin-left: auto;
+          flex-shrink: 0;
+          color: var(--color-text-muted);
+        }
       }
     }
     .user-avatar {
@@ -52,26 +69,40 @@ styles.replaceSync(`@scope (app-user-menu) {
       font-size: var(--font-size-sm);
 
       @media (min-width: 1024px) {
-        width: 28px;
-        height: 28px;
+        width: 34px;
+        height: 34px;
         flex-shrink: 0;
-        border-radius: var(--radius-sm);
+        border-radius: var(--radius-full, 50%);
+      }
+    }
+    .user-info {
+      display: none;
+      @media (min-width: 1024px) {
+        display: var(--user-name-display, flex);
+        flex-direction: column;
+        justify-content: center;
+        gap: 1px;
+        flex: 1;
+        min-width: 0;
+        text-align: left;
       }
     }
     .user-name {
-      display: none;
-      @media (min-width: 1024px) {
-        display: var(--user-name-display, block);
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: var(--font-size-sm);
-        font-weight: 500;
-        color: var(--color-text-main);
-        text-align: left;
-      }
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: var(--font-size-sm);
+      font-weight: 600;
+      line-height: 1.2;
+      color: var(--color-text-main);
+    }
+    .user-email {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: var(--font-size-xs);
+      line-height: 1.2;
+      color: var(--color-text-muted);
     }
     .user-dropdown {
       position: absolute;
@@ -216,14 +247,18 @@ export class AppUserMenu extends HTMLElement {
   #render() {
     const currentUser = this.getAttribute('current-user');
     const initial = currentUser ? currentUser.charAt(0).toUpperCase() : 'U';
+    const email = this.#users.find(u => u.username === currentUser)?.email || '';
     const eff = window.location.pathname.replace(/^\/u\/[^/]+/, '') || '/';
 
     this.innerHTML = `
       <button class="user-button" data-user-toggle type="button"
         aria-label="User menu${currentUser ? ` — ${currentUser}` : ''}">
         <div class="user-avatar">${initial}</div>
-        <span class="user-name">${currentUser || ''}</span>
-        ${icons.chevronDownSmall()}
+        <span class="user-info">
+          <span class="user-name">${currentUser || ''}</span>
+          ${email ? `<span class="user-email">${email}</span>` : ''}
+        </span>
+        ${icons.moreVertical('', 16)}
       </button>
       <div class="user-dropdown" data-user-dropdown>
         <div class="dropdown-header">
