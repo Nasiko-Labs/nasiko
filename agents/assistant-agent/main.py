@@ -8,6 +8,24 @@ from collections.abc import AsyncIterator
 import click
 import httpx
 import uvicorn
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Instrumentation must initialize before a2a-sdk (and anything it imports,
+# e.g. Starlette) is imported below: OTel's Starlette instrumentor patches by
+# rebinding `starlette.applications.Starlette` to an instrumented subclass, so
+# any module that already did `from starlette.applications import Starlette`
+# keeps its original, un-instrumented reference forever — no incoming
+# traceparent gets extracted, and every request starts an orphan root trace
+# instead of joining the platform's session trace.
+try:  # OTel bootstrap — telemetry.py must ship alongside main.py
+    from telemetry import init_telemetry
+
+    init_telemetry()
+except ImportError:
+    logger.warning("telemetry.py not found — OTel telemetry disabled")
+
 from a2a.helpers import (
     new_task_from_user_message,
     new_text_artifact_update_event,
@@ -27,9 +45,6 @@ from a2a.types import (
 )
 from openai import AsyncOpenAI
 from starlette.applications import Starlette
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 DISCOVERY_URL = os.environ.get("A2A_DISCOVERY_URL", "")
 

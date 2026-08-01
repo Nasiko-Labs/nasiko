@@ -402,26 +402,6 @@ pub async fn execute_build(
             return Err("no Dockerfile found in source".into());
         }
 
-        // Patch Dockerfile to inject OTel auto-instrumentation (zero-code change for the agent).
-        let original = tokio::fs::read_to_string(&dockerfile_path)
-            .await
-            .map_err(|e| format!("read Dockerfile: {e}"))?;
-        let patched = nasiko_observability::patch_dockerfile_for_otel(&original);
-        if patched != original {
-            tokio::fs::write(&dockerfile_path, &patched)
-                .await
-                .map_err(|e| format!("write patched Dockerfile: {e}"))?;
-            tracing::info!(build_id = %build_id, "patched Dockerfile with OTel instrumentation");
-
-            // Write the Python sitecustomize file into the build context so the
-            // COPY instruction in the patched Dockerfile can include it in the image.
-            // This file wraps AgentExecutor.execute() to set session.id on every
-            // request span — the key attribute for session grouping in the dashboard.
-            nasiko_observability::write_otel_patch_file(&tmp_dir)
-                .map_err(|e| format!("write OTel patch file to build context: {e}"))?;
-            tracing::info!(build_id = %build_id, "wrote .nasiko_otel_patch.py to build context");
-        }
-
         // Build image
         let tar_bytes =
             crate::build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;

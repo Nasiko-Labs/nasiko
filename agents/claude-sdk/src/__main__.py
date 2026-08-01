@@ -1,22 +1,33 @@
 import logging
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+
+# Instrumentation must initialize before a2a-sdk (and anything it imports,
+# e.g. Starlette) is imported below: OTel's Starlette instrumentor patches by
+# rebinding `starlette.applications.Starlette` to an instrumented subclass, so
+# any module that already did `from starlette.applications import Starlette`
+# keeps its original, un-instrumented reference forever — no incoming
+# traceparent gets extracted, and every request starts an orphan root trace
+# instead of joining the platform's session trace.
+from telemetry import init_telemetry
+
+init_telemetry()
+
 import click
 import uvicorn
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
-from dotenv import load_dotenv
-from telemetry import init_telemetry
 from starlette.middleware.cors import CORSMiddleware
 
 from agent import SynthesizerAgent
 from agent_executor import SynthesizerAgentExecutor
 
-load_dotenv()
-logging.basicConfig(level=logging.INFO)
-init_telemetry("synthesizer")
 logger = logging.getLogger(__name__)
 
 

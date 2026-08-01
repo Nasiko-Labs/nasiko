@@ -1006,10 +1006,12 @@ impl ObservabilityService {
             .map(|s| s.to_lowercase())
             .unwrap_or_else(|| span_kind_str(span.kind).to_lowercase());
 
-        // Input: prefer span attribute "input.value", fallback to Loki content
+        // Input: prefer span attributes — OpenInference "input.value", then the
+        // GenAI semconv "gen_ai.input.messages" — falling back to Loki content.
         let input_value = span
             .attributes
             .get("input.value")
+            .or_else(|| span.attributes.get("gen_ai.input.messages"))
             .and_then(|v| v.as_str())
             .map(String::from)
             .or_else(|| details.input_content.clone())
@@ -1025,10 +1027,11 @@ impl ObservabilityService {
                 .to_string()
         };
 
-        // Output: prefer span attribute "output.value", fallback to Loki content
+        // Output: same precedence as input — OpenInference, GenAI semconv, Loki.
         let output_value = span
             .attributes
             .get("output.value")
+            .or_else(|| span.attributes.get("gen_ai.output.messages"))
             .and_then(|v| v.as_str())
             .map(String::from)
             .or_else(|| details.output_content.clone())

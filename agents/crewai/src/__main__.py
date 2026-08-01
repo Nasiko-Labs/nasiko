@@ -7,6 +7,23 @@ and starts the server to handle incoming requests.
 import logging
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+
+# Instrumentation must initialize before a2a-sdk (and anything it imports,
+# e.g. Starlette) is imported below: OTel's Starlette instrumentor patches by
+# rebinding `starlette.applications.Starlette` to an instrumented subclass, so
+# any module that already did `from starlette.applications import Starlette`
+# keeps its original, un-instrumented reference forever — no incoming
+# traceparent gets extracted, and every request starts an orphan root trace
+# instead of joining the platform's session trace.
+from telemetry import init_telemetry
+
+init_telemetry()
+
 import click
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -18,14 +35,8 @@ from a2a.types import (
 )
 from agent import ImageGenerationAgent
 from agent_executor import ImageGenerationAgentExecutor
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from telemetry import init_telemetry
 
-load_dotenv()
-
-logging.basicConfig(level=logging.INFO)
-init_telemetry("crewai")
 logger = logging.getLogger(__name__)
 
 

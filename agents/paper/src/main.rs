@@ -27,9 +27,12 @@ impl PaperAgent {
 
     #[tracing::instrument(name = "ChatCompletion", skip_all, fields(
         gen_ai.operation.name = "chat",
+        gen_ai.provider.name = "openai",
         gen_ai.request.model = %self.model,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.input.messages = tracing::field::Empty,
+        gen_ai.output.messages = tracing::field::Empty,
     ))]
     async fn chat(
         &self,
@@ -44,6 +47,13 @@ impl PaperAgent {
         if let Some(cx) = parent_cx {
             use tracing_opentelemetry::OpenTelemetrySpanExt as _;
             tracing::Span::current().set_parent(cx.clone());
+        }
+        let capture = telemetry::capture_content();
+        if capture {
+            tracing::Span::current().record(
+                "gen_ai.input.messages",
+                telemetry::genai_input_messages(messages).to_string().as_str(),
+            );
         }
         let mut body = serde_json::json!({
             "model": self.model,
@@ -85,6 +95,19 @@ impl PaperAgent {
             }
         }
 
+        if capture {
+            let msg = &response["choices"][0]["message"];
+            let text = msg["content"].as_str().unwrap_or("");
+            let tool_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
+            let finish_reason = if tool_calls.is_empty() { "stop" } else { "tool_call" };
+            tracing::Span::current().record(
+                "gen_ai.output.messages",
+                telemetry::genai_output_message(text, &tool_calls, finish_reason)
+                    .to_string()
+                    .as_str(),
+            );
+        }
+
         Ok(response)
     }
 }
@@ -100,11 +123,6 @@ impl AgentExecutor for PaperAgent {
             .get("traceparent")
             .and_then(|v| v.first())
             .and_then(|tp| telemetry::remote_context_from_traceparent(tp));
-        let span = tracing::info_span!("a2a.execute", otel.kind = "server");
-        if let Some(ref cx) = remote_cx {
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            span.set_parent(cx.clone());
-        }
 
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
@@ -124,10 +142,40 @@ impl AgentExecutor for PaperAgent {
             })
             .unwrap_or_default();
 
+        // GenAI agent-span semconv: the A2A request/response is the agent
+        // invocation, so record it as invoke_agent with the exchanged messages
+        // (content gated by the platform capture flag). `session.id` lets the
+        // control plane find this trace by A2A contextId directly in Tempo.
+        let agent_name = std::env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
+        let span = tracing::info_span!(
+            "a2a.execute",
+            otel.kind = "server",
+            gen_ai.operation.name = "invoke_agent",
+            gen_ai.agent.name = %agent_name,
+            session.id = %context_id,
+            gen_ai.input.messages = tracing::field::Empty,
+            gen_ai.output.messages = tracing::field::Empty,
+        );
+        if let Some(ref cx) = remote_cx {
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            span.set_parent(cx.clone());
+        }
+        let capture = telemetry::capture_content();
+        if capture && !user_text.is_empty() {
+            span.record(
+                "gen_ai.input.messages",
+                telemetry::genai_text_message("user", &user_text)
+                    .to_string()
+                    .as_str(),
+            );
+        }
+
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let base_url = self.base_url.clone();
         let http = self.http.clone();
+        let record_span = span.clone();
 
         let stream = async_stream::stream! {
             yield Ok(status_working(&task_id, &context_id, None));
@@ -231,6 +279,14 @@ Rules:\n\
                 metadata: None,
             }));
 
+            if capture && !final_text.is_empty() {
+                record_span.record(
+                    "gen_ai.output.messages",
+                    telemetry::genai_text_message("assistant", &final_text)
+                        .to_string()
+                        .as_str(),
+                );
+            }
             yield Ok(status_completed(&task_id, &context_id));
         };
 

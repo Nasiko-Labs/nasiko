@@ -5,10 +5,8 @@ Import and call `init_telemetry()` at agent startup to auto-instrument:
 - LLM calls (openai, anthropic — via GenAI semantic conventions)
 - A2A server spans (incoming requests)
 
-All traces are exported to the OTLP endpoint configured by
-OTEL_EXPORTER_OTLP_ENDPOINT (injected by CP during agent deploy).
-
-If no endpoint is set, telemetry is silently disabled (no-op).
+Propagation (traceparent header) is ALWAYS enabled — required for CP flow tracking.
+Export to a collector is optional (OTEL_EXPORTER_OTLP_ENDPOINT).
 """
 
 import os
@@ -20,29 +18,20 @@ _initialized = False
 
 
 def init_telemetry(service_name: str | None = None) -> None:
-    """Initialize OpenTelemetry tracing + metrics. Safe to call multiple times."""
+    """Initialize OpenTelemetry tracing + propagation. Safe to call multiple times."""
     global _initialized
     if _initialized:
         return
     _initialized = True
 
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if not endpoint:
-        logger.debug("OTEL_EXPORTER_OTLP_ENDPOINT not set — telemetry disabled")
-        return
-
     try:
         from opentelemetry import trace, metrics
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.metrics import MeterProvider
-        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
         from opentelemetry.sdk.resources import Resource
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
         from opentelemetry.propagate import set_global_textmap
         from opentelemetry.propagators.composite import CompositePropagator
-        from opentelemetry.trace.propagation import TraceContextTextMapPropagator
+        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
     except ImportError:
         logger.warning("opentelemetry SDK not installed — telemetry disabled")
         return
@@ -50,28 +39,36 @@ def init_telemetry(service_name: str | None = None) -> None:
     name = service_name or os.environ.get("OTEL_SERVICE_NAME", "nasiko-agent")
     resource = Resource.create({"service.name": name})
 
-    # Traces
-    tracer_provider = TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, insecure=True))
-    )
-    trace.set_tracer_provider(tracer_provider)
-
-    # Metrics
-    metric_reader = PeriodicExportingMetricReader(
-        OTLPMetricExporter(endpoint=endpoint, insecure=True),
-        export_interval_millis=10000,
-    )
-    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
-    metrics.set_meter_provider(meter_provider)
-
-    # Propagation (W3C TraceContext so CP flow spans become parents)
+    # Propagation — ALWAYS enabled (required for flow tracking via traceparent)
     set_global_textmap(CompositePropagator([TraceContextTextMapPropagator()]))
 
-    # Auto-instrument common libraries
+    # TracerProvider — always set so instrumented HTTP clients propagate context
+    tracer_provider = TracerProvider(resource=resource)
+
+    # Export — only if endpoint configured
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if endpoint:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+
+        tracer_provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, insecure=True))
+        )
+
+        metric_reader = PeriodicExportingMetricReader(
+            OTLPMetricExporter(endpoint=endpoint, insecure=True),
+            export_interval_millis=10000,
+        )
+        metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[metric_reader]))
+
+    trace.set_tracer_provider(tracer_provider)
+
+    # Auto-instrument HTTP clients (propagates traceparent on all outbound calls)
     _auto_instrument()
 
-    logger.info(f"OTel telemetry initialized → {endpoint}")
+    logger.info(f"OTel telemetry initialized (export={'enabled → ' + endpoint if endpoint else 'disabled'})")
 
 
 def _auto_instrument():
@@ -80,8 +77,15 @@ def _auto_instrument():
     _try_instrument("opentelemetry.instrumentation.requests", "RequestsInstrumentor")
     _try_instrument("opentelemetry.instrumentation.logging", "LoggingInstrumentor")
     _try_instrument("opentelemetry.instrumentation.starlette", "StarletteInstrumentor")
+    # LLM clients — GenAI semconv spans (gen_ai.usage.*, gen_ai.request.model,
+    # and gen_ai.input/output.messages when content capture is enabled).
+    # opentelemetry.instrumentation.openai_v2 is the official OTel package;
+    # the un-suffixed openai module is Traceloop's, kept as a fallback.
+    _try_instrument("opentelemetry.instrumentation.openai_v2", "OpenAIInstrumentor")
     _try_instrument("opentelemetry.instrumentation.openai", "OpenAIInstrumentor")
     _try_instrument("opentelemetry.instrumentation.anthropic", "AnthropicInstrumentor")
+    # Framework spans — Traceloop's LangChain instrumentor (covers LangGraph too).
+    _try_instrument("opentelemetry.instrumentation.langchain", "LangchainInstrumentor")
 
 
 def _try_instrument(module_path: str, class_name: str):

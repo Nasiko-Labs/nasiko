@@ -5,9 +5,12 @@ description = "Orchestrating A2A agent — discovers peers via the platform regi
 requires-python = ">=3.12"
 dependencies = [
     "a2a-sdk[http-server]==1.1.0",
-    "starlette==1.3.1",
+    "starlette==1.2.0",
     "uvicorn==0.48.0",
     "click==8.4.1",
     "httpx==0.28.1",
     "openai==1.82.0",
+    "opentelemetry-distro>=0.46b0",
+    "opentelemetry-exporter-otlp>=1.25.0",
+    "opentelemetry-instrumentation-openai-v2>=2.0b0",
 ]

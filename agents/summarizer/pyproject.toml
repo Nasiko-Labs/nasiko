@@ -1,7 +1,7 @@
 [project]
 name = "summarizer-agent"
 version = "1.0.0"
-description = "Text summarizer agent — zero OTel code (instrumented by Nasiko at build time)"
+description = "Text summarizer agent — summarizes text into bullet points or paragraphs"
 requires-python = ">=3.12"
 dependencies = [
     "a2a-sdk[http-server]==1.1.1",
@@ -9,6 +9,9 @@ dependencies = [
     "openai>=1.57.0",
     "python-dotenv>=1.0.0",
     "uvicorn>=0.30.0",
+    "opentelemetry-distro>=0.46b0",
+    "opentelemetry-exporter-otlp>=1.25.0",
+    "opentelemetry-instrumentation-openai-v2>=2.0b0",
 ]
 
 [build-system]

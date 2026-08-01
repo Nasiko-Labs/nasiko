@@ -92,7 +92,11 @@ def _auto_instrument():
     _try_instrument("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor")
     _try_instrument("opentelemetry.instrumentation.requests", "RequestsInstrumentor")
     _try_instrument("opentelemetry.instrumentation.logging", "LoggingInstrumentor")
-    # LLM clients — emit gen_ai.usage.input_tokens / output_tokens / request.model
+    # LLM clients — GenAI semconv spans (gen_ai.usage.*, gen_ai.request.model,
+    # and gen_ai.input/output.messages when content capture is enabled).
+    # opentelemetry.instrumentation.openai_v2 is the official OTel package;
+    # the un-suffixed openai module is Traceloop's, kept as a fallback.
+    _try_instrument("opentelemetry.instrumentation.openai_v2", "OpenAIInstrumentor")
     _try_instrument("opentelemetry.instrumentation.openai", "OpenAIInstrumentor")
     _try_instrument("opentelemetry.instrumentation.anthropic", "AnthropicInstrumentor")
 

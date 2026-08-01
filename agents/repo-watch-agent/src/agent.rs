@@ -91,6 +91,7 @@ impl RepoWatchAgent {
         let mut history: Vec<Message> = Vec::new();
         let mut prompt = Message::user(prompt_text);
         let mut final_text = String::new();
+        let capture = telemetry::capture_content();
 
         for _ in 0..MAX_TOOL_TURNS {
             let req = model
@@ -100,7 +101,9 @@ impl RepoWatchAgent {
                 .tools(tool_defs.clone())
                 .temperature(COMPLETION_TEMPERATURE);
 
-            let response = send_completion(req, &self.model, remote_cx).await?;
+            let input_json = capture.then(|| openai_format_messages(&system, &history, &prompt));
+            let response =
+                send_completion(req, &self.model, remote_cx, input_json.as_deref()).await?;
 
             let mut text_parts = Vec::new();
             let mut tool_calls = Vec::new();
@@ -174,13 +177,15 @@ impl RepoWatchAgent {
                 "Tool calls are no longer available. Answer the original question now, \
                  using only the information already gathered above. Respond with plain text only.",
             );
+            let input_json = capture.then(|| openai_format_messages(&system, &history, &nudge));
             let req = model
-                .completion_request(nudge)
+                .completion_request(nudge.clone())
                 .preamble(system.clone())
                 .messages(history.clone())
                 .temperature(COMPLETION_TEMPERATURE);
 
-            let response = send_completion(req, &self.model, remote_cx).await?;
+            let response =
+                send_completion(req, &self.model, remote_cx, input_json.as_deref()).await?;
             final_text = strip_tool_markup(&assistant_text(&response));
         }
 
@@ -212,21 +217,46 @@ impl AgentExecutor for RepoWatchAgent {
             .get("traceparent")
             .and_then(|v| v.first())
             .and_then(|tp| telemetry::remote_context_from_traceparent(tp));
-        let span = tracing::info_span!("a2a.execute", otel.kind = "server");
-        if let Some(ref cx) = remote_cx {
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            span.set_parent(cx.clone());
-        }
 
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
         let user_text = extract_user_text(&ctx);
+
+        // GenAI agent-span semconv: the A2A request/response is the agent invocation, so
+        // record it as invoke_agent with the exchanged messages (content gated by the
+        // platform capture flag). `session.id` lets the control plane find this trace by
+        // A2A contextId directly in Tempo.
+        let agent_name =
+            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
+        let span = tracing::info_span!(
+            "a2a.execute",
+            otel.kind = "server",
+            gen_ai.operation.name = "invoke_agent",
+            gen_ai.agent.name = %agent_name,
+            session.id = %context_id,
+            gen_ai.input.messages = tracing::field::Empty,
+            gen_ai.output.messages = tracing::field::Empty,
+        );
+        if let Some(ref cx) = remote_cx {
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            span.set_parent(cx.clone());
+        }
+        let capture = telemetry::capture_content();
+        if capture && !user_text.is_empty() {
+            span.record(
+                "gen_ai.input.messages",
+                telemetry::genai_text_message("user", &user_text)
+                    .to_string()
+                    .as_str(),
+            );
+        }
         // Decide delivery from the request in code, not via an LLM tool call: a model that
         // ends its turn with the digest as plain text (as DeepSeek does) would end the tool
         // loop before ever calling a notify tool, silently dropping the request. Detecting the
         // intent here and posting deterministically after the digest mirrors the scheduler.
         let wants_slack = mentions_slack(&user_text);
         let agent = self.clone();
+        let record_span = span.clone();
 
         let stream = async_stream::stream! {
             yield Ok(status_working(&task_id, &context_id, None));
@@ -255,6 +285,14 @@ impl AgentExecutor for RepoWatchAgent {
                                     digest_text
                                 };
                                 yield Ok(artifact_event(&task_id, &context_id, &reply));
+                                if capture && !reply.is_empty() {
+                                    record_span.record(
+                                        "gen_ai.output.messages",
+                                        telemetry::genai_text_message("assistant", &reply)
+                                            .to_string()
+                                            .as_str(),
+                                    );
+                                }
                                 yield Ok(status_completed(&task_id, &context_id));
                             }
                             Err(e) => yield Ok(status_failed(&task_id, &context_id, &e)),
@@ -381,17 +419,23 @@ You MUST use tools for every claim; never answer from memory."
 }
 
 /// Sends one completion request, joining the caller's trace and recording GenAI token usage on
-/// the span so the platform's cost dashboards see it.
+/// the span so the platform's cost dashboards see it. When `input_messages` is `Some` (the
+/// caller checked the platform capture flag), the exchanged messages are recorded on the span
+/// per the GenAI semconv (`gen_ai.input.messages` / `gen_ai.output.messages`).
 #[tracing::instrument(name = "ChatCompletion", skip_all, fields(
     gen_ai.operation.name = "chat",
+    gen_ai.provider.name = "openai",
     gen_ai.request.model = %model_name,
     gen_ai.usage.input_tokens = tracing::field::Empty,
     gen_ai.usage.output_tokens = tracing::field::Empty,
+    gen_ai.input.messages = tracing::field::Empty,
+    gen_ai.output.messages = tracing::field::Empty,
 ))]
 async fn send_completion(
     req: CompletionRequestBuilder<openai::CompletionModel>,
     model_name: &str,
     parent_cx: Option<&opentelemetry::Context>,
+    input_messages: Option<&[serde_json::Value]>,
 ) -> Result<CompletionResponse<openai::CompletionResponse>, String> {
     // The remote parent must be set on THIS span explicitly: contextual inheritance from
     // a2a.execute strands the span in an orphan trace — tracing-opentelemetry children inherit
@@ -399,6 +443,14 @@ async fn send_completion(
     if let Some(cx) = parent_cx {
         use tracing_opentelemetry::OpenTelemetrySpanExt as _;
         tracing::Span::current().set_parent(cx.clone());
+    }
+    if let Some(messages) = input_messages {
+        tracing::Span::current().record(
+            "gen_ai.input.messages",
+            telemetry::genai_input_messages(messages)
+                .to_string()
+                .as_str(),
+        );
     }
 
     let response = req
@@ -415,7 +467,105 @@ async fn send_completion(
         );
     }
 
+    if input_messages.is_some() {
+        let mut text_parts = Vec::new();
+        let mut calls_json = Vec::new();
+        for content in response.choice.iter() {
+            match content {
+                AssistantContent::Text(t) => text_parts.push(t.text.clone()),
+                AssistantContent::ToolCall(tc) => calls_json.push(serde_json::json!({
+                    "id": tc.id,
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments.to_string()},
+                })),
+                AssistantContent::Reasoning(_) | AssistantContent::Image(_) => {}
+            }
+        }
+        let finish_reason = if calls_json.is_empty() {
+            "stop"
+        } else {
+            "tool_call"
+        };
+        tracing::Span::current().record(
+            "gen_ai.output.messages",
+            telemetry::genai_output_message(&text_parts.join("\n"), &calls_json, finish_reason)
+                .to_string()
+                .as_str(),
+        );
+    }
+
     Ok(response)
+}
+
+/// Convert the rig conversation (preamble + history + current prompt) into OpenAI-format chat
+/// messages — the shape `telemetry::genai_input_messages` expects — for span content capture.
+/// Non-text content (images, audio, documents) is skipped: this agent is text-only.
+fn openai_format_messages(
+    preamble: &str,
+    history: &[Message],
+    prompt: &Message,
+) -> Vec<serde_json::Value> {
+    let mut out = vec![serde_json::json!({"role": "system", "content": preamble})];
+    for msg in history.iter().chain(std::iter::once(prompt)) {
+        match msg {
+            Message::System { content } => {
+                out.push(serde_json::json!({"role": "system", "content": content}));
+            }
+            Message::User { content } => {
+                for item in content.iter() {
+                    match item {
+                        UserContent::Text(t) => {
+                            out.push(serde_json::json!({"role": "user", "content": t.text}));
+                        }
+                        UserContent::ToolResult(tr) => {
+                            let text = tr
+                                .content
+                                .iter()
+                                .filter_map(|c| match c {
+                                    ToolResultContent::Text(t) => Some(t.text.as_str()),
+                                    ToolResultContent::Image(_) => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            out.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tr.id,
+                                "content": text,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Message::Assistant { content, .. } => {
+                let mut text_parts = Vec::new();
+                let mut tool_calls = Vec::new();
+                for item in content.iter() {
+                    match item {
+                        AssistantContent::Text(t) => text_parts.push(t.text.clone()),
+                        AssistantContent::ToolCall(tc) => {
+                            tool_calls.push(serde_json::json!({
+                                "id": tc.id,
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments.to_string(),
+                                },
+                            }));
+                        }
+                        AssistantContent::Reasoning(_) | AssistantContent::Image(_) => {}
+                    }
+                }
+                let mut msg = serde_json::json!({
+                    "role": "assistant",
+                    "content": text_parts.join("\n"),
+                });
+                if !tool_calls.is_empty() {
+                    msg["tool_calls"] = serde_json::Value::Array(tool_calls);
+                }
+                out.push(msg);
+            }
+        }
+    }
+    out
 }
 
 /// Concatenates the text parts of the incoming A2A message (ignoring non-text parts).

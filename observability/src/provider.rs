@@ -423,6 +423,23 @@ impl ObservabilityProvider for TempoLokiProvider {
                 .cost(trace_model.as_deref(), trace_input, trace_output)
                 .await;
 
+            // Content precedence: Loki events, then GenAI semconv span attributes
+            // recorded directly on the root span (gen_ai.input/output.messages).
+            let attr_content = |key: &str| {
+                root_span
+                    .attributes
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            };
+            let input_content = content
+                .as_ref()
+                .and_then(|c| c.input.clone())
+                .or_else(|| attr_content("gen_ai.input.messages"));
+            let output_content = content
+                .and_then(|c| c.output)
+                .or_else(|| attr_content("gen_ai.output.messages"));
+
             traces.push(TraceSummary {
                 trace_id: trace_id.clone(),
                 root_span,
@@ -431,8 +448,8 @@ impl ObservabilityProvider for TempoLokiProvider {
                 model_used: trace_model,
                 duration_ms,
                 cost,
-                input_content: content.as_ref().and_then(|c| c.input.clone()),
-                output_content: content.and_then(|c| c.output),
+                input_content,
+                output_content,
             });
         }
 

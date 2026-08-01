@@ -75,13 +75,23 @@ impl InfraAgent {
             let chat_span = tracing::info_span!(
                 "ChatCompletion",
                 gen_ai.operation.name = "chat",
+                gen_ai.provider.name = "openai",
                 gen_ai.request.model = %model,
                 gen_ai.usage.input_tokens = tracing::field::Empty,
                 gen_ai.usage.output_tokens = tracing::field::Empty,
+                gen_ai.input.messages = tracing::field::Empty,
+                gen_ai.output.messages = tracing::field::Empty,
             );
             if let Some(cx) = parent_cx {
                 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
                 chat_span.set_parent(cx);
+            }
+            let capture = telemetry::capture_content();
+            if capture {
+                chat_span.record(
+                    "gen_ai.input.messages",
+                    telemetry::genai_input_messages(&messages).to_string().as_str(),
+                );
             }
 
             let body = serde_json::json!({
@@ -117,6 +127,7 @@ impl InfraAgent {
             let mut byte_stream = resp.bytes_stream();
             let mut buf = String::new();
             let mut tool_calls: Vec<ToolCallBuilder> = Vec::new();
+            let mut full_content = String::new();
 
             while let Some(chunk) = byte_stream.next().await {
                 let chunk = match chunk {
@@ -166,6 +177,7 @@ impl InfraAgent {
                     if let Some(content) = delta["content"].as_str()
                         && !content.is_empty()
                     {
+                        full_content.push_str(content);
                         yield ChatEvent::Content(content.to_string());
                     }
 
@@ -189,6 +201,24 @@ impl InfraAgent {
                 }
             }
 
+            if capture {
+                let calls_json: Vec<serde_json::Value> = tool_calls
+                    .iter()
+                    .filter(|tc| !tc.name.is_empty())
+                    .map(|tc| serde_json::json!({
+                        "id": tc.id,
+                        "function": {"name": tc.name, "arguments": tc.arguments},
+                    }))
+                    .collect();
+                let finish_reason = if calls_json.is_empty() { "stop" } else { "tool_call" };
+                chat_span.record(
+                    "gen_ai.output.messages",
+                    telemetry::genai_output_message(&full_content, &calls_json, finish_reason)
+                        .to_string()
+                        .as_str(),
+                );
+            }
+
             yield ChatEvent::Done { tool_calls };
         }
     }
@@ -205,11 +235,6 @@ impl AgentExecutor for InfraAgent {
             .get("traceparent")
             .and_then(|v| v.first())
             .and_then(|tp| telemetry::remote_context_from_traceparent(tp));
-        let span = tracing::info_span!("a2a.execute", otel.kind = "server");
-        if let Some(ref cx) = remote_cx {
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            span.set_parent(cx.clone());
-        }
 
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
@@ -229,10 +254,40 @@ impl AgentExecutor for InfraAgent {
             })
             .unwrap_or_default();
 
+        // GenAI agent-span semconv: the A2A request/response is the agent
+        // invocation, so record it as invoke_agent with the exchanged messages
+        // (content gated by the platform capture flag). `session.id` lets the
+        // control plane find this trace by A2A contextId directly in Tempo.
+        let agent_name = std::env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
+        let span = tracing::info_span!(
+            "a2a.execute",
+            otel.kind = "server",
+            gen_ai.operation.name = "invoke_agent",
+            gen_ai.agent.name = %agent_name,
+            session.id = %context_id,
+            gen_ai.input.messages = tracing::field::Empty,
+            gen_ai.output.messages = tracing::field::Empty,
+        );
+        if let Some(ref cx) = remote_cx {
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            span.set_parent(cx.clone());
+        }
+        let capture = telemetry::capture_content();
+        if capture && !user_text.is_empty() {
+            span.record(
+                "gen_ai.input.messages",
+                telemetry::genai_text_message("user", &user_text)
+                    .to_string()
+                    .as_str(),
+            );
+        }
+
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let base_url = self.base_url.clone();
         let http = self.http.clone();
+        let record_span = span.clone();
 
         let stream = async_stream::stream! {
             yield Ok(status_working(&task_id, &context_id, None));
@@ -263,6 +318,13 @@ Rules:\n\
 
             let artifact_id = new_artifact_id();
             let mut streamed_any = false;
+            // Accumulated across every round (not just the final one) so it
+            // matches exactly what was streamed to the caller as artifact
+            // text. Recorded on `record_span` *before* the terminal
+            // status_completed event below, not after: once that event is
+            // yielded, the A2A proxy forwards it and stops polling this
+            // generator, so anything after the yield never runs.
+            let mut full_text = String::new();
 
             'rounds: for _ in 0..6 {
                 let mut round_content = String::new();
@@ -273,6 +335,7 @@ Rules:\n\
                     match event {
                         ChatEvent::Content(delta) => {
                             round_content.push_str(&delta);
+                            full_text.push_str(&delta);
                             yield Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
                                 task_id: task_id.clone(),
                                 context_id: context_id.clone(),
@@ -359,6 +422,14 @@ Rules:\n\
                 }));
             }
 
+            if capture && !full_text.is_empty() {
+                record_span.record(
+                    "gen_ai.output.messages",
+                    telemetry::genai_text_message("assistant", &full_text)
+                        .to_string()
+                        .as_str(),
+                );
+            }
             yield Ok(status_completed(&task_id, &context_id));
         };
 

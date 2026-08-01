@@ -23,10 +23,10 @@ fn inject(ctx: AgentContext) -> HashMap<String, String> {
     env_vars
 }
 
-// ─── All 7 keys are present ───────────────────────────────────────────────────
+// ─── All 8 keys are present ───────────────────────────────────────────────────
 
 #[test]
-fn inject_adds_all_seven_otel_env_vars() {
+fn inject_adds_all_eight_otel_env_vars() {
     let env = inject(make_ctx("my-agent"));
 
     let expected_keys = [
@@ -36,13 +36,14 @@ fn inject_adds_all_seven_otel_env_vars() {
         "OTEL_RESOURCE_ATTRIBUTES",
         "OTEL_TRACES_EXPORTER",
         "OTEL_LOGS_EXPORTER",
+        "OTEL_SEMCONV_STABILITY_OPT_IN",
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
     ];
 
     for key in &expected_keys {
         assert!(env.contains_key(*key), "missing key: {key}");
     }
-    assert_eq!(env.len(), 7, "expected exactly 7 OTEL_ env vars");
+    assert_eq!(env.len(), 8, "expected exactly 8 OTEL_ env vars");
 }
 
 // ─── Individual key values ────────────────────────────────────────────────────
@@ -78,16 +79,16 @@ fn inject_sets_logs_exporter_to_otlp() {
 }
 
 #[test]
-fn inject_sets_capture_content_false_by_default() {
+fn inject_sets_capture_content_off_by_default() {
     let env = inject(make_ctx("my-agent"));
     assert_eq!(
         env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"],
-        "NO_CONTENT"
+        "no_content"
     );
 }
 
 #[test]
-fn inject_sets_capture_content_true_when_requested() {
+fn inject_sets_capture_content_span_and_event_when_requested() {
     let ctx = AgentContext {
         capture_content: true,
         ..make_ctx("my-agent")
@@ -95,7 +96,18 @@ fn inject_sets_capture_content_true_when_requested() {
     let env = inject(ctx);
     assert_eq!(
         env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"],
-        "EVENT_ONLY"
+        "span_and_event"
+    );
+}
+
+#[test]
+fn inject_opts_into_latest_genai_semconv() {
+    // Required for the official GenAI instrumentations to accept the enum
+    // capture modes and emit gen_ai.input/output.messages span attributes.
+    let env = inject(make_ctx("my-agent"));
+    assert_eq!(
+        env["OTEL_SEMCONV_STABILITY_OPT_IN"],
+        "gen_ai_latest_experimental"
     );
 }
 
@@ -209,7 +221,7 @@ fn inject_preserves_existing_env_vars() {
         env_vars.get("DATABASE_URL").map(|s| s.as_str()),
         Some("postgres://localhost/db")
     );
-    // Plus all 7 OTEL vars
+    // Plus all 8 OTEL vars
     assert!(env_vars.contains_key("OTEL_SERVICE_NAME"));
 }
 
@@ -230,78 +242,4 @@ fn inject_uses_custom_otel_collector_endpoint() {
         env["OTEL_EXPORTER_OTLP_ENDPOINT"],
         "http://custom-collector:4318"
     );
-}
-
-// ─── patch_dockerfile_for_otel ────────────────────────────────────────────────
-
-mod dockerfile_patch {
-    use nasiko_observability::injector::patch_dockerfile_for_otel;
-
-    #[test]
-    fn idempotent_if_already_patched() {
-        let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
-        let patched = patch_dockerfile_for_otel(dockerfile);
-        assert!(
-            patched.contains(".nasiko_otel_patch.py"),
-            "first pass should inject patch"
-        );
-        let double_patched = patch_dockerfile_for_otel(&patched);
-        assert_eq!(patched, double_patched, "second pass should be a no-op");
-    }
-
-    #[test]
-    fn non_python_dockerfile_unchanged() {
-        let dockerfile = "FROM node:20\nCMD [\"node\", \"server.js\"]";
-        let result = patch_dockerfile_for_otel(dockerfile);
-        // No python detected — should be returned unchanged
-        assert_eq!(result, dockerfile);
-    }
-
-    #[test]
-    fn python_dockerfile_gets_otel_install_line() {
-        let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
-        let result = patch_dockerfile_for_otel(dockerfile);
-        assert!(
-            result.contains("opentelemetry-distro"),
-            "patched Dockerfile should include opentelemetry-distro install"
-        );
-    }
-
-    #[test]
-    fn python_dockerfile_installs_sitecustomize() {
-        let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
-        let result = patch_dockerfile_for_otel(dockerfile);
-        assert!(
-            result.contains(".nasiko_otel_patch.py"),
-            "patched Dockerfile should copy .nasiko_otel_patch.py"
-        );
-        assert!(
-            result.contains("sitecustomize.py"),
-            "patched Dockerfile should install sitecustomize.py"
-        );
-    }
-
-    #[test]
-    fn python_dockerfile_cmd_not_wrapped_with_instrument() {
-        // We intentionally do NOT wrap CMD with opentelemetry-instrument because
-        // it prepends its own sitecustomize.py to PYTHONPATH, which would shadow
-        // ours and prevent the AgentExecutor session.id patch from running.
-        // Our sitecustomize.py calls initialize() directly instead.
-        let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD python main.py";
-        let result = patch_dockerfile_for_otel(dockerfile);
-        assert!(
-            result.contains("CMD python main.py"),
-            "CMD should be left unchanged (no opentelemetry-instrument wrapper)"
-        );
-    }
-
-    #[test]
-    fn python_dockerfile_exec_form_cmd_unchanged() {
-        let dockerfile = "FROM python:3.11\nRUN pip install myapp\nCMD [\"python\", \"main.py\"]";
-        let result = patch_dockerfile_for_otel(dockerfile);
-        assert!(
-            result.contains("CMD [\"python\", \"main.py\"]"),
-            "exec-form CMD should be left unchanged"
-        );
-    }
 }

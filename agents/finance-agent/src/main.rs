@@ -26,23 +26,43 @@ impl FinanceAgent {
 
     #[tracing::instrument(name = "ChatCompletion", skip_all, fields(
         gen_ai.operation.name = "chat",
+        gen_ai.provider.name = "openai",
         gen_ai.request.model = %self.model,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.input.messages = tracing::field::Empty,
+        gen_ai.output.messages = tracing::field::Empty,
     ))]
     async fn chat(
         &self,
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
         session_id: &str,
+        parent_cx: Option<&opentelemetry::Context>,
     ) -> Result<serde_json::Value, String> {
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        // The remote parent must be set on THIS span explicitly: contextual
+        // inheritance from a2a.execute strands the span in an orphan trace —
+        // tracing-opentelemetry children inherit the parent's originally sampled
+        // (local) trace id, not the one `set_parent` re-homed it to.
+        if let Some(cx) = parent_cx {
+            tracing::Span::current().set_parent(cx.clone());
+        }
         // session.id can't be declared in #[instrument] (dotted name isn't a valid
         // Rust ident), so set it directly on the underlying OTel span.
-        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
         tracing::Span::current().set_attribute(
             opentelemetry::Key::new("session.id"),
             opentelemetry::Value::String(session_id.to_string().into()),
         );
+        let capture = telemetry::capture_content();
+        if capture {
+            tracing::Span::current().record(
+                "gen_ai.input.messages",
+                telemetry::genai_input_messages(messages)
+                    .to_string()
+                    .as_str(),
+            );
+        }
         let body = serde_json::json!({
             "model": self.model,
             "messages": messages,
@@ -79,12 +99,42 @@ impl FinanceAgent {
             }
         }
 
+        if capture {
+            let message = &response["choices"][0]["message"];
+            let text = message["content"].as_str().unwrap_or("");
+            let calls_json = message["tool_calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let finish_reason = if calls_json.is_empty() {
+                "stop"
+            } else {
+                "tool_call"
+            };
+            tracing::Span::current().record(
+                "gen_ai.output.messages",
+                telemetry::genai_output_message(text, &calls_json, finish_reason)
+                    .to_string()
+                    .as_str(),
+            );
+        }
+
         Ok(response)
     }
 }
 
 impl AgentExecutor for FinanceAgent {
     fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+        // Join the caller's W3C trace (the platform forwards `traceparent`
+        // through the agent proxy/orchestrator). Without adopting it, the OTel
+        // SDK mints a fresh root trace id per request and the control plane's
+        // session-trace view can never find this agent's spans.
+        let remote_cx = ctx
+            .service_params
+            .get("traceparent")
+            .and_then(|v| v.first())
+            .and_then(|tp| telemetry::remote_context_from_traceparent(tp));
+
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
 
@@ -103,10 +153,40 @@ impl AgentExecutor for FinanceAgent {
             })
             .unwrap_or_default();
 
+        // GenAI agent-span semconv: the A2A request/response is the agent
+        // invocation, so record it as invoke_agent with the exchanged messages
+        // (content gated by the platform capture flag). `session.id` lets the
+        // control plane find this trace by A2A contextId directly in Tempo.
+        let agent_name =
+            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
+        let span = tracing::info_span!(
+            "a2a.execute",
+            otel.kind = "server",
+            gen_ai.operation.name = "invoke_agent",
+            gen_ai.agent.name = %agent_name,
+            session.id = %context_id,
+            gen_ai.input.messages = tracing::field::Empty,
+            gen_ai.output.messages = tracing::field::Empty,
+        );
+        if let Some(ref cx) = remote_cx {
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            span.set_parent(cx.clone());
+        }
+        let capture = telemetry::capture_content();
+        if capture && !user_text.is_empty() {
+            span.record(
+                "gen_ai.input.messages",
+                telemetry::genai_text_message("user", &user_text)
+                    .to_string()
+                    .as_str(),
+            );
+        }
+
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let base_url = self.base_url.clone();
         let http = self.http.clone();
+        let record_span = span.clone();
 
         let stream = async_stream::stream! {
             yield Ok(status_working(&task_id, &context_id, None));
@@ -139,7 +219,10 @@ Guidelines:\n\
                 // final_text still empty (silently returning no answer at all).
                 let tools_for_call: &[serde_json::Value] =
                     if round == 3 { &[] } else { &tool_defs };
-                let resp = match agent.chat(&messages, tools_for_call, &context_id).await {
+                let resp = match agent
+                    .chat(&messages, tools_for_call, &context_id, remote_cx.as_ref())
+                    .await
+                {
                     Ok(r) => r,
                     Err(e) => {
                         yield Ok(status_failed(&task_id, &context_id, &e));
@@ -192,10 +275,30 @@ Guidelines:\n\
                 metadata: None,
             }));
 
+            if capture && !final_text.is_empty() {
+                record_span.record(
+                    "gen_ai.output.messages",
+                    telemetry::genai_text_message("assistant", &final_text)
+                        .to_string()
+                        .as_str(),
+                );
+            }
             yield Ok(status_completed(&task_id, &context_id));
         };
 
-        Box::pin(stream)
+        // Poll the stream inside `span` so every span created during execution
+        // (ChatCompletion, tool calls) lands under the remote parent — even
+        // though the body streams after the HTTP handler has returned.
+        // (tracing's Instrumented wraps Futures, not Streams, so instrument
+        // each item-poll future rather than the stream itself.)
+        use futures::StreamExt as _;
+        use tracing::Instrument as _;
+        Box::pin(async_stream::stream! {
+            let mut inner = std::pin::pin!(stream);
+            while let Some(item) = inner.next().instrument(span.clone()).await {
+                yield item;
+            }
+        })
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {

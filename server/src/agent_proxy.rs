@@ -70,9 +70,32 @@ pub async fn agent_proxy(
         .get(TRACEPARENT_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let flow_ctx = traceparent
+    // Real span for this proxy hop. It joins the caller's trace when a
+    // traceparent came in (agent→agent cascades keep one flow/trace id),
+    // else becomes a fresh root. Either way the traceparent forwarded below
+    // names THIS span — which is actually exported — so the target agent's
+    // spans parent to a real node instead of a phantom random span id.
+    let proxy_span = tracing::info_span!(
+        "a2a.proxy",
+        otel.kind = "server",
+        gen_ai.operation.name = "invoke_agent",
+        agent.id = %agent_id,
+        session.id = tracing::field::Empty,
+        gen_ai.input.messages = tracing::field::Empty,
+    );
+    if let Some(cx) = traceparent
         .as_deref()
-        .and_then(FlowContext::from_traceparent)
+        .and_then(crate::telemetry::remote_context_from_traceparent)
+    {
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        proxy_span.set_parent(cx);
+    }
+    let flow_ctx = crate::telemetry::flow_context_from_span(&proxy_span)
+        .or_else(|| {
+            traceparent
+                .as_deref()
+                .and_then(FlowContext::from_traceparent)
+        })
         .unwrap_or_else(FlowContext::new_root);
 
     let agent_id_str = agent_id.to_string();
@@ -147,6 +170,13 @@ pub async fn agent_proxy(
     if let Some(ref info) = persist_info
         && !info.user_text.is_empty()
     {
+        proxy_span.record("session.id", info.session_id.as_str());
+        if state.config.otel_capture_content {
+            proxy_span.record(
+                "gen_ai.input.messages",
+                crate::telemetry::genai_text_message("user", &info.user_text).as_str(),
+            );
+        }
         let db = state.db.clone();
         let session_id = info.session_id.clone();
         let user_text = info.user_text.clone();
@@ -228,7 +258,7 @@ pub async fn agent_proxy(
 
     // Propagate trace context and caller identity to the agent
     forwarded = forwarded
-        .header("traceparent", flow_ctx.to_traceparent())
+        .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
         .header("x-user-id", &claims.sub)
         .header("x-username", &claims.username)
         .header(

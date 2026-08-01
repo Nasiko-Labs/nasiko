@@ -10,10 +10,7 @@ pub mod types;
 
 pub use db_pricing::DbPricing;
 pub use error::ObservabilityError;
-pub use injector::{
-    AgentContext, InstrumentationInjector, OtelInjector, patch_dockerfile_for_otel,
-    write_otel_patch_file,
-};
+pub use injector::{AgentContext, InstrumentationInjector, OtelInjector};
 pub use loki::{LokiClient, SpanContent, parse_trace_logs};
 pub use pricing::{CostBreakdown, PricingSource, StaticPricing, compute_cost};
 pub use provider::{

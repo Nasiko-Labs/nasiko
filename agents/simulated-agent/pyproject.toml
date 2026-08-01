@@ -8,4 +8,7 @@ dependencies = [
     "starlette==1.2.0",
     "uvicorn==0.48.0",
     "click==8.4.1",
+    "opentelemetry-distro>=0.46b0",
+    "opentelemetry-exporter-otlp>=1.25.0",
+    "opentelemetry-instrumentation-openai-v2>=2.0b0",
 ]

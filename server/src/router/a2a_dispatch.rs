@@ -193,7 +193,6 @@ pub async fn a2a_dispatch_handler(
         orchestrator_stream(
             &state,
             &query,
-            &text,
             &task_id,
             &context_id,
             user_id,
@@ -225,7 +224,6 @@ pub async fn a2a_dispatch_handler(
 async fn orchestrator_stream(
     state: &AppState,
     query: &str,
-    raw_text: &str,
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
@@ -237,14 +235,7 @@ async fn orchestrator_stream(
     // resume had no history to actually resume. `agent_id` is NULL here
     // (unlike agent_proxy's fixed target) since the orchestrator can route
     // to a different agent on every turn of the same session.
-    //
-    // Persist `raw_text` (what the caller actually typed), never `query`
-    // (history + raw_text already glued together by `with_current_query` at
-    // the call site) — storing the enriched blob here would nest: next
-    // turn's fetch would read this already-history-laden row back out and
-    // glue *another* copy of it in front of the next message, compounding
-    // turn over turn instead of growing linearly with real conversation.
-    ensure_orchestrator_chat_session(state, context_id, user_id, raw_text).await;
+    ensure_orchestrator_chat_session(state, context_id, user_id, query).await;
 
     let all_agents = AgentSelector::fetch_active_agents(&state.db)
         .await
@@ -319,9 +310,32 @@ async fn orchestrator_stream(
         ..Default::default()
     };
 
-    let flow_ctx = FlowContext::new_root();
+    // Real root span for this exchange. Its ids seed the FlowContext, so the
+    // traceparent forwarded to agents names a span that actually exists in
+    // Tempo — previously agents parented to a phantom random span id and the
+    // user→orchestrator hop was invisible in traces. GenAI agent semconv:
+    // this is the orchestrator's invoke_agent span, carrying the user query
+    // and final reply (content gated on the platform capture flag).
+    let dispatch_span = tracing::info_span!(
+        "a2a.dispatch",
+        otel.kind = "server",
+        gen_ai.operation.name = "invoke_agent",
+        gen_ai.agent.name = "orchestrator",
+        session.id = %context_id,
+        gen_ai.input.messages = tracing::field::Empty,
+        gen_ai.output.messages = tracing::field::Empty,
+    );
+    let capture_content = state.config.otel_capture_content;
+    if capture_content {
+        dispatch_span.record(
+            "gen_ai.input.messages",
+            crate::telemetry::genai_text_message("user", query).as_str(),
+        );
+    }
+    let flow_ctx = crate::telemetry::flow_context_from_span(&dispatch_span)
+        .unwrap_or_else(FlowContext::new_root);
     let flow_id = flow_ctx.flow_id.clone();
-    let traceparent = flow_ctx.to_traceparent();
+    let traceparent = crate::telemetry::traceparent_for(&flow_ctx);
     state.flow_guard.init_flow(&flow_ctx, "orchestrator").await;
 
     // Carry the A2A context_id so the LLM gateway keys its decision cache on the
@@ -564,6 +578,17 @@ async fn orchestrator_stream(
                                 .await;
                             }
 
+                            // Record the final reply on the dispatch span
+                            // (moved into this stream so it also spans the
+                            // full streamed exchange, not just the handler).
+                            if capture_content && !full_reply.is_empty() {
+                                dispatch_span.record(
+                                    "gen_ai.output.messages",
+                                    crate::telemetry::genai_text_message("assistant", &full_reply)
+                                        .as_str(),
+                                );
+                            }
+
                             // Record overall operation duration in OTel
                             genai_metrics.record_operation(
                                 orchestrator_start.elapsed().as_secs_f64(),
@@ -635,7 +660,26 @@ async fn agent_stream(
         .await
         .map_err(A2aDispatchError::Internal)?;
 
-    let flow_ctx = FlowContext::new_root();
+    // Real root span for the direct-agent exchange — same rationale as the
+    // orchestrator path: the forwarded traceparent must name an exported span.
+    let dispatch_span = tracing::info_span!(
+        "a2a.dispatch",
+        otel.kind = "server",
+        gen_ai.operation.name = "invoke_agent",
+        gen_ai.agent.name = %agent.name,
+        session.id = %context_id,
+        gen_ai.input.messages = tracing::field::Empty,
+        gen_ai.output.messages = tracing::field::Empty,
+    );
+    let capture_content = state.config.otel_capture_content;
+    if capture_content {
+        dispatch_span.record(
+            "gen_ai.input.messages",
+            crate::telemetry::genai_text_message("user", query).as_str(),
+        );
+    }
+    let flow_ctx = crate::telemetry::flow_context_from_span(&dispatch_span)
+        .unwrap_or_else(FlowContext::new_root);
     let flow_id = flow_ctx.flow_id.clone();
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
@@ -664,7 +708,7 @@ async fn agent_stream(
         .http_client
         .post(&endpoint)
         .header("A2A-Version", "1.0")
-        .header("traceparent", flow_ctx.to_traceparent());
+        .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
 
     // Mint a delegation token so this agent can call back into `/api/mcp`
     // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
@@ -713,6 +757,10 @@ async fn agent_stream(
         let flow_id_cleanup = flow_id;
 
         let stream = async_stream::stream! {
+            // Hold the dispatch span for the life of the stream so its duration
+            // covers the full exchange. (The agent's reply streams through
+            // opaque SSE frames here; the agent's own span records the output.)
+            let _dispatch_span = dispatch_span;
             yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
 
             // Emit trace_id so the UI can link this response to its distributed trace.
@@ -795,6 +843,13 @@ async fn agent_stream(
 
         let text = nasiko_types::a2a::extract_text(resp_body.get("result").unwrap_or(&resp_body))
             .unwrap_or_else(|| "No response".into());
+
+        if capture_content {
+            dispatch_span.record(
+                "gen_ai.output.messages",
+                crate::telemetry::genai_text_message("assistant", &text).as_str(),
+            );
+        }
 
         let artifact_id = Uuid::new_v4().to_string();
         let flow_id_cleanup = flow_id;
@@ -997,12 +1052,8 @@ pub async fn a2a_upload_handler(
         file_count
     );
 
-    // `query`/`raw_text` are the same value here — this multipart path always
-    // mints a fresh `context_id` above, so there's no prior history to fetch
-    // or enrich `query` with in the first place.
     orchestrator_stream(
         &state,
-        &query,
         &query,
         &task_id,
         &context_id,

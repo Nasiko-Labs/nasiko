@@ -1,21 +1,31 @@
 import logging
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+
+# Instrumentation must initialize before a2a-sdk (and anything it imports,
+# e.g. Starlette) is imported below: OTel's Starlette instrumentor patches by
+# rebinding `starlette.applications.Starlette` to an instrumented subclass, so
+# any module that already did `from starlette.applications import Starlette`
+# keeps its original, un-instrumented reference forever — no incoming
+# traceparent gets extracted, and every request starts an orphan root trace
+# instead of joining the platform's session trace.
+from telemetry import TraceparentMiddleware, init_telemetry
+
+init_telemetry(os.environ.get("OTEL_SERVICE_NAME", "translator"))
+
 import click
 import uvicorn
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
-from dotenv import load_dotenv
 from starlette.applications import Starlette
-from telemetry import TraceparentMiddleware, init_telemetry
 
 from agent_executor import TranslatorExecutor
-
-load_dotenv()
-logging.basicConfig(level=logging.INFO)
-init_telemetry(os.environ.get("OTEL_SERVICE_NAME", "translator"))
 
 logger = logging.getLogger(__name__)
 
