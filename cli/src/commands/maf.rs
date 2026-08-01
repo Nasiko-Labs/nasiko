@@ -94,6 +94,11 @@ pub fn workflow_get(workflow: &str, json_out: bool) -> Result<()> {
 /// `nasiko maf workflow update <name|id> [flags]` — rename, redescribe, or replace the steps of
 /// an existing workflow. Omitting `--step` entirely leaves the current steps untouched; passing
 /// any `--step` replaces the whole list (the server's `PUT` is a full step replace).
+///
+/// `--add-step`/`--edit-step` are CLI-side sugar over that same full-replace endpoint — there is
+/// no server-side patch API. Both fetch the current step list first, splice in the requested
+/// change, then resend the whole list, so unrelated steps survive untouched.
+#[allow(clippy::too_many_arguments)]
 pub fn workflow_update(
     workflow: &str,
     name: Option<String>,
@@ -101,7 +106,26 @@ pub fn workflow_update(
     clear_description: bool,
     steps: &[String],
     agents: &[String],
+    add_steps: &[String],
+    add_agents: &[String],
+    edit_step: Option<String>,
+    edit_description: Option<String>,
+    edit_agent: Option<String>,
 ) -> Result<()> {
+    if !steps.is_empty() && (!add_steps.is_empty() || edit_step.is_some()) {
+        anyhow::bail!(
+            "--step (full replace) cannot be combined with --add-step or --edit-step — \
+pick one way of changing steps"
+        );
+    }
+    if edit_step.is_some() && edit_description.is_none() && edit_agent.is_none() {
+        anyhow::bail!("--edit-step requires --edit-description and/or --edit-agent");
+    }
+    if edit_step.is_none() && (edit_description.is_some() || edit_agent.is_some()) {
+        anyhow::bail!("--edit-description/--edit-agent require --edit-step <step>");
+    }
+    validate_agent_count(add_steps.len(), add_agents.len())?;
+
     let client = Client::from_active_cluster()?;
     let id = resolve_workflow_id(&client, workflow)?;
 
@@ -112,11 +136,51 @@ pub fn workflow_update(
     } else if let Some(d) = &description {
         body.insert("description".to_string(), json!(d));
     }
+
     if !steps.is_empty() {
         body.insert(
             "steps".to_string(),
             json!(build_update_step_bodies(steps, agents)?),
         );
+    } else if !add_steps.is_empty() || edit_step.is_some() {
+        let current: Value = unwrap_data(client.get_json(&format!("/maf/workflow/{id}"))?)?;
+        let mut existing: Vec<Value> = current["maf_json"]["steps"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if existing.is_empty() {
+            anyhow::bail!("workflow '{workflow}' has no steps to edit — use --step to create some");
+        }
+
+        if let Some(target) = &edit_step {
+            let idx = resolve_step_target(&existing, target)?;
+            if let Some(desc) = &edit_description {
+                existing[idx]["task_description"] = json!(desc);
+            }
+            if let Some(agent) = &edit_agent {
+                existing[idx]["agent_id"] = json!(resolve_step_agent(Some(agent))?);
+            }
+        }
+
+        for (i, task) in add_steps.iter().enumerate() {
+            let agent_id = resolve_step_agent(add_agents.get(i))?;
+            existing.push(json!({ "task_description": task, "agent_id": agent_id }));
+        }
+
+        // Rebuild as `UpdateStepRequest` bodies ({step_index, agent_id, task_description}),
+        // re-numbering step_index sequentially now that a step may have been appended.
+        let rebuilt: Vec<Value> = existing
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                json!({
+                    "step_index": i as i32,
+                    "agent_id": s.get("agent_id").cloned().unwrap_or(Value::Null),
+                    "task_description": s.get("task_description").and_then(Value::as_str).unwrap_or(""),
+                })
+            })
+            .collect();
+        body.insert("steps".to_string(), json!(rebuilt));
     }
 
     let resp: Value =
@@ -124,6 +188,27 @@ pub fn workflow_update(
     let updated_name = resp.get("name").and_then(Value::as_str).unwrap_or("?");
     println!("Updated workflow '{updated_name}' ({id})");
     Ok(())
+}
+
+/// Resolve `--edit-step`'s argument to a 0-based index into `existing`: either the step's own
+/// `step_id` (UUID) or a 1-based position matching what `workflow get`/`--json` displays.
+fn resolve_step_target(existing: &[Value], target: &str) -> Result<usize> {
+    if let Some(idx) = existing
+        .iter()
+        .position(|s| s.get("step_id").and_then(Value::as_str) == Some(target))
+    {
+        return Ok(idx);
+    }
+    if let Ok(n) = target.parse::<usize>()
+        && n >= 1
+        && n <= existing.len()
+    {
+        return Ok(n - 1);
+    }
+    anyhow::bail!(
+        "--edit-step '{target}' is not a valid step_id or 1-based position (workflow has {} step(s))",
+        existing.len()
+    )
 }
 
 /// `nasiko maf workflow delete <name|id>` — soft-delete a workflow.
@@ -497,5 +582,39 @@ mod tests {
         assert_eq!(resolve_step_agent(None).unwrap(), None);
         assert_eq!(resolve_step_agent(Some(&"".to_string())).unwrap(), None);
         assert_eq!(resolve_step_agent(Some(&"-".to_string())).unwrap(), None);
+    }
+
+    fn step(step_id: &str, task: &str) -> Value {
+        json!({ "step_id": step_id, "task_description": task, "agent_id": null })
+    }
+
+    #[test]
+    fn resolve_step_target_by_step_id() {
+        let steps = vec![step("aaa", "first"), step("bbb", "second")];
+        assert_eq!(resolve_step_target(&steps, "bbb").unwrap(), 1);
+    }
+
+    #[test]
+    fn resolve_step_target_by_one_based_position() {
+        let steps = vec![step("aaa", "first"), step("bbb", "second")];
+        assert_eq!(resolve_step_target(&steps, "1").unwrap(), 0);
+        assert_eq!(resolve_step_target(&steps, "2").unwrap(), 1);
+    }
+
+    #[test]
+    fn resolve_step_target_rejects_out_of_range_position() {
+        let steps = vec![step("aaa", "first")];
+        assert!(resolve_step_target(&steps, "0").is_err());
+        assert!(resolve_step_target(&steps, "2").is_err());
+    }
+
+    #[test]
+    fn resolve_step_target_rejects_unknown_id() {
+        let steps = vec![step("aaa", "first")];
+        let err = resolve_step_target(&steps, "not-a-real-id").unwrap_err();
+        assert!(
+            err.to_string().contains("not a valid step_id"),
+            "got: {err}"
+        );
     }
 }

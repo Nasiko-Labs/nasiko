@@ -141,6 +141,11 @@ pub enum AgentOpsCommands {
     Restart { agent: String },
     /// Scale agent container to N replicas
     Scale { agent: String, replicas: u32 },
+    /// Deployment-level ops (list/inspect/restart) — distinct from the container-level ps/restart above
+    Deployments {
+        #[command(subcommand)]
+        command: DeploymentsCommands,
+    },
     /// Re-upload source and rebuild an existing deployed agent
     #[command(
         after_help = "Version resolution order: --version flag → AgentCard.json → pyproject.toml → Cargo.toml → server auto-patch"
@@ -437,7 +442,7 @@ pub enum MafCommands {
     /// Manage MAF workflows: create/list/get/update/delete/run, list their executions
     Workflow {
         #[command(subcommand)]
-        command: MafWorkflowCommands,
+        command: Box<MafWorkflowCommands>,
     },
     /// Inspect MAF executions (across all workflows, or one by id)
     Execution {
@@ -479,11 +484,14 @@ auto-assign every step via the routing engine."
         #[arg(long)]
         json: bool,
     },
-    /// Replace a workflow's name, description, and/or steps
-    #[command(
-        after_help = "Omitting --step leaves the existing steps untouched; passing any \
---step replaces the entire step list (the server's update is a full step replace)."
-    )]
+    /// Replace a workflow's name, description, and/or steps — or add/edit one step in place
+    #[command(after_help = "Three ways to change steps, pick one:\n\
+  --step (repeatable, with --agent) replaces the ENTIRE step list.\n\
+  --add-step (repeatable, with --add-agent) appends new step(s) after the existing ones.\n\
+  --edit-step <step_id-or-1-based-position> --edit-description/--edit-agent changes just \
+that one step; every other step is left exactly as-is.\n\
+--add-step and --edit-step are CLI-side convenience (fetch, splice, resend) — there is no \
+server-side patch API, so behind the scenes this still sends the full step list.")]
     Update {
         /// Workflow name or UUID
         workflow: String,
@@ -499,6 +507,21 @@ auto-assign every step via the routing engine."
         steps: Vec<String>,
         #[arg(long = "agent")]
         agents: Vec<String>,
+        /// Append a new step's task description after the existing steps (repeatable)
+        #[arg(long = "add-step")]
+        add_steps: Vec<String>,
+        /// Agent for the step at the same position among --add-step (name/UUID, or "-" to auto-assign)
+        #[arg(long = "add-agent")]
+        add_agents: Vec<String>,
+        /// Which existing step to edit: its step_id, or its 1-based position from `workflow get`
+        #[arg(long = "edit-step")]
+        edit_step: Option<String>,
+        /// New task description for the step targeted by --edit-step
+        #[arg(long = "edit-description")]
+        edit_description: Option<String>,
+        /// New agent for the step targeted by --edit-step (name/UUID, or "-" to auto-assign)
+        #[arg(long = "edit-agent")]
+        edit_agent: Option<String>,
     },
     /// Delete a workflow (soft-delete)
     #[command(alias = "rm")]
@@ -602,6 +625,20 @@ pub enum AgentsCommands {
         #[arg(long, short = 's')]
         session_id: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DeploymentsCommands {
+    /// List all deployments (crash reason, restart count, etc.)
+    #[command(alias = "list")]
+    Ls,
+    /// Show the current deployment for an agent
+    Get {
+        /// Agent name or ID
+        agent: String,
+    },
+    /// Restart a specific deployment by its deployment ID (see `deployments ls`)
+    Restart { deployment_id: String },
 }
 
 #[derive(Subcommand)]
@@ -866,6 +903,13 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
         AgentOpsCommands::Scale { agent, replicas } => commands::agents::scale(&agent, replicas),
+        AgentOpsCommands::Deployments { command } => match command {
+            DeploymentsCommands::Ls => commands::deployments::ls(),
+            DeploymentsCommands::Get { agent } => commands::deployments::get(&agent),
+            DeploymentsCommands::Restart { deployment_id } => {
+                commands::deployments::restart(&deployment_id)
+            }
+        },
         AgentOpsCommands::Reupload {
             id,
             name,
@@ -1140,7 +1184,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             } => commands::model_registry::set(&provider, tier, &model),
         },
         AgentOpsCommands::Maf { command } => match command {
-            MafCommands::Workflow { command } => match command {
+            MafCommands::Workflow { command } => match *command {
                 MafWorkflowCommands::List { json } => commands::maf::workflow_list(json),
                 MafWorkflowCommands::Create {
                     name,
@@ -1163,6 +1207,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     clear_description,
                     steps,
                     agents,
+                    add_steps,
+                    add_agents,
+                    edit_step,
+                    edit_description,
+                    edit_agent,
                 } => commands::maf::workflow_update(
                     &workflow,
                     name,
@@ -1170,6 +1219,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     clear_description,
                     &steps,
                     &agents,
+                    &add_steps,
+                    &add_agents,
+                    edit_step,
+                    edit_description,
+                    edit_agent,
                 ),
                 MafWorkflowCommands::Delete { workflow, force } => {
                     commands::maf::workflow_delete(&workflow, force)
