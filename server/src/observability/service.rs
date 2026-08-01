@@ -554,6 +554,10 @@ pub struct AgentFinopsRow {
     pub avg_cost_per_operation: f64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Prompt tokens served from provider cache (OpenAI cached / Anthropic cache read).
+    pub cache_read_tokens: u64,
+    /// Prompt tokens written to provider cache (Anthropic cache creation).
+    pub cache_creation_tokens: u64,
     pub total_tokens: u64,
     pub avg_latency_ms: Option<f64>,
     pub version: Option<String>,
@@ -566,6 +570,10 @@ pub struct FinopsTokenUsage {
     pub total_tokens: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Prompt tokens served from provider cache (OpenAI cached / Anthropic cache read).
+    pub cache_read_tokens: u64,
+    /// Prompt tokens written to provider cache (Anthropic cache creation).
+    pub cache_creation_tokens: u64,
     pub avg_tokens_per_operation: u64,
 }
 
@@ -656,15 +664,15 @@ impl ObservabilityService {
         }
     }
 
-    /// Returns Vec<(id, name, display_name)> for all agents in the DB. `name`
+    /// Returns Vec<(id, name, display_name, version)> for all agents in the DB. `name`
     /// doubles as the Tempo `service.name` (the injector sets OTEL_SERVICE_NAME
     /// to the agent name); `id` is the UUID reported to callers.
     /// OSS: returns all agents (NoopAuthorizer). EE adds RBAC at a higher layer.
     async fn get_agent_names(
         &self,
-    ) -> Result<Vec<(uuid::Uuid, String, String)>, ObservabilityError> {
-        sqlx::query_as::<_, (uuid::Uuid, String, String)>(
-            "SELECT id, name, COALESCE(display_name, name) FROM agents ORDER BY name",
+    ) -> Result<Vec<(uuid::Uuid, String, String, String)>, ObservabilityError> {
+        sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
+            "SELECT id, name, COALESCE(display_name, name), version FROM agents ORDER BY name",
         )
         .fetch_all(&self.db)
         .await
@@ -721,7 +729,7 @@ impl ObservabilityService {
         let total = agents.len();
         let agent_name_by_id: std::collections::HashMap<uuid::Uuid, String> = agents
             .into_iter()
-            .map(|(id, name, _display)| (id, name))
+            .map(|(id, name, _display, _version)| (id, name))
             .collect();
 
         // 3. Enrich each DB session from Tempo (by session_id). For agents
@@ -1174,12 +1182,14 @@ impl ObservabilityService {
         let mut agent_rows: Vec<AgentFinopsRow> = Vec::new();
         let mut grand_input = 0u64;
         let mut grand_output = 0u64;
+        let mut grand_cache_read = 0u64;
+        let mut grand_cache_creation = 0u64;
         let mut grand_cost = 0f64;
         let mut total_ops = 0usize;
         let mut total_ops_24h = 0usize;
         let mut active = 0usize;
 
-        for (agent_uuid, agent_name, display_name) in &agents {
+        for (agent_uuid, agent_name, display_name, version) in &agents {
             let finops = self
                 .provider
                 .agent_finops(agent_name, start, now)
@@ -1206,6 +1216,8 @@ impl ObservabilityService {
 
             grand_input += finops.input_tokens;
             grand_output += finops.output_tokens;
+            grand_cache_read += finops.cache_read_tokens;
+            grand_cache_creation += finops.cache_creation_tokens;
             grand_cost += finops.cost.total_usd;
             total_ops += finops.operations;
             total_ops_24h += ops_24h;
@@ -1218,9 +1230,11 @@ impl ObservabilityService {
                 avg_cost_per_operation: avg_cost,
                 prompt_tokens: finops.input_tokens,
                 completion_tokens: finops.output_tokens,
+                cache_read_tokens: finops.cache_read_tokens,
+                cache_creation_tokens: finops.cache_creation_tokens,
                 total_tokens: finops.input_tokens + finops.output_tokens,
                 avg_latency_ms: finops.latency_ms_p50,
-                version: None,
+                version: Some(version.to_string()),
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
             });
         }
@@ -1253,6 +1267,8 @@ impl ObservabilityService {
                     total_tokens: grand_total_tokens,
                     prompt_tokens: grand_input,
                     completion_tokens: grand_output,
+                    cache_read_tokens: grand_cache_read,
+                    cache_creation_tokens: grand_cache_creation,
                     avg_tokens_per_operation: avg_tpo,
                 },
             },
@@ -1497,6 +1513,8 @@ fn empty_agent_finops(agent_id: &str) -> AgentFinOps {
         operations: 0,
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         model_used: None,
         latency_ms_p50: None,
         cost: Default::default(),
@@ -1522,6 +1540,8 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
                 total_tokens: 0,
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
                 avg_tokens_per_operation: 0,
             },
         },

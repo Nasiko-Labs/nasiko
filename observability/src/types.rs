@@ -141,6 +141,38 @@ pub fn extract_token_attrs(
     (input, output, model)
 }
 
+/// Extract `(cache_read_tokens, cache_creation_tokens)` from a span's
+/// attributes. "Cache read" covers OpenAI-style cached prompt tokens and
+/// Anthropic cache reads; "cache creation" is Anthropic-style cache writes.
+/// Covers current GenAI semconv names and common instrumentation variants.
+pub fn extract_cache_token_attrs(attrs: &HashMap<String, serde_json::Value>) -> (u64, u64) {
+    let get_u64 = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| attrs.get(*k))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
+            .unwrap_or(0)
+    };
+
+    let cache_read = get_u64(&[
+        "gen_ai.usage.cached_input_tokens", // semconv (experimental)
+        "gen_ai.usage.cache_read_input_tokens",
+        "gen_ai.usage.cached_tokens",
+        "llm.usage.cache_read_input_tokens",
+        "cache_read_input_tokens",
+    ]);
+    let cache_creation = get_u64(&[
+        "gen_ai.usage.cache_creation_input_tokens",
+        "gen_ai.usage.cache_write_input_tokens",
+        "llm.usage.cache_creation_input_tokens",
+        "cache_creation_input_tokens",
+    ]);
+
+    (cache_read, cache_creation)
+}
+
 impl TraceDetails {
     /// Aggregate token counts across all spans:
     /// `(input_tokens, output_tokens, first_model_seen)`.
@@ -163,6 +195,19 @@ impl TraceDetails {
             }
         }
         (input, output, model)
+    }
+
+    /// Aggregate cache token counts across all spans:
+    /// `(cache_read_tokens, cache_creation_tokens)`.
+    pub fn cache_token_totals(&self) -> (u64, u64) {
+        let mut read = 0u64;
+        let mut creation = 0u64;
+        for span in &self.spans {
+            let (r, c) = extract_cache_token_attrs(&span.attributes);
+            read += r;
+            creation += c;
+        }
+        (read, creation)
     }
 
     /// Per-model token totals, for pricing mixed-model traces correctly.
@@ -227,6 +272,10 @@ pub struct AgentFinOps {
     pub operations: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Prompt tokens served from provider cache (OpenAI cached / Anthropic cache read).
+    pub cache_read_tokens: u64,
+    /// Prompt tokens written to provider cache (Anthropic cache creation).
+    pub cache_creation_tokens: u64,
     pub model_used: Option<String>,
     pub latency_ms_p50: Option<f64>,
     pub cost: CostBreakdown,

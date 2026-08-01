@@ -13,6 +13,9 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 const COLUMNS = [
   { key: 'agent_name', label: 'Agent' },
   { key: 'total_tokens', label: 'Tokens' },
+  { key: 'prompt_tokens', label: 'Input' },
+  { key: 'completion_tokens', label: 'Output' },
+  { key: 'cache_tokens', label: 'Cache r/w' },
   { key: 'operations', label: 'Operations' },
   { key: 'total_cost', label: 'Total cost' },
   { key: 'avg_cost_per_operation', label: 'Avg cost/op' },
@@ -23,6 +26,8 @@ const COLUMNS = [
 
 const SORTS = [
   { key: 'total_tokens', label: 'Most tokens' },
+  { key: 'prompt_tokens', label: 'Most input tokens' },
+  { key: 'completion_tokens', label: 'Most output tokens' },
   { key: 'total_cost', label: 'Highest cost' },
   { key: 'operations', label: 'Most operations' },
   { key: 'avg_latency_ms', label: 'Slowest' },
@@ -72,7 +77,7 @@ class TokenopsPage extends HTMLElement {
       </div>
 
       <h2 class="section-title">Token usage</h2>
-      <div class="kpi-strip" id="token-strip">${this.#skelKpis(4)}</div>
+      <div class="kpi-strip" id="token-strip">${this.#skelKpis(6)}</div>
     `;
 
     this.querySelector('#agent-search').addEventListener('input', (e) => {
@@ -144,8 +149,10 @@ class TokenopsPage extends HTMLElement {
     const avg = t.avg_tokens_per_operation ?? 0;
     this.querySelector('#token-strip').innerHTML = `
       ${this.#kpi('Total tokens', this.#fmtTokens(t.total_tokens), '')}
-      ${this.#kpi('Prompt tokens', this.#fmtTokens(t.prompt_tokens), '')}
-      ${this.#kpi('Completion tokens', this.#fmtTokens(t.completion_tokens), '')}
+      ${this.#kpi('Input tokens', this.#fmtTokens(t.prompt_tokens), '')}
+      ${this.#kpi('Output tokens', this.#fmtTokens(t.completion_tokens), '')}
+      ${this.#kpi('Cache read tokens', this.#fmtTokens(t.cache_read_tokens), 'Prompt tokens served from provider cache')}
+      ${this.#kpi('Cache write tokens', this.#fmtTokens(t.cache_creation_tokens), 'Prompt tokens written to provider cache')}
       ${this.#kpi('Average tokens / operation', this.#fmtTokens(avg), '')}
     `;
   }
@@ -182,6 +189,9 @@ class TokenopsPage extends HTMLElement {
       <tr>
         <td class="agent-name">${this.#esc(a.agent_name || a.agent_id)}</td>
         <td>${this.#fmtTokens(a.total_tokens)}</td>
+        <td>${this.#fmtTokens(a.prompt_tokens)}</td>
+        <td>${this.#fmtTokens(a.completion_tokens)}</td>
+        <td>${this.#fmtTokens(a.cache_read_tokens)} / ${this.#fmtTokens(a.cache_creation_tokens)}</td>
         <td>${(a.operations ?? 0).toLocaleString()}</td>
         <td>${this.#fmtCost(a.total_cost)}</td>
         <td>${this.#fmtCost(a.avg_cost_per_operation)}</td>
@@ -195,7 +205,9 @@ class TokenopsPage extends HTMLElement {
   #exportCsv() {
     const header = COLUMNS.map((c) => c.label).join(',');
     const lines = this.#visibleAgents().map((a) => [
-      a.agent_name, a.total_tokens ?? 0, a.operations ?? 0, a.total_cost ?? 0,
+      a.agent_name, a.total_tokens ?? 0, a.prompt_tokens ?? 0, a.completion_tokens ?? 0,
+      `${a.cache_read_tokens ?? 0} / ${a.cache_creation_tokens ?? 0}`,
+      a.operations ?? 0, a.total_cost ?? 0,
       a.avg_cost_per_operation ?? 0, a.container_hours ?? 0,
       a.avg_latency_ms ?? '', a.version ?? '',
     ].map((v) => `"${String(v).replaceAll('"', '""')}"`).join(','));

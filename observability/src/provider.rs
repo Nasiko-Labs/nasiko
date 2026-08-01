@@ -199,19 +199,20 @@ impl TempoLokiProvider {
 
     /// Fetch tokens/model/latency-p50 over up to
     /// [`TOKEN_AGGREGATION_TRACE_CAP`] traces.
-    async fn aggregate_traces(&self, results: &[TraceSearchResult]) -> (u64, u64, Option<String>) {
-        let mut input = 0u64;
-        let mut output = 0u64;
-        let mut model: Option<String> = None;
+    async fn aggregate_traces(&self, results: &[TraceSearchResult]) -> TraceAggregates {
+        let mut agg = TraceAggregates::default();
 
         for (trace_id, _, _) in results.iter().take(TOKEN_AGGREGATION_TRACE_CAP) {
             match self.tempo.get_trace(trace_id).await {
                 Ok(trace) => {
                     let (inp, out, m) = trace.token_totals();
-                    input += inp;
-                    output += out;
-                    if model.is_none() {
-                        model = m;
+                    let (cache_read, cache_creation) = trace.cache_token_totals();
+                    agg.input += inp;
+                    agg.output += out;
+                    agg.cache_read += cache_read;
+                    agg.cache_creation += cache_creation;
+                    if agg.model.is_none() {
+                        agg.model = m;
                     }
                 }
                 Err(e) => {
@@ -219,8 +220,18 @@ impl TempoLokiProvider {
                 }
             }
         }
-        (input, output, model)
+        agg
     }
+}
+
+/// Token totals accumulated across a set of traces by `aggregate_traces`.
+#[derive(Default)]
+struct TraceAggregates {
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+    model: Option<String>,
 }
 
 /// Per-session accumulator used while grouping traces by `session.id`.
@@ -540,15 +551,15 @@ impl ObservabilityProvider for TempoLokiProvider {
 
         let durations: Vec<u64> = results.iter().filter_map(|(_, _, d)| *d).collect();
         let (p50, p99) = latency_percentiles(durations);
-        let (input, output, model) = self.aggregate_traces(&results).await;
-        let cost = self.cost(model.as_deref(), input, output).await;
+        let agg = self.aggregate_traces(&results).await;
+        let cost = self.cost(agg.model.as_deref(), agg.input, agg.output).await;
 
         Ok(AgentStats {
             agent_id: agent_id.to_string(),
             trace_count: results.len(),
-            input_tokens: input,
-            output_tokens: output,
-            model_used: model,
+            input_tokens: agg.input,
+            output_tokens: agg.output,
+            model_used: agg.model,
             latency_ms_p50: p50,
             latency_ms_p99: p99,
             cost,
@@ -568,15 +579,17 @@ impl ObservabilityProvider for TempoLokiProvider {
 
         let durations: Vec<u64> = results.iter().filter_map(|(_, _, d)| *d).collect();
         let (p50, _) = latency_percentiles(durations);
-        let (input, output, model) = self.aggregate_traces(&results).await;
-        let cost = self.cost(model.as_deref(), input, output).await;
+        let agg = self.aggregate_traces(&results).await;
+        let cost = self.cost(agg.model.as_deref(), agg.input, agg.output).await;
 
         Ok(AgentFinOps {
             agent_id: agent_id.to_string(),
             operations: results.len(),
-            input_tokens: input,
-            output_tokens: output,
-            model_used: model,
+            input_tokens: agg.input,
+            output_tokens: agg.output,
+            cache_read_tokens: agg.cache_read,
+            cache_creation_tokens: agg.cache_creation,
+            model_used: agg.model,
             latency_ms_p50: p50,
             cost,
         })
