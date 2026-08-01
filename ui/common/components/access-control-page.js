@@ -84,10 +84,12 @@ class AccessControlPage extends HTMLElement {
       }
       this.#data = await window.fetchAccessControlOverview();
       try {
-        this.#pickerDepartments = (await window.fetchDepartmentList?.()) || [];
+        const depts = await window.fetchDepartmentList?.();
+        this.#pickerDepartments = Array.isArray(depts) ? depts : [];
       } catch { this.#pickerDepartments = []; }
       try {
-        this.#pickerTeams = (await window.fetchTeamList?.()) || [];
+        const teams = await window.fetchTeamList?.();
+        this.#pickerTeams = Array.isArray(teams) ? teams : [];
       } catch { this.#pickerTeams = []; }
       this.#setState('success');
     } catch (e) {

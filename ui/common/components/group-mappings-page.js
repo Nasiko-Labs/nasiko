@@ -30,7 +30,7 @@ class GroupMappingsPage extends HTMLElement {
       <div class="page-header">
         <span></span>
         <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 14)} Sync Azure AD Directory</app-button>
-        <app-button variant="primary" size="sm" id="btn-create">${icons.plus('', 14)} New Mapping</app-button>
+        <app-button variant="dark" size="sm" id="btn-create">${icons.plus('', 14)} New Mapping</app-button>
       </div>
       <smart-table id="mappings-table" data-fn="fetchGroupMappings" limit="20"></smart-table>
 
@@ -88,10 +88,12 @@ class GroupMappingsPage extends HTMLElement {
 
   async #loadLookups() {
     try {
-      this.#departments = (await window.fetchDepartmentList?.()) || [];
+      const depts = await window.fetchDepartmentList?.();
+      this.#departments = Array.isArray(depts) ? depts : [];
     } catch { this.#departments = []; }
     try {
-      this.#teams = (await window.fetchTeamList?.()) || [];
+      const teams = await window.fetchTeamList?.();
+      this.#teams = Array.isArray(teams) ? teams : [];
     } catch { this.#teams = []; }
 
     const deptSelect = this.querySelector('#mapping-department');

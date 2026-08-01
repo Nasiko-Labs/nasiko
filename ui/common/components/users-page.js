@@ -58,6 +58,8 @@ function relativeTime(dateStr) {
 
 class UsersPage extends HTMLElement {
   #initialized = false;
+  #departments = [];
+  #teams = [];
 
   async connectedCallback() {
     if (this.#initialized) return;
@@ -90,14 +92,39 @@ class UsersPage extends HTMLElement {
       }
     }
 
+    await this.#loadLookups();
     this.#render();
     this.#bind();
+  }
+
+  async #loadLookups() {
+    try {
+      const depts = await window.fetchDepartmentList?.();
+      this.#departments = Array.isArray(depts) ? depts : [];
+    } catch { this.#departments = []; }
+    try {
+      const teams = await window.fetchTeamList?.();
+      this.#teams = Array.isArray(teams) ? teams : [];
+    } catch { this.#teams = []; }
+  }
+
+  #placementLabel(row) {
+    if (row.team_id) {
+      const team = this.#teams.find((t) => t.id === row.team_id);
+      return team ? this.#esc(team.name) : '<span class="muted">Unknown team</span>';
+    }
+    if (row.department_id) {
+      const dept = this.#departments.find((d) => d.id === row.department_id);
+      return dept ? this.#esc(dept.name) : '<span class="muted">Unknown department</span>';
+    }
+    return '<span class="muted">— Unassigned —</span>';
   }
 
   #render() {
     this.innerHTML = `
       <div class="users-header">
         <span class="users-header-stats" id="users-stats"></span>
+        <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 16)} Sync Azure AD Directory</app-button>
         <app-button variant="primary" size="sm" id="btn-add-user">${icons.plus('', 16)} Add User</app-button>
       </div>
 
@@ -214,6 +241,24 @@ class UsersPage extends HTMLElement {
           </div>
         </div>
       </app-modal>
+
+      <app-modal id="reassign-modal" heading="Assign department / team">
+        <div class="modal-form">
+          <p class="hint" id="reassign-target"></p>
+          <div class="field">
+            <label for="reassign-department">Department</label>
+            <select id="reassign-department"><option value="">— Unassigned —</option></select>
+          </div>
+          <div class="field">
+            <label for="reassign-team">Team <span class="hint">(optional — leave unset for a department-only placement)</span></label>
+            <select id="reassign-team"><option value="">— No specific team —</option></select>
+          </div>
+          <div class="form-actions" data-slot="footer">
+            <app-button variant="secondary" id="reassign-cancel">Cancel</app-button>
+            <app-button variant="primary" id="reassign-save">Save</app-button>
+          </div>
+        </div>
+      </app-modal>
     `;
 
     const table = this.querySelector('#users-table');
@@ -230,14 +275,15 @@ class UsersPage extends HTMLElement {
           </span>
         </div>`;
       }},
-      { key: 'role', label: 'Role', width: '12%', render: (v, row) => {
+      { key: 'role', label: 'Role', width: '10%', render: (v, row) => {
         if (row.is_superuser) return '<app-badge variant="warning">superuser</app-badge>';
         const variant = v === 'admin' ? 'info'
           : (v === 'department_manager' || v === 'team_lead') ? 'success'
           : 'neutral';
         return `<app-badge variant="${variant}">${this.#esc(roleLabel(v))}</app-badge>`;
       }},
-      { key: 'is_active', label: 'Status', width: '10%', render: (v) => {
+      { key: 'department_team', label: 'Department / Team', width: '14%', render: (_, row) => this.#placementLabel(row) },
+      { key: 'is_active', label: 'Status', width: '9%', render: (v) => {
         const cls = v ? 'is-active' : 'is-disabled';
         const label = v ? 'Active' : 'Disabled';
         return `<span class="status-cell"><span class="status-dot ${cls}"></span>${label}</span>`;
@@ -245,24 +291,80 @@ class UsersPage extends HTMLElement {
       { key: 'last_login', label: 'Last Active', width: '12%', render: (v) =>
         `<span title="${v || 'Never'}">${relativeTime(v)}</span>`
       },
-      { key: 'created_at', label: 'Created', width: '10%', render: (v) => v ? new Date(v).toLocaleDateString() : '--' },
-      { key: 'actions', label: '', width: '12%', render: (_, row) => {
+      { key: 'created_at', label: 'Created', width: '9%', render: (v) => v ? new Date(v).toLocaleDateString() : '--' },
+      { key: 'actions', label: '', width: '14%', render: (_, row) => {
         if (row.is_superuser) return '';
         const esc = (s) => (s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         const edit = `<button class="action-btn" data-action="edit" data-id="${esc(row.id)}" data-username="${esc(row.username)}" data-email="${esc(row.email)}" data-display-name="${esc(row.display_name || '')}" title="Edit">${icons.edit('', 16)}</button>`;
+        const reassign = `<button class="action-btn" data-action="reassign" data-id="${esc(row.id)}" data-name="${esc(row.display_name || row.username)}" data-department-id="${esc(row.department_id || '')}" data-team-id="${esc(row.team_id || '')}" title="Assign department/team">${icons.folder('', 16)}</button>`;
         const deactivate = row.is_active
           ? `<button class="action-btn action-btn--warn" data-action="deactivate" data-id="${esc(row.id)}" title="Deactivate">${icons.xCircle('', 16)}</button>`
           : `<button class="action-btn" data-action="activate" data-id="${esc(row.id)}" title="Activate">${icons.checkCircle('', 16)}</button>`;
-        return `${edit}${deactivate}<button class="action-btn action-btn--danger" data-action="delete" data-id="${esc(row.id)}" data-name="${esc(row.username)}" title="Delete">${icons.trash('', 16)}</button>`;
+        return `${edit}${reassign}${deactivate}<button class="action-btn action-btn--danger" data-action="delete" data-id="${esc(row.id)}" data-name="${esc(row.username)}" title="Delete">${icons.trash('', 16)}</button>`;
       }},
     ];
+
+    const deptSelect = this.querySelector('#reassign-department');
+    for (const d of this.#departments) {
+      const opt = document.createElement('option');
+      opt.value = d.id; opt.textContent = d.name;
+      deptSelect.appendChild(opt);
+    }
+    const teamSelect = this.querySelector('#reassign-team');
+    for (const t of this.#teams) {
+      const opt = document.createElement('option');
+      opt.value = t.id; opt.textContent = t.name;
+      opt.dataset.departmentId = t.department_id || '';
+      teamSelect.appendChild(opt);
+    }
   }
 
   #bind() {
     const table = this.querySelector('#users-table');
     const modal = this.querySelector('#user-modal');
     const editModal = this.querySelector('#edit-modal');
+    const reassignModal = this.querySelector('#reassign-modal');
     let editingId = null;
+    let reassigningId = null;
+
+    const reassignDept = this.querySelector('#reassign-department');
+    const reassignTeam = this.querySelector('#reassign-team');
+
+    const filterTeamsByDepartment = () => {
+      const deptId = reassignDept.value;
+      for (const opt of reassignTeam.options) {
+        if (!opt.value) continue;
+        opt.hidden = Boolean(deptId) && opt.dataset.departmentId !== deptId;
+      }
+      // Clear a team selection that no longer belongs to the picked department.
+      if (reassignTeam.selectedOptions[0]?.hidden) reassignTeam.value = '';
+    };
+    reassignDept.addEventListener('change', filterTeamsByDepartment);
+
+    this.querySelector('#reassign-cancel').addEventListener('click', () => reassignModal.close());
+
+    const reassignSaveBtn = this.querySelector('#reassign-save');
+    reassignSaveBtn.addEventListener('click', async () => {
+      if (!reassigningId) return;
+      reassignSaveBtn.setAttribute('loading', '');
+      try {
+        const teamId = reassignTeam.value || null;
+        const departmentId = reassignDept.value || null;
+        const res = await window.updateUserPlacement(reassigningId, {
+          teamId,
+          departmentId,
+          clear: !teamId && !departmentId,
+        });
+        if (!res.ok) throw new Error(await res.text());
+        reassignModal.close();
+        table.refresh();
+        showToast('Assignment updated');
+      } catch (e) {
+        showToast(`Failed: ${e.message}`);
+      } finally {
+        reassignSaveBtn.removeAttribute('loading');
+      }
+    });
 
     // Stats update after table loads
     table.addEventListener('loading-end', () => {
@@ -313,6 +415,28 @@ class UsersPage extends HTMLElement {
         }
       }).catch(() => {});
     }
+
+    const syncBtn = this.querySelector('#btn-sync-azure');
+    syncBtn.addEventListener('click', async () => {
+      syncBtn.setAttribute('loading', '');
+      try {
+        const res = await window.syncAzureDirectory();
+        if (!res.ok) throw new Error(await res.text());
+        const summary = await res.json();
+        const errorCount = (summary.errors || []).length;
+        showToast(
+          `Synced: ${summary.departments_created} department(s), ${summary.teams_created} team(s), ` +
+          `${summary.users_created} new user(s) (${summary.users_skipped_existing} already in the system)` +
+          (errorCount ? ` — ${errorCount} error(s), see console` : '')
+        );
+        if (errorCount) console.warn('directory sync errors:', summary.errors);
+        table.refresh();
+      } catch (e) {
+        showToast(`Directory sync failed: ${e.message}`);
+      } finally {
+        syncBtn.removeAttribute('loading');
+      }
+    });
 
     // Create modal — POST /users takes no password; the server returns
     // one-time credentials (access_key/access_secret) in the 201 body,
@@ -427,6 +551,13 @@ class UsersPage extends HTMLElement {
         this.querySelector('#edit-display-name').value = btn.dataset.displayName || '';
         this.querySelector('#edit-password').value = '';
         editModal.open();
+      } else if (action === 'reassign') {
+        reassigningId = id;
+        this.querySelector('#reassign-target').textContent = `Assigning: ${btn.dataset.name || 'this user'}`;
+        reassignDept.value = btn.dataset.departmentId || '';
+        reassignTeam.value = btn.dataset.teamId || '';
+        filterTeamsByDepartment();
+        reassignModal.open();
       } else if (action === 'delete') {
         if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
         try {
