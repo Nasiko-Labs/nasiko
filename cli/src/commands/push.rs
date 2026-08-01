@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 
 use crate::api::Client;
 use crate::oci;
+use crate::util::parse_image_name_and_tag;
 
 /// Push an agent image to the cluster's OCI registry and register in catalog.
 /// Does NOT deploy a container.
@@ -58,27 +59,18 @@ fn push_from_directory(dir: &str, name_override: Option<&str>, client: &Client) 
 }
 
 fn push_from_image(image: &str, name_override: Option<&str>, client: &Client) -> Result<()> {
-    let agent_name = name_override.map(String::from).unwrap_or_else(|| {
-        image
-            .rsplit('/')
-            .next()
-            .unwrap_or(image)
-            .split(':')
-            .next()
-            .unwrap_or("agent")
-            .to_string()
-    });
-    let version = image.split(':').nth(1).unwrap_or("latest");
+    let (image_name, version) = parse_image_name_and_tag(image);
+    let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
 
     println!("Pushing {image} → {repo}:{version}...");
-    oci::push_image(image, &repo, version)?;
+    oci::push_image(image, &repo, &version)?;
 
     let image_ref = format!("{repo}:{version}");
 
     // Register in catalog
     let card = serde_json::json!({});
-    register_agent(client, &agent_name, version, &image_ref, &card)?;
+    register_agent(client, &agent_name, &version, &image_ref, &card)?;
 
     println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
     println!("  Deploy with: nasiko deploy {image}");
@@ -122,6 +114,6 @@ fn register_agent(
         "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
         "capabilities": card.get("capabilities"),
     });
-    let _: serde_json::Value = client.post_json("/catalog/agents", &create)?;
+    let _: serde_json::Value = client.post_json("/agents", &create)?;
     Ok(())
 }

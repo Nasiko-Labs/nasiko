@@ -26,6 +26,18 @@ fn on_path(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Split a Docker image reference into `(name, tag)`, stripping any registry
+/// host/path prefix first so a `host:port/...` ref doesn't get its port
+/// mistaken for part of the name or tag (e.g. `localhost:5000/my-agent:v2` ->
+/// `("my-agent", "v2")`, not `("localhost", "5000/my-agent")`).
+pub fn parse_image_name_and_tag(image: &str) -> (String, String) {
+    let last_segment = image.rsplit('/').next().unwrap_or(image);
+    match last_segment.rsplit_once(':') {
+        Some((name, tag)) => (name.to_string(), tag.to_string()),
+        None => (last_segment.to_string(), "latest".to_string()),
+    }
+}
+
 pub fn extract_tar_gz(data: &[u8], dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)?;
     let cursor = Cursor::new(data);

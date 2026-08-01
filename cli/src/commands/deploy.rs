@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 
 use crate::api::{Client, ContainerStatus, DeploySpec};
 use crate::oci;
+use crate::util::parse_image_name_and_tag;
 
 const AGENT_FILE: &str = ".nasiko/agent.json";
 
@@ -208,10 +209,8 @@ fn deploy_from_image(
     env: &HashMap<String, String>,
     client: &Client,
 ) -> Result<()> {
-    let agent_name = name_override
-        .map(String::from)
-        .unwrap_or_else(|| image.split(':').next().unwrap_or("agent").replace('/', "-"));
-    let version = image.split(':').nth(1).unwrap_or("latest");
+    let (image_name, version) = parse_image_name_and_tag(image);
+    let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
 
     let image_ref = format!("{repo}:{version}");
@@ -222,7 +221,7 @@ fn deploy_from_image(
         .status();
 
     println!("Pushing {image} → {image_ref}...");
-    oci::push_image(image, &repo, version)?;
+    oci::push_image(image, &repo, &version)?;
 
     // Upsert agent in registry: update if exists, create otherwise.
     let existing: Option<serde_json::Value> = client
