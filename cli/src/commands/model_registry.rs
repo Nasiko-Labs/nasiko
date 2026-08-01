@@ -7,12 +7,13 @@
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::api::Client;
+use crate::api::{Client, unwrap_data};
 
 /// `nasiko model-registry ls` — list every configured (provider, tier) → model mapping.
 pub fn ls(json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
-    let rows: Vec<Value> = client.get_json("/model-registry")?;
+    let raw: Value = client.get_json("/model-registry")?;
+    let rows: Vec<Value> = unwrap_data(raw)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
