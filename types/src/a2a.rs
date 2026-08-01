@@ -179,20 +179,28 @@ pub fn extract_text(result: &serde_json::Value) -> Option<String> {
     let task = result.get("task").unwrap_or(result);
 
     // Parts within one artifact/message are contiguous chunks (streaming
-    // agents emit one part per token) — concatenate them directly. Only
+    // agents emit one part per token) — concatenate them directly. The same
+    // applies to consecutive artifacts sharing an artifactId (a2a servers
+    // accumulate each streamed chunk as its own artifact entry). Only
     // distinct artifacts get a newline between them.
     if let Some(artifacts) = task.get("artifacts").and_then(|a| a.as_array()) {
-        let mut artifact_texts = Vec::new();
+        let mut artifact_texts: Vec<String> = Vec::new();
+        let mut last_id: Option<&str> = None;
         for artifact in artifacts {
+            let id = artifact.get("artifactId").and_then(|v| v.as_str());
             if let Some(parts) = artifact.get("parts").and_then(|p| p.as_array()) {
                 let text: String = parts
                     .iter()
                     .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
                     .collect();
                 if !text.is_empty() {
-                    artifact_texts.push(text);
+                    match (id, last_id, artifact_texts.last_mut()) {
+                        (Some(id), Some(prev), Some(acc)) if id == prev => acc.push_str(&text),
+                        _ => artifact_texts.push(text),
+                    }
                 }
             }
+            last_id = id;
         }
         if !artifact_texts.is_empty() {
             return Some(artifact_texts.join("\n"));
@@ -573,6 +581,7 @@ mod sse_event_tests {
 
 #[cfg(test)]
 mod transport_path_tests {
+    use super::extract_text;
     use super::extract_transport_path;
     use serde_json::json;
 
@@ -606,5 +615,26 @@ mod transport_path_tests {
         );
         assert_eq!(extract_transport_path(&json!({})), None);
         assert_eq!(extract_transport_path(&json!({ "url": "not-a-url" })), None);
+    }
+
+    #[test]
+    fn extract_text_merges_same_artifact_chunks_without_newlines() {
+        // Streaming agents accumulate one artifact entry per chunk, all
+        // sharing an artifactId — they are pieces of one reply, not lines.
+        let result = json!({ "task": { "artifacts": [
+            { "artifactId": "a1", "parts": [{ "text": "Hello" }] },
+            { "artifactId": "a1", "parts": [{ "text": " world" }] },
+            { "artifactId": "a1", "parts": [{ "text": "." }] },
+        ]}});
+        assert_eq!(extract_text(&result).as_deref(), Some("Hello world."));
+    }
+
+    #[test]
+    fn extract_text_separates_distinct_artifacts_with_newline() {
+        let result = json!({ "artifacts": [
+            { "artifactId": "a1", "parts": [{ "text": "first" }] },
+            { "artifactId": "a2", "parts": [{ "text": "second" }] },
+        ]});
+        assert_eq!(extract_text(&result).as_deref(), Some("first\nsecond"));
     }
 }

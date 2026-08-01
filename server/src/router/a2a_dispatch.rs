@@ -193,6 +193,7 @@ pub async fn a2a_dispatch_handler(
         orchestrator_stream(
             &state,
             &query,
+            &text,
             &task_id,
             &context_id,
             user_id,
@@ -224,6 +225,7 @@ pub async fn a2a_dispatch_handler(
 async fn orchestrator_stream(
     state: &AppState,
     query: &str,
+    raw_text: &str,
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
@@ -235,7 +237,14 @@ async fn orchestrator_stream(
     // resume had no history to actually resume. `agent_id` is NULL here
     // (unlike agent_proxy's fixed target) since the orchestrator can route
     // to a different agent on every turn of the same session.
-    ensure_orchestrator_chat_session(state, context_id, user_id, query).await;
+    //
+    // Persist `raw_text` (what the caller actually typed), never `query`
+    // (history + raw_text already glued together by `with_current_query` at
+    // the call site) — storing the enriched blob here would nest: next
+    // turn's fetch would read this already-history-laden row back out and
+    // glue *another* copy of it in front of the next message, compounding
+    // turn over turn instead of growing linearly with real conversation.
+    ensure_orchestrator_chat_session(state, context_id, user_id, raw_text).await;
 
     let all_agents = AgentSelector::fetch_active_agents(&state.db)
         .await
@@ -695,36 +704,39 @@ async fn agent_stream(
     .execute(&state.db)
     .await;
 
-    // Non-streaming (`message/send`), not `build_stream_request`: every example
-    // agent's `a2a-sdk` (Python) SSE producer spins the event loop indefinitely
-    // rather than terminating (upstream bug, not fixable here) — the
-    // non-streaming path is fully supported by both sides (the SDK's own
-    // `message/send` handler, and the JSON-response fallback branch just below,
-    // which already wraps a plain JSON reply into this endpoint's own SSE stream
-    // for the caller).
-    let req_body = nasiko_types::a2a::build_send_request(query, Some(context_id));
+    // Streaming first (`message/stream`): agents that stream (all the Rust
+    // seed agents, and python a2a-sdk servers) deliver live tokens and tool
+    // activity. The SSE loop below terminates itself on the first terminal
+    // status event because the python a2a-sdk SSE producer never closes the
+    // stream on its own (upstream bug). Agents that answer with plain JSON
+    // (or reject `message/stream`) fall through to the non-streaming branch,
+    // which retries with `message/send`.
+    let req_body = nasiko_types::a2a::build_stream_request(query, Some(context_id));
 
-    let mut req = state
-        .http_client
-        .post(&endpoint)
-        .header("A2A-Version", "1.0")
-        .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
+    let build_agent_req = || {
+        let mut req = state
+            .http_client
+            .post(&endpoint)
+            .header("A2A-Version", "1.0")
+            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
 
-    // Mint a delegation token so this agent can call back into `/api/mcp`
-    // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
-    // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
-    // unavailable to this agent rather than failing the whole chat call.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-        && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
-            &jwt_secret,
-            &user_id.to_string(),
-            &agent.id.to_string(),
-        )
-    {
-        req = req.header("x-nasiko-agent-token", delegation_token);
-    }
+        // Mint a delegation token so this agent can call back into `/api/mcp`
+        // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
+        // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
+        // unavailable to this agent rather than failing the whole chat call.
+        if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+            && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
+                &jwt_secret,
+                &user_id.to_string(),
+                &agent.id.to_string(),
+            )
+        {
+            req = req.header("x-nasiko-agent-token", delegation_token);
+        }
+        req
+    };
 
-    let response = req
+    let response = build_agent_req()
         .json(&req_body)
         .send()
         .await
@@ -806,6 +818,12 @@ async fn agent_stream(
                                 }
                                 let normalized = normalize_agent_event(data, &task_id, &context_id);
                                 yield Ok(Event::default().data(normalized));
+                                // The python a2a-sdk never closes its SSE stream;
+                                // end the exchange on the task's terminal event.
+                                if is_terminal_event(data) {
+                                    agent_done = true;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -836,10 +854,25 @@ async fn agent_stream(
         Ok(Sse::new(stream).into_response())
     } else {
         // Non-streaming JSON — wrap as A2A stream
-        let resp_body: serde_json::Value = response
+        let mut resp_body: serde_json::Value = response
             .json()
             .await
             .map_err(|e| A2aDispatchError::Internal(format!("invalid agent JSON: {e}")))?;
+
+        // The agent rejected `message/stream` (e.g. method not found) —
+        // retry once with plain `message/send`.
+        if resp_body.get("error").is_some() {
+            let retry_body = nasiko_types::a2a::build_send_request(query, Some(&context_id));
+            let retry = build_agent_req()
+                .json(&retry_body)
+                .send()
+                .await
+                .map_err(|e| A2aDispatchError::Internal(format!("agent request failed: {e}")))?;
+            resp_body = retry
+                .json()
+                .await
+                .map_err(|e| A2aDispatchError::Internal(format!("invalid agent JSON: {e}")))?;
+        }
 
         let text = nasiko_types::a2a::extract_text(resp_body.get("result").unwrap_or(&resp_body))
             .unwrap_or_else(|| "No response".into());
@@ -1052,8 +1085,12 @@ pub async fn a2a_upload_handler(
         file_count
     );
 
+    // `query`/`raw_text` are the same value here — this multipart path always
+    // mints a fresh `context_id` above, so there's no prior history to fetch
+    // or enrich `query` with in the first place.
     orchestrator_stream(
         &state,
+        &query,
         &query,
         &task_id,
         &context_id,
@@ -1205,6 +1242,39 @@ fn extract_failure_message(data: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join("");
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// True when this SSE event is a terminal task status (completed/failed/
+/// canceled/rejected) or a final status-update — the python a2a-sdk never
+/// closes its SSE stream, so the proxy must end the exchange itself.
+fn is_terminal_event(data: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
+        return false;
+    };
+    let result = parsed.get("result").unwrap_or(&parsed);
+    let status_update = result
+        .get("statusUpdate")
+        .or_else(|| parsed.get("statusUpdate"))
+        .unwrap_or(result);
+    if let Some(state) = status_update
+        .pointer("/status/state")
+        .and_then(|s| s.as_str())
+    {
+        let state = state.to_ascii_lowercase();
+        if state.contains("completed")
+            || state.contains("failed")
+            || state.contains("canceled")
+            || state.contains("cancelled")
+            || state.contains("rejected")
+        {
+            return true;
+        }
+    }
+    // 0.3 dialect: {"result": {"kind": "status-update", "final": true}}
+    result
+        .get("final")
+        .and_then(|f| f.as_bool())
+        .unwrap_or(false)
 }
 
 fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {
