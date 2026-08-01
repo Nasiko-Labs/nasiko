@@ -448,18 +448,29 @@ pub(crate) async fn get_one(
     claims: Claims,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Soft-deleted agents must not resolve here: the `(owner_id, name)` uniqueness
+    // constraint is a partial index scoped to `deleted_at IS NULL`
+    // (`agents_owner_name_active_uniq`, oss/migrations/0001_schema.sql) — the schema's
+    // own intent is that a deleted agent's name is free for a fresh row to reuse.
+    // Without this filter, a caller redeploying under a previously-deleted name (e.g.
+    // `nasiko deploy` re-checking "does this name already exist") found the old
+    // deleted row instead of getting a clean "not found", updated it in place, and
+    // left it permanently invisible to `nasiko ps`/`rm` (which do filter deleted_at)
+    // even though its container was genuinely running again.
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
-            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
+            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1 AND deleted_at IS NULL")
                 .bind(uuid)
                 .fetch_optional(&state.db)
                 .await
         }
         Err(_) => {
-            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
-                .bind(&id)
-                .fetch_optional(&state.db)
-                .await
+            sqlx::query_as::<_, Agent>(
+                "SELECT * FROM agents WHERE name = $1 AND deleted_at IS NULL",
+            )
+            .bind(&id)
+            .fetch_optional(&state.db)
+            .await
         }
     };
 
