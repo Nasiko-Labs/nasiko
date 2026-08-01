@@ -559,16 +559,7 @@ fn share_target_label(user: Option<&str>, public: bool) -> String {
 /// the platform by their exact username, not just people the caller could
 /// find via `share-targets`.
 fn resolve_username_to_user_id(client: &Client, username: &str) -> Result<String> {
-    let encoded: String = username
-        .chars()
-        .flat_map(|c| {
-            if c.is_alphanumeric() || "-_.~".contains(c) {
-                vec![c]
-            } else {
-                format!("%{:02X}", c as u32).chars().collect()
-            }
-        })
-        .collect();
+    let encoded = crate::api::urlencode(username);
     let resp: Value = client.get_json(&format!("/mcp/share-targets/resolve?username={encoded}"))?;
     let data = resp.get("data").cloned().unwrap_or(Value::Null);
     let user_id = data.get("user_id").and_then(|v| v.as_str());
@@ -787,16 +778,7 @@ pub fn share_targets(query: &str, json: bool) -> Result<()> {
 }
 
 fn share_targets_with(client: &Client, query: &str, json: bool) -> Result<()> {
-    let encoded: String = query
-        .chars()
-        .flat_map(|c| {
-            if c.is_alphanumeric() || "-_.~".contains(c) {
-                vec![c]
-            } else {
-                format!("%{:02X}", c as u32).chars().collect()
-            }
-        })
-        .collect();
+    let encoded = crate::api::urlencode(query);
     let resp: Value = client.get_json(&format!("/mcp/share-targets?q={encoded}"))?;
     let users = resp
         .get("data")
@@ -1869,6 +1851,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_username_to_user_id_encodes_non_ascii_username_as_utf8_bytes() {
+        // 'ü' is U+00FC (code point 252) but its UTF-8 encoding is the two
+        // bytes 0xC3 0xBC — a hand-rolled encoder using the code point
+        // directly would send "%FC" here instead of the correct "%C3%BC",
+        // an invalid escape once the code point exceeds a single byte.
+        let mut server = mockito::Server::new();
+        let _lookup = server
+            .mock(
+                "GET",
+                "/api/mcp/share-targets/resolve?username=g%C3%BCnther",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data": {"user_id": "u-gunther", "username": "günther"}}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let id = resolve_username_to_user_id(&client, "günther").unwrap();
+        assert_eq!(id, "u-gunther");
+    }
+
+    #[test]
     fn share_remove_named_user_resolves_username_then_deletes_grants_users() {
         let mut server = mockito::Server::new();
         let _lookup = server
@@ -2084,6 +2087,22 @@ mod tests {
             .create();
         let client = Client::for_test(&server.url(), None);
         share_targets_with(&client, "alice smith", false).unwrap();
+    }
+
+    #[test]
+    fn share_targets_with_url_encodes_non_ascii_query_as_utf8_bytes() {
+        let mut server = mockito::Server::new();
+        // 'é' is U+00E9 (code point 233) but its UTF-8 encoding is the two
+        // bytes 0xC3 0xA9 — a hand-rolled encoder using the code point
+        // directly would send "%E9" here instead of the correct "%C3%A9".
+        server
+            .mock("GET", "/api/mcp/share-targets?q=caf%C3%A9")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":{"users":[]}}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        share_targets_with(&client, "café", false).unwrap();
     }
 
     #[test]
