@@ -154,17 +154,17 @@ async fn deploy(
                 let image = spec.image.clone();
                 let owner_id = claims.user_uuid().ok();
                 tokio::spawn(async move {
-                    // Write the live endpoint URL + running status back to the catalog.
-                    if !endpoint.is_empty() {
-                        let url = endpoint;
-                        let _ = sqlx::query(
-                            "UPDATE agents SET url = $1, status = 'running', updated_at = now() WHERE id = $2",
-                        )
-                        .bind(&url)
-                        .bind(agent_id)
-                        .execute(&db)
-                        .await;
-                    }
+                    // Write the live endpoint URL + running status + image back to
+                    // the catalog, so restart (which needs `image` to redeploy) works
+                    // for agents deployed through this ad-hoc path too.
+                    let _ = sqlx::query(
+                        "UPDATE agents SET url = COALESCE(NULLIF($1, ''), url), image = $2, status = 'running', updated_at = now() WHERE id = $3",
+                    )
+                    .bind(&endpoint)
+                    .bind(&image)
+                    .bind(agent_id)
+                    .execute(&db)
+                    .await;
 
                     // A first-time deploy-by-image has no agent_builds row (no
                     // server-side build job ran) — ensure_deployment_tracked
@@ -396,7 +396,15 @@ async fn restart(
     let image = crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &image);
 
     // Resolve env: vault (base) + agent secrets (override)
-    let env = resolve_full_env(&state, owner_id, agent_id).await;
+    let mut env = resolve_full_env(&state, owner_id, agent_id).await;
+    // Inject LLM router wiring so the redeployed agent routes through the gateway.
+    crate::llm_router::wiring::inject_agent_llm_env(
+        &state.db,
+        &mut env,
+        agent_id,
+        Some(owner_id),
+    )
+    .await;
 
     // Destroy the UUID-keyed workload (post-fix); fall back to the name-keyed one
     // for pre-fix containers so we don't leave a stale duplicate running.

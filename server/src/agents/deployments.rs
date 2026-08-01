@@ -337,7 +337,16 @@ pub(crate) async fn restart_deployment(
     let image = info.spec_image.unwrap_or_else(|| info.image.clone());
 
     // Resolve agent environment (platform vars + agent-specific secrets).
-    let secrets = state.agent_env(info.agent_id).await;
+    let mut secrets = state.agent_env(info.agent_id).await;
+    // Re-inject LLM router wiring (agent JWT + base URL) so the restarted agent
+    // keeps routing through the gateway. Best-effort — skipped if not configured.
+    crate::llm_router::wiring::inject_agent_llm_env(
+        &state.db,
+        &mut secrets,
+        info.agent_id,
+        info.owner_id,
+    )
+    .await;
 
     if let Some(k8s_name) = &info.k8s_deployment_name {
         // ── K8s path: scale-to-1 (avoids tearing down and recreating the Deployment) ──

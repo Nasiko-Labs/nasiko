@@ -18,7 +18,6 @@ use crate::github::load_github_token;
 use crate::state::AppState;
 
 use super::utils::{set_build_status, set_upload_status};
-use crate::catalog::agent_secrets;
 
 /// Max multipart body for an agent update (mirrors the upload router). Without
 /// this the update route inherited axum's 2 MiB default, and `field.bytes()`
@@ -492,7 +491,16 @@ pub async fn execute_agent_update(
         )
         .await;
 
-        let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
+        let mut env = state.agent_env(agent_id).await;
+        // Inject LLM router wiring (agent JWT + base URL) so the updated agent
+        // keeps routing through the gateway. Best-effort — skipped if not configured.
+        crate::llm_router::wiring::inject_agent_llm_env(
+            &state.db,
+            &mut env,
+            agent_id,
+            Some(owner_id),
+        )
+        .await;
         // Key on the agent UUID (not name) so the update re-targets the existing
         // workload instead of spawning an orphaned name-keyed duplicate (RUN-2/7).
         let mut spec = crate::agents::build_agent_spec(
@@ -500,7 +508,7 @@ pub async fn execute_agent_update(
             &name,
             image_tag.clone(),
             vec![],
-            secrets,
+            env,
             None,
         );
         crate::agents::attach_pull_credential(
@@ -874,7 +882,16 @@ pub async fn execute_agent_rollback(
         .execute(db)
         .await;
 
-    let secrets = agent_secrets::resolve_agent_env(db, agent_id).await;
+    let mut env = state.agent_env(agent_id).await;
+    // Inject LLM router wiring so the rolled-back agent keeps routing through the
+    // gateway. Best-effort — skipped if not configured.
+    crate::llm_router::wiring::inject_agent_llm_env(
+        &state.db,
+        &mut env,
+        agent_id,
+        Some(caller_id),
+    )
+    .await;
     // `agent_versions.image_tag` for OCI-push deploys stores the registry-relative
     // `nasiko/{name}:{tag}` as-is, which pulls from docker.io if applied unqualified
     // — qualify exactly as the ad-hoc deploy and restart paths do (no-op for refs
@@ -887,7 +904,7 @@ pub async fn execute_agent_rollback(
         &agent_name,
         image.clone(),
         vec![],
-        secrets,
+        env,
         None,
     );
     crate::agents::attach_pull_credential(
