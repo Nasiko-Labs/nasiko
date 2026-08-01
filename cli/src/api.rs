@@ -118,6 +118,12 @@ impl Client {
         &self.base_url
     }
 
+    /// The caller's own user id, decoded locally from the stored JWT's `sub`
+    /// claim. `None` if there's no token, or it's not a JWT this can decode.
+    pub fn current_user_id(&self) -> Option<String> {
+        crate::config::token_subject(self.token.as_deref()?)
+    }
+
     fn api_url(&self, path: &str) -> String {
         format!("{}/api{}", self.base_url, path)
     }
@@ -183,6 +189,24 @@ impl Client {
             .call()
             .context("cannot reach control plane")?;
         if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        check_status(&mut resp, &url)?;
+        Ok(Some(resp.body_mut().read_json()?))
+    }
+
+    /// GET returning `Ok(None)` on 403 instead of erroring. For endpoints where
+    /// a 403 means "not entitled yet" rather than a real error — e.g. GitHub
+    /// repositories before the account is connected — so callers can show a
+    /// friendly "not connected" message instead of a raw HTTP error.
+    pub fn get_json_optional_on_forbidden<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+    ) -> Result<Option<T>> {
+        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
+        let url = self.api_url(path);
+        let mut resp = self.auth_get(&url).call().context("request failed")?;
+        if resp.status().as_u16() == 403 {
             return Ok(None);
         }
         check_status(&mut resp, &url)?;
@@ -281,6 +305,20 @@ impl Client {
         Ok(())
     }
 
+    /// DELETE and parse the JSON response body (for endpoints that return
+    /// details about what was torn down, e.g. `DELETE /agents/{id}`).
+    pub fn delete_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
+        let url = self.api_url(path);
+        let mut req = self.agent.delete(&url);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let mut resp = req.call().context("request failed")?;
+        check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
     /// DELETE and parse a JSON response body (for routes that return a
     /// descriptive body — e.g. a disconnect confirmation message — instead
     /// of a bare 204).
@@ -323,6 +361,25 @@ impl Client {
             .call()
             .context("cannot reach control plane")?;
         check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
+    /// Like `get_public_json`, but parses and returns the body regardless of
+    /// HTTP status — for endpoints that intentionally signal degraded state
+    /// via a non-2xx code (e.g. `/readiness` returns 503 exactly when the
+    /// caller most needs to see the per-subsystem breakdown in the body,
+    /// not have it discarded in favor of a raw HTTP-error message).
+    pub fn get_public_json_any_status<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+    ) -> Result<T> {
+        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
+        let url = self.raw_url(path);
+        let mut resp = self
+            .agent
+            .get(&url)
+            .call()
+            .context("cannot reach control plane")?;
         Ok(resp.body_mut().read_json()?)
     }
 
@@ -993,6 +1050,7 @@ pub struct McpBuildStatus {
 #[derive(Debug, Deserialize, Tabled)]
 pub struct AgentRecord {
     #[tabled(rename = "ID")]
+    #[serde(alias = "agent_id")]
     pub id: String,
     #[tabled(rename = "NAME")]
     pub name: String,
@@ -1018,6 +1076,12 @@ pub struct AgentRecord {
     #[tabled(skip)]
     #[serde(default)]
     pub description: Option<String>,
+    /// Consumed by `agents ps` to split "Created by you" vs "Shared with
+    /// you" (mirrors `nasiko mcp connector list`) — not shown as a column
+    /// itself, since the section header already conveys it.
+    #[tabled(skip)]
+    #[serde(default)]
+    pub owner_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1037,6 +1101,26 @@ pub struct UploadQueued {
     pub status_code: u16,
     #[serde(default)]
     pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeploymentRecord {
+    pub id: String,
+    pub agent_id: String,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub replicas: i32,
+    #[serde(default)]
+    pub service_url: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub crash_reason: Option<String>,
+    #[serde(default)]
+    pub crashed_at: Option<String>,
+    #[serde(default)]
+    pub restart_count: i32,
 }
 
 #[derive(Debug, Deserialize, Tabled, Default)]
@@ -1063,6 +1147,16 @@ pub struct UploadedAgent {
     #[tabled(rename = "URL", display = "opt_dash")]
     #[serde(default)]
     pub url: Option<String>,
+}
+
+/// Response from `DELETE /agents/{id}` — full teardown: every container for
+/// the agent is destroyed and the catalog row itself is deleted.
+#[derive(Debug, Deserialize)]
+pub struct DeletedAgent {
+    #[serde(default)]
+    pub containers_stopped: usize,
+    #[serde(default)]
+    pub runtime_errors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

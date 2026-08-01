@@ -19,7 +19,7 @@ pub fn status() -> Result<()> {
 
     let client = Client::from_active_cluster()?;
 
-    let readiness: serde_json::Value = client.get_public_json("/readiness")?;
+    let readiness: serde_json::Value = client.get_public_json_any_status("/readiness")?;
     let check = |key: &str| -> &str {
         if readiness
             .get(key)
