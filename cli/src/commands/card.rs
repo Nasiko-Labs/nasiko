@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::Result;
@@ -7,6 +8,14 @@ use dialoguer::{Confirm, Input};
 use crate::util;
 
 pub fn card(directory: &str, description: Option<&str>) -> Result<()> {
+    // `nasiko card <path>` is a natural mistake (the positional arg is the
+    // description; the directory is --dir). If the "description" is a path to
+    // an existing directory and --dir was left at its default, the user meant
+    // the directory.
+    let (directory, description) = match description {
+        Some(d) if directory == "." && Path::new(d).is_dir() => (d, None),
+        other => (directory, other),
+    };
     let root = Path::new(directory)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(directory).to_path_buf());
@@ -14,25 +23,33 @@ pub fn card(directory: &str, description: Option<&str>) -> Result<()> {
 
     println!("Agent Card Generator\n");
 
-    // Try LLM generation via CP
-    if try_generate_via_cp(&root, &card_path, description) {
-        return Ok(());
+    // Try LLM generation via CP; fall back to static generation, but tell the
+    // user WHY the CP path was skipped — "CP not available" hiding an auth or
+    // server error makes the real problem undiagnosable.
+    match try_generate_via_cp(&root, &card_path, description) {
+        Ok(()) => Ok(()),
+        Err(reason) => {
+            println!("LLM generation via CP skipped: {reason:#}");
+            println!("Falling back to static generation.\n");
+            generate_static(&root, &card_path, description)
+        }
     }
-
-    // Fallback: static generation
-    println!("CP not available — using static generation.\n");
-    generate_static(&root, &card_path, description)
 }
 
-fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>) -> bool {
-    let client = match crate::api::Client::from_active_cluster() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>) -> Result<()> {
+    let client = crate::api::Client::from_active_cluster()
+        .map_err(|e| anyhow::anyhow!("no active cluster ({e}) — run `nasiko connect`"))?;
 
+    // The server's /capabilities/generate requires source_code unconditionally
+    // (there's nothing to generate a card *from* without code) — bailing here
+    // whenever there's no source, not just when there's also no description,
+    // avoids a request the CLI already knows is doomed to fail.
     let source = collect_source(root);
-    if source.is_none() && description.is_none() {
-        return false;
+    if source.is_none() {
+        anyhow::bail!(
+            "no source files found in '{}' — LLM generation requires source code",
+            root.display()
+        );
     }
 
     let agent_name = root
@@ -51,118 +68,85 @@ fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>)
         body["description"] = serde_json::Value::String(desc.to_string());
     }
 
-    let resp: Result<serde_json::Value, _> = client.post_json("/capabilities/generate", &body);
-    match resp {
-        Ok(resp) => {
-            if let Some(generated) = resp.get("card") {
-                let existing = load_existing_card(card_path);
-                let card = merge_generated_card(existing, generated, root);
-                let json = serde_json::to_string_pretty(&card).unwrap_or_default();
-                if fs::write(card_path, &json).is_ok() {
-                    let tokens = resp
-                        .get("tokens_used")
-                        .and_then(|t| t.as_i64())
-                        .unwrap_or(0);
-                    println!("✓ Wrote AgentCard.json (LLM, {} tokens)", tokens);
-                    return true;
-                }
-            }
-            false
-        }
-        Err(_) => false,
-    }
+    let resp: serde_json::Value = client
+        .post_json("/capabilities/generate", &body)
+        .map_err(|e| anyhow::anyhow!("CP request failed: {e}"))?;
+    let generated = resp
+        .get("card")
+        .ok_or_else(|| anyhow::anyhow!("CP response has no 'card' field"))?;
+    let card = complete_card(generated, &agent_name, &load_existing_card(card_path));
+    let json = serde_json::to_string_pretty(&card)?;
+    fs::write(card_path, &json)
+        .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", card_path.display()))?;
+    let tokens = resp
+        .get("tokens_used")
+        .and_then(|t| t.as_i64())
+        .unwrap_or(0);
+    println!("✓ Wrote AgentCard.json (LLM, {} tokens)", tokens);
+    Ok(())
 }
 
-/// Overlay the LLM-generated fields (description, skills, tags, capabilities,
-/// I/O modes, framework) onto the existing AgentCard.json — or a fresh
-/// skeleton if there isn't one — instead of replacing the file wholesale.
-/// `GeneratedCard` (server-side) only carries the fields an LLM can infer from
-/// source; it has no opinion on `name`/`version`/`protocolVersion`/`url`/
-/// `preferredTransport`, so those must survive from what's already on disk.
-fn merge_generated_card(
-    existing: Option<serde_json::Value>,
+/// The CP's capability generator returns only what it can infer from source
+/// (description, skills, capabilities, modes, framework...). A publishable
+/// A2A card also needs identity fields — merge in `name`, `version`,
+/// `protocolVersion`, `url`, etc., preferring values from a pre-existing
+/// card so regeneration never loses them.
+fn complete_card(
     generated: &serde_json::Value,
-    root: &Path,
+    agent_name: &str,
+    existing: &Option<serde_json::Value>,
 ) -> serde_json::Value {
-    let mut card = existing.unwrap_or_else(|| default_card_skeleton(root));
-    let obj = card
-        .as_object_mut()
-        .expect("AgentCard.json must be a JSON object");
+    let mut card = generated.clone();
+    let Some(map) = card.as_object_mut() else {
+        return card;
+    };
 
-    for (generated_key, card_key) in [
-        ("description", "description"),
-        ("skills", "skills"),
-        ("tags", "tags"),
-        ("capabilities", "capabilities"),
-        ("default_input_modes", "defaultInputModes"),
-        ("default_output_modes", "defaultOutputModes"),
-    ] {
-        if let Some(value) = generated.get(generated_key) {
-            obj.insert(card_key.to_string(), value.clone());
-        }
-    }
-    if let Some(framework) = generated.get("framework").and_then(|v| v.as_str()) {
-        obj.insert("agentFramework".to_string(), serde_json::json!(framework));
+    let keep = |field: &str, default: serde_json::Value| {
+        existing
+            .as_ref()
+            .and_then(|e| e.get(field).cloned())
+            .unwrap_or(default)
+    };
+
+    let mut identity = serde_json::Map::new();
+    identity.insert(
+        "protocolVersion".into(),
+        keep("protocolVersion", "0.2.9".into()),
+    );
+    identity.insert("name".into(), keep("name", agent_name.into()));
+    identity.insert("version".into(), keep("version", "0.1.0".into()));
+    identity.insert("url".into(), keep("url", "http://localhost:8000/".into()));
+    identity.insert(
+        "preferredTransport".into(),
+        keep("preferredTransport", "JSONRPC".into()),
+    );
+    // The generator emits lowercase `framework` (fastapi, axum...); the card
+    // field is `agentFramework`. Prefer the existing card's value.
+    let framework = map
+        .get("framework")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let agent_framework = keep("agentFramework", framework);
+    if !agent_framework.is_null() {
+        identity.insert("agentFramework".into(), agent_framework);
     }
 
+    for (key, value) in identity {
+        map.entry(key).or_insert(value);
+    }
     card
 }
 
-fn default_card_skeleton(root: &Path) -> serde_json::Value {
-    let dir_name = root
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
+/// Cap on total collected source sent to the CP (keeps the request and the
+/// LLM prompt bounded for large repos).
+const MAX_TOTAL_SOURCE_BYTES: usize = 256_000;
 
-    serde_json::json!({
-        "protocolVersion": "0.2.9",
-        "name": dir_name,
-        "description": "",
-        "url": "http://localhost:8000/",
-        "preferredTransport": "JSONRPC",
-        "provider": {
-            "organization": "Nasiko",
-            "url": "https://nasiko.com"
-        },
-        "version": "0.1.0",
-        "capabilities": {
-            "streaming": false,
-            "pushNotifications": false,
-            "stateTransitionHistory": false
-        },
-        "securitySchemes": {},
-        "security": [],
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain"],
-        "skills": []
-    })
-}
-
+/// Collect agent source for capability generation — any language. File
+/// selection rules are shared with the server's archive reader
+/// (nasiko_utils::source_files), so local and uploaded generation agree.
 fn collect_source(root: &Path) -> Option<String> {
     let mut source = String::new();
-
-    // Collect Python sources
-    let src_dir = root.join("src");
-    if src_dir.is_dir() {
-        collect_dir_sources(&src_dir, &mut source);
-    }
-
-    // Collect Go sources
-    let cmd_dir = root.join("cmd");
-    if cmd_dir.is_dir() {
-        collect_dir_sources(&cmd_dir, &mut source);
-    }
-
-    // Main file in root
-    for name in &["main.go", "main.py", "agent.py"] {
-        if let Ok(content) = fs::read_to_string(root.join(name)) {
-            source.push_str(&format!("// --- {name} ---\n"));
-            source.push_str(&content);
-            source.push('\n');
-        }
-    }
-
+    collect_dir_sources(root, root, &mut source);
     if source.is_empty() {
         None
     } else {
@@ -170,29 +154,75 @@ fn collect_source(root: &Path) -> Option<String> {
     }
 }
 
-fn collect_dir_sources(dir: &Path, out: &mut String) {
+fn collect_dir_sources(root: &Path, dir: &Path, out: &mut String) {
+    use nasiko_utils::source_files::{MAX_SOURCE_FILE_BYTES, SKIP_DIRS, is_agent_source_file};
+
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
     for entry in entries.flatten() {
+        if out.len() >= MAX_TOTAL_SOURCE_BYTES {
+            return;
+        }
         let path = entry.path();
-        if path.is_file() {
-            let ext = path.extension().unwrap_or_default().to_string_lossy();
-            if matches!(ext.as_ref(), "py" | "go") {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if let Ok(content) = fs::read_to_string(&path) {
-                    out.push_str(&format!("// --- {name} ---\n"));
-                    out.push_str(&content);
-                    out.push('\n');
-                }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if path.is_dir() {
+            if !SKIP_DIRS.contains(&name.as_ref()) && !name.starts_with('.') {
+                collect_dir_sources(root, &path, out);
             }
+            continue;
+        }
+        if !is_agent_source_file(&name) {
+            continue;
+        }
+        let too_large = entry
+            .metadata()
+            .map(|m| m.len() > MAX_SOURCE_FILE_BYTES)
+            .unwrap_or(true);
+        if too_large {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&path) {
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+            out.push_str(&format!("// --- {rel} ---\n"));
+            out.push_str(&content);
+            out.push('\n');
         }
     }
 }
 
+/// Ask for a string when stdin is a terminal; otherwise take the default
+/// silently (echoed for the record). `nasiko card` must work in scripts and
+/// CI, where dialoguer's prompts error out with "not a terminal".
+fn prompt_str(interactive: bool, prompt: &str, default: String) -> Result<String> {
+    if !interactive {
+        println!("  {prompt}: {default}");
+        return Ok(default);
+    }
+    Ok(Input::new()
+        .with_prompt(prompt)
+        .default(default)
+        .interact_text()?)
+}
+
+fn prompt_bool(interactive: bool, prompt: &str, default: bool) -> Result<bool> {
+    if !interactive {
+        println!("  {prompt}: {default}");
+        return Ok(default);
+    }
+    Ok(Confirm::new()
+        .with_prompt(prompt)
+        .default(default)
+        .interact()?)
+}
+
 fn generate_static(root: &Path, card_path: &Path, user_description: Option<&str>) -> Result<()> {
     let existing = load_existing_card(card_path);
+    let interactive = std::io::stdin().is_terminal();
+    if !interactive {
+        println!("(non-interactive — using defaults; edit AgentCard.json to adjust)");
+    }
 
     let dir_name = root
         .file_name()
@@ -200,35 +230,36 @@ fn generate_static(root: &Path, card_path: &Path, user_description: Option<&str>
         .to_string_lossy()
         .to_string();
 
-    let name: String = Input::new()
-        .with_prompt("Agent name")
-        .default(existing_str(&existing, "name").unwrap_or(dir_name))
-        .interact_text()?;
+    let name = prompt_str(
+        interactive,
+        "Agent name",
+        existing_str(&existing, "name").unwrap_or(dir_name),
+    )?;
 
     let desc_default = user_description
         .map(String::from)
         .or_else(|| existing_str(&existing, "description"))
         .unwrap_or_default();
 
-    let description: String = Input::new()
-        .with_prompt("Description")
-        .default(desc_default)
-        .interact_text()?;
+    let description = prompt_str(interactive, "Description", desc_default)?;
 
-    let version: String = Input::new()
-        .with_prompt("Version")
-        .default(existing_str(&existing, "version").unwrap_or_else(|| "0.1.0".into()))
-        .interact_text()?;
+    let version = prompt_str(
+        interactive,
+        "Version",
+        existing_str(&existing, "version").unwrap_or_else(|| "0.1.0".into()),
+    )?;
 
-    let url: String = Input::new()
-        .with_prompt("Agent URL")
-        .default(existing_str(&existing, "url").unwrap_or_else(|| "http://localhost:8000/".into()))
-        .interact_text()?;
+    let url = prompt_str(
+        interactive,
+        "Agent URL",
+        existing_str(&existing, "url").unwrap_or_else(|| "http://localhost:8000/".into()),
+    )?;
 
-    let streaming = Confirm::new()
-        .with_prompt("Supports streaming?")
-        .default(existing_bool(&existing, &["capabilities", "streaming"]))
-        .interact()?;
+    let streaming = prompt_bool(
+        interactive,
+        "Supports streaming?",
+        existing_bool(&existing, &["capabilities", "streaming"]),
+    )?;
 
     let framework = detect_framework(root)
         .or_else(|| existing_str(&existing, "agentFramework"))
@@ -281,6 +312,8 @@ fn detect_framework(root: &Path) -> Option<String> {
         fs::read_to_string(&agent_py).ok()?
     } else if root.join("go.mod").exists() {
         return Some("a2a-go".into());
+    } else if root.join("Cargo.toml").exists() {
+        return Some("a2a-rs".into());
     } else {
         return None;
     };
