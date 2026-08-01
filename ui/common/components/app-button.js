@@ -123,6 +123,14 @@ styles.replaceSync(`@scope (app-button) {
     &:disabled {
       opacity: 0.5;
     }
+
+    /* Global reset sets svg { display: block } — lay the slotted content out
+       as inline flex so icon + label sit on one line with a consistent gap. */
+    .content {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-xs);
+    }
   }
 
   @keyframes btn-pulse {

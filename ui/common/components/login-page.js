@@ -56,8 +56,10 @@ class LoginPage extends HTMLElement {
       if (showMicrosoft) buttons += `<a href="/api/auth/oidc/login" class="btn-oauth">${icons.microsoft} Continue with Microsoft</a>`;
       if (showGithub) buttons += `<a href="/api/auth/github" class="btn-oauth">${GITHUB_ICON} Continue with GitHub</a>`;
       if (showGoogle) buttons += `<a href="${googleHref}" class="btn-oauth">${icons.google} Continue with Google</a>`;
+      // The divider separates the credentials form from the OAuth buttons —
+      // with no form above it, a lone "or" reads as a rendering glitch.
       oauthSection = `
-        <div class="divider">or</div>
+        ${showCredentials ? '<div class="divider">or</div>' : ''}
         <div class="oauth-section">${buttons}</div>
       `;
     }
