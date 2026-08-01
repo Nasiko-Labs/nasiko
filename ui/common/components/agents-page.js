@@ -97,7 +97,15 @@ class AgentsPage extends HTMLElement {
         counts.set(t, (counts.get(t) || 0) + 1);
       }
     }
-    const cats = [...counts.entries()].sort((x, y) => y[1] - x[1]);
+    // Top categories only — every distinct tag as a tab sprawls on big
+    // fleets. Long-tail tags stay reachable through search (matches tags).
+    const cats = [...counts.entries()]
+      .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+      .slice(0, 5);
+    // Keep a selected long-tail category visible while it's active.
+    if (this.#activeCategory !== "all" && !cats.some(([c]) => c === this.#activeCategory)) {
+      cats.push([this.#activeCategory, counts.get(this.#activeCategory) || 0]);
+    }
     const tab = (key, label, n) =>
       `<button class="type-tab ${this.#activeCategory === key ? "active" : ""}" role="tab"
         aria-selected="${this.#activeCategory === key}" data-category="${this.#esc(key)}">
