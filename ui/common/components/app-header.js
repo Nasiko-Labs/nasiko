@@ -185,18 +185,18 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 34px;
-      height: 34px;
-      border-radius: var(--r-10);
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-md);
       color: var(--color-text-muted);
-      background: light-dark(var(--cream-50), var(--neutral-800));
-      border: 1px solid var(--border-canvas);
+      background: transparent;
+      border: none;
       cursor: pointer;
       flex-shrink: 0;
 
       &:hover {
         color: var(--color-text-main);
-        background: light-dark(var(--white), var(--neutral-700));
+        background: light-dark(color-mix(in srgb, var(--white) 45%, transparent), var(--neutral-800));
       }
     }
   }
@@ -274,7 +274,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     @media (min-width: 1024px) {
       flex-direction: column;
       overflow-x: visible;
-      gap: 6px;
+      gap: 2px;
       align-items: stretch;
       padding: 0 var(--space-sm);
     }
@@ -329,23 +329,21 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      padding: 9px var(--space-sm);
-      border-radius: var(--r-10);
-      background: light-dark(var(--cream-50), var(--neutral-800));
-      border: 1px solid light-dark(color-mix(in srgb, var(--cream-300) 55%, transparent), var(--neutral-700));
-      color: light-dark(var(--neutral-700), var(--neutral-200));
+      padding: 7px var(--space-sm);
+      border-radius: var(--radius-md);
+      background: transparent;
+      border: none;
+      color: light-dark(var(--neutral-600), var(--neutral-300));
       font-weight: 500;
-      transition: background-color 0.15s, border-color 0.15s;
+      transition: background-color 0.15s, color 0.15s;
 
       &:hover {
         color: var(--color-text-main);
-        background-color: light-dark(var(--white), var(--neutral-700));
-        border-color: var(--border-canvas);
+        background-color: light-dark(color-mix(in srgb, var(--white) 45%, transparent), var(--neutral-800));
       }
 
       &.is-active {
         background-color: var(--bg-secondary-brand);
-        border-color: light-dark(var(--yellow-200), var(--yellow-800));
         color: var(--color-text-main);
         font-weight: 600;
         &:hover {
@@ -361,12 +359,12 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     }
   }
 
-  /* Collapsed rail: square icon-only cards, icon stays 16px and centered. */
+  /* Collapsed rail: icon-only rows, icon stays 16px and centered. */
   :scope.is-collapsed .nav-link {
     @media (min-width: 1024px) {
       justify-content: center;
       gap: 0;
-      padding: 9px 0;
+      padding: 8px 0;
     }
   }
 
