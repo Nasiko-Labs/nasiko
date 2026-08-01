@@ -19,7 +19,7 @@ class SessionsPage extends HTMLElement {
     this.innerHTML = `
       <div class="sessions-header">
         <h1>Sessions</h1>
-        <app-button variant="primary" size="sm" id="btn-new">New Chat</app-button>
+        <app-button variant="dark" size="sm" id="btn-new">New Chat</app-button>
       </div>
       <div class="sessions-search-wrap">
         <span class="sessions-search-icon">${icons.search('', 16)}</span>
@@ -117,7 +117,7 @@ class SessionsPage extends HTMLElement {
           title="No sessions yet"
           description="Start a conversation from the orchestrator or an agent page."
           icon='${icons.send()}'>
-          <app-button variant="primary" size="sm" onclick="window.location.href='/index.html'">Start a Chat</app-button>
+          <app-button variant="dark" size="sm" onclick="window.location.href='/index.html'">Start a Chat</app-button>
         </app-empty-state>`;
       }
       return;

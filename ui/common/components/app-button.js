@@ -2,7 +2,7 @@
  * Styled button with variants, sizes, loading spinner, and disabled state.
  *
  * @element app-button
- * @attr {string} variant - Visual style: `primary` (default) | `secondary` | `ghost` | `danger`
+ * @attr {string} variant - Visual style: `primary` (default) | `secondary` | `ghost` | `danger` | `dark`
  * @attr {string} size - Size modifier: `sm` | (default medium)
  * @attr {boolean} disabled - Disables the button
  * @attr {boolean} loading - Shows a spinner and disables the button
@@ -92,6 +92,15 @@ styles.replaceSync(`@scope (app-button) {
 
       &:hover:not(:disabled) {
         background: color-mix(in srgb, var(--color-error) 85%, black);
+      }
+    }
+
+    &.is-dark {
+      background: light-dark(var(--neutral-900), var(--neutral-100));
+      color: light-dark(var(--white), var(--neutral-900));
+
+      &:hover:not(:disabled) {
+        opacity: 0.85;
       }
     }
 

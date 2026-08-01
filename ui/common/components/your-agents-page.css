@@ -38,49 +38,37 @@ your-agents-page:not(:defined) {
     margin: 0;
   }
 
-  /* ── Stats bar ───────────────────────────────────────────────────────────── */
-  .stats-bar {
+  /* ── Status tabs (matches the agent-catalog tabs) ───────────────────────── */
+  .type-tabs {
     display: flex;
     gap: var(--space-xs);
-    flex-wrap: wrap;
-    align-items: center;
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-md);
+    overflow-x: auto;
+    scrollbar-width: none;
   }
-  .stat-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    background: none;
-    border: 1px solid transparent;
-    border-radius: 999px;
-    padding: var(--space-2xs) var(--space-sm);
-    cursor: pointer;
-    font-size: var(--font-size-xs);
+  .type-tabs::-webkit-scrollbar { display: none; }
+  .type-tab {
+    padding: var(--space-xs) var(--space-sm);
+    min-height: 42px;
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
     font-family: inherit;
-    color: var(--color-text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
   }
-  .stat-chip:hover {
-    border-color: var(--color-border);
-    color: var(--color-text-main);
+  .type-tab:hover { color: var(--color-text-main); }
+  .type-tab.active {
+    color: var(--color-primary);
+    border-bottom-color: var(--color-primary);
+    font-weight: 600;
   }
-  .stat-chip--active {
-    border-color: var(--color-primary);
-    background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-    color: var(--color-text-main);
-  }
-  .chip-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--color-neutral);
-  }
-  .chip-dot.is-running { background: var(--color-success); }
-  .chip-dot.is-stopped { background: var(--color-neutral); }
-  .chip-dot.is-error { background: var(--color-error); }
-  .stat-total {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin-left: var(--space-xs);
-  }
+  .type-tab .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
 
   /* ── Toolbar ─────────────────────────────────────────────────────────────── */
   .toolbar {
@@ -198,6 +186,7 @@ your-agents-page:not(:defined) {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .agent-card:hover {
     border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
@@ -225,7 +214,7 @@ your-agents-page:not(:defined) {
   .card-status {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2xs);
+    gap: 6px;
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     flex-shrink: 0;

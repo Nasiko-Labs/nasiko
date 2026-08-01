@@ -11,23 +11,6 @@ const TABS = [
   { key: 'logs', label: 'Logs', icon: 'terminal' },
 ];
 
-/** Deterministic color from a string hash, mapped to pleasant palette. */
-function avatarColor(name) {
-  const colors = [
-    'var(--color-primary)',
-    'var(--color-success)',
-    'var(--color-warning)',
-    'var(--color-error)',
-    'var(--color-info)',
-  ];
-  let hash = 0;
-  const str = name || '?';
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return colors[Math.abs(hash) % colors.length];
-}
-
 class AgentCardPage extends HTMLElement {
   #initialized = false;
   #agent = null;
@@ -69,7 +52,6 @@ class AgentCardPage extends HTMLElement {
     const a = this.#agent;
     const displayName = a.display_name || a.name;
     const initial = (displayName || '?')[0].toUpperCase();
-    const bgColor = avatarColor(displayName);
 
     const tagsHtml = (a.tags || []).slice(0, 3).map(t =>
       `<span class="acp-tag">${this.#esc(t)}</span>`
@@ -101,13 +83,12 @@ class AgentCardPage extends HTMLElement {
     this.innerHTML = `
       <div class="acp-page">
         <div class="acp-header">
-          <a class="acp-back" href="/your-agents.html" title="Back to Your Agents">
+          <a class="acp-back" href="/your-agents.html" title="Back to Your Agents" aria-label="Back to Your Agents">
             ${icons.chevronLeft('', 18)}
-            <span class="acp-back-text">Your Agents</span>
           </a>
           <div class="acp-header-main">
             <div class="acp-header-title">
-              <div class="acp-avatar" style="background:${bgColor}">${initial}</div>
+              <div class="acp-avatar" aria-hidden="true">${initial}</div>
               <h1 class="acp-name">${this.#esc(displayName)}</h1>
               <span class="acp-version">v${this.#esc(a.version || '?')}</span>
             </div>

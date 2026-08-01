@@ -25,7 +25,7 @@ function parseImageTag(image) {
 class YourAgentsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
-  #statusFilter = null;
+  #statusFilter = "all";
   #sortBy = "name";
 
   connectedCallback() {
@@ -40,8 +40,8 @@ class YourAgentsPage extends HTMLElement {
             <p class="page-desc">Deployed agent containers you manage.</p>
           </div>
         </div>
-        <div class="stats-bar" id="stats-bar"></div>
       </div>
+      <div class="type-tabs" id="status-tabs" role="tablist"></div>
       <div class="toolbar">
         <div class="search-wrap">
           <span class="search-icon">${icons.search("", 18)}</span>
@@ -99,16 +99,11 @@ class YourAgentsPage extends HTMLElement {
       this.#renderGrid();
     });
 
-    this.querySelector("#stats-bar").addEventListener("click", (e) => {
-      const chip = e.target.closest(".stat-chip[data-filter]");
-      if (!chip) return;
-      const filter = chip.dataset.filter;
-      if (this.#statusFilter === filter) {
-        this.#statusFilter = null;
-      } else {
-        this.#statusFilter = filter;
-      }
-      this.#renderStats();
+    this.querySelector("#status-tabs").addEventListener("click", (e) => {
+      const tab = e.target.closest(".type-tab");
+      if (!tab) return;
+      this.#statusFilter = tab.dataset.status;
+      this.#renderTabs();
       this.#renderGrid();
     });
 
@@ -119,28 +114,27 @@ class YourAgentsPage extends HTMLElement {
   async #load() {
     const result = await window.fetchContainers("", 1, 100);
     this.#agents = result.data || [];
-    this.#renderStats();
+    this.#renderTabs();
     this.#renderGrid();
   }
 
-  #renderStats() {
+  #renderTabs() {
     const running = this.#agents.filter((a) => a.status === "running").length;
-    const stopped = this.#agents.filter((a) => a.status === "stopped").length;
-    const errored = this.#agents.filter(
+    const failed = this.#agents.filter(
       (a) => a.status === "error" || a.status === "failed",
     ).length;
+    const stopped = this.#agents.length - running - failed;
 
-    const chip = (filter, cls, count, label) => {
-      const active = this.#statusFilter === filter ? " stat-chip--active" : "";
-      return `<button class="stat-chip${active}" data-filter="${filter}"><span class="chip-dot ${cls}"></span>${count} ${label}</button>`;
-    };
+    const tab = (key, label, n) =>
+      `<button class="type-tab ${this.#statusFilter === key ? "active" : ""}" role="tab"
+        aria-selected="${this.#statusFilter === key}" data-status="${key}">
+        ${label}<span class="n">${n}</span></button>`;
 
-    this.querySelector("#stats-bar").innerHTML = `
-      ${chip("running", "is-running", running, "running")}
-      ${chip("stopped", "is-stopped", stopped, "stopped")}
-      ${errored ? chip("error", "is-error", errored, "error") : ""}
-      <span class="stat-total">${this.#agents.length} total</span>
-    `;
+    this.querySelector("#status-tabs").innerHTML =
+      tab("all", "All", this.#agents.length) +
+      tab("running", "Running", running) +
+      tab("stopped", "Stopped", stopped) +
+      tab("failed", "Failed", failed);
   }
 
   #updateClearBtn() {
@@ -172,13 +166,22 @@ class YourAgentsPage extends HTMLElement {
     const q = (this.querySelector("#search-input")?.value || "").toLowerCase();
     let filtered = this.#agents;
 
-    if (this.#statusFilter) {
-      if (this.#statusFilter === "error") {
+    if (this.#statusFilter !== "all") {
+      if (this.#statusFilter === "failed") {
         filtered = filtered.filter(
           (a) => a.status === "error" || a.status === "failed",
         );
+      } else if (this.#statusFilter === "running") {
+        filtered = filtered.filter((a) => a.status === "running");
       } else {
-        filtered = filtered.filter((a) => a.status === this.#statusFilter);
+        // "stopped" covers everything that isn't running or failed
+        // (stopped, deploying, starting, unknown).
+        filtered = filtered.filter(
+          (a) =>
+            a.status !== "running" &&
+            a.status !== "error" &&
+            a.status !== "failed",
+        );
       }
     }
 

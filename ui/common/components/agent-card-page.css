@@ -13,7 +13,7 @@ agent-card-page:not(:defined) {
   /* -- Header ------------------------------------------------------------ */
   .acp-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--space-md);
     margin-bottom: var(--space-md);
     flex-wrap: wrap;
@@ -21,27 +21,20 @@ agent-card-page:not(:defined) {
   .acp-back {
     display: flex;
     align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-xs) var(--space-sm);
+    justify-content: center;
+    width: 36px;
+    height: 36px;
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
     background: var(--color-bg-surface);
     color: var(--color-text-muted);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
     text-decoration: none;
     cursor: pointer;
     flex-shrink: 0;
-    white-space: nowrap;
   }
   .acp-back:hover {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-  }
-  .acp-back-text {
-    @media (max-width: 640px) {
-      display: none;
-    }
+    border-color: var(--color-text-muted);
+    color: var(--color-text-main);
   }
   .acp-header-main { flex: 1; min-width: 0; }
   .acp-header-title {
@@ -55,13 +48,15 @@ agent-card-page:not(:defined) {
   .acp-avatar {
     width: 36px;
     height: 36px;
-    border-radius: 50%;
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: var(--font-size-base);
     font-weight: 600;
-    color: #fff;
+    background: var(--color-bg-base);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-main);
     flex-shrink: 0;
     line-height: 1;
   }

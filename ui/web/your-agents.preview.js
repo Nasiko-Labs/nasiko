@@ -31,12 +31,12 @@ export default {
     },
     "filter-running": async (page) => {
       await page.waitForSelector(".agent-card-name");
-      await page.click('.stat-chip[data-filter="running"]');
+      await page.click('.type-tab[data-status="running"]');
       await page.waitForTimeout(200);
     },
-    "filter-error": async (page) => {
+    "filter-failed": async (page) => {
       await page.waitForSelector(".agent-card-name");
-      await page.click('.stat-chip[data-filter="error"]');
+      await page.click('.type-tab[data-status="failed"]');
       await page.waitForTimeout(200);
     },
     "sort-status": async (page) => {

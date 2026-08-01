@@ -261,6 +261,25 @@ agents-page:not(:defined) {
     color: var(--color-primary);
     background: color-mix(in srgb, var(--color-primary) 10%, transparent);
   }
+  .card-chat-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    background: light-dark(var(--neutral-900), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: opacity var(--transition-fast);
+  }
+  .card-chat-btn svg { flex-shrink: 0; }
+  .card-chat-btn:hover {
+    opacity: 0.85;
+    color: light-dark(var(--white), var(--neutral-900));
+  }
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */
   .skeleton-card {

@@ -62,6 +62,7 @@ export const icons = {
   send:  s(`<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>`),
   arrowUp: s(`<path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>`),
   arrowDown: s(`<path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>`),
+  arrowUpRight: s(`<line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/>`),
   refresh:       s(`<path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>`),
   cloudDownload: s(`<polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0018 9h-1.26A8 8 0 103 16.29"/>`),
   square:  s(`<rect x="3" y="3" width="18" height="18" rx="2" ry="2" fill="currentColor" stroke="none"/>`),
