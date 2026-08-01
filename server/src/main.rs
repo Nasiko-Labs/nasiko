@@ -48,7 +48,7 @@ async fn main() {
             Arc::new(nasiko_runtime::SimulatedRuntime::new(sim_agent_url))
         }
         _ => Arc::new(
-            nasiko_server::runtime::build_docker_runtime(&config)
+            nasiko_server::runtime::build_docker_runtime(&config, db.clone())
                 .await
                 .expect("failed to create Docker runtime"),
         ),
@@ -70,7 +70,13 @@ async fn main() {
 /// instead of relying on users to hard-refresh (assets aren't content-hashed,
 /// so a stale cached JS/CSS file would silently run against a new backend).
 /// 5 min is safe at a once-a-day deploy cadence; revisit if deploys get more frequent.
-const STATIC_CACHE_CONTROL: &str = "max-age=300, must-revalidate";
+// Debug builds serve from disk (rust-embed), so always revalidate there —
+// otherwise local UI edits appear stale for up to 5 minutes.
+const STATIC_CACHE_CONTROL: &str = if cfg!(debug_assertions) {
+    "no-cache"
+} else {
+    "max-age=300, must-revalidate"
+};
 
 async fn static_handler(req: Request<Body>) -> Response {
     let path = req.uri().path().trim_start_matches('/');
