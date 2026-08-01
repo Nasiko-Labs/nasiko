@@ -11,7 +11,14 @@ pub struct GeneratedCard {
     pub skills: Vec<Skill>,
     pub tags: Vec<String>,
     pub capabilities: GeneratedCapabilities,
+    // Serialize-only rename: the LLM's raw JSON response uses snake_case for
+    // these two fields (unlike `GeneratedCapabilities`' fields, which it
+    // reliably produces in camelCase), so deserializing this struct from that
+    // response must still accept `default_input_modes`/`default_output_modes`.
+    // Only the *outgoing* card sent to the client needs the A2A-spec camelCase.
+    #[serde(rename(serialize = "defaultInputModes"))]
     pub default_input_modes: Vec<String>,
+    #[serde(rename(serialize = "defaultOutputModes"))]
     pub default_output_modes: Vec<String>,
     /// Primary framework detected from imports/deps (fastapi, express, gin, axum, etc.), or null.
     pub framework: Option<String>,
@@ -61,32 +68,38 @@ impl CapabilityGenerator {
         let system_prompt = self.build_system_prompt();
         let user_prompt = self.build_user_prompt(source_code, agent_name, description);
 
-        let request = ChatCompletionRequest {
-            model: self.model.clone(),
-            messages: vec![
-                ChatMessage {
-                    role: "system".to_string(),
-                    content: Some(system_prompt),
-                },
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: Some(user_prompt),
-                },
-            ],
-            stream: false,
-            temperature: Some(0.2),
-            max_tokens: Some(4000),
-            response_format: Some(ResponseFormat::JsonSchema {
+        let request = self.build_request(
+            system_prompt.clone(),
+            user_prompt.clone(),
+            ResponseFormat::JsonSchema {
                 json_schema: JsonSchema {
                     name: "agent_card".to_string(),
                     strict: Some(true),
                     schema: Self::output_schema(),
                 },
-            }),
-            stream_options: None,
-        };
+            },
+        );
 
-        let result = self.provider.chat_completion(&request).await?;
+        let result = match self.provider.chat_completion(&request).await {
+            Ok(r) => r,
+            // Some OpenAI-compatible providers (e.g. DeepSeek) reject
+            // `json_schema` structured outputs. Retry once in plain
+            // `json_object` mode with the schema embedded in the prompt.
+            Err(e) if is_response_format_rejection(&e) => {
+                tracing::info!(
+                    "provider rejected json_schema response_format; retrying with json_object"
+                );
+                let prompt_with_schema = format!(
+                    "{system_prompt}\n\nRespond with a single JSON object (no prose, no \
+                     markdown fences) that conforms exactly to this JSON Schema:\n{}",
+                    Self::output_schema()
+                );
+                let request =
+                    self.build_request(prompt_with_schema, user_prompt, ResponseFormat::JsonObject);
+                self.provider.chat_completion(&request).await?
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         let mut card: GeneratedCard = serde_json::from_str(&result.content)
             .map_err(|e| GeneratorError::ParseError(e.to_string()))?;
@@ -112,6 +125,32 @@ impl CapabilityGenerator {
             .collect();
 
         Ok((card, result))
+    }
+
+    fn build_request(
+        &self,
+        system_prompt: String,
+        user_prompt: String,
+        response_format: ResponseFormat,
+    ) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: self.model.clone(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: Some(system_prompt),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(user_prompt),
+                },
+            ],
+            stream: false,
+            temperature: Some(0.2),
+            max_tokens: Some(4000),
+            response_format: Some(response_format),
+            stream_options: None,
+        }
     }
 
     fn build_system_prompt(&self) -> String {
@@ -286,6 +325,14 @@ Guidelines for transport detection:
     }
 }
 
+/// A 400 whose body blames `response_format` means the provider doesn't
+/// support `json_schema` structured outputs (DeepSeek: "This response_format
+/// type is unavailable now") — the retryable case, as opposed to a genuinely
+/// malformed request.
+fn is_response_format_rejection(e: &ProviderError) -> bool {
+    matches!(e, ProviderError::Api { status: 400, body } if body.contains("response_format"))
+}
+
 /// Split combined source text into (manifests, source_code).
 ///
 /// Files named `requirements.txt`, `package.json`, `Cargo.toml`, `go.mod`,
@@ -359,7 +406,32 @@ pub enum GeneratorError {
 
 #[cfg(test)]
 mod tests {
+    use super::is_response_format_rejection;
     use super::normalize_mime;
+    use nasiko_orchestrator::providers::ProviderError;
+
+    #[test]
+    fn response_format_400_is_retryable() {
+        let e = ProviderError::Api {
+            status: 400,
+            body: r#"{"error":{"message":"This response_format type is unavailable now"}}"#.into(),
+        };
+        assert!(is_response_format_rejection(&e));
+    }
+
+    #[test]
+    fn other_errors_are_not_retryable() {
+        let bad_request = ProviderError::Api {
+            status: 400,
+            body: "missing field 'messages'".into(),
+        };
+        assert!(!is_response_format_rejection(&bad_request));
+        let auth = ProviderError::Api {
+            status: 401,
+            body: "response_format".into(),
+        };
+        assert!(!is_response_format_rejection(&auth));
+    }
 
     #[test]
     fn normalizes_shorthand_mime_types() {
