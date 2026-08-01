@@ -221,6 +221,9 @@ aggregated by `ui/common/components.css`.
 - **Tokens**: DS names (`--bg-*`, `--fg-*`, `--border-*`, `--s-*`, `--r-*`) are canonical; legacy
   `--color-*` / `--space-*` / `--radius-*` names are aliases onto them. Use DS names in new code.
 - **Theme**: `light-dark()` follows the OS; `<html data-theme="light|dark">` pins it explicitly.
+  Users pick Light/Dark/System from the avatar menu (`app-user-menu`); the choice persists in
+  `localStorage["app-theme"]` and is applied on load by `common/utils/theme.js` (imported for its
+  side effect by `app-header` and `login-page`).
 - Text on brand/feedback action surfaces must use `var(--color-on-primary)` — never hardcoded
   `white`.
 - Elevation is flat: 1px borders carry depth; shadows only on card hover (`--shadow-card-hover`)

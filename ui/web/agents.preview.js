@@ -15,6 +15,20 @@ export default {
     ["GET /api/settings", { catalog_tabs: null }],
   ],
   scenarios: {
+    // Avatar menu with the Light/Dark/System theme switch (System default).
+    "user-menu": async (page) => {
+      await page.waitForSelector(".card-name");
+      await page.click("[data-user-toggle]");
+      await page.waitForSelector("[data-user-dropdown].is-visible");
+      await page.waitForTimeout(200);
+    },
+    // Dark pinned from the avatar menu — must override an emulated light OS.
+    "theme-dark-pinned": async (page) => {
+      await page.waitForSelector(".card-name");
+      await page.click("[data-user-toggle]");
+      await page.click('[data-theme-choice="dark"]');
+      await page.waitForTimeout(300);
+    },
     empty: async (page) => {
       await page.evaluate(() => {
         window.fetchAgents = async () => ({ data: [], total: 0 });

@@ -1,4 +1,5 @@
 import { icons } from '../utils/icons.js';
+import '../utils/theme.js'; // side effect: applies the pinned theme (no app-header here)
 import styles from './login-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
