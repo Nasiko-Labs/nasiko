@@ -12,16 +12,6 @@ function statusClass(status) {
   return "is-stopped";
 }
 
-function collectCategories(agents) {
-  const cats = new Set();
-  for (const a of agents) {
-    for (const t of a.tags || []) {
-      cats.add(t.toLowerCase());
-    }
-  }
-  return [...cats].sort();
-}
-
 class AgentsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
@@ -36,15 +26,13 @@ class AgentsPage extends HTMLElement {
         <h1 class="title">Agent Catalog</h1>
         <p class="subtitle" id="agent-count"></p>
       </div>
+      <div class="type-tabs" id="category-tabs" role="tablist"></div>
       <div class="controls">
         <div class="search-wrap">
           <span class="search-icon">${icons.search("", 18)}</span>
           <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability..." />
           <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
         </div>
-        <select id="category-filter" class="filter-select" aria-label="Filter by category">
-          <option value="all">All categories</option>
-        </select>
       </div>
       <div class="grid" id="agents-grid">${this.#skeletonCards()}</div>
     `;
@@ -62,8 +50,12 @@ class AgentsPage extends HTMLElement {
       input.focus();
     });
 
-    this.querySelector("#category-filter").addEventListener("change", (e) => {
-      this.#activeCategory = e.target.value;
+    // Category tab clicks are delegated — tabs re-render after data loads.
+    this.querySelector("#category-tabs").addEventListener("click", (e) => {
+      const tab = e.target.closest(".type-tab");
+      if (!tab) return;
+      this.#activeCategory = tab.dataset.category;
+      this.#renderFilter();
       this.#renderGrid();
     });
 
@@ -99,11 +91,20 @@ class AgentsPage extends HTMLElement {
   }
 
   #renderFilter() {
-    const cats = collectCategories(this.#agents);
-    const select = this.querySelector("#category-filter");
-    select.innerHTML =
-      `<option value="all">All categories</option>` +
-      cats.map((c) => `<option value="${c}">${c.charAt(0).toUpperCase() + c.slice(1)}</option>`).join("");
+    const counts = new Map();
+    for (const a of this.#agents) {
+      for (const t of a.tags || []) {
+        counts.set(t, (counts.get(t) || 0) + 1);
+      }
+    }
+    const cats = [...counts.entries()].sort((x, y) => y[1] - x[1]);
+    const tab = (key, label, n) =>
+      `<button class="type-tab ${this.#activeCategory === key ? "active" : ""}" role="tab"
+        aria-selected="${this.#activeCategory === key}" data-category="${this.#esc(key)}">
+        ${this.#esc(label)}<span class="n">${n}</span></button>`;
+    this.querySelector("#category-tabs").innerHTML =
+      tab("all", "All", this.#agents.length) +
+      cats.map(([c, n]) => tab(c, c.charAt(0).toUpperCase() + c.slice(1), n)).join("");
   }
 
   #updateClearBtn() {

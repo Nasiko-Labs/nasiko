@@ -156,13 +156,12 @@ class SessionsPage extends HTMLElement {
     const timeStr = time ? this.#relativeTime(new Date(time)) : '';
     const sessionId = s.session_id;
     const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
-    const avatarColor = this.#avatarColor(agentName);
     const initial = agentName.charAt(0).toUpperCase();
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
     const stats = this.#statsChips(this.#obsStats.get(sessionId));
 
     return `<a class="session-card" href="${href}">
-      <div class="session-avatar" style="background:${avatarColor}">${initial}</div>
+      <div class="session-avatar">${initial}</div>
       <div class="session-info">
         <div class="session-agent">${this.#esc(agentName)}${msgCount}</div>
         ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 120))}</div>` : ''}
@@ -248,15 +247,6 @@ class SessionsPage extends HTMLElement {
     } catch {
       if (card) card.style.opacity = '1';
     }
-  }
-
-  #avatarColor(name) {
-    let hash = 0;
-    for (let i = 0; i < name.length; i++) {
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    const hue = Math.abs(hash) % 360;
-    return `hsl(${hue}, 55%, 45%)`;
   }
 
   #relativeTime(date) {

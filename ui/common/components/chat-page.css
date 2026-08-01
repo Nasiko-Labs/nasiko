@@ -301,16 +301,38 @@ chat-page:not(:defined) {
   /* ── Skeleton loading ────────────────────────────────────────────────── */
   .msg-skel {
     display: flex;
-    margin-bottom: var(--space-md);
+    margin-bottom: var(--space-lg);
+    animation: chat-skel-pulse 1.6s ease-in-out infinite;
+
+    &:nth-child(2) { animation-delay: 0.15s; }
+    &:nth-child(3) { animation-delay: 0.3s; }
+    &:nth-child(4) { animation-delay: 0.45s; }
+
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+      opacity: 0.7;
+    }
   }
   .msg-skel.is-right {
     justify-content: flex-end;
   }
+  /* User prompt placeholder: mirrors the gold user bubble. */
+  .msg-skel-bubble {
+    height: 40px;
+    border-radius: var(--radius-lg, 14px);
+    background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-surface));
+  }
+  /* Assistant reply placeholder: a block of text lines. */
+  .msg-skel-block {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: var(--space-sm) 0;
+  }
   .msg-skel-line {
-    height: 36px;
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--color-text-muted) 15%, var(--color-bg-surface));
-    animation: chat-skel-pulse 1.4s ease-in-out infinite;
+    height: 13px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--color-text-muted) 14%, var(--color-bg-surface));
   }
 
   /* Markdown rendering: shared styles in /common/styles/markdown.css (.md-body) */

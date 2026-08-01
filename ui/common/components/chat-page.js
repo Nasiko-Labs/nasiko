@@ -44,9 +44,17 @@ class ChatPage extends HTMLElement {
     if (this.#sessionId) {
       const messagesEl = this.querySelector("#messages");
       messagesEl.innerHTML = `
-        <div class="msg-skel"><div class="msg-skel-line" style="width:60%"></div></div>
-        <div class="msg-skel is-right"><div class="msg-skel-line" style="width:45%"></div></div>
-        <div class="msg-skel"><div class="msg-skel-line" style="width:70%"></div></div>
+        <div class="msg-skel is-right"><div class="msg-skel-bubble" style="width:38%"></div></div>
+        <div class="msg-skel"><div class="msg-skel-block" style="width:78%">
+          <div class="msg-skel-line" style="width:96%"></div>
+          <div class="msg-skel-line" style="width:88%"></div>
+          <div class="msg-skel-line" style="width:61%"></div>
+        </div></div>
+        <div class="msg-skel is-right"><div class="msg-skel-bubble" style="width:24%"></div></div>
+        <div class="msg-skel"><div class="msg-skel-block" style="width:70%">
+          <div class="msg-skel-line" style="width:92%"></div>
+          <div class="msg-skel-line" style="width:44%"></div>
+        </div></div>
       `;
       this.#loadMessages(messagesEl);
     }

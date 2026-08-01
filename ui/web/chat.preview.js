@@ -50,6 +50,24 @@ export default {
       await page.hover('.msg-row.is-assistant:last-of-type .msg');
       await page.waitForTimeout(200);
     },
+    "history-skeleton": async (page) => {
+      // Hold the messages request forever so the skeleton stays visible
+      // (init script wins over the fixture fetch stub after reload).
+      await page.addInitScript(() => {
+        let real = window.fetch.bind(window);
+        Object.defineProperty(window, "fetch", {
+          configurable: true,
+          get: () => (url, opts) =>
+            String(url).includes("/messages") ? new Promise(() => {}) : real(url, opts),
+          // Let the fixture harness install its stub for everything else.
+          set: (v) => { real = v; },
+        });
+      });
+      const base = page.url().split("?")[0];
+      await page.goto(`${base}?agent_id=a-001&agent_name=Coding+Agent&session_id=s-001`);
+      await page.waitForSelector(".msg-skel");
+      await page.waitForTimeout(200);
+    },
     "streamed-response": async (page) => {
       // Submit a message and let the mocked SSE stream render live
       await page.fill('#textarea', 'How do I scale an agent?');

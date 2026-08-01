@@ -32,7 +32,7 @@ export default {
     },
     "filter-category": async (page) => {
       await page.waitForSelector(".card-name");
-      await page.selectOption("#category-filter", "finance");
+      await page.click('.type-tab[data-category="finance"]');
       await page.waitForTimeout(200);
     },
     "sidebar-collapsed": async (page) => {

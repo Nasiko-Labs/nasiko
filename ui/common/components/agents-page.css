@@ -34,6 +34,37 @@ agents-page:not(:defined) {
     margin: 0;
   }
 
+  /* ── Category tabs (registry-style) ─────────────────────────────────────── */
+  .type-tabs {
+    display: flex;
+    gap: var(--space-xs);
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-md);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .type-tabs::-webkit-scrollbar { display: none; }
+  .type-tab {
+    padding: var(--space-xs) var(--space-sm);
+    min-height: 42px;
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .type-tab:hover { color: var(--color-text-main); }
+  .type-tab.active {
+    color: var(--color-primary);
+    border-bottom-color: var(--color-primary);
+    font-weight: 600;
+  }
+  .type-tab .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
+
   /* ── Controls (search + filter) ──────────────────────────────────────────── */
   .controls {
     display: flex;
@@ -153,7 +184,7 @@ agents-page:not(:defined) {
   .card-status {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2xs);
+    gap: 6px;
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     flex-shrink: 0;

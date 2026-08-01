@@ -109,13 +109,15 @@ sessions-page:not(:defined) {
   .session-avatar {
     width: 36px;
     height: 36px;
-    border-radius: 50%;
+    border-radius: var(--r-10, 10px);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: var(--font-size-sm);
     font-weight: 600;
-    color: #fff;
+    color: light-dark(var(--yellow-800, #8a6d00), var(--yellow-200, #f4e3a1));
+    background: var(--bg-secondary-brand);
+    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
     flex-shrink: 0;
   }
 
@@ -173,20 +175,22 @@ sessions-page:not(:defined) {
   button.session-traces {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2xs);
-    padding: var(--space-2xs) var(--space-xs);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    background: var(--color-bg-surface);
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--border-canvas);
+    border-radius: var(--radius-full, 999px);
+    background: light-dark(var(--cream-50), var(--neutral-800));
     color: var(--color-text-muted);
     font-size: var(--font-size-xs);
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
     line-height: 1;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 
     &:hover {
-      color: var(--color-primary);
-      border-color: var(--color-primary);
+      color: var(--color-text-main);
+      background: var(--bg-secondary-brand);
+      border-color: light-dark(var(--yellow-200), var(--yellow-800));
     }
 
     &:focus-visible {
