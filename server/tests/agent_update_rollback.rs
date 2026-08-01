@@ -35,6 +35,22 @@ async fn init_admin(server: &common::TestServer) -> Value {
         .unwrap()
 }
 
+/// Seed a second, plain `users` row — needed whenever a test acts as a
+/// superuser distinct from the `init_admin` account, since `agent_builds
+/// .triggered_by` and similar columns carry a real FK to `users(id)`.
+async fn seed_user(server: &common::TestServer, user_id: &str) {
+    let uid: Uuid = user_id.parse().unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, email) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(uid)
+    .bind(format!("user_{}", &user_id[..8]))
+    .bind(format!("user_{}@test.example", &user_id[..8]))
+    .execute(&server.db)
+    .await
+    .expect("seed_user");
+}
+
 /// Create an agent via catalog and return its JSON (synchronous, no Docker).
 async fn create_agent(server: &common::TestServer, uid: &str, name: &str, version: &str) -> Value {
     let res = common::as_superuser(server.client.post(server.url("/api/agents")), uid, "admin")
@@ -630,6 +646,103 @@ async fn rollback_to_specific_eligible_version() {
     assert_eq!(res.status(), 202);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["rolled_back_to"].as_str().unwrap(), "1.0.0");
+
+    server.cleanup().await;
+}
+
+// ─── Owner-identity integrity: a superuser acting on someone else's agent ───
+//
+// Regression coverage for a real bug: `update`/`rollback` fetched the agent's
+// real owner from the DB, then discarded it and queued the background job
+// with the *caller's* id instead. When a superuser (not the owner) updates or
+// rolls back someone else's agent, this silently pointed the agent's
+// LLM-router wiring — and the persisted `agent_deployments.owner_id` used by
+// every future restart — at the superuser's account instead of the real
+// owner's. These tests seed an agent owned by one user, then act on it as a
+// *different* superuser, and assert the queued job carries the real owner.
+
+#[tokio::test]
+#[serial]
+async fn rollback_by_different_superuser_queues_job_with_real_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let owner_uid = admin["user_id"].as_str().unwrap();
+    let caller_uid = Uuid::new_v4().to_string();
+    seed_user(&server, &caller_uid).await;
+
+    let agent = create_agent(&server, owner_uid, "rollback-owner-guard-agent", "1.0.1").await;
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+
+    sqlx::query(
+        "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, can_rollback, status) \
+         VALUES ($1, '1.0.0', 'rollback-owner-guard-agent:1.0.0', false, true, 'archived')",
+    )
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // A different superuser (not the agent's owner) triggers the rollback.
+    let res = do_rollback(&server, &caller_uid, &agent_id.to_string(), None).await;
+    assert_eq!(res.status(), 202);
+
+    let payload: Value = sqlx::query_scalar(
+        "SELECT payload FROM build_jobs WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        payload["agent_owner_id"].as_str().unwrap(),
+        owner_uid,
+        "queued rollback job must carry the agent's real owner, not the caller"
+    );
+    assert_eq!(
+        payload["caller_id"].as_str().unwrap(),
+        caller_uid,
+        "the acting superuser should still be recorded as the caller for audit purposes"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn update_by_different_superuser_queues_job_with_real_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let owner_uid = admin["user_id"].as_str().unwrap();
+    let caller_uid = Uuid::new_v4().to_string();
+    seed_user(&server, &caller_uid).await;
+
+    let agent = create_agent(&server, owner_uid, "update-owner-guard-agent", "1.0.0").await;
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+
+    // A different superuser (not the agent's owner) triggers the update.
+    let zip = common::make_zip(&[NO_DOCKERFILE]);
+    let res = do_update(&server, &caller_uid, &agent_id.to_string(), None, Some(zip)).await;
+    assert_eq!(res.status(), 202);
+
+    let payload: Value = sqlx::query_scalar(
+        "SELECT payload FROM build_jobs WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        payload["agent_owner_id"].as_str().unwrap(),
+        owner_uid,
+        "queued update job must carry the agent's real owner, not the caller"
+    );
+    assert_eq!(
+        payload["owner_id"].as_str().unwrap(),
+        caller_uid,
+        "the acting superuser should still be recorded as owner_id for status/audit tracking"
+    );
 
     server.cleanup().await;
 }

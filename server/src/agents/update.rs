@@ -121,7 +121,7 @@ pub(crate) async fn update_agent(
             }
         };
 
-    let (agent_name, current_version, prev_image, _agent_owner_id) = match agent {
+    let (agent_name, current_version, prev_image, agent_owner_id) = match agent {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -302,6 +302,7 @@ pub(crate) async fn update_agent(
         build_id,
         agent_id,
         owner_id,
+        agent_owner_id,
         name: agent_name.clone(),
         zip_path,
         image_tag: image_tag.clone(),
@@ -410,6 +411,7 @@ pub async fn execute_agent_update(
     build_id: Uuid,
     agent_id: Uuid,
     owner_id: Uuid,
+    agent_owner_id: Uuid,
     name: String,
     source_data: Option<Vec<u8>>,
     image_tag: String,
@@ -494,11 +496,14 @@ pub async fn execute_agent_update(
         let mut env = state.agent_env(agent_id).await;
         // Inject LLM router wiring (agent JWT + base URL) so the updated agent
         // keeps routing through the gateway. Best-effort — skipped if not configured.
+        // Uses agent_owner_id (the agent's real owner), NOT owner_id (the caller) —
+        // a superuser/ACL-grantee updating someone else's agent must not cause that
+        // agent to resolve the caller's secrets/llm_config instead of its own owner's.
         crate::llm_router::wiring::inject_agent_llm_env(
             &state.db,
             &mut env,
             agent_id,
-            Some(owner_id),
+            Some(agent_owner_id),
         )
         .await;
         // Key on the agent UUID (not name) so the update re-targets the existing
@@ -602,13 +607,17 @@ pub async fn execute_agent_update(
             // so the crash guardian and restart can find/rebuild this workload after an
             // update (RUN-3/RUN-3b); without spec_ports, restart_deployment falls back
             // to a hardcoded port 8000 guess instead of the port this deploy actually used.
+            // owner_id here must be the agent's real owner (agent_owner_id), not the
+            // caller who triggered this update — restart_deployment reads this exact
+            // column and re-injects LLM wiring from it, so a wrong value here would
+            // corrupt every future restart's wiring too, not just this one.
             let _ = sqlx::query(
                 "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
                  VALUES ($1, $2, 'running', $3, $4, $5, $6)",
             )
             .bind(agent_id)
             .bind(build_id)
-            .bind(owner_id)
+            .bind(agent_owner_id)
             .bind(agent_id.to_string())
             .bind(&image_tag)
             .bind(&spec_ports)
@@ -723,7 +732,7 @@ pub(crate) async fn rollback_agent(
             }
         };
 
-    let (agent_name, current_version, _agent_owner_id) = match agent {
+    let (agent_name, current_version, agent_owner_id) = match agent {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -823,6 +832,7 @@ pub(crate) async fn rollback_agent(
         rollback_build_id,
         agent_id,
         caller_id,
+        agent_owner_id,
         agent_name: agent_name.clone(),
         target_version: target.version,
         target_image_tag: target.image_tag,
@@ -854,20 +864,27 @@ pub(crate) async fn rollback_agent(
         .into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_agent_rollback(
     state: AppState,
     rollback_build_id: Uuid,
     agent_id: Uuid,
     caller_id: Uuid,
+    agent_owner_id: Uuid,
     agent_name: String,
     target: AgentVersionRow,
     reason: Option<String>,
 ) {
     let db = &state.db;
 
-    if let Some(r) = &reason {
-        tracing::info!(build_id = %rollback_build_id, %agent_id, reason = %r, "agent rollback initiated");
-    }
+    tracing::info!(
+        build_id = %rollback_build_id,
+        %agent_id,
+        %caller_id,
+        %agent_owner_id,
+        reason = reason.as_deref().unwrap_or("none"),
+        "agent rollback initiated"
+    );
 
     set_build_status(db, rollback_build_id, BuildStatus::Building).await;
 
@@ -879,8 +896,16 @@ pub async fn execute_agent_rollback(
     let mut env = state.agent_env(agent_id).await;
     // Inject LLM router wiring so the rolled-back agent keeps routing through the
     // gateway. Best-effort — skipped if not configured.
-    crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(caller_id))
-        .await;
+    // Uses agent_owner_id (the agent's real owner), NOT caller_id — a superuser/
+    // ACL-grantee rolling back someone else's agent must not cause that agent to
+    // resolve the caller's secrets/llm_config instead of its own owner's.
+    crate::llm_router::wiring::inject_agent_llm_env(
+        &state.db,
+        &mut env,
+        agent_id,
+        Some(agent_owner_id),
+    )
+    .await;
     // `agent_versions.image_tag` for OCI-push deploys stores the registry-relative
     // `nasiko/{name}:{tag}` as-is, which pulls from docker.io if applied unqualified
     // — qualify exactly as the ad-hoc deploy and restart paths do (no-op for refs
@@ -947,13 +972,15 @@ pub async fn execute_agent_rollback(
             ));
 
             // Persist identity + image + ports for guardian/restart (RUN-3/RUN-3b), as on update.
+            // owner_id here must be the agent's real owner (agent_owner_id), not
+            // caller_id — see the identical note on the update path above.
             let _ = sqlx::query(
                 "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
                  VALUES ($1, $2, 'running', $3, $4, $5, $6)",
             )
             .bind(agent_id)
             .bind(rollback_build_id)
-            .bind(caller_id)
+            .bind(agent_owner_id)
             .bind(agent_id.to_string())
             .bind(&image)
             .bind(&spec_ports)

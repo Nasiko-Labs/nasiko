@@ -129,7 +129,15 @@ pub enum BuildJobPayload {
     Update {
         build_id: Uuid,
         agent_id: Uuid,
+        /// The caller who triggered this update (may differ from the agent's owner —
+        /// a superuser or ACL-grantee can update another user's agent). Used only for
+        /// status/audit tracking (`set_upload_status`, `build_jobs.owner_id`).
         owner_id: Uuid,
+        /// The agent's actual `agents.owner_id` — always the true owner, regardless of
+        /// who triggered the update. This is what must be injected into the LLM router
+        /// JWT and persisted to `agent_deployments.owner_id`, so the agent keeps
+        /// resolving its real owner's secrets/llm_config, not the caller's.
+        agent_owner_id: Uuid,
         name: String,
         /// Path to uploaded zip on disk, or `None` for a GitHub re-deploy.
         zip_path: Option<String>,
@@ -143,7 +151,13 @@ pub enum BuildJobPayload {
     Rollback {
         rollback_build_id: Uuid,
         agent_id: Uuid,
+        /// Whoever triggered the rollback (may differ from the agent's owner — a
+        /// superuser or ACL-grantee can roll back another user's agent). Used only
+        /// for status/audit tracking (`agent_builds.triggered_by`).
         caller_id: Uuid,
+        /// The agent's actual `agents.owner_id` — see the identical field on
+        /// `Update` for why this must be kept separate from `caller_id`.
+        agent_owner_id: Uuid,
         agent_name: String,
         target_version: String,
         target_image_tag: String,
