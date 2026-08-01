@@ -398,13 +398,8 @@ async fn restart(
     // Resolve env: vault (base) + agent secrets (override)
     let mut env = resolve_full_env(&state, owner_id, agent_id).await;
     // Inject LLM router wiring so the redeployed agent routes through the gateway.
-    crate::llm_router::wiring::inject_agent_llm_env(
-        &state.db,
-        &mut env,
-        agent_id,
-        Some(owner_id),
-    )
-    .await;
+    crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id))
+        .await;
 
     // Destroy the UUID-keyed workload (post-fix); fall back to the name-keyed one
     // for pre-fix containers so we don't leave a stale duplicate running.
