@@ -281,7 +281,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   }
 
   .nav-icon {
-    opacity: 0.6;
+    opacity: 0.75;
+    stroke-width: 2;
     flex-shrink: 0;
   }
   .nav-link:hover .nav-icon, .nav-link.is-active .nav-icon { opacity: 1; }
