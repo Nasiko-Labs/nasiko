@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::api::Client;
 
@@ -28,15 +28,15 @@ pub fn get(key: &str, agent: Option<&str>) -> Result<()> {
     let client = Client::from_active_cluster()?;
     match agent {
         Some(name) => {
-            let agent_id = resolve_agent_id(&client, name)?;
-            let resp: serde_json::Value =
-                client.get_json(&format!("/agents/{agent_id}/secrets/{key}"))?;
-            if let Some(v) = resp.get("value").and_then(|v| v.as_str()) {
-                println!("{v}");
-            }
+            // No server route decrypts and returns an agent secret's value (only
+            // list/set/delete exist) — agent secrets are write-only by design.
+            bail!(
+                "agent-scoped secrets are write-only — use `secrets ls --agent {name}` to see names, or `secrets set --agent {name}` to overwrite"
+            );
         }
         None => {
-            let resp: serde_json::Value = client.get_json(&format!("/secrets/{key}"))?;
+            let raw: serde_json::Value = client.get_json(&format!("/secrets/{key}"))?;
+            let resp: serde_json::Value = crate::api::unwrap_data(raw)?;
             if let Some(v) = resp.get("value").and_then(|v| v.as_str()) {
                 println!("{v}");
             }
@@ -63,7 +63,8 @@ pub fn ls(agent: Option<&str>) -> Result<()> {
             }
         }
         None => {
-            let secrets: Vec<serde_json::Value> = client.get_json("/secrets")?;
+            let raw: serde_json::Value = client.get_json("/secrets")?;
+            let secrets: Vec<serde_json::Value> = crate::api::unwrap_data(raw)?;
             if secrets.is_empty() {
                 println!("Vault is empty.");
                 return Ok(());
