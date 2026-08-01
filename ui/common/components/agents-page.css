@@ -1,7 +1,5 @@
 agents-page:not(:defined) {
   display: block;
-  max-width: 1200px;
-  margin: 0 auto;
   padding: var(--space-xl) var(--space-md);
   min-height: 400px;
 }
@@ -17,8 +15,6 @@ agents-page:not(:defined) {
 @scope (agents-page) {
   :scope {
     display: block;
-    max-width: 1200px;
-    margin: 0 auto;
     padding: var(--space-xl) var(--space-md);
   }
 

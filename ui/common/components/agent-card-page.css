@@ -7,8 +7,6 @@ agent-card-page:not(:defined) {
   :scope { display: block; }
 
   .acp-page {
-    max-width: 960px;
-    margin: 0 auto;
     padding: var(--space-lg) var(--space-md);
   }
 

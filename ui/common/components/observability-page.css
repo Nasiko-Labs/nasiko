@@ -1,8 +1,6 @@
 /* Observability — execution history: all sessions across agents. */
 observability-page:not(:defined) {
   display: block;
-  max-width: 1200px;
-  margin: 0 auto;
   padding: var(--space-lg) var(--space-xl);
   min-height: 400px;
 }
@@ -10,8 +8,6 @@ observability-page:not(:defined) {
 @scope (observability-page) {
   :scope {
     display: block;
-    max-width: 1200px;
-    margin: 0 auto;
     padding: var(--space-lg) var(--space-xl);
   }
 

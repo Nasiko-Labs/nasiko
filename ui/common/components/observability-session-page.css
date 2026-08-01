@@ -1,8 +1,6 @@
 /* Observability session detail — chat history | trace tree | span detail. */
 observability-session-page:not(:defined) {
   display: block;
-  max-width: 1400px;
-  margin: 0 auto;
   padding: var(--space-lg) var(--space-xl);
   min-height: 400px;
 }
@@ -10,8 +8,6 @@ observability-session-page:not(:defined) {
 @scope (observability-session-page) {
   :scope {
     display: block;
-    max-width: 1400px;
-    margin: 0 auto;
     padding: var(--space-lg) var(--space-xl);
   }
 

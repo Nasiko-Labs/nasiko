@@ -1,8 +1,6 @@
 /* LLM router — provider catalog grid + routing config setup. */
 llm-router-page:not(:defined) {
   display: block;
-  max-width: 1200px;
-  margin: 0 auto;
   padding: var(--space-lg) var(--space-xl);
   min-height: 400px;
 }
@@ -10,8 +8,6 @@ llm-router-page:not(:defined) {
 @scope (llm-router-page) {
   :scope {
     display: block;
-    max-width: 1200px;
-    margin: 0 auto;
     padding: var(--space-lg) var(--space-xl);
   }
 

@@ -1,8 +1,6 @@
 /* MCP gateway — connectors table, register/upload modals, agent access. */
 mcp-page:not(:defined) {
   display: block;
-  max-width: 1200px;
-  margin: 0 auto;
   padding: var(--space-lg) var(--space-xl);
   min-height: 400px;
 }
@@ -10,8 +8,6 @@ mcp-page:not(:defined) {
 @scope (mcp-page) {
   :scope {
     display: block;
-    max-width: 1200px;
-    margin: 0 auto;
     padding: var(--space-lg) var(--space-xl);
   }
 

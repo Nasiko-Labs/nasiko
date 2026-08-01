@@ -253,8 +253,30 @@ class ObservabilitySessionPage extends HTMLElement {
           content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
         }));
       }
+      // GenAI semconv shape (gen_ai.input/output.messages):
+      // [{role, parts: [{type:"text",content}|{type:"tool_call",name,arguments}|
+      //                 {type:"tool_call_response",response}]}]
+      if (Array.isArray(parsed)) {
+        return parsed.map((m) => ({
+          role: m.role || '',
+          content: Array.isArray(m.parts) ? m.parts.map((p) => this.#partText(p)).join('\n') : JSON.stringify(m),
+        }));
+      }
     } catch { /* plain text below */ }
     return [{ role: '', content: String(rawValue) }];
+  }
+
+  /** Render one GenAI semconv message part as display text. */
+  #partText(p) {
+    if (p?.type === 'tool_call') {
+      const args = typeof p.arguments === 'string' ? p.arguments : JSON.stringify(p.arguments ?? {});
+      return `⚒ ${p.name || 'tool'}(${args})`;
+    }
+    if (p?.type === 'tool_call_response') {
+      return typeof p.response === 'string' ? p.response : JSON.stringify(p.response ?? '');
+    }
+    if (typeof p?.content === 'string') return p.content;
+    return JSON.stringify(p ?? '');
   }
 
   async #loadChat() {

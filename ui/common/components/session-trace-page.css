@@ -2,8 +2,6 @@
   :scope {
     display: block;
     padding: var(--space-lg);
-    max-width: 960px;
-    margin: 0 auto;
   }
   .trace-header {
     display: flex;

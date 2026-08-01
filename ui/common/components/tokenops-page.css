@@ -1,8 +1,6 @@
 /* TokenOps dashboard — KPI strip, per-agent cost table, token usage strip. */
 tokenops-page:not(:defined) {
   display: block;
-  max-width: 1200px;
-  margin: 0 auto;
   padding: var(--space-lg) var(--space-xl);
   min-height: 400px;
 }
@@ -18,8 +16,6 @@ tokenops-page:not(:defined) {
 @scope (tokenops-page) {
   :scope {
     display: block;
-    max-width: 1200px;
-    margin: 0 auto;
     padding: var(--space-lg) var(--space-xl);
   }
 

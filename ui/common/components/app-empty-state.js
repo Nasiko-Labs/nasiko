@@ -47,6 +47,11 @@ export class AppEmptyState extends HTMLElement {
     const desc     = this.getAttribute('description') || '';
     const iconAttr = this.getAttribute('icon') || '';
     const hasIcon  = iconAttr || iconChild;
+    // `title` collides with the global HTML tooltip attribute — every
+    // browser would show it as a native hover tooltip duplicating the
+    // heading text below. Drop it from the DOM once consumed; it's only
+    // ever read here (no observedAttributes reactivity to preserve it for).
+    this.removeAttribute('title');
     this.innerHTML = `
       ${hasIcon ? `<div class="icon">${iconAttr}</div>` : ''}
       ${title ? `<p class="title">${title}</p>` : ''}

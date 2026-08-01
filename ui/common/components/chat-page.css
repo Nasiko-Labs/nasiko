@@ -2,8 +2,6 @@ chat-page:not(:defined) {
   display: flex;
   flex-direction: column;
   height: calc(100dvh - var(--app-header-height));
-  max-width: 760px;
-  margin: 0 auto;
   padding: 0 var(--space-md);
 }
 
@@ -12,8 +10,6 @@ chat-page:not(:defined) {
     display: flex;
     flex-direction: column;
     height: calc(100dvh - var(--app-header-height));
-    max-width: 760px;
-    margin: 0 auto;
     padding: 0 var(--space-md);
 
     @media (min-width: 1024px) {
@@ -92,6 +88,9 @@ chat-page:not(:defined) {
     overflow-y: auto;
     padding: var(--space-lg) 0;
     min-height: 0;
+    width: 100%;
+    max-width: 900px;
+    margin-inline: auto;
   }
 
   /* ── Welcome / empty state ───────────────────────────────────────────── */
@@ -269,6 +268,9 @@ chat-page:not(:defined) {
     border-top: 1px solid var(--color-border);
     background: transparent;
     flex-shrink: 0;
+    width: 100%;
+    max-width: 900px;
+    margin-inline: auto;
   }
 
   /* ── Skeleton loading ────────────────────────────────────────────────── */

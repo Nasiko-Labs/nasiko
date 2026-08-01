@@ -11,8 +11,6 @@ sessions-page:not(:defined) {
 @scope (sessions-page) {
   :scope {
     display: block;
-    max-width: 720px;
-    margin: 0 auto;
     padding: var(--space-lg) var(--space-md);
   }
 
@@ -84,15 +82,18 @@ sessions-page:not(:defined) {
     display: flex;
     align-items: center;
     gap: var(--space-md);
-    padding: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    min-height: 64px;
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-10, var(--radius-md));
     background: var(--color-bg-surface);
     text-decoration: none;
     color: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s;
 
     &:hover {
       border-color: var(--color-primary);
+      box-shadow: var(--shadow-sm);
 
       & .session-delete {
         opacity: 1;
@@ -149,9 +150,8 @@ sessions-page:not(:defined) {
 
   .session-meta {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: var(--space-2xs);
+    align-items: center;
+    gap: var(--space-xs);
     flex-shrink: 0;
   }
 
@@ -165,13 +165,13 @@ sessions-page:not(:defined) {
     opacity: 0;
     background: none;
     border: none;
-    padding: var(--space-sm);
+    padding: 0;
     border-radius: var(--radius-sm);
     cursor: pointer;
     color: var(--color-text-muted);
     line-height: 1;
-    min-width: 44px;
-    min-height: 44px;
+    width: 32px;
+    height: 32px;
     display: grid;
     place-items: center;
 

@@ -1,5 +1,6 @@
 import styles from './sessions-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
+import './app-button.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class SessionsPage extends HTMLElement {
