@@ -19,11 +19,15 @@ export default {
       const evt = (obj) => `data: ${JSON.stringify({ result: obj })}\n\n`;
       const dataMsg = (data) => ({ status: { state: "TASK_STATE_WORKING", message: { parts: [{ data }] } } });
       return { __stream: [
-        { text: evt({ statusUpdate: dataMsg({ type: "trace_meta", trace_id: "trace-preview-chat" }) }), delay: 50 },
+        { text: evt({ statusUpdate: dataMsg({ type: "trace_meta", trace_id: "trace-preview-chat" }) }), delay: 600 },
         { text: evt({ statusUpdate: dataMsg({ type: "thinking", content: "Analyzing the request..." }) }), delay: 150 },
         { text: evt({ statusUpdate: dataMsg({ type: "tool_call", agent: "devops-agent", message: "How do I scale an agent deployment?", turn: 1 }) }), delay: 150 },
-        { text: evt({ statusUpdate: dataMsg({ type: "sub_status", agent: "devops-agent", message: "Consulting deployment runbook..." }) }), delay: 200 },
+        { text: evt({ statusUpdate: dataMsg({ type: "sub_status", agent: "devops-agent", message: "Consulting deployment runbook..." }) }), delay: 100 },
+        { text: evt({ statusUpdate: dataMsg({ type: "sub_status", agent: "devops-agent", message: "Checking KEDA autoscaler limits..." }) }), delay: 100 },
         { text: evt({ statusUpdate: dataMsg({ type: "tool_result", agent: "devops-agent", result: "Use `nasiko scale` with --replicas; traffic is balanced round-robin.", success: true, turn: 1 }) }), delay: 250 },
+        // Working-status text chunks — cumulative sends, like python-SDK agents stream.
+        { text: evt({ statusUpdate: { status: { state: "TASK_STATE_WORKING", message: { parts: [{ text: "## Scaling agents\n\nUse the `scale`" }] } } } }), delay: 150 },
+        { text: evt({ statusUpdate: { status: { state: "TASK_STATE_WORKING", message: { parts: [{ text: "## Scaling agents\n\nUse the `scale` command with **replica count**:" }] } } } }), delay: 150 },
         { text: evt({ artifactUpdate: { artifact: { parts: [{ text: answer }] }, append: false } }), delay: 300 },
         { text: evt({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED", message: { parts: [{ text: answer }] } } } }), delay: 100 },
       ] };
@@ -52,6 +56,13 @@ export default {
       await page.click('#submitBtn');
       await page.waitForSelector('.stream-content.is-visible', { timeout: 8000 });
       await page.waitForTimeout(300);
+    },
+    // Just after submit: bouncing typing indicator, before any stream event.
+    "typing-indicator": async (page) => {
+      await page.fill('#textarea', 'How do I scale an agent?');
+      await page.click('#submitBtn');
+      await page.waitForSelector('.typing-indicator', { timeout: 5000 });
+      await page.waitForTimeout(150);
     },
     // Mid-stream: tool-call step visible and running.
     "streaming-steps": async (page) => {

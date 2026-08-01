@@ -147,10 +147,15 @@ class AgentSteps extends HTMLElement {
       case 'sub_status': {
         const step = this.#openStepFor(d.agent);
         if (step && d.message) {
-          const live = document.createElement('div');
-          live.className = 'step-live-line';
+          // One live line per step, updated in place — appending a new node
+          // per SSE event stacked every chunk on its own line.
+          let live = step.querySelector('.step-live-line');
+          if (!live) {
+            live = document.createElement('div');
+            live.className = 'step-live-line';
+            step.querySelector('.step-body').appendChild(live);
+          }
           live.textContent = truncate(d.message, 200);
-          step.querySelector('.step-body').appendChild(live);
         }
         if (d.message) this.#setLabel(`${d.agent}: ${truncate(d.message, 100)}`);
         break;

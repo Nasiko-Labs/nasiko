@@ -162,6 +162,7 @@ chat-page:not(:defined) {
     gap: var(--space-xs);
     margin-bottom: var(--space-md);
     position: relative;
+    animation: msg-enter 0.25s ease-out;
   }
   .msg-row.is-user {
     justify-content: flex-end;
@@ -273,6 +274,30 @@ chat-page:not(:defined) {
     margin-inline: auto;
   }
 
+  /* ── Typing indicator ────────────────────────────────────────────────── */
+  .typing-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: var(--space-sm) var(--space-xs);
+
+    & span {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--color-text-muted);
+      opacity: 0.4;
+      animation: chat-typing-bounce 1.2s ease-in-out infinite;
+
+      &:nth-child(2) { animation-delay: 0.15s; }
+      &:nth-child(3) { animation-delay: 0.3s; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      & span { animation: none; opacity: 0.6; }
+    }
+  }
+
   /* ── Skeleton loading ────────────────────────────────────────────────── */
   .msg-skel {
     display: flex;
@@ -289,6 +314,22 @@ chat-page:not(:defined) {
   }
 
   /* Markdown rendering: shared styles in /common/styles/markdown.css (.md-body) */
+}
+
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+@keyframes msg-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes msg-enter {
+    from, to { opacity: 1; transform: none; }
+  }
 }
 
 @keyframes chat-skel-pulse {

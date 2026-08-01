@@ -332,13 +332,27 @@ class ChatPage extends HTMLElement {
     const contentEl = document.createElement("div");
     contentEl.className = "stream-content md-body";
 
+    const typingEl = document.createElement("div");
+    typingEl.className = "typing-indicator";
+    typingEl.setAttribute("aria-label", "Agent is responding");
+    typingEl.innerHTML = "<span></span><span></span><span></span>";
+
     streamArea.appendChild(stepsEl);
+    streamArea.appendChild(typingEl);
     streamArea.appendChild(contentEl);
     streamRow.appendChild(streamArea);
     messagesEl.appendChild(streamRow);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
+    const showContent = (html) => {
+      typingEl.remove();
+      contentEl.classList.add("is-visible");
+      contentEl.innerHTML = html;
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
     let fullText = "";
+    let workingText = "";
     let traceId = null;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -368,20 +382,26 @@ class ChatPage extends HTMLElement {
             if (msg && msg.parts) {
               if (state === "TASK_STATE_COMPLETED") {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
-                if (text && !fullText) {
+                // The completed status carries the full reply — prefer it over
+                // any partial/replace-mode chunk accumulation.
+                if (text && text.length >= fullText.length) {
                   fullText = text;
                   stepsEl.finish();
-                  contentEl.classList.add("is-visible");
-                  contentEl.innerHTML = renderMarkdown(fullText);
-                  messagesEl.scrollTop = messagesEl.scrollHeight;
+                  showContent(renderMarkdown(fullText));
+                }
+              } else if (state === "TASK_STATE_WORKING") {
+                const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
+                if (text && !fullText) {
+                  // Live progress: cumulative senders re-send the full text so
+                  // far (prefix match → replace); delta senders append.
+                  workingText = text.startsWith(workingText) ? text : workingText + text;
+                  showContent(renderMarkdown(workingText));
                 }
               } else if (state === "TASK_STATE_FAILED") {
                 const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
                 if (text) {
                   stepsEl.finish();
-                  contentEl.classList.add("is-visible");
-                  contentEl.innerHTML = `<span style="color:var(--color-error)">${this.#esc(text)}</span>`;
-                  messagesEl.scrollTop = messagesEl.scrollHeight;
+                  showContent(`<span style="color:var(--color-error)">${this.#esc(text)}</span>`);
                 }
               }
               for (const part of msg.parts) {
@@ -411,9 +431,7 @@ class ChatPage extends HTMLElement {
                 fullText = text;
               }
               stepsEl.finish();
-              contentEl.classList.add("is-visible");
-              contentEl.innerHTML = renderMarkdown(fullText);
-              messagesEl.scrollTop = messagesEl.scrollHeight;
+              showContent(renderMarkdown(fullText));
             }
           }
         } catch {}
@@ -422,9 +440,15 @@ class ChatPage extends HTMLElement {
 
     // Finalize
     stepsEl.finish();
+    typingEl.remove();
+    if (!fullText && workingText) {
+      // Stream ended without a final artifact/completed text — keep the last
+      // working text rather than discarding what the user already saw.
+      fullText = workingText;
+      showContent(renderMarkdown(fullText));
+    }
     if (!fullText) {
-      contentEl.classList.add("is-visible");
-      contentEl.innerHTML = renderMarkdown("No response");
+      showContent(renderMarkdown("No response"));
       fullText = "No response";
     }
 
