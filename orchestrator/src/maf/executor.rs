@@ -784,21 +784,27 @@ async fn call_agent(
 }
 
 fn extract_text(json: &serde_json::Value) -> String {
-    if let Some(text) = json["result"]["task"]["artifacts"]
-        .as_array()
-        .and_then(|a| a.first())
-        .and_then(|a| a["parts"].as_array())
-        .and_then(|p| p.first())
-        .and_then(|p| p["text"].as_str())
-    {
-        return text.to_string();
-    }
-    if let Some(text) = json["result"]["task"]["status"]["message"]["parts"]
-        .as_array()
-        .and_then(|p| p.first())
-        .and_then(|p| p["text"].as_str())
-    {
-        return text.to_string();
+    // Some agent SDKs nest the task under `result.task`; the ones actually
+    // deployed here (confirmed live against `petra-assistant-demo`) return
+    // `result` itself AS the task object — `result.artifacts`, no `task`
+    // wrapper. Try both nestings for each shape so either SDK version works.
+    for root in [&json["result"]["task"], &json["result"]] {
+        if let Some(text) = root["artifacts"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|a| a["parts"].as_array())
+            .and_then(|p| p.first())
+            .and_then(|p| p["text"].as_str())
+        {
+            return text.to_string();
+        }
+        if let Some(text) = root["status"]["message"]["parts"]
+            .as_array()
+            .and_then(|p| p.first())
+            .and_then(|p| p["text"].as_str())
+        {
+            return text.to_string();
+        }
     }
     if let Some(text) = json["result"]["parts"]
         .as_array()
