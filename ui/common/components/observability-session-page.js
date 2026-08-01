@@ -49,7 +49,7 @@ class ObservabilitySessionPage extends HTMLElement {
     `;
 
     this.querySelector('#back-btn').addEventListener('click', () => {
-      window.location.href = '/observability.html';
+      window.location.href = '/sessions.html';
     });
     this.querySelector('#traces-pane').addEventListener('click', (e) => {
       const row = e.target.closest('.span-row');

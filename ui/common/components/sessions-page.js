@@ -6,6 +6,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 class SessionsPage extends HTMLElement {
   #initialized = false;
   #sessions = [];
+  #obsStats = new Map();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -53,8 +54,25 @@ class SessionsPage extends HTMLElement {
   async #load() {
     const list = this.querySelector('#session-list');
     try {
-      const result = await window.fetchSessions('', 1, 50);
-      const sessions = result?.data || [];
+      // Chat sessions are the primary source; observability stats (traces,
+      // tokens, latency) are joined in by session id — best-effort, the page
+      // works without them.
+      const [chatRes, obsRes] = await Promise.allSettled([
+        window.fetchSessions('', 1, 50),
+        window.fetchObservabilitySessions?.() ?? Promise.reject(),
+      ]);
+      if (chatRes.status === 'rejected') throw chatRes.reason;
+      const sessions = chatRes.value?.data || [];
+
+      this.#obsStats = new Map();
+      if (obsRes.status === 'fulfilled') {
+        const obsSessions = obsRes.value?.data?.sessions || obsRes.value?.sessions || [];
+        for (const o of obsSessions) {
+          const id = o.session_id || o.id;
+          if (id) this.#obsStats.set(id, o);
+        }
+      }
+
       this.#sessions = sessions;
       this.#renderSessions(sessions);
     } catch {
@@ -121,6 +139,14 @@ class SessionsPage extends HTMLElement {
         this.#deleteSession(sessionId);
       });
     });
+
+    list.querySelectorAll('.session-traces').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        window.location.href = `/observability-session.html?session_id=${encodeURIComponent(btn.dataset.sessionId)}`;
+      });
+    });
   }
 
   #renderCard(s) {
@@ -133,18 +159,46 @@ class SessionsPage extends HTMLElement {
     const avatarColor = this.#avatarColor(agentName);
     const initial = agentName.charAt(0).toUpperCase();
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
+    const stats = this.#statsChips(this.#obsStats.get(sessionId));
 
     return `<a class="session-card" href="${href}">
       <div class="session-avatar" style="background:${avatarColor}">${initial}</div>
       <div class="session-info">
         <div class="session-agent">${this.#esc(agentName)}${msgCount}</div>
         ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 120))}</div>` : ''}
+        ${stats}
       </div>
       <div class="session-meta">
         <span class="session-time">${timeStr}</span>
+        <button class="session-traces" type="button" data-session-id="${this.#esc(sessionId)}"
+          title="View traces" aria-label="View traces for this session">${icons.trace('', 14)}<span>Traces</span></button>
         <button class="session-delete" data-session-id="${this.#esc(sessionId)}" title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>
       </div>
     </a>`;
+  }
+
+  /** Observability chips for a session: traces, tokens, p50 latency. */
+  #statsChips(o) {
+    if (!o) return '';
+    const chips = [];
+    const traces = o.num_traces;
+    if (traces) chips.push(`${icons.workflow('chip-icon', 12)}${traces} ${traces === 1 ? 'trace' : 'traces'}`);
+    const tokens = o.token_usage?.total;
+    if (tokens) chips.push(`${icons.coins('chip-icon', 12)}${this.#fmtCount(tokens)} tok`);
+    const p50 = o.trace_latency_ms_p50;
+    if (p50) chips.push(`${icons.clock('chip-icon', 12)}${this.#fmtMs(p50)} p50`);
+    if (!chips.length) return '';
+    return `<div class="session-stats">${chips.map((c) => `<span class="session-chip">${c}</span>`).join('')}</div>`;
+  }
+
+  #fmtCount(n) {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return String(n);
+  }
+
+  #fmtMs(ms) {
+    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
   }
 
   #groupByDate(sessions) {

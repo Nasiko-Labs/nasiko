@@ -168,6 +168,14 @@ class ChatPage extends HTMLElement {
     chatInput.reset();
     chatInput.setLoading(true);
 
+    // Immediate feedback: typing dots from the moment the prompt is sent —
+    // session create + response headers can take seconds on slow agents.
+    const pendingRow = document.createElement("div");
+    pendingRow.className = "msg-row is-assistant";
+    pendingRow.innerHTML = `<div class="typing-indicator" aria-label="Agent is responding"><span></span><span></span><span></span></div>`;
+    messagesEl.appendChild(pendingRow);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
     try {
       if (!this.#sessionId) {
         const res = await apiFetch("/chat/sessions", {
@@ -176,8 +184,12 @@ class ChatPage extends HTMLElement {
           body: JSON.stringify({ agent_id: this.#agentId }),
         });
         if (!res.ok) throw new Error("Failed to create session");
-        const session = await res.json();
-        this.#sessionId = session.session_id;
+        const body = await res.json();
+        // POST /api/chat/sessions wraps the session in {data, status_code,
+        // message}; tolerate a bare object for older servers.
+        const session = body.data || body;
+        this.#sessionId = session.session_id || session.id;
+        if (!this.#sessionId) throw new Error("Session created without an id");
         const params = new URLSearchParams(location.search);
         const nameParam = params.get("agent_name")
           ? `&agent_name=${encodeURIComponent(params.get("agent_name"))}`
@@ -236,10 +248,12 @@ class ChatPage extends HTMLElement {
         }
       }
 
+      pendingRow.remove();
       const { text: reply } = await this.#readA2aStream(res, messagesEl);
       this.#persistMessage(this.#sessionId, "assistant", reply);
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
+      pendingRow.remove();
       this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
       this.#updateRetryButtons(messagesEl);
     } finally {

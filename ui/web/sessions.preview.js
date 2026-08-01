@@ -10,6 +10,16 @@ const sessionsData = [
 
 export default {
   fetch: [
+    [{ method: "GET", path: /^\/api\/observability\/session\/list/ }, {
+      data: {
+        sessions: [
+          { session_id: "s-001", num_traces: 4, token_usage: { total: 18400 }, trace_latency_ms_p50: 1240 },
+          { session_id: "s-002", num_traces: 2, token_usage: { total: 7200 }, trace_latency_ms_p50: 890 },
+          { session_id: "s-004", num_traces: 9, token_usage: { total: 52300 }, trace_latency_ms_p50: 2150 },
+          { session_id: "s-006", num_traces: 12, token_usage: { total: 121000 }, trace_latency_ms_p50: 3400 },
+        ],
+      },
+    }],
     [{ method: "GET", path: /^\/api\/chat\/sessions/ }, { data: sessionsData, total: sessionsData.length }],
     [{ method: "DELETE", path: /^\/api\/chat\/sessions\// }, { ok: true }],
   ],

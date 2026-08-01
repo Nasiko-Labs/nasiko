@@ -148,6 +148,53 @@ sessions-page:not(:defined) {
     text-overflow: ellipsis;
   }
 
+  .session-stats {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    margin-top: var(--space-2xs);
+  }
+
+  .session-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px var(--space-xs);
+    border-radius: var(--radius-full, 999px);
+    background: light-dark(var(--cream-100), var(--neutral-800));
+    border: 1px solid var(--border-canvas);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+
+    & .chip-icon { flex-shrink: 0; opacity: 0.7; }
+  }
+
+  button.session-traces {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs) var(--space-xs);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-surface);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    cursor: pointer;
+    line-height: 1;
+
+    &:hover {
+      color: var(--color-primary);
+      border-color: var(--color-primary);
+    }
+
+    &:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+
   .session-meta {
     display: flex;
     align-items: center;
