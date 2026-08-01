@@ -19,7 +19,7 @@
 
       &.drag-over { border-color: var(--color-primary); outline: 3px solid color-mix(in srgb, var(--color-primary) 18%, transparent); outline-offset: -1px; }
       &:focus-within { border-color: var(--color-primary); }
-      &[data-state="recording"] { border-color: var(--color-error); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-error) 18%, transparent); background: color-mix(in srgb, var(--color-error) 5%, var(--color-bg-base)); }
+      &[data-state="recording"] { border-color: var(--color-error); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-error) 18%, transparent); background: color-mix(in srgb, var(--color-error) 5%, var(--color-bg-surface)); }
       &[data-state="transcribing"], &[data-state="loading"] { border-color: var(--color-primary); animation: pulse-border 2s infinite; }
     }
     .textarea {
@@ -145,7 +145,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 6px 10px;
-      background: var(--color-bg-base);
+      background: var(--bg-input);
       border: 1px solid var(--color-border);
       border-radius: var(--radius-md);
       font-size: var(--font-size-sm);

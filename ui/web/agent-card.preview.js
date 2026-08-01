@@ -1,6 +1,10 @@
 export default {
   fetch: [
     [{ method: "GET", path: /^\/api\/agents\/[^/]+$/ }, {
+      // SingleResponse envelope — matches GET /api/agents/{id} (see /api/docs)
+      status_code: 200,
+      message: "Agent retrieved successfully",
+      data: {
       id: "a-001",
       name: "devops-cluster-lifecycle",
       display_name: "Devops cluster lifecycle agent",
@@ -38,6 +42,7 @@ export default {
           sample_query: "What is the readiness score for gpu-cluster-prod?",
         },
       ],
+      },
     }],
     // Shape mirrors GET /api/observability/agent/{id}/stats (`nasiko observe stats`).
     [{ method: "GET", path: /^\/api\/observability\/agent\/.*\/stats/ }, {
@@ -57,6 +62,13 @@ export default {
         },
       },
     }],
+    // GET /api/agents/{id}/secrets → plain [SecretListEntry] (see /api/docs)
+    [{ method: "GET", path: /^\/api\/agents\/[^/]+\/secrets$/ }, [
+      { name: "OPENAI_API_KEY", updated_at: null },
+      { name: "SKYCOMMAND_TOKEN", updated_at: null },
+    ]],
+    [{ method: "POST", path: /^\/api\/agents\/[^/]+\/secrets$/ }, {}],
+    [{ method: "DELETE", path: /^\/api\/agents\/[^/]+\/secrets\/[^/]+$/ }, {}],
     [{ method: "GET", path: /^\/api\/agents\/.*\/acl$/ }, {
       unrestricted: false,
       allowed: [

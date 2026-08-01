@@ -67,6 +67,21 @@ class AgentsPage extends HTMLElement {
       this.#renderGrid();
     });
 
+    // Whole card opens details; explicit links (Details/Chat) keep their own hrefs.
+    const openCard = (card) => {
+      window.location.href = `/agent-card.html?id=${card.dataset.agentId}`;
+    };
+    this.querySelector("#agents-grid").addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      const card = e.target.closest(".card[data-agent-id]");
+      if (card) openCard(card);
+    });
+    this.querySelector("#agents-grid").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.target.closest("a")) return;
+      const card = e.target.closest(".card[data-agent-id]");
+      if (card) openCard(card);
+    });
+
     this.#loadAgents();
   }
 
@@ -157,7 +172,8 @@ class AgentsPage extends HTMLElement {
           .join("");
 
         return `
-        <div class="card">
+        <div class="card" data-agent-id="${encodeURIComponent(a.id)}" role="link" tabindex="0"
+          aria-label="Open ${this.#esc(name)} details">
           <div class="card-top">
             <span class="card-name">${this.#esc(name)}</span>
             ${a.status ? `<span class="card-status ${statusClass(a.status)}"><span class="status-dot"></span>${this.#esc(a.status)}</span>` : ""}

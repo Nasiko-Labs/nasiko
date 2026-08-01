@@ -21,8 +21,9 @@ function avatarColor(name) {
     'var(--color-info)',
   ];
   let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+  const str = name || '?';
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
   }
   return colors[Math.abs(hash) % colors.length];
 }
@@ -32,6 +33,7 @@ class AgentCardPage extends HTMLElement {
   #agent = null;
   #agentId = null;
   #logsLoaded = false;
+  #secretsLoaded = false;
   #logsTail = 100;
   #logsFollowing = true;
 
@@ -49,11 +51,13 @@ class AgentCardPage extends HTMLElement {
 
   async #load() {
     try {
-      this.#agent = await fetchApi(`/agents/${this.#agentId}`);
+      // GET /api/agents/{id} → SingleResponse envelope {data, status_code, message}
+      const resp = await fetchApi(`/agents/${this.#agentId}`);
+      this.#agent = resp?.data ?? resp;
     } catch {
       this.#agent = null;
     }
-    if (!this.#agent) {
+    if (!this.#agent?.name && !this.#agent?.display_name) {
       this.innerHTML = '<p style="color:var(--color-error);">Agent not found.</p>';
       return;
     }
@@ -114,7 +118,7 @@ class AgentCardPage extends HTMLElement {
             ${a.status === 'running' ? `<button class="acp-action-btn" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</button>` : ''}
             <button class="acp-action-btn acp-action-btn--danger" data-action="delete" title="Delete agent">${icons.trash('', 14)} Delete</button>
             <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
-              Start session ${icons.send('', 16)}
+              ${icons.send('', 15)} Start session
             </a>
           </div>
         </div>
@@ -189,6 +193,17 @@ class AgentCardPage extends HTMLElement {
               <div><dt>Replicas</dt><dd>${a.replicas ?? '—'}</dd></div>
             </dl>
           </section>
+          <section class="acp-section">
+            <h2 class="acp-section-title">Secrets</h2>
+            <p class="acp-section-sub">Environment secrets injected into this agent's container at deploy time. Values are write-only.</p>
+            <div id="acp-secrets-list"><app-skeleton height="60px"></app-skeleton></div>
+            <form class="acp-secret-form" id="acp-secret-form">
+              <input type="text" id="acp-secret-name" placeholder="SECRET_NAME"
+                pattern="[A-Za-z_][A-Za-z0-9_]*" autocomplete="off" required />
+              <input type="password" id="acp-secret-value" placeholder="Value" autocomplete="off" required />
+              <button type="submit" class="acp-action-btn">${icons.plus('', 14)} Set secret</button>
+            </form>
+          </section>
         </div>
 
         <div class="acp-panel" data-panel="logs">
@@ -229,7 +244,15 @@ class AgentCardPage extends HTMLElement {
       if (tab.dataset.tab === 'logs' && !this.#logsLoaded) {
         this.#loadLogs();
       }
+      if (tab.dataset.tab === 'settings' && !this.#secretsLoaded) {
+        this.#loadSecrets();
+      }
     });
+
+    const secretForm = this.querySelector('#acp-secret-form');
+    if (secretForm) {
+      secretForm.addEventListener('submit', (e) => this.#setSecret(e));
+    }
 
     const tailSelect = this.querySelector('#acp-logs-tail');
     if (tailSelect) {
@@ -452,6 +475,86 @@ class AgentCardPage extends HTMLElement {
     } catch {
       el.innerHTML = '';
     }
+  }
+
+  /* ── Agent secrets (settings tab) ─────────────────────────────────────── */
+
+  async #loadSecrets() {
+    const list = this.querySelector('#acp-secrets-list');
+    if (!list) return;
+    this.#secretsLoaded = true;
+    let secrets = [];
+    try {
+      // GET /api/agents/{id}/secrets → [SecretListEntry {name, updated_at?}]
+      secrets = await fetchApi(`/agents/${encodeURIComponent(this.#agent.id)}/secrets`);
+    } catch {
+      list.innerHTML = '<p class="acp-secrets-empty">You need owner access to manage this agent\'s secrets.</p>';
+      return;
+    }
+    this.#renderSecrets(Array.isArray(secrets) ? secrets : []);
+  }
+
+  #renderSecrets(secrets) {
+    const list = this.querySelector('#acp-secrets-list');
+    if (!list) return;
+    if (!secrets.length) {
+      list.innerHTML = '<p class="acp-secrets-empty">No secrets configured for this agent yet.</p>';
+      return;
+    }
+    list.innerHTML = `
+      <ul class="acp-secrets">
+        ${secrets.map((s) => `
+          <li class="acp-secret-row">
+            <span class="acp-secret-name">${icons.lock('', 13)} ${this.#esc(s.name)}</span>
+            <span class="acp-secret-value">••••••••</span>
+            <button type="button" class="acp-secret-delete" data-secret-name="${this.#esc(s.name)}"
+              aria-label="Delete secret ${this.#esc(s.name)}">${icons.trash('', 14)}</button>
+          </li>`).join('')}
+      </ul>
+    `;
+    list.querySelectorAll('.acp-secret-delete').forEach((btn) => {
+      btn.addEventListener('click', () => this.#deleteSecret(btn.dataset.secretName));
+    });
+  }
+
+  async #setSecret(e) {
+    e.preventDefault();
+    const nameInput = this.querySelector('#acp-secret-name');
+    const valueInput = this.querySelector('#acp-secret-value');
+    const name = nameInput.value.trim();
+    try {
+      const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}/secrets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, value: valueInput.value }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    } catch (err) {
+      showToast(`Failed to set secret: ${err.message}`);
+      return;
+    }
+    nameInput.value = '';
+    valueInput.value = '';
+    showToast(`Secret ${name} saved — restart the agent to apply`);
+    this.#secretsLoaded = false;
+    this.#loadSecrets();
+  }
+
+  async #deleteSecret(name) {
+    if (!confirm(`Delete secret ${name}?`)) return;
+    try {
+      const res = await apiFetch(
+        `/agents/${encodeURIComponent(this.#agent.id)}/secrets/${encodeURIComponent(name)}`,
+        { method: 'DELETE' },
+      );
+      if (!res.ok) throw new Error(await res.text());
+    } catch (err) {
+      showToast(`Failed to delete secret: ${err.message}`);
+      return;
+    }
+    showToast(`Secret ${name} deleted`);
+    this.#secretsLoaded = false;
+    this.#loadSecrets();
   }
 
   async #loadLogs() {

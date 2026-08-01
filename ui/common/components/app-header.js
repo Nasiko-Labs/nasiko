@@ -334,9 +334,24 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 
   :scope.is-collapsed .nav-link-text {
     @media (min-width: 1024px) {
-      opacity: 0;
-      width: 0;
-      overflow: hidden;
+      display: none;
+    }
+  }
+
+  /* Collapsed rail: square icon-only cards, icon stays 16px and centered. */
+  :scope.is-collapsed .nav-link {
+    @media (min-width: 1024px) {
+      justify-content: center;
+      gap: 0;
+      padding: 10px 0;
+    }
+  }
+
+  :scope.is-collapsed .nav-icon {
+    @media (min-width: 1024px) {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
     }
   }
 

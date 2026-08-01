@@ -75,5 +75,10 @@ export default {
       await page.click("agent-steps .step-summary");
       await page.waitForTimeout(200);
     },
+    // Icon-only sidebar rail after clicking the collapse toggle.
+    "sidebar-collapsed": async (page) => {
+      await page.click("[data-sidebar-toggle]");
+      await page.waitForTimeout(400);
+    },
   },
 };

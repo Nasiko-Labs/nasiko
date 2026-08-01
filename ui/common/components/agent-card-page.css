@@ -136,19 +136,22 @@ agent-card-page:not(:defined) {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: var(--space-sm) var(--space-lg);
-    border-radius: var(--radius-md);
-    background: var(--color-primary);
-    color: var(--color-on-primary);
+    padding: 10px var(--space-lg);
+    border-radius: var(--r-8);
+    background: light-dark(var(--neutral-900), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
-    font-weight: 500;
+    font-weight: 600;
     text-decoration: none;
     white-space: nowrap;
     flex-shrink: 0;
+    transition: opacity var(--transition-fast), translate var(--transition-fast);
   }
+  .acp-start-btn svg { flex-shrink: 0; }
   .acp-start-btn:hover {
-    background: var(--color-primary-hover);
-    color: var(--color-on-primary);
+    opacity: 0.85;
+    color: light-dark(var(--white), var(--neutral-900));
+    translate: 0 -1px;
   }
 
   /* -- Description ------------------------------------------------------- */
@@ -484,4 +487,70 @@ agent-card-page:not(:defined) {
   .acp-logs-empty app-empty-state {
     padding: var(--space-lg) var(--space-md);
   }
+
+  /* -- Secrets (settings tab) --------------------------------------------- */
+  .acp-secrets {
+    list-style: none;
+    margin: 0 0 var(--space-md);
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .acp-secret-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+    font-size: var(--font-size-sm);
+  }
+  .acp-secret-row:last-child { border-bottom: none; }
+  .acp-secret-row:hover { background: light-dark(var(--cream-50), var(--neutral-800)); }
+  .acp-secret-name {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .acp-secret-name svg { color: var(--color-text-muted); }
+  .acp-secret-value {
+    color: var(--color-text-muted);
+    letter-spacing: 0.1em;
+  }
+  .acp-secret-delete {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+  .acp-secret-delete:hover {
+    color: var(--color-error);
+    background: var(--color-error-bg);
+  }
+  .acp-secrets-empty {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    margin: 0 0 var(--space-md);
+  }
+  .acp-secret-form {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .acp-secret-form input {
+    flex: 1;
+    min-width: 160px;
+    font-size: var(--font-size-sm);
+  }
+  .acp-secret-form input[type="text"] { font-family: var(--font-mono); }
+  .acp-secret-form button { flex-shrink: 0; }
 }
