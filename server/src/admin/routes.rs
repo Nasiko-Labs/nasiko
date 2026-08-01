@@ -348,13 +348,26 @@ async fn restart(
     // record their image on the deployment row (`spec_image`), leaving the
     // catalog column NULL — decoding it as String made this query error out
     // and masked every such agent as a 404 "agent not found".
-    let agent: Option<(Uuid, Uuid, Option<String>)> =
+    //
+    // Accepts either a UUID or a display name, same as `resolve_agent_id_by_name`
+    // (which the sibling stop/start/scale/logs ops use) — without this, copying
+    // the UUID `nasiko ps` prints into `nasiko restart <uuid>` 404'd even though
+    // the identical UUID worked for `nasiko rm`.
+    let agent: Option<(Uuid, Uuid, Option<String>)> = if let Ok(id) = name.parse::<Uuid>() {
+        sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+    } else {
         sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE name = $1")
             .bind(&name)
             .fetch_optional(&state.db)
             .await
             .ok()
-            .flatten();
+            .flatten()
+    };
 
     let Some((agent_id, owner_id, image)) = agent else {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
@@ -410,7 +423,15 @@ async fn restart(
 
     // Redeploy with fresh env, UUID-keyed (see agents::build_agent_spec). Empty
     // ports → build_agent_spec defaults to DEFAULT_AGENT_PORT.
-    let mut spec = crate::agents::build_agent_spec(agent_id, &name, image, vec![], env, None);
+    let mut spec = crate::agents::build_agent_spec(
+        agent_id,
+        &name,
+        image,
+        vec![],
+        env,
+        None,
+        state.config.agent_max_replicas,
+    );
     crate::agents::attach_pull_credential(
         &state.db,
         &state.config.agent_runtime,
@@ -506,15 +527,22 @@ async fn logs(
     }
 }
 
-/// Excludes soft-deleted agents — the `(owner_id, name)` uniqueness constraint
-/// (`agents_owner_name_active_uniq`, oss/migrations/0001_schema.sql) is scoped to
-/// `deleted_at IS NULL`, so a deleted agent's name is meant to be free for a fresh
-/// row. Without this filter, `deploy()`'s ad-hoc image path found the old deleted
-/// row, updated it in place instead of treating the name as unclaimed, and left the
-/// resulting running container permanently invisible to `nasiko ps`/`rm`.
-async fn resolve_agent_id_by_name(state: &AppState, name: &str) -> Option<Uuid> {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL")
-        .bind(name)
+/// Resolve `name_or_id` to its catalog agent UUID — accepts either a UUID or a
+/// display name, same as `catalog::routes::get_one`. Without the UUID branch,
+/// copying the UUID `nasiko ps` itself prints into `stop`/`start`/`restart`/
+/// `scale` (all of which route through this) 404'd, even though the identical
+/// UUID works for `nasiko rm`.
+async fn resolve_agent_id_by_name(state: &AppState, name_or_id: &str) -> Option<Uuid> {
+    if let Ok(id) = name_or_id.parse::<Uuid>() {
+        return sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    }
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
+        .bind(name_or_id)
         .fetch_optional(&state.db)
         .await
         .ok()

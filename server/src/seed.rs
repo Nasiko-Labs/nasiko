@@ -156,6 +156,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             vec![AGENT_PORT],
             env,
             None,
+            state.config.agent_max_replicas,
         );
         crate::agents::attach_pull_credential(
             &state.db,

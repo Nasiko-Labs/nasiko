@@ -269,6 +269,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.openai_base_url.clone(),
                 state.config.agent_runtime.clone(),
                 state.config.agent_image_registry.clone(),
+                state.config.agent_max_replicas,
             )
             .await;
         }
@@ -378,6 +379,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.openai_base_url.clone(),
                 state.config.agent_runtime.clone(),
                 state.config.agent_image_registry.clone(),
+                state.config.agent_max_replicas,
             )
             .await;
         }

@@ -94,13 +94,6 @@ pub struct Config {
     pub embedding_model: String,
     pub router_agent_timeout_secs: u64,
     pub github_callback_url: Option<String>,
-    /// Central OAuth callback relay URL (multi-tenant deployments): used as the
-    /// GitHub `redirect_uri` for both authorize and token exchange instead of
-    /// `github_callback_url`, so many clusters can share one GitHub OAuth app
-    /// whose single registered callback points at the relay. Includes this
-    /// cluster's tenant-id path suffix. Unset (the default, and always for
-    /// standalone deployments) means GitHub calls this cluster back directly.
-    pub github_central_callback_url: Option<String>,
     /// Base URL to redirect to after a successful OAuth login. In production
     /// this is the same origin as the server. Override via `APP_BASE_URL` in
     /// dev when the server and app run on different ports.
@@ -179,6 +172,12 @@ pub struct Config {
     /// (KEDA ScaledObject). MCP_UPLOAD_MAX_REPLICAS, default 1 (matches
     /// agents; set higher when KEDA is installed). Ignored by DockerRuntime.
     pub mcp_upload_max_replicas: u32,
+    /// Maximum replica count for deployed agent pods under Kubernetes (KEDA
+    /// ScaledObject) — same mechanism and same global-ceiling shape as
+    /// `mcp_upload_max_replicas` above, just for regular agents instead of
+    /// MCP connectors. AGENT_MAX_REPLICAS, default 1 (no autoscaling unless
+    /// explicitly raised). Ignored by DockerRuntime.
+    pub agent_max_replicas: u32,
     /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
     /// unconnected catalog cards — changes rarely, so a much longer TTL than
     /// the permission/session caches.
@@ -229,14 +228,8 @@ impl Config {
             )
             .map(|v| v == "true")
             .unwrap_or(true),
-            tempo_url: env_or(
-                "TEMPO_URL",
-                "http://tempo.nasiko-infra.svc.cluster.local:3200",
-            ),
-            loki_url: env_or(
-                "LOKI_URL",
-                "http://loki.nasiko-infra.svc.cluster.local:3100",
-            ),
+            tempo_url: env_or("TEMPO_URL", ""),
+            loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a
             // partial config is treated as disabled. Computed here, the one place
             // env is read, so every consumer agrees on whether it's enabled.
@@ -275,9 +268,6 @@ impl Config {
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
-            github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK")
                 .ok()
@@ -330,6 +320,7 @@ impl Config {
             mcp_upload_default_port: env_parse("MCP_UPLOAD_DEFAULT_PORT", 8080),
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
+            agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
             mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
             seed_toolkits: std::env::var("SEED_TOOLKITS")
                 .unwrap_or_default()

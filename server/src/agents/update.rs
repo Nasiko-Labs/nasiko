@@ -508,8 +508,15 @@ pub async fn execute_agent_update(
         .await;
         // Key on the agent UUID (not name) so the update re-targets the existing
         // workload instead of spawning an orphaned name-keyed duplicate (RUN-2/7).
-        let mut spec =
-            crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), vec![], env, None);
+        let mut spec = crate::agents::build_agent_spec(
+            agent_id,
+            &name,
+            image_tag.clone(),
+            vec![],
+            env,
+            None,
+            state.config.agent_max_replicas,
+        );
         crate::agents::attach_pull_credential(
             &state.db,
             &state.config.agent_runtime,
@@ -913,8 +920,15 @@ pub async fn execute_agent_rollback(
     let image =
         crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &target.image_tag);
     // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
-    let mut spec =
-        crate::agents::build_agent_spec(agent_id, &agent_name, image.clone(), vec![], env, None);
+    let mut spec = crate::agents::build_agent_spec(
+        agent_id,
+        &agent_name,
+        image.clone(),
+        vec![],
+        env,
+        None,
+        state.config.agent_max_replicas,
+    );
     crate::agents::attach_pull_credential(
         &state.db,
         &state.config.agent_runtime,

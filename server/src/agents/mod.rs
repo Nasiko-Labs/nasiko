@@ -159,6 +159,7 @@ pub(crate) fn build_agent_spec(
     ports: Vec<u16>,
     env: HashMap<String, String>,
     resources: Option<ResourceLimits>,
+    max_replicas: u32,
 ) -> DeploymentSpec {
     DeploymentSpec {
         container_id: ContainerId::from_uuid(agent_id),
@@ -171,10 +172,13 @@ pub(crate) fn build_agent_spec(
         },
         env_vars: env,
         min_replicas: 1,
-        max_replicas: 1,
+        max_replicas,
         resources,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
+        harden: false,
+        network_override: None,
+        workload_kind: Default::default(),
     }
 }
 
@@ -213,7 +217,7 @@ mod spec_tests {
         let id = Uuid::new_v4();
         // Same agent_id → same ContainerId regardless of the display name, so every
         // deploy path converges on one workload.
-        let a = build_agent_spec(id, "My.Agent", "img:1", vec![], HashMap::new(), None);
+        let a = build_agent_spec(id, "My.Agent", "img:1", vec![], HashMap::new(), None, 1);
         let b = build_agent_spec(
             id,
             "totally-different-name",
@@ -221,6 +225,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             None,
+            1,
         );
         assert_eq!(a.container_id, ContainerId::from_uuid(id));
         assert_eq!(a.container_id, b.container_id);
@@ -231,8 +236,19 @@ mod spec_tests {
     #[test]
     fn preserves_explicit_ports() {
         let id = Uuid::new_v4();
-        let s = build_agent_spec(id, "a", "img:1", vec![9091], HashMap::new(), None);
+        let s = build_agent_spec(id, "a", "img:1", vec![9091], HashMap::new(), None, 1);
         assert_eq!(s.ports, vec![9091]);
+    }
+
+    #[test]
+    fn spec_max_replicas_comes_from_parameter() {
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(id, "a", "img:1", vec![], HashMap::new(), None, 5);
+        assert_eq!(
+            s.max_replicas, 5,
+            "max_replicas must match the parameter, not be hardcoded"
+        );
+        assert_eq!(s.min_replicas, 1);
     }
 
     #[test]

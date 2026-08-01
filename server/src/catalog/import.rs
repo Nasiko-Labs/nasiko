@@ -289,8 +289,15 @@ pub(crate) async fn build_and_deploy(
         Some(owner_id),
     )
     .await;
-    let mut spec =
-        crate::agents::build_agent_spec(agent_id, &meta.name, image_tag, vec![], env_vars, None);
+    let mut spec = crate::agents::build_agent_spec(
+        agent_id,
+        &meta.name,
+        image_tag,
+        vec![],
+        env_vars,
+        None,
+        state.config.agent_max_replicas,
+    );
     crate::agents::attach_pull_credential(
         &state.db,
         &state.config.agent_runtime,
@@ -872,6 +879,7 @@ pub(crate) async fn import_registry(
             vec![],
             env_vars,
             None,
+            state.config.agent_max_replicas,
         );
         crate::agents::attach_pull_credential(
             &state.db,

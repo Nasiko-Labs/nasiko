@@ -229,7 +229,7 @@ impl TestServer {
         // (auth_tokens revocation lookup), routing, and agent tables exist.
         // Without this every request fails closed at `require_auth` with 401
         // (or, for routes that don't hit auth first, a generic query error).
-        nasiko_server::state::AppState::run_migrations(&db).await;
+        AppState::run_migrations(&db).await;
 
         let s3_ep = s3_endpoint();
         let mut config = test_config(db_url, redis_url(), s3_ep.clone());
@@ -355,7 +355,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         embedding_model: "text-embedding-3-small".into(),
         router_agent_timeout_secs: 60,
         github_callback_url: None,
-        github_central_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
@@ -400,6 +399,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_upload_default_port: 8080,
         mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         mcp_upload_max_replicas: 1,
+        agent_max_replicas: 1,
         mcp_toolcount_ttl_seconds: 3600,
         seed_toolkits: vec![],
         app_base_url: "".to_string(),

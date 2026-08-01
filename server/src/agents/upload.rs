@@ -632,6 +632,7 @@ pub async fn execute_upload_and_deploy(
     openai_base_url: Option<String>,
     agent_runtime: String,
     agent_image_registry: String,
+    max_replicas: u32,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -678,8 +679,15 @@ pub async fn execute_upload_and_deploy(
         .await;
 
         // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
-        let mut spec =
-            crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
+        let mut spec = crate::agents::build_agent_spec(
+            agent_id,
+            &name,
+            image_tag.clone(),
+            ports,
+            env,
+            None,
+            max_replicas,
+        );
         crate::agents::attach_pull_credential(
             &db,
             &agent_runtime,
@@ -851,6 +859,7 @@ pub async fn execute_clone_and_deploy(
     openai_base_url: Option<String>,
     agent_runtime: String,
     agent_image_registry: String,
+    max_replicas: u32,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -900,8 +909,15 @@ pub async fn execute_clone_and_deploy(
         .await;
 
         // Deploy container keyed on agent UUID.
-        let mut spec =
-            crate::agents::build_agent_spec(agent_id, &name, image_tag.clone(), ports, env, None);
+        let mut spec = crate::agents::build_agent_spec(
+            agent_id,
+            &name,
+            image_tag.clone(),
+            ports,
+            env,
+            None,
+            max_replicas,
+        );
         crate::agents::attach_pull_credential(
             &db,
             &agent_runtime,
@@ -1187,6 +1203,7 @@ pub async fn execute_github_clone_and_deploy(
         state.config.openai_base_url.clone(),
         state.config.agent_runtime.clone(),
         state.config.agent_image_registry.clone(),
+        state.config.agent_max_replicas,
     )
     .await;
 }
