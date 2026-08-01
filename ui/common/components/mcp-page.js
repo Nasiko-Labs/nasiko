@@ -14,6 +14,7 @@
 import styles from './mcp-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import './app-modal.js';
+import './autocomplete.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const AUTH_LABELS = {
@@ -87,9 +88,7 @@ class McpPage extends HTMLElement {
       <div class="agent-access-card">
         <div class="agent-picker">
           <label for="agent-select">Agent</label>
-          <select id="agent-select">
-            <option value="">Select an agent…</option>
-          </select>
+          <auto-complete id="agent-select" placeholder="Search agents…" aria-label="Agent"></auto-complete>
           <span class="agent-picker-hint">Choose which connectors this agent may call, and set per-tool allow/deny rules.</span>
         </div>
         <div id="agent-access-body">
@@ -109,9 +108,29 @@ class McpPage extends HTMLElement {
     this.querySelector('#logs-close').addEventListener('click', () => {
       this.querySelector('#logs-panel').hidden = true;
     });
-    this.querySelector('#agent-select').addEventListener('change', (e) => {
-      this.#selectedAgentId = e.target.value;
+    const agentPicker = this.querySelector('#agent-select');
+    agentPicker.filterFn = (query) => {
+      const q = query.toLowerCase();
+      return this.#agents
+        .filter((a) => !q
+          || (a.display_name || '').toLowerCase().includes(q)
+          || (a.name || '').toLowerCase().includes(q))
+        .map((a) => ({
+          label: a.display_name || a.name,
+          subtitle: a.name !== (a.display_name || a.name) ? a.name : (a.status || ''),
+          value: a.id,
+        }));
+    };
+    agentPicker.addEventListener('option-selected', (e) => {
+      this.#selectedAgentId = e.detail.value;
       this.#loadAgentAccess();
+    });
+    // Clearing the input deselects the agent and returns to the empty state.
+    agentPicker.addEventListener('input', () => {
+      if (agentPicker.value.trim() === '' && this.#selectedAgentId) {
+        this.#selectedAgentId = '';
+        this.#loadAgentAccess();
+      }
     });
     this.#wireRegisterModal();
     this.#wireUploadModal();
@@ -151,10 +170,6 @@ class McpPage extends HTMLElement {
     } catch {
       this.#agents = [];
     }
-    const select = this.querySelector('#agent-select');
-    select.innerHTML = `<option value="">Select an agent…</option>` + this.#agents
-      .map((a) => `<option value="${this.#esc(a.id)}">${this.#esc(a.display_name || a.name)}</option>`)
-      .join('');
   }
 
   // ── Connectors table ─────────────────────────────────────────────────────

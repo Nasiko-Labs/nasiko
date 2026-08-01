@@ -300,11 +300,9 @@ mcp-page:not(:defined) {
     background: light-dark(var(--cream-50), var(--neutral-800));
 
     & label { font-size: var(--font-size-sm); font-weight: 600; }
-    & select {
-      width: auto;
-      min-width: 220px;
+    & auto-complete {
+      width: 280px;
       font-size: var(--font-size-sm);
-      background: var(--color-bg-surface);
     }
   }
 

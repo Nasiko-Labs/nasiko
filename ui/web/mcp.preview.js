@@ -360,12 +360,18 @@ export default {
       await page.waitForSelector('#oauth-revoke');
     },
     'agent-access': async (page) => {
-      // <option> elements are never "visible" — wait for them to be attached.
-      await page.waitForSelector('#agent-select option[value="a-001"]', { state: 'attached' });
-      await page.selectOption('#agent-select', 'a-001');
+      // Type into the autocomplete and pick the first suggestion.
+      await page.click('#agent-select .ac-input');
+      await page.fill('#agent-select .ac-input', 'coding');
+      await page.waitForSelector('#agent-select .ac-option');
+      await page.click('#agent-select .ac-option');
       await page.waitForSelector('.agent-access-table');
       await page.click('.act-tools');
       await page.waitForSelector('.tool-line');
+    },
+    'agent-picker-open': async (page) => {
+      await page.click('#agent-select .ac-input');
+      await page.waitForSelector('#agent-select .ac-option');
     },
     'build-logs': async (page) => {
       await page.click('#uploads-tbody .act-logs');
