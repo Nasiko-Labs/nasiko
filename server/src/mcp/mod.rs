@@ -26,6 +26,7 @@ use crate::auth::Claims;
 use crate::state::AppState;
 
 pub use handlers::gateway::require_delegation;
+pub use handlers::sharing::grant_response;
 
 /// Agent-facing MCP JSON-RPC gateway — `POST /api/mcp` — mounted with
 /// [`require_delegation`], NOT `require_auth`.

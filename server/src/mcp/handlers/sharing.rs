@@ -17,7 +17,7 @@ use crate::state::AppState;
 /// the two instead of always reporting "granted" regardless of which
 /// happened. `view` is the JSON `create_share_grant` returns, which always
 /// carries a `was_new` boolean.
-fn grant_response(
+pub fn grant_response(
     view: Value,
     created_msg: &'static str,
     existing_msg: &'static str,
