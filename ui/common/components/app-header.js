@@ -371,8 +371,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 
   :scope.is-collapsed .nav-icon {
     @media (min-width: 1024px) {
-      width: 16px;
-      height: 16px;
+      width: 18px;
+      height: 18px;
       flex-shrink: 0;
     }
   }
@@ -659,7 +659,7 @@ export class AppHeader extends HTMLElement {
         const active = this.#isActive(href);
         const titleEsc = this.#esc(link.title);
         const bgSpan = active ? '<span class="nav-link-bg"></span>' : '';
-        const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('nav-icon', 16) : '';
+        const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('nav-icon', 18) : '';
         return `<li><a href="${this.#esc(href)}"
         class="nav-link${active ? " is-active" : ""}"
         data-text="${titleEsc}"
