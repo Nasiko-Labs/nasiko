@@ -12,6 +12,7 @@ export default {
       ],
       total: 6,
     }],
+    ["GET /api/settings", { catalog_tabs: null }],
   ],
   scenarios: {
     empty: async (page) => {
@@ -34,6 +35,14 @@ export default {
       await page.waitForSelector(".card-name");
       await page.click('.type-tab[data-category="finance"]');
       await page.waitForTimeout(200);
+    },
+    "pinned-tabs": async (page) => {
+      await page.evaluate(() => {
+        window.fetchSettings = async () => ({ catalog_tabs: "finance, devops" });
+        document.querySelector("agents-page").remove();
+        document.body.appendChild(document.createElement("agents-page"));
+      });
+      await page.waitForSelector('.type-tab[data-category="finance"]');
     },
     "sidebar-collapsed": async (page) => {
       await page.waitForSelector(".card-name");

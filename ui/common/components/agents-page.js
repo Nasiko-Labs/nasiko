@@ -16,6 +16,7 @@ class AgentsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
   #activeCategory = "all";
+  #pinnedTabs = [];
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -80,9 +81,23 @@ class AgentsPage extends HTMLElement {
   async #loadAgents() {
     const result = await window.fetchAgents("", 1, 100);
     this.#agents = result.data || [];
+    await this.#loadPinnedTabs();
     this.#renderCount();
     this.#renderFilter();
     this.#renderGrid();
+  }
+
+  /** Admin-pinned tab list (Settings → `catalog_tabs`, comma-separated tags). */
+  async #loadPinnedTabs() {
+    try {
+      const settings = await window.fetchSettings?.();
+      this.#pinnedTabs = (settings?.catalog_tabs || "")
+        .split(",")
+        .map((t) => t.trim().toLowerCase())
+        .filter(Boolean);
+    } catch {
+      this.#pinnedTabs = [];
+    }
   }
 
   #renderCount() {
@@ -94,14 +109,21 @@ class AgentsPage extends HTMLElement {
     const counts = new Map();
     for (const a of this.#agents) {
       for (const t of a.tags || []) {
-        counts.set(t, (counts.get(t) || 0) + 1);
+        const key = t.toLowerCase();
+        counts.set(key, (counts.get(key) || 0) + 1);
       }
     }
-    // Top categories only — every distinct tag as a tab sprawls on big
-    // fleets. Long-tail tags stay reachable through search (matches tags).
-    const cats = [...counts.entries()]
-      .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
-      .slice(0, 5);
+    let cats;
+    if (this.#pinnedTabs.length) {
+      // Admin-pinned tab list (Settings → catalog_tabs) shown as-is, in order.
+      cats = this.#pinnedTabs.map((c) => [c, counts.get(c) || 0]);
+    } else {
+      // Top categories only — every distinct tag as a tab sprawls on big
+      // fleets. Long-tail tags stay reachable through search (matches tags).
+      cats = [...counts.entries()]
+        .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+        .slice(0, 5);
+    }
     // Keep a selected long-tail category visible while it's active.
     if (this.#activeCategory !== "all" && !cats.some(([c]) => c === this.#activeCategory)) {
       cats.push([this.#activeCategory, counts.get(this.#activeCategory) || 0]);
@@ -192,7 +214,7 @@ class AgentsPage extends HTMLElement {
             <div class="card-tags">${tags}</div>
             <div class="card-actions">
               <a class="card-link" href="/agent-card.html?id=${encodeURIComponent(a.id)}">Details</a>
-              <a class="card-link card-link--primary" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">${icons.send("", 13)} Chat</a>
+              <a class="card-chat-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
             </div>
           </div>
         </div>

@@ -35,6 +35,9 @@ pub struct Settings {
     pub oidc_redirect_uri: Option<String>,
     pub oidc_scopes: Option<String>,
     pub oidc_provider_label: Option<String>,
+    /// Comma-separated tag names pinning the agent-catalog tab list.
+    /// Unset/empty → the UI derives tabs from the most common agent tags.
+    pub catalog_tabs: Option<String>,
     pub oidc_client_secret_configured: bool,
 }
 
@@ -57,6 +60,7 @@ pub struct SettingsUpdate {
     pub oidc_redirect_uri: Option<String>,
     pub oidc_scopes: Option<String>,
     pub oidc_provider_label: Option<String>,
+    pub catalog_tabs: Option<String>,
     #[serde(default)]
     pub oidc_client_secret: Option<String>,
 }
@@ -67,7 +71,7 @@ async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl In
             router_model, default_provider, max_flow_depth,
             max_flow_fan_out, max_flow_tokens, flow_timeout_secs,
             registry_url, oidc_issuer_url, oidc_client_id, oidc_redirect_uri,
-            oidc_scopes, oidc_provider_label,
+            oidc_scopes, oidc_provider_label, catalog_tabs,
             (oidc_client_secret_encrypted IS NOT NULL) AS oidc_client_secret_configured
         FROM settings LIMIT 1"#,
     )
@@ -89,6 +93,7 @@ async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl In
             oidc_redirect_uri: None,
             oidc_scopes: None,
             oidc_provider_label: None,
+            catalog_tabs: None,
             oidc_client_secret_configured: false,
         })
         .into_response(),
@@ -120,10 +125,10 @@ async fn update_settings(
                id, router_model, default_provider, max_flow_depth, max_flow_fan_out,
                max_flow_tokens, flow_timeout_secs, registry_url,
                oidc_issuer_url, oidc_client_id, oidc_redirect_uri, oidc_scopes,
-               oidc_provider_label, oidc_client_secret_encrypted
+               oidc_provider_label, catalog_tabs, oidc_client_secret_encrypted
            )
-           VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                   CASE WHEN $13 THEN NULL ELSE $14 END)
+           VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                   CASE WHEN $14 THEN NULL ELSE $15 END)
            ON CONFLICT (id) DO UPDATE SET
              router_model = EXCLUDED.router_model,
              default_provider = EXCLUDED.default_provider,
@@ -137,15 +142,16 @@ async fn update_settings(
              oidc_redirect_uri = EXCLUDED.oidc_redirect_uri,
              oidc_scopes = EXCLUDED.oidc_scopes,
              oidc_provider_label = EXCLUDED.oidc_provider_label,
+             catalog_tabs = EXCLUDED.catalog_tabs,
              oidc_client_secret_encrypted = CASE
-                 WHEN $13 THEN NULL
+                 WHEN $14 THEN NULL
                  ELSE COALESCE(EXCLUDED.oidc_client_secret_encrypted, settings.oidc_client_secret_encrypted)
              END
            RETURNING
              router_model, default_provider, max_flow_depth, max_flow_fan_out,
              max_flow_tokens, flow_timeout_secs, registry_url,
              oidc_issuer_url, oidc_client_id, oidc_redirect_uri, oidc_scopes,
-             oidc_provider_label,
+             oidc_provider_label, catalog_tabs,
              (oidc_client_secret_encrypted IS NOT NULL) AS oidc_client_secret_configured"#,
     )
     .bind(&body.router_model)
@@ -160,6 +166,7 @@ async fn update_settings(
     .bind(&body.oidc_redirect_uri)
     .bind(&body.oidc_scopes)
     .bind(&body.oidc_provider_label)
+    .bind(&body.catalog_tabs)
     .bind(clear_secret)
     .bind(&new_secret_encrypted)
     .fetch_one(&state.db)

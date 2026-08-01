@@ -38,6 +38,11 @@ class SettingsPage extends HTMLElement {
           <input type="number" id="s-max-tokens" data-field="max_tokens" min="1" max="200000" />
           <div class="hint">Maximum output tokens allowed per API request.</div>
         </div>
+        <div class="form-group">
+          <label for="s-catalog-tabs">Agent Catalog Tabs</label>
+          <input type="text" id="s-catalog-tabs" data-field="catalog_tabs" data-allow-empty placeholder="e.g. devops, finance, support" />
+          <div class="hint">Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.</div>
+        </div>
       </div>
 
       <div class="panel" data-panel="models">
@@ -100,7 +105,10 @@ class SettingsPage extends HTMLElement {
       const updated = { ...this.#settings };
       this.querySelectorAll('[data-field]').forEach(el => {
         const v = el.value.trim();
-        if (v) updated[el.dataset.field] = el.type === 'number' ? Number(v) : v;
+        // data-allow-empty fields round-trip '' so they can be cleared.
+        if (v || el.hasAttribute('data-allow-empty')) {
+          updated[el.dataset.field] = el.type === 'number' ? Number(v) : v;
+        }
       });
       await window.saveSettings(updated);
       showToast('Settings saved');
