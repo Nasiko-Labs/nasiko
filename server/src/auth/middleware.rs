@@ -41,7 +41,7 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
     next.run(req).await
 }
 
-/// A frontend served under a path prefix, with its own public login page.
+/// A frontend served under a path prefix, with its own login behavior.
 ///
 /// The page gate ([`require_page_auth`]) redirects unauthenticated page
 /// navigations to the login page of the mount that owns the requested path,
@@ -54,14 +54,20 @@ pub struct UiMount {
     /// The bare prefix without the slash (`/app`) belongs to the mount too.
     pub prefix: &'static str,
     /// The mount's login page — its one ungated page and the redirect target.
-    pub login_path: &'static str,
+    ///
+    /// `None` means the mount's pages are never gated server-side. Use this
+    /// for a SPA that enforces auth client-side: its HTML shell is a static
+    /// bootloader with no user data, and its SSO flows land on it with the
+    /// session token in the URL (`?token=` / `#token=`), a handoff a
+    /// server-side redirect would destroy.
+    pub login_path: Option<&'static str>,
 }
 
 impl UiMount {
     /// The vanilla-JS UI at `/` — every edition serves it.
     pub const ROOT: UiMount = UiMount {
         prefix: "/",
-        login_path: "/login.html",
+        login_path: Some("/login.html"),
     };
 }
 
@@ -86,13 +92,14 @@ pub async fn require_page_auth(
 }
 
 /// The login page to redirect `path` to when the caller has no session —
-/// `None` when the request needs no session (an asset, or a login page).
+/// `None` when the request needs no session (an asset, a login page, or any
+/// path under an ungated mount).
 fn login_redirect_target(mounts: &'static [UiMount], path: &str) -> Option<&'static str> {
-    let mount = mount_for(mounts, path);
-    if path == mount.login_path || !is_gated_page(path) {
+    let login = mount_for(mounts, path).login_path?;
+    if path == login || !is_gated_page(path) {
         return None;
     }
-    Some(mount.login_path)
+    Some(login)
 }
 
 /// The mount owning `path`: the longest matching prefix, falling back to the
@@ -220,12 +227,12 @@ mod tests {
     /// OSS wiring: the root mount only.
     const ROOT_ONLY: &[UiMount] = &[UiMount::ROOT];
 
-    /// EE wiring: vanilla UI at `/` plus the Flutter app at `/app/`.
+    /// EE wiring: vanilla UI at `/` plus the ungated Flutter app at `/app/`.
     const WITH_APP: &[UiMount] = &[
         UiMount::ROOT,
         UiMount {
             prefix: "/app/",
-            login_path: "/app/login",
+            login_path: None,
         },
     ];
 
@@ -263,14 +270,17 @@ mod tests {
     }
 
     #[test]
-    fn app_mount_redirects_its_pages_to_its_own_login() {
-        assert_eq!(login_redirect_target(WITH_APP, "/app/"), Some("/app/login"));
-        assert_eq!(login_redirect_target(WITH_APP, "/app"), Some("/app/login"));
+    fn ungated_app_mount_serves_pages_without_a_session() {
+        // The Flutter SPA gates itself client-side, and its SSO callbacks
+        // land here with the token in the URL — no server-side redirect.
+        assert_eq!(login_redirect_target(WITH_APP, "/app/"), None);
+        assert_eq!(login_redirect_target(WITH_APP, "/app"), None);
+        assert_eq!(login_redirect_target(WITH_APP, "/app/login"), None);
+        assert_eq!(login_redirect_target(WITH_APP, "/app/auth/callback"), None);
         assert_eq!(
             login_redirect_target(WITH_APP, "/app/agents/some-uuid"),
-            Some("/app/login")
+            None
         );
-        assert_eq!(login_redirect_target(WITH_APP, "/app/login"), None);
         assert_eq!(login_redirect_target(WITH_APP, "/app/main.dart.js"), None);
         // Root-mount pages still go to the vanilla login.
         assert_eq!(
