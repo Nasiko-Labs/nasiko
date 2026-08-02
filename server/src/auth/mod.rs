@@ -5,4 +5,4 @@ pub mod rbac;
 
 pub use claims::Claims;
 pub use login::{protected_router as auth_protected_router, public_router as login_router};
-pub use middleware::{require_auth, require_page_auth};
+pub use middleware::{UiMount, require_auth, require_page_auth};

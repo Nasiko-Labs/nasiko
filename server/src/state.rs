@@ -52,6 +52,10 @@ pub struct AppState {
     oidc_dynamic_cache: OidcClientCache,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
+    /// UI mounts for the page gate (`auth::require_page_auth`) — each frontend
+    /// prefix with its own login page. OSS serves the root mount only; the EE
+    /// composition root adds the Flutter app mount at `/app/`.
+    pub ui_mounts: &'static [crate::auth::UiMount],
 }
 
 impl AppState {
@@ -217,6 +221,7 @@ impl AppState {
             oidc_svc,
             oidc_dynamic_cache: Arc::new(tokio::sync::RwLock::new(None)),
             build_tx,
+            ui_mounts: &[crate::auth::UiMount::ROOT],
         };
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
