@@ -5,8 +5,9 @@ It runs an inline ReAct loop (reason → call a tool → observe → repeat) ove
 chat model, with specialized coding tools confined to a workspace directory.
 
 Follows the deployable-agent pattern of `agents/paper` (A2A server via `a2a-server`,
-`AgentExecutor` impl, `/jsonrpc` + agent-card HTTP endpoints), but is a **root workspace member**
-and routes all file/shell access through a pluggable `Sandbox` backend.
+`AgentExecutor` impl, `/jsonrpc` + agent-card HTTP endpoints), and routes all file/shell access
+through a pluggable `Sandbox` backend. Standalone crate (own `Cargo.lock`, not a workspace
+member) so `docker build`/`nasiko build` can compile it from just this directory.
 
 ## Status
 
@@ -30,11 +31,12 @@ and routes all file/shell access through a pluggable `Sandbox` backend.
 - `src/main.rs` — `CodingAgent` + `AgentExecutor` with the ReAct loop (`MAX_TURNS = 12`), a
   coding-focused system prompt, streamed `status_working` updates, and the `AgentCard`
   (skills: `code-edit`, `code-test`, `code-refactor`).
-- `Dockerfile` — based on `rust:1-slim` (not `scratch`: the tools need a shell + toolchain),
-  with `git` and `ripgrep` installed and `WORKSPACE_DIR=/workspace`.
+- `Dockerfile` — multi-stage: a `rust:1-slim` builder stage compiles the release binary from
+  source (no local Rust toolchain needed), copied into a `rust:1-slim` runtime (not `scratch`: the
+  tools need a shell + toolchain), with `git` and `ripgrep` installed and `WORKSPACE_DIR=/workspace`.
 
 **Verification:** 10 unit tests pass (path containment, `edit_file` not-found/not-unique,
-exec exit codes, dir listing); `cargo check --workspace` is clean under `RUSTFLAGS="-D warnings"`;
+exec exit codes, dir listing); `cargo check` is clean under `RUSTFLAGS="-D warnings"`;
 the server boots and serves a correct `/.well-known/agent-card.json`.
 
 ### Phase 2 — pending
@@ -61,7 +63,7 @@ WORKSPACE_DIR=/path/to/project   # workspace root (default: current dir)
 SANDBOX_MODE=local               # default; 'remote' is Phase 2
 PORT=8000                        # default 8080
 
-cargo run -p nasiko-coding-agent
+cargo run
 ```
 
 Then:

@@ -1,4 +1,14 @@
+FROM rust:1-alpine AS builder
+RUN apk add --no-cache musl-dev build-base cmake perl
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM alpine:latest AS certs
+RUN apk --no-cache add ca-certificates
+
 FROM scratch
-COPY target/x86_64-unknown-linux-musl/release/nasiko-nutrition-agent /agent
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /app/target/release/nasiko-nutrition-agent /agent
 EXPOSE 8000
 ENTRYPOINT ["/agent"]

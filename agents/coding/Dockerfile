@@ -1,3 +1,11 @@
+FROM rust:1-slim AS builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake perl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
 # The coding agent's tools shell out to build/test toolchains, so unlike the other agents
 # (which are FROM scratch) the runtime image must carry a shell and a toolchain. This image
 # bundles the Rust toolchain; build per-language variants (-python, -node, -go) from the same
@@ -9,7 +17,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ripgrep ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY target/x86_64-unknown-linux-musl/release/nasiko-coding-agent /usr/local/bin/coding-agent
+COPY --from=builder /app/target/release/nasiko-coding-agent /usr/local/bin/coding-agent
 
 ENV WORKSPACE_DIR=/workspace
 ENV PORT=8000

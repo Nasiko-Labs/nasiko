@@ -1,13 +1,8 @@
-target := "x86_64-unknown-linux-musl"
 user := env("DOCKERHUB_USER", "akhilfolium")
 docker := env("DOCKER", if path_exists("/usr/bin/podman") == "true" { "podman" } else { "docker" })
 
 # Build image
 build:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd {{justfile_directory()}}
-    cargo zigbuild --release --target {{target}}
     {{docker}} build -t {{user}}/nutrition .
 
 # Push image

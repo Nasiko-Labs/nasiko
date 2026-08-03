@@ -1,22 +1,28 @@
 [package]
 name = "nasiko-coding-agent"
-version.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+# Standalone crate — not a member of the root workspace, so `nasiko new`/`nasiko build`
+# can compile it from just this directory (matches the other example agents, e.g.
+# oss/agents/paper). Dependency versions are pinned literally instead of via
+# `workspace = true` for the same reason.
+[workspace]
 
 [dependencies]
-a2a-server = { workspace = true }
-a2a = { workspace = true }
-tokio = { workspace = true }
-futures = { workspace = true }
-async-stream = { workspace = true }
-chrono = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-reqwest = { workspace = true }
-axum = { workspace = true }
-walkdir = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+a2a-server = { git = "https://github.com/a2aproject/a2a-rs", package = "a2a-server-lf" }
+a2a = { git = "https://github.com/a2aproject/a2a-rs", package = "a2a-lf" }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-stream = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+axum = { version = "0.8", features = ["json", "query", "multipart"] }
+walkdir = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { version = "1", features = ["full"] }
