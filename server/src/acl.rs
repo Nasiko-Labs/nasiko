@@ -64,20 +64,27 @@ pub async fn can_manage_agent(
 /// True if the caller can manage `connector_id`'s per-agent state on
 /// `agent_id` — either full agent management ([`can_manage_agent`]), or the
 /// caller can reach `connector_id` at all (Layer 1: owner, composio,
-/// user/public grant — EE additionally: team/department) AND it has already
-/// been granted directly to this agent (`grant_type = 'agent'`, see
-/// `connector grant-agent`).
+/// user/public grant — EE additionally: team/department) AND either it has
+/// already been granted directly to this agent (`grant_type = 'agent'`, see
+/// `connector grant-agent`) OR the caller has at least ordinary,
+/// non-managing access to the agent itself ([`can_access_agent`] — owner,
+/// public, or a plain `agent_grants` share).
 ///
 /// This lets anyone with reachability to a connector — its owner, or someone
-/// it was merely shared with — enable/disable/configure it on ANY agent
-/// (theirs, shared to them, or with no relationship to them at all) once
-/// it's been granted to that agent, mirroring [`reachable_shareable`]'s same
-/// relaxation for the grant itself (`oss/mcp-gateway/src/connectors.rs`) —
-/// attaching/using a connector you can already reach is narrower than
-/// sharing it with someone new, so it's gated by reachability, not
-/// ownership. It grants no control over the agent's other connectors or its
-/// agent-wide settings (reset, full connector/rule listing stay
-/// [`can_manage_agent`]-only).
+/// it was merely shared with — enable/disable/configure it on an agent they
+/// have SOME legitimate relationship to (own it, it's public, or it was
+/// shared to them), including attaching it there for the very first time —
+/// not just once someone else has already granted it. Before this second
+/// fallback, a connector-reachable caller who was ALSO given the agent
+/// itself via a plain share could never be the one to attach their own
+/// connector to it: `agent_has_connector_grant` only turns true after the
+/// attach has already happened, so the very first attach had nowhere to
+/// succeed from. It still refuses a caller with literally no relationship to
+/// the agent at all — that's still `can_manage_agent`-or-nothing, mirroring
+/// [`reachable_shareable`]'s own agent-side check
+/// (`oss/mcp-gateway/src/connectors.rs`). It grants no control over the
+/// agent's other connectors or its agent-wide settings (reset, full
+/// connector/rule listing stay [`can_manage_agent`]-only).
 ///
 /// [`reachable_shareable`]: nasiko_mcp_gateway::connectors
 pub async fn can_manage_agent_connector(
@@ -101,9 +108,14 @@ pub async fn can_manage_agent_connector(
     if !can_reach_connector {
         return false;
     }
-    nasiko_mcp_gateway::repo::agent_has_connector_grant(&state.db, agent_id, connector_id)
-        .await
-        .unwrap_or(false)
+    let already_granted =
+        nasiko_mcp_gateway::repo::agent_has_connector_grant(&state.db, agent_id, connector_id)
+            .await
+            .unwrap_or(false);
+    if already_granted {
+        return true;
+    }
+    can_access_agent(state, claims, agent_id).await
 }
 
 /// Check whether `caller_agent_id` is permitted to invoke `target_agent_id`.

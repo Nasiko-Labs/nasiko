@@ -764,6 +764,156 @@ async fn consumers_lists_only_agents_that_configured_the_connector() {
 /// grant it. (Someone who merely has *some* reachability to the connector —
 /// e.g. a user-share — but doesn't own it CAN grant-agent; see
 /// [`connector_reachable_non_owner_can_grant_agent`] for that case.)
+/// The reported bug: a connector owner shares their connector with someone
+/// (a plain connector-level user-grant), AND separately shares an AGENT they
+/// own with that same person (a plain `agent_grants` user-grant — not
+/// ownership, not `can_manage_agent`). That grantee should be able to attach
+/// their own reachable connector to the shared agent for the FIRST time —
+/// before this fix, `can_manage_agent_connector` required the connector to
+/// already be granted to the agent (`agent_has_connector_grant`), which is
+/// impossible on a first attach, so both `GET .../connectors` (empty-list
+/// 403) and `PUT .../connectors/{id}` (403) hard-denied a grantee with a
+/// completely legitimate relationship to both the connector and the agent.
+#[tokio::test]
+#[serial]
+async fn agent_grant_holder_can_attach_their_own_reachable_connector_for_the_first_time() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "fa-owner").await;
+    let (_agent_owner_id, agent_owner_uuid) = create_user(&server, &admin, "fa-agent-owner").await;
+    let (grantee_id, grantee_uuid) = create_user(&server, &admin, "fa-grantee").await;
+    let (stranger_id, _stranger_uuid) = create_user(&server, &admin, "fa-stranger").await;
+
+    let cid = seed_connector(&server, owner_uuid, "fa-tool").await;
+    let agent_id = seed_agent(&server, agent_owner_uuid, "fa-agent").await;
+
+    // Owner shares the connector directly with the grantee.
+    let res = common::as_member(
+        server.client.post(server.url(&format!(
+            "/api/mcp/connectors/{cid}/grants/users/{grantee_uuid}"
+        ))),
+        &owner_id,
+        "fa-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+
+    // Agent owner shares the AGENT with the same grantee (a plain
+    // agent-level grant, not ownership/management).
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id) VALUES ($1, 'user', $2)",
+    )
+    .bind(agent_id)
+    .bind(grantee_uuid.to_string())
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // The grantee can see their own reachable connector in this agent's list
+    // even before attaching it — a stranger with neither relationship still
+    // can't.
+    let body: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &grantee_id,
+        "fa-grantee",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        body["data"]["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["connector_id"] == cid.to_string()),
+        "grantee must see their own reachable connector: {body:?}"
+    );
+
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &stranger_id,
+        "fa-stranger",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        403,
+        "a stranger with no relationship to the agent or connector must still be denied"
+    );
+
+    // The core fix: the grantee can attach (enable) their connector on the
+    // shared agent for the first time — no prior grant-agent step needed.
+    let res = common::as_member(
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        &grantee_id,
+        "fa-grantee",
+    )
+    .json(&json!({"enabled": true}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "a grantee with agent access + connector reachability must be able to attach it for the first time"
+    );
+
+    // It now shows up enabled.
+    let body: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/mcp/agents/{agent_id}/connectors"))),
+        &grantee_id,
+        "fa-grantee",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let entry = body["data"]["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["connector_id"] == cid.to_string())
+        .expect("connector must still be visible after attaching");
+    assert_eq!(entry["enabled"], true, "{entry:?}");
+
+    // A stranger still can't attach it — no relationship to either side.
+    let res = common::as_member(
+        server
+            .client
+            .put(server.url(&format!("/api/mcp/agents/{agent_id}/connectors/{cid}"))),
+        &stranger_id,
+        "fa-stranger",
+    )
+    .json(&json!({"enabled": true}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        403,
+        "a stranger has no reachability to the connector or the agent at all"
+    );
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn agent_grant_lets_owner_configure_connector_without_personal_reachability() {

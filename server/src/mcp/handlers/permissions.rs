@@ -20,11 +20,22 @@ use crate::state::AppState;
 /// Same relaxed gate as `list_tool_rules` below (and `set_connector_access`/
 /// `list_connector_tools`, already relaxed by `a9012ded`/`56e46b07`): a caller
 /// who can't manage the whole agent still sees the connector(s) they
-/// themselves can reach and that have already been granted to this agent
-/// (narrowed, not blocked outright) — otherwise this endpoint (the natural
-/// first call before `agent-tools enable`/`set-rule`) would be the one
-/// sibling still hard-denying the exact caller those other endpoints already
-/// permit, making them undiscoverable in practice.
+/// themselves can reach (narrowed, not blocked outright) — otherwise this
+/// endpoint (the natural first call before `agent-tools enable`/`set-rule`)
+/// would be the one sibling still hard-denying the exact caller those other
+/// endpoints already permit, making them undiscoverable in practice. This
+/// works with zero relationship to the agent itself, e.g. a connector owner
+/// whose connector was granted to someone else's agent.
+///
+/// If that per-connector filter finds nothing at all (no connector the
+/// caller can manage happens to be attached here), it used to hard-403
+/// unconditionally — but an empty result is also the normal, legitimate
+/// state for a caller who has ordinary access to the agent
+/// ([`can_access_agent`] — owner, public, or a plain share) and simply
+/// hasn't attached any connector of their own yet (e.g. they're about to
+/// attach their first one). Only a caller with NEITHER a manageable
+/// connector already here NOR any relationship to the agent at all still
+/// gets the 403.
 #[utoipa::path(
     get,
     path = "/api/mcp/agents/{agent_id}/connectors",
@@ -32,7 +43,7 @@ use crate::state::AppState;
     params(("agent_id" = Uuid, Path, description = "Agent id")),
     responses(
         (status = 200, description = "Connectors + per-agent status — `data.connectors` is a list", body = McpEnvelope),
-        (status = 403, description = "Caller cannot manage this agent or any granted connector", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this agent, has no manageable connector already attached, and has no other relationship to it", body = McpEnvelope),
     ),
 )]
 pub async fn list_connectors(
@@ -74,7 +85,9 @@ pub async fn list_connectors(
             }
             *connectors = kept;
         }
-        if allowed.is_empty() || allowed.values().all(|v| !v) {
+        if (allowed.is_empty() || allowed.values().all(|v| !v))
+            && !crate::acl::can_access_agent(&state, &claims, agent_id).await
+        {
             return Err(ApiError(McpError::Forbidden(
                 "you do not have permission to manage this agent".into(),
             )));
@@ -166,11 +179,19 @@ pub async fn list_connector_tools(
 ///
 /// Agent-wide (every connector's rules at once), so a non-agent-manager never
 /// gets the unfiltered view: if they can't manage the whole agent, the result
-/// is narrowed to only the connector(s) they themselves own and that have
-/// already been granted to this agent (`ensure_can_manage_agent_connector`),
-/// e.g. so `agent-tools set-rule`'s read-modify-write can find that connector's
-/// existing rules. A caller with no such connector still gets the original
-/// 403 — this never turns into "any authenticated user can query any agent".
+/// is narrowed to only the connector(s) they themselves can manage
+/// (`can_manage_agent_connector` — reachable, and either already granted to
+/// this agent or the caller has at least ordinary access to it), e.g. so
+/// `agent-tools set-rule`'s read-modify-write can find that connector's
+/// existing rules. This works with zero relationship to the agent itself,
+/// e.g. a connector owner whose connector was granted to someone else's agent.
+///
+/// If that filter finds no manageable connector at all, an empty result is
+/// still a normal 200 as long as the caller has at least ordinary access to
+/// the agent ([`can_access_agent`] — owner, public, or a plain share): a
+/// freshly shared agent with no rules configured yet is not a permission
+/// failure. Only a caller with neither a manageable connector already here
+/// nor any relationship to the agent at all gets the 403.
 #[utoipa::path(
     get,
     path = "/api/mcp/agents/{agent_id}/tools",
@@ -178,7 +199,7 @@ pub async fn list_connector_tools(
     params(("agent_id" = Uuid, Path, description = "Agent id")),
     responses(
         (status = 200, description = "The agent's tool rules — `data.rules` is a list", body = McpEnvelope),
-        (status = 403, description = "Caller cannot manage this agent or any granted connector", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this agent, has no manageable connector already attached, and has no other relationship to it", body = McpEnvelope),
     ),
 )]
 pub async fn list_tool_rules(
@@ -189,7 +210,6 @@ pub async fn list_tool_rules(
     let mut data = service::permissions::list_tool_rules(&state, agent_id).await?;
     if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         let mut allowed: std::collections::HashMap<Uuid, bool> = std::collections::HashMap::new();
-        let mut saw_any_connector = false;
         if let Some(rules) = data.get_mut("rules").and_then(|v| v.as_array_mut()) {
             let mut kept = Vec::with_capacity(rules.len());
             for rule in rules.drain(..) {
@@ -200,7 +220,6 @@ pub async fn list_tool_rules(
                 else {
                     continue;
                 };
-                saw_any_connector = true;
                 let ok = match allowed.get(&connector_id) {
                     Some(v) => *v,
                     None => {
@@ -221,23 +240,9 @@ pub async fn list_tool_rules(
             }
             *rules = kept;
         }
-        // No rules exist yet at all (e.g. a freshly granted, never-configured
-        // connector) — fall back to an explicit ownership check so a caller
-        // with zero relationship to this agent still gets 403, not an
-        // indistinguishable empty 200.
-        if !saw_any_connector {
-            let user_id = parse_user(&claims)?;
-            let owns_a_granted_connector =
-                nasiko_mcp_gateway::repo::list_agent_granted_connectors(&state.db, agent_id)
-                    .await
-                    .map(|connectors| connectors.iter().any(|c| c.owner_id == Some(user_id)))
-                    .unwrap_or(false);
-            if !owns_a_granted_connector {
-                return Err(ApiError(McpError::Forbidden(
-                    "you do not have permission to manage this agent".into(),
-                )));
-            }
-        } else if allowed.values().all(|v| !v) {
+        if (allowed.is_empty() || allowed.values().all(|v| !v))
+            && !crate::acl::can_access_agent(&state, &claims, agent_id).await
+        {
             return Err(ApiError(McpError::Forbidden(
                 "you do not have permission to manage this agent".into(),
             )));
