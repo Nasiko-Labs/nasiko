@@ -6,6 +6,9 @@
 //! every regex in one place means new checks can be added here without touching (or adding
 //! noise to) the business logic, and the classifier file stays focused on *how* the patterns
 //! are used rather than *what* they are.
+//!
+//! The category and signal tables below are ported from the litellm-rust Adaptive Router
+//! reference — see `THIRD_PARTY_LICENSES.md` (crate root) for the upstream MIT attribution.
 
 use std::sync::LazyLock;
 

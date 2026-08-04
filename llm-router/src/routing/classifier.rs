@@ -9,7 +9,8 @@
 //! ## How the tier is chosen
 //!
 //! Two steps, both faithful ports of the litellm-rust **Adaptive Router** reference
-//! (`classifier/{categories,signals}.rs`, `scoring.rs`):
+//! (`classifier/{categories,signals}.rs`, `scoring.rs`) — see `THIRD_PARTY_LICENSES.md`
+//! (crate root) for the upstream MIT attribution this requires:
 //!
 //! 1. **Request type** — a regex vote-count classifier buckets the query into one of a
 //!    handful of [`RequestType`]s (code generation, factual lookup, …), defaulting to
