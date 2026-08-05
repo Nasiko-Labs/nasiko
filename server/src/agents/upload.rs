@@ -1640,47 +1640,27 @@ pub(crate) async fn list_upload_agents(
 
     // Join with agents to pull live metadata (tags, description, icon_url, version, status).
     // DISTINCT ON keeps the most recent upload row per agent.
-    let rows: Result<Vec<UploadAgentRow>, _> = if claims.is_superuser {
-        sqlx::query_as(
-            r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
-                   us.agent_id,
-                   us.agent_name,
-                   us.upload_id,
-                   us.error_message,
-                   a.description,
-                   COALESCE(a.tags, '{}') AS tags,
-                   a.icon_url,
-                   a.version,
-                   a.status AS agent_status
-               FROM upload_status us
-               JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
-               ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
-               LIMIT 50"#,
-        )
-        .fetch_all(&state.db)
-        .await
-    } else {
-        sqlx::query_as(
-            r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
-                   us.agent_id,
-                   us.agent_name,
-                   us.upload_id,
-                   us.error_message,
-                   a.description,
-                   COALESCE(a.tags, '{}') AS tags,
-                   a.icon_url,
-                   a.version,
-                   a.status AS agent_status
-               FROM upload_status us
-               JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
-               WHERE us.owner_id = $1
-               ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
-               LIMIT 50"#,
-        )
-        .bind(user_id)
-        .fetch_all(&state.db)
-        .await
-    };
+    // Always filter by owner_id — even admins should only see their own uploads.
+    let rows: Result<Vec<UploadAgentRow>, _> = sqlx::query_as(
+        r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
+               us.agent_id,
+               us.agent_name,
+               us.upload_id,
+               us.error_message,
+               a.description,
+               COALESCE(a.tags, '{}') AS tags,
+               a.icon_url,
+               a.version,
+               a.status AS agent_status
+           FROM upload_status us
+           JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+           WHERE us.owner_id = $1
+           ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
+           LIMIT 50"#,
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await;
 
     match rows {
         Ok(rows) => {

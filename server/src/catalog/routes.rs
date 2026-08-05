@@ -69,8 +69,7 @@ pub fn router() -> Router<AppState> {
 /// `get_one`'s `can_access_agent` call allows fetching it directly by id.
 fn agent_access_predicate(user_bind: &str, table_ref: &str) -> String {
     format!(
-        r#"({user_bind}::uuid IS NULL
-             OR {table_ref}.owner_id = {user_bind}
+        r#"({table_ref}.owner_id = {user_bind}
              OR {table_ref}.is_public = TRUE
              OR EXISTS (
                  SELECT 1 FROM agent_grants ag
@@ -117,13 +116,9 @@ pub(crate) async fn by_skill(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let owner_filter: Option<Uuid> = if claims.is_superuser {
-        None
-    } else {
-        match claims.user_uuid() {
-            Ok(id) => Some(id),
-            Err(e) => return e.into_response(),
-        }
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     // Normalise to lowercase before the GIN containment check.  Tags are
@@ -325,13 +320,9 @@ pub(crate) async fn list(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let owner_filter: Option<Uuid> = if claims.is_superuser {
-        None
-    } else {
-        match claims.user_uuid() {
-            Ok(id) => Some(id),
-            Err(e) => return e.into_response(),
-        }
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     let sql = format!(
@@ -448,18 +439,29 @@ pub(crate) async fn get_one(
     claims: Claims,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Soft-deleted agents must not resolve here: the `(owner_id, name)` uniqueness
+    // constraint is a partial index scoped to `deleted_at IS NULL`
+    // (`agents_owner_name_active_uniq`, oss/migrations/0001_schema.sql) — the schema's
+    // own intent is that a deleted agent's name is free for a fresh row to reuse.
+    // Without this filter, a caller redeploying under a previously-deleted name (e.g.
+    // `nasiko deploy` re-checking "does this name already exist") found the old
+    // deleted row instead of getting a clean "not found", updated it in place, and
+    // left it permanently invisible to `nasiko ps`/`rm` (which do filter deleted_at)
+    // even though its container was genuinely running again.
     let result = match id.parse::<Uuid>() {
         Ok(uuid) => {
-            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
+            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1 AND deleted_at IS NULL")
                 .bind(uuid)
                 .fetch_optional(&state.db)
                 .await
         }
         Err(_) => {
-            sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
-                .bind(&id)
-                .fetch_optional(&state.db)
-                .await
+            sqlx::query_as::<_, Agent>(
+                "SELECT * FROM agents WHERE name = $1 AND deleted_at IS NULL",
+            )
+            .bind(&id)
+            .fetch_optional(&state.db)
+            .await
         }
     };
 
@@ -697,12 +699,18 @@ pub(crate) async fn delete(
         }
     };
 
-    // Collect all non-stopped deployment container names for this agent.
-    // Collect distinct K8s workload names from non-stopped deployment rows.
-    // k8s_deployment_name is the actual workload/container identifier; namespace is
-    // the K8s namespace (e.g. 'nasiko-agents') and must not be used as a container ID.
-    // In Docker OSS, k8s_deployment_name is NULL so no extra entries are added and
-    // teardown falls through to the agent name only.
+    // Every real deploy path keys the running container on the agent's UUID, never the
+    // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
+    // be tried, not just when an `agent_deployments` row happens to confirm it. Relying
+    // solely on that join left agents deployed before this row existed (or never tracked
+    // for any other reason) permanently un-removable: the name-keyed guess below found
+    // nothing, `destroy` no-op'd successfully, and `nasiko rm` reported success while the
+    // real container kept running.
+    //
+    // Collect distinct K8s workload names from non-stopped deployment rows too — for
+    // pre-UUID-keying legacy containers, `k8s_deployment_name` may be the only place the
+    // real identifier was recorded. `name` is kept as a last-resort fallback for
+    // containers created before UUID-keying existed at all.
     let k8s_names: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
          WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
@@ -712,7 +720,7 @@ pub(crate) async fn delete(
     .await
     .unwrap_or_default();
 
-    let mut containers_to_stop: Vec<String> = vec![name.clone()];
+    let mut containers_to_stop: Vec<String> = vec![id.to_string(), name.clone()];
     for kn in k8s_names {
         if !containers_to_stop.contains(&kn) {
             containers_to_stop.push(kn);
@@ -1022,13 +1030,9 @@ pub(crate) async fn search(
         return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
     }
 
-    let owner_filter: Option<Uuid> = if claims.is_superuser {
-        None
-    } else {
-        match claims.user_uuid() {
-            Ok(id) => Some(id),
-            Err(e) => return e.into_response(),
-        }
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     // `COUNT(*) OVER()` yields the total match count (post-filter, pre-LIMIT) so
@@ -1247,50 +1251,33 @@ pub(crate) async fn registry_user_agents(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let agents = if claims.is_superuser {
-        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents
-               WHERE deleted_at IS NULL
-                 AND ($1::text IS NULL OR (name ILIKE $1 OR description ILIKE $1))
-                 AND ($2::text IS NULL OR status = $2)
-               ORDER BY created_at DESC
-               LIMIT $3 OFFSET $4"#,
-        )
-        .bind(&pattern)
-        .bind(&q.status)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-    } else {
-        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents
-               WHERE deleted_at IS NULL
-                 AND (
-                   owner_id = $1
-                   OR is_public = true
-                   OR EXISTS (
-                       SELECT 1 FROM agent_grants ag
-                       WHERE ag.agent_id = agents.id
-                         AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
-                           OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text))
-                   )
+    // All users (including admins) see: owned + public + explicitly granted agents.
+    let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
+    let agents = sqlx::query_as::<_, Agent>(
+        r#"SELECT * FROM agents
+           WHERE deleted_at IS NULL
+             AND (
+               owner_id = $1
+               OR is_public = true
+               OR EXISTS (
+                   SELECT 1 FROM agent_grants ag
+                   WHERE ag.agent_id = agents.id
+                     AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
+                       OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text))
                )
-                 AND ($2::text IS NULL OR (name ILIKE $2 OR description ILIKE $2))
-                 AND ($3::text IS NULL OR status = $3)
-               ORDER BY created_at DESC
-               LIMIT $4 OFFSET $5"#,
-        )
-        .bind(user_id)
-        .bind(&pattern)
-        .bind(&q.status)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-    };
+           )
+             AND ($2::text IS NULL OR (name ILIKE $2 OR description ILIKE $2))
+             AND ($3::text IS NULL OR status = $3)
+           ORDER BY created_at DESC
+           LIMIT $4 OFFSET $5"#,
+    )
+    .bind(user_id)
+    .bind(&pattern)
+    .bind(&q.status)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await;
 
     match agents {
         Ok(list) => {
