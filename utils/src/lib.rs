@@ -1,6 +1,7 @@
 pub mod display;
 pub mod source_files;
 pub mod term;
+pub mod version;
 pub mod zip;
 
 /// Helper for required env vars — returns clear error message.

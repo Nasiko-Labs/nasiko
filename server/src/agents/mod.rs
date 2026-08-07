@@ -7,6 +7,7 @@ pub mod llm_config;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
+pub mod versions;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -191,10 +192,9 @@ pub fn router() -> Router<AppState> {
     // builds on top of this router and mounts its own richer grants router
     // (team/department grants + the live, CLI-consumed request shapes in
     // ee/cli/src/access.rs) at the same paths. Merging both panics on route
-    // registration conflicts. The OSS-tier grants module IS live — the agent
-    // card's "Access & security" tab consumes it — but it is mounted only in
-    // the OSS-only composition root (`crate::build_app`), which EE never
-    // calls, so each edition serves exactly one grants API.
+    // registration conflicts. This OSS-tier grants module has no CLI/UI/test
+    // consumer yet — wire it up (and reconcile it with EE's implementation)
+    // in a dedicated pass rather than mounting two incompatible APIs.
 }
 
 /// GET routes pulled out from under `router()`'s `require_deployer` gate —

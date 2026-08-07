@@ -38,6 +38,13 @@ pub fn parse_image_name_and_tag(image: &str) -> (String, String) {
     }
 }
 
+/// True if `image` has a `:tag` written explicitly, as opposed to
+/// [`parse_image_name_and_tag`]'s implicit `"latest"` fallback. Used so an
+/// untagged image isn't mistaken for a deliberately chosen version.
+pub fn image_has_explicit_tag(image: &str) -> bool {
+    image.rsplit('/').next().unwrap_or(image).contains(':')
+}
+
 pub fn extract_tar_gz(data: &[u8], dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)?;
     let cursor = Cursor::new(data);

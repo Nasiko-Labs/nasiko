@@ -9,6 +9,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 crossterm.workspace = true
+semver.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

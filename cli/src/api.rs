@@ -1201,6 +1201,31 @@ pub struct AgentVersion {
     pub created_at: String,
 }
 
+impl Client {
+    /// Fetches every version ever recorded for an agent — active and
+    /// archived. Used to check a chosen version against the full history,
+    /// not just what's currently live.
+    pub fn version_history(&self, agent_id: &str) -> Result<Vec<AgentVersion>> {
+        let raw: serde_json::Value = self.get_json(&format!("/agents/{agent_id}/versions"))?;
+        unwrap_data(raw)
+    }
+
+    /// Like [`Client::version_history`], but just the version strings, and
+    /// never fails — an empty list just means "no history to compare".
+    pub fn used_versions(&self, agent_id: &str) -> Vec<String> {
+        self.version_history(agent_id)
+            .map(|versions| versions.into_iter().map(|v| v.version).collect())
+            .unwrap_or_default()
+    }
+
+    /// Looks up an agent by UUID or name. `None` if it doesn't exist yet.
+    pub fn get_agent(&self, id_or_name: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .get_json_optional::<serde_json::Value>(&format!("/agents/{id_or_name}"))?
+            .map(|raw| raw.get("data").cloned().unwrap_or(raw)))
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct DeploySpec {
     pub image: String,

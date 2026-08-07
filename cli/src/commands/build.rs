@@ -5,8 +5,18 @@ use std::process::Command;
 use anyhow::{Result, bail};
 
 use crate::util::container_bin;
+use crate::version_prompt::{VersionFlags, resolve_deploy_version};
 
 pub fn build(directory: &str, tag: Option<&str>, platform: Option<&str>) -> Result<()> {
+    build_with_version_flags(directory, tag, platform, VersionFlags::default())
+}
+
+pub fn build_with_version_flags(
+    directory: &str,
+    tag: Option<&str>,
+    platform: Option<&str>,
+    flags: VersionFlags,
+) -> Result<()> {
     let root = Path::new(directory)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(directory).to_path_buf());
@@ -21,7 +31,9 @@ pub fn build(directory: &str, tag: Option<&str>, platform: Option<&str>) -> Resu
 
     let resolved_tag = match tag {
         Some(t) => t.to_string(),
-        None => default_tag(&root),
+        // `build` doesn't talk to the server, so it only checks AgentCard's
+        // version — no "already deployed" version to compare against.
+        None => default_tag(&root, flags)?,
     };
 
     println!("Building {resolved_tag}");
@@ -91,21 +103,31 @@ fn missing_copy_sources(dockerfile: &str, root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn default_tag(root: &Path) -> String {
+fn default_tag(root: &Path, flags: VersionFlags) -> Result<String> {
     let card_path = root.join("AgentCard.json");
     if card_path.exists()
         && let Ok(content) = fs::read_to_string(&card_path)
         && let Ok(card) = serde_json::from_str::<serde_json::Value>(&content)
     {
         let name = card.get("name").and_then(|n| n.as_str()).unwrap_or("agent");
-        let version = card
-            .get("version")
-            .and_then(|v| v.as_str())
-            .unwrap_or("latest");
-        return format!("{name}:{version}");
+        let card_version = card.get("version").and_then(|v| v.as_str());
+        // No server round-trip here, so no history to check.
+        let context = crate::version_prompt::VersionContext {
+            card_version,
+            current_deployed_version: None,
+            used_versions: &[],
+        };
+        let decision = resolve_deploy_version(context, flags)?;
+        return Ok(format!("{name}:{}", decision.version));
     }
     let dir_name = root.file_name().unwrap_or_default().to_string_lossy();
-    format!("{dir_name}:latest")
+    let context = crate::version_prompt::VersionContext {
+        card_version: None,
+        current_deployed_version: None,
+        used_versions: &[],
+    };
+    let decision = resolve_deploy_version(context, flags)?;
+    Ok(format!("{dir_name}:{}", decision.version))
 }
 
 #[cfg(test)]

@@ -6,20 +6,34 @@ use anyhow::{Context, Result};
 use crate::api::Client;
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
+use crate::version_prompt::{VersionContext, VersionFlags, resolve_deploy_version};
 
 /// Push an agent image to the cluster's OCI registry and register in catalog.
 /// Does NOT deploy a container.
 pub fn push(image: &str, name_override: Option<&str>) -> Result<()> {
+    push_with_version_flags(image, name_override, VersionFlags::default())
+}
+
+pub fn push_with_version_flags(
+    image: &str,
+    name_override: Option<&str>,
+    flags: VersionFlags,
+) -> Result<()> {
     let client = Client::from_active_cluster()?;
 
     if Path::new(image).join("AgentCard.json").exists() {
-        push_from_directory(image, name_override, &client)
+        push_from_directory(image, name_override, flags, &client)
     } else {
-        push_from_image(image, name_override, &client)
+        push_from_image(image, name_override, flags, &client)
     }
 }
 
-fn push_from_directory(dir: &str, name_override: Option<&str>, client: &Client) -> Result<()> {
+fn push_from_directory(
+    dir: &str,
+    name_override: Option<&str>,
+    flags: VersionFlags,
+    client: &Client,
+) -> Result<()> {
     let root = Path::new(dir);
     let card_path = root.join("AgentCard.json");
     let card: serde_json::Value = serde_json::from_str(
@@ -31,37 +45,67 @@ fn push_from_directory(dir: &str, name_override: Option<&str>, client: &Client) 
         .map(String::from)
         .or_else(|| card.get("name").and_then(|n| n.as_str()).map(String::from))
         .unwrap_or_else(|| "agent".into());
-    let version = card
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("latest");
+    let existing = lookup_existing(client, &agent_name);
+    let (current_deployed_version, used_versions) = used_version_context(client, &existing);
+    let card_version = card.get("version").and_then(|v| v.as_str());
+    let context = VersionContext {
+        card_version,
+        current_deployed_version: current_deployed_version.as_deref(),
+        used_versions: &used_versions,
+    };
+    let decision = resolve_deploy_version(context, flags)?;
+    let version = decision.version;
     let image_tag = format!("{agent_name}:{version}");
 
-    // Build image
-    // Cluster nodes are amd64 on every supported provider — build for the
-    // deployment target, not the host arch, or Apple Silicon builds
-    // CrashLoop on the cluster with "exec format error".
+    // Build for linux/amd64 (the cluster's arch), not the host arch — an
+    // Apple Silicon build here would CrashLoop with "exec format error".
     super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
 
     // Push to OCI
     let repo = format!("nasiko/{agent_name}");
     println!("Pushing {image_tag} → {repo}:{version}...");
-    oci::push_image(&image_tag, &repo, version)?;
+    oci::push_image(&image_tag, &repo, &version)?;
 
     let image_ref = format!("{repo}:{version}");
 
     // Register in catalog
-    register_agent(client, &agent_name, version, &image_ref, &card)?;
+    register_agent(
+        client,
+        &agent_name,
+        &version,
+        &image_ref,
+        &card,
+        decision.overwrite,
+    )?;
 
     println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
     println!("  Deploy with: nasiko deploy {dir}");
     Ok(())
 }
 
-fn push_from_image(image: &str, name_override: Option<&str>, client: &Client) -> Result<()> {
-    let (image_name, version) = parse_image_name_and_tag(image);
+fn push_from_image(
+    image: &str,
+    name_override: Option<&str>,
+    flags: VersionFlags,
+    client: &Client,
+) -> Result<()> {
+    let (image_name, image_tag_version) = parse_image_name_and_tag(image);
     let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
+
+    let existing = lookup_existing(client, &agent_name);
+    let (current_deployed_version, used_versions) = used_version_context(client, &existing);
+    // Only trust the tag if the user actually wrote one (`image:tag`) — a
+    // bare `image` implicitly means Docker's "latest", not a real choice.
+    let card_version =
+        crate::util::image_has_explicit_tag(image).then_some(image_tag_version.as_str());
+    let context = VersionContext {
+        card_version,
+        current_deployed_version: current_deployed_version.as_deref(),
+        used_versions: &used_versions,
+    };
+    let decision = resolve_deploy_version(context, flags)?;
+    let version = decision.version;
 
     println!("Pushing {image} → {repo}:{version}...");
     oci::push_image(image, &repo, &version)?;
@@ -70,11 +114,45 @@ fn push_from_image(image: &str, name_override: Option<&str>, client: &Client) ->
 
     // Register in catalog
     let card = serde_json::json!({});
-    register_agent(client, &agent_name, &version, &image_ref, &card)?;
+    register_agent(
+        client,
+        &agent_name,
+        &version,
+        &image_ref,
+        &card,
+        decision.overwrite,
+    )?;
 
     println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
     println!("  Deploy with: nasiko deploy {image}");
     Ok(())
+}
+
+/// Gets the currently-deployed version and full version history from
+/// [`lookup_existing`]'s result. Both come back empty for a brand-new
+/// agent. Shared by `push_from_directory` and `push_from_image`.
+fn used_version_context(
+    client: &Client,
+    existing: &Option<(String, Option<String>)>,
+) -> (Option<String>, Vec<String>) {
+    let current_deployed_version = existing.as_ref().and_then(|(_, v)| v.clone());
+    let used_versions = existing
+        .as_ref()
+        .map(|(id, _)| client.used_versions(id))
+        .unwrap_or_default();
+    (current_deployed_version, used_versions)
+}
+
+/// Looks up an existing agent's id and version by name. `None` if it
+/// doesn't exist yet (or the lookup fails — treated the same as "new").
+fn lookup_existing(client: &Client, name: &str) -> Option<(String, Option<String>)> {
+    let agent = client.get_agent(name).ok().flatten()?;
+    let id = agent.get("id").and_then(|v| v.as_str())?.to_string();
+    let version = agent
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Some((id, version))
 }
 
 fn register_agent(
@@ -83,22 +161,24 @@ fn register_agent(
     version: &str,
     image_ref: &str,
     card: &serde_json::Value,
+    allow_overwrite: bool,
 ) -> Result<()> {
-    // Upsert by name: a prior `push` (or `deploy`) may have already registered
-    // this agent, so blindly POSTing a create would fail with HTTP 409 "agent
-    // name already exists". `GET /agents/{id}` resolves by name or UUID.
-    let existing = client
-        .get_json_optional::<serde_json::Value>(&format!("/agents/{name}"))?
-        .map(|raw| raw.get("data").cloned().unwrap_or(raw));
+    // Update if the agent already exists (from a prior push/deploy), else create it.
+    let existing = client.get_agent(name)?;
     if let Some(existing) = existing {
         let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        println!("  Updating in catalog: {name}");
+        if allow_overwrite {
+            println!("  Overwriting in catalog: {name} @ {version}");
+        } else {
+            println!("  Updating in catalog: {name}");
+        }
         let update = serde_json::json!({
             "version": version,
             "image": image_ref,
             "description": card.get("description"),
             "skills": card.get("skills"),
             "capabilities": card.get("capabilities"),
+            "allow_overwrite": allow_overwrite,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         return Ok(());

@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use crate::api::{Client, ContainerStatus, DeploySpec};
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
+use crate::version_prompt::{VersionContext, VersionFlags, resolve_deploy_version};
 
 const AGENT_FILE: &str = ".nasiko/agent.json";
 
@@ -26,14 +27,79 @@ pub fn deploy(
     env_file: Option<&str>,
     env_args: &[String],
 ) -> Result<()> {
+    deploy_with_version_flags(
+        image,
+        name,
+        port,
+        env_file,
+        env_args,
+        VersionFlags::default(),
+    )
+}
+
+pub fn deploy_with_version_flags(
+    image: &str,
+    name: Option<&str>,
+    port: u16,
+    env_file: Option<&str>,
+    env_args: &[String],
+    flags: VersionFlags,
+) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let env = parse_env(env_file, env_args)?;
 
     if Path::new(image).join("AgentCard.json").exists() {
-        deploy_from_directory(image, name, port, &env, &client)
+        deploy_from_directory(image, name, port, &env, flags, &client)
     } else {
-        deploy_from_image(image, name, port, &env, &client)
+        deploy_from_image(image, name, port, &env, flags, &client)
     }
+}
+
+/// Gets the currently-deployed version and full version history from an
+/// already-looked-up agent. Both come back empty for a brand-new agent.
+/// Shared by `deploy_from_directory` and `deploy_from_image`.
+fn used_version_context<'a>(
+    client: &Client,
+    existing: Option<&'a (String, serde_json::Value)>,
+) -> (Option<&'a str>, Vec<String>) {
+    let current_deployed_version = existing
+        .and_then(|(_, current)| current.get("version"))
+        .and_then(|v| v.as_str());
+    let used_versions = existing
+        .map(|(id, _)| client.used_versions(id))
+        .unwrap_or_default();
+    (current_deployed_version, used_versions)
+}
+
+/// Finds the existing agent for a directory deploy: first checks the local
+/// cache file, then falls back to looking it up by name (in case the agent
+/// was registered another way, e.g. `nasiko push`, and the cache is stale
+/// or missing).
+fn find_existing_agent_binding(
+    client: &Client,
+    agent_file: &Path,
+    agent_name: &str,
+) -> Result<Option<(String, serde_json::Value)>> {
+    let existing_id = load_agent_id(agent_file);
+    let cached = match &existing_id {
+        Some(id) => client.get_agent(id)?.map(|current| (id.clone(), current)),
+        None => None,
+    };
+    if cached.is_some() {
+        return Ok(cached);
+    }
+    if existing_id.is_some() {
+        println!("  ! Cached agent binding is stale — checking by name");
+    }
+
+    Ok(client.get_agent(agent_name)?.map(|current| {
+        let id = current
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        (id, current)
+    }))
 }
 
 fn parse_env(env_file: Option<&str>, env_args: &[String]) -> Result<HashMap<String, String>> {
@@ -70,6 +136,7 @@ fn deploy_from_directory(
     name_override: Option<&str>,
     port: u16,
     env: &HashMap<String, String>,
+    flags: VersionFlags,
     client: &Client,
 ) -> Result<()> {
     let root = Path::new(dir);
@@ -83,72 +150,41 @@ fn deploy_from_directory(
         .map(String::from)
         .or_else(|| card.get("name").and_then(|n| n.as_str()).map(String::from))
         .unwrap_or_else(|| "agent".into());
-    let version = card
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("latest");
+
+    // Find the agent first, so we can catch a same-version redeploy below.
+    let agent_file = root.join(AGENT_FILE);
+    let existing = find_existing_agent_binding(client, &agent_file, &agent_name)?;
+
+    let (current_deployed_version, used_versions) = used_version_context(client, existing.as_ref());
+    let card_version = card.get("version").and_then(|v| v.as_str());
+    let context = VersionContext {
+        card_version,
+        current_deployed_version,
+        used_versions: &used_versions,
+    };
+    let decision = resolve_deploy_version(context, flags)?;
+    let version = decision.version;
     let image_tag = format!("{agent_name}:{version}");
 
-    // Auto-build before pushing
-    // Cluster nodes are amd64 on every supported provider — build for the
-    // deployment target, not the host arch, or Apple Silicon builds
-    // CrashLoop on the cluster with "exec format error".
+    // Build for linux/amd64 (the cluster's arch), not the host arch — an
+    // Apple Silicon build here would CrashLoop with "exec format error".
     super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
 
     // Push image to OCI
     let repo = format!("nasiko/{agent_name}");
     println!("Pushing {image_tag} → {repo}:{version}...");
-    oci::push_image(&image_tag, &repo, version)?;
+    oci::push_image(&image_tag, &repo, &version)?;
 
     let image_ref = format!("{repo}:{version}");
 
-    // Check for existing agent binding
-    let agent_file = root.join(AGENT_FILE);
-    let existing_id = load_agent_id(&agent_file);
-
-    // Resolve the cached binding, tolerating a stale one: if the cached agent no
-    // longer exists server-side (e.g. after a DB reset), `get_json_optional`
-    // returns None and we fall through to a name-based lookup below instead of
-    // failing with a 404.
-    let mut existing = match &existing_id {
-        Some(id) => client
-            .get_json_optional::<serde_json::Value>(&format!("/agents/{id}"))?
-            .map(|raw| (id.clone(), raw.get("data").cloned().unwrap_or(raw))),
-        None => None,
-    };
-    if existing_id.is_some() && existing.is_none() {
-        println!("  ! Cached agent binding is stale — checking by name");
-    }
-
-    // No usable cache (missing, or stale). The agent may still exist
-    // server-side under this name — e.g. registered by a prior `nasiko push`,
-    // which doesn't write `.nasiko/agent.json`. Without this check, deploy
-    // would blindly POST a create and get HTTP 409 "agent name already exists".
-    if existing.is_none() {
-        existing = client
-            .get_json_optional::<serde_json::Value>(&format!("/agents/{agent_name}"))?
-            .map(|raw| {
-                let current = raw.get("data").cloned().unwrap_or(raw);
-                let id = current
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                (id, current)
-            });
-    }
-
     let agent_id = match existing {
         Some((id, current)) => {
-            // Update existing agent
             let current_version = current
                 .get("version")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if current_version == version {
-                eprintln!(
-                    "  ! Redeploying same version ({version}) — consider bumping version in AgentCard.json"
-                );
+            if decision.overwrite {
+                println!("  Overwriting: {version} (was: {current_version})");
             } else {
                 println!("  Updating: {current_version} → {version}");
             }
@@ -159,6 +195,7 @@ fn deploy_from_directory(
                 "description": card.get("description"),
                 "skills": card.get("skills"),
                 "capabilities": card.get("capabilities"),
+                "allow_overwrite": decision.overwrite,
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
             save_agent_id(&agent_file, &id, &agent_name)?;
@@ -207,11 +244,34 @@ fn deploy_from_image(
     name_override: Option<&str>,
     port: u16,
     env: &HashMap<String, String>,
+    flags: VersionFlags,
     client: &Client,
 ) -> Result<()> {
-    let (image_name, version) = parse_image_name_and_tag(image);
+    let (image_name, image_tag_version) = parse_image_name_and_tag(image);
     let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
+
+    // Upsert agent in registry: update if exists, create otherwise.
+    let existing = client.get_agent(&agent_name)?.map(|agent| {
+        let id = agent
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        (id, agent)
+    });
+    let (current_deployed_version, used_versions) = used_version_context(client, existing.as_ref());
+    // Only trust the tag if the user actually wrote one (`image:tag`) — a
+    // bare `image` implicitly means Docker's "latest", not a real choice.
+    let card_version =
+        crate::util::image_has_explicit_tag(image).then_some(image_tag_version.as_str());
+    let context = VersionContext {
+        card_version,
+        current_deployed_version,
+        used_versions: &used_versions,
+    };
+    let decision = resolve_deploy_version(context, flags)?;
+    let version = decision.version;
 
     let image_ref = format!("{repo}:{version}");
 
@@ -223,14 +283,17 @@ fn deploy_from_image(
     println!("Pushing {image} → {image_ref}...");
     oci::push_image(image, &repo, &version)?;
 
-    // Upsert agent in registry: update if exists, create otherwise.
-    let existing: Option<serde_json::Value> = client
-        .get_json_optional(&format!("/agents/{agent_name}"))?
-        .map(|raw: serde_json::Value| raw.get("data").cloned().unwrap_or(raw));
-    if let Some(existing) = existing {
-        let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        println!("  Updating agent: {agent_name}");
-        let update = serde_json::json!({ "version": version, "image": image_ref });
+    if let Some((id, _)) = existing {
+        if decision.overwrite {
+            println!("  Overwriting agent: {agent_name} @ {version}");
+        } else {
+            println!("  Updating agent: {agent_name}");
+        }
+        let update = serde_json::json!({
+            "version": version,
+            "image": image_ref,
+            "allow_overwrite": decision.overwrite,
+        });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
     } else {
         println!("  Registering agent: {agent_name}");
