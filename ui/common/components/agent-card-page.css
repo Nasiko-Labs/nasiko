@@ -10,60 +10,49 @@ agent-card-page:not(:defined) {
     padding: var(--space-lg) var(--space-md);
   }
 
-  /* -- Header ------------------------------------------------------------ */
-  .acp-header {
+  /* -- Topbar (close + actions) ------------------------------------------ */
+  .acp-topbar {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
+    justify-content: space-between;
     gap: var(--space-md);
-    margin-bottom: var(--space-md);
-    flex-wrap: wrap;
+    margin-bottom: var(--space-lg);
   }
   .acp-back {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
-    color: var(--color-text-muted);
+    width: var(--control-h-md);
+    height: var(--control-h-md);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
     text-decoration: none;
     cursor: pointer;
     flex-shrink: 0;
   }
   .acp-back:hover {
-    border-color: var(--color-text-muted);
-    color: var(--color-text-main);
+    background: var(--bg-surface-hover);
   }
-  .acp-header-main { flex: 1; min-width: 0; }
-  .acp-header-title {
+  .acp-topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  /* -- Title row ----------------------------------------------------------- */
+  .acp-title-row {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
     flex-wrap: wrap;
+    margin-bottom: var(--space-sm);
   }
-
-  /* -- Avatar ------------------------------------------------------------ */
-  .acp-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
-    color: var(--color-text-main);
-    flex-shrink: 0;
-    line-height: 1;
-  }
-
   .acp-name {
+    font-family: var(--font-display);
     font-size: var(--font-size-2xl);
-    font-weight: 600;
+    font-weight: 500;
+    letter-spacing: 0.16px;
     color: var(--color-text-main);
     margin: 0;
   }
@@ -71,54 +60,46 @@ agent-card-page:not(:defined) {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
   }
-  .acp-header-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: var(--space-xs);
-    margin-left: calc(36px + var(--space-sm));
-    @media (max-width: 640px) {
-      margin-left: 0;
-    }
-  }
-  .acp-tag {
-    font-size: var(--font-size-xs);
-    padding: 2px 10px;
-    border-radius: var(--radius-sm);
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
+  .acp-verified {
+    display: inline-flex;
     color: var(--color-text-muted);
   }
-  .acp-tag--more {
-    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-  }
-  .acp-header-actions {
+  .acp-title-row .acp-start-btn { margin-left: auto; }
+  .acp-badge-row {
     display: flex;
     align-items: center;
-    gap: var(--space-sm);
-    flex-shrink: 0;
-    @media (max-width: 640px) {
-      width: 100%;
-      order: 3;
-    }
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    margin-bottom: var(--space-md);
+  }
+  .acp-tag {
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--font-size-xs);
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+  }
+  .acp-tag--more {
+    color: var(--color-text-muted);
   }
   .acp-action-btn {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
+    border: none;
+    background: var(--color-bg-base);
     color: var(--color-text-main);
     font-size: var(--font-size-xs);
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
   }
-  .acp-action-btn:hover { border-color: var(--color-primary); }
+  .acp-action-btn:hover { background: var(--bg-surface-hover); }
   .acp-action-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
@@ -131,29 +112,120 @@ agent-card-page:not(:defined) {
     gap: var(--space-xs);
     padding: 10px var(--space-lg);
     border-radius: var(--r-8);
-    background: light-dark(var(--neutral-900), var(--neutral-100));
+    background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
     font-weight: 600;
     text-decoration: none;
     white-space: nowrap;
     flex-shrink: 0;
-    transition: opacity var(--transition-fast), translate var(--transition-fast);
+    transition: background var(--transition-fast);
   }
   .acp-start-btn svg { flex-shrink: 0; }
   .acp-start-btn:hover {
-    opacity: 0.85;
+    background: light-dark(var(--sand-700), var(--neutral-300));
     color: light-dark(var(--white), var(--neutral-900));
-    translate: 0 -1px;
   }
 
-  /* -- Description ------------------------------------------------------- */
+  /* -- Overview head: description + JSON toggle --------------------------- */
+  .acp-overview-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-lg);
+  }
   .acp-description {
     font-size: var(--font-size-sm);
     color: var(--color-text-prose);
     line-height: 1.6;
-    margin-bottom: var(--space-lg);
+    margin: 0;
     max-width: 72ch;
+  }
+  .acp-json-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    cursor: pointer;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .acp-json-toggle input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .acp-json-track {
+    width: 34px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--color-bg-base);
+    border: 1px solid var(--color-border);
+    position: relative;
+    transition: background var(--transition-fast);
+  }
+  .acp-json-track::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-bg-surface);
+    box-shadow: var(--shadow-sm);
+    transition: translate var(--transition-fast);
+  }
+  .acp-json-toggle input:checked + .acp-json-track {
+    background: var(--bg-brand);
+    border-color: var(--bg-brand);
+  }
+  .acp-json-toggle input:checked + .acp-json-track::after {
+    translate: 14px 0;
+  }
+  .acp-json-toggle input:focus-visible + .acp-json-track {
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
+  }
+  .acp-json-toggle svg { color: var(--color-text-muted); }
+
+  /* -- JSON block ---------------------------------------------------------- */
+  .acp-json-block {
+    position: relative;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    margin-bottom: var(--space-xl);
+  }
+  .acp-json-block pre {
+    margin: 0;
+    padding: var(--space-lg);
+    overflow: auto;
+    max-height: 70vh;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    line-height: 1.7;
+    color: var(--color-text-main);
+  }
+  .acp-json-copy {
+    position: absolute;
+    top: var(--space-sm);
+    right: var(--space-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+    border-radius: var(--r-8);
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+  .acp-json-copy:hover {
+    background: var(--bg-surface-hover);
+    color: var(--color-text-main);
   }
 
   /* -- Tabs -------------------------------------------------------------- */
@@ -161,23 +233,28 @@ agent-card-page:not(:defined) {
     display: flex;
     gap: var(--space-lg);
     border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--space-xl);
+    margin-bottom: var(--space-lg);
   }
   .acp-tab {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: var(--space-sm) var(--space-xs);
+    padding: var(--space-sm) var(--space-2xs);
     font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--color-text-muted);
     border: none;
     border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
     background: none;
     cursor: pointer;
   }
   .acp-tab:hover { color: var(--color-text-main); }
-  .acp-tab.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+  .acp-tab.is-active {
+    color: var(--fg-brand);
+    border-bottom-color: var(--fg-brand-highlight);
+    font-weight: 600;
+  }
 
   /* -- Panels ------------------------------------------------------------ */
   .acp-panel { display: none; }
@@ -208,17 +285,17 @@ agent-card-page:not(:defined) {
     color: inherit;
   }
   .acp-skill-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
     padding: var(--space-md);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
     cursor: pointer;
   }
   .acp-skill-card:hover {
-    border-color: var(--color-primary);
+    border-color: var(--color-border);
   }
   .acp-skill-name {
     font-size: var(--font-size-base);
@@ -236,15 +313,19 @@ agent-card-page:not(:defined) {
     align-items: center;
     gap: var(--space-xs);
     margin-top: var(--space-sm);
-    padding: var(--space-xs) var(--space-sm);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
+    padding: var(--space-sm);
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-main);
   }
-  .acp-skill-sample-icon { flex-shrink: 0; color: var(--color-primary); }
+  .acp-skill-sample-icon { flex-shrink: 0; color: var(--color-text-muted); }
   .acp-skill-sample-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acp-skill-sample::after {
+    content: "›";
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
 
   /* -- Stats grid -------------------------------------------------------- */
   .acp-stats-grid {
@@ -254,10 +335,10 @@ agent-card-page:not(:defined) {
     min-height: 90px;
   }
   .acp-stat {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border: none;
+    border-radius: var(--r-8);
     padding: var(--space-md);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
   }
   .acp-stat-label {
     font-size: var(--font-size-xs);
@@ -289,10 +370,10 @@ agent-card-page:not(:defined) {
     gap: var(--space-md);
   }
   .acp-acl-group {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    border: none;
+    border-radius: var(--r-8);
     padding: var(--space-md);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
   }
   .acp-acl-group-title {
     font-size: var(--font-size-sm);
@@ -329,10 +410,10 @@ agent-card-page:not(:defined) {
     .acp-details-row { grid-template-columns: 1fr; }
   }
   .acp-details-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    border: none;
+    border-radius: var(--r-8);
     padding: var(--space-lg);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
   }
   .acp-details-card .acp-section-title { margin-bottom: var(--space-xs); }
 

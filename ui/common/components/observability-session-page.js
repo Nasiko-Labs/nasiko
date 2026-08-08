@@ -35,7 +35,7 @@ class ObservabilitySessionPage extends HTMLElement {
       <div class="kpi-strip" id="kpi-strip"></div>
       <div class="panes">
         <section class="pane" id="chat-pane" aria-label="Chat history">
-          <h2 class="pane-title">Chat History</h2>
+          <h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">${icons.chevronLeft('', 14)}</button></h2>
           <div class="pane-empty">Loading…</div>
         </section>
         <section class="pane" id="traces-pane" aria-label="Traces">
@@ -50,6 +50,11 @@ class ObservabilitySessionPage extends HTMLElement {
 
     this.querySelector('#back-btn').addEventListener('click', () => {
       window.location.href = '/sessions.html';
+    });
+    this.querySelector('#chat-pane').addEventListener('click', (e) => {
+      if (e.target.closest('.pane-collapse')) {
+        this.querySelector('.panes').classList.toggle('chat-collapsed');
+      }
     });
     this.querySelector('#traces-pane').addEventListener('click', (e) => {
       const row = e.target.closest('.span-row');
@@ -139,6 +144,7 @@ class ObservabilitySessionPage extends HTMLElement {
         <button class="span-row" type="button"
           data-trace-id="${this.#esc(traceId)}" data-span-id="${this.#esc(node.span_id)}"
           style="margin-left:${depth * 16}px; width:calc(100% - ${depth * 16}px)">
+          ${depth > 0 ? '<span class="span-tree" aria-hidden="true">└</span>' : ''}
           <span class="span-icon">${this.#spanIcon(node)}</span>
           <span class="span-name">${this.#esc(node.name)}</span>
           <span class="status-dot${this.#isError(node.status_code) ? ' is-error' : ''}"></span>
@@ -289,12 +295,12 @@ class ObservabilitySessionPage extends HTMLElement {
       // Observability sessions don't always map to a chat session.
     }
     if (!messages.length) {
-      pane.innerHTML = '<h2 class="pane-title">Chat History</h2><div class="pane-empty">No chat transcript for this session</div>';
+      pane.innerHTML = '<h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">' + icons.chevronLeft('', 14) + '</button></h2><div class="pane-empty">No chat transcript for this session</div>';
       return;
     }
     const s = this.#session;
     pane.innerHTML = `
-      <h2 class="pane-title">Chat History</h2>
+      <h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">${icons.chevronLeft('', 14)}</button></h2>
       <div class="chat-card">
         ${messages.map((m) => m.role === 'user'
           ? `<div class="msg-user">${this.#esc(m.content)}</div>`

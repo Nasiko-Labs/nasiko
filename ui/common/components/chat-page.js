@@ -489,7 +489,7 @@ class ChatPage extends HTMLElement {
   #traceLinkHtml(traceId) {
     if (!traceId) return '';
     return `<a class="msg-action-trace" href="/session-trace.html?trace_id=${encodeURIComponent(traceId)}"
-      aria-label="View trace" title="View trace">${icons.trace('', 14)}</a>`;
+      aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 
   // The live "view trace" link on a streamed reply comes from the trace_meta

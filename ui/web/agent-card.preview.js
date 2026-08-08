@@ -122,6 +122,14 @@ export default {
       await page.waitForSelector('.acp-acl-grid', { timeout: 5000 });
       await page.evaluate(() => document.querySelector('#acp-acl').scrollIntoView());
     },
+    "json-view": async (page) => {
+      const url = new URL(page.url());
+      url.searchParams.set('id', 'a-001');
+      await page.goto(url.toString(), { waitUntil: 'networkidle' });
+      await page.waitForSelector('.acp-page', { timeout: 5000 });
+      await page.click('.acp-json-toggle');
+      await page.waitForSelector('#acp-json-view:not([hidden])');
+    },
     "settings-tab": async (page) => {
       const url = new URL(page.url());
       url.searchParams.set('id', 'a-001');

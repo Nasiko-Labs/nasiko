@@ -29,10 +29,10 @@ export default {
     [{ method: "POST", path: /^\/api\/chat\/sessions\/.*\/messages$/ }, { ok: true }],
     ["POST /api/orchestrator/a2a", { __stream: a2aStream }],
     ["GET /api/agents?status=running&limit=6", [
-      { id: "a1", name: "coding-agent", display_name: "Coding Agent", status: "running" },
-      { id: "a2", name: "docs-agent", display_name: "Docs Agent", status: "running" },
-      { id: "a3", name: "nutrition-agent", display_name: "Nutrition Agent", status: "running" },
-      { id: "a4", name: "research-agent", display_name: "Research Agent", status: "running" },
+      { id: "a1", name: "coding-agent", display_name: "Coding Agent", status: "running", description: "Writes, reviews and debugs code across languages." },
+      { id: "a2", name: "docs-agent", display_name: "Docs Agent", status: "running", description: "Answers questions from your internal documentation." },
+      { id: "a3", name: "nutrition-agent", display_name: "Nutrition Agent", status: "running", description: "Meal planning and nutrition breakdowns." },
+      { id: "a4", name: "research-agent", display_name: "Research Agent", status: "running", description: "Deep research with cited web sources." },
     ]],
   ],
   scenarios: {
@@ -70,7 +70,7 @@ export default {
     "steps-expanded": async (page) => {
       await page.fill("#textarea", "Why is my deployment failing?");
       await page.click("#submitBtn");
-      await page.waitForSelector(".response-content.is-visible", { timeout: 8000 });
+      await page.waitForSelector("agent-steps.is-done", { timeout: 8000 });
       await page.click("agent-steps .steps-header");
       await page.click("agent-steps .step-summary");
       await page.waitForTimeout(200);

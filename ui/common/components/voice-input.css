@@ -13,13 +13,13 @@
     .input-area {
       position: relative;
       width: 100%;
-      border-radius: var(--radius-lg);
-      background: var(--color-bg-surface);
-      border: 1px solid var(--color-border);
+      border-radius: var(--r-12);
+      background: var(--bg-input);
+      border: 1px solid transparent;
 
       &.drag-over { border-color: var(--color-primary); outline: 3px solid color-mix(in srgb, var(--color-primary) 18%, transparent); outline-offset: -1px; }
       &:focus-within { border-color: var(--color-primary); }
-      &[data-state="recording"] { border-color: var(--color-error); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-error) 18%, transparent); background: color-mix(in srgb, var(--color-error) 5%, var(--color-bg-surface)); }
+      &[data-state="recording"] { border-color: var(--color-error); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-error) 18%, transparent); background: color-mix(in srgb, var(--color-error) 5%, var(--bg-input)); }
       &[data-state="transcribing"], &[data-state="loading"] { border-color: var(--color-primary); animation: pulse-border 2s infinite; }
     }
     .textarea {
@@ -46,7 +46,7 @@
       width: var(--btn-size);
       height: var(--btn-size);
       border-radius: var(--radius-sm);
-      border: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+      border: none;
       color: var(--color-text-muted);
       line-height: 0;
       background: transparent;
@@ -55,7 +55,7 @@
       align-items: center;
       justify-content: center;
 
-      &:hover { border-color: var(--color-primary); color: var(--color-primary); }
+      &:hover { color: var(--color-text-main); background: var(--bg-surface-hover); }
     }
     .record-btn {
       position: absolute;
@@ -64,16 +64,15 @@
       width: var(--btn-size);
       height: var(--btn-size);
       border-radius: 50%;
-      border: 1px solid var(--color-border);
-      background: var(--color-bg-surface);
+      border: none;
+      background: transparent;
       color: var(--color-text-muted);
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 1px 4px light-dark(rgba(0,0,0,0.1), rgba(0,0,0,0.4));
 
-      &:hover:not(:disabled) { background: var(--color-border); color: var(--color-text-main); }
+      &:hover:not(:disabled) { background: var(--bg-surface-hover); color: var(--color-text-main); }
       &[data-state="recording"] { background: var(--color-error); color: var(--color-on-primary); border-color: var(--color-error); animation: pulse-scale 1.5s infinite; }
       &[data-state="transcribing"] { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); cursor: wait; }
       &:disabled { opacity: 0.8; }
@@ -85,15 +84,15 @@
       width: var(--btn-size);
       height: var(--btn-size);
       border-radius: 50%;
-      background: var(--color-primary);
-      color: var(--color-on-primary);
+      background: light-dark(var(--sand-800), var(--neutral-100));
+      color: light-dark(var(--white), var(--neutral-900));
       border: none;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
 
-      &:hover:not(:disabled) { background: var(--color-primary-hover); }
+      &:hover:not(:disabled) { background: light-dark(var(--sand-700), var(--neutral-300)); }
       &:disabled { opacity: 0.5; cursor: not-allowed; }
     }
     .btn-icon { width: var(--icon-size); height: var(--icon-size); display: block; color: inherit; }

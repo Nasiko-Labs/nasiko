@@ -6,9 +6,9 @@ import styles from './agent-card-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const TABS = [
-  { key: 'overview', label: 'Overview', icon: 'layers' },
-  { key: 'settings', label: 'Settings', icon: 'settings' },
-  { key: 'logs', label: 'Logs', icon: 'terminal' },
+  { key: 'overview', label: 'Overview' },
+  { key: 'settings', label: 'Settings' },
+  { key: 'logs', label: 'Logs' },
 ];
 
 class AgentCardPage extends HTMLElement {
@@ -51,13 +51,15 @@ class AgentCardPage extends HTMLElement {
   #render() {
     const a = this.#agent;
     const displayName = a.display_name || a.name;
-    const initial = (displayName || '?')[0].toUpperCase();
 
     const tagsHtml = (a.tags || []).slice(0, 3).map(t =>
       `<span class="acp-tag">${this.#esc(t)}</span>`
     ).join('');
     const extraTagCount = (a.tags || []).length - 3;
     const moreTag = extraTagCount > 0 ? `<span class="acp-tag acp-tag--more">+${extraTagCount}</span>` : '';
+
+    const statusVariant = a.status === 'running' ? 'success' : (a.status === 'error' || a.status === 'failed') ? 'error' : 'neutral';
+    const statusLabel = a.status === 'running' ? 'Active' : (a.status || 'Unknown').replace(/^./, c => c.toUpperCase());
 
     const skills = a.skills || [];
     const skillsHtml = skills.map(s => {
@@ -82,35 +84,55 @@ class AgentCardPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="acp-page">
-        <div class="acp-header">
+        <div class="acp-topbar">
           <a class="acp-back" href="/your-agents.html" title="Back to Your Agents" aria-label="Back to Your Agents">
-            ${icons.chevronLeft('', 18)}
+            ${icons.x('', 16)}
           </a>
-          <div class="acp-header-main">
-            <div class="acp-header-title">
-              <div class="acp-avatar" aria-hidden="true">${initial}</div>
-              <h1 class="acp-name">${this.#esc(displayName)}</h1>
-              <span class="acp-version">v${this.#esc(a.version || '?')}</span>
-            </div>
-            <div class="acp-header-tags">${tagsHtml}${moreTag}</div>
-          </div>
-          <div class="acp-header-actions">
+          <div class="acp-topbar-actions">
             ${a.status === 'running' ? `<button class="acp-action-btn" data-action="restart" title="Restart agent">${icons.refresh('', 14)} Restart</button>` : ''}
             ${a.status === 'running' ? `<button class="acp-action-btn" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</button>` : ''}
             <button class="acp-action-btn acp-action-btn--danger" data-action="delete" title="Delete agent">${icons.trash('', 14)} Delete</button>
-            <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
-              ${icons.send('', 15)} Start session
-            </a>
           </div>
         </div>
 
-        <p class="acp-description">${this.#esc(a.description || '')}</p>
+        <div class="acp-title-row">
+          <h1 class="acp-name">${this.#esc(displayName)}</h1>
+          <span class="acp-version">v${this.#esc(a.version || '?')}</span>
+          <span class="acp-verified" title="Registered agent">${icons.checkCircle('', 16)}</span>
+          <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
+            Start session ${icons.send('', 15)}
+          </a>
+        </div>
+
+        <div class="acp-badge-row">
+          <span class="badge badge--${statusVariant}">${this.#esc(statusLabel)}</span>
+          ${a.provider ? `<span class="acp-tag">Author: ${this.#esc(a.provider)}</span>` : ''}
+          ${tagsHtml}${moreTag}
+        </div>
 
         <nav class="acp-tabs">
-          ${TABS.map(t => `<button class="acp-tab${t.key === 'overview' ? ' is-active' : ''}" data-tab="${t.key}">${icons[t.icon]('acp-tab-icon', 16)} ${t.label}</button>`).join('')}
+          ${TABS.map(t => `<button class="acp-tab${t.key === 'overview' ? ' is-active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
         </nav>
 
         <div class="acp-panel is-active" data-panel="overview">
+          <div class="acp-overview-head">
+            <p class="acp-description">${this.#esc(a.description || '')}</p>
+            <label class="acp-json-toggle">
+              <input type="checkbox" id="acp-json-switch" />
+              <span class="acp-json-track" aria-hidden="true"></span>
+              <span class="acp-json-label">Agent JSON</span>
+              ${icons.code('', 15)}
+            </label>
+          </div>
+
+          <div id="acp-json-view" hidden>
+            <div class="acp-json-block">
+              <button type="button" class="acp-json-copy" title="Copy JSON" aria-label="Copy JSON">${icons.copy('', 15)}</button>
+              <pre><code>${this.#esc(JSON.stringify(a, null, 2))}</code></pre>
+            </div>
+          </div>
+
+          <div id="acp-overview-body">
           ${skills.length ? `
           <section class="acp-section">
             <h2 class="acp-section-title">Skills</h2>
@@ -162,6 +184,7 @@ class AgentCardPage extends HTMLElement {
               <app-skeleton height="80px"></app-skeleton>
             </div>
           </section>
+          </div>
         </div>
 
         <div class="acp-panel" data-panel="settings">
@@ -228,6 +251,17 @@ class AgentCardPage extends HTMLElement {
       if (tab.dataset.tab === 'settings' && !this.#secretsLoaded) {
         this.#loadSecrets();
       }
+    });
+
+    const jsonSwitch = this.querySelector('#acp-json-switch');
+    jsonSwitch.addEventListener('change', () => {
+      this.querySelector('#acp-json-view').hidden = !jsonSwitch.checked;
+      this.querySelector('#acp-overview-body').hidden = jsonSwitch.checked;
+    });
+    this.querySelector('.acp-json-copy').addEventListener('click', () => {
+      navigator.clipboard.writeText(JSON.stringify(a, null, 2))
+        .then(() => showToast('Agent JSON copied'))
+        .catch(() => showToast('Copy failed'));
     });
 
     const secretForm = this.querySelector('#acp-secret-form');

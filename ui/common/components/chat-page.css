@@ -29,9 +29,9 @@ chat-page:not(:defined) {
   .chat-header-avatar {
     width: 36px;
     height: 36px;
-    border-radius: 50%;
-    background: var(--color-primary);
-    color: var(--color-on-primary);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
     display: grid;
     place-items: center;
     font-weight: 600;
@@ -104,20 +104,22 @@ chat-page:not(:defined) {
     text-align: center;
   }
   .welcome-avatar {
-    width: 56px;
-    height: 56px;
-    border-radius: 50%;
-    background: var(--color-primary);
-    color: var(--color-on-primary);
+    width: 64px;
+    height: 64px;
+    border-radius: var(--r-12);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
     display: grid;
     place-items: center;
-    font-weight: 600;
+    font-weight: 500;
+    font-family: var(--font-display);
     font-size: var(--font-size-2xl);
     margin-bottom: var(--space-md);
   }
   .welcome-title {
+    font-family: var(--font-display);
     font-size: var(--font-size-xl);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--color-text-main);
     margin: 0 0 var(--space-xs);
   }
@@ -135,9 +137,9 @@ chat-page:not(:defined) {
   }
   button.welcome-chip {
     padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
+    border-radius: var(--r-8);
+    border: 1px solid transparent;
+    background: var(--color-bg-base);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     cursor: pointer;
@@ -145,9 +147,7 @@ chat-page:not(:defined) {
     text-align: left;
 
     &:hover {
-      border-color: var(--color-primary);
-      color: var(--color-primary);
-      background: color-mix(in srgb, var(--color-primary) 5%, var(--color-bg-surface));
+      border-color: var(--color-border);
     }
     &:focus-visible {
       outline: none;
@@ -167,91 +167,86 @@ chat-page:not(:defined) {
   .msg-row.is-user {
     justify-content: flex-end;
   }
+  .msg-row.is-assistant {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-xs);
+  }
   .msg {
     max-width: 85%;
     padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-12);
     font-size: var(--font-size-sm);
     line-height: 1.6;
     word-wrap: break-word;
     overflow-wrap: break-word;
   }
   .msg.is-user {
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    border-bottom-right-radius: var(--radius-sm);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
     white-space: pre-wrap;
   }
   .msg.is-assistant {
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-bottom-left-radius: var(--radius-sm);
+    background: transparent;
+    border: none;
+    padding: 0;
+    max-width: 100%;
   }
 
   /* ── Message actions toolbar ─────────────────────────────────────────── */
+  /* Assistant replies: static icon row below the answer (per NightOwl mock). */
   .msg-actions {
     display: flex;
     align-items: center;
-    gap: 2px;
-    opacity: 0;
-    position: absolute;
-    top: calc(-1 * var(--space-sm) - 4px);
-    right: 0;
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    padding: 2px;
-    box-shadow: var(--shadow-sm);
-
-    .msg-row.is-assistant & {
-      left: 0;
-      right: auto;
-    }
-  }
-  .msg-row:hover .msg-actions,
-  .msg-row:focus-within .msg-actions {
-    opacity: 1;
-  }
-  /* Streamed replies show <agent-steps> at the top-left; keep the toolbar
-     on the right so it never covers the steps toggle. */
-  .msg-row.is-assistant .assistant-stream .msg-actions {
-    left: auto;
-    right: 0;
+    gap: var(--space-2xs);
+    margin-top: var(--space-2xs);
   }
   button.msg-action-copy,
   button.msg-action-retry,
   a.msg-action-trace {
-    display: grid;
-    place-items: center;
-    width: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2xs);
     height: 28px;
+    min-width: 28px;
+    padding: 0 var(--space-2xs);
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    text-decoration: none;
     cursor: pointer;
 
     &:hover {
-      color: var(--color-primary);
-      background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+      color: var(--color-text-main);
+      background: var(--bg-surface-hover);
     }
     &:focus-visible {
       outline: none;
       box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
+  a.msg-action-trace {
+    order: 99;
+    margin-left: auto;
+    color: var(--color-text-main);
+    font-weight: 500;
+  }
 
   /* ── Streaming area ──────────────────────────────────────────────────── */
   .assistant-stream {
-    max-width: 85%;
+    max-width: 100%;
     position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
   }
   .stream-content {
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-bottom-left-radius: var(--radius-sm);
+    padding: 0;
+    background: transparent;
+    border: none;
     font-size: var(--font-size-sm);
     line-height: 1.6;
     word-wrap: break-word;
@@ -266,7 +261,6 @@ chat-page:not(:defined) {
   /* ── Input area ──────────────────────────────────────────────────────── */
   .input-area {
     padding: var(--space-sm) 0 var(--space-md);
-    border-top: 1px solid var(--color-border);
     background: transparent;
     flex-shrink: 0;
     width: 100%;
@@ -319,8 +313,8 @@ chat-page:not(:defined) {
   /* User prompt placeholder: mirrors the gold user bubble. */
   .msg-skel-bubble {
     height: 40px;
-    border-radius: var(--radius-lg, 14px);
-    background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-surface));
+    border-radius: var(--r-12);
+    background: var(--color-bg-base);
   }
   /* Assistant reply placeholder: a block of text lines. */
   .msg-skel-block {

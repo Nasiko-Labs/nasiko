@@ -29,6 +29,46 @@ agent-steps .steps-header:focus-visible {
   box-shadow: 0 0 0 2px var(--color-primary-ring);
 }
 
+/* Done: full-width sand summary bar — "Reasoned for Xs · N steps · routed to <agent>" */
+agent-steps.is-done .steps-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--r-8);
+  background: var(--color-bg-base);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+agent-steps.is-done .steps-header:hover {
+  background: var(--color-bg-base);
+  color: var(--color-text-muted);
+}
+agent-steps.is-done .steps-chevron { display: none; }
+agent-steps .steps-check {
+  color: var(--color-text-main);
+  flex-shrink: 0;
+}
+agent-steps .steps-strong {
+  color: var(--color-text-main);
+  font-weight: 600;
+  margin-right: var(--space-xs);
+}
+agent-steps .steps-meta {
+  color: var(--color-text-muted);
+}
+agent-steps .steps-viewall { display: none; }
+agent-steps.is-done .steps-viewall {
+  display: inline;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--color-text-main);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 agent-steps .steps-chevron {
   transition: transform 0.15s ease;
   color: var(--color-text-muted);
@@ -56,6 +96,9 @@ agent-steps.is-done .steps-pulse {
   background: var(--color-warning);
 }
 
+agent-steps.is-done .steps-list {
+  margin-top: var(--space-xs);
+}
 agent-steps .steps-list {
   display: none;
   margin-top: var(--space-2xs);

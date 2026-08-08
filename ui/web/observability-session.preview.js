@@ -134,6 +134,11 @@ export default {
     }],
   ],
   scenarios: {
+    "chat-collapsed": async (page) => {
+      await page.waitForSelector(".pane-collapse");
+      await page.click("#chat-pane .pane-collapse");
+      await page.waitForTimeout(200);
+    },
     "attributes-tab": async (page) => {
       await page.waitForSelector(".tab-btn");
       await page.click('.tab-btn[data-tab="attributes"]');

@@ -28,20 +28,25 @@ class AgentSteps extends HTMLElement {
   #steps = new Map();
   #count = 0;
   #finished = false;
+  #startedAt = null;
 
   connectedCallback() {
     if (this.querySelector('.steps-header')) return;
+    this.#startedAt = Date.now();
     this.innerHTML = `
       <button type="button" class="steps-header" aria-expanded="true">
         ${icons.chevronRight('steps-chevron', 14)}
         <span class="steps-pulse"></span>
         <span class="steps-label">Working…</span>
+        <span class="steps-viewall">View all steps</span>
       </button>
       <div class="steps-list"></div>
     `;
     this.querySelector('.steps-header').addEventListener('click', () => {
       const expanded = this.classList.toggle('is-expanded');
       this.querySelector('.steps-header').setAttribute('aria-expanded', String(expanded));
+      const viewall = this.querySelector('.steps-viewall');
+      if (viewall) viewall.textContent = expanded ? 'Hide steps' : 'View all steps';
     });
     this.classList.add('is-expanded');
   }
@@ -222,7 +227,20 @@ class AgentSteps extends HTMLElement {
     this.classList.add('is-done');
     const header = this.querySelector('.steps-header');
     if (header) header.setAttribute('aria-expanded', 'false');
-    this.#setLabel(`${this.#count} agent call${this.#count === 1 ? '' : 's'}`);
+    const pulse = this.querySelector('.steps-pulse');
+    if (pulse) pulse.outerHTML = icons.checkCircle('steps-check', 15);
+    const secs = this.#startedAt ? (Date.now() - this.#startedAt) / 1000 : null;
+    const routedTo = [...this.#steps.values()].find((s) => s.dataset.agent)?.dataset.agent;
+    const label = this.querySelector('.steps-label');
+    if (label) {
+      const strong = document.createElement('span');
+      strong.className = 'steps-strong';
+      strong.textContent = secs != null ? `Reasoned for ${secs.toFixed(1)}s` : 'Done';
+      const meta = document.createElement('span');
+      meta.className = 'steps-meta';
+      meta.textContent = ` ${this.#count} step${this.#count === 1 ? '' : 's'}${routedTo ? ` · routed to ${routedTo}` : ''}`;
+      label.replaceChildren(strong, meta);
+    }
   }
 }
 

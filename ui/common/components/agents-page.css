@@ -22,11 +22,8 @@ agents-page:not(:defined) {
   .page-top {
     margin-bottom: var(--space-lg);
   }
-  .title {
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    color: var(--color-text-main);
-    margin: 0 0 var(--space-xs);
+  .page-top .title-page {
+    margin-bottom: var(--space-xs);
   }
   .subtitle {
     font-size: var(--font-size-sm);
@@ -34,50 +31,19 @@ agents-page:not(:defined) {
     margin: 0;
   }
 
-  /* ── Category tabs (registry-style) ─────────────────────────────────────── */
-  .type-tabs {
-    display: flex;
-    gap: var(--space-xs);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--space-md);
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .type-tabs::-webkit-scrollbar { display: none; }
-  .type-tab {
-    padding: var(--space-xs) var(--space-sm);
-    min-height: 42px;
-    border: none;
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-  }
-  .type-tab:hover { color: var(--color-text-main); }
-  .type-tab.active {
-    color: var(--color-primary);
-    border-bottom-color: var(--color-primary);
-    font-weight: 600;
-  }
-  .type-tab .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
-
-  /* ── Controls (search + filter) ──────────────────────────────────────────── */
+  /* ── Search — flat sand well, no stroke ─────────────────────────────────── */
   .controls {
     display: flex;
     gap: var(--space-sm);
     align-items: center;
     flex-wrap: wrap;
-    margin-bottom: var(--space-lg);
+    margin-bottom: var(--space-md);
   }
   .search-wrap {
     position: relative;
     flex: 1;
     min-width: 200px;
-    max-width: 480px;
+    max-width: 520px;
   }
   .search-icon {
     position: absolute;
@@ -86,14 +52,15 @@ agents-page:not(:defined) {
     transform: translateY(-50%);
     color: var(--color-text-muted);
     pointer-events: none;
+    display: flex;
   }
-  .search-wrap:focus-within .search-icon { color: var(--color-primary); }
   .search-wrap input {
     width: 100%;
-    padding: var(--space-sm) var(--space-xl) var(--space-sm) 38px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    min-height: var(--control-h-lg);
+    padding: 0 var(--space-xl) 0 38px;
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
     font-size: var(--font-size-sm);
     color: var(--color-text-main);
     font-family: inherit;
@@ -122,57 +89,88 @@ agents-page:not(:defined) {
   }
   .search-clear:hover { color: var(--color-text-main); }
 
-  .filter-select {
-    width: auto;
-    flex-shrink: 0;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-family: inherit;
-    cursor: pointer;
-    min-width: 160px;
+  /* ── Category tabs — gold underline, count suffix ───────────────────────── */
+  .type-tabs {
+    display: flex;
+    gap: var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-lg);
+    overflow-x: auto;
+    scrollbar-width: none;
   }
-  .filter-select:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
+  .type-tabs::-webkit-scrollbar { display: none; }
+  .type-tab {
+    padding: var(--space-xs) var(--space-2xs);
+    min-height: 40px;
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .type-tab:hover { color: var(--color-text-main); }
+  .type-tab.active {
+    color: var(--color-text-main);
+    border-bottom-color: var(--fg-brand-highlight);
+    font-weight: 600;
+  }
+  .type-tab.active:first-child { color: var(--fg-brand); }
+  .type-tab .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
+
+  .type-tabs .skel-tab {
+    width: 72px;
+    height: 16px;
+    margin: 12px 0;
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-base);
+    animation: skel-pulse 1.5s ease-in-out infinite;
   }
 
   /* ── Grid ────────────────────────────────────────────────────────────────── */
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: var(--space-lg);
+    gap: var(--space-md);
   }
   .empty-wrap {
     grid-column: 1 / -1;
   }
 
-  /* ── Card ────────────────────────────────────────────────────────────────── */
+  /* ── Card — strokeless sand well ────────────────────────────────────────── */
   .card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
     padding: var(--space-md);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
     cursor: pointer;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition: border-color 0.15s ease;
   }
   .card:hover {
-    border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
-    box-shadow: var(--shadow-sm);
+    border-color: var(--color-border);
   }
   .card-top {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--space-sm);
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
   }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-neutral);
+    flex-shrink: 0;
+  }
+  .status-dot.is-running { background: var(--color-success); }
+  .status-dot.is-error { background: var(--color-error); }
+  .status-dot.is-pending { background: var(--color-info); }
   .card-name {
     font-size: var(--font-size-base);
     font-weight: 600;
@@ -181,24 +179,28 @@ agents-page:not(:defined) {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .card-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  .card-version {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     flex-shrink: 0;
-    text-transform: capitalize;
   }
-  .card-status .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--color-neutral);
+  .card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    overflow: hidden;
+    max-height: 1.9em;
   }
-  .card-status.is-running .status-dot { background: var(--color-success); }
-  .card-status.is-error .status-dot { background: var(--color-error); }
-  .card-status.is-pending .status-dot { background: var(--color-info); }
+  .tag {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-main);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    padding: 1px var(--space-xs);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+  .tag--more { color: var(--color-text-muted); }
   .card-desc {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
@@ -214,83 +216,50 @@ agents-page:not(:defined) {
   .card-foot {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
+    justify-content: flex-end;
+    gap: var(--space-xs);
     margin-top: var(--space-2xs);
-  }
-  .card-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-xs);
-    overflow: hidden;
-    max-height: 1.8em;
-  }
-  .tag {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
-    padding: 1px var(--space-xs);
-    border-radius: 999px;
-    white-space: nowrap;
-  }
-  .card-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    flex-shrink: 0;
   }
   .card-link {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2xs);
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-md);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
     color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
+    font-size: 13px;
     font-weight: 500;
     text-decoration: none;
   }
   .card-link:hover {
     color: var(--color-text-main);
-    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
-  }
-  .card-link--primary {
-    color: var(--color-primary);
-  }
-  .card-link--primary:hover {
-    color: var(--color-primary);
-    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+    background: var(--bg-surface-hover);
   }
   .card-chat-btn {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2xs);
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-md);
-    background: light-dark(var(--neutral-900), var(--neutral-100));
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
-    font-size: var(--font-size-sm);
+    font-size: 13px;
     font-weight: 500;
     text-decoration: none;
     white-space: nowrap;
-    transition: opacity var(--transition-fast);
+    transition: background var(--transition-fast);
   }
   .card-chat-btn svg { flex-shrink: 0; }
   .card-chat-btn:hover {
-    opacity: 0.85;
+    background: light-dark(var(--sand-700), var(--neutral-300));
     color: light-dark(var(--white), var(--neutral-900));
   }
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */
   .skeleton-card {
-    min-height: 147px; /* matches a rendered two-line card so the grid doesn't shift on load */
-  }
-  .skel-dot {
-    width: 48px;
-    height: 14px;
-    border-radius: 999px;
-    background: var(--color-border);
-    animation: skel-pulse 1.5s ease-in-out infinite;
+    min-height: 165px; /* matches a rendered two-line card so the grid doesn't shift on load */
   }
   .skel-line {
     height: 0.85em;
@@ -304,12 +273,11 @@ agents-page:not(:defined) {
   .skel-tags {
     display: flex;
     gap: var(--space-xs);
-    margin-top: auto;
   }
   .skel-tag {
-    width: 52px;
-    height: 18px;
-    border-radius: 999px;
+    width: 64px;
+    height: 20px;
+    border-radius: var(--radius-sm);
     background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
   }

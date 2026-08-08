@@ -16,15 +16,22 @@ sessions-page:not(:defined) {
 
   .sessions-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
+    gap: var(--space-md);
     margin-bottom: var(--space-md);
   }
 
-  .sessions-header h1 {
-    font-size: var(--font-size-xl);
-    font-weight: 600;
+  .sessions-header-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .sessions-subtitle {
     margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
   }
 
   .sessions-search-wrap {
@@ -44,86 +51,73 @@ sessions-page:not(:defined) {
 
   input.sessions-search {
     width: 100%;
-    padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-xl);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    height: var(--control-h-lg);
+    padding: 0 var(--space-sm) 0 var(--space-xl);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
     font-size: var(--font-size-sm);
     color: var(--color-text-main);
 
     &:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
 
   .session-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
+    display: block;
   }
 
-  .session-group-header {
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--color-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: var(--space-xs) 0 var(--space-2xs) 0;
-    margin-top: var(--space-md);
-
-    &:first-child {
-      margin-top: 0;
-    }
+  /* ── Execution history table ─────────────────────────────────────────── */
+  .sessions-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: var(--font-size-sm);
   }
 
-  .session-card {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-sm) var(--space-md);
-    min-height: 64px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-10, var(--radius-md));
-    background: var(--color-bg-surface);
-    text-decoration: none;
-    color: inherit;
-    transition: border-color 0.15s, box-shadow 0.15s;
-
-    &:hover {
-      border-color: var(--color-primary);
-      box-shadow: var(--shadow-sm);
-
-      & .session-delete {
-        opacity: 1;
-      }
-    }
-
-    &:focus-visible {
-      outline: none;
-      box-shadow: 0 0 0 2px var(--color-primary-ring);
-    }
-  }
-
-  .session-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--r-10, 10px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  .sessions-table th {
+    text-align: left;
     font-size: var(--font-size-sm);
     font-weight: 600;
-    color: light-dark(var(--yellow-800, #8a6d00), var(--yellow-200, #f4e3a1));
-    background: var(--bg-secondary-brand);
-    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
-    flex-shrink: 0;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--color-text-main);
+    background: light-dark(var(--sand-200), var(--neutral-800));
+    border-bottom: none;
+    padding: var(--space-sm) var(--space-md);
+    white-space: nowrap;
+  }
+  .sessions-table th:first-child { border-radius: var(--r-8) 0 0 var(--r-8); }
+  .sessions-table th:last-child { border-radius: 0 var(--r-8) var(--r-8) 0; }
+
+  .sessions-table td {
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: middle;
   }
 
-  .session-info {
-    flex: 1;
-    min-width: 0;
+  .sessions-table tbody tr {
+    cursor: pointer;
+
+    &:hover td { background: var(--bg-surface-hover); }
+    &:hover .session-delete { opacity: 1; }
+    &:focus-visible {
+      outline: none;
+      box-shadow: inset 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+
+  .col-session { max-width: 380px; }
+  .col-num, .col-date {
+    color: var(--color-text-main);
+    white-space: nowrap;
+  }
+  .col-actions {
+    white-space: nowrap;
+    text-align: right;
+    width: 1%;
   }
 
   .session-agent {
@@ -150,66 +144,28 @@ sessions-page:not(:defined) {
     text-overflow: ellipsis;
   }
 
-  .session-stats {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin-top: var(--space-2xs);
-  }
-
-  .session-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 1px var(--space-xs);
-    border-radius: var(--radius-full, 999px);
-    background: light-dark(var(--cream-100), var(--neutral-800));
-    border: 1px solid var(--border-canvas);
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    white-space: nowrap;
-
-    & .chip-icon { flex-shrink: 0; opacity: 0.7; }
-  }
-
   button.session-traces {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border: 1px solid var(--border-canvas);
-    border-radius: var(--radius-full, 999px);
-    background: light-dark(var(--cream-50), var(--neutral-800));
-    color: var(--color-text-muted);
+    gap: var(--space-2xs);
+    height: var(--control-h-sm);
+    padding: 0 var(--space-sm);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
     font-size: var(--font-size-xs);
     font-weight: 600;
     cursor: pointer;
     line-height: 1;
-    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+    transition: border-color 0.15s;
 
-    &:hover {
-      color: var(--color-text-main);
-      background: var(--bg-secondary-brand);
-      border-color: light-dark(var(--yellow-200), var(--yellow-800));
-    }
+    &:hover { border-color: var(--color-border); }
 
     &:focus-visible {
       outline: none;
       box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
-  }
-
-  .session-meta {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    flex-shrink: 0;
-  }
-
-  .session-time {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    white-space: nowrap;
   }
 
   button.session-delete {
@@ -221,10 +177,12 @@ sessions-page:not(:defined) {
     cursor: pointer;
     color: var(--color-text-muted);
     line-height: 1;
-    width: 32px;
-    height: 32px;
-    display: grid;
+    width: 28px;
+    height: 28px;
+    display: inline-grid;
     place-items: center;
+    vertical-align: middle;
+    margin-left: var(--space-2xs);
 
     &:hover {
       color: var(--color-error);
@@ -238,15 +196,10 @@ sessions-page:not(:defined) {
     }
   }
 
-  /* Skeleton loading state */
-  .session-card-skeleton {
+  /* ── Skeleton loading state ──────────────────────────────────────────── */
+  .sessions-table-skeleton {
     display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    flex-direction: column;
     animation: skeleton-pulse 1.5s ease-in-out infinite;
 
     @media (prefers-reduced-motion: reduce) {
@@ -255,12 +208,21 @@ sessions-page:not(:defined) {
     }
   }
 
-  .skeleton-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    background: var(--color-border);
-    flex-shrink: 0;
+  .skeleton-line--head {
+    height: 42px;
+    width: 100%;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-200), var(--neutral-800));
+    margin-bottom: 0;
+  }
+
+  .session-row-skeleton {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    min-height: 61px;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .skeleton-info {
@@ -273,7 +235,7 @@ sessions-page:not(:defined) {
   .skeleton-line {
     height: 12px;
     border-radius: var(--radius-sm);
-    background: var(--color-border);
+    background: var(--color-bg-base);
   }
 
   .skeleton-line--short {
@@ -285,7 +247,7 @@ sessions-page:not(:defined) {
   }
 
   .skeleton-line--time {
-    width: 40px;
+    width: 90px;
     flex-shrink: 0;
   }
 }

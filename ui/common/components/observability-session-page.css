@@ -22,20 +22,22 @@ observability-session-page:not(:defined) {
   .back-btn {
     width: 36px;
     height: 36px;
-    border: 1px solid var(--color-border);
+    border: 1px solid transparent;
     border-radius: var(--r-8);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
     color: var(--color-text-main);
     flex-shrink: 0;
+    cursor: pointer;
 
-    &:hover { border-color: var(--border-hover); }
+    &:hover { border-color: var(--color-border); }
     & svg { width: 16px; height: 16px; }
   }
 
   .page-title {
-    font-size: var(--font-size-xl);
-    font-weight: 600;
-    font-family: var(--font-mono);
+    font-family: var(--font-display);
+    font-size: var(--font-size-2xl);
+    font-weight: 500;
+    letter-spacing: 0.16px;
     margin: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -60,13 +62,18 @@ observability-session-page:not(:defined) {
   }
 
   .kpi-label {
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
     font-weight: 600;
+    color: var(--color-text-main);
     margin-bottom: var(--space-xs);
     white-space: nowrap;
   }
 
-  .kpi-value { font-size: var(--font-size-base); color: var(--color-text-main); }
+  .kpi-value {
+    font-size: var(--font-size-base);
+    font-family: var(--font-mono);
+    color: var(--color-text-main);
+  }
 
   /* ── Three panes ──────────────────────────────────────────────────────── */
   .panes {
@@ -79,9 +86,41 @@ observability-session-page:not(:defined) {
     @media (max-width: 1100px) { grid-template-columns: 1fr; }
   }
 
+  /* Chat pane collapsed to a slim rail (per mock chatPanel-collapsed state). */
+  .panes.chat-collapsed {
+    grid-template-columns: 48px minmax(280px, 4fr) minmax(340px, 5fr);
+
+    & #chat-pane {
+      padding: var(--space-sm);
+      overflow: hidden;
+
+      & .pane-title {
+        writing-mode: vertical-rl;
+        margin: 0;
+        gap: var(--space-sm);
+      }
+      & .pane-collapse svg { transform: rotate(180deg); }
+      & > :not(.pane-title) { display: none; }
+    }
+  }
+
+  .pane-collapse {
+    display: inline-grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover { color: var(--color-text-main); background: var(--bg-surface-hover); }
+  }
+
   .pane {
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--r-12);
     background: var(--color-bg-surface);
     padding: var(--space-md);
     display: flex;
@@ -103,8 +142,8 @@ observability-session-page:not(:defined) {
 
   /* ── Chat history pane ────────────────────────────────────────────────── */
   .chat-card {
-    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
-    border-radius: var(--radius-md);
+    border: 1px solid var(--fg-brand-highlight, var(--yellow-400));
+    border-radius: var(--r-12);
     padding: var(--space-md);
     display: flex;
     flex-direction: column;
@@ -114,8 +153,8 @@ observability-session-page:not(:defined) {
   .msg-user {
     align-self: flex-end;
     max-width: 90%;
-    background: light-dark(var(--cream-50), var(--neutral-700));
-    border: 1px solid var(--color-border);
+    background: var(--color-bg-base);
+    border: none;
     border-radius: var(--r-10);
     padding: var(--space-sm) var(--space-md);
     font-size: var(--font-size-sm);
@@ -142,8 +181,8 @@ observability-session-page:not(:defined) {
     gap: 6px;
     padding: 4px 10px;
     border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: light-dark(var(--cream-50), var(--neutral-800));
+    border-radius: var(--radius-full, 999px);
+    background: var(--color-bg-surface);
     font-size: var(--font-size-xs);
     color: var(--color-text-main);
     white-space: nowrap;
@@ -160,18 +199,25 @@ observability-session-page:not(:defined) {
     text-align: left;
     padding: var(--space-sm);
     border: 1px solid transparent;
-    border-radius: var(--r-10);
+    border-radius: var(--r-8);
     cursor: pointer;
     font-size: var(--font-size-sm);
     color: var(--color-text-main);
     background: transparent;
 
-    &:hover { background: light-dark(var(--cream-50), var(--neutral-700)); }
+    &:hover { background: var(--bg-surface-hover); }
 
     &.is-selected {
-      background: var(--bg-secondary-brand);
-      border-color: light-dark(var(--yellow-300), var(--yellow-800));
+      background: var(--color-bg-base);
+      border-color: var(--fg-brand-highlight, var(--yellow-400));
     }
+  }
+
+  .span-tree {
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    flex-shrink: 0;
   }
 
   .span-icon {
@@ -256,8 +302,8 @@ observability-session-page:not(:defined) {
     & svg { width: 14px; height: 14px; }
 
     &.is-active {
-      color: light-dark(var(--yellow-700), var(--yellow-400));
-      border-bottom-color: light-dark(var(--yellow-600), var(--yellow-400));
+      color: var(--fg-brand);
+      border-bottom-color: var(--fg-brand-highlight);
     }
   }
 
@@ -269,7 +315,8 @@ observability-session-page:not(:defined) {
   }
 
   .msg-block {
-    border: 1px solid var(--color-border);
+    background: var(--color-bg-base);
+    border: 1px solid transparent;
     border-radius: var(--r-8);
     padding: var(--space-sm) var(--space-md);
     margin-bottom: var(--space-sm);
@@ -291,8 +338,8 @@ observability-session-page:not(:defined) {
   }
 
   .raw-json {
-    background: light-dark(var(--cream-50), var(--neutral-900));
-    border: 1px solid var(--color-border);
+    background: var(--color-bg-base);
+    border: 1px solid transparent;
     border-radius: var(--r-8);
     padding: var(--space-md);
     font-family: var(--font-mono);

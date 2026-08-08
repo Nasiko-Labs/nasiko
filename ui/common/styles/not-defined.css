@@ -308,7 +308,7 @@ chat-page:not(:defined) .chat-skel {
 }
 
 .chat-skel__avatar {
-  border-radius: 50%;
+  border-radius: var(--r-8);
 }
 
 .chat-skel__info {
@@ -330,7 +330,7 @@ chat-page:not(:defined) .chat-skel {
 
 .chat-skel__input {
   height: 115px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--r-12);
 }
 
 @media (prefers-reduced-motion: reduce) {

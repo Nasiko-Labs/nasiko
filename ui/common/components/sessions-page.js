@@ -18,7 +18,10 @@ class SessionsPage extends HTMLElement {
   #render() {
     this.innerHTML = `
       <div class="sessions-header">
-        <h1>Sessions</h1>
+        <div class="sessions-header-info">
+          <h1 class="title-page">Execution history</h1>
+          <p class="sessions-subtitle">Review all queries across agents. Select a session to open its trace details.</p>
+        </div>
         <app-button variant="dark" size="sm" id="btn-new">New Chat</app-button>
       </div>
       <div class="sessions-search-wrap">
@@ -40,15 +43,17 @@ class SessionsPage extends HTMLElement {
   }
 
   #renderSkeletons() {
-    const skeleton = `<div class="session-card-skeleton">
-      <div class="skeleton-avatar"></div>
+    const row = `<div class="session-row-skeleton">
       <div class="skeleton-info">
         <div class="skeleton-line skeleton-line--short"></div>
         <div class="skeleton-line skeleton-line--long"></div>
       </div>
       <div class="skeleton-line skeleton-line--time"></div>
     </div>`;
-    return skeleton.repeat(4);
+    return `<div class="sessions-table-skeleton">
+      <div class="skeleton-line skeleton-line--head"></div>
+      ${row.repeat(4)}
+    </div>`;
   }
 
   async #load() {
@@ -123,13 +128,22 @@ class SessionsPage extends HTMLElement {
       return;
     }
 
-    const groups = this.#groupByDate(sessions);
-    let html = '';
-    for (const [label, items] of groups) {
-      html += `<div class="session-group-header">${this.#esc(label)}</div>`;
-      html += items.map(s => this.#renderCard(s)).join('');
-    }
-    list.innerHTML = html;
+    const rows = sessions.map(s => this.#renderRow(s)).join('');
+    list.innerHTML = `
+      <table class="sessions-table">
+        <thead>
+          <tr>
+            <th>Sessions</th>
+            <th>Traces count</th>
+            <th>Tokens</th>
+            <th>Latency P50</th>
+            <th>Date</th>
+            <th class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
 
     list.querySelectorAll('.session-delete').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -147,47 +161,52 @@ class SessionsPage extends HTMLElement {
         window.location.href = `/observability-session.html?session_id=${encodeURIComponent(btn.dataset.sessionId)}`;
       });
     });
+
+    list.querySelectorAll('tr[data-href]').forEach(row => {
+      row.addEventListener('click', () => { window.location.href = row.dataset.href; });
+    });
   }
 
-  #renderCard(s) {
+  #renderRow(s) {
     const agentName = s.agent_name || 'Orchestrator';
     const preview = s.last_message || '';
     const time = s.updated_at || s.created_at;
-    const timeStr = time ? this.#relativeTime(new Date(time)) : '';
+    const timeStr = time ? this.#formatDate(new Date(time)) : '—';
     const sessionId = s.session_id;
     const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
-    const initial = agentName.charAt(0).toUpperCase();
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
-    const stats = this.#statsChips(this.#obsStats.get(sessionId));
+    const o = this.#obsStats.get(sessionId);
+    const traces = o?.num_traces ?? '—';
+    const tokens = o?.token_usage?.total ? this.#fmtCount(o.token_usage.total) : '—';
+    const p50 = o?.trace_latency_ms_p50 ? this.#fmtMs(o.trace_latency_ms_p50) : '—';
 
-    return `<a class="session-card" href="${href}">
-      <div class="session-avatar">${initial}</div>
-      <div class="session-info">
+    return `<tr data-href="${href}" tabindex="0">
+      <td class="col-session">
         <div class="session-agent">${this.#esc(agentName)}${msgCount}</div>
-        ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 120))}</div>` : ''}
-        ${stats}
-      </div>
-      <div class="session-meta">
-        <span class="session-time">${timeStr}</span>
+        ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 90))}</div>` : ''}
+      </td>
+      <td class="col-num">${traces}</td>
+      <td class="col-num">${tokens}</td>
+      <td class="col-num">${p50}</td>
+      <td class="col-date">${timeStr}</td>
+      <td class="col-actions">
         <button class="session-traces" type="button" data-session-id="${this.#esc(sessionId)}"
-          title="View traces" aria-label="View traces for this session">${icons.trace('', 14)}<span>Traces</span></button>
+          title="View traces" aria-label="View traces for this session"><span>Traces</span>${icons.chevronRight('', 14)}</button>
         <button class="session-delete" data-session-id="${this.#esc(sessionId)}" title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>
-      </div>
-    </a>`;
+      </td>
+    </tr>`;
   }
 
-  /** Observability chips for a session: traces, tokens, p50 latency. */
-  #statsChips(o) {
-    if (!o) return '';
-    const chips = [];
-    const traces = o.num_traces;
-    if (traces) chips.push(`${icons.workflow('chip-icon', 12)}${traces} ${traces === 1 ? 'trace' : 'traces'}`);
-    const tokens = o.token_usage?.total;
-    if (tokens) chips.push(`${icons.coins('chip-icon', 12)}${this.#fmtCount(tokens)} tok`);
-    const p50 = o.trace_latency_ms_p50;
-    if (p50) chips.push(`${icons.clock('chip-icon', 12)}${this.#fmtMs(p50)} p50`);
-    if (!chips.length) return '';
-    return `<div class="session-stats">${chips.map((c) => `<span class="session-chip">${c}</span>`).join('')}</div>`;
+  #formatDate(date) {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const timeStr = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    if (date >= today) return `Today at ${timeStr}`;
+    if (date >= yesterday) return `Yesterday at ${timeStr}`;
+    const dateStr = date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    return `${dateStr} at ${timeStr}`;
   }
 
   #fmtCount(n) {
@@ -200,39 +219,11 @@ class SessionsPage extends HTMLElement {
     return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
   }
 
-  #groupByDate(sessions) {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const weekAgo = new Date(today);
-    weekAgo.setDate(weekAgo.getDate() - 7);
-
-    const groups = new Map();
-    for (const s of sessions) {
-      const time = s.updated_at || s.created_at;
-      const date = time ? new Date(time) : new Date(0);
-      let label;
-      if (date >= today) {
-        label = 'Today';
-      } else if (date >= yesterday) {
-        label = 'Yesterday';
-      } else if (date >= weekAgo) {
-        label = 'This Week';
-      } else {
-        label = 'Older';
-      }
-      if (!groups.has(label)) groups.set(label, []);
-      groups.get(label).push(s);
-    }
-    return groups;
-  }
-
   async #deleteSession(sessionId) {
     let card = null;
     for (const btn of this.querySelectorAll('.session-delete')) {
       if (btn.dataset.sessionId === sessionId) {
-        card = btn.closest('.session-card');
+        card = btn.closest('tr');
         break;
       }
     }
@@ -247,16 +238,6 @@ class SessionsPage extends HTMLElement {
     } catch {
       if (card) card.style.opacity = '1';
     }
-  }
-
-  #relativeTime(date) {
-    const now = new Date();
-    const diff = Math.floor((now - date) / 1000);
-    if (diff < 60) return 'just now';
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
   #esc(s) {

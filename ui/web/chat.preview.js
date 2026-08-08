@@ -93,7 +93,7 @@ export default {
     "steps-expanded": async (page) => {
       await page.fill('#textarea', 'How do I scale an agent?');
       await page.click('#submitBtn');
-      await page.waitForSelector('.stream-content.is-visible', { timeout: 8000 });
+      await page.waitForSelector('agent-steps.is-done', { timeout: 8000 });
       await page.click('agent-steps .steps-header');
       await page.waitForTimeout(200);
     },

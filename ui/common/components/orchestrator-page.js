@@ -24,21 +24,22 @@ class OrchestratorPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <h1 class="title">What can I help you with?</h1>
-      <div class="input-wrap">
-        <voice-input
-          id="voice-input"
-          placeholder="Ask anything — the orchestrator will find the best agent..."
-          transcription-callback="transcribeAudio"
-        ></voice-input>
-      </div>
+      <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
+      <h1 class="title">Route a task</h1>
+      <p class="subtitle">Describe a task and Nasiko will route it to the best available agent for execution.</p>
       <div class="recent-agents" id="recent-agents">
-        <div class="recent-agents-title">RECENT AGENTS</div>
         <div class="recent-agents-grid" id="recent-agents-grid">
           <div class="agent-card-skel"></div>
           <div class="agent-card-skel"></div>
           <div class="agent-card-skel"></div>
         </div>
+      </div>
+      <div class="input-wrap">
+        <voice-input
+          id="voice-input"
+          placeholder="Describe the task you want to execute..."
+          transcription-callback="transcribeAudio"
+        ></voice-input>
       </div>
       <div class="response-area" id="response-area">
         <div class="steps-slot" id="steps-slot"></div>
@@ -188,10 +189,11 @@ class OrchestratorPage extends HTMLElement {
         const displayName = agent.display_name || agent.name || agent.id;
         return `
           <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
-            <div class="agent-card-icon">${icons.cube('', 14)}</div>
-            <div class="agent-card-info">
-              <div class="agent-card-name">${this.#esc(displayName)}</div>
+            <div class="agent-card-top">
+              <span class="agent-card-name">${this.#esc(displayName)}</span>
+              <span class="agent-card-go">${icons.arrowUpRight('', 14)}</span>
             </div>
+            ${agent.description ? `<div class="agent-card-desc">${this.#esc(agent.description)}</div>` : ''}
           </a>
         `;
       }).join('');

@@ -36,16 +36,15 @@ class YourAgentsPage extends HTMLElement {
       <div class="page-header">
         <div class="page-header-top">
           <div>
-            <h1 class="page-title">Your Agents</h1>
-            <p class="page-desc">Deployed agent containers you manage.</p>
+            <h1 class="title-page">Your agents</h1>
+            <p class="page-desc">Deployed agent containers you manage. Track status and failures, then open one to manage access, versions, and settings.</p>
           </div>
         </div>
       </div>
-      <div class="type-tabs" id="status-tabs" role="tablist"></div>
       <div class="toolbar">
         <div class="search-wrap">
           <span class="search-icon">${icons.search("", 18)}</span>
-          <input type="search" id="search-input" placeholder="Search agents..." />
+          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability..." />
           <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
         </div>
         <div class="sort-wrap">
@@ -56,6 +55,7 @@ class YourAgentsPage extends HTMLElement {
           </select>
         </div>
       </div>
+      <div class="type-tabs" id="status-tabs" role="tablist">${Array.from({ length: 4 }, () => `<div class="skel-tab"></div>`).join("")}</div>
       <div class="agents-grid" id="agents-grid">
         ${this.#skeletonCards()}
       </div>
@@ -148,10 +148,12 @@ class YourAgentsPage extends HTMLElement {
       { length: 4 },
       () => `
       <div class="agent-card skeleton-card">
-        <div class="agent-card-top">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-dot"></div>
+        <div class="skel-line skel-line--name"></div>
+        <div class="skel-tags">
+          <div class="skel-tag"></div>
+          <div class="skel-tag"></div>
         </div>
+        <div class="skel-line skel-line--desc"></div>
         <div class="skel-line skel-line--image"></div>
         <div class="skel-actions">
           <div class="skel-btn"></div>
@@ -227,18 +229,33 @@ class YourAgentsPage extends HTMLElement {
         const name = a.display_name || a.name;
         const isRunning = a.status === "running";
         const isError = a.status === "error" || a.status === "failed";
-        const { name: imgName, version } = parseImageTag(a.image);
+        const { name: imgName, version: imgVersion } = parseImageTag(a.image);
+        const version = a.version || imgVersion;
+        const allTags = a.tags || [];
+        const shownTags = allTags.slice(0, 2);
+        const extraTags = allTags.length - shownTags.length;
+        const tagsHtml =
+          shownTags.map((t) => `<span class="tag">${this.#esc(t)}</span>`).join("") +
+          (extraTags > 0 ? `<span class="tag tag--more">+${extraTags}</span>` : "");
 
         return `
         <div class="agent-card${isError ? " agent-card--error" : ""}">
           <div class="agent-card-top">
+            <span class="status-dot ${statusClass(a.status)}" title="${this.#esc(a.status)}"></span>
             <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
-            <span class="card-status ${statusClass(a.status)}"><span class="status-dot"></span>${this.#esc(a.status)}</span>
+            ${version ? `<span class="agent-card-version">v${this.#esc(String(version).replace(/^v/, ""))}</span>` : ""}
           </div>
+          ${tagsHtml ? `<div class="agent-card-tags">${tagsHtml}</div>` : ""}
+          ${
+            isError
+              ? `<div class="agent-card-error"><span class="agent-card-error-title">Agent failed</span>Container exited with an error. <a href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>`
+              : a.description
+                ? `<div class="agent-card-desc">${this.#esc(a.description)}</div>`
+                : ""
+          }
           <div class="agent-card-meta">
-            <code class="agent-card-image">${this.#esc(imgName)}${version ? `:${this.#esc(version)}` : ""}</code>
+            <code class="agent-card-image">${this.#esc(imgName)}${imgVersion ? `:${this.#esc(imgVersion)}` : ""}</code>
           </div>
-          ${isError ? `<div class="agent-card-error">Container exited with an error. <a href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>` : ""}
           <div class="agent-card-actions">
             ${
               isRunning

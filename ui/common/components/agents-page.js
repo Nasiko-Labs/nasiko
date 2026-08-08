@@ -24,17 +24,17 @@ class AgentsPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="page-top">
-        <h1 class="title">Agent Catalog</h1>
-        <p class="subtitle" id="agent-count"></p>
+        <h1 class="title-page">Agent hub</h1>
+        <p class="subtitle" id="agent-count">Discover and chat with the agents deployed on this cluster.</p>
       </div>
-      <div class="type-tabs" id="category-tabs" role="tablist"></div>
       <div class="controls">
         <div class="search-wrap">
           <span class="search-icon">${icons.search("", 18)}</span>
-          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability..." />
+          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability" />
           <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
         </div>
       </div>
+      <div class="type-tabs" id="category-tabs" role="tablist">${this.#skeletonTabs()}</div>
       <div class="grid" id="agents-grid">${this.#skeletonCards()}</div>
     `;
 
@@ -102,7 +102,8 @@ class AgentsPage extends HTMLElement {
 
   #renderCount() {
     const el = this.querySelector("#agent-count");
-    if (el) el.textContent = `${this.#agents.length} agent${this.#agents.length !== 1 ? "s" : ""} available`;
+    const n = this.#agents.length;
+    if (el) el.textContent = `Discover and chat with the ${n} agent${n !== 1 ? "s" : ""} deployed on this cluster.`;
   }
 
   #renderFilter() {
@@ -143,21 +144,22 @@ class AgentsPage extends HTMLElement {
     btn.style.display = input.value ? "" : "none";
   }
 
+  #skeletonTabs() {
+    return Array.from({ length: 6 }, () => `<div class="skel-tab"></div>`).join("");
+  }
+
   #skeletonCards() {
     return Array.from(
       { length: 6 },
       () => `
       <div class="card skeleton-card">
-        <div class="card-top">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-dot"></div>
-        </div>
-        <div class="skel-line skel-line--desc1"></div>
-        <div class="skel-line skel-line--desc2"></div>
+        <div class="skel-line skel-line--name"></div>
         <div class="skel-tags">
           <div class="skel-tag"></div>
           <div class="skel-tag"></div>
         </div>
+        <div class="skel-line skel-line--desc1"></div>
+        <div class="skel-line skel-line--desc2"></div>
       </div>
     `,
     ).join("");
@@ -197,25 +199,27 @@ class AgentsPage extends HTMLElement {
     grid.innerHTML = filtered
       .map((a) => {
         const name = a.display_name || a.name;
-        const tags = (a.tags || [])
-          .slice(0, 3)
-          .map((t) => `<span class="tag">${this.#esc(t)}</span>`)
-          .join("");
+        const allTags = a.tags || [];
+        const shown = allTags.slice(0, 2);
+        const extra = allTags.length - shown.length;
+        const tags =
+          shown.map((t) => `<span class="tag">${this.#esc(t)}</span>`).join("") +
+          (extra > 0 ? `<span class="tag tag--more">+${extra}</span>` : "");
+        const version = a.version ? `v${String(a.version).replace(/^v/, "")}` : "";
 
         return `
         <div class="card" data-agent-id="${encodeURIComponent(a.id)}" role="link" tabindex="0"
           aria-label="Open ${this.#esc(name)} details">
           <div class="card-top">
+            ${a.status ? `<span class="status-dot ${statusClass(a.status)}" title="${this.#esc(a.status)}"></span>` : ""}
             <span class="card-name">${this.#esc(name)}</span>
-            ${a.status ? `<span class="card-status ${statusClass(a.status)}"><span class="status-dot"></span>${this.#esc(a.status)}</span>` : ""}
+            ${version ? `<span class="card-version">${this.#esc(version)}</span>` : ""}
           </div>
+          <div class="card-tags">${tags}</div>
           <div class="card-desc">${this.#esc(a.description || "")}</div>
           <div class="card-foot">
-            <div class="card-tags">${tags}</div>
-            <div class="card-actions">
-              <a class="card-link" href="/agent-card.html?id=${encodeURIComponent(a.id)}">Details</a>
-              <a class="card-chat-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
-            </div>
+            <a class="card-link" href="/agent-card.html?id=${encodeURIComponent(a.id)}">Details</a>
+            <a class="card-chat-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
           </div>
         </div>
       `;
