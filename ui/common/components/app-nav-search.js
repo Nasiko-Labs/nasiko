@@ -164,8 +164,8 @@ export class AppNavSearch extends HTMLElement {
           <ul class="results" data-nav-results role="listbox" aria-label="Search results"></ul>
           <div class="footer">
             <span class="footer-hint">
-              ${icons.chevronDown('footer-key', 16)}
-              ${icons.chevronUp('footer-key', 16)}
+              <kbd class="footer-key">&#8595;</kbd>
+              <kbd class="footer-key">&#8593;</kbd>
               navigate
             </span>
             <span class="footer-hint">

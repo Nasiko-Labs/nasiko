@@ -29,7 +29,16 @@ export class DropdownController {
   open() {
     if (this.#isOpen) return;
     const r = this.#anchor.getBoundingClientRect();
-    this.#el.style.top   = `${r.bottom + 4}px`;
+    // Flip upward when the anchor sits near the fold — otherwise the fixed
+    // dropdown extends past the viewport bottom and can't be seen.
+    const roomBelow = window.innerHeight - r.bottom - 8;
+    if (roomBelow < 160 && r.top > window.innerHeight - r.bottom) {
+      this.#el.style.top    = 'auto';
+      this.#el.style.bottom = `${window.innerHeight - r.top + 4}px`;
+    } else {
+      this.#el.style.bottom = 'auto';
+      this.#el.style.top    = `${r.bottom + 4}px`;
+    }
     this.#el.style.left  = `${r.left}px`;
     this.#el.style.width = `${r.width}px`;
     this.#el.classList.remove('hidden');

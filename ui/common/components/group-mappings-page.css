@@ -16,10 +16,14 @@
   .page-header {
     display: flex;
     align-items: flex-start;
+    flex-wrap: wrap;
     gap: var(--s-8);
     margin-bottom: var(--space-md);
   }
-  .page-header > div:first-child { flex: 1; min-width: 0; }
+  .page-header > div:first-child { flex: 1 1 100%; min-width: 0; }
+  @media (min-width: 761px) {
+    .page-header > div:first-child { flex: 1 1 auto; }
+  }
 
   /* Table language: sand header band, hairline rows */
   smart-table .scroll {
@@ -27,7 +31,7 @@
     border-radius: var(--r-8);
     background: var(--color-bg-surface);
   }
-  smart-table .thead { background: var(--sand-100); }
+  smart-table .thead { background: light-dark(var(--sand-100), var(--neutral-800)); }
   smart-table .th {
     border-bottom: none;
     color: var(--sand-700);

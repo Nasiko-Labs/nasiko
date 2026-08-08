@@ -3,6 +3,7 @@ import { fetchApi, apiFetch } from '/common/services/api.js';
 import { showToast } from '/common/utils/toast.js';
 import { ansiToHtml } from '/common/utils/ansi.js';
 import styles from './agent-card-page.css' with { type: 'css' };
+import '/common/components/app-empty-state.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const TABS = [
@@ -25,7 +26,14 @@ class AgentCardPage extends HTMLElement {
     this.#initialized = true;
     this.#agentId = new URLSearchParams(location.search).get('id');
     if (!this.#agentId) {
-      this.innerHTML = '<p style="color:var(--color-text-muted);">No agent ID specified.</p>';
+      this.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--space-md);min-height:60vh;text-align:center;">
+          <app-empty-state
+            title="No agent selected"
+            description="Open an agent from the hub to see its card, settings, and logs.">
+          </app-empty-state>
+          <a href="/agents.html" style="color:var(--fg-brand);font-size:var(--font-size-sm);font-weight:600;">Browse the agent hub</a>
+        </div>`;
       return;
     }
     this.innerHTML = '<app-skeleton height="400px" style="max-width:900px;margin:0 auto;"></app-skeleton>';

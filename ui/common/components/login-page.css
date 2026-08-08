@@ -70,7 +70,7 @@ login-page:not(:defined) {
     padding: 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;
@@ -133,7 +133,7 @@ login-page:not(:defined) {
     transition: background var(--transition-fast), border-color var(--transition-fast);
   }
   .btn-oauth:hover {
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     border-color: light-dark(var(--sand-300), var(--neutral-600));
   }
   .btn-oauth:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }

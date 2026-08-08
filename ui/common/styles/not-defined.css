@@ -61,7 +61,7 @@ app-skeleton:not(:defined) {
 app-code-snippet:not(:defined) {
   display: block;
   min-height: var(--control-h-lg);
-  background: light-dark(var(--sand-50), var(--neutral-800));
+  background: var(--bg-input);
   border-radius: var(--r-8);
 }
 

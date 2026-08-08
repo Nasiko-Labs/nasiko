@@ -253,6 +253,15 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     --user-avatar-size: 30px;
     --user-avatar-radius: var(--r-6);
     --user-name-display: none;
+    /* The rail scroll-clips absolute descendants — open the menu as a
+       viewport-fixed flyout beside the rail's bottom cluster instead.
+       ('auto', not 'unset': a CSS-wide keyword in a custom property makes it
+       guaranteed-invalid, so var() would take its fallback instead.) */
+    --user-dropdown-position: fixed;
+    --user-dropdown-top: auto;
+    --user-dropdown-bottom: var(--s-12);
+    --user-dropdown-left: calc(var(--app-sidebar-width) + var(--s-4));
+    --user-dropdown-right: auto;
   }
   .rail-identity .identity-name {
     display: none;

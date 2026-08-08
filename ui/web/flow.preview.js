@@ -2,6 +2,17 @@
 // navigation.js defines window.fetchFlowDetail -> GET /api/flows/{id},
 // so the fixture must intercept the fetch (a window override would be
 // clobbered when navigation.js loads).
+
+// Re-load the page with ?id=… when the harness opened it bare.
+const withFlowId = async (page) => {
+  if (page.url().includes("id=")) return;
+  const u = new URL(page.url());
+  u.searchParams.set("id", "fl-a1b2c3d4e5f6");
+  await page.goto(u.toString());
+  await page.waitForSelector(".step");
+  await page.waitForTimeout(300);
+};
+
 const flowDetail = {
   flow: {
     flow_id: "fl-a1b2c3d4e5f6",
@@ -25,10 +36,15 @@ export default {
     [{ method: "GET", path: /^\/api\/flows\/[^/]+$/ }, flowDetail],
   ],
   scenarios: {
+    // The page reads ?id= from the query; the harness opens the bare URL
+    // (a scenario named "default" never runs) — capture via "with-flow".
+    "with-flow": async (page) => { await withFlowId(page); },
     "step-expanded": async (page) => {
+      await withFlowId(page);
       await page.waitForSelector(".step");
       await page.click(".step:nth-child(2) .step-row");
       await page.waitForSelector(".step[open] .step-body");
+      await page.waitForTimeout(300);
     },
   },
 };

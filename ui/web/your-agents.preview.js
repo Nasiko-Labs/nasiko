@@ -28,6 +28,7 @@ export default {
         document.body.appendChild(el);
       });
       await page.waitForSelector("app-empty-state");
+      await page.waitForTimeout(400);
     },
     "filter-running": async (page) => {
       await page.waitForSelector(".agent-card-name");

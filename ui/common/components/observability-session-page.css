@@ -61,6 +61,19 @@ observability-session-page:not(:defined) {
     &:first-child { border-left: none; padding-left: 0; }
   }
 
+  /* Mobile: clean 2-column stat grid — hairline only between the columns */
+  @media (max-width: 760px) {
+    .kpi-strip {
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-lg) 0;
+    }
+    .kpi { border-left: none; padding-left: 0; }
+    .kpi:nth-child(2n) {
+      border-left: 1px solid var(--color-border);
+      padding-left: var(--space-lg);
+    }
+  }
+
   .kpi-label {
     font-size: var(--font-size-sm);
     font-weight: 600;
@@ -345,7 +358,9 @@ observability-session-page:not(:defined) {
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
     overflow-x: auto;
-    white-space: pre;
+    /* Long attribute values wrap instead of clipping flush at the well edge */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     max-height: 400px;
     overflow-y: auto;
   }

@@ -4,6 +4,16 @@
 const SESSION_ID = "ses_18a5801d3353463ca39ebc216887f385";
 const TRACE_ID = "8a880df26caf4c12a0e2d5f898f49420";
 
+// Re-load the page with ?session_id=… when the harness opened it bare.
+const withSession = async (page) => {
+  if (page.url().includes("session_id=")) return;
+  const u = new URL(page.url());
+  u.searchParams.set("session_id", SESSION_ID);
+  await page.goto(u.toString());
+  await page.waitForSelector(".pane-title");
+  await page.waitForTimeout(300);
+};
+
 const mkSpan = (spanId, name, kind, latency, tokens, model, children = []) => ({
   id: btoa(spanId),
   span_id: spanId,
@@ -122,10 +132,11 @@ export default {
       },
     }],
     [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-root$/ }, spanDetail("span-root", "a2a.execute")],
-    [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-cc\d$/ }, (req) => {
-      const spanId = new URL(req.url).pathname.split("/").pop();
-      return spanDetail(spanId, "ChatCompletion");
-    }],
+    // One static entry per span: function fixtures are serialized into the
+    // page and lose module-scope closures (spanDetail would be undefined).
+    [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-cc1$/ }, spanDetail("span-cc1", "ChatCompletion")],
+    [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-cc2$/ }, spanDetail("span-cc2", "ChatCompletion")],
+    [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-cc3$/ }, spanDetail("span-cc3", "ChatCompletion")],
     [{ method: "GET", path: /^\/api\/chat\/sessions\/ses_/ }, {
       data: [
         { id: "m1", session_id: SESSION_ID, role: "user", content: "Hello, what can you do?", has_file_parts: false, timestamp: new Date(Date.now() - 40 * 60 * 1000).toISOString() },
@@ -134,17 +145,26 @@ export default {
     }],
   ],
   scenarios: {
+    // The page reads session_id from the query; the harness loads the bare
+    // URL (and never runs a scenario literally named "default"), so the
+    // populated state is captured via this named scenario and every other
+    // scenario first navigates with the id.
+    "with-session": async (page) => { await withSession(page); },
     "chat-collapsed": async (page) => {
+      await withSession(page);
       await page.waitForSelector(".pane-collapse");
       await page.click("#chat-pane .pane-collapse");
       await page.waitForTimeout(200);
     },
     "attributes-tab": async (page) => {
+      await withSession(page);
       await page.waitForSelector(".tab-btn");
       await page.click('.tab-btn[data-tab="attributes"]');
       await page.waitForSelector(".raw-json");
+      await page.waitForTimeout(300);
     },
     "tool-span-selected": async (page) => {
+      await withSession(page);
       await page.waitForSelector(".span-row");
       const rows = await page.$$(".span-row");
       if (rows[2]) await rows[2].click();

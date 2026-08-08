@@ -217,7 +217,7 @@
   --bg-canvas-card: light-dark(var(--shell-control), var(--neutral-800));
   --border-canvas: light-dark(transparent, var(--neutral-700));
   /* Inputs are flat sand wells on the white plane — no stroke */
-  --bg-input: light-dark(var(--sand-50), var(--neutral-800));
+  --bg-input: light-dark(var(--sand-50), var(--neutral-900));
   --color-text-main: var(--fg-primary);
   --color-text-prose: light-dark(var(--neutral-600), var(--neutral-300));
   --color-text-muted: var(--fg-secondary);
@@ -496,6 +496,19 @@ h1 {
 
 h2 {
   font-size: var(--font-size-3xl);
+}
+
+/* NightOwl page title — Chivo Mono 500 20/28 (+0.16px tracking). Lives here
+   (not styles/text.css) so it applies at first paint on pages that render
+   synchronously — the components.css @import chain arrives after paint. */
+.title-page {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 500;
+  letter-spacing: 0.16px;
+  color: var(--color-text-main);
+  margin: 0;
 }
 
 h3 {

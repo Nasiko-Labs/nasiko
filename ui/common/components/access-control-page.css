@@ -122,7 +122,7 @@
     background: var(--color-bg-surface);
   }
   smart-table .thead {
-    background: var(--sand-100);
+    background: light-dark(var(--sand-100), var(--neutral-800));
   }
   smart-table .th {
     border-bottom: none;

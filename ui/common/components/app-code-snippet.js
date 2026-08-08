@@ -29,7 +29,7 @@ styles.replaceSync(`@scope (app-code-snippet) {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     border-radius: var(--r-8);
     padding: var(--s-8) var(--s-8) var(--s-8) var(--s-16);
     min-height: var(--control-h-lg);

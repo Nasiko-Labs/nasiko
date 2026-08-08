@@ -52,7 +52,7 @@ tokenops-page:not(:defined) {
     padding: 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     cursor: pointer;
@@ -168,7 +168,7 @@ tokenops-page:not(:defined) {
       padding: 0 var(--s-12) 0 36px;
       border: none;
       border-radius: var(--r-8);
-      background: light-dark(var(--sand-50), var(--neutral-800));
+      background: var(--bg-input);
       color: var(--color-text-main);
       font-size: var(--font-size-sm);
 
@@ -185,7 +185,7 @@ tokenops-page:not(:defined) {
     padding: 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     cursor: pointer;
@@ -215,7 +215,7 @@ tokenops-page:not(:defined) {
     letter-spacing: 0;
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     border-bottom: 1px solid var(--color-border);
     padding: var(--space-sm) var(--space-md);
     white-space: nowrap;
@@ -229,7 +229,7 @@ tokenops-page:not(:defined) {
   }
 
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: light-dark(var(--sand-50), var(--neutral-800)); }
+  tbody tr:hover { background: var(--bg-input); }
 
   th.is-num { text-align: right; }
   td.is-num {

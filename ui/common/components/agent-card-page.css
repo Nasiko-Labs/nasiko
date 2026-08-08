@@ -483,11 +483,16 @@ agent-card-page:not(:defined) {
   }
   select.acp-logs-tail-select {
     font-size: var(--font-size-xs);
-    padding: 2px var(--space-xs);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
+    height: var(--control-h-sm);
+    padding: 0 var(--space-xs);
+    border-radius: var(--r-6);
+    border: none;
+    background: var(--bg-input);
     color: var(--color-text-main);
+    font-family: inherit;
+    cursor: pointer;
+
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   }
   .acp-logs-follow-btn {
     display: inline-flex;
@@ -580,7 +585,7 @@ agent-card-page:not(:defined) {
     font-size: var(--font-size-sm);
   }
   .acp-secret-row:last-child { border-bottom: none; }
-  .acp-secret-row:hover { background: light-dark(var(--cream-50), var(--neutral-800)); }
+  .acp-secret-row:hover { background: var(--bg-input); }
   .acp-secret-name {
     display: inline-flex;
     align-items: center;

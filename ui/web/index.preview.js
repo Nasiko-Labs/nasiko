@@ -36,9 +36,10 @@ export default {
     ]],
   ],
   scenarios: {
-    "sidebar-collapsed": async (page) => {
-      await page.click("[data-sidebar-toggle]");
-      await page.waitForTimeout(250);
+    // Labeled sidebar after clicking the topbar rail toggle.
+    "rail-expanded": async (page) => {
+      await page.click("[data-rail-toggle]");
+      await page.waitForTimeout(500);
     },
     "user-menu-open": async (page) => {
       await page.click("[data-user-toggle]");
@@ -74,11 +75,6 @@ export default {
       await page.click("agent-steps .steps-header");
       await page.click("agent-steps .step-summary");
       await page.waitForTimeout(200);
-    },
-    // Icon-only sidebar rail after clicking the collapse toggle.
-    "sidebar-collapsed": async (page) => {
-      await page.click("[data-sidebar-toggle]");
-      await page.waitForTimeout(400);
     },
   },
 };

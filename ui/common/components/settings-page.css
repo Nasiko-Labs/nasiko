@@ -74,7 +74,7 @@ settings-page:not(:defined) {
     padding: 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;

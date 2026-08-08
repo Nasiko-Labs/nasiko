@@ -14,7 +14,7 @@
     height: 56px;
     margin: 0 auto var(--space-lg);
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     display: flex;
     align-items: center;
     justify-content: center;

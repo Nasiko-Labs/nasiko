@@ -12,8 +12,12 @@ class LoginPage extends HTMLElement {
   async connectedCallback() {
     const brandTitle = this.getAttribute('brand-title') || 'Nasiko';
     const subtitle = this.getAttribute('subtitle') || 'Sign in to your workspace';
-    const showGithub = !this.hasAttribute('no-github');
-    let showGoogle = !this.hasAttribute('no-google');
+    // Social sign-in is opt-in per deployment — a bare <login-page> renders
+    // no button whose backend route may not exist. GitHub SSO (`github`
+    // attribute) exists on EE control planes; Google only where the host
+    // page supplies its route via google-href (e.g. the tenant portal BFF).
+    const showGithub = this.hasAttribute('github') && !this.hasAttribute('no-github');
+    let showGoogle = this.hasAttribute('google-href') && !this.hasAttribute('no-google');
     const showCredentials = !this.hasAttribute('no-credentials');
 
     // Microsoft/OIDC is opt-in per deployment (unlike GitHub/Google, which
@@ -33,13 +37,9 @@ class LoginPage extends HTMLElement {
       }
     }
 
-    // Deployments with a Google-only OIDC backend (e.g. the tenant
-    // self-service portal, which has no /api/auth/google route at all) pass
-    // google-href to point the button elsewhere, and google-status-href to
-    // gate its visibility the same way Microsoft's is gated above — default
-    // behavior (always-shown, hardcoded href) is unchanged for every
-    // existing caller.
-    const googleHref = this.getAttribute('google-href') || '/api/auth/google';
+    // google-status-href optionally gates the (already opt-in) Google button
+    // the same way Microsoft's is gated above.
+    const googleHref = this.getAttribute('google-href');
     const googleStatusHref = this.getAttribute('google-status-href');
     if (showGoogle && googleStatusHref) {
       try {

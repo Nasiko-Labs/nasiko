@@ -17,4 +17,15 @@ export default {
   fetch: [
     [{ method: "GET", path: /^\/api\/builds\/[^/]+$/ }, build],
   ],
+  scenarios: {
+    // The page reads ?id= from the query; the harness opens the bare URL
+    // (a scenario named "default" never runs) — capture via "with-build".
+    "with-build": async (page) => {
+      if (page.url().includes("id=")) return;
+      const u = new URL(page.url());
+      u.searchParams.set("id", build.id);
+      await page.goto(u.toString());
+      await page.waitForTimeout(400);
+    },
+  },
 };

@@ -7,17 +7,16 @@
     input.ac-input {
       flex: 1;
       width: 100%;
-      padding: 8px var(--space-sm) 8px var(--ac-icon-clearance);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      background-color: var(--color-bg-surface);
+      height: var(--control-h-lg);
+      padding: 0 var(--space-sm) 0 var(--ac-icon-clearance);
+      border: none;
+      border-radius: var(--r-8);
+      background-color: var(--bg-input); /* NightOwl: flat sand well, no stroke */
       color: var(--color-text-main);
-      font-size: var(--font-size-base);
-      box-shadow: var(--shadow-sm);
+      font-size: var(--font-size-sm);
 
       &::placeholder { color: var(--color-text-muted); }
-      &:hover { border-color: var(--color-primary); }
-      &:focus { border-color: var(--color-primary); outline: none; box-shadow: 0 0 0 2px var(--color-primary-ring); }
+      &:focus { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     }
     .ac-icon {
       position: absolute;

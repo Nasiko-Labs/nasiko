@@ -21,7 +21,7 @@ add-agent-page:not(:defined) {
     width: 56px;
     height: 56px;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     color: var(--color-text-main);
     margin-bottom: var(--space-md);
   }
@@ -43,7 +43,7 @@ add-agent-page:not(:defined) {
     width: min(100%, 780px);
     padding: var(--space-md) var(--space-lg);
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     text-decoration: none;
     margin-bottom: var(--space-lg);
     transition: background var(--transition-fast);
@@ -150,10 +150,10 @@ add-agent-page:not(:defined) {
     align-items: center;
     justify-content: center;
     height: var(--control-h-lg);
-    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
+    border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--yellow-100), var(--yellow-900));
-    color: var(--color-text-main);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
@@ -161,7 +161,7 @@ add-agent-page:not(:defined) {
   }
 
   .method-btn:hover:not(:disabled) {
-    background: light-dark(var(--yellow-200), var(--yellow-800));
+    background: light-dark(var(--sand-700), var(--neutral-300));
   }
 
   .method-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }

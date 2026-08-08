@@ -13,6 +13,14 @@ export default {
       total: 6,
     }],
     ["GET /api/settings", { catalog_tabs: null }],
+    [{ method: "GET", path: /^\/api\/mcp\/connectors/ }, { data: { created_by_you: [
+      { id: "c1", name: "github", display_name: "GitHub", url: "https://api.githubcopilot.com/mcp" },
+      { id: "c2", name: "slack", display_name: "Slack", url: "https://mcp.slack.example.com/mcp" },
+    ], shared_with_you: [], total: 2 } }],
+    [{ method: "GET", path: /^\/api\/chat\/sessions/ }, { data: [
+      { session_id: "cs-1", agent_id: "a-001", agent_name: "Coding Agent", last_message: "Fixed the DNS resolution issue in container networking", message_count: 12, updated_at: "2026-07-03T20:40:00Z" },
+      { session_id: "cs-2", agent_id: "a-002", agent_name: "Research Agent", last_message: "Here's the summary of Kubernetes operator patterns", message_count: 8, updated_at: "2026-07-03T16:15:00Z" },
+    ], total: 2 }],
   ],
   scenarios: {
     "mobile-menu": async (page) => { await page.evaluate(() => document.querySelector("[data-mobile-menu]")?.click()); await new Promise(r => setTimeout(r, 400)); },
@@ -49,6 +57,7 @@ export default {
         document.body.appendChild(el);
       });
       await page.waitForSelector("app-empty-state");
+      await page.waitForTimeout(400);
     },
     "search-filled": async (page) => {
       await page.waitForSelector(".card-name");
@@ -57,8 +66,8 @@ export default {
     },
     "filter-category": async (page) => {
       await page.waitForSelector(".card-name");
-      await page.click('.type-tab[data-category="finance"]');
-      await page.waitForTimeout(200);
+      await page.click('.type-tab[data-category="devops"]');
+      await page.waitForTimeout(400);
     },
     "pinned-tabs": async (page) => {
       await page.evaluate(() => {
@@ -67,11 +76,12 @@ export default {
         document.body.appendChild(document.createElement("agents-page"));
       });
       await page.waitForSelector('.type-tab[data-category="finance"]');
+      await page.waitForTimeout(400);
     },
-    "sidebar-collapsed": async (page) => {
+    "rail-expanded": async (page) => {
       await page.waitForSelector(".card-name");
-      await page.click("[data-sidebar-toggle]");
-      await page.waitForTimeout(200);
+      await page.click("[data-rail-toggle]");
+      await page.waitForTimeout(500);
     },
   },
 };

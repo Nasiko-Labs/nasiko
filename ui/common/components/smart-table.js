@@ -244,13 +244,18 @@ export class SmartTable extends HTMLElement {
 
     thead.innerHTML = `<tr>${cols.map(col => {
       const field = col.key;
+      const label = col.label ?? field;
+      // Label-less columns (row actions) get a plain, non-sortable header —
+      // a focusable empty "Sort by" control is noise for everyone.
+      if (!String(label).trim()) {
+        return `<th class="th is-plain" role="columnheader"></th>`;
+      }
       let icon = IC_SORT_BOTH;
       let ariaSort = 'none';
       if (this.#sortField === field) {
         icon = this.#sortDirection === 'asc' ? IC_SORT_ASC : IC_SORT_DESC;
         ariaSort = this.#sortDirection === 'asc' ? 'ascending' : 'descending';
       }
-      const label = col.label ?? field;
       return `
         <th class="th"
             data-field="${this.#escapeAttr(field)}"
@@ -267,7 +272,7 @@ export class SmartTable extends HTMLElement {
 
     // Rebind sort events on headers
     this.#events.removeTagged('_header');
-    thead.querySelectorAll('.th').forEach(th => {
+    thead.querySelectorAll('.th[data-field]').forEach(th => {
       const field = th.dataset.field;
       const clickHandler = () => this.#sort(field);
       const keyHandler = (e) => {

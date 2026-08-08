@@ -1,6 +1,16 @@
 // Flows page fixtures
 export default {
   fetch: [
+    [{ method: "GET", path: /^\/api\/observability\/session\/list/ }, {
+      data: {
+        sessions: [
+          { session_id: "s-001", first_input: "Fix the DNS resolution issue in container networking", num_traces: 4, token_usage: { total: 18400 }, trace_latency_ms_p50: 1240 },
+          { session_id: "s-002", first_input: "Summarize Kubernetes operator patterns", num_traces: 2, token_usage: { total: 7200 }, trace_latency_ms_p50: 890 },
+          { session_id: "s-004", first_input: "Optimize the CI pipeline build times", num_traces: 9, token_usage: { total: 52300 }, trace_latency_ms_p50: 2150 },
+          { session_id: "s-006", first_input: "Refactor the routing engine to a trait-based design", num_traces: 12, token_usage: { total: 121000 }, trace_latency_ms_p50: 3400 },
+        ],
+      },
+    }],
     [{ method: "GET", path: /^\/api\/flows\?/ }, {
       data: [
         { flow_id: "fl-a1b2c3d4e5f6", title: "Help me deploy the new auth service to production", root_agent_name: "devops-agent", status: "completed", total_invocations: 4, duration_ms: 12400, created_at: "2026-06-30T10:00:00Z" },

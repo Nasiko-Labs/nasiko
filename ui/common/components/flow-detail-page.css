@@ -12,6 +12,20 @@
     margin-bottom: var(--space-lg);
   }
 
+  @media (max-width: 760px) {
+    .page-head { flex-wrap: wrap; }
+    /* 5-column desktop strip reflows to a 2-col grid instead of clipping */
+    .kpi-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    .kpi { border-left: none; padding-left: 0; }
+    .kpi:nth-child(2n) {
+      border-left: 1px solid var(--color-border);
+      padding-left: var(--space-md);
+    }
+  }
+
   .page-sub {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);

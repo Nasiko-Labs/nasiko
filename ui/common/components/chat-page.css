@@ -13,7 +13,9 @@ chat-page:not(:defined) {
     padding: 0 var(--space-md);
 
     @media (min-width: 1024px) {
-      height: 100dvh;
+      /* Fill the floating content card exactly (topbar + 16px card margins)
+         so .messages scrolls internally and the composer stays pinned. */
+      height: calc(100dvh - var(--shell-topbar-height) - 2 * var(--s-16));
     }
   }
 

@@ -42,12 +42,12 @@ styles.replaceSync(`@scope (app-user-menu) {
         border-radius: var(--r-10);
         &:hover {
           border-color: transparent;
-          background: light-dark(var(--cream-50), var(--neutral-800));
+          background: var(--bg-input);
           box-shadow: none;
         }
         &:active, &.is-open {
           border-color: var(--border-canvas);
-          background: light-dark(var(--cream-50), var(--neutral-800));
+          background: var(--bg-input);
           box-shadow: none;
         }
         & svg:last-child {
@@ -107,7 +107,9 @@ styles.replaceSync(`@scope (app-user-menu) {
       color: var(--color-text-muted);
     }
     .user-dropdown {
-      position: absolute;
+      /* Hosts inside overflow-clipped chrome (the rail) switch this to fixed
+         and position against the viewport via the vars below. */
+      position: var(--user-dropdown-position, absolute);
       top: var(--user-dropdown-top, calc(100% + var(--space-xs)));
       bottom: var(--user-dropdown-bottom, unset);
       right: var(--user-dropdown-right, 0);

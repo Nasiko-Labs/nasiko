@@ -75,7 +75,7 @@ mcp-page:not(:defined) {
     font-weight: 600;
     cursor: pointer;
 
-    &:hover { background: light-dark(var(--cream-50), var(--neutral-800)); }
+    &:hover { background: var(--bg-input); }
     & svg { width: 14px; height: 14px; }
   }
 
@@ -91,7 +91,7 @@ mcp-page:not(:defined) {
     font-weight: 500;
     cursor: pointer;
 
-    &:hover { background: light-dark(var(--cream-50), var(--neutral-800)); color: var(--color-text-main); }
+    &:hover { background: var(--bg-input); color: var(--color-text-main); }
     &.danger:hover { color: var(--fg-error); }
     & svg { width: 14px; height: 14px; }
   }
@@ -132,7 +132,7 @@ mcp-page:not(:defined) {
     font-weight: 600;
     font-size: var(--font-size-sm);
     color: var(--color-text-main);
-    background: light-dark(var(--cream-50), var(--neutral-800));
+    background: var(--bg-input);
     border-bottom: 1px solid var(--color-border);
     padding: var(--space-sm) var(--space-md);
     white-space: nowrap;
@@ -148,7 +148,7 @@ mcp-page:not(:defined) {
   tbody tr:last-child td { border-bottom: none; }
   tbody tr.connector-row { cursor: pointer; }
   tbody tr.connector-row:hover,
-  #uploads-tbody tr:hover { background: light-dark(var(--cream-50), var(--neutral-800)); }
+  #uploads-tbody tr:hover { background: var(--bg-input); }
 
   .th-actions { width: 80px; }
 
@@ -273,7 +273,7 @@ mcp-page:not(:defined) {
     align-items: center;
     justify-content: space-between;
     padding: var(--space-xs) var(--space-md);
-    background: light-dark(var(--cream-50), var(--neutral-800));
+    background: var(--bg-input);
     border-bottom: 1px solid var(--color-border);
   }
 
@@ -313,7 +313,7 @@ mcp-page:not(:defined) {
     gap: var(--space-sm);
     padding: var(--space-md);
     border-bottom: 1px solid var(--color-border);
-    background: light-dark(var(--cream-50), var(--neutral-800));
+    background: var(--bg-input);
 
     & label { font-size: var(--font-size-sm); font-weight: 600; }
     & auto-complete {
@@ -345,7 +345,7 @@ mcp-page:not(:defined) {
     & thead th { border-top: none; }
     & .tools-row > td {
       padding: 0;
-      background: light-dark(var(--cream-50), var(--neutral-800));
+      background: var(--bg-input);
     }
   }
 
@@ -464,7 +464,7 @@ mcp-page:not(:defined) {
       width: 100%;
       border: none;
       border-radius: var(--r-8);
-      background: light-dark(var(--sand-50), var(--neutral-800));
+      background: var(--bg-input);
       color: var(--color-text-main);
       font-size: var(--font-size-sm);
       font-family: inherit;
@@ -479,6 +479,24 @@ mcp-page:not(:defined) {
     & input, & select {
       height: var(--control-h-lg);
       padding: 0 var(--s-12);
+    }
+    & input[type="file"] {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+    }
+    & input[type="file"]::file-selector-button {
+      height: var(--control-h-sm);
+      margin-right: var(--s-12);
+      padding: 0 var(--s-12);
+      border: none;
+      border-radius: var(--r-6);
+      background: light-dark(var(--sand-800), var(--neutral-100));
+      color: light-dark(var(--white), var(--neutral-900));
+      font-family: inherit;
+      font-size: var(--font-size-xs);
+      font-weight: 500;
+      cursor: pointer;
     }
     & textarea {
       resize: vertical;
@@ -510,7 +528,7 @@ mcp-page:not(:defined) {
     font-size: var(--font-size-xs);
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--r-8);
-    background: light-dark(var(--cream-50), var(--neutral-800));
+    background: var(--bg-input);
     color: var(--color-text-muted);
 
     & svg { width: 14px; height: 14px; flex-shrink: 0; align-self: center; }
@@ -583,7 +601,7 @@ mcp-page:not(:defined) {
     font-size: var(--font-size-sm);
 
     &:last-child { border-bottom: none; }
-    &:nth-child(odd) { background: light-dark(var(--cream-50), var(--neutral-800)); }
+    &:nth-child(odd) { background: var(--bg-input); }
   }
 
   .meta-label {
@@ -633,7 +651,7 @@ mcp-page:not(:defined) {
       padding: 0 var(--s-12);
       border: none;
       border-radius: var(--r-8);
-      background: light-dark(var(--sand-50), var(--neutral-800));
+      background: var(--bg-input);
       color: var(--color-text-main);
       font-size: var(--font-size-sm);
       font-family: inherit;

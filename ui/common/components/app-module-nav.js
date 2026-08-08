@@ -100,7 +100,7 @@ app-module-nav:not(:defined) { display: block; }
     color: var(--fg-secondary);
     transition: background var(--transition-fast), color var(--transition-fast);
   }
-  .row:hover { background: light-dark(var(--sand-50), var(--neutral-800)); }
+  .row:hover { background: var(--bg-input); }
   .row:focus-visible {
     outline: 2px solid var(--fg-brand);
     outline-offset: -2px;
@@ -152,7 +152,7 @@ app-module-nav:not(:defined) { display: block; }
   .skel-row {
     height: var(--control-h-sm);
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-50), var(--neutral-800));
+    background: var(--bg-input);
     animation: amn-pulse 1.4s ease-in-out infinite;
   }
   .skel-row.is-head { width: 70%; }
