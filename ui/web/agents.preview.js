@@ -15,6 +15,7 @@ export default {
     ["GET /api/settings", { catalog_tabs: null }],
   ],
   scenarios: {
+    "mobile-menu": async (page) => { await page.evaluate(() => document.querySelector("[data-mobile-menu]")?.click()); await new Promise(r => setTimeout(r, 400)); },
     // Avatar menu with the Light/Dark/System theme switch (System default).
     "user-menu": async (page) => {
       await page.waitForSelector(".card-name");

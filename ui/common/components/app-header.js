@@ -137,6 +137,15 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     gap: var(--s-12);
   }
 
+  /* Small screens: drop the history cluster, let search flex, keep menu */
+  @media (max-width: 1023.98px) {
+    .nav-cluster { display: none; }
+    .search-field { width: auto; flex: 1; min-width: 0; }
+    .search-field .kbd-hint { display: none; }
+    .topbar-spacer { display: none; }
+    .topbar-right a.chrome-btn.is-labeled { display: none; }
+  }
+
   /* ── Rail ───────────────────────────────────────────────────────────── */
   .rail {
     display: none;
