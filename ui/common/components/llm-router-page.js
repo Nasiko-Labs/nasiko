@@ -1,4 +1,5 @@
 /**
+import '/common/components/app-skeleton.js';
  * LLM router — routing configs (per-reasoning-tier model presets) and the
  * provider/model catalog.
  *
@@ -42,7 +43,12 @@ class LlmRouterPage extends HTMLElement {
   }
 
   async #load() {
-    this.innerHTML = `${this.#headHtml()}<p class="group-sub">Loading…</p>`;
+    this.innerHTML = `${this.#headHtml()}
+      <div style="display:grid;gap:var(--space-md)" aria-busy="true">
+        <app-skeleton height="72px" radius="md"></app-skeleton>
+        <app-skeleton height="72px" radius="md"></app-skeleton>
+        <app-skeleton height="72px" radius="md"></app-skeleton>
+      </div>`;
     try {
       const [configs, providers, secrets] = await Promise.all([
         window.fetchLlmConfigs(),

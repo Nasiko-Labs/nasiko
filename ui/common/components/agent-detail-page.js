@@ -1,16 +1,18 @@
 import { icons } from '/common/utils/icons.js';
 import { fetchApi } from '/common/services/api.js';
 import { connectSSE } from '/common/services/sse.js';
+import '/common/components/agent-llm-config.js';
 import { ansiToHtml } from '/common/utils/ansi.js';
 import styles from './agent-detail-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
-  { key: 'skills',   label: 'Skills'   },
-  { key: 'logs',     label: 'Logs'     },
-  { key: 'metrics',  label: 'Metrics'  },
-  { key: 'flows',    label: 'Flows'    },
+  { key: 'skills',   label: 'Skills'    },
+  { key: 'llm',      label: 'LLM Config' },
+  { key: 'logs',     label: 'Logs'      },
+  { key: 'metrics',  label: 'Metrics'   },
+  { key: 'flows',    label: 'Flows'     },
 ];
 
 const LEVEL_COLORS = { INFO: '#6366f1', WARN: '#f59e0b', ERROR: '#ef4444', DEBUG: '#9ca3af' };
@@ -92,6 +94,8 @@ class AgentDetailPage extends HTMLElement {
         </div>
       </div>
 
+      <div class="panel" data-panel="llm" id="llm-panel"></div>
+
       <div class="panel" data-panel="logs">
         <div class="log-toolbar">
           <input type="text"   id="log-search"  placeholder="Search messages…">
@@ -104,8 +108,8 @@ class AgentDetailPage extends HTMLElement {
           </button>
           <button class="action-btn" id="log-refresh-btn">Refresh</button>
         </div>
-        <div class="log-viewer" id="log-viewer">
-          <span style="color:var(--color-text-muted);">Loading…</span>
+        <div class="log-viewer" id="log-viewer" aria-busy="true">
+          <app-skeleton lines="3"></app-skeleton>
         </div>
       </div>
 
@@ -126,6 +130,7 @@ class AgentDetailPage extends HTMLElement {
       tab.classList.add('is-active');
       this.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add('is-active');
       if (tab.dataset.tab === 'logs')    this.#initLogs();
+      if (tab.dataset.tab === 'llm')     this.#loadLlmConfig();
       if (tab.dataset.tab === 'metrics') this.#loadMetrics();
     });
 
@@ -156,6 +161,16 @@ class AgentDetailPage extends HTMLElement {
     followBtn.addEventListener('click', () => this.#toggleFollow());
   }
 
+  // Lazy-mount the config component on first open (it self-loads via the API), so the
+  // owner-only GET isn't fired for users who never open the tab.
+  #loadLlmConfig() {
+    const panel = this.querySelector('#llm-panel');
+    if (panel.querySelector('agent-llm-config')) return;
+    const el = document.createElement('agent-llm-config');
+    el.setAttribute('agent-id', this.#agentId);
+    panel.appendChild(el);
+  }
+
   async #loadLogs() {
     const viewer = this.querySelector('#log-viewer');
     if (!viewer) return;
@@ -167,7 +182,7 @@ class AgentDetailPage extends HTMLElement {
     if (search) params.set('search', search);
     if (level)  params.set('level',  level);
 
-    viewer.innerHTML = '<span style="color:var(--color-text-muted);">Loading…</span>';
+    viewer.innerHTML = '<app-skeleton lines="3"></app-skeleton>';
 
     try {
       const logs = await fetchApi(`/observability/agents/${this.#agentId}/logs?${params}`);

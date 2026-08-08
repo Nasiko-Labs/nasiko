@@ -29,6 +29,10 @@ tokenops-page:not(:defined) {
     margin-bottom: var(--space-lg);
   }
 
+  @media (max-width: 760px) {
+    .page-head { flex-direction: column; }
+  }
+
   .page-sub {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
@@ -89,6 +93,19 @@ tokenops-page:not(:defined) {
     min-width: 0;
 
     &:first-child { border-left: none; padding-left: 0; }
+  }
+
+  /* Mobile: 2×2 stat grid — hairline only between the two columns */
+  @media (max-width: 760px) {
+    .kpi-strip {
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-lg) 0;
+    }
+    .kpi { border-left: none; padding-left: 0; }
+    .kpi:nth-child(2n) {
+      border-left: 1px solid var(--color-border);
+      padding-left: var(--space-lg);
+    }
   }
 
   .kpi-label {

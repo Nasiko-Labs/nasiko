@@ -1,4 +1,5 @@
 import { fetchApi } from '/common/services/api.js';
+import '/common/components/app-skeleton.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
 
@@ -57,7 +58,7 @@ class AgentLlmConfig extends HTMLElement {
       this.innerHTML = '<p class="msg error">No agent ID.</p>';
       return;
     }
-    this.innerHTML = '<p class="msg">Loading config…</p>';
+    this.innerHTML = '<app-skeleton lines="3"></app-skeleton>';
     this.#load();
   }
 

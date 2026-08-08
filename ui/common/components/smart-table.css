@@ -46,6 +46,7 @@
     .scroll {
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
       border: 1px solid var(--color-border);
       border-radius: var(--radius-md);
     }

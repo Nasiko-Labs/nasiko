@@ -1,4 +1,5 @@
 /**
+import '/common/components/app-skeleton.js';
  * Observability session detail — three panes: chat history, trace/span tree,
  * span detail (info/attributes with input/output messages).
  *
@@ -36,11 +37,11 @@ class ObservabilitySessionPage extends HTMLElement {
       <div class="panes">
         <section class="pane" id="chat-pane" aria-label="Chat history">
           <h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">${icons.chevronLeft('', 14)}</button></h2>
-          <div class="pane-empty">Loading…</div>
+          <div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div>
         </section>
         <section class="pane" id="traces-pane" aria-label="Traces">
           <h2 class="pane-title">Traces</h2>
-          <div class="pane-empty">Loading…</div>
+          <div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div>
         </section>
         <section class="pane" id="detail-pane" aria-label="Span detail">
           <div class="pane-empty">Select a span to see its details</div>
@@ -166,7 +167,7 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#selected = { traceId, spanId };
     this.#markSelected();
     const pane = this.querySelector('#detail-pane');
-    pane.innerHTML = '<div class="pane-empty">Loading span…</div>';
+    pane.innerHTML = '<div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div>';
     let resp;
     try {
       resp = await window.fetchSpanDetail(traceId, spanId);

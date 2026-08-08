@@ -105,6 +105,11 @@ setup-cli-page:not(:defined) {
     flex-direction: column;
     gap: var(--space-lg);
     flex: 1;
+    animation: panel-in var(--transition-base);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .step-panel.is-active { animation: none; }
   }
 
   .step-intro {

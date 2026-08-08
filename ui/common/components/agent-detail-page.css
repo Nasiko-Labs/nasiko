@@ -57,7 +57,11 @@
   .tab:hover { color: var(--color-text-main); }
   .tab.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
   .panel { display: none; }
-  .panel.is-active { display: block; }
+  .panel.is-active { display: block; animation: panel-in var(--transition-base); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .panel.is-active { animation: none; }
+  }
   .info-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

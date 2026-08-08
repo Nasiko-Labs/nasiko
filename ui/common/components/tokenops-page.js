@@ -1,4 +1,5 @@
 /**
+import '/common/components/app-skeleton.js';
  * TokenOps dashboard — token-first cost/usage analytics per agent.
  *
  * @element tokenops-page
@@ -76,7 +77,7 @@ class TokenopsPage extends HTMLElement {
             <tr>${COLUMNS.map((c) => `<th${c.num ? ' class="is-num"' : ''}>${c.label}</th>`).join('')}</tr>
           </thead>
           <tbody id="cost-tbody">
-            <tr class="empty-row"><td colspan="${COLUMNS.length}">Loading…</td></tr>
+            ${Array.from({ length: 3 }, () => `<tr class="skel-row" aria-hidden="true">${COLUMNS.map(() => '<td><app-skeleton height="0.9rem"></app-skeleton></td>').join('')}</tr>`).join('')}
           </tbody>
         </table>
       </div>
