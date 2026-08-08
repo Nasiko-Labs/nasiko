@@ -3,17 +3,11 @@ import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
 import '/common/components/app-modal.js';
-import '/common/components/app-badge.js';
 import '/common/components/app-button.js';
 import '/common/components/app-empty-state.js';
 
 import styles from './users-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
-
-const AVATAR_COLORS = [
-  '#3b6fd4', '#059669', '#d97706', '#7c3aed',
-  '#dc2626', '#0891b2', '#4f46e5', '#be185d',
-];
 
 // Server user_role enum — values must match exactly or POST/PUT /users 500s.
 const ROLE_LABELS = {
@@ -27,20 +21,6 @@ const ROLE_LABELS = {
 function roleLabel(role) {
   if (!role) return 'Member';
   return ROLE_LABELS[role] || role;
-}
-
-function avatarColor(name) {
-  let hash = 0;
-  const str = name || '';
-  for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
-
-function avatarLetter(name) {
-  if (!name) return '?';
-  return name.charAt(0).toUpperCase();
 }
 
 function relativeTime(dateStr) {
@@ -122,10 +102,13 @@ class UsersPage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
-      <div class="users-header">
-        <span class="users-header-stats" id="users-stats"></span>
-        <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 16)} Sync Azure AD Directory</app-button>
-        <app-button variant="primary" size="sm" id="btn-add-user">${icons.plus('', 16)} Add User</app-button>
+      <div class="page-head">
+        <h1 class="title-page">Users</h1>
+        <span class="count-chips" id="users-stats"></span>
+        <div class="head-actions">
+          <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 16)} Sync Azure AD Directory</app-button>
+          <app-button variant="primary" size="sm" id="btn-add-user">${icons.plus('', 16)} Create user</app-button>
+        </div>
       </div>
 
       <div class="filters-bar">
@@ -265,10 +248,9 @@ class UsersPage extends HTMLElement {
     table.columns = [
       { key: 'display_name', label: 'User', width: '24%', render: (v, row) => {
         const name = v || row.username;
-        const color = avatarColor(name);
-        const letter = avatarLetter(name);
+        const initials = name.split(/\s+/).map((p) => p[0]).slice(0, 2).join('');
         return `<div class="user-cell">
-          <span class="user-avatar" style="background:${color}">${letter}</span>
+          <span class="user-avatar">${this.#esc(initials)}</span>
           <span>
             <span class="user-name">${this.#esc(name)}</span><br>
             <span class="user-email">${this.#esc(row.email)}</span>
@@ -276,18 +258,17 @@ class UsersPage extends HTMLElement {
         </div>`;
       }},
       { key: 'role', label: 'Role', width: '10%', render: (v, row) => {
-        if (row.is_superuser) return '<app-badge variant="warning">superuser</app-badge>';
+        if (row.is_superuser) return '<span class="badge badge--warning">superuser</span>';
         const variant = v === 'admin' ? 'info'
           : (v === 'department_manager' || v === 'team_lead') ? 'success'
           : 'neutral';
-        return `<app-badge variant="${variant}">${this.#esc(roleLabel(v))}</app-badge>`;
+        return `<span class="badge badge--${variant}">${this.#esc(roleLabel(v))}</span>`;
       }},
       { key: 'department_team', label: 'Department / Team', width: '14%', render: (_, row) => this.#placementLabel(row) },
-      { key: 'is_active', label: 'Status', width: '9%', render: (v) => {
-        const cls = v ? 'is-active' : 'is-disabled';
-        const label = v ? 'Active' : 'Disabled';
-        return `<span class="status-cell"><span class="status-dot ${cls}"></span>${label}</span>`;
-      }},
+      { key: 'is_active', label: 'Status', width: '9%', render: (v) =>
+        v ? '<span class="badge badge--success">Active</span>'
+          : '<span class="badge badge--muted">Disabled</span>'
+      },
       { key: 'last_login', label: 'Last Active', width: '12%', render: (v) =>
         `<span title="${v || 'Never'}">${relativeTime(v)}</span>`
       },
@@ -587,7 +568,8 @@ class UsersPage extends HTMLElement {
     if (!el) return;
     if (window.fetchUserStats) {
       window.fetchUserStats().then(stats => {
-        el.innerHTML = `<span class="count">${stats.admins}</span> admins, <span class="count">${stats.total}</span> users`;
+        el.innerHTML = `<span class="count-chip"><b>${stats.admins}</b> admins</span>`
+          + `<span class="count-chip"><b>${stats.total}</b> users</span>`;
       }).catch(() => {});
     }
   }

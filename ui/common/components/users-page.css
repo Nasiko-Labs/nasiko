@@ -1,3 +1,5 @@
+/* NightOwl "Access Manager" table language: title row with count chips +
+   actions, sand-banded table, avatar chips, status pills, flat sand inputs. */
 @scope (users-page) {
   :scope { display: block; }
 
@@ -5,23 +7,51 @@
     padding: var(--space-xl) var(--space-md);
   }
 
-  .users-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--space-lg);
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-  }
-  .users-header-stats {
-    font-size: var(--font-size-sm);
+  .muted {
     color: var(--color-text-muted);
-  }
-  .users-header-stats .count {
-    font-weight: 600;
-    color: var(--color-text-main);
+    font-style: italic;
   }
 
+  /* ── Title row ─────────────────────────────────────────────────────── */
+  .page-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-lg);
+  }
+  .count-chips {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    flex-wrap: wrap;
+  }
+  .count-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-40);
+    background: var(--bg-surface);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+  .count-chip b {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin-left: auto;
+  }
+
+  /* ── Filters — flat sand wells ─────────────────────────────────────── */
   .filters-bar {
     display: flex;
     align-items: center;
@@ -30,32 +60,51 @@
     flex-wrap: wrap;
   }
   select.filter-select {
-    padding: var(--space-xs) var(--space-sm);
+    padding: 0 var(--s-12);
     padding-right: 28px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
     color: var(--color-text-main);
-    font-size: var(--font-size-sm);
+    font-size: 13px;
+    font-weight: 500;
     font-family: inherit;
     appearance: none;
     -webkit-appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 8px center;
-    min-height: 36px;
+    min-height: var(--control-h-md);
     min-width: 140px;
     max-width: 200px;
     cursor: pointer;
 
     &:hover {
-      border-color: var(--color-primary);
+      background-color: var(--bg-surface-hover);
     }
     &:focus {
       outline: none;
       border-color: var(--color-primary);
       box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
+  }
+
+  /* ── Table language: sand header band, hairline rows ───────────────── */
+  smart-table .scroll {
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+  }
+  smart-table .thead { background: var(--sand-100); }
+  smart-table .th {
+    border-bottom: none;
+    color: var(--sand-700);
+  }
+  smart-table .th:hover { background: var(--sand-200); }
+  smart-table .td { border-bottom: 1px solid var(--sand-100); }
+  smart-table input.search {
+    background: var(--bg-input);
+    border-color: transparent;
   }
 
   .user-cell {
@@ -67,13 +116,15 @@
   .user-avatar {
     width: 30px;
     height: 30px;
-    border-radius: 50%;
+    border-radius: var(--r-8);
     display: flex;
     align-items: center;
     justify-content: center;
+    background: var(--bg-surface);
+    color: var(--color-text-main);
+    font-family: var(--font-display);
     font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: #fff;
+    font-weight: 500;
     flex-shrink: 0;
     text-transform: uppercase;
     line-height: 1;
@@ -89,27 +140,7 @@
     line-height: 1.3;
   }
 
-  .status-cell {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    font-size: var(--font-size-sm);
-  }
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .status-dot.is-active {
-    background: var(--color-success);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 20%, transparent);
-  }
-  .status-dot.is-disabled {
-    background: var(--color-text-muted);
-    opacity: 0.6;
-  }
-
+  /* ── Modal forms — flat sand input wells ───────────────────────────── */
   .modal-form { display: flex; flex-direction: column; gap: var(--space-sm); }
   .field { display: flex; flex-direction: column; gap: 3px; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm); }
@@ -123,15 +154,15 @@
   .modal-form input, .modal-form select {
     width: 100%;
     padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;
     appearance: none;
     -webkit-appearance: none;
-    min-height: 36px;
+    min-height: var(--control-h-lg);
   }
   .modal-form select {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
@@ -153,10 +184,9 @@
     justify-content: space-between;
     gap: var(--space-xs);
     padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-base);
-    min-height: 36px;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
+    min-height: var(--control-h-lg);
   }
   .cred-value code {
     font-family: var(--font-mono);
@@ -176,7 +206,7 @@
     border: none;
     cursor: pointer;
     padding: var(--space-xs);
-    border-radius: var(--radius-sm);
+    border-radius: var(--r-4);
     color: var(--color-text-muted);
     min-width: 28px;
     min-height: 28px;
@@ -184,7 +214,7 @@
     align-items: center;
     justify-content: center;
 
-    &:hover { background: color-mix(in srgb, var(--color-text-muted) 10%, transparent); color: var(--color-text-main); }
+    &:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
     &:focus-visible { box-shadow: 0 0 0 2px var(--color-primary-ring); outline: none; }
   }
   .action-btn--danger {
@@ -195,4 +225,10 @@
     color: var(--color-warning);
     &:hover { background: color-mix(in srgb, var(--color-warning) 10%, transparent); color: var(--color-warning); }
   }
+}
+
+/* Upgrade contract — reserve head + filters + table footprint */
+users-page:not(:defined) {
+  display: block;
+  min-height: 560px;
 }

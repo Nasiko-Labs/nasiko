@@ -1,13 +1,45 @@
+/* NightOwl "Access Manager" table language. */
 @scope (departments-page) {
   :scope {
     display: block;
   }
 
-  .page-header {
+  .page-head {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    margin-bottom: var(--space-md);
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-lg);
+  }
+  .count-chips {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    flex-wrap: wrap;
+  }
+  .count-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-40);
+    background: var(--bg-surface);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+  .count-chip b {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin-left: auto;
   }
 
   .warning-banner {
@@ -17,8 +49,7 @@
     width: 100%;
     padding: var(--space-sm) var(--space-md);
     background: var(--color-warning-bg);
-    border: 1px solid var(--color-warning-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-8);
     margin-bottom: var(--space-md);
     font-size: var(--font-size-sm);
     color: var(--color-text-main);
@@ -30,16 +61,49 @@
     color: var(--color-warning);
   }
 
-  .dept-stats {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
-    margin-bottom: var(--space-md);
+  /* Table language: sand header band, hairline rows */
+  smart-table .scroll {
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
   }
-  .dept-stats .count {
-    font-weight: 600;
+  smart-table .thead { background: var(--sand-100); }
+  smart-table .th {
+    border-bottom: none;
+    color: var(--sand-700);
+  }
+  smart-table .th:hover { background: var(--sand-200); }
+  smart-table .td { border-bottom: 1px solid var(--sand-100); }
+  smart-table input.search {
+    background: var(--bg-input);
+    border-color: transparent;
+  }
+
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-4);
+    background: var(--bg-surface);
+    font-family: var(--font-display);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
     color: var(--color-text-main);
   }
 
+  .cell-warn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    color: var(--color-error);
+    font-size: var(--font-size-sm);
+  }
+  .cell-warn svg { flex-shrink: 0; }
+
+  /* Modal form — flat sand input wells */
   .modal-form {
     display: flex;
     flex-direction: column;
@@ -60,13 +124,13 @@
   .modal-form input, .modal-form textarea {
     width: 100%;
     padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;
-    min-height: 36px;
+    min-height: var(--control-h-lg);
 
     &:focus {
       outline: none;
@@ -93,4 +157,10 @@
     color: var(--color-text-muted);
     font-style: italic;
   }
+}
+
+/* Upgrade contract — reserve head + table footprint */
+departments-page:not(:defined) {
+  display: block;
+  min-height: 480px;
 }

@@ -2,7 +2,6 @@ import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
-import '/common/components/app-badge.js';
 
 import styles from './group-mappings-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -68,7 +67,7 @@ class GroupMappingsPage extends HTMLElement {
     const table = this.querySelector('#mappings-table');
     table.columns = [
       { key: 'external_group_id', label: 'Entra Group Object ID', width: '28%', render: (v) => `<code>${this.#esc(v)}</code>` },
-      { key: 'role', label: 'Role', width: '14%', render: (v) => v ? `<app-badge variant="info">${this.#esc(v)}</app-badge>` : '<span class="muted">--</span>' },
+      { key: 'role', label: 'Role', width: '14%', render: (v) => v ? `<span class="badge badge--info">${this.#esc(v)}</span>` : '<span class="muted">--</span>' },
       { key: 'department_id', label: 'Department', width: '16%', render: (v) => this.#deptName(v) },
       { key: 'team_id', label: 'Team', width: '16%', render: (v) => this.#teamName(v) },
       { key: 'description', label: 'Description', width: '16%', render: (v) => v ? this.#esc(v) : '<span class="muted">--</span>' },
@@ -114,13 +113,13 @@ class GroupMappingsPage extends HTMLElement {
   #deptName(id) {
     if (!id) return '<span class="muted">--</span>';
     const d = this.#departments.find((x) => x.id === id);
-    return this.#esc(d ? d.name : id);
+    return d ? `<span class="tag-chip">${this.#esc(d.name)}</span>` : this.#esc(id);
   }
 
   #teamName(id) {
     if (!id) return '<span class="muted">--</span>';
     const t = this.#teams.find((x) => x.id === id);
-    return this.#esc(t ? t.name : id);
+    return t ? `<span class="tag-chip">${this.#esc(t.name)}</span>` : this.#esc(id);
   }
 
   #resetForm() {

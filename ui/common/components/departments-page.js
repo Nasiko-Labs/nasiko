@@ -3,7 +3,6 @@ import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
-import '/common/components/app-badge.js';
 
 import styles from './departments-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -16,15 +15,17 @@ class DepartmentsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <div class="page-head">
+        <h1 class="title-page">Departments</h1>
+        <span class="count-chips" id="dept-stats"></span>
+        <div class="head-actions">
+          <app-button variant="primary" size="sm" id="btn-create">${icons.plus('', 14)} Create department</app-button>
+        </div>
+      </div>
       <div class="warning-banner" id="warning-banner" hidden>
         ${icons.info('', 18)}
         <span id="warning-text"></span>
       </div>
-      <div class="page-header">
-        <span></span>
-        <app-button variant="primary" size="sm" id="btn-create">${icons.plus('', 14)} Create Department</app-button>
-      </div>
-      <div class="dept-stats" id="dept-stats"></div>
       <smart-table id="dept-table" data-fn="fetchDepartments" search search-placeholder="Search departments..." limit="20"></smart-table>
 
       <app-modal id="create-modal" heading="Create Department">
@@ -46,12 +47,25 @@ class DepartmentsPage extends HTMLElement {
     `;
 
     const table = this.querySelector('#dept-table');
+    const warnCell = (label) =>
+      `<span class="cell-warn">${icons.info('', 14)} ${label}</span>`;
+    const deptStatus = (row) => {
+      const teams = row.teams_count ?? 0;
+      if (!teams) return '<span class="badge badge--warning">Needs setup</span>';
+      if (!row.manager) return '<span class="badge badge--error">Needs attention</span>';
+      return '<span class="badge badge--success">Fully configured</span>';
+    };
     table.columns = [
-      { key: 'name', label: 'Name', width: '25%', render: (v) => `<span class="name-cell">${this.#esc(v)}</span>` },
-      { key: 'manager', label: 'Manager', width: '20%', render: (v) => v ? this.#esc(v) : '<span class="muted">--</span>' },
-      { key: 'teams_count', label: 'Teams', width: '12%', render: (v) => String(v ?? 0) },
-      { key: 'members_count', label: 'Members', width: '12%', render: (v) => String(v ?? 0) },
-      { key: 'agents_count', label: 'Agents', width: '12%', render: (v) => String(v ?? 0) },
+      { key: 'name', label: 'Name', width: '22%', render: (v) => `<span class="name-cell">${this.#esc(v)}</span>` },
+      { key: 'manager', label: 'Manager', width: '20%', render: (v) =>
+        v ? this.#esc(v) : warnCell('No manager assigned') },
+      { key: 'teams_count', label: 'Teams', width: '14%', render: (v) =>
+        (v ?? 0) > 0
+          ? `<span class="tag-chip">${v} team${v === 1 ? '' : 's'}</span>`
+          : warnCell('No teams') },
+      { key: 'members_count', label: 'Members', width: '13%', render: (v) => String(v ?? 0) },
+      { key: 'agents_count', label: 'Agents', width: '13%', render: (v) => String(v ?? 0) },
+      { key: 'status', label: 'Status', width: '18%', render: (_, row) => deptStatus(row) },
     ];
 
     const modal = this.querySelector('#create-modal');
@@ -114,7 +128,8 @@ class DepartmentsPage extends HTMLElement {
         banner.hidden = true;
       }
 
-      statsEl.innerHTML = `<span class="count">${stats.total}</span> department${stats.total !== 1 ? 's' : ''}, <span class="count">${stats.without_manager}</span> without manager`;
+      statsEl.innerHTML = `<span class="count-chip"><b>${stats.total}</b> department${stats.total !== 1 ? 's' : ''}</span>`
+        + `<span class="count-chip"><b>${stats.without_manager}</b> without manager</span>`;
     } catch {
       // Stats are non-critical; table still works without them
     }

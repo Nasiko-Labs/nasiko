@@ -16,9 +16,12 @@ class TeamsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <div class="teams-stats" id="teams-stats"></div>
-      <div class="actions-bar">
-        <app-button variant="primary" size="sm" id="btn-create-team">${icons.plus('', 16)} Create Team</app-button>
+      <div class="page-head">
+        <h1 class="title-page">Teams</h1>
+        <span class="count-chips" id="teams-stats"></span>
+        <div class="head-actions">
+          <app-button variant="primary" size="sm" id="btn-create-team">${icons.plus('', 16)} Create team</app-button>
+        </div>
       </div>
       <smart-table id="teams-table" data-fn="fetchTeams" search search-placeholder="Search teams..." limit="20"></smart-table>
 
@@ -52,18 +55,23 @@ class TeamsPage extends HTMLElement {
     try {
       const stats = await window.fetchTeamStats();
       if (!stats) return;
-      el.innerHTML = `<span class="count">${stats.total}</span> team${stats.total !== 1 ? 's' : ''}, <span class="count">${stats.empty_teams}</span> without members`;
+      el.innerHTML = `<span class="count-chip"><b>${stats.total}</b> team${stats.total !== 1 ? 's' : ''}</span>`
+        + `<span class="count-chip"><b>${stats.empty_teams}</b> without members</span>`;
     } catch {
       el.innerHTML = '';
     }
   }
 
   #setupTable() {
+    const warnCell = (label) =>
+      `<span class="cell-warn">${icons.info('', 14)} ${label}</span>`;
     const table = this.querySelector('#teams-table');
     table.columns = [
       { key: 'name', label: 'Name', width: '30%', render: (v) => `<strong>${v || ''}</strong>` },
-      { key: 'department', label: 'Department', width: '25%', render: (v) => v ? v : '--' },
-      { key: 'members_count', label: 'Members', width: '20%', render: (v) => v != null ? v : '0' },
+      { key: 'department', label: 'Department', width: '25%', render: (v) =>
+        v ? `<span class="tag-chip">${v}</span>` : '<span class="muted">--</span>' },
+      { key: 'members_count', label: 'Members', width: '20%', render: (v) =>
+        (v ?? 0) > 0 ? String(v) : warnCell('No members') },
       { key: 'agents_count', label: 'Agents', width: '25%', render: (v) => v != null ? v : '0' },
     ];
   }

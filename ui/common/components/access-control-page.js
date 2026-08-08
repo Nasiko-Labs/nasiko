@@ -1,7 +1,6 @@
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-button.js';
-import '/common/components/app-badge.js';
 import '/common/components/app-skeleton.js';
 import '/common/components/app-modal.js';
 import '/common/components/smart-table.js';
@@ -56,12 +55,13 @@ class AccessControlPage extends HTMLElement {
   #setState(state, error) {
     if (state === 'loading') {
       this.innerHTML = `
-        <div class="stats-bar" style="min-height:72px">
-          <app-skeleton lines="1" height="2rem"></app-skeleton>
+        <div class="page-head" style="min-height:var(--control-h-lg)">
+          <app-skeleton lines="1" height="1.75rem" style="flex:1"></app-skeleton>
         </div>
-        <div class="warnings-grid">
-          <app-skeleton lines="2" height="1rem"></app-skeleton>
-          <app-skeleton lines="2" height="1rem"></app-skeleton>
+        <div class="attn-band" style="min-height:88px">
+          <div class="attn-item"><app-skeleton lines="2" height="1rem"></app-skeleton></div>
+          <div class="attn-item"><app-skeleton lines="2" height="1rem"></app-skeleton></div>
+          <div class="attn-item"><app-skeleton lines="2" height="1rem"></app-skeleton></div>
         </div>
         <div class="section">
           <app-skeleton lines="1" height="1.5rem"></app-skeleton>
@@ -100,8 +100,6 @@ class AccessControlPage extends HTMLElement {
   #render() {
     const { stats, warnings, departments, unassigned_users } = this.#data;
 
-    const activeWarnings = (warnings || []).filter(w => w.count > 0);
-
     // Register data functions for smart-table
     window._acpFetchDepartments = async () => ({
       data: departments || [],
@@ -113,36 +111,35 @@ class AccessControlPage extends HTMLElement {
       total: (unassigned_users || []).length,
     });
 
+    const countChip = (value, label) =>
+      `<span class="count-chip"><b>${this.#fmtNum(value)}</b> ${label}</span>`;
+
     this.innerHTML = `
-      <div class="stats-bar">
-        <div class="stat-item">
-          <span class="stat-value">${this.#fmtNum(stats.admins)}</span>
-          <span class="stat-label">Admins</span>
+      <div class="page-head">
+        <h1 class="title-page">Access control</h1>
+        <div class="count-chips">
+          ${countChip(stats.admins, 'admins')}
+          ${countChip(stats.departments, 'departments')}
+          ${countChip(stats.teams, 'teams')}
+          ${countChip(stats.users, 'users')}
+          ${countChip(stats.agents, 'agents')}
         </div>
-        <div class="stat-item">
-          <span class="stat-value">${this.#fmtNum(stats.departments)}</span>
-          <span class="stat-label">Departments</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value">${this.#fmtNum(stats.teams)}</span>
-          <span class="stat-label">Teams</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value">${this.#fmtNum(stats.users)}</span>
-          <span class="stat-label">Users</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value">${this.#fmtNum(stats.agents)}</span>
-          <span class="stat-label">Agents</span>
+        <div class="head-actions">
+          <app-button variant="primary" size="sm" id="btn-create-user">
+            ${icons.plus('', 14)} Create user
+          </app-button>
+          <app-button variant="secondary" size="sm" id="btn-create-team">
+            ${icons.plus('', 14)} Create team
+          </app-button>
         </div>
       </div>
 
-      ${activeWarnings.length > 0 ? `
-      <div class="warnings-grid">
-        ${activeWarnings.map(w => `
-          <div class="warning-card is-${this.#escAttr(w.type)}">
-            <span class="warning-count">${this.#fmtNum(w.count)}</span>
-            <span class="warning-label">${this.#esc(w.label)}</span>
+      ${(warnings || []).length > 0 ? `
+      <div class="attn-band">
+        ${warnings.map(w => `
+          <div class="attn-item${w.count > 0 && w.type !== 'info' ? ' is-alert' : ''}">
+            <span class="attn-label">${this.#esc(w.label)}</span>
+            <span class="attn-value">${this.#fmtNum(w.count)}</span>
           </div>
         `).join('')}
       </div>` : ''}
@@ -150,19 +147,13 @@ class AccessControlPage extends HTMLElement {
       <div class="section">
         <div class="section-header">
           <h2>Departments</h2>
-          <app-button variant="secondary" size="sm" id="btn-create-team">
-            ${icons.plus('', 14)} Create Team
-          </app-button>
         </div>
         <smart-table id="departments-table" data-fn="_acpFetchDepartments" limit="10"></smart-table>
       </div>
 
       <div class="section">
         <div class="section-header">
-          <h2>Unassigned Members</h2>
-          <app-button variant="secondary" size="sm" id="btn-create-user">
-            ${icons.plus('', 14)} Create User
-          </app-button>
+          <h2>Unassigned members</h2>
         </div>
         <smart-table id="unassigned-table" data-fn="_acpFetchUnassigned" limit="10"></smart-table>
       </div>
@@ -187,31 +178,52 @@ class AccessControlPage extends HTMLElement {
     `;
 
     // Configure departments table columns
+    const warnCell = (label) =>
+      `<span class="cell-warn">${icons.info('', 14)} ${label}</span>`;
+    const deptStatus = (row) => {
+      const teams = row.teams_count ?? 0;
+      if (!teams) return '<span class="badge badge--warning">Needs setup</span>';
+      if (!row.manager) return '<span class="badge badge--error">Needs attention</span>';
+      return '<span class="badge badge--success">Fully configured</span>';
+    };
     const deptTable = this.querySelector('#departments-table');
     deptTable.columns = [
-      { key: 'name', label: 'Name', width: '25%' },
-      { key: 'manager', label: 'Manager', width: '20%', render: (v) => v || '—' },
-      { key: 'teams_count', label: 'Teams', width: '15%', render: (v) => String(v ?? 0) },
-      { key: 'members_count', label: 'Members', width: '20%', render: (v) => String(v ?? 0) },
-      { key: 'agents_count', label: 'Agents', width: '20%', render: (v) => String(v ?? 0) },
+      { key: 'name', label: 'Name', width: '22%', render: (v) => `<strong>${this.#esc(v)}</strong>` },
+      { key: 'manager', label: 'Manager', width: '20%', render: (v) =>
+        v ? this.#esc(v) : warnCell('No manager assigned') },
+      { key: 'teams_count', label: 'Teams', width: '14%', render: (v) =>
+        (v ?? 0) > 0
+          ? `<span class="tag-chip">${this.#fmtNum(v)} team${v === 1 ? '' : 's'}</span>`
+          : warnCell('No teams') },
+      { key: 'members_count', label: 'Members', width: '13%', render: (v) => String(v ?? 0) },
+      { key: 'agents_count', label: 'Agents', width: '13%', render: (v) => String(v ?? 0) },
+      { key: 'status', label: 'Status', width: '18%', render: (_, row) => deptStatus(row) },
     ];
 
     // Configure unassigned users table columns
     const unassignedTable = this.querySelector('#unassigned-table');
     unassignedTable.columns = [
-      { key: 'username', label: 'Username', width: '18%' },
-      { key: 'display_name', label: 'Name', width: '18%', render: (v) => v || '—' },
-      { key: 'email', label: 'Email', width: '24%', render: (v) => v || '—' },
-      { key: 'role', label: 'Role', width: '14%', render: (v) => {
-        const variant = v === 'admin' ? 'info' : v === 'deployer' ? 'success' : 'neutral';
-        return `<app-badge variant="${variant}">${v || 'member'}</app-badge>`;
+      { key: 'display_name', label: 'User', width: '26%', render: (v, row) => {
+        const name = v || row.username || '—';
+        const initials = name.split(/\s+/).map((p) => p[0]).slice(0, 2).join('');
+        return `<div class="user-cell">
+          <span class="user-avatar">${this.#esc(initials)}</span>
+          <span>
+            <span class="user-name">${this.#esc(name)}</span><br>
+            <span class="user-email">${this.#esc(row.email || '')}</span>
+          </span>
+        </div>`;
       }},
-      { key: 'created_at', label: 'Created', width: '10%', render: (v) =>
+      { key: 'role', label: 'Role', width: '16%', render: (v) => {
+        const variant = v === 'admin' ? 'info' : v === 'deployer' ? 'success' : 'neutral';
+        return `<span class="badge badge--${variant}">${this.#esc(v || 'member')}</span>`;
+      }},
+      { key: 'created_at', label: 'Created', width: '16%', render: (v) =>
         v ? new Date(v).toLocaleDateString() : '—'
       },
-      { key: 'actions', label: '', width: '4%', render: (_, row) => {
+      { key: 'actions', label: '', width: '12%', render: (_, row) => {
         const esc = (s) => (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        return `<button class="action-btn" data-action="assign" data-id="${esc(row.id)}" data-name="${esc(row.display_name || row.username)}" title="Assign department/team">${icons.folder('', 16)}</button>`;
+        return `<button class="row-action" data-action="assign" data-id="${esc(row.id)}" data-name="${esc(row.display_name || row.username)}" title="Assign department/team">Assign</button>`;
       }},
     ];
 
@@ -278,10 +290,6 @@ class AccessControlPage extends HTMLElement {
     const d = document.createElement('span');
     d.textContent = s || '';
     return d.innerHTML;
-  }
-
-  #escAttr(s) {
-    return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 }
 

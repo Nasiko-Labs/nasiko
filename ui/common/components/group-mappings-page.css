@@ -1,3 +1,4 @@
+/* NightOwl "Access Manager" table language. */
 @scope (group-mappings-page) {
   :scope {
     display: block;
@@ -7,10 +8,48 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: var(--space-sm);
+    gap: var(--s-8);
     margin-bottom: var(--space-md);
   }
 
+  /* Table language: sand header band, hairline rows */
+  smart-table .scroll {
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+  }
+  smart-table .thead { background: var(--sand-100); }
+  smart-table .th {
+    border-bottom: none;
+    color: var(--sand-700);
+  }
+  smart-table .th:hover { background: var(--sand-200); }
+  smart-table .td { border-bottom: 1px solid var(--sand-100); }
+
+  smart-table .td code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    background: var(--bg-surface);
+    padding: 2px var(--s-8);
+    border-radius: var(--r-4);
+  }
+
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-4);
+    background: var(--bg-surface);
+    font-family: var(--font-display);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-text-main);
+  }
+
+  /* Modal form — flat sand input wells */
   .modal-form {
     display: flex;
     flex-direction: column;
@@ -31,21 +70,23 @@
   .modal-form input, .modal-form select {
     width: 100%;
     padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;
-    min-height: 36px;
+    min-height: var(--control-h-lg);
 
     &:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 3px var(--color-primary-ring);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
   .modal-form select {
+    appearance: none;
+    -webkit-appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 10px center;
@@ -74,11 +115,11 @@
     border: none;
     cursor: pointer;
     padding: var(--space-xs);
-    border-radius: var(--radius-sm);
+    border-radius: var(--r-4);
     color: var(--color-text-muted);
 
     &:hover {
-      background: color-mix(in srgb, var(--color-text-main) 8%, transparent);
+      background: var(--bg-surface-hover);
       color: var(--color-text-main);
     }
   }
@@ -86,4 +127,10 @@
     color: var(--color-error);
     &:hover { background: color-mix(in srgb, var(--color-error) 10%, transparent); color: var(--color-error); }
   }
+}
+
+/* Upgrade contract — reserve header + table footprint */
+group-mappings-page:not(:defined) {
+  display: block;
+  min-height: 400px;
 }

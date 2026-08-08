@@ -3,6 +3,20 @@
     display: block;
   }
 
+  /* Table language: sand header band, hairline rows */
+  smart-table .scroll {
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+  }
+  smart-table .thead { background: var(--sand-100); }
+  smart-table .th {
+    border-bottom: none;
+    color: var(--sand-700);
+  }
+  smart-table .th:hover { background: var(--sand-200); }
+  smart-table .td { border-bottom: 1px solid var(--sand-100); }
+
   .muted {
     color: var(--color-text-muted);
     font-style: italic;
@@ -26,11 +40,11 @@
     border: none;
     cursor: pointer;
     padding: var(--space-xs);
-    border-radius: var(--radius-sm);
+    border-radius: var(--r-4);
     color: var(--color-text-muted);
 
     &:hover {
-      background: color-mix(in srgb, var(--color-text-main) 8%, transparent);
+      background: var(--bg-surface-hover);
       color: var(--color-text-main);
     }
   }
@@ -51,8 +65,7 @@
   }
 
   .error-banner {
-    border: 1px solid var(--color-error-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-8);
     background: var(--color-error-bg);
     color: var(--color-error);
     padding: var(--space-sm) var(--space-md);
@@ -76,20 +89,23 @@
     gap: var(--space-sm);
   }
   .summary-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border: none;
+    border-radius: var(--r-8);
     padding: var(--space-sm) var(--space-md);
-    background: var(--color-bg-surface);
+    background: var(--bg-surface);
     min-width: 0;
   }
   .summary-card-label {
     font-size: var(--font-size-xs);
+    font-weight: 500;
     color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
   .summary-card-value {
+    font-family: var(--font-display);
     font-size: var(--font-size-sm);
+    font-weight: 500;
     margin-top: var(--space-xs);
     overflow-wrap: break-word;
   }
@@ -106,8 +122,8 @@
 
   .outputs-list {
     margin: 0;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    border-radius: var(--r-8);
     overflow: hidden;
   }
   .outputs-item {
@@ -116,7 +132,7 @@
     padding: var(--space-xs) var(--space-md);
     font-size: var(--font-size-xs);
 
-    &:not(:last-child) { border-bottom: 1px solid var(--color-border); }
+    &:not(:last-child) { border-bottom: 1px solid var(--sand-200); }
     & dt {
       flex: 0 0 30%;
       color: var(--color-text-muted);
@@ -139,9 +155,10 @@
 
   /* Same terminal styling as build-detail-page's log viewer */
   .log-viewer {
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    background: var(--sand-900);
+    color: var(--sand-50);
+    border: none;
+    border-radius: var(--r-8);
     padding: var(--space-md);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
@@ -151,9 +168,14 @@
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-all;
-    color: var(--color-text-main);
   }
   .log-line { display: block; }
+}
+
+/* Upgrade contract — reserve the clusters-table footprint */
+runtime-page:not(:defined) {
+  display: block;
+  min-height: 400px;
 }
 
 @keyframes runtime-page-pulse {

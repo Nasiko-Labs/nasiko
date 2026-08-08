@@ -1,8 +1,6 @@
-import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
-import '/common/components/app-badge.js';
 
 import styles from './team-access-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -41,7 +39,10 @@ class TeamAccessPage extends HTMLElement {
     const canReassignPlacement = this.#ctx.is_superuser || this.#ctx.role === 'admin' || this.#ctx.role === 'department_manager';
 
     this.innerHTML = `
-      <p class="scope-line">Viewing as <app-badge variant="info">${this.#esc(this.#ctx.role)}</app-badge> — showing users in your ${this.#ctx.role === 'department_manager' ? 'department' : 'team'}.</p>
+      <div class="page-head">
+        <h1 class="title-page">Team access</h1>
+        <span class="scope-line">Viewing as <span class="badge badge--info">${this.#esc(this.#ctx.role)}</span> — showing users in your ${this.#ctx.role === 'department_manager' ? 'department' : 'team'}.</span>
+      </div>
       <smart-table id="org-users-table" data-fn="fetchOrgUsers" search search-placeholder="Search..." limit="20"></smart-table>
 
       <app-modal id="edit-modal" heading="Edit Access">
@@ -91,16 +92,25 @@ class TeamAccessPage extends HTMLElement {
     table.columns = [
       { key: 'display_name', label: 'User', width: '30%', render: (v, row) => {
         const name = v || row.username;
-        return `<span>${this.#esc(name)}<br><span class="muted">${this.#esc(row.email)}</span></span>`;
+        const initials = (name || '?').split(/\s+/).map((p) => p[0]).slice(0, 2).join('');
+        return `<div class="user-cell">
+          <span class="user-avatar">${this.#esc(initials)}</span>
+          <span>
+            <span class="user-name">${this.#esc(name)}</span><br>
+            <span class="user-email">${this.#esc(row.email)}</span>
+          </span>
+        </div>`;
       }},
-      { key: 'role', label: 'Role', width: '18%', render: (v) => `<app-badge variant="neutral">${this.#esc(v || 'member')}</app-badge>` },
+      { key: 'role', label: 'Role', width: '18%', render: (v) => `<span class="badge badge--neutral">${this.#esc(v || 'member')}</span>` },
       { key: 'team_id', label: 'Team', width: '20%', render: (v) => this.#teamName(v) },
-      { key: 'is_active', label: 'Status', width: '12%', render: (v) => v ? 'Active' : 'Disabled' },
+      { key: 'is_active', label: 'Status', width: '12%', render: (v) =>
+        v ? '<span class="badge badge--success">Active</span>'
+          : '<span class="badge badge--muted">Disabled</span>' },
       { key: 'actions', label: '', width: '15%', render: (_, row) => {
         if (row.id === this.#ctx.id) return '<span class="muted">you</span>';
         const esc = (s) => (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        return `<button class="action-btn" data-action="edit" data-id="${esc(row.id)}"` +
-          ` data-role="${esc(row.role)}" data-team-id="${esc(row.team_id)}" title="Edit">${icons.edit('', 16)}</button>`;
+        return `<button class="row-action" data-action="edit" data-id="${esc(row.id)}"` +
+          ` data-role="${esc(row.role)}" data-team-id="${esc(row.team_id)}" title="Edit access">Edit</button>`;
       }},
     ];
   }
@@ -108,7 +118,7 @@ class TeamAccessPage extends HTMLElement {
   #teamName(id) {
     if (!id) return '<span class="muted">--</span>';
     const t = this.#teams.find((x) => x.id === id);
-    return t ? this.#esc(t.name) : '<span class="muted">--</span>';
+    return t ? `<span class="tag-chip">${this.#esc(t.name)}</span>` : '<span class="muted">--</span>';
   }
 
   #bind(canReassignPlacement) {

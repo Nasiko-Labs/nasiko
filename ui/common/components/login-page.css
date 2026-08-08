@@ -1,80 +1,97 @@
+/* Login — NightOwl: centered card on the light plane, gold mark, Chivo Mono
+   title, flat sand inputs, dark ink submit. */
+login-page:not(:defined) {
+  display: block;
+  position: fixed;
+  inset: 0;
+  background: light-dark(var(--white), var(--neutral-900));
+}
+
 @scope (login-page) {
   :scope {
+    /* Full-bleed light plane — overrides the shell's ink body backdrop
+       (this page renders without app-header). */
+    position: fixed;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 100dvh;
-    width: 100%;
+    overflow: auto;
+    background: light-dark(var(--white), var(--neutral-900));
   }
   .card {
-    width: min(100% - 2rem, 380px);
+    width: min(100% - 2rem, 400px);
     padding: var(--space-2xl) var(--space-xl);
+    background: transparent;
+    border: none;
+    box-shadow: none;
   }
   .brand {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: var(--space-sm);
-    margin-bottom: var(--space-xl);
+    margin-bottom: var(--space-lg);
   }
   .brand-icon {
-    width: 40px;
-    height: 40px;
+    width: 48px;
+    height: 48px;
     color: var(--color-primary);
     display: flex;
     align-items: center;
     justify-content: center;
   }
-  .brand-icon svg { width: 36px; height: 36px; }
-  .brand-text {
+  .brand-icon svg { width: 44px; height: 44px; }
+  .login-title {
     font-family: var(--font-display);
-    font-size: var(--font-size-xl);
+    font-size: 24px;
+    line-height: 32px;
     font-weight: 500;
+    letter-spacing: 0.16px;
     color: var(--color-text-main);
+    text-align: center;
+    margin: 0 0 var(--space-sm);
   }
   .subtitle {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
     text-align: center;
-    margin-bottom: var(--space-lg);
+    margin-bottom: var(--space-xl);
   }
-  form { display: flex; flex-direction: column; gap: var(--space-sm); }
-  .field { display: flex; flex-direction: column; gap: 3px; }
+  form { display: flex; flex-direction: column; gap: var(--space-md); }
+  .field { display: flex; flex-direction: column; gap: var(--s-4); }
   label {
     font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--color-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
   }
   input {
     width: 100%;
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    height: var(--control-h-lg);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;
   }
-  input:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
+  input::placeholder { color: var(--color-text-muted); }
+  input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-submit {
     width: 100%;
-    padding: var(--space-sm);
-    background: var(--color-primary);
-    color: var(--color-on-primary);
+    height: var(--control-h-lg);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-weight: 500;
     font-size: var(--font-size-sm);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-8);
     cursor: pointer;
     border: none;
     margin-top: var(--space-xs);
+    transition: background var(--transition-fast);
   }
-  .btn-submit:hover { background: var(--color-primary-hover); }
+  .btn-submit:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+  .btn-submit:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
   .error-msg {
     color: var(--color-error);
@@ -96,24 +113,29 @@
     height: 1px;
     background: var(--color-border);
   }
-  .oauth-section { display: flex; flex-direction: column; gap: var(--space-xs); }
+  .oauth-section { display: flex; flex-direction: column; gap: var(--space-sm); }
   .btn-oauth {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: var(--space-sm);
     width: 100%;
-    padding: var(--space-xs) var(--space-md);
+    height: var(--control-h-lg);
+    padding: 0 var(--space-md);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-base);
+    border-radius: var(--r-8);
+    background: light-dark(var(--white), var(--neutral-900));
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
     text-decoration: none;
-    transition: border-color 0.15s;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
   }
-  .btn-oauth:hover { border-color: var(--color-text-muted); }
+  .btn-oauth:hover {
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    border-color: light-dark(var(--sand-300), var(--neutral-600));
+  }
+  .btn-oauth:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-oauth svg { width: 18px; height: 18px; flex-shrink: 0; }
 }

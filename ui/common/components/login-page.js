@@ -69,8 +69,8 @@ class LoginPage extends HTMLElement {
       <div class="card">
         <div class="brand">
           <div class="brand-icon">${LOGO_ICON}</div>
-          <span class="brand-text">${brandTitle}</span>
         </div>
+        <h1 class="login-title">Sign in to ${brandTitle}</h1>
         <p class="subtitle">${subtitle}</p>
         ${showCredentials ? `
           <form id="login-form">
