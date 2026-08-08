@@ -308,6 +308,16 @@ body {
   min-height: 100dvh;
 }
 
+/* Mobile (<1024px): no rail/card chrome — the content plane is the page
+   itself, so page components sit on the white surface directly. Desktop gets
+   the floating white card in the @media block below. */
+@media (max-width: 1023.98px) {
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette) {
+    background: var(--color-bg-surface);
+    flex: 1;
+  }
+}
+
 main {
   width: min(100% - 2 * var(--space-lg), var(--page-max-width));
   margin: 0 auto;
