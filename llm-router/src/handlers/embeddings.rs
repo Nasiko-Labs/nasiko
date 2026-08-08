@@ -16,6 +16,7 @@ use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::providers::fallback;
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
+use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::usage::{self, UsageRecord};
 
 /// Axum handler. Builds the Postgres-backed store and delegates to [`embeddings_core`].
@@ -66,6 +67,11 @@ async fn embeddings_core(
             latency_ms,
             streaming: false,
             finish_reason: None,
+            flow_id: headers
+                .get(TRACEPARENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_flow_id),
+            platform_paid: resolved.platform_paid,
         },
     );
 

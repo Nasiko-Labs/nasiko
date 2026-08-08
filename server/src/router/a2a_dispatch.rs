@@ -431,6 +431,9 @@ async fn orchestrator_stream(
     let orchestrator_model = state.config.openai_model.clone();
     let orchestrator_start = Instant::now();
     let mut full_reply = String::new();
+    let observability = state.observability.clone();
+    // Accumulated orchestrator-turn usage for the terminal `usage_meta` event.
+    let mut turn_usage = super::usage_meta::TurnUsage::default();
 
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
@@ -528,7 +531,9 @@ async fn orchestrator_stream(
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::Usage { input_tokens, output_tokens, model } => {
+                        OrchestratorEvent::Usage { input_tokens, output_tokens, model, estimated } => {
+                            turn_usage.add(input_tokens, output_tokens, &model, estimated);
+
                             // Fire-and-forget: track token usage in DB
                             let tracker = usage_tracker.clone();
                             let uid = user_id;
@@ -544,6 +549,10 @@ async fn orchestrator_stream(
                                 .tokens(input_tokens as i32, output_tokens as i32)
                                 .session_id(&fid)
                                 .streaming(false)
+                                .metadata(json!({
+                                    "key_source": "platform",
+                                    "estimated": estimated,
+                                }))
                                 .build();
                                 if let Err(e) = tracker.track_tokens(usage).await {
                                     tracing::warn!(error = %e, "failed to track orchestrator token usage");
@@ -573,18 +582,32 @@ async fn orchestrator_stream(
                                 ))));
                             }
 
+                            let summary = super::usage_meta::summarize_flow_usage(
+                                &db,
+                                observability.as_ref(),
+                                &flow_id_cleanup,
+                                &turn_usage,
+                                orchestrator_start.elapsed().as_millis() as i64,
+                            )
+                            .await;
+
                             // Mirrors `agent_proxy.rs` persisting the agent's reply after
                             // a completed turn — without this, `--session-id` resume has
                             // no recorded history to actually resume, even though the
                             // session row and user message (above) now exist.
                             if !full_reply.is_empty() {
-                                let _ = sqlx::query(
-                                    "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'assistant', $2)",
+                                super::usage_meta::insert_assistant_message(
+                                    &db, &context_id, &full_reply, &summary, &flow_id_cleanup,
                                 )
-                                .bind(&context_id)
-                                .bind(&full_reply)
-                                .execute(&db)
                                 .await;
+                            }
+
+                            // Terminal usage summary — the UI renders this as the
+                            // message's token/duration/cost chips.
+                            {
+                                let usage_msg = a2a::agent_message(&context_id, &task_id,
+                                    a2a::data_part(summary.to_data_part(&flow_id_cleanup)));
+                                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
                             }
 
                             // Record the final reply on the dispatch span
@@ -763,6 +786,8 @@ async fn agent_stream(
     let flow_events = state.flow_events.clone();
     let mut flow_rx = state.flow_events.subscribe(&flow_id).await;
     let db = state.db.clone();
+    let observability = state.observability.clone();
+    let agent_start = Instant::now();
 
     if content_type.contains("text/event-stream") {
         let byte_stream = response.bytes_stream();
@@ -836,6 +861,22 @@ async fn agent_stream(
                 }
             }
 
+            // Terminal usage summary: duration always; tokens/cost only when the
+            // agent's calls were platform-paid through the LLM gateway.
+            {
+                let summary = super::usage_meta::summarize_flow_usage(
+                    &db,
+                    observability.as_ref(),
+                    &flow_id_cleanup,
+                    &super::usage_meta::TurnUsage::default(),
+                    agent_start.elapsed().as_millis() as i64,
+                )
+                .await;
+                let usage_msg = a2a::agent_message(&context_id, &task_id,
+                    a2a::data_part(summary.to_data_part(&flow_id_cleanup)));
+                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
+            }
+
             if let Some(err) = agent_error {
                 yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
             } else {
@@ -901,6 +942,21 @@ async fn agent_stream(
             yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
                 &task_id, &context_id, &artifact_id, &text, false, true,
             ))));
+
+            // Terminal usage summary — same contract as the streaming branch.
+            {
+                let summary = super::usage_meta::summarize_flow_usage(
+                    &db,
+                    observability.as_ref(),
+                    &flow_id_cleanup,
+                    &super::usage_meta::TurnUsage::default(),
+                    agent_start.elapsed().as_millis() as i64,
+                )
+                .await;
+                let usage_msg = a2a::agent_message(&context_id, &task_id,
+                    a2a::data_part(summary.to_data_part(&flow_id_cleanup)));
+                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
+            }
 
             yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
 

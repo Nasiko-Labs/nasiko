@@ -1,0 +1,243 @@
+@scope (workflows-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  .page-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-lg);
+  }
+  .page-head-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+    min-width: 0;
+  }
+  .page-sub {
+    margin: 0;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+
+  /* Dark primary CTA (mockup: primary s button, plus icon right) */
+  .new-wf-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background var(--transition-fast);
+  }
+  .new-wf-btn:hover {
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
+  }
+  .new-wf-btn.is-lg {
+    min-height: var(--control-h-md);
+    padding: 0 var(--s-16);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--s-16);
+    align-content: start;
+  }
+
+  /* ── Workflow card — strokeless sand well (mockup: pad 20, gap 12, r8) ── */
+  .wf-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+    padding: var(--s-20);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    cursor: pointer;
+    transition: border-color 0.15s ease;
+  }
+  .wf-card:hover { border-color: var(--color-border); }
+  .wf-card.is-skeleton { cursor: default; min-height: 176px; }
+
+  .wf-card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-8);
+  }
+  .wf-name {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    line-height: 20px;
+    color: var(--color-text-main);
+  }
+  /* Keep the per-card menu inside the card's right edge */
+  app-action-menu .aam-menu { left: auto; right: 0; }
+
+  .wf-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-8);
+  }
+  /* Neutral meta pills sit on sand — lift them to white for contrast */
+  .wf-badges .badge--muted {
+    background: light-dark(var(--white), var(--neutral-800));
+    color: var(--color-text-muted);
+  }
+
+  .wf-desc {
+    margin: 0;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-main);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .wf-agents {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .wf-status {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin-top: auto;
+    padding-top: var(--s-4);
+  }
+  .wf-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--r-40);
+    background: var(--color-neutral);
+    flex-shrink: 0;
+  }
+  .wf-status.is-success .wf-dot { background: var(--color-success); }
+  .wf-status.is-failed .wf-dot { background: var(--color-error); }
+  .wf-status.is-running .wf-dot { background: var(--fg-brand); }
+  .wf-status-text {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .load-error {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-error);
+  }
+
+  /* ── Empty state (mockup: centered tile + Chivo title + process pills) ── */
+  .empty-wrap { display: block; }
+  .wf-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-lg);
+    padding: var(--space-2xl) var(--space-md);
+    text-align: center;
+  }
+  .empty-tile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 72px;
+    height: 72px;
+    border-radius: var(--r-12);
+    background: var(--color-bg-base);
+    color: var(--color-text-muted);
+  }
+  .empty-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+  }
+  .empty-sub {
+    margin: calc(-1 * var(--space-sm)) 0 0;
+    max-width: 460px;
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--color-text-muted);
+    text-wrap: pretty;
+  }
+  .empty-pills {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .process-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-8);
+    height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-40);
+    background: var(--color-bg-base);
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-main);
+    white-space: nowrap;
+  }
+  .process-pill svg { color: var(--fg-brand); }
+  .empty-arrow { color: var(--color-text-muted); }
+
+  /* ── Skeleton card internals ── */
+  .skel-line {
+    height: 0.85em;
+    border-radius: var(--radius-sm);
+    background: var(--color-border);
+    animation: wf-skel-pulse 1.5s ease-in-out infinite;
+  }
+  .skel-line--name { width: 55%; height: 1.05em; }
+  .skel-line--desc1 { width: 90%; }
+  .skel-line--desc2 { width: 65%; }
+  .skel-tags { display: flex; gap: var(--space-xs); }
+  .skel-tag {
+    width: 64px;
+    height: 20px;
+    border-radius: var(--r-40);
+    background: var(--color-border);
+    animation: wf-skel-pulse 1.5s ease-in-out infinite;
+  }
+}
+
+@keyframes wf-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes wf-skel-pulse { from, to { opacity: 1; } }
+}

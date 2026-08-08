@@ -26,7 +26,7 @@ copying files — `common/` has exactly one copy in the repo.
 | :--- | :--- |
 | `common/global.css` | Design tokens (`--color-*`, `--space-*`, `--radius-*`, `--font-*`, …) and element defaults, in `@layer base` |
 | `common/components.css` | Aggregator that `@import`s every file in `common/styles/` — link this once per page |
-| `common/styles/*.css` | Utility layers: buttons, badges, layout primitives, prose/markdown, segmented controls, surfaces, text, and the `:not(:defined)` upgrade-contract rules |
+| `common/styles/*.css` | Utility layers: buttons, badges, layout primitives, prose/markdown, segmented controls, surfaces, text, the page host geometry (`page-layout.css`), and the `:not(:defined)` upgrade-contract rules |
 | `common/components/*.js` (+ sibling `.css`) | Web components: reusable primitives (`app-button`, `app-modal`, `app-badge`, layout elements, …) and page-level components |
 | `common/services/api.js` | Single funnel for `/api/*` calls (`apiFetch`/`fetchApi`) — handles session-expired redirects in one place |
 | `common/services/sse.js` | `connectSSE()` helper wrapping `EventSource` |
@@ -55,10 +55,17 @@ copying files — `common/` has exactly one copy in the repo.
   `--*` custom properties in `global.css`. Don't hardcode a hex value or
   a raw `px` size in component CSS.
 - **Upgrade contract** — any component with layout footprint gets a
-  `<element>:not(:defined) { ... }` rule (in `common/styles/not-defined.css`
-  for shared elements, or the component's own CSS for page-level ones) that
-  reserves the same geometry the real render will use, so there's no layout
-  shift when the custom element upgrades.
+  `<element>:not(:defined) { ... }` rule in `common/styles/not-defined.css`
+  that reserves the same geometry the real render will use, so there's no
+  layout shift when the custom element upgrades. It must live in that file,
+  not in the component's own CSS: a component's sheet is adopted by its
+  module, so it does not exist at first paint.
+- **Page host geometry lives in `common/styles/page-layout.css`** — a page
+  element's own box (display, padding, the desktop card padding, the
+  module-nav gutter) is written there once, keyed on the element and with no
+  `:not(:defined)` filter, so the same rule serves both the pre-upgrade paint
+  and the loaded page. A page's `@scope`d sheet must not re-declare those
+  properties, or it wins on proximity and the two copies drift.
 - **Mandatory JS shape** — `#private` fields for internal state; a
   connect guard (`#initialized` flag checked in `connectedCallback`) so
   re-attaching an element doesn't double-render; clean up timers/listeners

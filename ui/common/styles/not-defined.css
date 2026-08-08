@@ -80,6 +80,30 @@ data-view:not(:defined) {
 }
 
 /*
+  app-module-nav upgrade contract. Below 1024px the nav is a disclosure bar in
+  normal flow above the page content (desktop pins it into the content card's
+  left padding, out of flow), so reserve that bar or the whole page header
+  drops when the real nav arrives.
+
+  Only matches where the nav is authored in page HTML: pages whose component
+  injects it have already imported app-module-nav.js, so it is defined before
+  the element exists. Its own sheet can't do this job — that sheet arrives with
+  its module (same reason as the note above the page-element rules below).
+*/
+app-module-nav:not(:defined) {
+  display: none;
+}
+@media (max-width: 1023.98px) {
+  app-module-nav:not(:defined) {
+    display: block;
+    height: 38px;
+    margin-bottom: var(--space-md);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--r-8);
+  }
+}
+
+/*
   app-tabs upgrade contract. Before the script runs, every `[data-tab]` panel is
   a plain block, so all of them render stacked — then `connectedCallback` hides
   all but the active one, collapsing the page height (large CLS / "partial page
@@ -103,28 +127,15 @@ voice-input:not(:defined) {
   box-shadow: inset 0 0 0 1px var(--color-border), var(--shadow-sm);
 }
 
-/* Page-level elements — reserve layout before JS upgrades them */
-orchestrator-page:not(:defined),
-your-agents-page:not(:defined),
-agents-page:not(:defined),
-sessions-page:not(:defined),
-agent-card-page:not(:defined),
-flow-detail-page:not(:defined),
-build-detail-page:not(:defined),
-session-trace-page:not(:defined),
-builds-page:not(:defined),
-chat-page:not(:defined),
-flows-page:not(:defined),
-secrets-page:not(:defined),
-users-page:not(:defined),
-teams-page:not(:defined),
-departments-page:not(:defined),
-access-control-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-md);
-  max-width: 1100px;
-  margin: 0 auto;
-}
+/*
+  Page host geometry is NOT in this file — it lives in page-layout.css, keyed
+  on the page element with no `:not(:defined)` filter, so a single copy serves
+  both the pre-upgrade paint and the loaded page. Mirroring it here (against a
+  page sheet that can only arrive with its module) is what drifted before.
+
+  What stays here is genuinely pre-upgrade-only: reservations for elements
+  whose box does not exist yet.
+*/
 
 @media (prefers-reduced-motion: reduce) {
   app-stat-card:not(:defined),
@@ -279,22 +290,14 @@ access-control-page:not(:defined) {
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
-/* Chat page pre-upgrade skeleton — geometry mirrors chat-page.css :scope
-   (760px container, 75px header, 148px input area) so nothing shifts when
-   the component upgrades. */
+/* Chat page pre-upgrade skeleton. The host flex column comes from
+   page-layout.css (identical before and after upgrade); this is just the
+   skeleton's own stretch inside it. */
 chat-page:not(:defined) .chat-skel {
   display: flex;
   flex-direction: column;
-  height: calc(100dvh - var(--app-header-height));
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 0 var(--space-md);
-}
-
-@media (min-width: 1024px) {
-  chat-page:not(:defined) .chat-skel {
-    height: 100dvh;
-  }
+  flex: 1;
+  min-height: 0;
 }
 
 .chat-skel__header {
@@ -302,7 +305,6 @@ chat-page:not(:defined) .chat-skel {
   align-items: center;
   gap: var(--space-sm);
   box-sizing: border-box;
-  min-height: 75px;
   padding: var(--space-md) 0;
   border-bottom: 1px solid var(--color-border);
 }
@@ -324,13 +326,388 @@ chat-page:not(:defined) .chat-skel {
   flex: 1;
 }
 
+/* Mirrors chat-page.css .input-area exactly (900px centered column, no
+   horizontal padding) so the composer doesn't resize when the page upgrades. */
 .chat-skel__composer {
-  padding: var(--space-md) 0;
+  width: 100%;
+  max-width: 900px;
+  margin-inline: auto;
+  padding: var(--space-sm) 0 var(--space-md);
+  box-sizing: border-box;
 }
 
 .chat-skel__input {
-  height: 115px;
+  /* Measured against the upgraded <voice-input> in chat-page (112px). */
+  height: 112px;
   border-radius: var(--r-12);
+}
+
+/*
+  Pre-upgrade page header (`.pre-*`) — real content, not shimmer.
+
+  Phase 1 (page HTML parsed, page module not executed yet) can only use CSS
+  that is already linked, i.e. this file: a component's own sheet arrives with
+  its module. Title, description and search need no backend, so list pages
+  paint them for real in their HTML and shimmer only what the API feeds — the
+  tab strip and the card grid.
+
+  The component replaces this markup wholesale on upgrade, so these classes
+  never coexist with a page's own. Keep them page-agnostic: per-page card
+  metrics come in through the --pre-* knobs, not through new selectors.
+  Geometry mirrors the loaded header and skeleton grid so nothing moves
+  between phase 1, the component's loading state, and loaded data.
+*/
+/* Below 1024px app-module-nav is a disclosure bar above the page content
+   (desktop pins it into the content card's left padding, out of flow), so
+   reserve that bar or the whole header drops when the real nav arrives. */
+.pre-modnav {
+  display: none;
+}
+@media (max-width: 1023.98px) {
+  .pre-modnav {
+    display: block;
+    height: 38px;
+    margin-bottom: var(--space-md);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--r-8);
+  }
+}
+
+.pre-head {
+  margin-bottom: var(--pre-head-mb, var(--space-lg));
+}
+.pre-head .title-page {
+  margin-bottom: var(--pre-head-gap, var(--space-xs));
+}
+.pre-head p {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+/* Heads whose loaded layout is a row: title block left, actions right. */
+.pre-head--split {
+  display: flex;
+  align-items: var(--pre-head-align, flex-start);
+  justify-content: var(--pre-head-justify, space-between);
+  flex-wrap: var(--pre-head-wrap, wrap);
+  gap: var(--pre-head-gutter, var(--space-md));
+}
+/* Mirrors the loaded head's text block (`flex: 1 1 auto; min-width: 0`) —
+   without it the title column takes its max-content width and pushes the
+   actions onto a second line that the loaded head doesn't have. Scoped to
+   heads that actually have actions, so a title + inline meta stays snug. */
+.pre-head--split:has(.pre-head__actions) > div:first-child,
+.pre-head--split:has(> .pre-action) > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pre-head__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--pre-actions-gap, var(--space-sm));
+  flex-shrink: 0;
+}
+/* For heads with something between the title and the actions (count chips). */
+.pre-head__actions--push {
+  margin-left: auto;
+}
+/* Head buttons need no backend either, so they paint for real. Geometry
+   mirrors <app-button size="sm">; the --pre-action-* knobs retune it for
+   pages whose buttons differ (mcp's 10px-padded, 14/600 head actions). */
+.pre-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--pre-action-gap, var(--space-xs));
+  min-height: var(--pre-action-h, var(--control-h-sm));
+  padding: var(--pre-action-py, 0) var(--pre-action-px, var(--s-12));
+  border: 1px solid var(--color-border);
+  border-radius: var(--r-8);
+  background: var(--color-bg-surface);
+  color: var(--color-text-main);
+  font-size: var(--pre-action-fs, 13px);
+  font-weight: var(--pre-action-fw, 500);
+  white-space: nowrap;
+}
+.pre-action--solid {
+  border-color: transparent;
+  background: light-dark(var(--sand-800), var(--neutral-100));
+  color: light-dark(var(--white), var(--neutral-900));
+}
+.pre-action--secondary {
+  background: light-dark(var(--yellow-100), var(--yellow-900));
+  border-color: light-dark(var(--yellow-200), var(--yellow-800));
+}
+
+.pre-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-bottom: var(--pre-controls-mb, var(--space-md));
+}
+.pre-search {
+  position: relative;
+  flex: 1;
+  min-width: 200px;
+  max-width: var(--pre-search-max, 520px);
+}
+.pre-search__icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+/* Inert until the module upgrades the page — styled as a live field on
+   purpose, so enhancement is invisible rather than looking disabled. */
+.pre-search__input {
+  width: 100%;
+  min-height: var(--control-h-lg);
+  padding: 0 var(--space-xl) 0 var(--pre-search-pl, 38px);
+  border: 1px solid transparent;
+  border-radius: var(--r-8);
+  background: var(--bg-input);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-main);
+}
+.pre-search__input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  display: none;
+}
+.pre-select {
+  width: auto;
+  min-width: 140px;
+  flex-shrink: 0;
+  min-height: var(--control-h-lg);
+  padding: 0 var(--space-md);
+  border: 1px solid transparent;
+  border-radius: var(--r-8);
+  /* Shorthand on purpose — drops the base-layer chevron gradients, matching
+     the loaded .sort-select. */
+  background: var(--bg-input);
+  color: var(--color-text-main);
+  font-size: var(--font-size-sm);
+}
+/* Filter selects that show a chevron affordance (the org pages' .filter-select
+   — your-agents' .sort-select deliberately has none). */
+.pre-select--chevron {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+/* Tab strip — labels carry API counts, so it shimmers. */
+.pre-tabs {
+  display: flex;
+  gap: var(--space-md);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--pre-tabs-mb, var(--space-lg));
+}
+/* …unless the labels are static (no counts) — then they paint for real.
+   Mirrors the loaded gold-underline tab; the sliding indicator takes over
+   the bar on upgrade. */
+.pre-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  margin-bottom: -1px;
+  padding: var(--space-xs) var(--space-2xs);
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+.pre-tab--active {
+  border-bottom-color: var(--fg-brand-highlight);
+  color: var(--color-text-main);
+  font-weight: 600;
+}
+.pre-tabs__item {
+  width: 72px;
+  height: 16px;
+  /* 12 + 16 + 11 = the loaded strip's 39px content box (a real .type-tab is
+     40px with a -1px bottom margin). */
+  margin: 12px 0 11px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-base);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+/* Card grid. --pre-col / --pre-card-h / --pre-card-pad / --pre-card-gap let
+   one rule match any page's loaded skeleton card. */
+.pre-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--pre-col, 300px), 100%), 1fr));
+  gap: var(--pre-gap, var(--space-md));
+}
+/* Same cards stacked one per row (executions' run list). */
+.pre-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pre-gap, var(--space-md));
+}
+/* Wider landscape cards with a compressed inner rhythm (your-agents). */
+.pre-grid--wide {
+  --pre-col: 320px;
+  --pre-card-h: 240px;
+  --pre-card-pad: var(--s-12) var(--space-md);
+  --pre-card-gap: var(--space-xs);
+}
+.pre-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pre-card-gap, var(--space-sm));
+  min-height: var(--pre-card-h, 192px);
+  padding: var(--pre-card-pad, var(--space-md));
+  border: 1px solid transparent;
+  border-radius: var(--r-8);
+  background: var(--color-bg-base);
+}
+.pre-line {
+  height: 0.85em;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.pre-line--name { height: 1em; width: 45%; }
+.pre-line--w50 { width: 50%; }
+.pre-line--w65 { width: 65%; }
+.pre-line--w72 { width: 72%; }
+.pre-line--w85 { width: 85%; }
+.pre-line--w90 { width: 90%; }
+.pre-tags {
+  display: flex;
+  gap: var(--space-xs);
+}
+.pre-tag {
+  width: 64px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.pre-actions {
+  display: flex;
+  gap: var(--space-xs);
+  margin-top: auto;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+}
+.pre-btn {
+  width: 70px;
+  height: var(--control-h-sm);
+  border-radius: var(--r-8);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+/* Count chips in a page head — every figure is API-fed, so they shimmer,
+   but the row is reserved so the head doesn't reflow when the counts land. */
+.pre-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--s-8);
+  flex-wrap: wrap;
+}
+.pre-chip {
+  display: block;
+  width: var(--pre-chip-w, 96px);
+  height: var(--control-h-sm);
+  border-radius: var(--r-40);
+  background: var(--bg-surface);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+/* Section heading between blocks on one page — mirrors the loaded
+   `.section-header h2` (display face, no top margin of its own). */
+.pre-subhead {
+  margin: 0 0 var(--space-md);
+  padding-top: var(--space-sm);
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: 500;
+  letter-spacing: 0.16px;
+  color: var(--color-text-main);
+}
+
+/* Equal-width stat band (access control's "needs attention" strip) — every
+   figure comes from the API, so the whole band shimmers. */
+.pre-band {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  min-height: 88px;
+  margin-bottom: var(--space-xl);
+  border-radius: var(--r-8);
+  background: var(--bg-surface);
+}
+.pre-band__item {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--s-4);
+  padding: var(--space-md) var(--space-lg);
+}
+
+/* Table pages (<smart-table>). Column labels are declared in the component,
+   not fetched, so the head row paints for real and only the body shimmers.
+   --pre-cols carries the page's colgroup widths; the grid tracks and the
+   per-cell padding then reproduce the loaded table exactly. */
+.pre-table {
+  border: var(--pre-table-stroke, 1px solid var(--color-border));
+  border-radius: var(--pre-table-radius, var(--radius-md));
+  background: var(--color-bg-surface);
+  overflow: hidden;
+}
+.pre-table__row {
+  display: grid;
+  grid-template-columns: var(--pre-cols, repeat(4, 1fr));
+  align-items: center;
+  min-height: var(--pre-row-h, auto);
+  border-bottom: 1px solid var(--pre-table-rule, var(--color-border));
+  font-size: var(--font-size-sm);
+}
+.pre-table__row:last-child {
+  border-bottom: none;
+}
+.pre-table__row--head {
+  background: var(--pre-table-head-bg, var(--color-bg-base));
+  font-size: var(--font-size-xs);
+}
+.pre-th {
+  padding: var(--space-sm) var(--space-md);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pre-td {
+  padding: var(--space-sm) var(--space-md);
+}
+.pre-cell {
+  height: 0.75em;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+/* Org/access pages restyle smart-table into the sand table language
+   (no outer stroke, sand header band, sand hairlines) — mirror it. */
+.pre-table--sand {
+  --pre-table-stroke: none;
+  --pre-table-radius: var(--r-8);
+  --pre-table-head-bg: light-dark(var(--sand-100), var(--neutral-800));
+  --pre-table-rule: light-dark(var(--sand-100), var(--neutral-800));
+}
+.pre-table--sand .pre-table__row--head {
+  border-bottom: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -342,7 +719,13 @@ chat-page:not(:defined) .chat-skel {
   .skel-session__avatar,
   .skel-session__line,
   .skel-agent-pill,
-  .skel-block {
+  .skel-block,
+  .pre-tabs__item,
+  .pre-line,
+  .pre-tag,
+  .pre-btn,
+  .pre-cell,
+  .pre-chip {
     animation: none;
     opacity: 0.6;
   }

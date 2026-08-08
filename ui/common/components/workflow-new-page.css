@@ -1,0 +1,257 @@
+@scope (workflow-new-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  /* Centered — this page has no module-nav column, so a left-hugging 700px
+     column reads unbalanced in the wide card (matches workflow-detail-page). */
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    max-width: 700px;
+    margin-inline: auto;
+  }
+
+  /* ── Header: back + borderless Chivo name input + Draft pill ── */
+  .page-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+  }
+  .back-btn {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--r-8);
+    color: var(--color-text-main);
+    flex-shrink: 0;
+  }
+  .back-btn:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
+  .name-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: var(--font-display);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+  }
+  .name-input::placeholder { color: var(--color-text-muted); }
+  .draft-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-40);
+    background: var(--color-bg-base);
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  /* ── Describe block ── */
+  .describe {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+  }
+  .describe-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+  }
+  .describe-label {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+  .draft-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: transparent;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-main);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .draft-btn svg { color: var(--fg-brand); }
+  .draft-btn:hover:not(:disabled) { background: var(--bg-surface-hover); }
+  .draft-btn:disabled { opacity: 0.6; cursor: default; }
+
+  #wf-desc {
+    width: 100%;
+    padding: var(--s-12);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    resize: vertical;
+    background: var(--bg-input);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+  #wf-desc:focus { outline: none; border-color: var(--color-primary); }
+  #wf-desc::placeholder { color: var(--color-text-muted); }
+  .hint {
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+  }
+  .gen-notice {
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-8);
+    background: light-dark(var(--yellow-50), var(--neutral-800));
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-main);
+    text-wrap: pretty;
+  }
+
+  /* ── Steps section ── */
+  .steps-sec {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+  }
+  .steps-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+  }
+  .steps-label {
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+  .count-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-40);
+    background: var(--color-bg-base);
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+  }
+  .spacer { flex: 1; }
+  .drafted-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--fg-brand);
+  }
+
+  /* Drafting state — spinner line + pulsing placeholder cards */
+  .drafting {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+  }
+  .drafting-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+  /* Placeholder for a step card — same surface, edge and padding as
+     wf-step-editor's real card, so resolving the draft doesn't shift the page. */
+  .drafting-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 122px;
+    padding: var(--s-16) var(--s-20);
+    border: 1px solid light-dark(var(--sand-100), var(--neutral-800));
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    animation: wfn-pulse 1.6s ease-in-out infinite;
+  }
+  .drafting-bar {
+    height: 10px;
+    border-radius: var(--r-40);
+    background: light-dark(var(--sand-200), var(--neutral-700));
+  }
+  .drafting-bar.is-short { width: 120px; background: light-dark(var(--sand-300), var(--neutral-600)); }
+  .drafting-bar.is-mid { width: 60%; }
+
+  .spin {
+    display: inline-flex;
+    color: var(--fg-brand);
+    animation: wfn-spin 1.1s linear infinite;
+  }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    margin: 0;
+  }
+
+  /* ── Footer ── */
+  .foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+  }
+  .footnote {
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+  }
+  .foot-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    margin-left: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .cancel-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--control-h-md);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+  }
+  .cancel-link:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spin { animation: none; }
+    .drafting-card { animation: none; }
+  }
+}
+
+@keyframes wfn-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes wfn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

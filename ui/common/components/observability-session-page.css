@@ -1,15 +1,9 @@
 /* Observability session detail — chat history | trace tree | span detail. */
-observability-session-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 400px;
-}
 
 @scope (observability-session-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   /* ── Header ───────────────────────────────────────────────────────────── */
   .page-head {
@@ -99,6 +93,33 @@ observability-session-page:not(:defined) {
     @media (max-width: 1100px) { grid-template-columns: 1fr; }
   }
 
+  /* No spans to select, so the span-detail pane has nothing to say: fold it
+     away and let the trace pane's empty state use both columns, rather than
+     parking two stub sentences in two tall blank panes. */
+  .panes.traces-empty {
+    grid-template-columns: minmax(260px, 3fr) minmax(340px, 7fr);
+
+    & #detail-pane { display: none; }
+
+    @media (max-width: 1100px) { grid-template-columns: 1fr; }
+  }
+
+  /* Nothing recorded for this session at all — one empty state, full width. */
+  .panes.traces-empty.chat-empty {
+    grid-template-columns: 1fr;
+
+    & #chat-pane { display: none; }
+  }
+
+  /* Let the empty state fill its pane instead of leaving a dead column of
+     white below a short dashed box. */
+  .panes.traces-empty #traces-pane,
+  .panes.chat-empty #chat-pane {
+    max-height: none;
+
+    & app-empty-state { flex: 1; }
+  }
+
   /* Chat pane collapsed to a slim rail (per mock chatPanel-collapsed state). */
   .panes.chat-collapsed {
     grid-template-columns: 48px minmax(280px, 4fr) minmax(340px, 5fr);
@@ -171,13 +192,69 @@ observability-session-page:not(:defined) {
     border-radius: var(--r-10);
     padding: var(--space-sm) var(--space-md);
     font-size: var(--font-size-sm);
+    --clamp-bg: var(--color-bg-base);
+    display: flex;
+    flex-direction: column;
+
+    /* Literal user input, not markdown — newlines must survive. */
+    & .msg-clamp { white-space: pre-wrap; }
   }
 
   .msg-assistant {
     font-size: var(--font-size-sm);
     color: var(--color-text-main);
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Clamped long content ─────────────────────────────────────────────── */
+  /* Transcripts and span payloads (system prompts especially) run to
+     thousands of characters; show a readable slice and let the reader open
+     it. `max-height` rather than -webkit-line-clamp so rendered markdown
+     blocks inside keep their own layout. */
+  .msg-clamp {
+    position: relative;
+    max-height: 16em;
+    overflow: hidden;
+
+    &.is-expanded {
+      max-height: none;
+      overflow: visible;
+    }
+
+    /* Fade the cut so it doesn't read as a rendering glitch. Only on blocks
+       that actually overflow — `.is-clamped` is set after measuring, so
+       short messages get no phantom fade. */
+    &.is-clamped:not(.is-expanded)::after {
+      content: "";
+      position: absolute;
+      inset-inline: 0;
+      bottom: 0;
+      height: 2.5em;
+      pointer-events: none;
+      background: linear-gradient(to bottom, transparent, var(--clamp-bg, var(--color-bg-surface)));
+    }
+  }
+
+  button.msg-more {
+    align-self: flex-start;
+    margin-top: var(--space-2xs);
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--fg-brand, var(--color-text-muted));
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    cursor: pointer;
+
+    &:hover { text-decoration: underline; }
+
+    &:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+      border-radius: var(--radius-sm);
+    }
   }
 
   .chat-meta {
@@ -334,6 +411,9 @@ observability-session-page:not(:defined) {
     padding: var(--space-sm) var(--space-md);
     margin-bottom: var(--space-sm);
     font-size: var(--font-size-sm);
+    display: flex;
+    flex-direction: column;
+    --clamp-bg: var(--color-bg-base);
 
     & .msg-role {
       font-size: var(--font-size-xs);

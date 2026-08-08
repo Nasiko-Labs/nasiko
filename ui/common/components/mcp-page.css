@@ -1,21 +1,9 @@
 /* MCP gateway — connectors table, register/upload modals, agent access. */
-mcp-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 400px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
-   nav pins into the card's left padding on desktop). */
-@media (min-width: 1024px) {
-  mcp-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
 
 @scope (mcp-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   .page-head {
     display: flex;
@@ -25,14 +13,8 @@ mcp-page:not(:defined) {
     margin-bottom: var(--space-lg);
   }
 
-  .page-title {
-    font-size: 20px;
-    line-height: 28px;
-    font-weight: 500;
-    font-family: var(--font-display);
-    letter-spacing: 0.16px;
-    margin: 0;
-  }
+  /* The page title uses the global .title-page (global.css) so it paints
+     identically before this sheet — which arrives with the module — loads. */
 
   .page-sub {
     font-size: var(--font-size-sm);
@@ -146,8 +128,6 @@ mcp-page:not(:defined) {
   }
 
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr.connector-row { cursor: pointer; }
-  tbody tr.connector-row:hover,
   #uploads-tbody tr:hover { background: var(--bg-input); }
 
   .th-actions { width: 80px; }
@@ -184,19 +164,6 @@ mcp-page:not(:defined) {
   .cell-actions {
     text-align: right;
     white-space: nowrap;
-  }
-
-  .badge {
-    display: inline-block;
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    padding: 2px 10px;
-    border-radius: var(--r-16);
-    white-space: nowrap;
-  }
-  .badge-auth {
-    background: var(--bg-secondary-brand);
-    color: light-dark(var(--neutral-900), var(--neutral-100));
   }
 
   .status {
@@ -444,6 +411,220 @@ mcp-page:not(:defined) {
 
   .tools-empty { padding: var(--space-xs) 0; }
 
+  /* ── Unified catalog — toolkits ∪ custom MCP servers (card grid + tabs) ── */
+  .tk-tabs {
+    display: flex;
+    gap: var(--space-md);
+    min-height: 40px; /* matches .tk-tab so the skeleton strip doesn't shift */
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-md);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tk-tabs::-webkit-scrollbar { display: none; }
+
+  .tk-tab {
+    padding: var(--space-xs) var(--space-2xs);
+    min-height: 40px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:hover { color: var(--color-text-main); }
+    &.active {
+      color: var(--color-text-main);
+      font-weight: 600;
+      border-bottom-color: var(--fg-brand-highlight);
+    }
+    & .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
+  }
+
+  /* The sliding .tab-indicator (tab-indicator.js) supplies the gold bar */
+  .tk-tabs.has-tab-indicator .tk-tab.active { border-bottom-color: transparent; }
+
+  .tk-tabs .tk-skel-tab { width: 110px; align-self: center; }
+
+  .tk-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-md);
+
+    & .empty-state, & .tk-msg { grid-column: 1 / -1; }
+  }
+
+  .tk-msg {
+    text-align: center;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    padding: var(--space-xl);
+  }
+
+  /* Strokeless sand well, matching the Agent hub cards */
+  .tk-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    transition: border-color 0.15s ease;
+
+    &:hover { border-color: var(--color-border); }
+  }
+
+  /* Custom-server cards open the detail/management modal on body click */
+  .tk-card.is-clickable { cursor: pointer; }
+
+  .tk-top {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-width: 0;
+
+    /* Build-state chip stands in for the connect button on uploads */
+    & .chip { flex-shrink: 0; }
+  }
+
+  .tk-logo {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
+    font-family: var(--font-display);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    text-transform: uppercase;
+
+    /* Logo image sits over the letter avatar; on error it is removed. */
+    & img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      padding: 5px;
+      box-sizing: border-box;
+      object-fit: contain;
+      border-radius: inherit;
+      background: var(--color-bg-surface);
+    }
+  }
+
+  .tk-id {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .tk-name {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--color-text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tk-chips {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-width: 0;
+  }
+
+  .tk-chip {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-main);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    padding: 1px var(--space-xs);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+
+  .tk-by {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tk-action {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    flex-shrink: 0;
+    border: none;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+
+    & svg { flex-shrink: 0; }
+    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+  }
+
+  .tk-rest, .tk-hover {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+  }
+
+  /* Connected: quiet success state that offers Disconnect on hover */
+  .tk-action.is-connected {
+    background: transparent;
+    color: var(--fg-success);
+
+    & .tk-hover { display: none; }
+    &:hover {
+      background: var(--bg-input);
+      color: var(--fg-error);
+
+      & .tk-rest { display: none; }
+      & .tk-hover { display: inline-flex; }
+    }
+  }
+
+  .tk-desc {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: calc(2 * 1.5em);
+    max-height: calc(2 * 1.5em);
+  }
+
+  /* Skeleton cards mirror the rendered card so the grid doesn't shift */
+  .tk-card-skel .tk-skel-logo { width: 32px; flex-shrink: 0; }
+  .tk-card-skel .tk-skel-name { width: 45%; }
+  .tk-card-skel .tk-skel-chip { width: 56px; }
+  .tk-card-skel .tk-skel-btn { width: 88px; flex-shrink: 0; }
+
   /* ── Modal forms ──────────────────────────────────────────────────────── */
   .modal-form {
     display: flex;
@@ -464,7 +645,7 @@ mcp-page:not(:defined) {
       width: 100%;
       border: none;
       border-radius: var(--r-8);
-      background: var(--bg-input);
+      background-color: var(--bg-input);
       color: var(--color-text-main);
       font-size: var(--font-size-sm);
       font-family: inherit;
@@ -571,6 +752,10 @@ mcp-page:not(:defined) {
     }
   }
 
+  /* Sliding indicator takes over the (neutral, not gold) active bar */
+  .upload-tabs.has-tab-indicator .upload-tab.is-active { border-bottom-color: transparent; }
+  .upload-tabs .tab-indicator { background: light-dark(var(--neutral-900), var(--neutral-100)); }
+
   .upload-queued {
     display: flex;
     align-items: center;
@@ -630,6 +815,14 @@ mcp-page:not(:defined) {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
     padding: var(--space-sm) 0;
+  }
+
+  .detail-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--space-md);
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
   }
 
   .cred-status {

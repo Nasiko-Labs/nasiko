@@ -1,9 +1,11 @@
-import { fetchApi } from '/common/services/api.js';
+import { apiFetch, fetchApi } from '/common/services/api.js';
 
 window.fetchNavigation = async () => [
   // rail: true → shown as a rail module icon; everything else is reachable
   // through the module tree navs and the ⌘F nav search.
-  { title: "Orchestrator", url: "/index.html", icon: "workflow", rail: true },
+  { title: "Orchestrator", url: "/index.html", icon: "brain", rail: true },
+  { title: "Workflows", url: "/workflows.html", icon: "workflow" },
+  { title: "Executions", url: "/executions.html", icon: "play" },
   { title: "Agents", url: "/agents.html", icon: "bot", rail: true },
   { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true },
   { title: "MCP gateway", url: "/mcp.html", icon: "server", rail: true },
@@ -22,12 +24,31 @@ window.fetchNavigation = async () => [
 // ({label, url}) or in-page sections ({label, section} → the page handles
 // the `module-nav-select` event). Only real pages/features appear here.
 const MODULE_NAVS = {
+  orchestrator: {
+    title: 'Orchestrator', icon: 'brain',
+    groups: [
+      { label: 'Session', items: [
+        { label: 'Orchestrate a task', url: '/index.html' },
+      ]},
+      { label: 'Workflows', items: [
+        { label: 'All workflows', url: '/workflows.html' },
+        { label: 'Executions', url: '/executions.html' },
+      ]},
+    ],
+  },
   mcp: {
     title: 'MCP gateway', icon: 'server',
     groups: [
+      // Scope rows filter the unified catalog grid; ownership scopes apply
+      // to custom MCP servers only (toolkits are platform-registered).
       { label: 'MCP servers', items: [
-        { label: 'Connectors', section: 'connectors' },
+        { label: 'All', section: 'all' },
+        { label: 'Created by you', section: 'created-by-you' },
+        { label: 'Shared with me', section: 'shared-with-me' },
         { label: 'My uploads', section: 'uploads' },
+      ]},
+      { label: 'Toolkits', items: [
+        { label: 'All toolkits', section: 'toolkits' },
       ]},
       { label: 'Access', items: [
         { label: 'Agent access', section: 'agent-access' },
@@ -117,6 +138,77 @@ window.fetchFlowDetail = async (flowId) => {
   return fetchApi(`/flows/${flowId}`);
 };
 
+// ── MAF workflows — /api/maf/* (oss/server/src/maf.rs) ───────────────────────
+// Every response uses the {data, status_code, message} envelope; list
+// endpoints additionally wrap the rows as data:{data:[...], total} (total is
+// the page length, not the true total).
+const mafRows = (body) =>
+  (Array.isArray(body?.data) ? body.data : body?.data?.data) || [];
+
+window.fetchWorkflows = async (limit = 100, offset = 0) => {
+  return mafRows(await fetchApi(`/maf/workflows?limit=${limit}&offset=${offset}`));
+};
+
+window.fetchWorkflow = async (id) => {
+  return (await fetchApi(`/maf/workflow/${encodeURIComponent(id)}`)).data;
+};
+
+window.createWorkflow = async (body) => {
+  return (await fetchApi('/maf/workflows', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })).data;
+};
+
+window.updateWorkflow = async (id, body) => {
+  return (await fetchApi(`/maf/workflow/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })).data;
+};
+
+window.deleteWorkflow = async (id) => {
+  return fetchApi(`/maf/workflow/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
+window.runWorkflow = async (id) => {
+  // 202 Accepted → data: {execution_id, execution_number, execution_count}
+  return (await fetchApi(`/maf/workflow/${encodeURIComponent(id)}/run`, { method: 'POST' })).data;
+};
+
+window.fetchExecution = async (id) => {
+  return (await fetchApi(`/maf/execution/${encodeURIComponent(id)}`)).data;
+};
+
+window.fetchWorkflowExecutions = async (id, limit = 50, offset = 0) => {
+  return mafRows(await fetchApi(
+    `/maf/workflow/${encodeURIComponent(id)}/executions?limit=${limit}&offset=${offset}`,
+  ));
+};
+
+window.fetchAllExecutions = async (limit = 100, offset = 0) => {
+  return mafRows(await fetchApi(`/maf/executions?limit=${limit}&offset=${offset}`));
+};
+
+// The create page branches on the failure mode (503 = no LLM key configured,
+// 400 = user has no agents, 422 = planner failure), so surface the status.
+window.generateWorkflow = async (description) => {
+  const res = await apiFetch('/maf/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(body?.message || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return body?.data;
+};
+
 window.fetchTraceDetail = async (traceId) => {
   // Server route: GET /api/observability/trace/{id} (same as `nasiko observe trace`).
   // Envelope {data:{trace}}; trace.spans is a nested tree (children embedded).
@@ -201,6 +293,13 @@ window.fetchBuilds = async (query, page, limit) => {
   const params = new URLSearchParams({ limit, offset: ((page || 1) - 1) * limit });
   if (query) params.set('q', query);
   return fetchApi(`/builds?${params}`);
+};
+
+// User directory search for the ⌘F palette (GET /api/search/users, an OSS
+// route — org-scoped on EE). A 404 hides the palette's Users section.
+window.fetchUserSearch = async (query) => {
+  const params = new URLSearchParams({ q: query || '' });
+  return fetchApi(`/search/users?${params}`);
 };
 
 window.fetchSettings = async () => {
@@ -300,6 +399,29 @@ window.fetchMcpOauthStatus = async (connectorId) => {
 
 window.revokeMcpOauthToken = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/oauth/token`, { method: 'DELETE' });
+};
+
+// Toolkits — platform Composio connectables the caller can connect to.
+window.fetchMcpToolkits = async () => {
+  return fetchApi('/mcp/composio/toolkits');
+};
+
+// body: {connector_id} (+ optional credentials: {value} for api_key flows).
+// data.status: connected | initiated (oauth_url) | oauth_required (authorization_url).
+window.connectMcpService = async (body) => {
+  return fetchApi('/mcp/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+window.fetchMcpConnections = async () => {
+  return fetchApi('/mcp/connections');
+};
+
+window.disconnectMcpConnection = async (connectorId) => {
+  return fetchApi(`/mcp/connections/${encodeURIComponent(connectorId)}`, { method: 'DELETE' });
 };
 
 window.fetchAgentMcpConnectors = async (agentId) => {

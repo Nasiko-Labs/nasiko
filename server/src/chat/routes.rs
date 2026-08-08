@@ -841,9 +841,13 @@ async fn send_message(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    let usage = body.usage.as_ref();
     let msg = match sqlx::query_as::<_, ChatMessage>(
-        r#"INSERT INTO chat_messages (session_id, role, content, file_parts, has_file_parts)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO chat_messages
+               (session_id, role, content, file_parts, has_file_parts,
+                input_tokens, output_tokens, model, duration_ms, cost_usd,
+                usage_estimated, trace_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -851,6 +855,13 @@ async fn send_message(
     .bind(&body.content)
     .bind(&file_parts_json)
     .bind(has_file_parts)
+    .bind(usage.and_then(|u| u.input_tokens))
+    .bind(usage.and_then(|u| u.output_tokens))
+    .bind(usage.and_then(|u| u.model.as_deref()))
+    .bind(usage.and_then(|u| u.duration_ms))
+    .bind(usage.and_then(|u| u.cost_usd))
+    .bind(usage.and_then(|u| u.estimated))
+    .bind(usage.and_then(|u| u.trace_id.as_deref()))
     .fetch_one(&mut *tx)
     .await
     {

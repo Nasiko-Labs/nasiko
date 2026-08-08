@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -17,7 +19,37 @@
   <body>
     <app-header></app-header>
     <agent-card-page>
-      <div class="skel-block" style="height:400px;max-width:900px;margin:0 auto;"></div>
+      <!-- Close/actions row, agent title + CTA, tag pills, tab strip, then
+           description and skill cards — mirrors the loaded overview tab. -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-lg);">
+        <div class="skel-block" style="width:36px;height:36px;border-radius:var(--r-8);"></div>
+        <div style="display:flex;gap:var(--space-sm);">
+          <div class="skel-card__btn" style="width:100px;height:36px;"></div>
+          <div class="skel-card__btn" style="width:90px;height:36px;"></div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-md);margin-bottom:var(--space-md);">
+        <div class="skel-card__line" style="height:32px;width:480px;max-width:50vw;"></div>
+        <div class="skel-card__btn" style="width:170px;height:44px;"></div>
+      </div>
+      <div class="skel-card__tags" style="margin-bottom:var(--space-lg);">
+        <div class="skel-card__tag"></div><div class="skel-card__tag"></div><div class="skel-card__tag"></div><div class="skel-card__tag"></div><div class="skel-card__tag"></div>
+      </div>
+      <div style="display:flex;gap:var(--space-lg);border-bottom:1px solid var(--color-border);padding-bottom:var(--space-md);margin-bottom:var(--space-lg);">
+        <div class="skel-card__line" style="width:80px;"></div>
+        <div class="skel-card__line" style="width:120px;"></div>
+        <div class="skel-card__line" style="width:80px;"></div>
+        <div class="skel-card__line" style="width:70px;"></div>
+        <div class="skel-card__line" style="width:50px;"></div>
+      </div>
+      <div class="skel-card__line" style="width:70%;max-width:800px;margin-bottom:var(--space-sm);"></div>
+      <div class="skel-card__line" style="width:55%;max-width:640px;margin-bottom:var(--space-xl);"></div>
+      <div class="skel-card__line" style="height:22px;width:80px;margin-bottom:var(--space-md);"></div>
+      <div class="skel-grid">
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+      </div>
     </agent-card-page>
   </body>
 </html>

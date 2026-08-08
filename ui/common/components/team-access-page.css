@@ -1,9 +1,8 @@
 /* NightOwl "Access Manager" table language. */
 @scope (team-access-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   .page-head {
     display: flex;
@@ -168,14 +167,4 @@
 }
 
 /* Upgrade contract — reserve head + table footprint */
-team-access-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 480px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract. */
-@media (min-width: 1024px) {
-  team-access-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
 

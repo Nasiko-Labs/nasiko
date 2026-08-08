@@ -163,6 +163,50 @@ export default {
       await page.waitForSelector(".raw-json");
       await page.waitForTimeout(300);
     },
+    // A session the trace backend has nothing for: the span-detail pane folds
+    // away and one empty state covers the width.
+    "no-traces": async (page) => {
+      await withSession(page);
+      await page.evaluate(() => {
+        window.fetchObservabilitySession = async () => ({
+          data: { session: { session_id: "ses_empty", num_traces: 0, token_usage: { total: 0 }, cost_summary: { total: { cost: 0 } }, latency_p50: 0, latency_p99: 0, traces: [] } },
+        });
+        document.querySelector("observability-session-page").remove();
+        document.body.appendChild(document.createElement("observability-session-page"));
+      });
+      await page.waitForSelector(".panes.traces-empty app-empty-state");
+      await page.waitForTimeout(200);
+    },
+    // Neither traces nor a chat transcript — a single full-width empty state.
+    "no-data": async (page) => {
+      await withSession(page);
+      await page.evaluate(() => {
+        window.fetchObservabilitySession = async () => ({
+          data: { session: { session_id: "ses_empty", num_traces: 0, token_usage: { total: 0 }, cost_summary: { total: { cost: 0 } }, latency_p50: 0, latency_p99: 0, traces: [] } },
+        });
+        window.fetchChatSession = async () => ({ data: [] });
+        document.querySelector("observability-session-page").remove();
+        document.body.appendChild(document.createElement("observability-session-page"));
+      });
+      await page.waitForSelector(".panes.traces-empty.chat-empty");
+      await page.waitForTimeout(200);
+    },
+    // Long markdown reply: renders as markdown and clamps behind Show more.
+    "long-chat": async (page) => {
+      await withSession(page);
+      await page.evaluate(() => {
+        window.fetchChatSession = async () => ({
+          data: [
+            { id: "m1", role: "user", content: "Walk me through the deploy rollback procedure." },
+            { id: "m2", role: "assistant", content: "## Rollback procedure\n\nRolling back is a **three step** operation:\n\n1. Freeze the build queue\n2. Re-point the service to the previous image\n3. Verify health, then unfreeze\n\n### Commands\n\n```bash\nnasiko ps --agent devops-agent\nnasiko deploy devops-agent --image devops-agent:0.3.0\nnasiko logs devops-agent --follow\n```\n\n### Verification checklist\n\n| Check | Expected |\n| --- | --- |\n| `/health` | `ok` |\n| Replicas | matches previous |\n| Error rate | back to baseline |\n\nIf the health check does not settle within five minutes, escalate to the on-call\nplatform engineer and leave the build queue frozen. Do *not* retry the rollback\nautomatically — a second image flip while the first is still converging will make\nthe deployment history ambiguous and complicate the incident review.\n\n> Note: rollbacks do not revert database migrations. Any migration applied by the\n> bad release must be reverted separately.\n" },
+          ],
+        });
+        document.querySelector("observability-session-page").remove();
+        document.body.appendChild(document.createElement("observability-session-page"));
+      });
+      await page.waitForSelector(".msg-more");
+      await page.waitForTimeout(200);
+    },
     "tool-span-selected": async (page) => {
       await withSession(page);
       await page.waitForSelector(".span-row");

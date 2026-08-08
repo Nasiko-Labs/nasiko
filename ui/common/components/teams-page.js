@@ -20,7 +20,7 @@ class TeamsPage extends HTMLElement {
       <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Teams</h1>
-        <span class="count-chips" id="teams-stats"></span>
+        <span class="count-chips" id="teams-stats"><span class="pre-chip" style="--pre-chip-w:74px"></span><span class="pre-chip" style="--pre-chip-w:122px"></span></span>
         <div class="head-actions">
           <app-button variant="primary" size="sm" id="btn-create-team">${icons.plus('', 16)} Create team</app-button>
         </div>

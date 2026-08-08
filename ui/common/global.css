@@ -34,7 +34,7 @@
 
 /* 1. Design Tokens (The API)
  *
- * Source of truth: Nasiko UI Design System (yellow palette, Slate neutrals,
+ * Source of truth: Nasiko UI Design System (yellow palette, ink neutrals,
  * Chivo Mono display + Inter body). DS tokens (--bg-, --fg-, --border-,
  * --s-, --r-) are canonical; the legacy --color- / --space- / --radius-
  * names below are aliases kept so existing component CSS re-skins unchanged.
@@ -50,16 +50,27 @@
   --white: #FFFFFF;
   --black: #000000;
 
-  --neutral-50:  #F8FAFC;
-  --neutral-100: #F1F5F9;
-  --neutral-200: #E2E8F0;
-  --neutral-300: #CBD5E1;
-  --neutral-400: #94A3B8;
-  --neutral-500: #64748B;
-  --neutral-600: #475569;
-  --neutral-700: #334155;
-  --neutral-800: #1E293B;
-  --neutral-900: #0F172A;
+  /* Ink neutral ramp — same hue family as --shell-bg (#242628) at ~5%
+     saturation, NOT Tailwind Slate (~33% saturation on a blue hue). Dark
+     surfaces come from light-dark(sand-*, neutral-*), so the old Slate values
+     gave the whole dark theme a blue cast that clashed with the always-ink
+     chrome. Two deliberate relationships: --neutral-800 (#2B2D30, the dark
+     content surface) is slightly LIGHTER than the ink shell so the content
+     plane floats above the chrome exactly as the white plane does in light
+     theme, while --neutral-900 (#1A1C1E) is darker than the ink and serves as
+     the recessed card/well surface sitting inside that plane. */
+  --neutral-50:  #F7F8F9;
+  --neutral-100: #EEF0F2;
+  --neutral-200: #DFE2E5;
+  --neutral-300: #C3C7CB;
+  /* Lightened from #90949A: muted text on the dark plane measured 4.53:1
+     (AA with no headroom); this restores 5.24:1 at the same hue. */
+  --neutral-400: #9BA0A6;
+  --neutral-500: #6B6E72;
+  --neutral-600: #4F5255;
+  --neutral-700: #3A3D40;
+  --neutral-800: #2B2D30;
+  --neutral-900: #1A1C1E;
 
   --yellow-50:  #FDF7E6;
   --yellow-100: #FBF0CE;
@@ -167,7 +178,10 @@
   /* ==== DS spacing / radius / border widths / icon sizes ==== */
   --s-0: 0px; --s-2: 2px; --s-4: 4px; --s-8: 8px;
   --s-12: 12px; --s-16: 16px; --s-20: 20px; --s-24: 24px;
-  --s-28: 28px; --s-36: 36px; --s-48: 48px; --s-64: 64px; --s-80: 80px;
+  --s-28: 28px; --s-36: 36px; --s-48: 48px; --s-52: 52px; --s-64: 64px; --s-80: 80px;
+
+  /* Standard content padding inside the white card (52 top, 64 sides/bottom) */
+  --card-content-pad: var(--s-52) var(--s-64) var(--s-64);
 
   --r-0: 0px; --r-4: 4px; --r-6: 6px; --r-8: 8px;
   --r-10: 10px; --r-12: 12px; --r-16: 16px; --r-40: 40px;
@@ -380,15 +394,15 @@ main.app-shell {
     background: var(--color-bg-surface);
     border: none;
     border-radius: var(--r-8);
-    margin: var(--s-16);
-    min-height: calc(100dvh - var(--shell-topbar-height) - 2 * var(--s-16));
+    margin: 0 var(--s-12) var(--s-12) 0;
+    min-height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     box-shadow: 0 8px 16px rgba(100, 116, 139, 0.12);
   }
 
   /* <main> content pages keep their centered column inside the card */
   body:has(> app-header) > main {
     max-width: none;
-    padding: var(--s-28) var(--s-48) var(--s-48);
+    padding: var(--card-content-pad);
   }
 
   body:has(> app-header) > main > * {
@@ -397,7 +411,7 @@ main.app-shell {
   }
 
   body:has(> app-header) > main.app-shell {
-    height: calc(100dvh - var(--shell-topbar-height) - 2 * var(--s-16));
+    height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     padding: 0;
   }
 
@@ -600,8 +614,34 @@ textarea {
   min-height: 80px;
 }
 
-select {
+/* Native selects: drop the OS chrome and draw the DS chevron — a stroked
+   caret matching icons.js, not a filled triangle. A url() SVG can't read
+   custom properties, so the stroke is baked per theme and re-declared for the
+   dark side below; `--fg-secondary` is #645C52 light / #9BA0A6 dark.
+   `:not([multiple])` also lifts specificity to (0,1,1) so the background-image
+   survives the `:is(input…, select)` rule's `background:` shorthand above. */
+select:not([multiple]) {
   cursor: pointer;
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23645C52' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 12px center;
+  background-size: 12px 12px;
+  background-repeat: no-repeat;
+
+  &:hover:not(:disabled) {
+    background-color: var(--bg-surface-hover);
+  }
+}
+
+/* Dark caret: system-dark unless light is pinned, plus explicitly pinned dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) select:not([multiple]) {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239BA0A6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+}
+:root[data-theme="dark"] select:not([multiple]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239BA0A6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 input[type="file"] {

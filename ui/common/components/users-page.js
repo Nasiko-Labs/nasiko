@@ -107,7 +107,7 @@ class UsersPage extends HTMLElement {
       <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Users</h1>
-        <span class="count-chips" id="users-stats"></span>
+        <span class="count-chips" id="users-stats"><span class="pre-chip" style="--pre-chip-w:70px"></span><span class="pre-chip" style="--pre-chip-w:69px"></span></span>
         <div class="head-actions">
           <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 16)} Sync Azure AD Directory</app-button>
           <app-button variant="primary" size="sm" id="btn-add-user">${icons.plus('', 16)} Create user</app-button>

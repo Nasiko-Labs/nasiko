@@ -1,23 +1,6 @@
-chat-page:not(:defined) {
-  display: flex;
-  flex-direction: column;
-  height: calc(100dvh - var(--app-header-height));
-  padding: 0 var(--space-md);
-}
-
 @scope (chat-page) {
-  :scope {
-    display: flex;
-    flex-direction: column;
-    height: calc(100dvh - var(--app-header-height));
-    padding: 0 var(--space-md);
-
-    @media (min-width: 1024px) {
-      /* Fill the floating content card exactly (topbar + 16px card margins)
-         so .messages scrolls internally and the composer stays pinned. */
-      height: calc(100dvh - var(--shell-topbar-height) - 2 * var(--s-16));
-    }
-  }
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
 
   /* ── Header ──────────────────────────────────────────────────────────── */
   .chat-header {
@@ -257,6 +240,11 @@ chat-page:not(:defined) {
   .stream-content.is-visible {
     display: block;
   }
+  /* Live progress prose (TASK_STATE_WORKING) — visibly provisional until the
+     real reply replaces it. */
+  .stream-content.is-progress {
+    color: var(--color-text-muted);
+  }
 
   /* ── Trace link lives in .msg-actions (a.msg-action-trace) ───────────── */
 
@@ -268,6 +256,16 @@ chat-page:not(:defined) {
     width: 100%;
     max-width: 900px;
     margin-inline: auto;
+  }
+
+  /* ── Per-message usage chips (usage_meta / chat_messages usage columns) ─ */
+  .msg-actions .msg-usage {
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    align-self: center;
+    padding: 0 var(--space-2xs);
   }
 
   /* ── Typing indicator ────────────────────────────────────────────────── */

@@ -1,10 +1,12 @@
 /**
- * Global ⌘F command palette used inside `<app-header>`: searches pages plus
- * live control-plane data — agents (`window.fetchAgents`), MCP connectors
- * (`window.fetchMcpConnectors`), and recent chat sessions
- * (`window.fetchSessions`) — in labeled groups. Data loads once per open and
- * filters client-side per keystroke; sources that fail (or don't exist on a
- * deployment) simply omit their group.
+ * Global ⌘F search palette used inside `<app-header>`: a dark ink dropdown
+ * anchored under the topbar search field (NightOwl "Global search panel").
+ * Searches pages plus live control-plane entities — agents, workflows, MAF
+ * executions, chat sessions, MCP connectors, Composio toolkits, builds, and
+ * (EE only, feature-detected) users. Data loads once per open, in parallel,
+ * rendering incrementally as each source lands; keystrokes filter
+ * client-side after a short debounce. Sources that fail (or don't exist on
+ * a deployment) simply omit their section.
  *
  * @element app-nav-search
  * @fires navigate - Item selected; `detail: { url, newTab }` — bubbles
@@ -12,152 +14,181 @@
 import { icons } from "../utils/icons.js";
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (app-nav-search) {
+    /* Ink panel per the NightOwl mockup: shell background, radius 8, deep
+       drop shadow, no backdrop dim. Anchored under the topbar search field
+       by inline styles from #position(); these rules are the un-anchored
+       fallback (top-centered, e.g. if the topbar field is missing). */
     .nav-dialog {
-      border-radius: clamp(0px, 3vw, var(--radius-lg));
-      max-width: min(600px, 90vw);
-      width: min(100% - var(--space-xl), 600px);
-      margin: clamp(0rem, 5vh, var(--space-2xl)) auto;
+      margin: calc(var(--shell-topbar-height) + var(--s-8)) auto auto;
+      width: min(480px, calc(100vw - 16px));
+      padding: 0;
+      border: none;
+      border-radius: var(--r-8);
+      background: var(--shell-bg);
+      color: var(--shell-fg);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
       overflow: hidden;
-      &::backdrop { background: rgba(0, 0, 0, 0.5); }
+      /* Mockup: no dim, no blur — outside clicks still close via the
+         (invisible) backdrop. Overrides global dialog::backdrop. */
+      &::backdrop { background: transparent; backdrop-filter: none; }
     }
     .nav-search { display: flex; flex-direction: column; }
+    /* Input styled like the topbar search field it drops down from. */
     .input-row {
       display: flex;
       align-items: center;
-      gap: var(--space-sm);
-      padding: var(--space-lg) var(--space-xl);
-      border-bottom: 1px solid var(--color-border);
+      gap: var(--s-8);
+      margin: var(--s-12) var(--s-12) var(--s-8);
+      height: var(--control-h-sm);
+      padding: 0 var(--s-12);
+      border-radius: var(--r-6);
+      background: var(--shell-control);
     }
-    .input-icon { flex-shrink: 0; width: 18px; height: 18px; color: var(--color-text-muted); }
+    .input-icon { flex-shrink: 0; width: 15px; height: 15px; color: var(--shell-fg-muted); }
     .input {
       flex: 1;
       border: none;
       background: transparent;
-      color: var(--color-text-main);
-      font-size: var(--font-size-base);
+      color: var(--shell-fg);
+      font-size: 13px;
       padding: 0;
       min-width: 0;
-      &:focus { outline: none; }
-      &::placeholder { color: var(--color-text-muted); }
+      &:focus { outline: none; box-shadow: none; }
+      &::placeholder { color: var(--shell-fg-muted); }
     }
     .esc-hint {
       flex-shrink: 0;
-      font-size: var(--font-size-xs);
-      color: var(--color-text-muted);
-      background: var(--color-bg-base);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-sm);
-      padding: 2px var(--space-xs);
+      font-family: inherit;
+      font-size: 11px;
+      color: var(--shell-fg-muted);
+      background: transparent; /* global kbd rule paints a light chip */
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: var(--r-4);
+      padding: 1px 5px;
       cursor: default;
       user-select: none;
     }
     .results {
       list-style: none;
-      padding: var(--space-xs) 0;
+      padding: 0 var(--s-8) var(--s-8);
       margin: 0;
-      max-height: min(400px, 60vh);
+      max-height: min(480px, calc(100dvh - 160px));
       overflow-y: auto;
       & .group-head {
-        padding: var(--space-sm) var(--space-lg) var(--space-2xs);
-        font-size: var(--font-size-xs);
+        padding: var(--s-8) var(--s-8) var(--s-4);
+        font-size: 11px;
         font-weight: 600;
-        letter-spacing: 0.4px;
+        letter-spacing: 0.5px;
         text-transform: uppercase;
-        color: var(--color-text-muted);
+        color: var(--shell-fg-muted);
+        user-select: none;
+      }
+      & .group-more {
+        padding: 2px var(--s-8) var(--s-4);
+        font-size: 12px;
+        color: var(--shell-fg-muted);
         user-select: none;
       }
       &::-webkit-scrollbar { width: 6px; }
       &::-webkit-scrollbar-track { background: transparent; }
-      &::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+      &::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 3px; }
     }
     .result {
       display: flex;
       align-items: center;
-      gap: var(--space-sm);
-      padding: var(--space-sm) var(--space-lg);
+      gap: var(--s-8);
+      padding: 6px var(--s-8);
+      border-radius: var(--r-6);
       cursor: pointer;
-      border-left: 3px solid transparent;
-      &:hover { background: var(--color-bg-base); }
+      &:hover { background: rgba(255, 255, 255, 0.06); }
       &.is-active {
-        background: var(--color-bg-base);
-        border-left-color: var(--color-primary);
-        & .result-label { color: var(--color-primary); font-weight: 600; }
-        & .result-icon { color: var(--color-primary); }
-        & .result-arrow { opacity: 1; color: var(--color-primary); }
+        background: var(--shell-control-hover);
+        & .result-icon { color: var(--shell-selected); }
+        & .result-arrow { opacity: 1; color: var(--shell-selected); }
       }
       &.is-current { & .result-label { font-weight: 600; } }
     }
-    .result-icon { flex-shrink: 0; width: 16px; height: 16px; color: var(--color-text-muted); }
+    .result-icon { flex-shrink: 0; width: 15px; height: 15px; color: var(--shell-fg-muted); }
     .result-body { flex: 1; min-width: 0; }
-    .result-label { font-size: var(--font-size-sm); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .result-subtitle { font-size: var(--font-size-xs); color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
-    .result-arrow { flex-shrink: 0; width: 14px; height: 14px; color: var(--color-text-muted); opacity: 0; }
-    .result-current-dot { display: block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-primary); flex-shrink: 0; }
+    .result-label { font-size: 13px; font-weight: 500; color: var(--shell-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .result-subtitle { font-size: 12px; color: var(--shell-fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+    .result-arrow { flex-shrink: 0; width: 13px; height: 13px; color: var(--shell-fg-muted); opacity: 0; }
+    .result-current-dot { display: block; width: 6px; height: 6px; border-radius: 50%; background: var(--shell-selected); flex-shrink: 0; }
     .empty {
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: var(--space-2xl) var(--space-lg);
-      color: var(--color-text-muted);
-      gap: var(--space-sm);
+      padding: var(--s-24) var(--s-12);
+      color: var(--shell-fg-muted);
+      gap: var(--s-8);
     }
-    .empty-icon { width: 32px; height: 32px; opacity: 0.4; }
-    .empty-text { font-size: var(--font-size-sm); }
+    .empty-icon { width: 28px; height: 28px; opacity: 0.4; }
+    .empty-text { font-size: 13px; }
     .footer {
       display: flex;
       align-items: center;
-      gap: var(--space-lg);
-      padding: var(--space-sm) var(--space-lg);
-      border-top: 1px solid var(--color-border);
-      background: var(--color-bg-base);
+      gap: var(--s-12);
+      padding: var(--s-8) var(--s-12);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
     }
-    .footer-hint { display: flex; align-items: center; gap: var(--space-xs); font-size: var(--font-size-xs); color: var(--color-text-muted); }
+    .footer-hint { display: flex; align-items: center; gap: var(--s-4); font-size: 11px; color: var(--shell-fg-muted); }
     .footer-key {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: var(--font-size-xs);
-      color: var(--color-text-muted);
-      background: var(--color-bg-surface);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-sm);
-      padding: 1px 5px;
+      font-family: inherit;
+      font-size: 11px;
+      color: var(--shell-fg-muted);
+      background: transparent; /* global kbd rule paints a light chip */
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: var(--r-4);
+      padding: 0 4px;
     }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
   }
 `);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
+const FILTER_DEBOUNCE_MS = 150;
 
+/** Unwraps the common list envelopes: bare array or {data:[...]}. */
+const rowsOf = (r) => (Array.isArray(r) ? r : r?.data) || [];
 
-/** Global search dialog for app-header. Emits `navigate` event. */
+/** Global search palette for app-header. Emits `navigate` event. */
 export class AppNavSearch extends HTMLElement {
   #navLinks = [];
   #userPrefix = '';
+  #anchor = null;
   #isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  #results = [];
+  #sections = [];
+  #flat = [];
   #selectedIndex = -1;
   #dialog;
   #input;
   #resultsList;
+  #debounceTimer;
   // Live control-plane data, loaded once per open (small lists; filtered
   // client-side per keystroke). Missing/failed sources stay empty arrays.
-  #agents = [];
-  #connectors = [];
-  #sessions = [];
+  #data = {
+    agents: [], workflows: [], executions: [], sessions: [],
+    connectors: [], toolkits: [], builds: [], users: [],
+  };
+  #usersUnavailable = false; // EE-only source; 404 on OSS hides the section
   #loadToken = 0;
 
   set navLinks(v) { this.#navLinks = v; }
   set userPrefix(v) { this.#userPrefix = v; }
+  /** Topbar search field the panel anchors under (set by app-header). */
+  set anchorEl(el) { this.#anchor = el; }
 
   connectedCallback() {
     this.innerHTML = `
-      <dialog class="nav-dialog" data-nav-dialog aria-label="Navigation search">
+      <dialog class="nav-dialog" data-nav-dialog aria-label="Global search">
         <div class="nav-search">
           <div class="input-row">
             ${icons.search('input-icon')}
             <input class="input" type="text" autocomplete="off"
-              placeholder="Search pages…" data-nav-input aria-label="Search navigation"
+              placeholder="Search anything…" data-nav-input aria-label="Global search"
               role="combobox" aria-autocomplete="list" aria-haspopup="listbox"/>
             <kbd class="esc-hint">ESC</kbd>
           </div>
@@ -186,9 +217,11 @@ export class AppNavSearch extends HTMLElement {
     this.#resultsList = this.querySelector('[data-nav-results]');
 
     this.#input?.addEventListener('input', () => {
-      this.#results = this.#filter(this.#input.value.trim());
-      this.#selectedIndex = this.#results.length > 0 ? 0 : -1;
-      this.#renderResults();
+      clearTimeout(this.#debounceTimer);
+      this.#debounceTimer = setTimeout(() => {
+        this.#refresh();
+        this.#searchUsers(this.#input.value.trim());
+      }, FILTER_DEBOUNCE_MS);
     });
 
     this.#input?.addEventListener('keydown', e => {
@@ -201,104 +234,193 @@ export class AppNavSearch extends HTMLElement {
     });
 
     this.#dialog?.addEventListener('cancel', e => { e.preventDefault(); this.close(); });
+    // With a transparent ::backdrop, clicks outside the panel hit the
+    // backdrop (target = the dialog element) — close, don't dim.
     this.#dialog?.addEventListener('click', e => { if (e.target === this.#dialog) this.close(); });
   }
 
   open() {
     if (!this.#dialog) return;
-    if (this.#input) this.#input.placeholder = 'Search pages, agents, MCPs, chats…';
-    this.#results = this.#filter('');
-    this.#selectedIndex = this.#results.length > 0 ? 0 : -1;
-    this.#renderResults();
+    this.#usersUnavailable = false;
+    this.#refresh();
+    this.#position();
     this.#dialog.showModal();
+    window.addEventListener('resize', this.#onResize);
     setTimeout(() => this.#input?.focus(), 50);
     this.#loadSources();
-  }
-
-  /** Fetch agents / MCP connectors / recent chats; re-filter when they land. */
-  async #loadSources() {
-    const token = ++this.#loadToken;
-    const settle = (p, apply) => p.then(apply).catch(() => { /* source unavailable */ });
-    await Promise.all([
-      typeof window.fetchAgents === 'function'
-        ? settle(window.fetchAgents('', 1, 50), (r) => {
-            this.#agents = Array.isArray(r) ? r : r?.data || [];
-          })
-        : null,
-      typeof window.fetchMcpConnectors === 'function'
-        ? settle(window.fetchMcpConnectors(), (r) => {
-            const d = r?.data ?? r ?? {};
-            this.#connectors = [...(d.created_by_you || []), ...(d.shared_with_you || [])];
-          })
-        : null,
-      typeof window.fetchSessions === 'function'
-        ? settle(window.fetchSessions('', 1, 25), (r) => {
-            this.#sessions = Array.isArray(r) ? r : r?.data || [];
-          })
-        : null,
-    ]);
-    // Stale response of a previous open, or the dialog closed meanwhile.
-    if (token !== this.#loadToken || !this.#dialog?.open) return;
-    this.#results = this.#filter(this.#input?.value.trim() || '');
-    if (this.#selectedIndex === -1 && this.#results.length) this.#selectedIndex = 0;
-    this.#renderResults();
   }
 
   close() {
     if (!this.#dialog) return;
     this.#dialog.close();
+    window.removeEventListener('resize', this.#onResize);
+    clearTimeout(this.#debounceTimer);
     if (this.#input) this.#input.value = '';
-    this.#results = [];
+    this.#sections = [];
+    this.#flat = [];
     this.#selectedIndex = -1;
   }
 
-  #filter(query) {
+  #onResize = () => { if (this.#dialog?.open) this.#position(); };
+
+  /** Anchor the panel under the topbar search field, mockup-style; fall
+   *  back to the top-centered CSS position when no anchor is rendered. */
+  #position() {
+    const anchor = this.#anchor?.isConnected
+      ? this.#anchor
+      : this.closest('app-header')?.querySelector('[data-search-trigger]');
+    const rect = anchor?.getBoundingClientRect();
+    const style = this.#dialog.style;
+    if (!rect || rect.width === 0) {
+      style.margin = style.left = style.top = style.width = '';
+      return;
+    }
+    // Deviation from the 280px mockup panel: our rows carry subtitles, so
+    // widen to ~480px (never narrower than the field, never off-screen).
+    const width = Math.min(Math.max(rect.width, 480), window.innerWidth - 16);
+    const left = Math.min(Math.max(rect.left, 8), window.innerWidth - width - 8);
+    style.margin = '0';
+    style.left = `${left}px`;
+    style.top = `${rect.bottom + 6}px`;
+    style.width = `${width}px`;
+  }
+
+  /** Fires all entity fetches in parallel; each one re-renders as it lands. */
+  #loadSources() {
+    const token = ++this.#loadToken;
+    const settle = (p, apply) => p
+      ?.then((r) => {
+        // Ignore stale responses of a previous open, or a closed dialog.
+        if (token !== this.#loadToken || !this.#dialog?.open) return;
+        apply(r);
+        this.#refresh();
+      })
+      .catch(() => { /* source unavailable — section omitted */ });
+    const call = (name, ...args) =>
+      typeof window[name] === 'function' ? window[name](...args) : null;
+
+    settle(call('fetchAgents', '', 1, 50), (r) => { this.#data.agents = rowsOf(r); });
+    settle(call('fetchWorkflows', 50), (r) => { this.#data.workflows = rowsOf(r); });
+    settle(call('fetchAllExecutions', 50), (r) => { this.#data.executions = rowsOf(r); });
+    settle(call('fetchSessions', '', 1, 50), (r) => { this.#data.sessions = rowsOf(r); });
+    settle(call('fetchMcpConnectors'), (r) => {
+      const d = r?.data ?? r ?? {};
+      this.#data.connectors = [...(d.created_by_you || []), ...(d.shared_with_you || [])];
+    });
+    settle(call('fetchMcpToolkits'), (r) => { this.#data.toolkits = r?.data?.toolkits || []; });
+    settle(call('fetchBuilds', '', 1, 25), (r) => { this.#data.builds = rowsOf(r); });
+    this.#searchUsers(this.#input?.value.trim() || '');
+  }
+
+  /** EE-only user directory search; the query runs server-side, so refetch
+   *  per (debounced) keystroke. First failure hides the section for this open. */
+  async #searchUsers(query) {
+    if (this.#usersUnavailable || typeof window.fetchUserSearch !== 'function') return;
+    const token = this.#loadToken;
+    try {
+      const r = await window.fetchUserSearch(query);
+      if (token !== this.#loadToken || !this.#dialog?.open) return;
+      this.#data.users = Array.isArray(r) ? r : r?.data?.users || r?.data || [];
+      this.#refresh();
+    } catch {
+      this.#usersUnavailable = true;
+      this.#data.users = [];
+    }
+  }
+
+  #refresh() {
+    this.#sections = this.#buildSections(this.#input?.value.trim() || '');
+    this.#flat = this.#sections.flatMap((s) => s.items);
+    this.#selectedIndex = this.#flat.length > 0 ? 0 : -1;
+    this.#renderResults();
+  }
+
+  /** Grouped, capped, deduped sections; substring match like the rest of the UI. */
+  #buildSections(query) {
     const q = query.toLowerCase();
-    const matches = (...fields) =>
-      !q || fields.some((f) => (f || '').toLowerCase().includes(q));
+    const hit = (...fields) => !q || fields.some((f) => (f || '').toLowerCase().includes(q));
+    const cap = q ? 5 : 3;
+    const pfx = this.#userPrefix;
+    const seen = new Set();
+    const section = (group, icon, rows, match, toItem) => {
+      const items = rows.filter(match).map(toItem).filter((item) => {
+        const key = `${group}|${item.value}|${item.label}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      return { group, icon, items: items.slice(0, cap), extra: Math.max(0, items.length - cap) };
+    };
+    const d = this.#data;
 
-    const pages = this.#navLinks
-      .filter((l) => matches(l.title, l.url, l.description))
-      .map((l) => ({
-        group: 'Pages', icon: 'document',
-        label: l.title,
-        value: this.#userPrefix + l.url,
-        subtitle: l.description || l.url,
-      }));
-
-    const agents = this.#agents
-      .filter((a) => matches(a.display_name, a.name, a.description))
-      .slice(0, q ? 6 : 4)
-      .map((a) => ({
-        group: 'Agents', icon: 'bot',
-        label: a.display_name || a.name,
-        value: `${this.#userPrefix}/agent-card.html?id=${encodeURIComponent(a.id)}`,
-        subtitle: (a.description || a.name || '').slice(0, 90),
-      }));
-
-    const connectors = this.#connectors
-      .filter((c) => matches(c.display_name, c.name, c.url))
-      .slice(0, q ? 6 : 3)
-      .map((c) => ({
-        group: 'MCP connectors', icon: 'server',
-        label: c.display_name || c.name,
-        value: `${this.#userPrefix}/mcp.html`,
-        subtitle: c.url || c.name,
-      }));
-
-    const sessions = this.#sessions
-      .filter((s) => matches(s.agent_name, s.last_message, s.title))
-      .slice(0, q ? 6 : 4)
-      .map((s) => ({
-        group: 'Recent chats', icon: 'history',
-        label: (s.title || s.last_message || '').slice(0, 70) || s.session_id,
-        value: `${this.#userPrefix}/chat.html?session_id=${encodeURIComponent(s.session_id)}`
-          + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
-          + `&agent_name=${encodeURIComponent(s.agent_name || 'Orchestrator')}`,
-        subtitle: s.agent_name || 'Orchestrator',
-      }));
-
-    return [...pages, ...agents, ...connectors, ...sessions];
+    return [
+      section('Agents', 'bot', d.agents,
+        (a) => hit(a.display_name, a.name, a.description),
+        (a) => ({
+          label: a.display_name || a.name,
+          value: `${pfx}/agent-card.html?id=${encodeURIComponent(a.id)}`,
+          subtitle: (a.description || a.name || '').slice(0, 90),
+        })),
+      section('Workflows', 'workflow', d.workflows,
+        (w) => hit(w.name, w.description),
+        (w) => ({
+          label: w.name,
+          value: `${pfx}/workflow.html?id=${encodeURIComponent(w.id)}`,
+          subtitle: (w.description || '').slice(0, 90) || w.status,
+        })),
+      section('Executions', 'play', d.executions.filter((e) => e.maf_id),
+        (e) => hit(e.workflow_name, e.status, e.id),
+        (e) => ({
+          label: `${e.workflow_name || 'Deleted workflow'} · ${e.status}`,
+          value: `${pfx}/workflow.html?id=${encodeURIComponent(e.maf_id)}&exec=${encodeURIComponent(e.id)}`,
+          subtitle: e.execution_number != null ? `Run #${e.execution_number}` : e.id,
+        })),
+      section('Chats', 'history', d.sessions,
+        (s) => hit(s.title, s.last_message, s.agent_name),
+        (s) => ({
+          label: (s.title || s.last_message || '').slice(0, 70) || s.session_id,
+          value: `${pfx}/chat.html?session_id=${encodeURIComponent(s.session_id)}`
+            + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
+            + `&agent_name=${encodeURIComponent(s.agent_name || 'Orchestrator')}`,
+          subtitle: s.agent_name || 'Orchestrator',
+        })),
+      section('MCP connectors', 'server', d.connectors,
+        (c) => hit(c.display_name, c.name, c.url),
+        (c) => ({
+          label: c.display_name || c.name,
+          value: `${pfx}/mcp.html`,
+          subtitle: c.url || c.name,
+        })),
+      section('Toolkits', 'layers', d.toolkits,
+        (t) => hit(t.display_name, t.name, t.description),
+        (t) => ({
+          label: t.display_name || t.name,
+          value: `${pfx}/mcp.html`,
+          subtitle: (t.description || '').slice(0, 90)
+            || (t.tool_count ? `${t.tool_count} tools` : ''),
+        })),
+      section('Builds', 'cube', d.builds,
+        (b) => hit(b.image_reference, b.version_tag, b.status, b.id),
+        (b) => ({
+          label: b.image_reference || `Build ${(b.id || '').slice(0, 8)}`,
+          value: `${pfx}/build.html?id=${encodeURIComponent(b.id)}`,
+          subtitle: [b.status, b.version_tag].filter(Boolean).join(' · '),
+        })),
+      section('Users', 'users', d.users,
+        (u) => hit(u.display_name, u.username, u.email),
+        (u) => ({
+          label: u.display_name || u.username || u.email,
+          value: `${pfx}/users.html`,
+          subtitle: u.email || u.role || '',
+        })),
+      section('Pages', 'document', this.#navLinks,
+        (l) => hit(l.title, l.url, l.description),
+        (l) => ({
+          label: l.title,
+          value: pfx + l.url,
+          subtitle: l.description || l.url,
+        })),
+    ].filter((s) => s.items.length > 0);
   }
 
   #normalize(p) {
@@ -308,7 +430,7 @@ export class AppNavSearch extends HTMLElement {
   #renderResults() {
     if (!this.#resultsList) return;
 
-    if (this.#results.length === 0) {
+    if (this.#flat.length === 0) {
       this.#resultsList.innerHTML = `
         <li class="empty">
           ${icons.faceFrown('empty-icon')}
@@ -318,29 +440,31 @@ export class AppNavSearch extends HTMLElement {
     }
 
     const currentPath = this.#normalize(window.location.pathname);
-    let lastGroup = null;
-    this.#resultsList.innerHTML = this.#results.map((item, i) => {
-      const isCurrent = this.#normalize(item.value) === currentPath;
-      const indicator = isCurrent
-        ? `<span class="result-current-dot" aria-hidden="true"></span>
-           <span class="sr-only">(current page)</span>`
-        : `${icons.chevronRight('result-arrow')}`;
-      const header = item.group && item.group !== lastGroup
-        ? `<li class="group-head" role="presentation">${this.#esc(item.group)}</li>`
+    let idx = 0;
+    this.#resultsList.innerHTML = this.#sections.map((sec) => {
+      const iconHtml = (icons[sec.icon] || icons.document)('result-icon');
+      const rows = sec.items.map((item) => {
+        const i = idx++;
+        const isCurrent = this.#normalize(item.value) === currentPath;
+        const indicator = isCurrent
+          ? `<span class="result-current-dot" aria-hidden="true"></span>
+             <span class="sr-only">(current page)</span>`
+          : `${icons.chevronRight('result-arrow')}`;
+        return `
+          <li class="result${i === this.#selectedIndex ? ' is-active' : ''}${isCurrent ? ' is-current' : ''}"
+            data-idx="${i}" role="option" aria-selected="${i === this.#selectedIndex}">
+            ${iconHtml}
+            <div class="result-body">
+              <div class="result-label">${this.#esc(item.label)}</div>
+              ${item.subtitle ? `<div class="result-subtitle">${this.#esc(item.subtitle)}</div>` : ''}
+            </div>
+            ${indicator}
+          </li>`;
+      }).join('');
+      const more = sec.extra > 0
+        ? `<li class="group-more" role="presentation">+${sec.extra} more — keep typing to narrow</li>`
         : '';
-      lastGroup = item.group;
-      const iconHtml = (icons[item.icon] || icons.document)('result-icon');
-
-      return `${header}
-        <li class="result${i === this.#selectedIndex ? ' is-active' : ''}${isCurrent ? ' is-current' : ''}"
-          data-idx="${i}" role="option" aria-selected="${i === this.#selectedIndex}">
-          ${iconHtml}
-          <div class="result-body">
-            <div class="result-label">${this.#esc(item.label)}</div>
-            ${item.subtitle ? `<div class="result-subtitle">${this.#esc(item.subtitle)}</div>` : ''}
-          </div>
-          ${indicator}
-        </li>`;
+      return `<li class="group-head" role="presentation">${this.#esc(sec.group)}</li>${rows}${more}`;
     }).join('');
 
     this.#resultsList.querySelectorAll('[data-idx]').forEach(el => {
@@ -367,15 +491,15 @@ export class AppNavSearch extends HTMLElement {
   }
 
   #move(dir) {
-    if (!this.#results.length) return;
-    this.#selectedIndex = (this.#selectedIndex + dir + this.#results.length) % this.#results.length;
+    if (!this.#flat.length) return;
+    this.#selectedIndex = (this.#selectedIndex + dir + this.#flat.length) % this.#flat.length;
     this.#updateHighlight();
     this.#resultsList?.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
   }
 
   #confirm(newTab = false) {
-    if (this.#selectedIndex === -1 && this.#results.length > 0) this.#selectedIndex = 0;
-    const item = this.#results[this.#selectedIndex];
+    if (this.#selectedIndex === -1 && this.#flat.length > 0) this.#selectedIndex = 0;
+    const item = this.#flat[this.#selectedIndex];
     if (!item?.value) return;
     this.close();
     this.dispatchEvent(new CustomEvent('navigate', { bubbles: true, detail: { url: item.value, newTab } }));

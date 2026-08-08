@@ -26,24 +26,41 @@ styles.replaceSync(`@scope (agent-llm-config) {
     margin-top: 2px;
     font-weight: 400;
   }
+  /* DS form controls: 32px flat sand wells, hairline only on focus.
+     background-color (not the shorthand) so the global select chevron survives. */
   .row input, .row select {
     width: 100%;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    height: var(--control-h-md);
+    padding: 0 var(--s-12);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background-color: var(--bg-input);
     color: var(--color-text-main);
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
     font-family: inherit;
   }
+  .row select { padding-right: 30px; }
   .row input:focus, .row select:focus {
     outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
+    border-color: var(--border-hover);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); }
   .actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-lg); }
-  .btn-save { background: var(--color-primary); color: #fff; border: none; padding: var(--space-xs) var(--space-md); border-radius: var(--radius-md); font-size: var(--font-size-sm); font-weight: 500; cursor: pointer; }
+  /* Dark primary per DS (sand-800 fill), not the legacy gold-on-white. */
+  .btn-save {
+    min-height: var(--control-h-md);
+    padding: 0 var(--s-16);
+    border: none;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-800), var(--neutral-200));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .btn-save:hover { opacity: 0.9; }
+  .btn-save:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--color-primary-ring); }
   .msg { color: var(--color-text-muted); font-style: italic; }
   .msg.error { color: var(--color-error); font-style: normal; }
 }`);
@@ -76,7 +93,9 @@ class AgentLlmConfig extends HTMLElement {
       }</p>`;
       return;
     }
-    this.#render(config, Array.isArray(secrets) ? secrets : []);
+    // GET /api/secrets answers with the ApiResponse envelope ({data:[…]});
+    // tolerate a bare array too so older servers keep working.
+    this.#render(config, Array.isArray(secrets) ? secrets : (secrets?.data ?? []));
   }
 
   #render(config, secrets) {

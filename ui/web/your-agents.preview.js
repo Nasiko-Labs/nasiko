@@ -40,6 +40,23 @@ export default {
       await page.click('.type-tab[data-status="failed"]');
       await page.waitForTimeout(200);
     },
+    // Freezes the tab indicator mid-flight: stretch the transition, click a
+    // far tab, capture while the gold bar is between the two labels.
+    "tab-slide-mid": async (page) => {
+      await page.waitForSelector(".agent-card-name");
+      await page.addStyleTag({
+        content: ".tab-indicator { transition-duration: 4s !important; transition-timing-function: linear !important; }",
+      });
+      await page.click('.type-tab[data-status="failed"]');
+      await page.waitForTimeout(1200);
+    },
+    // With reduced motion the indicator must land instantly on the new tab.
+    "tab-reduced-motion": async (page) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.waitForSelector(".agent-card-name");
+      await page.click('.type-tab[data-status="running"]');
+      await page.waitForTimeout(80);
+    },
     "sort-status": async (page) => {
       await page.waitForSelector(".agent-card-name");
       await page.selectOption("#sort-select", "status");

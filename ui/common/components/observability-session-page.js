@@ -1,5 +1,4 @@
 /**
-import '/common/components/app-skeleton.js';
  * Observability session detail — three panes: chat history, trace/span tree,
  * span detail (info/attributes with input/output messages).
  *
@@ -12,6 +11,11 @@ import '/common/components/app-skeleton.js';
  */
 import styles from './observability-session-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
+import { renderMarkdown } from '/common/utils/markdown.js';
+// Both were previously "imported" from inside the docblock above, i.e. never:
+// <app-skeleton> and <app-empty-state> rendered as inert unknown elements.
+import '/common/components/app-skeleton.js';
+import '/common/components/app-empty-state.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class ObservabilitySessionPage extends HTMLElement {
@@ -22,6 +26,8 @@ class ObservabilitySessionPage extends HTMLElement {
   #span = null;         // currently-selected span's detail payload
   #selected = null;     // {traceId, spanId}
   #detailTab = 'info';
+  #tracesState = 'loading';  // loading | ready | empty | error
+  #chatState = 'loading';    // loading | ready | empty
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -55,6 +61,16 @@ class ObservabilitySessionPage extends HTMLElement {
     this.querySelector('#chat-pane').addEventListener('click', (e) => {
       if (e.target.closest('.pane-collapse')) {
         this.querySelector('.panes').classList.toggle('chat-collapsed');
+        return;
+      }
+      const copyBtn = e.target.closest('.md-code-copy');
+      if (copyBtn) {
+        const codeEl = copyBtn.closest('.md-code-block')?.querySelector('code');
+        if (codeEl) {
+          navigator.clipboard.writeText(codeEl.textContent).catch(() => {});
+          copyBtn.innerHTML = icons.check('', 14);
+          setTimeout(() => { copyBtn.innerHTML = icons.copy('', 14); }, 1500);
+        }
       }
     });
     this.querySelector('#traces-pane').addEventListener('click', (e) => {
@@ -82,8 +98,12 @@ class ObservabilitySessionPage extends HTMLElement {
       resp = await window.fetchObservabilitySession(this.#sessionId);
     } catch (e) {
       console.error('Session fetch failed:', e);
-      this.querySelector('#traces-pane').innerHTML =
-        '<h2 class="pane-title">Traces</h2><div class="pane-empty">Failed to load traces</div>';
+      this.#tracesState = 'error';
+      this.#renderTracesPlaceholder(
+        'Traces unavailable',
+        'The trace backend could not be reached for this session.',
+        icons.xCircle(),
+      );
       return;
     }
     this.#session = resp?.data?.session ?? null;
@@ -106,6 +126,20 @@ class ObservabilitySessionPage extends HTMLElement {
       kpi('Latency P50', `${((s.latency_p50 ?? 0) / 1000).toFixed(1)} s`),
       kpi('Latency P99', `${((s.latency_p99 ?? 0) / 1000).toFixed(1)} s`),
     ].join('');
+    // The chat pane loads in parallel and often wins the race, rendering its
+    // chips before #session exists; refresh them once the totals are in.
+    this.#renderChatMeta();
+  }
+
+  #renderChatMeta() {
+    const meta = this.querySelector('.chat-meta');
+    if (!meta) return;
+    const s = this.#session;
+    meta.innerHTML = `
+      <span class="chip">${icons.layers('', 12)} ${(s?.token_usage?.total ?? 0).toLocaleString()}</span>
+      <span class="chip">$ ${(s?.cost_summary?.total?.cost ?? 0).toFixed(2)}</span>
+      <span class="chip">${icons.clock('', 12)} ${((s?.latency_p50 ?? 0) / 1000).toFixed(1)} s</span>
+    `;
   }
 
   /** Expand each trace of the session into a flattened, indented span list. */
@@ -133,12 +167,42 @@ class ObservabilitySessionPage extends HTMLElement {
     if (flat.length) this.#selectSpan(flat[0].traceId, flat[0].node.span_id);
   }
 
+  /**
+   * Trace pane with nothing to show. The span-detail pane is meaningless
+   * without a span to select, so `.traces-empty` folds it away and this one
+   * empty state takes both columns — instead of two stub sentences sitting
+   * in two tall blank panes.
+   */
+  #renderTracesPlaceholder(title, description, icon) {
+    this.querySelector('#traces-pane').innerHTML = `
+      <h2 class="pane-title">Traces</h2>
+      <app-empty-state title="${this.#esc(title)}" description="${this.#esc(description)}"
+        icon='${icon}'></app-empty-state>
+    `;
+    this.#syncPanes();
+  }
+
+  /** Fold away panes that have no content to carry. */
+  #syncPanes() {
+    const panes = this.querySelector('.panes');
+    if (!panes) return;
+    panes.classList.toggle('traces-empty', this.#tracesState === 'empty' || this.#tracesState === 'error');
+    panes.classList.toggle('chat-empty', this.#chatState === 'empty');
+  }
+
   #renderTraces() {
     const pane = this.querySelector('#traces-pane');
     if (!this.#spans.length) {
-      pane.innerHTML = '<h2 class="pane-title">Traces</h2><div class="pane-empty">No trace data for this session</div>';
+      this.#tracesState = 'empty';
+      this.#renderTracesPlaceholder(
+        'No traces for this session',
+        'Nothing was recorded here. Spans appear once an instrumented agent handles a request in this session.',
+        icons.trace(),
+      );
       return;
     }
+    this.#tracesState = 'ready';
+    this.#syncPanes();
     pane.innerHTML = `
       <h2 class="pane-title">Traces</h2>
       ${this.#spans.map(({ node, depth, traceId }) => `
@@ -216,6 +280,7 @@ class ObservabilitySessionPage extends HTMLElement {
     const body = this.querySelector('#detail-body');
     if (!body) return;
     body.innerHTML = this.#detailTab === 'info' ? this.#infoTabHtml() : this.#attributesTabHtml();
+    this.#applyClamps(body);
   }
 
   #infoTabHtml() {
@@ -228,7 +293,9 @@ class ObservabilitySessionPage extends HTMLElement {
         ? msgs.map((m) => `
             <div class="msg-block">
               <div class="msg-role">${this.#esc(m.role || '')}</div>
-              <div class="msg-content">${this.#esc(m.content || '')}</div>
+              <!-- Escaped, not markdown: span payloads are often raw JSON or
+                   tool output, which a markdown pass would mangle. -->
+              <div class="msg-content msg-clamp">${this.#esc(m.content || '')}</div>
             </div>`).join('')
         : `<div class="pane-empty">${emptyText}</div>`}
     `;
@@ -286,6 +353,10 @@ class ObservabilitySessionPage extends HTMLElement {
     return JSON.stringify(p ?? '');
   }
 
+  #chatPaneTitle() {
+    return `<h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">${icons.chevronLeft('', 14)}</button></h2>`;
+  }
+
   async #loadChat() {
     const pane = this.querySelector('#chat-pane');
     let messages = [];
@@ -296,23 +367,48 @@ class ObservabilitySessionPage extends HTMLElement {
       // Observability sessions don't always map to a chat session.
     }
     if (!messages.length) {
-      pane.innerHTML = '<h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">' + icons.chevronLeft('', 14) + '</button></h2><div class="pane-empty">No chat transcript for this session</div>';
+      this.#chatState = 'empty';
+      pane.innerHTML = `${this.#chatPaneTitle()}
+        <app-empty-state title="No transcript"
+          description="This session has no stored chat messages."
+          icon='${icons.document()}'></app-empty-state>`;
+      this.#syncPanes();
       return;
     }
-    const s = this.#session;
+    this.#chatState = 'ready';
     pane.innerHTML = `
-      <h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">${icons.chevronLeft('', 14)}</button></h2>
+      ${this.#chatPaneTitle()}
       <div class="chat-card">
         ${messages.map((m) => m.role === 'user'
-          ? `<div class="msg-user">${this.#esc(m.content)}</div>`
-          : `<div class="msg-assistant">${this.#esc(m.content)}</div>`).join('')}
-        <div class="chat-meta">
-          <span class="chip">${icons.layers('', 12)} ${(s?.token_usage?.total ?? 0).toLocaleString()}</span>
-          <span class="chip">$ ${(s?.cost_summary?.total?.cost ?? 0).toFixed(2)}</span>
-          <span class="chip">${icons.clock('', 12)} ${((s?.latency_p50 ?? 0) / 1000).toFixed(1)} s</span>
-        </div>
+          // User turns are literal input — escaped, never parsed as markdown.
+          ? `<div class="msg-user"><div class="msg-clamp">${this.#esc(m.content)}</div></div>`
+          : `<div class="msg-assistant"><div class="msg-clamp md-body">${renderMarkdown(m.content ?? '')}</div></div>`).join('')}
+        <div class="chat-meta"></div>
       </div>
     `;
+    this.#renderChatMeta();
+    this.#applyClamps(pane);
+    this.#syncPanes();
+  }
+
+  /**
+   * Add a Show more/less toggle to every clamped block that actually
+   * overflows — measured, so short messages get no stray control.
+   */
+  #applyClamps(root) {
+    root.querySelectorAll('.msg-clamp').forEach((el) => {
+      if (el.scrollHeight <= el.clientHeight + 4) return;
+      el.classList.add('is-clamped');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'msg-more';
+      btn.textContent = 'Show more';
+      btn.addEventListener('click', () => {
+        const open = el.classList.toggle('is-expanded');
+        btn.textContent = open ? 'Show less' : 'Show more';
+      });
+      el.after(btn);
+    });
   }
 
   #spanIcon(node) {

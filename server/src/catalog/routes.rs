@@ -388,6 +388,17 @@ async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
 pub(crate) struct AgentDetailResponse {
     id: Uuid,
     name: String,
+    #[serde(rename = "display_name")]
+    display_name: Option<String>,
+    /// Owner's user UUID — lets the UI label the owner row in grant lists.
+    #[serde(rename = "owner_id")]
+    owner_id: Uuid,
+    /// True when the caller may manage this agent (owner or superuser) —
+    /// computed with the same predicate the mutating routes enforce
+    /// (`crate::acl::can_manage_agent`), so the UI can gate its management
+    /// tabs without guessing.
+    #[serde(rename = "can_manage")]
+    can_manage: bool,
     status: String,
     version: String,
     description: String,
@@ -480,6 +491,8 @@ pub(crate) async fn get_one(
         return StatusCode::FORBIDDEN.into_response();
     }
 
+    let can_manage = crate::acl::can_manage_agent(&state, &claims, agent.id).await;
+
     let skills: Vec<serde_json::Value> = agent
         .skills
         .0
@@ -490,6 +503,9 @@ pub(crate) async fn get_one(
     let data = AgentDetailResponse {
         id: agent.id,
         name: agent.name.clone(),
+        display_name: agent.display_name.clone(),
+        owner_id: agent.owner_id,
+        can_manage,
         status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),

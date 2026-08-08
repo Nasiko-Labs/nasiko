@@ -1,10 +1,9 @@
 /* NightOwl "Access Manager" table language: title row with count chips +
    actions, sand-banded table, avatar chips, status pills, flat sand inputs. */
 @scope (users-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   .users-unavailable {
     padding: var(--space-xl) var(--space-md);
@@ -231,14 +230,4 @@
 }
 
 /* Upgrade contract — reserve head + filters + table footprint */
-users-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 560px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract. */
-@media (min-width: 1024px) {
-  users-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
 

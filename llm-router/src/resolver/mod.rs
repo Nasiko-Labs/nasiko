@@ -88,6 +88,10 @@ pub struct ResolvedConfig {
     pub tier1_model: Option<String>,
     pub tier2_model: Option<String>,
     pub tier3_model: Option<String>,
+    /// Whether the call is paid with the platform's key (vs. the owner's own
+    /// `user_secrets` key). Recorded on usage rows so platform-paid spend can be
+    /// metered separately from bring-your-own-key spend.
+    pub platform_paid: bool,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -280,6 +284,9 @@ pub async fn resolve(
     )
     .await?;
 
+    // Mirrors resolve_api_key: a secret name + non-empty owner uses the owner's key
+    // (or errors) — everything else is the platform key.
+    let platform_paid = !(secret_name.is_some() && !owner_id.is_empty());
     let resolved = ResolvedConfig {
         litellm_model: format!("{}/{}", plan.provider, plan.model),
         provider: plan.provider,
@@ -293,6 +300,7 @@ pub async fn resolve(
         tier1_model: plan.tier1_model,
         tier2_model: plan.tier2_model,
         tier3_model: plan.tier3_model,
+        platform_paid,
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",

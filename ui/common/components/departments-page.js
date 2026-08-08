@@ -19,7 +19,7 @@ class DepartmentsPage extends HTMLElement {
       <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Departments</h1>
-        <span class="count-chips" id="dept-stats"></span>
+        <span class="count-chips" id="dept-stats"><span class="pre-chip" style="--pre-chip-w:106px"></span><span class="pre-chip" style="--pre-chip-w:124px"></span></span>
         <div class="head-actions">
           <app-button variant="primary" size="sm" id="btn-create">${icons.plus('', 14)} Create department</app-button>
         </div>

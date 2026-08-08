@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -13,6 +15,17 @@
   </head>
   <body>
     <app-header></app-header>
-    <llm-router-page></llm-router-page>
+    <llm-router-page>
+      <!-- Mirrors the loaded head + the component's own 3×72px loading rows. -->
+      <div style="display:flex;flex-direction:column;gap:var(--space-xs);margin-bottom:var(--space-lg);">
+        <div class="skel-card__line" style="height:28px;width:160px;"></div>
+        <div class="skel-card__line" style="width:520px;max-width:70vw;"></div>
+      </div>
+      <div style="display:grid;gap:var(--space-md);">
+        <div class="skel-block" style="height:72px;border-radius:var(--radius-md);"></div>
+        <div class="skel-block" style="height:72px;border-radius:var(--radius-md);"></div>
+        <div class="skel-block" style="height:72px;border-radius:var(--radius-md);"></div>
+      </div>
+    </llm-router-page>
   </body>
 </html>

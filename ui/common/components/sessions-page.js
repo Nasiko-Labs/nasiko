@@ -36,7 +36,9 @@ class SessionsPage extends HTMLElement {
     `;
 
     this.querySelector('#btn-new')?.addEventListener('click', () => {
-      window.location.href = '/chat.html';
+      // No agent preselected: the orchestrator routes each message, so name it
+      // honestly instead of showing the placeholder agent header.
+      window.location.href = '/chat.html?agent_name=Orchestrator';
     });
 
     this.querySelector('.sessions-search')?.addEventListener('input', (e) => {

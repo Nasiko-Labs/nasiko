@@ -22,6 +22,12 @@ pub struct UsageRecord {
     pub latency_ms: i64,
     pub streaming: bool,
     pub finish_reason: Option<String>,
+    /// The flow id parsed from the agent-forwarded `traceparent`, when present.
+    /// Written to `token_usage.session_id` — the same key the orchestrator uses —
+    /// so per-message usage can be aggregated across the platform and its agents.
+    pub flow_id: Option<String>,
+    /// Whether the platform's key paid for this call (vs. the owner's own secret).
+    pub platform_paid: bool,
 }
 
 /// Spawn the usage write so it never blocks the response.
@@ -47,12 +53,16 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
         None => (None, None, None),
     };
 
+    let metadata = serde_json::json!({
+        "key_source": if record.platform_paid { "platform" } else { "user_secret" },
+    });
+
     sqlx::query(
         r#"INSERT INTO token_usage
                (user_id, agent_id, operation_type, provider, model,
                 input_tokens, output_tokens, total_tokens,
-                latency_ms, streaming, finish_reason)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                latency_ms, streaming, finish_reason, session_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
     )
     .bind(owner)
     .bind(agent)
@@ -65,6 +75,8 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
     .bind(record.latency_ms as i32)
     .bind(record.streaming)
     .bind(record.finish_reason)
+    .bind(record.flow_id)
+    .bind(metadata)
     .execute(&db)
     .await
     .map_err(|e| e.to_string())?;

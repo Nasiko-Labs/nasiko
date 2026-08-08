@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko — Executions</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <script type="module" src="/navigation.js"></script>
+    <script type="module" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/executions-page.js"></script>
+  </head>
+  <body>
+    <app-header></app-header>
+    <executions-page>
+      <!-- Pre-upgrade paint: real header and controls (they need no backend and must
+           not move), shimmer only for what the API feeds. The component replaces
+           all of this on upgrade — see common/styles/not-defined.css. -->
+      <div class="pre-modnav"></div>
+      <div class="pre-head" style="--pre-head-gap:0">
+        <h1 class="title-page">All executions</h1>
+      </div>
+      <div class="pre-tabs">
+        <span class="pre-tab pre-tab--active">Active</span>
+        <span class="pre-tab">History</span>
+      </div>
+      <div class="pre-rows" style="--pre-gap:var(--s-16);--pre-card-h:108px;--pre-card-pad:var(--s-20);--pre-card-gap:var(--s-12)">
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:70%"></div>
+        </div>
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:70%"></div>
+        </div>
+      </div>
+    </executions-page>
+  </body>
+</html>

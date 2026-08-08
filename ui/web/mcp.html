@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -13,6 +15,64 @@
   </head>
   <body>
     <app-header></app-header>
-    <mcp-page></mcp-page>
+    <mcp-page>
+      <!-- Pre-upgrade paint: real header and controls (they need no backend and must
+           not move), shimmer only for what the API feeds. The component replaces
+           all of this on upgrade — see common/styles/not-defined.css. -->
+      <div class="pre-modnav"></div>
+      <div class="pre-head pre-head--split">
+        <div>
+          <h1 class="title-page">MCP gateway</h1>
+          <p>Connect external MCP servers and control which agents can use their tools</p>
+        </div>
+        <div class="pre-head__actions" style="--pre-action-py:10px;--pre-action-px:var(--space-md);--pre-action-fs:var(--font-size-sm);--pre-action-fw:600">
+          <span class="pre-action"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:14px;height:14px;flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload MCP server</span>
+          <span class="pre-action pre-action--solid"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:14px;height:14px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Register connector</span>
+        </div>
+      </div>
+      <div class="pre-tabs" style="--pre-tabs-mb:var(--space-md)">
+        <div class="pre-tabs__item" style="width:28px"></div>
+        <div class="pre-tabs__item" style="width:140px"></div>
+        <div class="pre-tabs__item" style="width:90px"></div>
+      </div>
+      <div class="pre-grid" style="--pre-col:280px;--pre-card-h:150px">
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:90%"></div>
+          <div class="pre-line" style="width:60%"></div>
+        </div>
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:90%"></div>
+          <div class="pre-line" style="width:60%"></div>
+        </div>
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:90%"></div>
+          <div class="pre-line" style="width:60%"></div>
+        </div>
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:90%"></div>
+          <div class="pre-line" style="width:60%"></div>
+        </div>
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:90%"></div>
+          <div class="pre-line" style="width:60%"></div>
+        </div>
+        <div class="pre-card">
+          <div class="pre-line pre-line--name"></div>
+          <div class="pre-tags"><div class="pre-tag"></div><div class="pre-tag"></div></div>
+          <div class="pre-line" style="width:90%"></div>
+          <div class="pre-line" style="width:60%"></div>
+        </div>
+      </div>
+    </mcp-page>
   </body>
 </html>

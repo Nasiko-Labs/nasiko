@@ -2,10 +2,9 @@
    divided attention-stats band, sand-banded tables with warning cells and
    status pills. */
 @scope (access-control-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   /* ── Title row ─────────────────────────────────────────────────────── */
   .page-head {
@@ -237,7 +236,7 @@
     padding: var(--space-xs) var(--space-sm);
     border: 1px solid transparent;
     border-radius: var(--r-8);
-    background: var(--bg-input);
+    background-color: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;
@@ -274,14 +273,4 @@
 }
 
 /* Upgrade contract — reserve the head + band + tables footprint */
-access-control-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 640px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract. */
-@media (min-width: 1024px) {
-  access-control-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
 

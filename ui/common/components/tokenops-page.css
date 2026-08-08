@@ -1,11 +1,6 @@
 /* TokenOps dashboard — NightOwl FinOps layout: KPI strips (divided columns,
    Chivo Mono numbers), per-agent cost table with a sand header band, and the
    token-usage strip. */
-tokenops-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 400px;
-}
 
 @keyframes tokenops-skel-pulse {
   0%, 100% { opacity: 1; }
@@ -16,10 +11,8 @@ tokenops-page:not(:defined) {
 }
 
 @scope (tokenops-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
 
   .page-head {
     display: flex;
@@ -49,10 +42,10 @@ tokenops-page:not(:defined) {
   .head-actions select {
     width: auto;
     height: var(--control-h-lg);
-    padding: 0 var(--s-12);
+    padding: 0 30px 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: var(--bg-input);
+    background-color: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     cursor: pointer;
@@ -182,10 +175,10 @@ tokenops-page:not(:defined) {
   .toolbar select {
     width: auto;
     height: var(--control-h-md);
-    padding: 0 var(--s-12);
+    padding: 0 30px 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: var(--bg-input);
+    background-color: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     cursor: pointer;

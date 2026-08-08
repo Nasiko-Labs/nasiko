@@ -1,15 +1,3 @@
-agents-page:not(:defined) {
-  display: block;
-  padding: var(--space-xl) var(--space-md);
-  min-height: 400px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
-   nav pins into the card's left padding on desktop). */
-@media (min-width: 1024px) {
-  agents-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
-
 @keyframes skel-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -19,10 +7,9 @@ agents-page:not(:defined) {
 }
 
 @scope (agents-page) {
-  :scope {
-    display: block;
-    padding: var(--space-xl) var(--space-md);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   /* ── Page top ────────────────────────────────────────────────────────────── */
   .page-top {
@@ -125,12 +112,15 @@ agents-page:not(:defined) {
     font-weight: 600;
   }
   .type-tab.active:first-child { color: var(--fg-brand); }
+  /* The sliding .tab-indicator (tab-indicator.js) supplies the gold bar */
+  .type-tabs.has-tab-indicator .type-tab.active { border-bottom-color: transparent; }
   .type-tab .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
 
   .type-tabs .skel-tab {
     width: 72px;
     height: 16px;
-    margin: 12px 0;
+    /* 12 + 16 + 11 matches a real .type-tab (40px, -1px bottom margin) */
+    margin: 12px 0 11px;
     border-radius: var(--radius-sm);
     background: var(--color-bg-base);
     animation: skel-pulse 1.5s ease-in-out infinite;
@@ -224,28 +214,41 @@ agents-page:not(:defined) {
     min-height: calc(2 * 1.5em);
     max-height: calc(2 * 1.5em);
   }
+  /* Hairline-separated action row, bottom-aligned across cards of differing
+     content height — same anatomy as the your-agents cards. */
   .card-foot {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: var(--space-xs);
-    margin-top: var(--space-2xs);
+    margin-top: auto;
+    padding-top: var(--s-12);
+    border-top: 1px solid var(--color-border);
   }
+  /* Quiet secondary — pairs with the dark primary Chat button (same height,
+     radius and type; a bare text link read as unstyled next to a filled one). */
   .card-link {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2xs);
     min-height: var(--control-h-sm);
     padding: 0 var(--s-12);
+    border: 1px solid var(--color-border);
     border-radius: var(--r-8);
-    color: var(--color-text-muted);
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
     font-size: 13px;
     font-weight: 500;
     text-decoration: none;
+    transition: background var(--transition-fast);
   }
   .card-link:hover {
     color: var(--color-text-main);
     background: var(--bg-surface-hover);
+  }
+  .card-link:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
   .card-chat-btn {
     display: inline-flex;

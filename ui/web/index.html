@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -14,14 +16,20 @@
   <body>
     <app-header></app-header>
     <orchestrator-page>
-      <div style="display:flex;flex-direction:column;gap:var(--space-md);padding:var(--space-xl) var(--space-md);max-width:720px;margin:0 auto;">
-        <div class="skel-block" style="height:2rem;width:60%;margin:0 auto;"></div>
-        <div class="skel-block" style="height:56px;width:100%;border-radius:var(--radius-lg);"></div>
-        <div style="display:flex;gap:var(--space-sm);margin-top:var(--space-md);">
-          <div class="skel-agent-pill" style="flex:1;"></div>
-          <div class="skel-agent-pill" style="flex:1;"></div>
-          <div class="skel-agent-pill" style="flex:1;"></div>
+      <!-- Mirrors the loaded route screen: 72px hero icon, title + subtitle,
+           recent-agents grid (96px cards), 88px composer, workflow banner —
+           all in the page's centered min(100%, 820px) column. -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:0;width:min(100%,820px);">
+        <div class="skel-block" style="width:72px;height:72px;border-radius:var(--r-12);margin-bottom:var(--space-lg);"></div>
+        <div class="skel-block" style="height:2rem;width:240px;margin-bottom:var(--space-xs);"></div>
+        <div class="skel-block" style="height:1rem;width:420px;max-width:90%;margin-bottom:var(--space-xl);"></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--space-sm);width:100%;margin-bottom:var(--space-md);">
+          <div class="skel-block" style="height:96px;border-radius:var(--r-8);"></div>
+          <div class="skel-block" style="height:96px;border-radius:var(--r-8);"></div>
+          <div class="skel-block" style="height:96px;border-radius:var(--r-8);"></div>
         </div>
+        <div class="skel-block" style="height:88px;width:100%;border-radius:var(--radius-lg);"></div>
+        <div class="skel-block" style="height:80px;width:100%;border-radius:var(--r-8);margin-top:var(--space-xl);"></div>
       </div>
     </orchestrator-page>
   </body>

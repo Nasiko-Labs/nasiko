@@ -9,9 +9,9 @@
  * `module-nav-select` CustomEvent with `{ section }` for the host page).
  *
  * Desktop (≥1024px): a 200px column pinned to the content card's left edge —
- * the host page component gets matching left padding (see the body-level
- * rules below). Mobile: a collapsible disclosure in normal flow above the
- * page content.
+ * the host page component gets matching left padding from
+ * `common/styles/page-layout.css`. Mobile: a collapsible disclosure in normal
+ * flow above the page content.
  *
  * @element app-module-nav
  * @attr {string} module - Key passed to `window.fetchModuleNav`.
@@ -22,17 +22,15 @@
 import { icons } from "../utils/icons.js";
 
 const styles = new CSSStyleSheet();
-styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav
-   is the white content card; the nav pins inside its left padding and the
-   page content moves right. High-specificity on purpose — page stylesheets
-   set 'padding' shorthands at :scope specificity and must lose the left side. */
+styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
+   the white content card; the nav pins inside its left padding. The gutter
+   itself (the host's padding-left) is page geometry and lives in
+   common/styles/page-layout.css — it has to exist at first paint, and this
+   sheet only arrives with this module. What is left here is how the nav fills
+   that gutter, which is inert until the nav upgrades anyway. */
 @media (min-width: 1024px) {
-  /* :nth-child(n) is a no-op filter that lifts specificity to (0,1,2) so this
-     wins over page-sheet ':scope { padding: … }' rules regardless of sheet
-     adoption order. */
-  body:has(> app-header) > :nth-child(n of :not(app-header)):has(> app-module-nav) {
+  body:has(> app-header) > :not(app-header):has(> app-module-nav) {
     position: relative;
-    padding-left: calc(224px + var(--space-xl));
   }
   body:has(> app-header) > :not(app-header) > app-module-nav {
     position: absolute;

@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -13,6 +15,22 @@
   </head>
   <body>
     <app-header></app-header>
-    <setup-cli-page></setup-cli-page>
+    <setup-cli-page>
+      <!-- The host is a gap-lg flex column pre-upgrade: close button, page
+           head, step-tab strip, first step panel, guide banner. -->
+      <div class="skel-block" style="width:32px;height:32px;border-radius:var(--r-8);"></div>
+      <div style="display:flex;flex-direction:column;gap:var(--space-xs);">
+        <div class="skel-card__line" style="height:28px;width:280px;"></div>
+        <div class="skel-card__line" style="width:440px;max-width:70vw;"></div>
+      </div>
+      <div class="skel-block" style="height:48px;border-radius:var(--r-8);"></div>
+      <div style="display:flex;flex-direction:column;gap:var(--space-sm);">
+        <div class="skel-card__line" style="width:420px;max-width:70vw;"></div>
+        <div class="skel-block" style="height:40px;border-radius:var(--r-8);"></div>
+        <div class="skel-block" style="height:40px;border-radius:var(--r-8);"></div>
+        <div class="skel-card__line" style="width:360px;max-width:60vw;"></div>
+      </div>
+      <div class="skel-block" style="height:160px;border-radius:var(--r-8);"></div>
+    </setup-cli-page>
   </body>
 </html>

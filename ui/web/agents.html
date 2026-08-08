@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
+    <!-- The page component's own sheet, linked rather than imported by its
+         module, so the static shell below is fully styled at first paint.
+         agents-page.js must therefore NOT also adopt it. -->
+    <link rel="stylesheet" href="/common/components/agents-page.css" />
     <script type="module" src="/navigation.js"></script>
     <script type="module" src="/common/components/app-header.js"></script>
     <script type="module" src="/common/components/agents-page.js"></script>
@@ -14,54 +20,70 @@
   <body>
     <app-header></app-header>
     <agents-page>
-      <div class="skel-grid skel-grid--narrow">
-        <div class="skel-card">
-          <div class="skel-card__header"><div class="skel-card__avatar"></div><div class="skel-card__badge"></div></div>
-          <div class="skel-card__line skel-card__line--w50"></div>
-          <div class="skel-card__tags"><div class="skel-card__tag"></div><div class="skel-card__tag"></div></div>
-          <div class="skel-card__line skel-card__line--w80"></div>
-          <div class="skel-card__line skel-card__line--w60"></div>
-          <div class="skel-card__actions"><div class="skel-card__btn"></div><div class="skel-card__btn"></div></div>
+      <!-- Static shell: everything that needs no backend, in the component's
+           own class names so it paints for real before the module loads. The
+           component binds to these nodes instead of re-rendering them, and
+           fills only the two API-fed regions (#category-tabs, #agents-grid),
+           which start as the same skeletons the component would draw. -->
+      <app-module-nav module="agents"></app-module-nav>
+      <div class="page-top">
+        <h1 class="title-page">Agent hub</h1>
+        <!-- Deliberately count-free: the fleet size lands in the "All N" tab.
+             Injecting it here reflowed the description (2 → 3 lines on mobile)
+             the moment the API answered. -->
+        <p class="subtitle">Discover and chat with the agents deployed on this cluster.</p>
+      </div>
+      <div class="controls">
+        <div class="search-wrap">
+          <span class="search-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:18px;height:18px;flex-shrink:0"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></span>
+          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability" />
+          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:16px;height:16px;flex-shrink:0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
-        <div class="skel-card">
-          <div class="skel-card__header"><div class="skel-card__avatar"></div><div class="skel-card__badge"></div></div>
-          <div class="skel-card__line skel-card__line--w50"></div>
-          <div class="skel-card__tags"><div class="skel-card__tag"></div><div class="skel-card__tag"></div></div>
-          <div class="skel-card__line skel-card__line--w80"></div>
-          <div class="skel-card__line skel-card__line--w60"></div>
-          <div class="skel-card__actions"><div class="skel-card__btn"></div><div class="skel-card__btn"></div></div>
+      </div>
+      <div class="type-tabs" id="category-tabs" role="tablist">
+        <div class="skel-tab"></div>
+        <div class="skel-tab"></div>
+        <div class="skel-tab"></div>
+        <div class="skel-tab"></div>
+        <div class="skel-tab"></div>
+        <div class="skel-tab"></div>
+      </div>
+      <div class="grid" id="agents-grid">
+        <div class="card skeleton-card">
+          <div class="skel-line skel-line--name"></div>
+          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
+          <div class="skel-line skel-line--desc1"></div>
+          <div class="skel-line skel-line--desc2"></div>
         </div>
-        <div class="skel-card">
-          <div class="skel-card__header"><div class="skel-card__avatar"></div><div class="skel-card__badge"></div></div>
-          <div class="skel-card__line skel-card__line--w50"></div>
-          <div class="skel-card__tags"><div class="skel-card__tag"></div><div class="skel-card__tag"></div></div>
-          <div class="skel-card__line skel-card__line--w80"></div>
-          <div class="skel-card__line skel-card__line--w60"></div>
-          <div class="skel-card__actions"><div class="skel-card__btn"></div><div class="skel-card__btn"></div></div>
+        <div class="card skeleton-card">
+          <div class="skel-line skel-line--name"></div>
+          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
+          <div class="skel-line skel-line--desc1"></div>
+          <div class="skel-line skel-line--desc2"></div>
         </div>
-        <div class="skel-card">
-          <div class="skel-card__header"><div class="skel-card__avatar"></div><div class="skel-card__badge"></div></div>
-          <div class="skel-card__line skel-card__line--w50"></div>
-          <div class="skel-card__tags"><div class="skel-card__tag"></div><div class="skel-card__tag"></div></div>
-          <div class="skel-card__line skel-card__line--w80"></div>
-          <div class="skel-card__line skel-card__line--w60"></div>
-          <div class="skel-card__actions"><div class="skel-card__btn"></div><div class="skel-card__btn"></div></div>
+        <div class="card skeleton-card">
+          <div class="skel-line skel-line--name"></div>
+          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
+          <div class="skel-line skel-line--desc1"></div>
+          <div class="skel-line skel-line--desc2"></div>
         </div>
-        <div class="skel-card">
-          <div class="skel-card__header"><div class="skel-card__avatar"></div><div class="skel-card__badge"></div></div>
-          <div class="skel-card__line skel-card__line--w50"></div>
-          <div class="skel-card__tags"><div class="skel-card__tag"></div><div class="skel-card__tag"></div></div>
-          <div class="skel-card__line skel-card__line--w80"></div>
-          <div class="skel-card__line skel-card__line--w60"></div>
-          <div class="skel-card__actions"><div class="skel-card__btn"></div><div class="skel-card__btn"></div></div>
+        <div class="card skeleton-card">
+          <div class="skel-line skel-line--name"></div>
+          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
+          <div class="skel-line skel-line--desc1"></div>
+          <div class="skel-line skel-line--desc2"></div>
         </div>
-        <div class="skel-card">
-          <div class="skel-card__header"><div class="skel-card__avatar"></div><div class="skel-card__badge"></div></div>
-          <div class="skel-card__line skel-card__line--w50"></div>
-          <div class="skel-card__tags"><div class="skel-card__tag"></div><div class="skel-card__tag"></div></div>
-          <div class="skel-card__line skel-card__line--w80"></div>
-          <div class="skel-card__line skel-card__line--w60"></div>
-          <div class="skel-card__actions"><div class="skel-card__btn"></div><div class="skel-card__btn"></div></div>
+        <div class="card skeleton-card">
+          <div class="skel-line skel-line--name"></div>
+          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
+          <div class="skel-line skel-line--desc1"></div>
+          <div class="skel-line skel-line--desc2"></div>
+        </div>
+        <div class="card skeleton-card">
+          <div class="skel-line skel-line--name"></div>
+          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
+          <div class="skel-line skel-line--desc1"></div>
+          <div class="skel-line skel-line--desc2"></div>
         </div>
       </div>
     </agents-page>

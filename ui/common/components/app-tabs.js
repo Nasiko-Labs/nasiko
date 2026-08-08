@@ -36,7 +36,9 @@ styles.replaceSync(`@keyframes tab-panel-enter {
       background: var(--color-primary);
       border-radius: 2px 2px 0 0;
       pointer-events: none;
-      transition: transform 220ms ease, width 220ms ease;
+      transition:
+        transform 200ms cubic-bezier(0.2, 0, 0, 1),
+        width 200ms cubic-bezier(0.2, 0, 0, 1);
     }
     .tab {
       padding: var(--space-xs) var(--space-sm);

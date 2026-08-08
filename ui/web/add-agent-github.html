@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -13,6 +15,18 @@
   </head>
   <body>
     <app-header></app-header>
-    <add-agent-github-page></add-agent-github-page>
+    <add-agent-github-page>
+      <!-- Back link, title + subtitle, 400px search well, repo list rows. -->
+      <div class="skel-card__line" style="width:60px;height:20px;margin-bottom:var(--space-md);"></div>
+      <div style="display:flex;flex-direction:column;gap:var(--space-xs);margin-bottom:var(--space-md);">
+        <div class="skel-card__line" style="height:28px;width:240px;"></div>
+        <div class="skel-card__line" style="width:480px;max-width:70vw;"></div>
+      </div>
+      <div class="skel-block" style="height:36px;max-width:400px;border-radius:var(--r-8);margin-bottom:var(--space-md);"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-md) 0;border-bottom:1px solid var(--color-border);"><div class="skel-card__line" style="width:220px;"></div><div class="skel-card__btn" style="width:80px;"></div></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-md) 0;border-bottom:1px solid var(--color-border);"><div class="skel-card__line" style="width:180px;"></div><div class="skel-card__btn" style="width:80px;"></div></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-md) 0;border-bottom:1px solid var(--color-border);"><div class="skel-card__line" style="width:260px;"></div><div class="skel-card__btn" style="width:80px;"></div></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-md) 0;border-bottom:1px solid var(--color-border);"><div class="skel-card__line" style="width:200px;"></div><div class="skel-card__btn" style="width:80px;"></div></div>
+    </add-agent-github-page>
   </body>
 </html>

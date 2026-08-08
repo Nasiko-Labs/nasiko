@@ -1,6 +1,10 @@
 // MCP gateway fixtures — shapes match the /api/mcp handlers
 // (oss/server/src/mcp/handlers/*, views in oss/mcp-gateway/src/connectors.rs
-// `connector_dto` / `list_connectors_view`). Envelope {data, status_code, message}.
+// `connector_dto` / `list_connectors_view`, toolkits in
+// oss/mcp-gateway/src/catalog.rs `list_toolkits_view`). Envelope
+// {data, status_code, message}. The page merges connectors + toolkits into
+// one catalog grid: some connected, some not, one shared-with-me
+// (docs-search), the rest created-by-you.
 
 const connector = (over) => ({
   connector_id: over.connector_id,
@@ -136,6 +140,77 @@ const githubTools = {
     { name: 'delete_branch', description: 'Delete a branch from a repository. Destructive.', stance: 'deny', last_synced_at: '2026-07-30T10:00:00Z' },
   ],
 };
+
+// Toolkits — GET /api/mcp/composio/toolkits (catalog.rs list_toolkits_view).
+// Data-URI logos keep the preview offline; the broken path exercises the
+// letter-avatar fallback.
+const svgLogo = (fill, glyph) => 'data:image/svg+xml,' + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="${fill}"/><text x="12" y="16.5" font-family="Arial" font-size="12" font-weight="bold" fill="#fff" text-anchor="middle">${glyph}</text></svg>`,
+);
+
+const toolkit = (over) => ({
+  connector_id: over.connector_id,
+  name: over.name,
+  display_name: over.display_name,
+  description: over.description,
+  logo_url: over.logo_url ?? null,
+  auth_flow: over.auth_flow ?? 'oauth',
+  tool_count: over.tool_count ?? 0,
+  is_connected: over.is_connected ?? false,
+});
+
+const toolkits = [
+  toolkit({
+    connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000001',
+    name: 'gmail',
+    display_name: 'Gmail',
+    description: 'Send, search, and label email; manage drafts and threads in the user’s mailbox.',
+    logo_url: svgLogo('#ea4335', 'M'),
+    tool_count: 24,
+    is_connected: true,
+  }),
+  toolkit({
+    connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000002',
+    name: 'figma',
+    display_name: 'Figma',
+    description: 'Read files, comments, and components; export frames from design documents.',
+    logo_url: svgLogo('#0acf83', 'F'),
+    tool_count: 18,
+  }),
+  toolkit({
+    connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000003',
+    name: 'outlook',
+    display_name: 'Outlook',
+    description: 'Mail and calendar tools for Microsoft 365 accounts: send, schedule, and search.',
+    logo_url: svgLogo('#0078d4', 'O'),
+    tool_count: 31,
+  }),
+  toolkit({
+    connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000004',
+    name: 'notion',
+    display_name: 'Notion',
+    description: 'Create and update pages and databases; search across the connected workspace.',
+    logo_url: svgLogo('#111111', 'N'),
+    tool_count: 12,
+    is_connected: true,
+  }),
+  toolkit({
+    connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000005',
+    name: 'jira',
+    display_name: 'Jira',
+    description: 'Project tracking for agile teams: create issues, transition workflows, run JQL searches.',
+    logo_url: '/assets/logos/jira-missing.svg', // 404s → letter avatar fallback
+    tool_count: 42,
+  }),
+  toolkit({
+    connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000006',
+    name: 'linear',
+    display_name: 'Linear',
+    description: 'Issue tracking tools: create, assign, and update issues and projects.',
+    auth_flow: 'api_key',
+    tool_count: 9,
+  }),
+];
 
 const buildLogs = [
   '#8 [4/6] RUN pip install --no-cache-dir -r requirements.txt',
@@ -309,6 +384,41 @@ export default {
       data: null, status_code: 200, message: 'Connector deleted successfully',
     }],
 
+    ['GET /api/mcp/composio/toolkits', {
+      data: { toolkits, total: toolkits.length },
+      status_code: 200,
+      message: 'Toolkits retrieved successfully',
+    }],
+    ['POST /api/mcp/connect', {
+      data: {
+        status: 'initiated',
+        connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000002',
+        name: 'figma',
+        oauth_url: 'https://backend.composio.dev/authorize?state=abc',
+      },
+      status_code: 201,
+      message: 'OAuth flow initiated',
+    }],
+    ['GET /api/mcp/connections', {
+      data: {
+        connections: [
+          { connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000001', name: 'gmail', status: 'ACTIVE' },
+          { connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000004', name: 'notion', status: 'ACTIVE' },
+        ],
+      },
+      status_code: 200,
+      message: 'Connections retrieved successfully',
+    }],
+    [{ method: 'DELETE', path: /^\/api\/mcp\/connections\/[0-9a-f-]+$/ }, {
+      data: {
+        message: 'Disconnected',
+        connector_id: '7a2e3b4c-3333-4b4b-8c8c-000000000001',
+        composio_revoked: true,
+      },
+      status_code: 200,
+      message: 'Disconnected successfully',
+    }],
+
     [{ method: 'GET', path: /^\/api\/mcp\/agents\/[^/]+\/connectors$/ }, {
       data: agentConnectors,
       status_code: 200,
@@ -357,11 +467,47 @@ export default {
       await page.click('#upload-btn');
       await page.waitForSelector('#upload-modal dialog[open]');
     },
+    // Unified catalog tabs — counts come from the merged toolkit+server set.
+    'available-tab': async (page) => {
+      await page.waitForSelector('.tk-card[data-id]');
+      await page.click('.tk-tab[data-tab="available"]');
+      await new Promise((r) => setTimeout(r, 300));
+    },
+    'connected-tab': async (page) => {
+      await page.waitForSelector('.tk-card[data-id]');
+      await page.click('.tk-tab[data-tab="connected"]');
+      await new Promise((r) => setTimeout(r, 300));
+    },
+    // Nav scopes — ownership scopes show custom servers only; the toolkits
+    // scope shows Composio cards only.
+    'created-by-you': async (page) => {
+      await page.waitForSelector('.tk-card[data-id]');
+      await page.click('app-module-nav [data-section="created-by-you"]');
+      await new Promise((r) => setTimeout(r, 400));
+    },
+    'toolkits-filter': async (page) => {
+      await page.waitForSelector('.tk-card[data-id]');
+      await page.click('app-module-nav [data-section="toolkits"]');
+      await new Promise((r) => setTimeout(r, 400));
+    },
     'connector-detail': async (page) => {
-      // First row is the GitHub OAuth connector — shows meta + OAuth status.
-      await page.click('tr.connector-row .act-manage');
+      // GitHub is a custom OAuth server — card body click opens the detail
+      // modal with meta + OAuth status + owner delete.
+      await page.waitForSelector('.tk-card[data-id]');
+      await page.click('.tk-card[data-id="6f1d2a3b-1111-4a4a-9b9b-000000000001"] .tk-name');
       await page.waitForSelector('#detail-modal dialog[open]');
       await page.waitForSelector('#oauth-revoke');
+    },
+    'catalog-empty': async (page) => {
+      await page.evaluate(() => {
+        window.fetchMcpConnectors = async () => (
+          { data: { created_by_you: [], shared_with_you: [], total: 0 }, status_code: 200 });
+        window.fetchMcpToolkits = async () => ({ data: { toolkits: [], total: 0 }, status_code: 200 });
+        window.fetchMcpMyUploads = async () => ({ data: [], status_code: 200 });
+        document.querySelector('mcp-page').remove();
+        document.body.appendChild(document.createElement('mcp-page'));
+      });
+      await page.waitForSelector('#catalog-grid .empty-state');
     },
     'agent-access': async (page) => {
       // Type into the autocomplete and pick the first suggestion.
@@ -372,14 +518,20 @@ export default {
       await page.waitForSelector('.agent-access-table');
       await page.click('.act-tools');
       await page.waitForSelector('.tool-line');
+      await page.evaluate(() => document.querySelector('.agent-access-card')?.scrollIntoView());
+      await new Promise((r) => setTimeout(r, 300));
     },
     'agent-picker-open': async (page) => {
+      await page.evaluate(() => document.querySelector('.agent-access-card')?.scrollIntoView());
       await page.click('#agent-select .ac-input');
       await page.waitForSelector('#agent-select .ac-option');
+      await new Promise((r) => setTimeout(r, 300));
     },
     'build-logs': async (page) => {
       await page.click('#uploads-tbody .act-logs');
       await page.waitForSelector('#logs-panel:not([hidden])');
+      await page.evaluate(() => document.querySelector('#uploads-section')?.scrollIntoView());
+      await new Promise((r) => setTimeout(r, 300));
     },
   },
 };

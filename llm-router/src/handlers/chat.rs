@@ -186,14 +186,30 @@ async fn chat_core(
     );
 
     let started = Instant::now();
+    // Attribution for the usage row: the flow id this call belongs to (from the
+    // agent-forwarded traceparent) and who paid for it.
+    let flow_id = headers
+        .get(TRACEPARENT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_flow_id);
+    let platform_paid = resolved.platform_paid;
 
     if req.is_streaming() {
         let (stream, (provider, model)) =
             fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
         let renderer = inbound.chat_stream_renderer();
-        return stream_chat(
-            ctx, renderer, stream, provider, model, agent_id, owner_id, started,
-        );
+        return stream_chat(StreamChatArgs {
+            ctx,
+            renderer,
+            provider_stream: stream,
+            provider,
+            model,
+            agent_id,
+            owner_id,
+            started,
+            flow_id,
+            platform_paid,
+        });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
@@ -213,6 +229,8 @@ async fn chat_core(
             latency_ms,
             streaming: false,
             finish_reason: resp.choices.first().and_then(|c| c.finish_reason.clone()),
+            flow_id,
+            platform_paid,
         },
     );
 
@@ -246,21 +264,31 @@ async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> Boun
         %flow_id, "derive_boundary_signals: parsed flow_id from traceparent; looking up flow in DB"
     );
 
-    let row: Result<Option<(Option<String>,)>, sqlx::Error> =
-        sqlx::query_as("SELECT metadata->>'mode' FROM flows WHERE flow_id = $1")
-            .bind(&flow_id)
-            .fetch_optional(db)
-            .await;
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT metadata->>'mode', metadata->>'context_id' FROM flows WHERE flow_id = $1",
+    )
+    .bind(&flow_id)
+    .fetch_optional(db)
+    .await;
     match row {
-        Ok(Some((mode,))) => {
+        Ok(Some((mode, context_id))) => {
             let mode = mode
                 .as_deref()
                 .map(Mode::from_label)
                 .unwrap_or(Mode::FreeFlowing);
-            let signals = BoundarySignals::in_flow(flow_id.clone(), mode);
+            // Key the decision cache on the conversation's stable context_id, not
+            // the flow_id (= this turn's traceparent trace id, which the CLI
+            // re-mints every turn). The proxy/orchestrator writes context_id onto
+            // the flow row; turn 1 (cold start) writes the sticky decision under
+            // it and turn 2+ hit it. Fall back to flow_id for older flow rows (or
+            // a caller) that never set context_id — behaviour identical to before.
+            let conv_id = context_id
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| flow_id.clone());
+            let signals = BoundarySignals::in_flow(conv_id.clone(), mode);
             tracing::info!(
                 target: "nasiko::llm_router::boundary",
-                %flow_id, mode = ?mode, phase = ?signals.phase,
+                %flow_id, %conv_id, mode = ?mode, phase = ?signals.phase,
                 is_fireable_boundary = signals.is_fireable_boundary(),
                 "derive_boundary_signals: known flow → IN-FLOW signals (router may re-select the model at this boundary)"
             );
@@ -285,13 +313,9 @@ async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> Boun
     }
 }
 
-/// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
-/// Usage is captured as chunks flow and written when the stream ends — including on
-/// client disconnect — via a `Drop` guard. `provider`/`model` are the effective
-/// (possibly fallback) values chosen by the executor.
-#[allow(clippy::too_many_arguments)]
-fn stream_chat(
-    ctx: &LlmRouterCtx,
+/// Everything [`stream_chat`] needs; bundled so the argument list stays readable.
+struct StreamChatArgs<'a> {
+    ctx: &'a LlmRouterCtx,
     renderer: Box<dyn ChatStreamRenderer>,
     provider_stream: BoxStream<'static, Result<ChatChunk, ProviderError>>,
     provider: String,
@@ -299,7 +323,27 @@ fn stream_chat(
     agent_id: String,
     owner_id: String,
     started: Instant,
-) -> Result<Response, GatewayError> {
+    flow_id: Option<String>,
+    platform_paid: bool,
+}
+
+/// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
+/// Usage is captured as chunks flow and written when the stream ends — including on
+/// client disconnect — via a `Drop` guard. `provider`/`model` are the effective
+/// (possibly fallback) values chosen by the executor.
+fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
+    let StreamChatArgs {
+        ctx,
+        renderer,
+        provider_stream,
+        provider,
+        model,
+        agent_id,
+        owner_id,
+        started,
+        flow_id,
+        platform_paid,
+    } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
         db: ctx.db.clone(),
@@ -309,6 +353,8 @@ fn stream_chat(
         model: model.clone(),
         started,
         state: state.clone(),
+        flow_id,
+        platform_paid,
     };
 
     let body_stream = async_stream::stream! {
@@ -370,6 +416,8 @@ struct UsageGuard {
     model: String,
     started: Instant,
     state: Arc<Mutex<StreamState>>,
+    flow_id: Option<String>,
+    platform_paid: bool,
 }
 
 impl Drop for UsageGuard {
@@ -387,6 +435,8 @@ impl Drop for UsageGuard {
                 latency_ms: self.started.elapsed().as_millis() as i64,
                 streaming: true,
                 finish_reason: st.finish_reason.clone(),
+                flow_id: self.flow_id.clone(),
+                platform_paid: self.platform_paid,
             },
         );
     }

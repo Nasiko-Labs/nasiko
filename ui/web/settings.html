@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -13,6 +15,28 @@
   </head>
   <body>
     <app-header></app-header>
-    <settings-page></settings-page>
+    <settings-page>
+      <!-- Mirrors the loaded panel head + grid setting rows (960px content).
+           .pre-modnav reserves the mobile app-module-nav disclosure bar. -->
+      <div class="pre-modnav"></div>
+      <div style="max-width:960px;">
+        <div style="display:flex;flex-direction:column;gap:var(--space-xs);margin-bottom:var(--space-lg);">
+          <div class="skel-card__line" style="height:28px;width:150px;"></div>
+          <div class="skel-card__line" style="width:340px;max-width:60vw;"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,380px);gap:var(--space-xl);align-items:center;padding:var(--space-md) 0;border-top:1px solid var(--color-border);">
+          <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:140px;"></div><div class="skel-card__line" style="width:260px;"></div></div>
+          <div class="skel-block" style="height:40px;border-radius:var(--r-8);"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,380px);gap:var(--space-xl);align-items:center;padding:var(--space-md) 0;border-top:1px solid var(--color-border);">
+          <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:160px;"></div><div class="skel-card__line" style="width:240px;"></div></div>
+          <div class="skel-block" style="height:40px;border-radius:var(--r-8);"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,380px);gap:var(--space-xl);align-items:center;padding:var(--space-md) 0;border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border);">
+          <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:180px;"></div><div class="skel-card__line" style="width:280px;"></div></div>
+          <div class="skel-block" style="height:40px;border-radius:var(--r-8);"></div>
+        </div>
+      </div>
+    </settings-page>
   </body>
 </html>

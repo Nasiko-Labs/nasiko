@@ -1,5 +1,6 @@
 /* Shared utility classes — imported by all pages via <link rel="stylesheet" href="/assets/components.css"> */
 @import '/common/styles/not-defined.css';
+@import '/common/styles/page-layout.css';
 @import '/common/styles/surface.css';
 @import '/common/styles/badge.css';
 @import '/common/styles/text.css';

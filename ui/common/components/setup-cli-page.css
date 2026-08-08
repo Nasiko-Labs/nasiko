@@ -1,18 +1,8 @@
 /* Setup CLI — numbered step tabs, per-step command snippets, guide banner. */
-setup-cli-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 600px;
-}
 
 @scope (setup-cli-page) {
-  :scope {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-    padding: var(--space-lg) var(--space-xl);
-    min-height: 100%;
-  }
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
 
   .close-btn {
     display: inline-flex;

@@ -1,22 +1,10 @@
 /* Settings — NightOwl: left section nav + grouped setting rows on the white
    plane; sand input wells, hairline row separators, dark save button. */
-settings-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 500px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
-   nav pins into the card's left padding on desktop). */
-@media (min-width: 1024px) {
-  settings-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
 
 @scope (settings-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   /* ── Content ─────────────────────────────────────────────────────────── */
   .content { min-width: 0; max-width: 960px; }
@@ -74,7 +62,7 @@ settings-page:not(:defined) {
     padding: 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: var(--bg-input);
+    background-color: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-family: inherit;

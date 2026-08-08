@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -13,6 +15,18 @@
   </head>
   <body>
     <app-header></app-header>
-    <add-agent-page></add-agent-page>
+    <add-agent-page>
+      <!-- Centered column (the host is a centered flex column pre-upgrade):
+           56px icon tile, title, subtitle, 780px CLI banner, 2-col chooser. -->
+      <div class="skel-block" style="width:56px;height:56px;border-radius:var(--r-8);margin-bottom:var(--space-md);"></div>
+      <div class="skel-card__line" style="height:28px;width:220px;"></div>
+      <div class="skel-card__line" style="width:320px;max-width:80vw;margin:var(--space-sm) 0 var(--space-xl);"></div>
+      <div class="skel-block" style="width:min(100%,780px);height:68px;border-radius:var(--r-8);margin-bottom:var(--space-lg);"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-lg);width:min(100%,780px);">
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+      </div>
+    </add-agent-page>
   </body>
 </html>

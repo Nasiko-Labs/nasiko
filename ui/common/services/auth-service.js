@@ -8,6 +8,16 @@ class AuthService {
     return _cachedUser?.name || null;
   }
 
+  // Caller's user UUID (JWT `sub`). Truthful only after fetchCurrentUser().
+  getCurrentUserId() {
+    return _cachedUser?.id || null;
+  }
+
+  // Truthful only after fetchCurrentUser().
+  isSuperuser() {
+    return _cachedUser?.is_superuser === true;
+  }
+
   // Truthful only after fetchCurrentUser() has resolved (app-header awaits it
   // before rendering). The cookie is HttpOnly, so a server round-trip is the
   // only way to learn auth state — there is nothing local to check.
@@ -34,8 +44,10 @@ class AuthService {
       if (!res.ok) return null;
       const claims = await res.json();
       _cachedUser = {
+        id: claims.sub || null,
         name: claims.username || claims.sub || 'User',
         email: claims.email || '',
+        is_superuser: claims.is_superuser === true,
       };
       return _cachedUser;
     } catch {

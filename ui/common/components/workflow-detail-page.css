@@ -1,0 +1,237 @@
+@scope (workflow-detail-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  /* Mockup review screen: single column, max-width 720. Centered — the page
+     has no module-nav column, so a left-hugging 720px column reads unbalanced
+     in the wide card (deliberate deviation from the left-aligned mockup). */
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    max-width: 720px;
+    margin-inline: auto;
+  }
+
+  .page-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+  }
+  .back-btn {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: var(--r-8);
+    background: transparent;
+    color: var(--color-text-main);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .back-btn:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
+
+  .name-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: var(--font-display);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+  }
+  .run-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .desc-input {
+    width: 100%;
+    padding: var(--s-12);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    resize: vertical;
+    background: var(--bg-input);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--color-text-main);
+  }
+  .desc-input:focus { outline: none; border-color: var(--color-primary); }
+  .desc-input::placeholder { color: var(--color-text-muted); }
+
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-8);
+  }
+
+  .sec {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+  }
+  .sec-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+
+  .output-gen {
+    margin: 0;
+    padding: var(--s-16) var(--s-20);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--color-text-muted);
+    text-wrap: pretty;
+  }
+
+  /* Sticky-feel save bar for pending edits */
+  .save-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-8);
+    background: light-dark(var(--yellow-50), var(--neutral-800));
+  }
+  .save-note {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+
+  /* ── Execution history rows ── */
+  #exec-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+  }
+  .exec-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    width: 100%;
+    min-height: var(--control-h-lg);
+    padding: var(--s-8) var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+  .exec-row:hover { background: var(--bg-surface-hover); }
+  .exec-num {
+    font-family: var(--font-display);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-main);
+    min-width: 44px;
+  }
+  .exec-meta {
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+  .exec-open {
+    margin-left: auto;
+    display: inline-flex;
+    color: var(--color-text-muted);
+  }
+  .exec-empty {
+    margin: 0;
+    padding: var(--s-16) var(--s-20);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+
+  /* ── Run view ── */
+  #run-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+  }
+  .run-head-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+  }
+  .run-exec-num {
+    font-family: var(--font-display);
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    color: var(--color-text-main);
+  }
+  .run-output-body {
+    padding: var(--s-16) var(--s-20);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+  .run-error {
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-8);
+    background: var(--color-error-bg);
+    font-family: var(--font-display);
+    font-size: var(--font-size-xs);
+    line-height: 18px;
+    color: var(--color-error);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* ── Empty / not-found ── */
+  .not-found {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-12);
+    padding: var(--space-2xl) var(--space-md);
+    text-align: center;
+  }
+  .empty-tile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    border-radius: var(--r-12);
+    background: var(--color-bg-base);
+    color: var(--color-text-muted);
+  }
+  .not-found-title {
+    margin: 0;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    color: var(--color-text-main);
+  }
+  .not-found-sub {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+}

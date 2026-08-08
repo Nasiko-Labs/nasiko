@@ -34,3 +34,12 @@
 .seg-ctrl label:has(:focus-visible) {
   outline: 2px solid var(--color-primary); outline-offset: 1px;
 }
+
+/* Sliding pill indicator (tab-indicator.js) carries the selected fill;
+   labels stack above it so text stays readable */
+.seg-ctrl.has-tab-indicator label { position: relative; z-index: 1; }
+.seg-ctrl.has-tab-indicator label:has(:checked) { background: transparent; }
+.seg-ctrl .tab-indicator {
+  background: var(--bg-surface-active);
+  border-radius: var(--r-8);
+}

@@ -1,15 +1,3 @@
-your-agents-page:not(:defined) {
-  display: block;
-  padding: var(--space-xl) var(--space-md);
-  min-height: 400px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
-   nav pins into the card's left padding on desktop). */
-@media (min-width: 1024px) {
-  your-agents-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
-
 @keyframes skel-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -19,10 +7,9 @@ your-agents-page:not(:defined) {
 }
 
 @scope (your-agents-page) {
-  :scope {
-    display: block;
-    padding: var(--space-xl) var(--space-md);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   /* ── Header ──────────────────────────────────────────────────────────────── */
   .page-header { margin-bottom: var(--space-lg); }
@@ -70,11 +57,14 @@ your-agents-page:not(:defined) {
     font-weight: 600;
   }
   .type-tab.active:first-child { color: var(--fg-brand); }
+  /* The sliding .tab-indicator (tab-indicator.js) supplies the gold bar */
+  .type-tabs.has-tab-indicator .type-tab.active { border-bottom-color: transparent; }
   .type-tab .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
   .type-tabs .skel-tab {
     width: 72px;
     height: 16px;
-    margin: 12px 0;
+    /* 12 + 16 + 11 matches a real .type-tab (40px, -1px bottom margin) */
+    margin: 12px 0 11px;
     border-radius: var(--radius-sm);
     background: var(--color-bg-base);
     animation: skel-pulse 1.5s ease-in-out infinite;
@@ -161,8 +151,10 @@ your-agents-page:not(:defined) {
   /* ── Grid ────────────────────────────────────────────────────────────────── */
   .agents-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: var(--space-lg);
+    /* Landscape cards: 3-up width with a compressed vertical rhythm (see
+       .agent-card) so each card reads short and wide, not boxy or oversized. */
+    grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+    gap: var(--space-md);
   }
   /* Status-tab switches rebuild the grid — fresh children replay the fade */
   .agents-grid > * { animation: panel-in var(--transition-base); }
@@ -199,11 +191,11 @@ your-agents-page:not(:defined) {
   .agent-card {
     border: 1px solid transparent;
     border-radius: var(--r-8);
-    padding: var(--space-md);
+    padding: var(--s-12) var(--space-md);
     background: var(--color-bg-base);
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
     transition: border-color 0.15s ease;
   }
   .agent-card:hover {
@@ -269,17 +261,6 @@ your-agents-page:not(:defined) {
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .agent-card-meta {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    flex-wrap: wrap;
-  }
-  .agent-card-image {
-    font-size: var(--font-size-xs);
-    font-family: var(--font-mono);
-    color: var(--color-text-muted);
-  }
   .agent-card-error {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
@@ -295,44 +276,79 @@ your-agents-page:not(:defined) {
     font-weight: 500;
     text-decoration: underline;
   }
+  /* Action row — hairline-separated footer; margin-top:auto keeps it aligned
+     across cards of differing content heights */
   .agent-card-actions {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
     margin-top: auto;
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
   }
 
-  /* ── Card action buttons ─────────────────────────────────────────────────── */
+  /* ── Card action buttons — small quiet secondary (28px, r8), matching the
+        agents-page card idiom (quiet Details / contained dark Chat) ───────── */
   .card-action-btn {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: var(--space-2xs) var(--space-sm);
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
+    gap: var(--space-2xs);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
+    font-size: 13px;
     font-weight: 500;
     font-family: inherit;
     cursor: pointer;
     white-space: nowrap;
+    transition:
+      background var(--transition-fast),
+      color var(--transition-fast),
+      border-color var(--transition-fast);
   }
-  .card-action-btn:hover {
-    color: var(--color-text-main);
-    background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+  .card-action-btn svg { flex-shrink: 0; }
+  .card-action-btn:hover:not(:disabled) {
+    background: var(--bg-surface-hover);
   }
+  .card-action-btn:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+  .card-action-btn:disabled { opacity: 0.6; cursor: default; }
+  /* Contextual primary (Deploy) — contained dark, same as agents-page Chat */
   .card-action-btn--primary {
-    color: var(--color-primary);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    border-color: transparent;
+    color: light-dark(var(--white), var(--neutral-900));
   }
-  .card-action-btn--primary:hover {
-    color: var(--color-primary);
-    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  .card-action-btn--primary:hover:not(:disabled) {
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
   }
+  /* Delete — icon-only quiet-danger, pushed right of the lifecycle actions */
+  /* Icon-only lifecycle buttons (Restart/Stop) — square quiet buttons; the
+     action name lives in title/aria-label. */
+  .card-action-btn--icon {
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+    padding: 0;
+    justify-content: center;
+  }
+
   .card-action-btn--danger {
     margin-left: auto;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+    padding: 0;
+    justify-content: center;
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-text-muted);
   }
-  .card-action-btn--danger:hover {
+  .card-action-btn--danger:hover:not(:disabled) {
     color: var(--color-error);
     background: color-mix(in srgb, var(--color-error) 8%, transparent);
   }
@@ -347,7 +363,7 @@ your-agents-page:not(:defined) {
   }
   .skel-line--name { width: 50%; height: 1em; }
   .skel-line--desc { width: 85%; }
-  .skel-line--image { width: 140px; }
+  .skel-line--desc2 { width: 72%; }
   .skel-tags {
     display: flex;
     gap: var(--space-xs);
@@ -363,11 +379,13 @@ your-agents-page:not(:defined) {
     display: flex;
     gap: var(--space-xs);
     margin-top: auto;
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
   }
   .skel-btn {
     width: 70px;
-    height: 24px;
-    border-radius: var(--radius-md);
+    height: var(--control-h-sm);
+    border-radius: var(--r-8);
     background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
   }

@@ -14,7 +14,7 @@ use crate::error::OrchestratorError;
 use crate::events::OrchestratorEvent;
 use crate::guard::CallGuard;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
-use crate::tool::A2aTool;
+use crate::tool::{A2aTool, DelegationContext};
 
 /// Attribute one completion's total token cost evenly across the tool calls
 /// it produced — the API gives one usage figure per completion, not per tool
@@ -84,6 +84,7 @@ pub struct Orchestrator {
     a2a_client: Arc<A2aClient>,
     context: ContextManager,
     guard: Option<Arc<dyn CallGuard>>,
+    delegation: Option<DelegationContext>,
 }
 
 impl Orchestrator {
@@ -97,6 +98,7 @@ impl Orchestrator {
             a2a_client,
             context,
             guard: None,
+            delegation: None,
         }
     }
 
@@ -107,6 +109,13 @@ impl Orchestrator {
 
     pub fn with_guard(mut self, guard: Arc<dyn CallGuard>) -> Self {
         self.guard = Some(guard);
+        self
+    }
+
+    /// Attach the calling user's identity so every agent this orchestrator
+    /// invokes receives a per-agent MCP delegation token (see `A2aTool`).
+    pub fn with_delegation(mut self, delegation: DelegationContext) -> Self {
+        self.delegation = Some(delegation);
         self
     }
 
@@ -332,7 +341,10 @@ impl Orchestrator {
         // Clone what we need for the spawned task
         let config = self.config.clone();
         let registry = self.registry.clone();
-        let a2a_client = self.a2a_client.clone();
+        let agents_ctx = AgentCallContext {
+            a2a_client: self.a2a_client.clone(),
+            delegation: self.delegation.clone(),
+        };
         let mut context = self.context.clone();
         let guard = self.guard.clone();
 
@@ -340,7 +352,7 @@ impl Orchestrator {
             let _ = run_stream_inner(
                 &config,
                 &registry,
-                &a2a_client,
+                &agents_ctx,
                 &mut context,
                 &query,
                 &tx,
@@ -385,7 +397,8 @@ impl Orchestrator {
         let mut defs = Vec::new();
 
         for agent in agents {
-            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone());
+            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
+                .with_delegation(self.delegation.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -442,11 +455,20 @@ impl Orchestrator {
     }
 }
 
+/// Bundles the two things needed to actually reach an agent — the shared HTTP
+/// client and (optionally) the calling user's identity for per-agent MCP
+/// delegation tokens — so `run_stream_inner` doesn't need them as separate
+/// arguments.
+struct AgentCallContext {
+    a2a_client: Arc<A2aClient>,
+    delegation: Option<DelegationContext>,
+}
+
 /// Inner streaming implementation. Sends events to the channel as orchestration progresses.
 async fn run_stream_inner(
     config: &OrchestratorConfig,
     registry: &AgentRegistry,
-    a2a_client: &Arc<A2aClient>,
+    agents_ctx: &AgentCallContext,
     context: &mut ContextManager,
     user_query: &str,
     tx: &mpsc::Sender<OrchestratorEvent>,
@@ -502,7 +524,11 @@ async fn run_stream_inner(
     let mut builder = ToolSet::builder();
     let mut tool_defs = Vec::new();
     for agent in &agents {
-        let tool = A2aTool::new(agent.clone(), a2a_client.clone()).with_progress(tx.clone());
+        // Streaming loop: keep BOTH features — delegation (per-agent MCP token,
+        // this branch) and live progress relay (main).
+        let tool = A2aTool::new(agent.clone(), agents_ctx.a2a_client.clone())
+            .with_delegation(agents_ctx.delegation.clone())
+            .with_progress(tx.clone());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }
@@ -612,6 +638,7 @@ async fn run_stream_inner(
                         input_tokens: input,
                         output_tokens: output,
                         model: config.model.clone(),
+                        estimated: false,
                     })
                     .await;
             }
@@ -803,18 +830,37 @@ async fn run_stream_inner(
                 }
             }
 
+            // rig 0.11's stream surfaces no usage chunk, so streamed turns would
+            // otherwise report nothing at all. Emit a character-based estimate,
+            // flagged so consumers label it approximate rather than exact.
+            {
+                let output_chars: usize = text_parts.iter().map(|t| t.len()).sum::<usize>()
+                    + tool_calls
+                        .iter()
+                        .map(|tc| tc.function.arguments.to_string().len())
+                        .sum::<usize>();
+                let input_chars = preamble.len() + user_prompt.len();
+                let _ = tx
+                    .send(OrchestratorEvent::Usage {
+                        input_tokens: estimate_tokens_from_chars(input_chars),
+                        output_tokens: estimate_tokens_from_chars(output_chars),
+                        model: config.model.clone(),
+                        estimated: true,
+                    })
+                    .await;
+            }
+
             if !tool_calls.is_empty() {
                 // Note: unlike the non-streaming branch below, no `Thinking`
                 // event is sent here — any pre-tool-call text was already
                 // delivered live via `Content` as it streamed above, so
                 // re-sending it as `Thinking` would just print it twice.
 
-                // Unlike the non-streaming branches, this turn's `stream.next()`
-                // loop above never surfaces a usage/token-count chunk for this
-                // provider stream type, so there's no real figure to attribute
-                // to `after_call` here — it stays 0 for streamed turns only.
-                // Token-budget enforcement is still real for every turn after
-                // the first (turn_idx > 0 always takes the non-streaming path).
+                // The estimated Usage above is for display/attribution only; no
+                // exact figure exists to feed `after_call`, so token-budget
+                // accounting stays 0 for streamed turns only. Budget enforcement
+                // is still real for every turn after the first (turn_idx > 0
+                // always takes the non-streaming path).
                 let mut results_for_context = Vec::new();
 
                 for tc in &tool_calls {
@@ -935,6 +981,13 @@ async fn run_stream_inner(
         })
         .await;
     Err(OrchestratorError::MaxTurnsExceeded(config.max_turns))
+}
+
+/// Rough chars→tokens estimate (~4 chars/token for English-ish text) for
+/// streamed turns where the provider reports no usage. Never returns 0 for
+/// non-empty text so estimated usage is distinguishable from "no data".
+fn estimate_tokens_from_chars(chars: usize) -> u64 {
+    (chars as u64).div_ceil(4)
 }
 
 #[cfg(test)]

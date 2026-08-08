@@ -1,5 +1,6 @@
 import { apiFetch } from "/common/services/api.js";
 import { icons } from "/common/utils/icons.js";
+import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
 import "/common/components/app-modal.js";
@@ -7,8 +8,9 @@ import "/common/components/app-module-nav.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 
-import styles from "./your-agents-page.css" with { type: "css" };
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
+// your-agents-page.css is <link>ed by the host page, not imported here: a sheet
+// pulled in by this module only exists once the module does, which is too late
+// to style the static shell the page paints before then (see web/your-agents.html).
 
 function statusClass(status) {
   if (status === "running") return "is-running";
@@ -33,55 +35,13 @@ class YourAgentsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    this.innerHTML = `
-      <app-module-nav module="agents"></app-module-nav>
-      <div class="page-header">
-        <div class="page-header-top">
-          <div>
-            <h1 class="title-page">Your agents</h1>
-            <p class="page-desc">Deployed agent containers you manage. Track status and failures, then open one to manage access, versions, and settings.</p>
-          </div>
-        </div>
-      </div>
-      <div class="toolbar">
-        <div class="search-wrap">
-          <span class="search-icon">${icons.search("", 18)}</span>
-          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability..." />
-          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
-        </div>
-        <div class="sort-wrap">
-          <select id="sort-select" class="sort-select" aria-label="Sort agents">
-            <option value="name">Sort: Name</option>
-            <option value="status">Sort: Status</option>
-            <option value="version">Sort: Version</option>
-          </select>
-        </div>
-      </div>
-      <div class="type-tabs" id="status-tabs" role="tablist">${Array.from({ length: 4 }, () => `<div class="skel-tab"></div>`).join("")}</div>
-      <div class="agents-grid" id="agents-grid">
-        ${this.#skeletonCards()}
-      </div>
-
-      <app-modal id="deploy-modal" heading="Deploy Agent">
-        <div class="modal-section">
-          <h3>Environment Variables</h3>
-          <p>These will be injected into the container. Saved to agent secrets for future deploys.</p>
-          <div id="env-rows"></div>
-          <div style="display:flex;gap:var(--space-sm);margin-top:var(--space-xs);">
-            <button class="add-env-btn" id="btn-add-env">${icons.plus("", 14)} Add variable</button>
-            <button class="import-btn" id="btn-import-secrets">${icons.key("", 14)} Import from secrets</button>
-          </div>
-        </div>
-        <div class="modal-section" id="secrets-import-section" style="display:none;">
-          <h3>Select secrets to import</h3>
-          <div class="secret-chips" id="secret-chips"></div>
-        </div>
-        <div class="form-actions">
-          <button class="btn-cancel" id="deploy-cancel">Cancel</button>
-          <button class="btn-deploy" id="deploy-confirm">Deploy</button>
-        </div>
-      </app-modal>
-    `;
+    // The host page owns the shell (web/your-agents.html) so it paints styled
+    // before this module arrives; here we only bind to it and fill the API-fed
+    // regions. Fallback for hosts that don't supply it (element created in JS).
+    if (!this.querySelector("#agents-grid")) this.insertAdjacentHTML("afterbegin", this.#shell());
+    // The deploy dialog stays component-owned: it has no pre-JS footprint, so
+    // duplicating it into every host page would buy nothing.
+    this.insertAdjacentHTML("beforeend", this.#deployModal());
 
     this.querySelector("#search-input").addEventListener("input", () => {
       this.#updateClearBtn();
@@ -101,6 +61,7 @@ class YourAgentsPage extends HTMLElement {
       this.#renderGrid();
     });
 
+    attachSlidingIndicator(this.querySelector("#status-tabs"), ".type-tab", ".active");
     this.querySelector("#status-tabs").addEventListener("click", (e) => {
       const tab = e.target.closest(".type-tab");
       if (!tab) return;
@@ -145,6 +106,61 @@ class YourAgentsPage extends HTMLElement {
     btn.style.display = input.value ? "" : "none";
   }
 
+  /** Fallback shell — mirrors the static markup in web/your-agents.html. */
+  #shell() {
+    return `
+      <app-module-nav module="agents"></app-module-nav>
+      <div class="page-header">
+        <div class="page-header-top">
+          <div>
+            <h1 class="title-page">Your agents</h1>
+            <p class="page-desc">Deployed agent containers you manage. Track status and failures, then open one to manage access, versions, and settings.</p>
+          </div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="search-wrap">
+          <span class="search-icon">${icons.search("", 18)}</span>
+          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability..." />
+          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
+        </div>
+        <div class="sort-wrap">
+          <select id="sort-select" class="sort-select" aria-label="Sort agents">
+            <option value="name">Sort: Name</option>
+            <option value="status">Sort: Status</option>
+            <option value="version">Sort: Version</option>
+          </select>
+        </div>
+      </div>
+      <div class="type-tabs" id="status-tabs" role="tablist">${Array.from({ length: 4 }, () => `<div class="skel-tab"></div>`).join("")}</div>
+      <div class="agents-grid" id="agents-grid">${this.#skeletonCards()}</div>
+    `;
+  }
+
+  #deployModal() {
+    return `
+      <app-modal id="deploy-modal" heading="Deploy Agent">
+        <div class="modal-section">
+          <h3>Environment Variables</h3>
+          <p>These will be injected into the container. Saved to agent secrets for future deploys.</p>
+          <div id="env-rows"></div>
+          <div style="display:flex;gap:var(--space-sm);margin-top:var(--space-xs);">
+            <button class="add-env-btn" id="btn-add-env">${icons.plus("", 14)} Add variable</button>
+            <button class="import-btn" id="btn-import-secrets">${icons.key("", 14)} Import from secrets</button>
+          </div>
+        </div>
+        <div class="modal-section" id="secrets-import-section" style="display:none;">
+          <h3>Select secrets to import</h3>
+          <div class="secret-chips" id="secret-chips"></div>
+        </div>
+        <div class="form-actions">
+          <button class="btn-cancel" id="deploy-cancel">Cancel</button>
+          <button class="btn-deploy" id="deploy-confirm">Deploy</button>
+        </div>
+      </app-modal>
+    `;
+  }
+
   #skeletonCards() {
     return Array.from(
       { length: 4 },
@@ -156,7 +172,7 @@ class YourAgentsPage extends HTMLElement {
           <div class="skel-tag"></div>
         </div>
         <div class="skel-line skel-line--desc"></div>
-        <div class="skel-line skel-line--image"></div>
+        <div class="skel-line skel-line--desc2"></div>
         <div class="skel-actions">
           <div class="skel-btn"></div>
           <div class="skel-btn"></div>
@@ -231,7 +247,7 @@ class YourAgentsPage extends HTMLElement {
         const name = a.display_name || a.name;
         const isRunning = a.status === "running";
         const isError = a.status === "error" || a.status === "failed";
-        const { name: imgName, version: imgVersion } = parseImageTag(a.image);
+        const { version: imgVersion } = parseImageTag(a.image);
         const version = a.version || imgVersion;
         const allTags = a.tags || [];
         const shownTags = allTags.slice(0, 2);
@@ -255,22 +271,19 @@ class YourAgentsPage extends HTMLElement {
                 ? `<div class="agent-card-desc">${this.#esc(a.description)}</div>`
                 : ""
           }
-          <div class="agent-card-meta">
-            <code class="agent-card-image">${this.#esc(imgName)}${imgVersion ? `:${this.#esc(imgVersion)}` : ""}</code>
-          </div>
           <div class="agent-card-actions">
             ${
               isRunning
                 ? `
-              <button class="card-action-btn" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}">${icons.refresh("", 13)} Restart</button>
-              <button class="card-action-btn" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}">${icons.square("", 11)} Stop</button>
+              <button class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
+              <button class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}" title="Stop">${icons.square("", 12)}</button>
             `
                 : `
               <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>
             `
             }
-            <button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}">
-              ${icons.trash("", 13)} Delete
+            <button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}" title="Delete ${this.#escAttr(name)}">
+              ${icons.trash("", 14)}
             </button>
           </div>
         </div>

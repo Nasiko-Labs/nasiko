@@ -44,6 +44,16 @@ pub struct ChatMessage {
     pub file_parts: Option<sqlx::types::Json<serde_json::Value>>,
     pub has_file_parts: bool,
     pub timestamp: DateTime<Utc>,
+    // Per-message usage (assistant rows; platform-paid spend only — see
+    // migration 041). All optional: user rows and BYO-key agent replies
+    // carry at most duration/trace.
+    pub input_tokens: Option<i32>,
+    pub output_tokens: Option<i32>,
+    pub model: Option<String>,
+    pub duration_ms: Option<i32>,
+    pub cost_usd: Option<rust_decimal::Decimal>,
+    pub usage_estimated: Option<bool>,
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,4 +95,19 @@ pub struct SendMessage {
     pub content: String,
     pub file_parts: Option<serde_json::Value>,
     pub file_ids: Option<Vec<Uuid>>,
+    /// Optional per-message usage captured client-side from the stream's
+    /// `usage_meta` event (direct-agent chats persist through this route).
+    pub usage: Option<MessageUsage>,
+}
+
+/// The usage subset a client may attach when persisting an assistant message.
+#[derive(Debug, Deserialize)]
+pub struct MessageUsage {
+    pub input_tokens: Option<i32>,
+    pub output_tokens: Option<i32>,
+    pub model: Option<String>,
+    pub duration_ms: Option<i32>,
+    pub cost_usd: Option<rust_decimal::Decimal>,
+    pub estimated: Option<bool>,
+    pub trace_id: Option<String>,
 }

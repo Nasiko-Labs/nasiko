@@ -108,7 +108,21 @@ where
     T: 'static,
 {
     let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
+    // OSS-tier agent grants/visibility API (list grants, public toggle, user
+    // and agent-agent shares, ownership transfer). Mounted HERE and not in
+    // `agents::router()` because EE replaces it wholesale: `build_ee_app`
+    // nests its richer org-aware grants router at the same
+    // `/api/agents/{id}/…` paths, and mounting both would panic on route
+    // conflicts at startup. Handlers gate themselves on owner-or-superuser
+    // (`acl::can_manage_agent`), so the mount needs only `require_auth`.
+    let grant_routes = Router::new()
+        .nest("/agents", agents::grants::router())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
     build_app_with_user_router(state.clone(), fallback, users::router())
+        .nest("/api", grant_routes.with_state(state.clone()))
         .merge(auth::login::public_router(login_limiter).with_state(state))
 }
 

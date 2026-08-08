@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
@@ -15,26 +17,59 @@
   <body>
     <app-header></app-header>
     <sessions-page>
-      <div class="skel-sessions">
-        <div class="skel-session">
-          <div class="skel-session__avatar"></div>
-          <div class="skel-session__info"><div class="skel-session__line skel-session__line--short"></div><div class="skel-session__line skel-session__line--long"></div></div>
-          <div class="skel-session__line skel-session__line--time"></div>
+      <!-- Pre-upgrade paint: real header and filter field (neither needs a
+           backend, and neither may move), shimmer only for the session rows.
+           The component replaces all of this on upgrade — see
+           common/styles/not-defined.css. -->
+      <div class="pre-modnav"></div>
+      <div class="pre-head pre-head--split" style="--pre-head-mb:var(--space-md);--pre-head-gap:var(--space-2xs);--pre-head-wrap:nowrap">
+        <div>
+          <h1 class="title-page">Execution history</h1>
+          <p>Review all queries across agents. Select a session to open its trace details.</p>
         </div>
-        <div class="skel-session">
-          <div class="skel-session__avatar"></div>
-          <div class="skel-session__info"><div class="skel-session__line skel-session__line--short"></div><div class="skel-session__line skel-session__line--long"></div></div>
-          <div class="skel-session__line skel-session__line--time"></div>
+        <div class="pre-head__actions">
+          <span class="pre-action pre-action--solid">New Chat</span>
         </div>
-        <div class="skel-session">
-          <div class="skel-session__avatar"></div>
-          <div class="skel-session__info"><div class="skel-session__line skel-session__line--short"></div><div class="skel-session__line skel-session__line--long"></div></div>
-          <div class="skel-session__line skel-session__line--time"></div>
+      </div>
+      <div class="pre-controls" style="--pre-controls-mb:var(--s-12)">
+        <div class="pre-search" style="--pre-search-max:none;--pre-search-pl:var(--space-xl)">
+          <span class="pre-search__icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:16px;height:16px;flex-shrink:0"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></span>
+          <input class="pre-search__input" type="search" placeholder="Filter sessions..." aria-label="Filter sessions" />
         </div>
-        <div class="skel-session">
-          <div class="skel-session__avatar"></div>
-          <div class="skel-session__info"><div class="skel-session__line skel-session__line--short"></div><div class="skel-session__line skel-session__line--long"></div></div>
-          <div class="skel-session__line skel-session__line--time"></div>
+      </div>
+      <div class="pre-table pre-table--sand" style="--pre-cols:minmax(0,1fr) 110px 90px 110px 150px 120px;--pre-table-head-bg:light-dark(var(--sand-200), var(--neutral-800));--pre-table-rule:var(--color-border)">
+        <div class="pre-table__row pre-table__row--head" style="--pre-row-h:42px"></div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
+        </div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
+        </div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
+        </div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
         </div>
       </div>
     </sessions-page>

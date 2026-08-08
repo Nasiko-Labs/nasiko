@@ -461,7 +461,10 @@ export class AppHeader extends HTMLElement {
     const href = link.url;
     const active = this.#isActive(href);
     const titleEsc = this.#esc(link.title);
-    const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18) : icons.cube('', 18);
+    // Chrome icons (rail + topbar) render at 1px stroke per the NightOwl weight rule.
+    // Rail glyphs: 1.25 stroke — the mockup's 1px chrome weight reads wispy at
+    // 18px on the ink rail; topbar utility icons stay at 1.
+    const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.25) : icons.cube('', 18, 1.25);
     return `<a href="${this.#esc(href)}" class="rail-item${active ? " is-active" : ""}"
       title="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
   }
@@ -499,22 +502,22 @@ export class AppHeader extends HTMLElement {
       <header class="topbar" role="banner">
         <span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>
         <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
-          ${icons.panelLeft("", 16)}
+          ${icons.panelLeft("", 16, 1)}
         </button>
         <div class="nav-cluster">
-          <button class="chrome-btn" data-nav-back aria-label="Back" type="button">${icons.chevronLeft("", 16)}</button>
-          <button class="chrome-btn" data-nav-fwd aria-label="Forward" type="button">${icons.chevronRight("", 16)}</button>
+          <button class="chrome-btn" data-nav-back aria-label="Back" type="button">${icons.chevronLeft("", 16, 1)}</button>
+          <button class="chrome-btn" data-nav-fwd aria-label="Forward" type="button">${icons.chevronRight("", 16, 1)}</button>
         </div>
         ${navLinks.length ? `
         <button class="search-field" data-search-trigger type="button" aria-label="Search pages">
-          ${icons.search("", 16)}
+          ${icons.search("", 16, 1)}
           <span class="placeholder">Search anything...</span>
           <span class="kbd-hint">\u2318F</span>
         </button>` : ""}
         <span class="topbar-spacer"></span>
         <div class="topbar-right">
-          ${addAgent ? `<a href="${this.#esc(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16)} Add agent</a>` : ""}
-          <button class="chrome-btn mobile-menu-btn" data-mobile-menu aria-label="Menu" type="button">${icons.menu("", 16)}</button>
+          ${addAgent ? `<a href="${this.#esc(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16, 1)} Add agent</a>` : ""}
+          <button class="chrome-btn mobile-menu-btn" data-mobile-menu aria-label="Menu" type="button">${icons.menu("", 16, 1)}</button>
         </div>
       </header>
       <nav class="rail" aria-label="Main navigation">
@@ -548,6 +551,8 @@ export class AppHeader extends HTMLElement {
     if (navSearch) {
       navSearch.navLinks = navLinks;
       navSearch.userPrefix = "";
+      // The palette drops down anchored under the topbar search field.
+      navSearch.anchorEl = this.querySelector("[data-search-trigger]");
       navSearch.addEventListener("navigate", (e) => {
         e.detail.newTab
           ? window.open(e.detail.url, "_blank")

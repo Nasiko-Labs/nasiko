@@ -310,6 +310,7 @@ async fn translated_call(
         tier1_model: None,
         tier2_model: None,
         tier3_model: None,
+        platform_paid: true,
     };
 
     let provider = provider_for(backend.label(), http, cfg)

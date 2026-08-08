@@ -493,6 +493,10 @@ mod tests {
             max_tokens: None,
             has_llm_config: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
         }
     }
 

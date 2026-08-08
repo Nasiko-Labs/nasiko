@@ -3,6 +3,8 @@ import "./voice-input.js";
 import "./agent-steps.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
+import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
+import { usageChipsHtml, usageFromMessage } from '/common/utils/usage-chips.js';
 
 if (!window.transcribeAudio) {
   window.transcribeAudio = async (blob) => {
@@ -257,8 +259,8 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply } = await this.#readA2aStream(res, messagesEl);
-      this.#persistMessage(this.#sessionId, "assistant", reply);
+      const { text: reply, traceId, usage } = await this.#readA2aStream(res, messagesEl);
+      this.#persistMessage(this.#sessionId, "assistant", reply, { traceId, usage });
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
       pendingRow.remove();
@@ -281,7 +283,10 @@ class ChatPage extends HTMLElement {
       messagesEl.innerHTML = '';
       if (Array.isArray(msgs) && msgs.length) {
         for (const m of msgs) {
-          this.#appendMsg(messagesEl, m.role, m.content);
+          this.#appendMsg(messagesEl, m.role, m.content, {
+            usage: usageFromMessage(m),
+            traceId: m.trace_id,
+          });
           if (m.role === 'user') this.#lastUserContent = m.content;
         }
         this.#updateRetryButtons(messagesEl);
@@ -289,7 +294,7 @@ class ChatPage extends HTMLElement {
     } catch { messagesEl.innerHTML = ''; }
   }
 
-  #appendMsg(messagesEl, role, content) {
+  #appendMsg(messagesEl, role, content, { usage = null, traceId = null } = {}) {
     // Sessions are written by multiple clients: the web UI stores replies as
     // "assistant" while the CLI/TUI store them as "agent". Anything that is
     // not the user renders as an agent reply (markdown + assistant styling).
@@ -316,6 +321,8 @@ class ChatPage extends HTMLElement {
       actions.className = "msg-actions";
       actions.innerHTML = `
         <button type="button" class="msg-action-copy" aria-label="Copy message" title="Copy">${icons.copy('', 14)}</button>
+        ${usageChipsHtml(usage)}
+        ${this.#traceLinkHtml(traceId)}
       `;
       row.appendChild(actions);
     }
@@ -366,112 +373,54 @@ class ChatPage extends HTMLElement {
     messagesEl.appendChild(streamRow);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
-    const showContent = (html) => {
-      typingEl.remove();
-      contentEl.classList.add("is-visible");
-      contentEl.innerHTML = html;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+    // Follow the stream only while the user is at the bottom.
+    const follow = () => {
+      if (nearBottom(messagesEl)) messagesEl.scrollTop = messagesEl.scrollHeight;
     };
 
-    let fullText = "";
-    let workingText = "";
-    let traceId = null;
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    const showContent = (html, { progress = false } = {}) => {
+      typingEl.remove();
+      contentEl.classList.add("is-visible");
+      contentEl.classList.toggle("is-progress", progress);
+      contentEl.innerHTML = html;
+      follow();
+    };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const renderReply = frameRenderer((text) => {
+      stepsEl.finish();
+      showContent(renderMarkdown(text));
+    });
+    const renderProgress = frameRenderer((text) => {
+      showContent(renderMarkdown(text), { progress: true });
+    });
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const raw = line.slice(6).trim();
-        if (!raw) continue;
-        try {
-          const evt = JSON.parse(raw);
-          const statusUpdate = evt.statusUpdate || evt.result?.statusUpdate;
-          const artifactUpdate = evt.artifactUpdate || evt.result?.artifactUpdate;
-
-          if (statusUpdate) {
-            const su = statusUpdate;
-            const state = su.status?.state;
-            const msg = su.status?.message;
-            if (msg && msg.parts) {
-              if (state === "TASK_STATE_COMPLETED") {
-                const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
-                // The completed status carries the full reply — prefer it over
-                // any partial/replace-mode chunk accumulation.
-                if (text && text.length >= fullText.length) {
-                  fullText = text;
-                  stepsEl.finish();
-                  showContent(renderMarkdown(fullText));
-                }
-              } else if (state === "TASK_STATE_WORKING") {
-                const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
-                if (text && !fullText) {
-                  // Live progress: cumulative senders re-send the full text so
-                  // far (prefix match → replace); delta senders append.
-                  workingText = text.startsWith(workingText) ? text : workingText + text;
-                  showContent(renderMarkdown(workingText));
-                }
-              } else if (state === "TASK_STATE_FAILED") {
-                const text = msg.parts.filter(p => p.text).map(p => p.text).join("");
-                if (text) {
-                  stepsEl.finish();
-                  showContent(`<span style="color:var(--color-error)">${this.#esc(text)}</span>`);
-                }
-              }
-              for (const part of msg.parts) {
-                if (part.data) {
-                  const d = part.data;
-                  if (d.type === "trace_meta" && d.trace_id) {
-                    traceId = d.trace_id;
-                    continue;
-                  }
-                  stepsEl.onEvent(d);
-                  messagesEl.scrollTop = messagesEl.scrollHeight;
-                }
-              }
-            }
-          }
-
-          if (artifactUpdate) {
-            const au = artifactUpdate;
-            const text = au.artifact?.parts
-              ?.filter((p) => p.text)
-              .map((p) => p.text)
-              .join("");
-            if (text) {
-              if (au.append) {
-                fullText += text;
-              } else {
-                fullText = text;
-              }
-              stepsEl.finish();
-              showContent(renderMarkdown(fullText));
-            }
-          }
-        } catch {}
-      }
-    }
+    const out = await readA2aStream(res, {
+      onReply: renderReply,
+      onProgress: renderProgress,
+      onData: (d) => {
+        stepsEl.onEvent(d);
+        follow();
+      },
+      onError: (message) => {
+        stepsEl.finish();
+        showContent(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
+      },
+    });
 
     // Finalize
     stepsEl.finish();
     typingEl.remove();
-    if (!fullText && workingText) {
-      // Stream ended without a final artifact/completed text — keep the last
-      // working text rather than discarding what the user already saw.
-      fullText = workingText;
-      showContent(renderMarkdown(fullText));
-    }
-    if (!fullText) {
+    let fullText = out.text;
+    if (out.failed && !fullText) {
+      fullText = out.errorMessage;
+      showContent(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
+    } else if (!fullText) {
       showContent(renderMarkdown("No response"));
       fullText = "No response";
+    } else {
+      // The frame renderer may still have a queued paint; settle on the
+      // final text synchronously so actions append below rendered content.
+      showContent(renderMarkdown(fullText));
     }
 
     // Add actions to stream row
@@ -479,11 +428,12 @@ class ChatPage extends HTMLElement {
     actions.className = "msg-actions";
     actions.innerHTML = `
       <button type="button" class="msg-action-copy" aria-label="Copy message" title="Copy">${icons.copy('', 14)}</button>
-      ${this.#traceLinkHtml(traceId)}
+      ${usageChipsHtml(out.usage)}
+      ${this.#traceLinkHtml(out.traceId)}
     `;
     streamArea.appendChild(actions);
 
-    return { text: fullText, traceId };
+    return { text: fullText, traceId: out.traceId, usage: out.usage };
   }
 
   #traceLinkHtml(traceId) {
@@ -492,14 +442,25 @@ class ChatPage extends HTMLElement {
       aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 
-  // The live "view trace" link on a streamed reply comes from the trace_meta
-  // SSE event; the durable message ↔ trace association lives server-side in
-  // the session_traces table, not on the message row.
-  #persistMessage(sessionId, role, content) {
+  // Assistant rows carry their usage_meta + trace id so chips and the
+  // "Detailed trace" link survive a history reload.
+  #persistMessage(sessionId, role, content, { traceId = null, usage = null } = {}) {
+    const body = { role, content };
+    if (traceId || usage) {
+      body.usage = {
+        input_tokens: usage?.input_tokens ?? null,
+        output_tokens: usage?.output_tokens ?? null,
+        model: usage?.model ?? null,
+        duration_ms: usage?.duration_ms ?? null,
+        cost_usd: usage?.cost_usd ?? null,
+        estimated: usage?.estimated ?? null,
+        trace_id: traceId,
+      };
+    }
     apiFetch(`/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role, content }),
+      body: JSON.stringify(body),
     }).catch(() => {});
   }
 

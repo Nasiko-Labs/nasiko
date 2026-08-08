@@ -1,0 +1,196 @@
+/*
+  Page host geometry — the outer box of every page element.
+
+  This file is LINKED (via components.css), never adopted. That is the whole
+  point: a page component's own sheet is pulled in by its module
+  (`import … with { type: 'css' }` → `document.adoptedStyleSheets`), so anything
+  written there does not exist at first paint. Host padding written in a page
+  sheet therefore had to be mirrored into a `:not(:defined)` block, and the two
+  copies drifted — that drift is what produced the mobile jump and the 1px
+  tab-strip mismatch.
+
+  So the host box lives here, once, keyed on the page element itself (no
+  `:not(:defined)` filter) — it applies identically before and after upgrade,
+  by construction. Everything *inside* a page stays in that page's `@scope`d
+  sheet.
+
+  Rules for editing:
+  - Only host-box properties belong here: display/flow, padding, size,
+    position. Not colors, not children.
+  - A page sheet must NOT re-declare a property set here. These selectors are
+    unscoped, so a surviving `@scope (x-page) { :scope { padding … } }` would
+    win (scope proximity, and equal-or-higher specificity) and silently
+    reintroduce the two-copies problem.
+*/
+
+/* ── Standard content pages ──────────────────────────────────────────────
+   Narrow viewports: page sits directly on the white surface. Desktop adds the
+   floating content card's padding in the media block at the bottom. */
+agent-card-page,
+build-detail-page,
+builds-page,
+executions-page,
+flow-detail-page,
+flows-page,
+secrets-page,
+sessions-page,
+workflow-detail-page,
+workflow-new-page,
+workflows-page {
+  display: block;
+  padding: var(--space-lg) var(--space-md);
+}
+
+/* Hub pages lead with a deeper top pad (their title is the page's first ink). */
+agents-page,
+your-agents-page {
+  display: block;
+  padding: var(--space-xl) var(--space-md);
+}
+
+/* Pages whose narrow-viewport gutter is the wider --space-xl. */
+access-control-page,
+add-agent-github-page,
+departments-page,
+group-mappings-page,
+llm-router-page,
+mcp-page,
+observability-session-page,
+runtime-page,
+settings-page,
+team-access-page,
+teams-page,
+tokenops-page,
+users-page {
+  display: block;
+  padding: var(--space-lg) var(--space-xl);
+}
+
+/* Session trace: uniform gutter at every width (dense three-pane detail). */
+session-trace-page {
+  display: block;
+  padding: var(--space-lg);
+}
+
+/* ── Pages with bespoke host geometry ────────────────────────────────────── */
+
+/* Import new agent: centered chooser column. */
+add-agent-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-2xl) var(--space-md);
+}
+
+/* Setup CLI: full-bleed step column, no desktop card padding. */
+setup-cli-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg) var(--space-xl);
+  min-height: 100%;
+}
+
+/* Chat: flex column filling the viewport so .messages scrolls internally and
+   the composer stays pinned; the header band is full width and the composer
+   centers itself. */
+chat-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--app-header-height));
+  padding: 0 var(--space-md);
+}
+
+/* Orchestrator: centered hero column with a deep top pad. The loaded page
+   swaps this for a compact layout via `.has-response`, which stays in
+   orchestrator-page.css — it is a runtime state, not a first-paint concern. */
+orchestrator-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: calc(100dvh - 80px);
+  padding: var(--space-md);
+  padding-top: max(48px, 16dvh);
+}
+
+/* Login: full-bleed light plane over the shell's ink body backdrop (this page
+   renders without app-header). The background is here, not in login-page.css,
+   so the ink shell never flashes before the module loads. */
+login-page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: light-dark(var(--white), var(--neutral-900));
+}
+
+/* ── Desktop: the floating content card ──────────────────────────────────── */
+@media (min-width: 1024px) {
+  /* Standard card content padding (52 top, 64 sides/bottom). tokenops-page and
+     setup-cli-page are deliberately absent — both are full-bleed. */
+  agent-card-page,
+  agents-page,
+  your-agents-page,
+  build-detail-page,
+  builds-page,
+  executions-page,
+  flow-detail-page,
+  flows-page,
+  secrets-page,
+  sessions-page,
+  workflow-detail-page,
+  workflow-new-page,
+  workflows-page,
+  access-control-page,
+  add-agent-github-page,
+  departments-page,
+  group-mappings-page,
+  llm-router-page,
+  mcp-page,
+  observability-session-page,
+  runtime-page,
+  settings-page,
+  team-access-page,
+  teams-page,
+  users-page {
+    padding: var(--card-content-pad);
+  }
+
+  /*
+    app-module-nav host gutter. On desktop the nav is a 200px column pinned
+    into the content card's left padding (24 inset + 200 nav = 224, + the 64
+    content pad = 288), out of normal flow; the page content moves right to
+    clear it. app-module-nav.js owns how the nav fills that gutter, but the
+    gutter itself is page geometry and must exist at first paint — every page
+    listed here renders a nav in every render branch, so it is unconditional
+    rather than keyed on `:has(> app-module-nav)` (which would be false in
+    phase 1 for the pages that inject their nav from JS).
+
+    Must follow the `padding` shorthand above, which would otherwise reset it.
+  */
+  access-control-page,
+  agents-page,
+  builds-page,
+  departments-page,
+  executions-page,
+  flows-page,
+  group-mappings-page,
+  mcp-page,
+  runtime-page,
+  sessions-page,
+  settings-page,
+  team-access-page,
+  teams-page,
+  users-page,
+  workflows-page,
+  your-agents-page {
+    padding-left: calc(224px + var(--s-64));
+  }
+
+  /* Chat fills the floating card exactly (topbar + 16px card margins). */
+  chat-page {
+    height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
+  }
+}

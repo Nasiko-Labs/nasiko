@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko — Create workflow</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <script type="module" src="/navigation.js"></script>
+    <script type="module" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/workflow-new-page.js"></script>
+  </head>
+  <body>
+    <app-header></app-header>
+    <workflow-new-page>
+      <div style="display:flex;flex-direction:column;gap:var(--space-lg);max-width:700px;">
+        <div style="display:flex;align-items:center;gap:var(--s-12);">
+          <div class="skel-card__avatar" style="border-radius:var(--r-8);"></div>
+          <div class="skel-card__line skel-card__line--w50" style="height:28px;"></div>
+        </div>
+        <div class="skel-card__line" style="height:88px;border-radius:var(--r-8);"></div>
+        <div class="skel-card">
+          <div class="skel-card__line skel-card__line--w40"></div>
+          <div class="skel-card__line skel-card__line--w80"></div>
+          <div class="skel-card__line skel-card__line--w60"></div>
+        </div>
+      </div>
+    </workflow-new-page>
+  </body>
+</html>

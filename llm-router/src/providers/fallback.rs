@@ -273,6 +273,13 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             tracing::warn!(%entry, "skipping fallback: no api key available");
             continue;
         }
+        // Same-provider fallbacks reuse the primary's key (and payer); cross-provider
+        // fallbacks always use the platform key.
+        let platform_paid = if provider == primary.provider {
+            primary.platform_paid
+        } else {
+            true
+        };
         attempts.push(ResolvedConfig {
             provider,
             model,
@@ -284,6 +291,11 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             has_llm_config: primary.has_llm_config,
             // Fallback attempts are never pinned — pinning disables fallbacks upstream.
             pinned_model: None,
+            // Tier overrides don't apply to fallback attempts.
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid,
         });
     }
     attempts
@@ -320,6 +332,10 @@ mod tests {
             max_tokens: Some(100),
             has_llm_config: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
         }
     }
 
@@ -395,6 +411,10 @@ mod tests {
             max_tokens: None,
             has_llm_config: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -443,6 +463,10 @@ mod tests {
             max_tokens: None,
             has_llm_config: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
         };
         let req: EmbeddingsRequest =
             serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
@@ -515,6 +539,10 @@ mod tests {
             max_tokens: None,
             has_llm_config: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -585,6 +613,10 @@ mod tests {
             max_tokens: None,
             has_llm_config: true,
             pinned_model: Some("claude-opus-4-8".into()),
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
         };
         let req: ChatRequest = serde_json::from_value(json!({
             "temperature": 0.7,
@@ -628,6 +660,10 @@ mod tests {
             max_tokens: None,
             has_llm_config: false,
             pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))

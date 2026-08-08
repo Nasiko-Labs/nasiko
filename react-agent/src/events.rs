@@ -46,11 +46,15 @@ pub enum OrchestratorEvent {
         turn: usize,
     },
 
-    /// Token usage from an LLM call (emitted per non-streaming turn).
+    /// Token usage from an LLM call. Non-streaming turns report exact
+    /// provider counts; streamed turns report a character-based estimate
+    /// (`estimated: true`) because the rig 0.11 stream surfaces no usage
+    /// chunk — consumers must label estimated figures as approximate.
     Usage {
         input_tokens: u64,
         output_tokens: u64,
         model: String,
+        estimated: bool,
     },
 
     /// An error occurred during orchestration.

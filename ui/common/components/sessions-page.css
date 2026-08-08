@@ -1,24 +1,12 @@
-sessions-page:not(:defined) {
-  display: block;
-  min-height: 200px;
-}
-
-/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
-   nav pins into the card's left padding on desktop). */
-@media (min-width: 1024px) {
-  sessions-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
-}
-
 @keyframes skeleton-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
 
 @scope (sessions-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-md);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   .sessions-header {
     display: flex;
@@ -42,7 +30,7 @@ sessions-page:not(:defined) {
 
   .sessions-search-wrap {
     position: relative;
-    margin-bottom: var(--space-lg);
+    margin-bottom: var(--s-12);
   }
 
   .sessions-search-icon {
@@ -87,6 +75,10 @@ sessions-page:not(:defined) {
     border-collapse: separate;
     border-spacing: 0;
     font-size: var(--font-size-sm);
+    /* global.css gives every <table> `margin: var(--space-md) 0`, which stacked
+       another 16px under the filter's own 12px (and left 16px dangling below
+       the last row). The gap here is owned by .sessions-search-wrap. */
+    margin: 0;
   }
 
   .sessions-table th {
@@ -113,7 +105,11 @@ sessions-page:not(:defined) {
   .sessions-table tbody tr {
     cursor: pointer;
 
+    /* The hover fill is rounded on its outer corners so a row reads as the
+       same pill shape as the sand header band above it. */
     &:hover td { background: var(--bg-surface-hover); }
+    &:hover td:first-child { border-radius: var(--r-8) 0 0 var(--r-8); }
+    &:hover td:last-child { border-radius: 0 var(--r-8) var(--r-8) 0; }
     &:hover .session-delete { opacity: 1; }
     &:focus-visible {
       outline: none;

@@ -1,18 +1,9 @@
 /* Import new agent — NightOwl: centered icon tile + Chivo Mono title,
    Set-up-CLI banner, 2×2 chooser cards. */
-add-agent-page:not(:defined) {
-  display: block;
-  padding: var(--space-2xl) var(--space-md);
-  min-height: 500px;
-}
 
 @scope (add-agent-page) {
-  :scope {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: var(--space-2xl) var(--space-md);
-  }
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
 
   .page-icon {
     display: inline-flex;
@@ -90,15 +81,17 @@ add-agent-page:not(:defined) {
   }
 
   /* ── Chooser cards ───────────────────────────────────────────────────── */
+  /* Three methods, one row — a 2-col grid orphaned the OCI card onto its own
+     row (and pushed it below the fold on short viewports). */
   .method-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-lg);
-    width: min(100%, 780px);
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-md);
+    width: min(100%, 1020px);
   }
 
-  @media (max-width: 640px) {
-    .method-grid { grid-template-columns: 1fr; }
+  @media (max-width: 900px) {
+    .method-grid { grid-template-columns: 1fr; width: min(100%, 520px); }
   }
 
   .method-card {

@@ -1,0 +1,128 @@
+@scope (wf-run-steps) {
+  :scope {
+    display: block;
+  }
+
+  .step {
+    display: flex;
+    gap: var(--s-12);
+  }
+
+  /* Status icon column + connector line (mockup: 20px col, 1px sand line) */
+  .rail-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 20px;
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+  }
+  .rail-col.is-success { color: var(--color-success); }
+  .rail-col.is-failed { color: var(--color-error); }
+  .rail-col.is-running { color: var(--fg-brand); }
+  .rail-line {
+    flex: 1;
+    width: 1px;
+    min-height: 20px;
+    margin-top: var(--s-4);
+    background: light-dark(var(--sand-200), var(--neutral-700));
+  }
+
+  .spin {
+    display: inline-flex;
+    animation: wf-spin 1.1s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spin { animation: none; }
+  }
+
+  .step-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    flex: 1;
+    min-width: 0;
+    padding-bottom: var(--s-20);
+  }
+  .step:last-child .step-body { padding-bottom: 0; }
+
+  .step-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+    min-height: 20px;
+  }
+  .step-title {
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+  .meta {
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+  }
+  .status.is-success { color: var(--color-success); }
+  .status.is-failed { color: var(--color-error); }
+  .status.is-running { color: var(--fg-brand); }
+
+  /* Output / Prompt pill tabs (mockup: 24px pills, active = white fill) */
+  .pane-tabs {
+    display: flex;
+    gap: var(--s-8);
+  }
+  .pane-tab {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 10px;
+    border: none;
+    border-radius: var(--r-40);
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+  .pane-tab.is-active {
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+  }
+  /* On a sand card (surface="sand") the wells flip to white for contrast */
+  :scope[surface='sand'] .pane-tab.is-active {
+    background: light-dark(var(--white), var(--neutral-800));
+  }
+
+  .pane {
+    max-height: 128px;
+    padding: var(--s-12);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    overflow-y: auto;
+    font-size: var(--font-size-xs);
+    line-height: 18px;
+    color: var(--color-text-main);
+    scrollbar-width: thin;
+    overflow-wrap: anywhere;
+  }
+  :scope[surface='sand'] .pane {
+    background: light-dark(var(--white), var(--neutral-800));
+  }
+  .pane.md-body { font-size: var(--font-size-xs); }
+  .pane--mono {
+    font-family: var(--font-display);
+    white-space: pre-wrap;
+  }
+  .pane--error {
+    font-family: var(--font-display);
+    white-space: pre-wrap;
+    color: var(--color-error);
+  }
+}
+
+@keyframes wf-spin {
+  to { transform: rotate(360deg); }
+}

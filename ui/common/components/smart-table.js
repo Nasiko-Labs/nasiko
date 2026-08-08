@@ -80,7 +80,11 @@ export class SmartTable extends HTMLElement {
 
     this.#render();
     this.#setupEventListeners();
-    this.refresh();
+    // Deferred by a microtask: pages assign `columns` on the statement after
+    // the element is created, which is after this callback has run. Waiting
+    // lets the skeleton pass draw the real header and column widths, so rows
+    // never move between the loading state and loaded data.
+    queueMicrotask(() => this.refresh());
   }
 
   disconnectedCallback() {
@@ -177,8 +181,19 @@ export class SmartTable extends HTMLElement {
 
     try {
       const response = await this.dataFn(this.#searchQuery, this.#currentPage, this.limit);
-      this.#data = response.data || response;
-      this.#totalItems = response.total || this.#data.length;
+      // A fetcher may answer a bare array or a {data, total} envelope. Anything
+      // else is a contract mismatch (e.g. an endpoint returning a differently
+      // named key): degrade to an empty table with a pointed warning rather
+      // than assigning a non-iterable and throwing deep in the sort.
+      const rows = Array.isArray(response) ? response : response?.data;
+      if (!Array.isArray(rows)) {
+        console.warn(
+          `smart-table: "${this.#dataFnName}" returned no row array (expected an array or {data:[…]}); got`,
+          response,
+        );
+      }
+      this.#data = Array.isArray(rows) ? rows : [];
+      this.#totalItems = response?.total ?? this.#data.length;
       this.#invalidateSortCache();
       this.#renderTable();
       this.#updatePagination();
@@ -196,7 +211,10 @@ export class SmartTable extends HTMLElement {
     const thead = this.querySelector('.thead');
     const tbody = this.querySelector('.tbody');
     if (!thead || !tbody) return;
-    if (!this.#data.length) thead.innerHTML = '';
+    if (!this.#data.length) {
+      this.#renderColgroup(this.columns);
+      this.#renderHead(this.columns);
+    }
     const colCount = this.columns ? this.columns.length : 4;
     const widthSets = [
       ['60%','80%','40%','70%'],
@@ -232,16 +250,55 @@ export class SmartTable extends HTMLElement {
       : Object.keys(this.#data[0]).map(k => ({ key: k, label: k }));
 
     // Rebuild colgroup on every render to stay consistent across sort/re-renders
-    const table = this.querySelector('.table');
-    if (table) {
-      table.querySelector('colgroup')?.remove();
-      if (cols.some(c => c.width)) {
-        const cg = document.createElement('colgroup');
-        cg.innerHTML = cols.map(c => `<col${c.width ? ` style="width:${c.width}"` : ''}>`).join('');
-        table.prepend(cg);
-      }
-    }
+    this.#renderColgroup(cols);
+    this.#renderHead(cols);
 
+    // Rebind sort events on headers
+    this.#events.removeTagged('_header');
+    thead.querySelectorAll('.th[data-field]').forEach(th => {
+      const field = th.dataset.field;
+      const clickHandler = () => this.#sort(field);
+      const keyHandler = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.#sort(field);
+        }
+      };
+      this.#events.add(th, 'click', clickHandler, { _header: true });
+      this.#events.add(th, 'keydown', keyHandler, { _header: true });
+    });
+
+    const displayData = this.#getSortedData();
+    tbody.innerHTML = displayData.map((row, i) => `
+      <tr${this.#showDetail ? ` class="is-clickable" data-row-index="${i}"` : ''}>${cols.map(col => {
+        const raw = row[col.key];
+        const cell = col.render
+          ? col.render(raw, row)
+          : `<span title="${this.#escapeAttr(raw)}">${this.#escapeHtml(raw)}</span>`;
+        return `<td class="td${col.wrap ? ' is-wrap' : ''}">${cell}</td>`;
+      }).join('')}</tr>
+    `).join('');
+  }
+
+  #renderColgroup(cols) {
+    const table = this.querySelector('.table');
+    if (!table) return;
+    table.querySelector('colgroup')?.remove();
+    if (!cols || !cols.some(c => c.width)) return;
+    const cg = document.createElement('colgroup');
+    cg.innerHTML = cols.map(c => `<col${c.width ? ` style="width:${c.width}"` : ''}>`).join('');
+    table.prepend(cg);
+  }
+
+  /** Header row — shared by the skeleton pass and the data render, so the
+   *  first body row sits at the same y in both. */
+  #renderHead(cols) {
+    const thead = this.querySelector('.thead');
+    if (!thead) return;
+    if (!cols) {
+      thead.innerHTML = '';
+      return;
+    }
     thead.innerHTML = `<tr>${cols.map(col => {
       const field = col.key;
       const label = col.label ?? field;
@@ -269,32 +326,6 @@ export class SmartTable extends HTMLElement {
           </div>
         </th>`;
     }).join('')}</tr>`;
-
-    // Rebind sort events on headers
-    this.#events.removeTagged('_header');
-    thead.querySelectorAll('.th[data-field]').forEach(th => {
-      const field = th.dataset.field;
-      const clickHandler = () => this.#sort(field);
-      const keyHandler = (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          this.#sort(field);
-        }
-      };
-      this.#events.add(th, 'click', clickHandler, { _header: true });
-      this.#events.add(th, 'keydown', keyHandler, { _header: true });
-    });
-
-    const displayData = this.#getSortedData();
-    tbody.innerHTML = displayData.map((row, i) => `
-      <tr${this.#showDetail ? ` class="is-clickable" data-row-index="${i}"` : ''}>${cols.map(col => {
-        const raw = row[col.key];
-        const cell = col.render
-          ? col.render(raw, row)
-          : `<span title="${this.#escapeAttr(raw)}">${this.#escapeHtml(raw)}</span>`;
-        return `<td class="td${col.wrap ? ' is-wrap' : ''}">${cell}</td>`;
-      }).join('')}</tr>
-    `).join('');
   }
 
   #updatePagination() {

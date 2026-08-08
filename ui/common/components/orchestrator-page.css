@@ -1,12 +1,3 @@
-orchestrator-page:not(:defined) {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-height: calc(100dvh - 80px);
-  padding: var(--space-md);
-  padding-top: max(48px, 16dvh);
-}
-
 @keyframes orch-skel-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -19,14 +10,8 @@ orchestrator-page:not(:defined) {
 }
 
 @scope (orchestrator-page) {
-  :scope {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    min-height: calc(100dvh - 80px);
-    padding: var(--space-md);
-    padding-top: max(48px, 16dvh);
-  }
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
   :scope.has-response {
     min-height: auto;
     padding-top: var(--space-md);
@@ -137,6 +122,47 @@ orchestrator-page:not(:defined) {
     display: none;
   }
   .response-content.is-visible { display: block; }
+  /* Live progress prose (TASK_STATE_WORKING) — visibly provisional until the
+     real reply replaces it. */
+  .response-content.is-progress {
+    color: var(--color-text-muted);
+    border-style: dashed;
+  }
+
+  .typing-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: var(--space-sm) var(--space-xs);
+
+    & span {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--color-text-muted);
+      opacity: 0.4;
+      animation: orch-typing-bounce 1.2s ease-in-out infinite;
+
+      &:nth-child(2) { animation-delay: 0.15s; }
+      &:nth-child(3) { animation-delay: 0.3s; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      & span { animation: none; opacity: 0.6; }
+    }
+  }
+  .response-usage {
+    margin-top: var(--space-xs);
+  }
+  .response-usage .msg-usage,
+  .msg-actions .msg-usage {
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    align-self: center;
+    padding: 0 var(--space-2xs);
+  }
   .continue-link {
     display: inline-flex;
     align-items: center;
@@ -210,4 +236,75 @@ orchestrator-page:not(:defined) {
     background: var(--color-bg-base);
     animation: orch-skel-pulse 1.5s ease-in-out infinite;
   }
+
+  /* ── Create-workflow banner (mockup Route screen, bottom card) ─────────── */
+  .wf-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-16);
+    width: min(100%, 820px);
+    margin-top: var(--space-xl);
+    padding: var(--s-20);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    text-decoration: none;
+    transition: background var(--transition-fast);
+  }
+  .wf-banner:hover { background: var(--bg-surface-hover); }
+  :scope.has-response .wf-banner { display: none; }
+  .wf-banner-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--r-8);
+    background: light-dark(var(--white), var(--neutral-800));
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+  .wf-banner-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+  .wf-banner-title {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    line-height: 20px;
+    color: var(--color-text-main);
+  }
+  .wf-banner-sub {
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+  .wf-banner-cta {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
+    background: light-dark(var(--yellow-100), var(--yellow-900));
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-main);
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background var(--transition-fast);
+  }
+  .wf-banner:hover .wf-banner-cta {
+    background: light-dark(var(--yellow-200), var(--yellow-800));
+  }
+  @media (max-width: 640px) {
+    .wf-banner { flex-wrap: wrap; }
+    .wf-banner-text { flex-basis: calc(100% - 56px); }
+  }
+}
+
+@keyframes orch-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
 }

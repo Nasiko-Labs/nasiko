@@ -160,17 +160,35 @@ and the page component element (optionally wrapping static skeleton markup for z
 Load `navigation.js` first (it defines the `window.fetch*` data functions), then `app-header`, then
 the page component.
 
+### Static shell
+
+Most pages fill that skeleton slot with the `.pre-*` classes from `common/styles/not-defined.css`
+— a parallel, page-agnostic vocabulary that mirrors the loaded geometry, because the component's
+own sheet isn't loaded yet.
+
+`agents.html` and `your-agents.html` take the other route: the page `<link>`s the component's
+sheet, so the slot can hold the component's **real** markup and class names (title, description,
+search, toolbar) plus the component's own skeletons for the API-fed regions. The component then
+never wipes `innerHTML` — `connectedCallback` binds to the existing nodes and renders only into
+its data containers, falling back to rendering the shell when a host doesn't supply it. One set of
+class names, styled identically before and after upgrade.
+
 ### Component CSS
 
 Page/component CSS lives in a sibling `.css` file, imported with a CSS module import attribute and
 adopted document-wide:
 
 ```js
-import styles from "./your-agents-page.css" with { type: "css" };
+import styles from "./sessions-page.css" with { type: "css" };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 ```
 
 Scope selectors to the component's tag name (or use `@scope`) since sheets are document-adopted.
+
+A sheet imported this way only exists once its module does, so it cannot style anything the page
+paints before then. Where a page authors the component's real markup in HTML (see "Static shell"
+below), the page `<link>`s the sheet instead and the module drops the import — one sheet, one
+owner, either way. `agents.html` and `your-agents.html` are the two pages on that variant.
 
 ### data-view / smart-table contract
 

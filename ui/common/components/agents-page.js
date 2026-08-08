@@ -1,10 +1,12 @@
 import { icons } from "/common/utils/icons.js";
+import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 import "/common/components/app-module-nav.js";
 
-import styles from "./agents-page.css" with { type: "css" };
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
+// agents-page.css is <link>ed by the host page, not imported here: a sheet
+// pulled in by this module only exists once the module does, which is too late
+// to style the static shell the page paints before then (see web/agents.html).
 
 function statusClass(status) {
   if (status === "running") return "is-running";
@@ -23,22 +25,10 @@ class AgentsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    this.innerHTML = `
-      <app-module-nav module="agents"></app-module-nav>
-      <div class="page-top">
-        <h1 class="title-page">Agent hub</h1>
-        <p class="subtitle" id="agent-count">Discover and chat with the agents deployed on this cluster.</p>
-      </div>
-      <div class="controls">
-        <div class="search-wrap">
-          <span class="search-icon">${icons.search("", 18)}</span>
-          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability" />
-          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
-        </div>
-      </div>
-      <div class="type-tabs" id="category-tabs" role="tablist">${this.#skeletonTabs()}</div>
-      <div class="grid" id="agents-grid">${this.#skeletonCards()}</div>
-    `;
+    // The host page owns the shell (web/agents.html) so it paints styled before
+    // this module arrives; here we only bind to it and fill the API-fed regions.
+    // Fallback for hosts that don't supply it (e.g. an element created in JS).
+    if (!this.querySelector("#agents-grid")) this.insertAdjacentHTML("afterbegin", this.#shell());
 
     this.querySelector("#search-input").addEventListener("input", () => {
       this.#updateClearBtn();
@@ -54,6 +44,7 @@ class AgentsPage extends HTMLElement {
     });
 
     // Category tab clicks are delegated — tabs re-render after data loads.
+    attachSlidingIndicator(this.querySelector("#category-tabs"), ".type-tab", ".active");
     this.querySelector("#category-tabs").addEventListener("click", (e) => {
       const tab = e.target.closest(".type-tab");
       if (!tab) return;
@@ -84,7 +75,6 @@ class AgentsPage extends HTMLElement {
     const result = await window.fetchAgents("", 1, 100);
     this.#agents = result.data || [];
     await this.#loadPinnedTabs();
-    this.#renderCount();
     this.#renderFilter();
     this.#renderGrid();
   }
@@ -100,12 +90,6 @@ class AgentsPage extends HTMLElement {
     } catch {
       this.#pinnedTabs = [];
     }
-  }
-
-  #renderCount() {
-    const el = this.querySelector("#agent-count");
-    const n = this.#agents.length;
-    if (el) el.textContent = `Discover and chat with the ${n} agent${n !== 1 ? "s" : ""} deployed on this cluster.`;
   }
 
   #renderFilter() {
@@ -144,6 +128,29 @@ class AgentsPage extends HTMLElement {
     const input = this.querySelector("#search-input");
     const btn = this.querySelector("#search-clear");
     btn.style.display = input.value ? "" : "none";
+  }
+
+  /** Fallback shell — mirrors the static markup in web/agents.html. */
+  #shell() {
+    return `
+      <app-module-nav module="agents"></app-module-nav>
+      <div class="page-top">
+        <h1 class="title-page">Agent hub</h1>
+        <!-- Deliberately count-free: the fleet size lands in the "All N" tab.
+             Injecting it here reflowed the description (2 → 3 lines on mobile)
+             the moment the API answered. -->
+        <p class="subtitle">Discover and chat with the agents deployed on this cluster.</p>
+      </div>
+      <div class="controls">
+        <div class="search-wrap">
+          <span class="search-icon">${icons.search("", 18)}</span>
+          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability" />
+          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
+        </div>
+      </div>
+      <div class="type-tabs" id="category-tabs" role="tablist">${this.#skeletonTabs()}</div>
+      <div class="grid" id="agents-grid">${this.#skeletonCards()}</div>
+    `;
   }
 
   #skeletonTabs() {

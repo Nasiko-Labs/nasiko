@@ -1,4 +1,5 @@
 pub mod a2a_dispatch;
+pub mod usage_meta;
 
 pub use a2a_dispatch::{a2a_dispatch_handler, a2a_upload_handler, router_stats_handler};
 pub use nasiko_orchestrator::{AgentCardSummary, AgentSelector};

@@ -1,0 +1,256 @@
+@scope (wf-step-editor) {
+  :scope {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .step-block {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Step card — sand well with a soft edge so the card reads as one object.
+     Two content rows only (instruction, agent) plus a left ordinal rail and a
+     right control rail; the ordinal chip replaces a redundant header caption. */
+  .step-card {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: var(--s-12);
+    row-gap: var(--s-12);
+    padding: var(--s-16) var(--s-20);
+    border: 1px solid light-dark(var(--sand-100), var(--neutral-800));
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+  }
+  .step-card:focus-within {
+    border-color: light-dark(var(--sand-200), var(--neutral-700));
+  }
+
+  /* Gold ordinal chip — the step's only identity marker, and the anchor the
+     connector spine below the card lines up with (mockup: #F7E19C fill). */
+  .step-num {
+    grid-column: 1;
+    grid-row: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    /* Centres on the instruction field's first text line (10px pad + 9px). */
+    margin-top: 9px;
+    border-radius: var(--r-40);
+    background: light-dark(var(--yellow-200), var(--yellow-800));
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    line-height: 1;
+    color: var(--color-text-main);
+    flex-shrink: 0;
+  }
+
+  /* Control rail — reorder pair grouped tight, destructive delete split off
+     behind a hairline so it can't be hit by reflex. */
+  .step-tools {
+    grid-column: 3;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    margin-top: 7px;
+  }
+  .tool-btn {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: var(--r-6);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition:
+      background var(--transition-fast),
+      color var(--transition-fast);
+  }
+  .tool-btn:hover:not(:disabled) {
+    background: var(--bg-surface-hover);
+    color: var(--color-text-main);
+  }
+  .tool-btn:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+  .tool-btn:disabled { opacity: 0.3; cursor: default; }
+  .tool-btn--danger { margin-left: var(--s-4); }
+  .tool-btn--danger:hover:not(:disabled) {
+    color: var(--color-error);
+    background: color-mix(in srgb, var(--color-error) 8%, transparent);
+  }
+  .tool-sep {
+    width: 1px;
+    height: 14px;
+    margin-left: var(--s-4);
+    background: light-dark(var(--sand-300), var(--neutral-700));
+  }
+
+  /* Instruction well — raised surface inside the sand card */
+  textarea {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+    min-height: 56px;
+    padding: 10px var(--s-12);
+    border: 1px solid transparent;
+    border-radius: var(--r-6);
+    background: light-dark(var(--white), var(--neutral-800));
+    resize: vertical;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+  textarea:focus {
+    outline: none;
+    border-color: var(--color-primary);
+  }
+  textarea::placeholder { color: var(--color-text-muted); }
+
+  /* Agent row — sits in the instruction column so both fields share an edge */
+  .agent-row {
+    grid-column: 2;
+    grid-row: 2;
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+  }
+  .agent-label {
+    flex-shrink: 0;
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+  }
+  select {
+    flex: 1;
+    min-width: 0;
+    height: var(--control-h-md);
+    padding: 0 30px 0 var(--s-8);
+    border: 1px solid transparent;
+    border-radius: var(--r-6);
+    /* background-color only — the global select rule draws the DS chevron
+       via background-image, and a `background:` shorthand would erase it. */
+    background-color: light-dark(var(--white), var(--neutral-800));
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--color-text-main);
+  }
+  select:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+  /* "Suggested" reads as a marker on the picker, so give it pill weight rather
+     than leaving bare gold text floating at the row's end. */
+  .suggested {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-40);
+    background: light-dark(var(--yellow-100), var(--yellow-900));
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: light-dark(var(--yellow-700), var(--yellow-300));
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Narrow screens: there's no room for a control rail, so the controls take
+     the top-right of the card and the chip anchors that row instead. */
+  @media (max-width: 640px) {
+    .step-card {
+      grid-template-columns: 20px minmax(0, 1fr);
+      column-gap: var(--s-8);
+      row-gap: var(--s-8);
+      padding: var(--s-12) var(--s-16);
+    }
+    .step-num { margin-top: 2px; }
+    .step-tools {
+      grid-column: 2;
+      grid-row: 1;
+      justify-content: flex-end;
+      margin-top: 0;
+    }
+    textarea { grid-row: 2; }
+    .agent-row {
+      grid-row: 3;
+      flex-wrap: wrap;
+    }
+    /* Label and marker share a line above a full-width picker. */
+    .agent-label { flex: 1; }
+    .suggested { order: 1; }
+    select {
+      order: 2;
+      flex-basis: 100%;
+    }
+    /* Card padding drops to 16, so the spine moves with the chip. */
+    .connector { margin-left: 26px; }
+  }
+
+  /* Connector spine — lines up with the ordinal chip's centre (1px card border
+     + 20px padding + 10px half-chip) and carries enough weight to be read as a
+     link between cards rather than a hairline artefact. */
+  .connector {
+    width: 2px;
+    height: 18px;
+    margin-left: 30px;
+    border-radius: var(--r-4);
+    background: light-dark(var(--sand-300), var(--neutral-600));
+  }
+
+  .steps-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-8);
+    padding: var(--space-xl) var(--s-20);
+    border: 1px solid light-dark(var(--sand-100), var(--neutral-800));
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    text-align: center;
+  }
+  .steps-empty-title {
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    color: var(--color-text-main);
+  }
+  .steps-empty-sub {
+    max-width: 380px;
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    text-wrap: pretty;
+  }
+
+  .add-step {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    align-self: flex-start;
+    min-height: var(--control-h-sm);
+    margin-top: var(--s-12);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: transparent;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-main);
+    cursor: pointer;
+  }
+  .add-step:hover { background: var(--bg-surface-hover); }
+  .add-step:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}

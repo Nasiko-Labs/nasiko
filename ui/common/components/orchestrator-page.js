@@ -1,6 +1,8 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
+import { readA2aStream, frameRenderer } from '/common/utils/a2a-stream.js';
+import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import '/common/components/voice-input.js';
 import '/common/components/agent-steps.js';
 
@@ -25,8 +27,8 @@ class OrchestratorPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
-      <h1 class="title">Route a task</h1>
-      <p class="subtitle">Describe a task and Nasiko will route it to the best available agent for execution.</p>
+      <h1 class="title">Orchestrate a task</h1>
+      <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it.</p>
       <div class="recent-agents" id="recent-agents">
         <div class="recent-agents-grid" id="recent-agents-grid">
           <div class="agent-card-skel"></div>
@@ -44,14 +46,24 @@ class OrchestratorPage extends HTMLElement {
       <div class="response-area" id="response-area">
         <div class="steps-slot" id="steps-slot"></div>
         <div class="response-wrap">
+          <div class="typing-indicator" id="response-typing" style="display:none;" aria-label="Agent is responding"><span></span><span></span><span></span></div>
           <div class="response-content md-body" id="response-content"></div>
           <div class="msg-actions" id="response-actions" style="display:none;">
             <button type="button" class="msg-action-copy" aria-label="Copy response" title="Copy">${icons.copy('', 14)}</button>
             <a class="msg-action-trace" id="response-trace" style="display:none;" href="#" aria-label="View trace" title="View trace">${icons.trace('', 14)}</a>
           </div>
         </div>
+        <div class="response-usage" id="response-usage"></div>
         <a class="continue-link" id="continue-link" style="display:none;" href="#">Continue in chat</a>
       </div>
+      <a class="wf-banner" href="/workflow-new.html">
+        <span class="wf-banner-icon" aria-hidden="true">${icons.workflow('', 20)}</span>
+        <span class="wf-banner-text">
+          <span class="wf-banner-title">Need multiple coordinated steps or agents?</span>
+          <span class="wf-banner-sub">Create a workflow to structure complex tasks and reusable operations.</span>
+        </span>
+        <span class="wf-banner-cta">Create workflow</span>
+      </a>
     `;
 
     this.#loadRecentAgents();
@@ -100,6 +112,7 @@ class OrchestratorPage extends HTMLElement {
       responseActions.style.display = 'none';
       responseTrace.style.display = 'none';
       continueLink.style.display = 'none';
+      this.querySelector('#response-usage').innerHTML = '';
 
       try {
         // Create a session so the conversation can be continued
@@ -141,20 +154,33 @@ class OrchestratorPage extends HTMLElement {
         });
         if (!res.ok) throw new Error(await res.text());
 
-        const { text: reply, traceId } = await this.#readStream(res, stepsEl, responseContent);
+        const { text: reply, traceId, usage } = await this.#readStream(res, stepsEl, responseContent);
 
         responseActions.style.display = '';
         if (traceId) {
           responseTrace.href = `/session-trace.html?trace_id=${encodeURIComponent(traceId)}`;
           responseTrace.style.display = '';
         }
+        this.querySelector('#response-usage').innerHTML = usageChipsHtml(usage);
 
-        // Persist assistant reply
+        // Persist assistant reply (with its usage so chips survive in chat history)
         if (sessionId && reply) {
+          const persistBody = { role: 'assistant', content: reply };
+          if (traceId || usage) {
+            persistBody.usage = {
+              input_tokens: usage?.input_tokens ?? null,
+              output_tokens: usage?.output_tokens ?? null,
+              model: usage?.model ?? null,
+              duration_ms: usage?.duration_ms ?? null,
+              cost_usd: usage?.cost_usd ?? null,
+              estimated: usage?.estimated ?? null,
+              trace_id: traceId,
+            };
+          }
           apiFetch(`/chat/sessions/${sessionId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ role: 'assistant', content: reply }),
+            body: JSON.stringify(persistBody),
           }).catch(() => {});
         }
 
@@ -204,90 +230,48 @@ class OrchestratorPage extends HTMLElement {
   }
 
   async #readStream(res, stepsEl, responseContent) {
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let fullText = '';
-    let traceId = null;
+    const typingEl = this.querySelector('#response-typing');
+    if (typingEl) typingEl.style.display = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const show = (html, { progress = false } = {}) => {
+      if (typingEl) typingEl.style.display = 'none';
+      responseContent.classList.add('is-visible');
+      responseContent.classList.toggle('is-progress', progress);
+      responseContent.innerHTML = html;
+    };
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
+    const renderReply = frameRenderer((text) => {
+      stepsEl.finish();
+      show(renderMarkdown(text));
+    });
+    const renderProgress = frameRenderer((text) => {
+      show(renderMarkdown(text), { progress: true });
+    });
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6).trim();
-        if (!raw) continue;
-        try {
-          const evt = JSON.parse(raw);
-          const statusUpdate = evt.statusUpdate || evt.result?.statusUpdate;
-          const artifactUpdate = evt.artifactUpdate || evt.result?.artifactUpdate;
-
-          if (statusUpdate) {
-            const state = statusUpdate.status?.state;
-            const msg = statusUpdate.status?.message;
-            if (msg && msg.parts) {
-              if (state === 'TASK_STATE_COMPLETED') {
-                const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
-                if (text && !fullText) {
-                  fullText = text;
-                  stepsEl.finish();
-                  responseContent.classList.add('is-visible');
-                  responseContent.innerHTML = renderMarkdown(fullText);
-                }
-              } else if (state === 'TASK_STATE_FAILED') {
-                const text = msg.parts.filter(p => p.text).map(p => p.text).join('');
-                if (text) {
-                  stepsEl.finish();
-                  responseContent.classList.add('is-visible');
-                  responseContent.innerHTML = `<span style="color:var(--color-error)">${this.#esc(text)}</span>`;
-                }
-              }
-              for (const part of msg.parts) {
-                if (!part.data) continue;
-                if (part.data.type === 'trace_meta' && part.data.trace_id) {
-                  traceId = part.data.trace_id;
-                  continue;
-                }
-                stepsEl.onEvent(part.data);
-              }
-            }
-          }
-
-          if (artifactUpdate) {
-            const au = artifactUpdate;
-            const text = au.artifact?.parts
-              ?.filter(p => p.text)
-              .map(p => p.text)
-              .join('');
-            if (text) {
-              if (au.append) {
-                fullText += text;
-              } else {
-                fullText = text;
-              }
-              stepsEl.finish();
-              responseContent.classList.add('is-visible');
-              responseContent.innerHTML = renderMarkdown(fullText);
-            }
-          }
-        } catch {}
-      }
-    }
+    const out = await readA2aStream(res, {
+      onReply: renderReply,
+      onProgress: renderProgress,
+      onData: (d) => stepsEl.onEvent(d),
+      onError: (message) => {
+        stepsEl.finish();
+        show(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
+      },
+    });
 
     stepsEl.finish();
-    if (!fullText) {
+    if (typingEl) typingEl.style.display = 'none';
+    let fullText = out.text;
+    if (out.failed && !fullText) {
+      fullText = out.errorMessage;
+      show(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
+    } else if (!fullText) {
       fullText = 'No response';
-      responseContent.classList.add('is-visible');
-      responseContent.textContent = fullText;
+      show(this.#esc(fullText));
     } else {
-      responseContent.innerHTML = renderMarkdown(fullText);
+      // Settle on the final text synchronously past any queued frame paint.
+      show(renderMarkdown(fullText));
     }
-    return { text: fullText, traceId };
+    return { text: fullText, traceId: out.traceId, usage: out.usage };
   }
 
   #formatName(id) {

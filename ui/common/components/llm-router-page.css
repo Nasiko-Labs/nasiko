@@ -1,15 +1,9 @@
 /* LLM router — KPI strip, config cards grid, provider catalog, config form. */
-llm-router-page:not(:defined) {
-  display: block;
-  padding: var(--space-lg) var(--space-xl);
-  min-height: 400px;
-}
 
 @scope (llm-router-page) {
-  :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-xl);
-  }
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
 
   .page-head {
     display: flex;

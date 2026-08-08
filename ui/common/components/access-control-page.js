@@ -55,10 +55,25 @@ class AccessControlPage extends HTMLElement {
 
   #setState(state, error) {
     if (state === 'loading') {
+      // Title, section headings and the action buttons are static, so they
+      // render for real here (and in the page's pre-upgrade HTML) — only the
+      // API-fed chips, attention band and tables shimmer, and nothing moves
+      // when the overview lands.
       this.innerHTML = `
-      <app-module-nav module="org"></app-module-nav>
-        <div class="page-head" style="min-height:var(--control-h-lg)">
-          <app-skeleton lines="1" height="1.75rem" style="flex:1"></app-skeleton>
+        <app-module-nav module="org"></app-module-nav>
+        <div class="page-head">
+          <h1 class="title-page">Access control</h1>
+          <div class="pre-chips">
+            <div class="pre-chip" style="--pre-chip-w:76px"></div>
+            <div class="pre-chip" style="--pre-chip-w:104px"></div>
+            <div class="pre-chip" style="--pre-chip-w:70px"></div>
+            <div class="pre-chip" style="--pre-chip-w:72px"></div>
+            <div class="pre-chip" style="--pre-chip-w:80px"></div>
+          </div>
+          <div class="head-actions">
+            <app-button variant="primary" size="sm" disabled>${icons.plus('', 14)} Create user</app-button>
+            <app-button variant="secondary" size="sm" disabled>${icons.plus('', 14)} Create team</app-button>
+          </div>
         </div>
         <div class="attn-band" style="min-height:88px">
           <div class="attn-item"><app-skeleton lines="2" height="1rem"></app-skeleton></div>
@@ -66,7 +81,7 @@ class AccessControlPage extends HTMLElement {
           <div class="attn-item"><app-skeleton lines="2" height="1rem"></app-skeleton></div>
         </div>
         <div class="section">
-          <app-skeleton lines="1" height="1.5rem"></app-skeleton>
+          <div class="section-header"><h2>Departments</h2></div>
           <app-skeleton lines="5" height="1rem"></app-skeleton>
         </div>
       `;
