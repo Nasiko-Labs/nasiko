@@ -7,6 +7,17 @@
   letter-spacing: 0.04em;
 }
 
+/* NightOwl page title — Chivo Mono 500 20/28 (+0.16px tracking) */
+.title-page {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 500;
+  letter-spacing: 0.16px;
+  color: var(--color-text-main);
+  margin: 0;
+}
+
 /* Inline section label — same as label-muted, semantic alias */
 .label-section {
   font-size: var(--font-size-xs);

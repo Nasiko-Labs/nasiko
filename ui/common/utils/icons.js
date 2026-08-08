@@ -38,6 +38,7 @@ export const icons = {
   menu:   s(`<path d="M4 6h16M4 12h16M4 18h16"/>`),
 
   chevronDown:  s(`<path d="M19 9l-7 7-7-7"/>`),
+  history: s(`<path d="M3 12a9 9 0 1 0 3.5-7.1L3 8"/><path d="M3 3v5h5"/><polyline points="12 7 12 12 15 14"/>`),
   chevronUp:    s(`<path d="M5 15l7-7 7 7"/>`),
   chevronRight: s(`<path d="M9 5l7 7-7 7"/>`),
   chevronLeft:  s(`<path d="M15 18l-6-6 6-6"/>`),

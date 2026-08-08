@@ -72,12 +72,25 @@
   --yellow-800: #695104;
   --yellow-900: #463602;
 
-  /* Warm cream canvas ramp — page background + sidebar cards (light theme) */
-  --cream-50:  #F6F2EC;
-  --cream-100: #EFE9E0;
-  --cream-200: #E2DACE;
-  --cream-300: #D6CCBC;
-  --cream-400: #C4B8A4;
+  /* Warm sand ramp — NightOwl neutral scale (fig-tokens); the content plane,
+     cards, inputs, and table chrome all read from this ramp */
+  --sand-50:  #F5F2EC;
+  --sand-100: #EDE7DC;
+  --sand-200: #E2DAD0;
+  --sand-300: #D4CCC0;
+  --sand-400: #C2BAB0;
+  --sand-500: #A89E94;
+  --sand-600: #8C8278;
+  --sand-700: #645C52;
+  --sand-800: #3A3430;
+  --sand-900: #242628;
+
+  /* Legacy warm cream canvas ramp — superseded by --sand-*, kept as aliases */
+  --cream-50:  var(--sand-50);
+  --cream-100: var(--sand-100);
+  --cream-200: var(--sand-200);
+  --cream-300: var(--sand-300);
+  --cream-400: var(--sand-400);
 
   --orange-100: #FFEDD5; --orange-300: #FDBA74; --orange-400: #FB923C; --orange-600: #EA580C; --orange-900: #7C2D12;
   --red-100:    #FEE2E2; --red-300:    #FCA5A5; --red-400:    #F87171; --red-600:    #DC2626; --red-900:    #7F1D1D;
@@ -86,14 +99,32 @@
   --teal-400:   #2DD4BF; --teal-500:   #14B8A6;
   --green-100:  #DCFCE7; --green-300:  #86EFAC; --green-400:  #4ADE80; --green-600:  #16A34A; --green-900:  #14532D;
 
+  /* ==== NightOwl shell chrome (ink plane — not theme-switched) ==== */
+  --shell-bg:             #242628; /* flat ink: topbar + rail + backdrop */
+  --shell-control:        #3A3430; /* dark-chrome control fill (rest) */
+  --shell-control-hover:  #4A423C;
+  --shell-control-active: #242628;
+  --shell-fg:             #FFFFFF;
+  --shell-fg-muted:       color-mix(in srgb, #FFFFFF 62%, transparent);
+  --shell-selected:       var(--yellow-200); /* pale-gold selected glyph #F7E19C */
+  --shell-topbar-height:  52px;
+  --shell-rail-width:     56px;  /* 32px buttons + gutters */
+  --shell-rail-expanded:  240px;
+  --shell-logo-glow:      drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16));
+
+  /* ==== Control metrics (fig-tokens control-*) ==== */
+  --control-h-sm: 28px;
+  --control-h-md: 32px;
+  --control-h-lg: 36px;
+
   /* ==== DS semantic tokens (theme-aware) ==== */
   --bg-base:            light-dark(var(--white), var(--black));
-  --bg-group:           light-dark(var(--neutral-50), var(--neutral-900));
-  --bg-surface:         light-dark(var(--neutral-100), var(--neutral-800));
-  --bg-surface-hover:   light-dark(var(--neutral-200), var(--neutral-700));
-  --bg-surface-active:  light-dark(var(--neutral-300), var(--neutral-600));
+  --bg-group:           light-dark(var(--sand-50), var(--neutral-900));
+  --bg-surface:         light-dark(var(--sand-50), var(--neutral-800));
+  --bg-surface-hover:   light-dark(var(--sand-100), var(--neutral-700));
+  --bg-surface-active:  light-dark(var(--sand-200), var(--neutral-600));
   --bg-overlay:         light-dark(rgba(100, 116, 139, 0.5), rgba(15, 23, 42, 0.6));
-  --bg-disabled:        light-dark(var(--neutral-200), var(--neutral-700));
+  --bg-disabled:        light-dark(var(--sand-200), var(--neutral-700));
 
   --bg-brand:           var(--yellow-600);
   --bg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-400));
@@ -109,9 +140,9 @@
   --bg-error:           light-dark(var(--red-100), var(--red-900));
   --bg-information:     light-dark(var(--blue-100), var(--blue-900));
 
-  --fg-primary:         light-dark(var(--neutral-700), var(--neutral-100));
-  --fg-secondary:       light-dark(var(--neutral-500), var(--neutral-400));
-  --fg-disabled:        light-dark(var(--neutral-400), var(--neutral-600));
+  --fg-primary:         light-dark(var(--sand-900), var(--neutral-100));
+  --fg-secondary:       light-dark(var(--sand-700), var(--neutral-400));
+  --fg-disabled:        light-dark(var(--sand-500), var(--neutral-600));
   --fg-on-action:       light-dark(var(--white), var(--neutral-900));
 
   --fg-brand:           light-dark(var(--yellow-600), var(--yellow-400));
@@ -124,14 +155,14 @@
   --fg-error:           light-dark(var(--red-600), var(--red-400));
   --fg-information:     light-dark(var(--blue-600), var(--blue-400));
 
-  --border-primary:     light-dark(var(--neutral-300), var(--neutral-700));
+  --border-primary:     light-dark(var(--sand-200), var(--neutral-700));
   --border-secondary:   var(--fg-brand);
   --border-hover:       var(--fg-brand);
   --border-success:     light-dark(var(--green-300), var(--green-600));
   --border-error:       light-dark(var(--red-300), var(--red-600));
   --border-warning:     light-dark(var(--orange-300), var(--orange-600));
   --border-information: light-dark(var(--blue-300), var(--blue-600));
-  --border-disabled:    light-dark(var(--neutral-200), var(--neutral-700));
+  --border-disabled:    light-dark(var(--sand-200), var(--neutral-700));
 
   /* ==== DS spacing / radius / border widths / icon sizes ==== */
   --s-0: 0px; --s-2: 2px; --s-4: 4px; --s-8: 8px;
@@ -174,18 +205,19 @@
   --color-info-border: var(--border-information);
 
   --color-neutral: var(--fg-secondary);
-  --color-neutral-bg: light-dark(var(--neutral-100), var(--neutral-800));
+  --color-neutral-bg: light-dark(var(--sand-100), var(--neutral-800));
   --color-neutral-border: var(--border-primary);
 
-  /* Page canvas / raised surfaces. The app layers warm-cream canvas → white
-     content panel → white cards, so the legacy names map to canvas/surface. */
-  --color-bg-base: light-dark(var(--cream-200), var(--neutral-900));
+  /* Page canvas / raised surfaces. NightOwl: flat ink shell backdrop (body
+     only — see --shell-bg) → white content card → sand wells on white.
+     --color-bg-base stays a LIGHT wash: table heads, code, hovers use it. */
+  --color-bg-base: light-dark(var(--sand-50), var(--neutral-900));
   --color-bg-surface: light-dark(var(--white), var(--neutral-800));
-  /* Sidebar nav cards + canvas-toned chrome sitting directly on the canvas */
-  --bg-canvas-card: light-dark(color-mix(in srgb, var(--white) 22%, var(--cream-200)), var(--neutral-800));
-  --border-canvas: light-dark(var(--cream-300), var(--neutral-700));
-  /* Inputs get a faint cream tint so they read as wells on white panels */
-  --bg-input: light-dark(var(--cream-50), var(--neutral-800));
+  /* Chrome sitting directly on the ink shell (rare — most chrome is the shell itself) */
+  --bg-canvas-card: light-dark(var(--shell-control), var(--neutral-800));
+  --border-canvas: light-dark(transparent, var(--neutral-700));
+  /* Inputs are flat sand wells on the white plane — no stroke */
+  --bg-input: light-dark(var(--sand-50), var(--neutral-800));
   --color-text-main: var(--fg-primary);
   --color-text-prose: light-dark(var(--neutral-600), var(--neutral-300));
   --color-text-muted: var(--fg-secondary);
@@ -239,11 +271,11 @@
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* Layout */
-  --app-header-height: 48px;
-  --app-sidebar-width-expanded: 216px;
-  --app-sidebar-width-collapsed: 60px;
-  --app-sidebar-width: var(--app-sidebar-width-expanded);
-  --page-max-width: 75rem;
+  --app-header-height: var(--shell-topbar-height);
+  --app-sidebar-width-expanded: var(--shell-rail-expanded);
+  --app-sidebar-width-collapsed: var(--shell-rail-width);
+  --app-sidebar-width: var(--app-sidebar-width-collapsed);
+  --page-max-width: 90rem;
 }
 
 /* Explicit theme pin — wins over the OS preference */
@@ -266,7 +298,7 @@ html {
 }
 
 body {
-  background-color: var(--color-bg-base);
+  background-color: var(--shell-bg);
   color: var(--color-text-main);
   font-family: var(--font-sans);
   line-height: 1.5;
@@ -293,9 +325,12 @@ main.app-shell {
 }
 
 @media (min-width: 1024px) {
-  body, .app-layout {
-    flex-direction: row;
-    align-items: stretch;
+  /* NightOwl shell: fixed 52px ink topbar + fixed left icon rail; the page
+     content is the white card floating on the ink backdrop. app-header
+     renders both bars; body padding carves out their space. */
+  body {
+    padding-top: var(--shell-topbar-height);
+    padding-left: var(--app-sidebar-width);
   }
 
   body > main, .app-layout > main {
@@ -314,7 +349,7 @@ main.app-shell {
   body > main.app-shell, .app-layout > main.app-shell {
     max-width: none;
     margin: 0;
-    height: 100dvh;
+    height: calc(100dvh - var(--shell-topbar-height));
   }
 
   main {
@@ -327,23 +362,23 @@ main.app-shell {
     height: 100dvh;
   }
 
-  /* Content panel — the page component floats as a white rounded sheet on the
-     cream canvas (sidebar excluded; floating chrome like toasts, dialogs, and
-     the kb palette are plain divs / dedicated tags and are opted out). */
+  /* Content card — the page component floats as the single white r8 card on
+     the ink shell (floating chrome like toasts, dialogs, and the kb palette
+     are plain divs / dedicated tags and are opted out). */
   body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette),
   body:has(> app-header) > main {
     background: var(--color-bg-surface);
-    border: 1px solid var(--border-canvas);
-    border-radius: var(--r-16);
-    margin: var(--s-8) var(--s-8) var(--s-8) 0;
-    min-height: calc(100dvh - 2 * var(--s-8));
-    box-shadow: var(--shadow-sm);
+    border: none;
+    border-radius: var(--r-8);
+    margin: var(--s-16);
+    min-height: calc(100dvh - var(--shell-topbar-height) - 2 * var(--s-16));
+    box-shadow: 0 8px 16px rgba(100, 116, 139, 0.12);
   }
 
-  /* <main> content pages keep their centered column inside the panel */
+  /* <main> content pages keep their centered column inside the card */
   body:has(> app-header) > main {
     max-width: none;
-    padding: var(--space-md) var(--space-xl);
+    padding: var(--s-28) var(--s-48) var(--s-48);
   }
 
   body:has(> app-header) > main > * {
@@ -352,7 +387,7 @@ main.app-shell {
   }
 
   body:has(> app-header) > main.app-shell {
-    height: calc(100dvh - 2 * var(--s-8));
+    height: calc(100dvh - var(--shell-topbar-height) - 2 * var(--s-16));
     padding: 0;
   }
 
@@ -513,8 +548,8 @@ label {
   input[type="datetime-local"], textarea, select) {
   width: 100%;
   padding: 8px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border: 1px solid transparent; /* NightOwl: inputs are flat sand wells */
+  border-radius: var(--r-8);
   font-size: var(--font-size-base);
   background: var(--bg-input);
   color: var(--color-text-main);
@@ -804,11 +839,10 @@ app-header:not(:defined) {
   display: flex;
   align-items: center;
   gap: var(--space-md);
-  padding: 0 var(--space-md);
-  height: var(--app-header-height);
-  background: var(--color-bg-base);
+  padding: 0 var(--s-12);
+  height: var(--shell-topbar-height);
+  background: var(--shell-bg);
   border-bottom: none;
-  box-shadow: var(--shadow-sm);
   position: sticky;
   top: 0;
   z-index: 100;
@@ -817,10 +851,10 @@ app-header:not(:defined) {
   &::before {
     content: '';
     display: block;
-    width: 96px;
-    height: 20px;
-    border-radius: var(--radius-sm);
-    background: var(--color-border);
+    width: 36px;
+    height: 36px;
+    border-radius: var(--r-8);
+    background: var(--shell-control);
     flex-shrink: 0;
     animation: app-header-skel-pulse 1.4s ease-in-out infinite;
   }
@@ -830,9 +864,9 @@ app-header:not(:defined) {
     display: block;
     margin-left: auto;
     width: 140px;
-    height: 20px;
-    border-radius: var(--radius-sm);
-    background: var(--color-border);
+    height: 28px;
+    border-radius: var(--r-8);
+    background: var(--shell-control);
     flex-shrink: 0;
     animation: app-header-skel-pulse 1.4s ease-in-out infinite 0.2s;
   }
@@ -847,23 +881,12 @@ app-header:not(:defined) {
   }
 
   @media (min-width: 1024px) {
+    /* Reserves the fixed topbar strip; the rail column is carved out by the
+       body padding, so no extra placeholder box is needed for it. */
     position: fixed;
     left: 0;
     top: 0;
-    width: var(--app-sidebar-width);
-    height: 100dvh;
-    flex-direction: column;
-    align-items: stretch;
-    padding: var(--space-md) 0;
-    border-bottom: none;
-
-    &::before {
-      margin: 0 var(--space-md) var(--space-sm);
-    }
-
-    &::after {
-      margin: var(--space-xs) var(--space-md) 0;
-      width: auto;
-    }
+    width: 100%;
+    height: var(--shell-topbar-height);
   }
 }

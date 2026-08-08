@@ -44,16 +44,16 @@ styles.replaceSync(`@keyframes tab-panel-enter {
       font: 500 var(--font-size-sm)/1 inherit;
       border-radius: var(--radius-sm) var(--radius-sm) 0 0;
       white-space: nowrap;
-      min-height: 44px;
+      min-height: 40px;
       border: none;
       margin-bottom: 0;
       background: transparent;
 
-      &:hover { color: var(--color-primary); background: var(--color-bg-base); }
+      &:hover { color: var(--color-primary); }
       &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
       &[aria-selected="true"] {
         color: var(--color-primary);
-        font-weight: 700;
+        font-weight: 600;
       }
     }
     .panel { padding-top: var(--space-md); }

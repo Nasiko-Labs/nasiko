@@ -1,39 +1,33 @@
 /**
- * Top application header with brand link, navigation, search, and user menu.
+ * NightOwl application shell: 52px ink topbar + collapsible left icon rail.
+ *
+ * Renders both chrome bars from one element so existing pages keep their
+ * single `<app-header>` tag. The rail lists the pages from
+ * `window.fetchNavigation()` (or the `nav-links` attribute); Settings and the
+ * identity menu pin to the rail's bottom cluster.
  *
  * @element app-header
- * @attr {string} brand-title - Application name shown in the header
- * @attr {string} brand-url - URL the brand title links to (default: `/`)
- * @attr {string} nav-links - JSON array of `{label, url}` objects for nav links
+ * @attr {string} brand-title - Application name (used for tooltips/aria)
+ * @attr {string} brand-url - URL the brand mark links to (default: `/`)
+ * @attr {string} nav-links - JSON array of `{title, url, icon}` objects
  * @note Includes `<app-nav-search>` and `<app-user-menu>` internally.
- * @note Listens to `loading-start` / `loading-end` on `document` to show a loading bar.
+ * @note Dispatches `loading-start` on nav clicks (see app-loading-bar).
  */
 import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
+
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ah-skel-pulse {
-
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.35;
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 
 ::view-transition-old(app-header),
 ::view-transition-new(app-header) {
   animation: none;
   mix-blend-mode: normal;
-}
-
-::view-transition-group(active-nav-pill) {
-  animation-duration: 0.25s;
-  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @scope (app-header) {
@@ -45,454 +39,242 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     view-transition-name: app-header;
 
     @media (min-width: 1024px) {
-      position: sticky;
-      left: 0;
-      top: 0;
-      width: var(--app-sidebar-width);
-      height: 100dvh;
-      flex-shrink: 0;
-      transition: width 0.2s ease;
-      overflow: visible;
+      position: fixed;
+      inset: 0 0 auto 0;
+      height: var(--shell-topbar-height);
     }
   }
 
-  .nav-link-skel {
-    /* 21px bar + 7px margins = the 35px row a rendered .nav-link occupies,
-       so the nav doesn't shift when links load. */
-    display: inline-block;
-    height: 21px;
-    margin: 7px var(--space-sm);
-    border-radius: var(--radius-sm);
-    background: var(--color-border);
-    animation: ah-skel-pulse 1.4s ease-in-out infinite;
-
-    @media (min-width: 1024px) {
-      margin: 7px var(--space-md);
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      animation: none;
-      opacity: 0.4;
-    }
-  }
-
-  .brand-link-skel {
-    display: inline-block;
-    width: 96px;
-    height: 20px;
-    border-radius: var(--radius-sm);
-    background: var(--color-border);
-    flex-shrink: 0;
-    animation: ah-skel-pulse 1.4s ease-in-out infinite;
-
-    @media (prefers-reduced-motion: reduce) {
-      animation: none;
-      opacity: 0.4;
-    }
-  }
-
-  .bar {
+  /* ── Topbar ─────────────────────────────────────────────────────────── */
+  .topbar {
     display: flex;
     align-items: center;
-    gap: var(--space-xs);
-    padding: 0 var(--space-md);
-    height: var(--app-header-height);
-    background: var(--color-bg-base);
-    border-bottom: none;
-    box-shadow: var(--shadow-sm);
-
-    @media (min-width: 1024px) {
-      flex-direction: column;
-      align-items: stretch;
-      height: 100%;
-      width: 100%;
-      padding: var(--space-md) 0;
-      position: static;
-      top: unset;
-      box-shadow: none;
-      background: transparent;
-    }
+    gap: var(--s-12);
+    height: var(--shell-topbar-height);
+    padding: 0 var(--s-12);
+    background: var(--shell-bg);
+    color: var(--shell-fg);
   }
 
-  .brand-row {
-    display: none;
-
-    @media (min-width: 1024px) {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--space-xs);
-      padding: 0 var(--space-sm);
-      margin-bottom: var(--space-md);
-      min-height: 36px;
-      flex-shrink: 0;
-    }
-  }
-
-  .brand-logo-card {
+  /* Dark-chrome control recipe — every topbar/rail control shares it */
+  .chrome-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 34px;
-    border-radius: var(--r-10);
-    background: var(--bg-secondary-brand);
-    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
-    flex-shrink: 0;
+    gap: var(--s-8);
+    height: var(--control-h-sm);
+    min-width: var(--control-h-sm);
+    padding: 0;
+    border: none;
+    border-radius: var(--r-6);
+    background: var(--shell-control);
+    color: var(--shell-fg);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--transition-fast);
   }
+  .chrome-btn:hover { background: var(--shell-control-hover); }
+  .chrome-btn:active { background: var(--shell-control-active); }
+  .chrome-btn.is-labeled { padding: 0 var(--s-12); }
+  .chrome-btn:focus-visible {
+    outline: 2px solid var(--shell-selected);
+    outline-offset: 1px;
+  }
+  a.chrome-btn { text-decoration: none; color: var(--shell-fg); }
 
-  .brand-link {
-    flex-shrink: 0;
+  .identity-chip {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--r-8);
+    background: var(--blue-600);
+    color: var(--white);
     display: inline-flex;
     align-items: center;
-    gap: var(--space-xs);
-    font-family: var(--font-display);
-    font-size: var(--font-size-base);
-    font-weight: 500;
-    color: var(--color-text-main);
-    text-decoration: none;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-
-    & .brand-mark { flex-shrink: 0; }
-
-    &:hover {
-      color: var(--color-text-main);
-    }
-  }
-
-  .brand-link-mobile {
-    flex-shrink: 0;
-    font-size: var(--font-size-sm);
+    justify-content: center;
+    font-size: 14px;
     font-weight: 600;
-    color: var(--color-text-main);
-    text-decoration: none;
-
-    &:hover {
-      color: var(--color-text-main);
-    }
-
-    @media (min-width: 1024px) {
-      display: none;
-    }
+    flex-shrink: 0;
+    user-select: none;
   }
 
-  .sidebar-toggle {
+  .nav-cluster {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+  }
+
+  .search-field {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    width: 280px;
+    height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--shell-control);
+    color: var(--shell-fg);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .search-field:hover { background: var(--shell-control-hover); }
+  .search-field .placeholder {
+    flex: 1;
+    color: var(--shell-fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .search-field .kbd-hint { color: var(--shell-fg-muted); font-size: 13px; }
+  .search-field svg { color: var(--shell-fg-muted); }
+
+  .topbar-spacer { flex: 1; }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+  }
+
+  /* ── Rail ───────────────────────────────────────────────────────────── */
+  .rail {
     display: none;
 
     @media (min-width: 1024px) {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 32px;
-      height: 32px;
-      border-radius: var(--radius-md);
-      color: var(--color-text-muted);
-      background: transparent;
-      border: none;
-      cursor: pointer;
-      flex-shrink: 0;
-
-      &:hover {
-        color: var(--color-text-main);
-        background: light-dark(color-mix(in srgb, var(--white) 45%, transparent), var(--neutral-800));
-      }
-    }
-  }
-
-  :scope.is-collapsed .brand-row {
-    @media (min-width: 1024px) {
-      flex-direction: column;
-      justify-content: center;
-      gap: var(--s-8);
-    }
-  }
-
-  :scope.is-collapsed .brand-title-text {
-    @media (min-width: 1024px) {
-      display: none;
-    }
-  }
-
-  .center {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    min-width: 0;
-
-    @media (min-width: 1024px) {
-      flex-direction: column;
-      align-items: stretch;
-      align-self: stretch;
-      gap: 0;
-      min-height: 0;
-      overflow-y: auto;
-      scrollbar-width: none;
-
-      &::-webkit-scrollbar {
-        display: none;
-      }
-    }
-  }
-
-  .nav {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    position: relative;
-    /* Fade the trailing edge so a horizontally scrollable nav reads as scrollable
-       instead of hard-clipping labels mid-word. */
-    mask-image: linear-gradient(to right, black calc(100% - var(--s-24)), transparent);
-
-    @media (min-width: 1024px) {
-      overflow: visible;
-      mask-image: none;
-    }
-  }
-
-  .nav-list {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-
-    & li {
-      margin: 0;
-      padding: 0;
-    }
-
-    &::-webkit-scrollbar {
-      display: none;
-    }
-
-    @media (min-width: 1024px) {
-      flex-direction: column;
-      overflow-x: visible;
-      gap: 2px;
-      align-items: stretch;
-      padding: 0 var(--space-sm);
-    }
-  }
-
-  .nav-icon {
-    opacity: 0.75;
-    stroke-width: 2;
-    flex-shrink: 0;
-  }
-  .nav-link:hover .nav-icon, .nav-link.is-active .nav-icon { opacity: 1; }
-
-  .nav-link {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-xs) var(--space-sm);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-sm);
-    font-weight: 400;
-    color: var(--color-text-main);
-    text-decoration: none;
-    white-space: nowrap;
-    border: 1px solid transparent;
-    background-color: transparent;
-    transition: color 0.15s;
-
-    &:hover {
-      color: var(--color-primary);
-      background-color: color-mix(in srgb, var(--color-primary) 8%, transparent);
-    }
-
-    &:focus {
-      box-shadow: 0 0 0 2px var(--color-primary-ring);
-    }
-
-    &.is-active {
-      color: var(--color-primary);
-      background-color: transparent;
-      border-color: transparent;
-
-      &:hover {
-        background-color: transparent;
-      }
-    }
-
-    @media (min-width: 1024px) {
-      display: flex;
-      align-items: center;
-      gap: var(--space-sm);
-      text-align: left;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      padding: 7px var(--space-sm);
-      border-radius: var(--radius-md);
-      background: transparent;
-      border: none;
-      color: light-dark(var(--neutral-600), var(--neutral-300));
-      font-weight: 500;
-      transition: background-color 0.15s, color 0.15s;
-
-      &:hover {
-        color: var(--color-text-main);
-        background-color: light-dark(color-mix(in srgb, var(--white) 45%, transparent), var(--neutral-800));
-      }
-
-      &.is-active {
-        background-color: var(--bg-secondary-brand);
-        color: var(--color-text-main);
-        font-weight: 600;
-        &:hover {
-          background-color: var(--bg-secondary-brand);
-        }
-      }
-    }
-  }
-
-  :scope.is-collapsed .nav-link-text {
-    @media (min-width: 1024px) {
-      display: none;
-    }
-  }
-
-  /* Collapsed rail: icon-only rows, icon stays 16px and centered. */
-  :scope.is-collapsed .nav-link {
-    @media (min-width: 1024px) {
-      justify-content: center;
-      gap: 0;
-      padding: 8px 0;
-    }
-  }
-
-  :scope.is-collapsed .nav-icon {
-    @media (min-width: 1024px) {
-      width: 18px;
-      height: 18px;
-      flex-shrink: 0;
-    }
-  }
-
-  .nav-link-bg {
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
-    border: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent);
-    z-index: 1;
-    view-transition-name: active-nav-pill;
-
-    @media (min-width: 1024px) {
-      background-color: transparent;
-      border: none;
-    }
-  }
-
-  .nav-link-text {
-    position: relative;
-    z-index: 2;
-  }
-
-  .menu-btn {
-    flex-shrink: 0;
-    align-self: center;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius-sm);
-    color: var(--color-text-muted);
-
-    &:hover {
-      color: var(--color-text-main);
-      background: var(--color-bg-base);
-    }
-
-    &:focus {
-      box-shadow: 0 0 0 2px var(--color-primary-ring);
-    }
-
-    @media (min-width: 1024px) {
-      display: none;
-    }
-  }
-
-  .menu-icon {
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-  }
-
-  .user {
-    flex-shrink: 0;
-    align-self: center;
-    position: relative;
-
-    @media (min-width: 1024px) {
-      margin-top: auto;
-      padding: var(--space-sm) var(--space-sm) 0;
-      border-top: 1px solid var(--border-canvas);
       display: flex;
       flex-direction: column;
       align-items: stretch;
-      align-self: stretch;
-      --user-btn-w: 100%;
-      --user-btn-h: 52px;
-      --user-btn-justify: flex-start;
-      --user-btn-padding: 0 var(--space-xs);
-      --user-dropdown-top: auto;
-      --user-dropdown-bottom: calc(100% + var(--space-xs));
-      --user-dropdown-right: auto;
-      --user-dropdown-left: 0;
-    }
-  }
-
-  :scope.is-collapsed .user {
-    @media (min-width: 1024px) {
-      --user-name-display: none;
-      --user-btn-justify: center;
-      --user-btn-padding: 0;
-    }
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border-width: 0;
-
-    &.is-focusable:focus {
+      gap: var(--s-12);
       position: fixed;
-      top: var(--space-sm);
-      left: var(--space-sm);
-      z-index: 10000;
-      width: auto;
-      height: auto;
-      padding: var(--space-sm) var(--space-md);
-      margin: 0;
-      overflow: visible;
-      clip: auto;
-      white-space: normal;
-      background: var(--color-primary);
-      color: var(--color-on-primary);
-      border-radius: var(--radius-md);
-      font-size: var(--font-size-sm);
-      font-weight: 600;
-      text-decoration: none;
+      top: var(--shell-topbar-height);
+      bottom: 0;
+      left: 0;
+      width: var(--app-sidebar-width);
+      padding: var(--s-12);
+      background: var(--shell-bg);
+      color: var(--shell-fg);
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: none;
+    }
+  }
+  .rail::-webkit-scrollbar { display: none; }
+
+  .rail-item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    height: var(--control-h-md);
+    min-height: var(--control-h-md);
+    width: var(--control-h-md);
+    padding: 0;
+    justify-content: center;
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--shell-control);
+    color: var(--shell-fg);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+    white-space: nowrap;
+  }
+  .rail-item:hover { background: var(--shell-control-hover); color: var(--shell-fg); }
+  .rail-item:active { background: var(--shell-control-active); }
+  .rail-item.is-active {
+    background: transparent;
+    color: var(--shell-selected);
+  }
+  .rail-item:focus-visible {
+    outline: 2px solid var(--shell-selected);
+    outline-offset: 1px;
+  }
+  .rail-item .rail-label { display: none; }
+
+  :scope.is-expanded .rail-item {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 0 var(--s-8);
+    background: transparent;
+  }
+  :scope.is-expanded .rail-item:hover { background: var(--shell-control-hover); }
+  :scope.is-expanded .rail-item.is-active {
+    background: var(--yellow-100);
+    color: var(--sand-900);
+  }
+  :scope.is-expanded .rail-item .rail-label { display: inline; }
+
+  .rail-bottom {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+  }
+
+  .rail-identity {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+  }
+  .rail-identity app-user-menu { flex-shrink: 0; }
+  .rail-identity .identity-name {
+    display: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--shell-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  :scope.is-expanded .rail-identity .identity-name { display: block; }
+
+  /* ── Mobile ─────────────────────────────────────────────────────────── */
+  .mobile-nav {
+    display: none;
+  }
+  :scope.mobile-open .mobile-nav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+    padding: var(--s-8) var(--s-12) var(--s-12);
+    background: var(--shell-bg);
+  }
+  .mobile-nav .rail-item {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 0 var(--s-8);
+    background: transparent;
+  }
+  .mobile-nav .rail-item .rail-label { display: inline; }
+  .mobile-nav .rail-item.is-active { background: var(--yellow-100); color: var(--sand-900); }
+
+  .mobile-menu-btn { display: inline-flex; }
+
+  @media (min-width: 1024px) {
+    .mobile-menu-btn { display: none; }
+    .mobile-nav, :scope.mobile-open .mobile-nav { display: none; }
+  }
+
+  /* ── Skeleton ───────────────────────────────────────────────────────── */
+  .rail-skel {
+    height: var(--control-h-md);
+    width: var(--control-h-md);
+    border-radius: var(--r-8);
+    background: var(--shell-control);
+    animation: ah-skel-pulse 1.4s ease-in-out infinite;
+
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+      opacity: 0.4;
     }
   }
 }`);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppHeader extends HTMLElement {
-  #collapsed = localStorage.getItem("app-sidebar-collapsed") === "true";
+  #expanded = localStorage.getItem("app-rail-expanded") === "true";
+  #mobileOpen = false;
 
   #esc(str) {
     if (!str) return "";
@@ -503,38 +285,44 @@ export class AppHeader extends HTMLElement {
 
   #handleKeyDown = (e) => {
     const isShortcut =
-      ((e.metaKey || e.ctrlKey) && e.key === "k") || e.key === "\\";
+      ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "f")) || e.key === "\\";
     if (isShortcut) {
-      e.preventDefault();
       const navSearch = this.querySelector("app-nav-search");
-      if (navSearch && !navSearch.querySelector("[data-nav-dialog]")?.open) {
-        navSearch.open();
-      }
+      if (!navSearch) return;
+      e.preventDefault();
+      if (!navSearch.querySelector("[data-nav-dialog]")?.open) navSearch.open();
     }
   };
 
   #handleClick = (e) => {
-    if (e.target.closest("[data-sidebar-toggle]")) {
-      this.#collapsed = !this.#collapsed;
-      localStorage.setItem("app-sidebar-collapsed", this.#collapsed);
-      this.#applyCollapsed();
+    if (e.target.closest("[data-rail-toggle]")) {
+      this.#expanded = !this.#expanded;
+      localStorage.setItem("app-rail-expanded", this.#expanded);
+      this.#applyExpanded();
+      return;
+    }
+    if (e.target.closest("[data-mobile-menu]")) {
+      this.#mobileOpen = !this.#mobileOpen;
+      this.classList.toggle("mobile-open", this.#mobileOpen);
       return;
     }
     if (e.target.closest("[data-search-trigger]")) {
       this.querySelector("app-nav-search")?.open();
-    } else {
-      const link = e.target.closest(".nav-link");
-      if (link && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)) {
-        document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
-      }
+      return;
+    }
+    if (e.target.closest("[data-nav-back]")) { window.history.back(); return; }
+    if (e.target.closest("[data-nav-fwd]")) { window.history.forward(); return; }
+    const link = e.target.closest(".rail-item[href]");
+    if (link && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)) {
+      document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
     }
   };
 
-  #applyCollapsed() {
-    this.classList.toggle("is-collapsed", this.#collapsed);
+  #applyExpanded() {
+    this.classList.toggle("is-expanded", this.#expanded);
     document.documentElement.style.setProperty(
       "--app-sidebar-width",
-      this.#collapsed ? "var(--app-sidebar-width-collapsed)" : "var(--app-sidebar-width-expanded)"
+      this.#expanded ? "var(--app-sidebar-width-expanded)" : "var(--app-sidebar-width-collapsed)"
     );
   }
 
@@ -547,20 +335,15 @@ export class AppHeader extends HTMLElement {
   }
 
   async connectedCallback() {
-    this.#applyCollapsed();
+    this.#applyExpanded();
     document.removeEventListener("keydown", this.#handleKeyDown);
     this.removeEventListener("click", this.#handleClick);
     this.addEventListener("click", this.#handleClick);
     if (this.getAttribute("nav-links")) {
-      // nav-links attribute present — render synchronously so view-transition-name
-      // styles are in the DOM before the browser captures the new-page snapshot.
       this.render();
       document.addEventListener("keydown", this.#handleKeyDown);
       return;
     }
-    // No nav-links attribute — async fetch path. Render from sessionStorage cache
-    // first so view-transition-names are available before pagereveal, then
-    // re-render once fresh data arrives.
     const cached = sessionStorage.getItem("app-header-nav");
     if (cached) {
       try { this.navItems = JSON.parse(cached); } catch { /* ignore bad cache */ }
@@ -607,103 +390,104 @@ export class AppHeader extends HTMLElement {
     const current = this.#normalizePath(window.location.pathname);
     const target = this.#normalizePath(href);
     if (target === current) return true;
-    // Basename comparison: /u/user/history === /history
     const currentBase = current.split("/").pop();
     const targetBase = target.split("/").pop();
     return !!currentBase && currentBase === targetBase;
   }
 
+  #initials() {
+    const user = authService.getCurrentUser() || "";
+    const parts = user.split(/[\s._-]+/).filter(Boolean);
+    if (!parts.length) return "N";
+    return parts.slice(0, 2).map(p => p[0].toUpperCase()).join("");
+  }
+
+  #navLinks() {
+    const navLinksJson = this.getAttribute("nav-links");
+    if (navLinksJson) {
+      try { return JSON.parse(navLinksJson); } catch (e) {
+        console.error("Invalid nav-links JSON:", e);
+        return [];
+      }
+    }
+    return this.navItems || [];
+  }
+
+  #railItem(link) {
+    const href = link.url;
+    const active = this.#isActive(href);
+    const titleEsc = this.#esc(link.title);
+    const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18) : icons.cube('', 18);
+    return `<a href="${this.#esc(href)}" class="rail-item${active ? " is-active" : ""}"
+      title="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
+  }
+
   #renderSkeleton() {
-    const widths = [56, 72, 48, 64];
     this.innerHTML = `
-      <header class="bar" role="banner">
-        <div class="center">
-          ${this.getAttribute("brand-title") ? `<span class="brand-link-skel" aria-hidden="true"></span>` : ""}
-          <nav class="nav" aria-label="Main navigation" aria-busy="true">
-            <ul class="nav-list" role="list">
-              ${widths.map((w) => `<li><span class="nav-link-skel" style="width:${w}px" aria-hidden="true"></span></li>`).join("")}
-            </ul>
-          </nav>
-        </div>
+      <header class="topbar" role="banner">
+        <span class="identity-chip" aria-hidden="true"></span>
       </header>
+      <nav class="rail" aria-label="Main navigation" aria-busy="true">
+        ${Array.from({ length: 6 }, () => `<span class="rail-skel" aria-hidden="true"></span>`).join("")}
+      </nav>
     `;
   }
 
   render() {
-    const navLinksJson = this.getAttribute("nav-links");
-    let navLinks = [];
-    if (navLinksJson) {
-      try {
-        navLinks = JSON.parse(navLinksJson);
-      } catch (e) {
-        console.error("Invalid nav-links JSON:", e);
-      }
-    } else {
-      navLinks = this.navItems || [];
-    }
-
-    const currentUser = authService.getCurrentUser();
+    const navLinks = this.#navLinks().filter((link) => {
+      if (link.hidden) return false;
+      const urlLower = (link.url || "").toLowerCase();
+      return !urlLower.includes("/login") && !urlLower.includes("/admin");
+    });
     const isAuthenticated = authService.isAuthenticated();
-    const brandTitle = this.getAttribute("brand-title");
-    const brandUrl = this.getAttribute("brand-url") || "/";
-    const userPrefix = "";
+    const currentUser = authService.getCurrentUser();
 
-    const navPills = navLinks
-      .filter((link) => {
-        if (link.hidden) return false;
-        const urlLower = (link.url || "").toLowerCase();
-        return !urlLower.includes("/login") && !urlLower.includes("/admin");
-      })
-      .map((link) => {
-        const href = userPrefix + link.url;
-        const active = this.#isActive(href);
-        const titleEsc = this.#esc(link.title);
-        const bgSpan = active ? '<span class="nav-link-bg"></span>' : '';
-        const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('nav-icon', 18) : '';
-        return `<li><a href="${this.#esc(href)}"
-        class="nav-link${active ? " is-active" : ""}"
-        data-text="${titleEsc}"
-        title="${titleEsc}"
-        ${active ? 'aria-current="page"' : ""}>${bgSpan}${iconHtml}<span class="nav-link-text">${titleEsc}</span></a></li>`;
-      })
-      .join("");
+    const settingsLinks = navLinks.filter(l => /settings/i.test(l.title));
+    const mainLinks = navLinks.filter(l => !settingsLinks.includes(l));
+    const addAgent = mainLinks.find(l => /add agent/i.test(l.title));
+    // Rail shows module-level entries (rail: true); when no item carries the
+    // flag (attribute-driven navs, EE overrides) every link is a rail item.
+    const hasRailFlags = mainLinks.some(l => l.rail);
+    const railLinks = mainLinks.filter(l => l !== addAgent && (!hasRailFlags || l.rail));
 
     this.innerHTML = `
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
-      <header class="bar" role="banner">
-        <div class="brand-row">
-          <a href="${this.#esc(brandUrl)}" class="brand-link" title="${this.#esc(brandTitle || "Nasiko")}">
-            <span class="brand-logo-card"><img class="brand-mark" src="/common/mark-nasiko.svg" alt="" width="20" height="20" /></span>
-            ${brandTitle ? `<span class="brand-title-text">${this.#esc(brandTitle)}</span>` : ""}
-          </a>
-          <button class="sidebar-toggle" data-sidebar-toggle
-            aria-label="Toggle sidebar" type="button">
-            ${icons.panelLeft("", 18)}
-          </button>
+      <header class="topbar" role="banner">
+        <span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>
+        <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
+          ${icons.panelLeft("", 16)}
+        </button>
+        <div class="nav-cluster">
+          <button class="chrome-btn" data-nav-back aria-label="Back" type="button">${icons.chevronLeft("", 16)}</button>
+          <button class="chrome-btn" data-nav-fwd aria-label="Forward" type="button">${icons.chevronRight("", 16)}</button>
         </div>
-        <div class="center">
-          ${brandTitle ? `<a href="${this.#esc(brandUrl)}" class="brand-link-mobile">${this.#esc(brandTitle)}</a>` : ""}
-          ${
-            navLinks.length
-              ? `
-            <nav class="nav" aria-label="Main navigation">
-              <ul class="nav-list" role="list">${navPills}</ul>
-            </nav>`
-              : ""
-          }
+        ${navLinks.length ? `
+        <button class="search-field" data-search-trigger type="button" aria-label="Search pages">
+          ${icons.search("", 16)}
+          <span class="placeholder">Search anything...</span>
+          <span class="kbd-hint">\u2318F</span>
+        </button>` : ""}
+        <span class="topbar-spacer"></span>
+        <div class="topbar-right">
+          ${addAgent ? `<a href="${this.#esc(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16)} Add agent</a>` : ""}
+          <button class="chrome-btn mobile-menu-btn" data-mobile-menu aria-label="Menu" type="button">${icons.menu("", 16)}</button>
         </div>
-        ${
-          navLinks.length
-            ? `
-          <button class="menu-btn" data-search-trigger
-            aria-label="Search pages" type="button">
-            ${icons.search("menu-icon", 20)}
-          </button>`
-            : ""
-        }
-        ${isAuthenticated ? `<app-user-menu class="user" current-user="${this.#esc(currentUser)}"></app-user-menu>` : ""}
-        ${navLinks.length ? `<app-nav-search></app-nav-search>` : ""}
       </header>
+      <nav class="rail" aria-label="Main navigation">
+        ${railLinks.map(l => this.#railItem(l)).join("")}
+        <div class="rail-bottom">
+          ${settingsLinks.map(l => this.#railItem(l)).join("")}
+          ${isAuthenticated ? `
+          <div class="rail-identity">
+            <app-user-menu current-user="${this.#esc(currentUser)}"></app-user-menu>
+            <span class="identity-name">${this.#esc(currentUser)}</span>
+          </div>` : ""}
+        </div>
+      </nav>
+      <div class="mobile-nav">
+        ${mainLinks.concat(settingsLinks).map(l => this.#railItem(l)).join("")}
+      </div>
+      ${navLinks.length ? `<app-nav-search></app-nav-search>` : ""}
     `;
 
     const userMenu = this.querySelector("app-user-menu");
@@ -719,26 +503,18 @@ export class AppHeader extends HTMLElement {
     const navSearch = this.querySelector("app-nav-search");
     if (navSearch) {
       navSearch.navLinks = navLinks;
-      navSearch.userPrefix = userPrefix;
+      navSearch.userPrefix = "";
       navSearch.addEventListener("navigate", (e) => {
         e.detail.newTab
           ? window.open(e.detail.url, "_blank")
           : (window.location.href = e.detail.url);
       });
     }
-
-    // Scroll active nav link into view on mount
-    this.querySelector(".nav-link.is-active")?.scrollIntoView({
-      block: "nearest",
-      inline: "center",
-    });
   }
 
   #removeUser(username) {
     if (confirm(`Remove account for ${username}?`)) {
       authService.removeUserSession(username);
-      // Only the user list changed — update the existing element directly
-      // instead of nuking and re-mounting the whole header (Rule 17).
       const userMenu = this.querySelector("app-user-menu");
       if (userMenu) userMenu.users = authService.getUsers();
     }
@@ -762,7 +538,5 @@ export class AppHeader extends HTMLElement {
     }
   }
 }
-
-
 
 customElements.define("app-header", AppHeader);

@@ -1,17 +1,22 @@
-/* Surface — card-like bg + border + radius, no padding */
+/* Surface — card-like bg + radius; NightOwl surfaces are strokeless, borders
+   only where earned (hover hairline lives on the consumer) */
 .surface {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--r-8);
 }
 
-/* Card — surface with padding and shadow */
+/* Card — sand-tinted product card on the white plane */
 .card {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  background: var(--bg-surface);
+  border: 1px solid transparent;
+  border-radius: var(--r-8);
   padding: var(--space-lg);
+  transition: border-color var(--transition-fast);
+}
+
+.card:hover {
+  border-color: var(--color-border);
 }
 
 /* Row item — for list/table rows inside a surface */

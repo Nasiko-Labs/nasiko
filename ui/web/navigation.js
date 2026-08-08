@@ -1,18 +1,20 @@
 import { fetchApi } from '/common/services/api.js';
 
 window.fetchNavigation = async () => [
-  { title: "Orchestrator", url: "/index.html", icon: "workflow" },
-  { title: "Agents", url: "/agents.html", icon: "bot" },
+  // rail: true → shown as a rail module icon; everything else is reachable
+  // through the module tree navs and the ⌘F nav search.
+  { title: "Orchestrator", url: "/index.html", icon: "workflow", rail: true },
+  { title: "Agents", url: "/agents.html", icon: "bot", rail: true },
+  { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true },
+  { title: "MCP gateway", url: "/mcp.html", icon: "server", rail: true },
+  { title: "LLM router", url: "/llm-router.html", icon: "route", rail: true },
+  { title: "TokenOps", url: "/tokenops.html", icon: "coins", rail: true },
   { title: "Your Agents", url: "/your-agents.html", icon: "user" },
   { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
-  { title: "Sessions", url: "/sessions.html", icon: "activity" },
-  { title: "MCP gateway", url: "/mcp.html", icon: "server" },
   { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
-  { title: "LLM router", url: "/llm-router.html", icon: "route" },
   { title: "Builds", url: "/builds.html", icon: "cube" },
-  { title: "TokenOps", url: "/tokenops.html", icon: "coins" },
   { title: "Secrets", url: "/secrets.html", icon: "lock" },
-  { title: "Settings", url: "/settings.html", icon: "settings" },
+  { title: "Settings", url: "/settings.html", icon: "settings", rail: true },
 ];
 
 window.fetchAgents = async (query, page, limit) => {

@@ -9,11 +9,23 @@
 // be wrong for API calls (fetch() follows it transparently and hands the
 // caller login-page HTML), so the API returns 401 and we navigate the page.
 
+/// Multi-tenant seam: the BFF dashboard injects
+/// `window.nasikoConfig = { apiBase: "https://<sub>.nasiko.dev", ... }` at
+/// serve time (docs/MULTITENANT.md §9). Empty/absent = same-origin (single
+/// tenant, today's behavior). Resolved per call — never cached — so an
+/// in-SPA workspace switch re-points every subsequent request.
+function apiBase() {
+  return window.nasikoConfig?.apiBase || "";
+}
+
 /// Low-level: performs the request and handles 401 by redirecting to the
 /// login page. Returns the raw Response for callers that stream, read text,
 /// or branch on status themselves.
 export async function apiFetch(path, opts = {}) {
-  const res = await fetch(`/api${path}`, opts);
+  const base = apiBase();
+  // Cross-origin CP calls ride the CP's host-only session cookie.
+  const withCreds = base ? { credentials: "include", ...opts } : opts;
+  const res = await fetch(`${base}/api${path}`, withCreds);
   if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
     window.location.href = '/login.html';
     return new Promise(() => {}); // page is navigating away; never settle

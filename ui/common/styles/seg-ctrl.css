@@ -1,7 +1,8 @@
-/* Segmented radio control — pill-shaped button group for mutually exclusive choices */
+/* Segmented radio control — NightOwl pill group: strokeless sand pills,
+   selected = sand-100 fill; the group carries no outer border */
 .seg-ctrl {
   border: none; padding: 0; margin: 0;
-  display: flex; align-items: center; gap: 0;
+  display: flex; align-items: center; gap: var(--s-4);
 }
 
 .seg-ctrl legend {
@@ -13,20 +14,23 @@
 .seg-ctrl label {
   display: flex; align-items: center; gap: var(--space-xs);
   margin: 0;
-  padding: var(--space-xs) var(--space-sm);
-  font-size: var(--font-size-sm); font-weight: 500;
-  border: 1px solid var(--color-border); cursor: pointer;
-  color: var(--color-text-muted); background: var(--color-bg-surface);
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  height: var(--control-h-sm);
+  padding: 0 var(--s-12);
+  font-size: 13px; font-weight: 500;
+  border: none; border-radius: var(--r-8); cursor: pointer;
+  color: var(--color-text-main); background: transparent;
+  transition: background var(--transition-fast), color var(--transition-fast);
   white-space: nowrap;
 }
 
-.seg-ctrl label:first-of-type { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
-.seg-ctrl label:last-of-type  { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-.seg-ctrl label + label        { border-left: none; }
+.seg-ctrl label:hover { background: var(--bg-surface-hover); }
 
 .seg-ctrl input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
 
 .seg-ctrl label:has(:checked) {
-  background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary);
+  background: var(--bg-surface-active); color: var(--color-text-main);
+}
+
+.seg-ctrl label:has(:focus-visible) {
+  outline: 2px solid var(--color-primary); outline-offset: 1px;
 }

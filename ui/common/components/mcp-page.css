@@ -20,9 +20,11 @@ mcp-page:not(:defined) {
   }
 
   .page-title {
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    font-family: var(--font-sans);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    font-family: var(--font-display);
+    letter-spacing: 0.16px;
     margin: 0;
   }
 

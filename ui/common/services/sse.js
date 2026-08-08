@@ -1,5 +1,8 @@
 export function connectSSE(path, { onMessage, onError, onOpen } = {}) {
-  const source = new EventSource(`/api${path}`);
+  // Same multi-tenant seam as apiFetch (see services/api.js): base from
+  // window.nasikoConfig, credentialed when cross-origin.
+  const base = window.nasikoConfig?.apiBase || "";
+  const source = new EventSource(`${base}/api${path}`, base ? { withCredentials: true } : undefined);
   if (onOpen) source.addEventListener("open", onOpen);
   source.addEventListener("message", (e) => {
     try {

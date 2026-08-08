@@ -22,8 +22,8 @@ styles.replaceSync(`@scope (app-button) {
 
   .btn {
     width: 100%;
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-md);
+    padding: 0 var(--s-16);
+    border-radius: var(--r-8);
     font: 500 var(--font-size-sm)/1 inherit;
     border: 1px solid transparent;
     display: inline-flex;
@@ -31,37 +31,37 @@ styles.replaceSync(`@scope (app-button) {
     justify-content: center;
     gap: var(--space-xs);
     white-space: nowrap;
-    min-height: 44px;
+    min-height: var(--control-h-lg);
+    transition: background var(--transition-fast), color var(--transition-fast);
 
     &.is-sm {
-      min-height: 36px;
-      padding: 5px var(--space-sm);
-      font-size: var(--font-size-xs);
+      min-height: var(--control-h-sm);
+      padding: 0 var(--s-12);
+      font-size: 13px;
     }
 
     &.is-lg {
-      min-height: 52px;
-      padding: var(--space-sm) var(--space-lg);
+      min-height: 44px;
+      padding: 0 var(--space-lg);
       font-size: var(--font-size-base);
     }
 
     &.is-primary {
-      background: var(--color-primary);
-      color: var(--color-on-primary);
+      background: light-dark(var(--sand-800), var(--neutral-100));
+      color: light-dark(var(--white), var(--neutral-900));
 
       &:hover:not(:disabled) {
-        background: var(--color-primary-hover);
+        background: light-dark(var(--sand-700), var(--neutral-300));
       }
     }
 
     &.is-secondary {
-      background: var(--color-bg-surface);
-      border-color: var(--color-border);
+      background: light-dark(var(--yellow-100), var(--yellow-900));
+      border-color: light-dark(var(--yellow-200), var(--yellow-800));
       color: var(--color-text-main);
 
       &:hover:not(:disabled) {
-        background: var(--color-bg-base);
-        border-color: var(--color-text-muted);
+        background: light-dark(var(--yellow-200), var(--yellow-800));
       }
     }
 
@@ -76,19 +76,18 @@ styles.replaceSync(`@scope (app-button) {
     }
 
     &.is-outline {
-      background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-surface));
+      background: var(--color-bg-surface);
       color: var(--color-text-main);
-      border: 2px solid var(--color-primary-hover);
+      border: 1px solid var(--color-border);
 
       &:hover:not(:disabled) {
-        background: var(--color-primary-hover);
-        color: var(--color-on-primary);
+        background: var(--color-bg-base);
       }
     }
 
     &.is-danger {
       background: var(--color-error);
-      color: var(--color-on-primary);
+      color: var(--white);
 
       &:hover:not(:disabled) {
         background: color-mix(in srgb, var(--color-error) 85%, black);
@@ -96,11 +95,11 @@ styles.replaceSync(`@scope (app-button) {
     }
 
     &.is-dark {
-      background: light-dark(var(--neutral-900), var(--neutral-100));
+      background: light-dark(var(--sand-800), var(--neutral-100));
       color: light-dark(var(--white), var(--neutral-900));
 
       &:hover:not(:disabled) {
-        opacity: 0.85;
+        background: light-dark(var(--sand-700), var(--neutral-300));
       }
     }
 
