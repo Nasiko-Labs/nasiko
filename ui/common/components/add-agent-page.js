@@ -6,9 +6,18 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 class AddAgentPage extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
-      <span class="page-icon">${icons.cube('', 48)}</span>
-      <h1 class="page-title">Add a new agent</h1>
+      <span class="page-icon">${icons.cube('', 28)}</span>
+      <h1 class="title-page">Import new agent</h1>
       <p class="page-subtitle">Choose how you would like to register your agent.</p>
+
+      <a class="cli-banner" href="/setup-cli.html">
+        <span class="cli-banner-icon">${icons.terminal('', 18)}</span>
+        <span class="cli-banner-text">
+          <span class="cli-banner-title">Set up CLI</span>
+          <span class="cli-banner-sub">Prefer the terminal? Build, test, and publish agents with the Nasiko CLI.</span>
+        </span>
+        <span class="cli-banner-chevron">${icons.chevronRight('', 16)}</span>
+      </a>
 
       <div class="method-grid">
         <div class="method-card">
@@ -40,17 +49,9 @@ class AddAgentPage extends HTMLElement {
           <div class="method-card-desc">Pull a pre-built agent image directly from any OCI-compatible container registry.</div>
           <button class="method-btn" id="btn-oci">Connect Registry</button>
         </div>
-
-        <div class="method-card is-disabled">
-          <div class="method-card-header">
-            <span>${icons.layers('', 22)}</span>
-            <span class="method-card-title">Import from AgentKit</span>
-          </div>
-          <div class="method-card-req">Coming soon</div>
-          <div class="method-card-desc">Sync agents built in AgentKit directly into your registry.</div>
-          <button class="method-btn" disabled>Connect AgentKit</button>
-        </div>
       </div>
+
+      <p class="coming-soon">Coming soon... Import from AgentKit.</p>
     `;
 
     const fileInput = document.createElement('input');

@@ -12,15 +12,15 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const COLUMNS = [
   { key: 'agent_name', label: 'Agent' },
-  { key: 'total_tokens', label: 'Tokens' },
-  { key: 'prompt_tokens', label: 'Input' },
-  { key: 'completion_tokens', label: 'Output' },
-  { key: 'cache_tokens', label: 'Cache r/w' },
-  { key: 'operations', label: 'Operations' },
-  { key: 'total_cost', label: 'Total cost' },
-  { key: 'avg_cost_per_operation', label: 'Avg cost/op' },
-  { key: 'container_hours', label: 'Agent hours' },
-  { key: 'avg_latency_ms', label: 'Avg latency' },
+  { key: 'total_tokens', label: 'Tokens', num: true },
+  { key: 'prompt_tokens', label: 'Input', num: true },
+  { key: 'completion_tokens', label: 'Output', num: true },
+  { key: 'cache_tokens', label: 'Cache r/w', num: true },
+  { key: 'operations', label: 'Operations', num: true },
+  { key: 'total_cost', label: 'Total cost', num: true },
+  { key: 'avg_cost_per_operation', label: 'Avg cost/op', num: true },
+  { key: 'container_hours', label: 'Agent hours', num: true },
+  { key: 'avg_latency_ms', label: 'Avg latency', num: true },
   { key: 'version', label: 'Version' },
 ];
 
@@ -46,11 +46,17 @@ class TokenopsPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="page-head">
-        <h1 class="page-title">TokenOps dashboard</h1>
-        <button class="btn-dark" id="export-btn" type="button">Export</button>
+        <div>
+          <h1 class="title-page">TokenOps</h1>
+          <p class="page-sub">Token spend, usage, and agent activity across the cluster.</p>
+        </div>
+        <div class="head-actions">
+          <select id="month-select" aria-label="Period">${this.#monthOptions()}</select>
+          <button class="btn-dark" id="export-btn" type="button">Export</button>
+        </div>
       </div>
 
-      <div class="kpi-strip" id="kpi-strip">${this.#skelKpis(5)}</div>
+      <div class="kpi-strip" id="kpi-strip">${this.#skelKpis(4)}</div>
 
       <h2 class="section-title">Agent cost</h2>
       <div class="toolbar">
@@ -60,7 +66,6 @@ class TokenopsPage extends HTMLElement {
             placeholder="Search agents by name, skill, or capability..." />
         </div>
         <div class="toolbar-spacer"></div>
-        <select id="month-select" aria-label="Period">${this.#monthOptions()}</select>
         <select id="sort-select" aria-label="Sort">
           ${SORTS.map((s) => `<option value="${s.key}">${s.label}</option>`).join('')}
         </select>
@@ -68,7 +73,7 @@ class TokenopsPage extends HTMLElement {
       <div class="cost-table-wrap">
         <table>
           <thead>
-            <tr>${COLUMNS.map((c) => `<th>${c.label}</th>`).join('')}</tr>
+            <tr>${COLUMNS.map((c) => `<th${c.num ? ' class="is-num"' : ''}>${c.label}</th>`).join('')}</tr>
           </thead>
           <tbody id="cost-tbody">
             <tr class="empty-row"><td colspan="${COLUMNS.length}">Loading…</td></tr>
@@ -77,7 +82,7 @@ class TokenopsPage extends HTMLElement {
       </div>
 
       <h2 class="section-title">Token usage</h2>
-      <div class="kpi-strip" id="token-strip">${this.#skelKpis(6)}</div>
+      <div class="kpi-strip" id="token-strip">${this.#skelKpis(4)}</div>
     `;
 
     this.querySelector('#agent-search').addEventListener('input', (e) => {
@@ -134,26 +139,26 @@ class TokenopsPage extends HTMLElement {
 
   #renderSummary(s) {
     this.querySelector('#kpi-strip').innerHTML = `
-      ${this.#kpi('Total tokens', this.#fmtTokens(this.#totalTokens()), 'across all agents')}
-      ${this.#kpi('Total operations', (s.total_operations ?? 0).toLocaleString(),
-        `${(s.operations_last_24h ?? 0).toLocaleString()} in the last 24 hours`)}
-      ${this.#kpi('Agent hours', `${this.#fmtNum(s.total_container_hours)} hrs`, 'Total active execution time')}
       ${this.#kpi('Total cost', this.#fmtCost(s.total_cost),
         `Based on ${(s.total_operations ?? 0).toLocaleString()} operations`)}
+      ${this.#kpi('Total tokens', this.#fmtTokens(this.#totalTokens()), 'Across all agents')}
+      ${this.#kpi('Total operations', (s.total_operations ?? 0).toLocaleString(),
+        `${(s.operations_last_24h ?? 0).toLocaleString()} in the last 24 hours`)}
       ${this.#kpi('Active agents', `${s.active_agents ?? 0}`,
-        `${s.total_agents ?? 0} total agents configured`)}
+        `${s.total_agents ?? 0} configured · ${this.#fmtNum(s.total_container_hours)} agent hrs`)}
     `;
   }
 
   #renderTokenUsage(t) {
     const avg = t.avg_tokens_per_operation ?? 0;
     this.querySelector('#token-strip').innerHTML = `
-      ${this.#kpi('Total tokens', this.#fmtTokens(t.total_tokens), '')}
-      ${this.#kpi('Input tokens', this.#fmtTokens(t.prompt_tokens), '')}
-      ${this.#kpi('Output tokens', this.#fmtTokens(t.completion_tokens), '')}
-      ${this.#kpi('Cache read tokens', this.#fmtTokens(t.cache_read_tokens), 'Prompt tokens served from provider cache')}
-      ${this.#kpi('Cache write tokens', this.#fmtTokens(t.cache_creation_tokens), 'Prompt tokens written to provider cache')}
-      ${this.#kpi('Average tokens / operation', this.#fmtTokens(avg), '')}
+      ${this.#kpi('Input tokens', this.#fmtTokens(t.prompt_tokens), 'Sent to models as prompts')}
+      ${this.#kpi('Output tokens', this.#fmtTokens(t.completion_tokens), 'Generated by models')}
+      ${this.#kpi('Cache tokens',
+        `${this.#fmtTokens((t.cache_read_tokens ?? 0) + (t.cache_creation_tokens ?? 0))}`,
+        `${this.#fmtTokens(t.cache_read_tokens)} read · ${this.#fmtTokens(t.cache_creation_tokens)} written`)}
+      ${this.#kpi('Total tokens', this.#fmtTokens(t.total_tokens),
+        `${this.#fmtTokens(avg)} avg per operation`)}
     `;
   }
 
@@ -188,15 +193,15 @@ class TokenopsPage extends HTMLElement {
     tbody.innerHTML = rows.map((a) => `
       <tr>
         <td class="agent-name">${this.#esc(a.agent_name || a.agent_id)}</td>
-        <td>${this.#fmtTokens(a.total_tokens)}</td>
-        <td>${this.#fmtTokens(a.prompt_tokens)}</td>
-        <td>${this.#fmtTokens(a.completion_tokens)}</td>
-        <td>${this.#fmtTokens(a.cache_read_tokens)} / ${this.#fmtTokens(a.cache_creation_tokens)}</td>
-        <td>${(a.operations ?? 0).toLocaleString()}</td>
-        <td>${this.#fmtCost(a.total_cost)}</td>
-        <td>${this.#fmtCost(a.avg_cost_per_operation)}</td>
-        <td>${this.#fmtNum(a.container_hours)} hrs</td>
-        <td>${this.#fmtLatency(a.avg_latency_ms)}</td>
+        <td class="is-num">${this.#fmtTokens(a.total_tokens)}</td>
+        <td class="is-num">${this.#fmtTokens(a.prompt_tokens)}</td>
+        <td class="is-num">${this.#fmtTokens(a.completion_tokens)}</td>
+        <td class="is-num">${this.#fmtTokens(a.cache_read_tokens)} / ${this.#fmtTokens(a.cache_creation_tokens)}</td>
+        <td class="is-num">${(a.operations ?? 0).toLocaleString()}</td>
+        <td class="is-num">${this.#fmtCost(a.total_cost)}</td>
+        <td class="is-num">${this.#fmtCost(a.avg_cost_per_operation)}</td>
+        <td class="is-num">${this.#fmtNum(a.container_hours)} hrs</td>
+        <td class="is-num">${this.#fmtLatency(a.avg_latency_ms)}</td>
         <td>${this.#esc(a.version || '—')}</td>
       </tr>
     `).join('');

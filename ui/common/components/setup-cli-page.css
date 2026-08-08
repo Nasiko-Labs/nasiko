@@ -1,0 +1,168 @@
+/* Setup CLI — numbered step tabs, per-step command snippets, guide banner. */
+setup-cli-page:not(:defined) {
+  display: block;
+  padding: var(--space-lg) var(--space-xl);
+  min-height: 600px;
+}
+
+@scope (setup-cli-page) {
+  :scope {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    padding: var(--space-lg) var(--space-xl);
+    min-height: 100%;
+  }
+
+  .close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-h-md);
+    height: var(--control-h-md);
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    color: var(--color-text-main);
+    cursor: pointer;
+    align-self: flex-start;
+
+    &:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+    & svg { width: 16px; height: 16px; }
+  }
+
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+  }
+
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+  }
+
+  /* ── Numbered step tabs ──────────────────────────────────────────────── */
+  .step-tabs {
+    display: flex;
+    gap: var(--s-4);
+    padding: var(--s-4);
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    border-radius: var(--r-8);
+  }
+
+  .step-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    height: var(--control-h-lg);
+    border-radius: var(--r-6);
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover { color: var(--color-text-main); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+
+    &.is-active {
+      background: light-dark(var(--white), var(--neutral-700));
+      color: var(--color-text-main);
+      box-shadow: var(--shadow-sm);
+    }
+  }
+
+  .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: light-dark(var(--sand-200), var(--neutral-600));
+    color: var(--color-text-main);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .step-tab.is-active .step-num {
+    background: light-dark(var(--sand-900), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+  }
+
+  /* ── Step panels ─────────────────────────────────────────────────────── */
+  .step-panel { display: none; }
+  .step-panel.is-active {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    flex: 1;
+  }
+
+  .step-intro {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0;
+    max-width: 72ch;
+  }
+
+  .snippet-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .step-note {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: 0;
+    max-width: 72ch;
+  }
+
+  .step-note code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    padding: 1px 5px;
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    border-radius: var(--r-4);
+  }
+
+  /* ── Guide banner ────────────────────────────────────────────────────── */
+  .guide-banner {
+    margin-top: auto;
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    border-radius: var(--r-8);
+    padding: var(--space-lg) var(--space-xl);
+  }
+
+  .guide-title {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin: 0 0 var(--space-xs);
+  }
+
+  .guide-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0 0 var(--space-sm);
+  }
+
+  .guide-list {
+    margin: 0;
+    padding-left: var(--space-lg);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+  }
+}

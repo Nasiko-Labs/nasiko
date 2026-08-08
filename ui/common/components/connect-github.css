@@ -5,24 +5,27 @@
     margin: var(--space-xl) auto;
     padding: var(--space-2xl);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background: var(--color-bg-surface);
+    border-radius: var(--r-12);
+    background: light-dark(var(--white), var(--neutral-900));
     text-align: center;
   }
   .connect-icon {
-    width: 64px;
-    height: 64px;
+    width: 56px;
+    height: 56px;
     margin: 0 auto var(--space-lg);
-    border-radius: 50%;
-    background: var(--color-neutral-bg);
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
     display: flex;
     align-items: center;
     justify-content: center;
   }
-  .connect-icon svg { width: 32px; height: 32px; fill: var(--color-text-main); }
+  .connect-icon svg { width: 28px; height: 28px; fill: var(--color-text-main); }
   .connect-title {
-    font-size: var(--font-size-xl);
-    font-weight: 600;
+    font-family: var(--font-display);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
     color: var(--color-text-main);
     margin-bottom: var(--space-sm);
   }
@@ -36,19 +39,23 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-sm);
-    padding: 12px var(--space-xl);
-    background: #24292f;
-    color: #fff;
-    font-weight: 600;
-    font-size: var(--font-size-base);
-    border-radius: var(--radius-md);
+    height: var(--control-h-lg);
+    padding: 0 var(--space-xl);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+    border-radius: var(--r-8);
     border: none;
     cursor: pointer;
     text-decoration: none;
-    transition: background 0.15s;
+    transition: background var(--transition-fast);
   }
-  .connect-btn:hover { background: #1b1f23; color: #fff; }
-  .connect-btn svg { width: 20px; height: 20px; fill: currentColor; }
+  .connect-btn:hover {
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
+  }
+  .connect-btn svg { width: 18px; height: 18px; fill: currentColor; }
   .connect-scopes {
     margin-top: var(--space-lg);
     font-size: var(--font-size-xs);

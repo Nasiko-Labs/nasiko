@@ -1,4 +1,6 @@
-/* TokenOps dashboard — KPI strip, per-agent cost table, token usage strip. */
+/* TokenOps dashboard — NightOwl FinOps layout: KPI strips (divided columns,
+   Chivo Mono numbers), per-agent cost table with a sand header band, and the
+   token-usage strip. */
 tokenops-page:not(:defined) {
   display: block;
   padding: var(--space-lg) var(--space-xl);
@@ -21,39 +23,61 @@ tokenops-page:not(:defined) {
 
   .page-head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-md);
     margin-bottom: var(--space-lg);
   }
 
-  .page-title {
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    font-family: var(--font-sans);
-    margin: 0;
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+  }
+
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-shrink: 0;
+  }
+
+  .head-actions select {
+    width: auto;
+    height: var(--control-h-lg);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   }
 
   .btn-dark {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: 10px var(--space-md);
+    height: var(--control-h-lg);
+    padding: 0 var(--s-16);
     border-radius: var(--r-8);
-    background: light-dark(var(--neutral-900), var(--neutral-100));
+    background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
 
-    &:hover { opacity: 0.85; }
+    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     & svg { width: 14px; height: 14px; }
   }
 
   /* ── KPI strip: columns divided by hairlines, top+bottom rules ────────── */
   .kpi-strip {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     border-block: 1px solid var(--color-border);
     padding: var(--space-md) 0;
     margin-bottom: var(--space-xl);
@@ -68,24 +92,26 @@ tokenops-page:not(:defined) {
   }
 
   .kpi-label {
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-muted);
     margin-bottom: var(--space-sm);
     white-space: nowrap;
   }
 
   .kpi-value {
-    font-size: var(--font-size-lg);
+    font-family: var(--font-display);
+    font-size: 24px;
+    line-height: 30px;
     font-weight: 500;
+    letter-spacing: 0.16px;
     color: var(--color-text-main);
   }
 
   .kpi-sub {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    margin-top: 2px;
-    font-style: normal;
+    margin-top: var(--space-xs);
   }
 
   .section-title {
@@ -96,7 +122,7 @@ tokenops-page:not(:defined) {
     margin: 0 0 var(--space-md);
   }
 
-  /* ── Toolbar: search + month + sort ───────────────────────────────────── */
+  /* ── Toolbar: search + sort ───────────────────────────────────────────── */
   .toolbar {
     display: flex;
     align-items: center;
@@ -119,21 +145,41 @@ tokenops-page:not(:defined) {
       pointer-events: none;
     }
 
-    & input { padding-left: 36px; }
+    & input {
+      width: 100%;
+      height: var(--control-h-md);
+      padding: 0 var(--s-12) 0 36px;
+      border: none;
+      border-radius: var(--r-8);
+      background: light-dark(var(--sand-50), var(--neutral-800));
+      color: var(--color-text-main);
+      font-size: var(--font-size-sm);
+
+      &::placeholder { color: var(--color-text-muted); }
+      &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+    }
   }
 
   .toolbar-spacer { flex: 1; }
 
   .toolbar select {
     width: auto;
+    height: var(--control-h-md);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    color: var(--color-text-main);
     font-size: var(--font-size-sm);
-    background: var(--color-bg-surface);
+    cursor: pointer;
+
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   }
 
   /* ── Agent cost table ─────────────────────────────────────────────────── */
   .cost-table-wrap {
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-8);
     overflow-x: auto;
     margin-bottom: var(--space-xl);
   }
@@ -146,12 +192,12 @@ tokenops-page:not(:defined) {
 
   thead th {
     text-align: left;
-    font-weight: 600;
+    font-weight: 500;
     text-transform: none;
     letter-spacing: 0;
-    font-size: var(--font-size-sm);
-    color: var(--color-text-main);
-    background: light-dark(var(--cream-50), var(--neutral-800));
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    background: light-dark(var(--sand-50), var(--neutral-800));
     border-bottom: 1px solid var(--color-border);
     padding: var(--space-sm) var(--space-md);
     white-space: nowrap;
@@ -165,9 +211,15 @@ tokenops-page:not(:defined) {
   }
 
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: light-dark(var(--cream-50), var(--neutral-800)); }
+  tbody tr:hover { background: light-dark(var(--sand-50), var(--neutral-800)); }
 
-  td.is-muted, th.is-num, td.is-num { color: var(--color-text-main); }
+  th.is-num { text-align: right; }
+  td.is-num {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
 
   .agent-name { font-weight: 500; }
 
@@ -184,5 +236,5 @@ tokenops-page:not(:defined) {
     animation: tokenops-skel-pulse 1.5s ease-in-out infinite;
   }
   .skel-line--label { width: 60%; height: 0.8em; }
-  .skel-line--value { width: 40%; height: 1.2em; margin-top: var(--space-sm); }
+  .skel-line--value { width: 40%; height: 1.5em; margin-top: var(--space-sm); }
 }

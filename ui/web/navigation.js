@@ -11,6 +11,7 @@ window.fetchNavigation = async () => [
   { title: "TokenOps", url: "/tokenops.html", icon: "coins", rail: true },
   { title: "Your Agents", url: "/your-agents.html", icon: "user" },
   { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
+  { title: "Set up CLI", url: "/setup-cli.html", icon: "terminal" },
   { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
   { title: "Builds", url: "/builds.html", icon: "cube" },
   { title: "Secrets", url: "/secrets.html", icon: "lock" },

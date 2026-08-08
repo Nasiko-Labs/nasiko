@@ -1,5 +1,8 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
+import '/common/components/app-button.js';
+import '/common/components/app-badge.js';
+import '/common/components/app-skeleton.js';
 import styles from './add-agent-github-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -8,12 +11,17 @@ class AddAgentGithubPage extends HTMLElement {
 
   connectedCallback() {
     this.innerHTML = `
-      <div class="toolbar">
-        <h1>Import from GitHub</h1>
-        <a class="back-link" href="/add-agent.html">${icons.chevronLeft('', 14)} Back</a>
+      <a class="back-link" href="/add-agent.html">${icons.chevronLeft('', 14)} Back</a>
+      <div class="page-head">
+        <div>
+          <h1 class="title-page">Import from GitHub</h1>
+          <p class="subtitle">Select a repository containing a Nasiko agent. The repo must include an <code>AgentCard.json</code> at the root.</p>
+        </div>
       </div>
-      <p class="subtitle">Select a repository containing a Nasiko agent. The repo must include an <code>AgentCard.json</code> at the root.</p>
-      <input type="search" class="search-box" placeholder="Filter repositories..." />
+      <div class="search-wrap">
+        ${icons.search('', 16)}
+        <input type="search" class="search-box" placeholder="Filter repositories..." />
+      </div>
       <div class="repo-list">
         <div class="repo-item"><app-skeleton height="20px"></app-skeleton></div>
         <div class="repo-item"><app-skeleton height="20px"></app-skeleton></div>
@@ -90,7 +98,7 @@ class AddAgentGithubPage extends HTMLElement {
             ${r.private ? '<app-badge size="xs" variant="neutral">Private</app-badge>' : ''}
           </span>
         </div>
-        <app-button size="xs" data-import="${r.full_name}">Import</app-button>
+        <app-button size="sm" variant="outline" data-import="${r.full_name}">Import</app-button>
       </div>
     `).join('');
   }

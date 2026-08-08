@@ -1,86 +1,150 @@
+/* Settings — NightOwl: left section nav + grouped setting rows on the white
+   plane; sand input wells, hairline row separators, dark save button. */
+settings-page:not(:defined) {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--space-2xl);
+  padding: var(--space-lg) var(--space-xl);
+  min-height: 500px;
+}
+
 @scope (settings-page) {
   :scope {
-    display: block;
-    padding: var(--space-lg) var(--space-md);
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: var(--space-2xl);
+    padding: var(--space-lg) var(--space-xl);
+    align-items: start;
   }
-  .page-title {
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    margin: 0 0 var(--space-lg);
+
+  @media (max-width: 760px) {
+    :scope { grid-template-columns: 1fr; gap: var(--space-lg); }
   }
-  .tabs {
+
+  /* ── Section nav ─────────────────────────────────────────────────────── */
+  .side-nav {
     display: flex;
-    gap: var(--space-md);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--space-xl);
+    flex-direction: column;
+    gap: var(--s-4);
+    position: sticky;
+    top: var(--space-lg);
   }
-  .tab {
-    padding: var(--space-sm) var(--space-xs);
+
+  .side-nav-title {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin-bottom: var(--space-sm);
+  }
+
+  .side-nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    height: var(--control-h-md);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
+    background: transparent;
+    color: var(--color-text-muted);
     font-size: var(--font-size-sm);
     font-weight: 500;
-    color: var(--color-text-muted);
-    border: none;
-    border-bottom: 2px solid transparent;
-    background: none;
+    text-align: left;
     cursor: pointer;
+
+    &:hover { background: light-dark(var(--sand-50), var(--neutral-800)); color: var(--color-text-main); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+
+    &.is-active {
+      background: light-dark(var(--sand-100), var(--neutral-700));
+      color: var(--color-text-main);
+    }
   }
-  .tab:hover { color: var(--color-text-main); }
-  .tab.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+  /* ── Content ─────────────────────────────────────────────────────────── */
+  .content { min-width: 0; max-width: 960px; }
+
+  .panel-head { display: none; }
+  .panel-head.is-active { display: block; margin-bottom: var(--space-lg); }
+
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+  }
+
   .panel { display: none; }
   .panel.is-active { display: block; }
-  .form-group {
-    margin-bottom: var(--space-lg);
+
+  .setting-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 380px);
+    gap: var(--space-xl);
+    align-items: center;
+    padding: var(--space-md) 0;
+    border-top: 1px solid var(--color-border);
+
+    &:last-child { border-bottom: 1px solid var(--color-border); }
   }
-  .form-group label {
+
+  @media (max-width: 900px) {
+    .setting-row { grid-template-columns: 1fr; gap: var(--space-sm); }
+  }
+
+  .setting-info label {
     display: block;
     font-size: var(--font-size-sm);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--color-text-main);
-    margin-bottom: var(--space-xs);
   }
-  .form-group .hint {
+
+  .setting-info .hint {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    margin-top: var(--space-xs);
+    margin-top: var(--s-4);
+    max-width: 52ch;
   }
-  .form-group input,
-  .form-group select,
-  .form-group textarea {
+
+  .setting-control input,
+  .setting-control select {
     width: 100%;
-    max-width: 500px;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    height: var(--control-h-lg);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
     color: var(--color-text-main);
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
     font-family: inherit;
+
+    &::placeholder { color: var(--color-text-muted); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   }
-  .form-group input:focus,
-  .form-group select:focus,
-  .form-group textarea:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
+
+  .setting-control select { cursor: pointer; }
+
+  /* ── Save bar ────────────────────────────────────────────────────────── */
   .save-bar {
     display: flex;
     justify-content: flex-end;
     padding-top: var(--space-lg);
-    margin-top: var(--space-lg);
-    border-top: 1px solid var(--color-border);
   }
+
   .save-btn {
-    padding: var(--space-sm) var(--space-xl);
-    background: var(--color-primary);
-    color: var(--color-on-primary);
+    display: inline-flex;
+    align-items: center;
+    height: var(--control-h-lg);
+    padding: 0 var(--space-lg);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     border: none;
-    border-radius: var(--radius-md);
+    border-radius: var(--r-8);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
-    transition: opacity 0.15s;
+    transition: background var(--transition-fast);
+
+    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+    &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
-  .save-btn:hover { opacity: 0.9; }
-  .save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 }

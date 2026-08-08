@@ -1,3 +1,11 @@
+/* Import new agent — NightOwl: centered icon tile + Chivo Mono title,
+   Set-up-CLI banner, 2×2 chooser cards, coming-soon footer. */
+add-agent-page:not(:defined) {
+  display: block;
+  padding: var(--space-2xl) var(--space-md);
+  min-height: 500px;
+}
+
 @scope (add-agent-page) {
   :scope {
     display: flex;
@@ -5,87 +13,167 @@
     align-items: center;
     padding: var(--space-2xl) var(--space-md);
   }
+
   .page-icon {
-    color: var(--color-text-muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    color: var(--color-text-main);
     margin-bottom: var(--space-md);
   }
-  .page-title {
-    font-size: var(--font-size-2xl);
-    font-weight: 400;
-    color: var(--color-text-main);
-    margin-bottom: var(--space-xs);
-  }
+
+  .title-page { text-align: center; }
+
   .page-subtitle {
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
     color: var(--color-text-muted);
-    margin-bottom: var(--space-xl);
+    margin: var(--space-xs) 0 var(--space-xl);
+    text-align: center;
   }
+
+  /* ── Set up CLI banner ───────────────────────────────────────────────── */
+  .cli-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    width: min(100%, 780px);
+    padding: var(--space-md) var(--space-lg);
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-50), var(--neutral-800));
+    text-decoration: none;
+    margin-bottom: var(--space-lg);
+    transition: background var(--transition-fast);
+
+    &:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  }
+
+  .cli-banner-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--r-8);
+    background: light-dark(var(--white), var(--neutral-700));
+    color: var(--color-text-main);
+    flex-shrink: 0;
+  }
+
+  .cli-banner-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .cli-banner-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+  }
+
+  .cli-banner-sub {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .cli-banner-chevron {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    display: inline-flex;
+  }
+
+  /* ── Chooser cards ───────────────────────────────────────────────────── */
   .method-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--space-lg);
     width: min(100%, 780px);
   }
+
   @media (max-width: 640px) {
     .method-grid { grid-template-columns: 1fr; }
   }
+
   .method-card {
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--r-12);
     padding: var(--space-lg);
-    background: var(--color-bg-surface);
+    background: light-dark(var(--white), var(--neutral-900));
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    transition: border-color 0.15s;
+    transition: box-shadow var(--transition-fast), border-color var(--transition-fast);
   }
-  .method-card:hover { border-color: var(--color-primary); }
-  .method-card.is-disabled {
-    opacity: 0.5;
-    pointer-events: none;
+
+  .method-card:hover {
+    border-color: light-dark(var(--sand-300), var(--neutral-600));
+    box-shadow: var(--shadow-md);
   }
+
   .method-card-header {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+    color: var(--color-text-main);
   }
+
   .method-card-title {
-    font-size: var(--font-size-lg);
+    font-size: var(--font-size-base);
     font-weight: 600;
     color: var(--color-text-main);
   }
+
   .method-card-req {
     font-size: var(--font-size-xs);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--color-text-muted);
   }
+
   .method-card-desc {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
     line-height: 1.5;
     flex: 1;
   }
+
   .method-btn {
     margin-top: auto;
     width: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--color-primary);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+    height: var(--control-h-lg);
+    border: 1px solid light-dark(var(--yellow-200), var(--yellow-800));
+    border-radius: var(--r-8);
+    background: light-dark(var(--yellow-100), var(--yellow-900));
     color: var(--color-text-main);
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: background var(--transition-fast);
   }
-  .method-btn:hover {
-    background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+
+  .method-btn:hover:not(:disabled) {
+    background: light-dark(var(--yellow-200), var(--yellow-800));
   }
+
+  .method-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+
   .method-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .coming-soon {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: var(--space-xl) 0 0;
   }
 }
