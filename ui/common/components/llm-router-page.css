@@ -1,4 +1,4 @@
-/* LLM router — provider catalog grid + routing config setup. */
+/* LLM router — KPI strip, config cards grid, provider catalog, config form. */
 llm-router-page:not(:defined) {
   display: block;
   padding: var(--space-lg) var(--space-xl);
@@ -11,127 +11,222 @@ llm-router-page:not(:defined) {
     padding: var(--space-lg) var(--space-xl);
   }
 
-  .page-title {
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    font-family: var(--font-sans);
-    margin: 0 0 var(--space-lg);
-  }
-
-  /* ── List view ────────────────────────────────────────────────────────── */
-  .empty-configs {
-    margin-bottom: var(--space-lg);
-
-    & .empty-title {
-      font-size: var(--font-size-lg);
-      font-weight: 700;
-      margin: var(--space-md) 0 var(--space-xs);
-    }
-
-    & .empty-sub {
-      font-size: var(--font-size-sm);
-      color: var(--color-text-muted);
-      margin: 0 0 var(--space-md);
-    }
-  }
-
-  .btn-dark {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: 10px var(--space-md);
-    border-radius: var(--r-8);
-    background: light-dark(var(--neutral-900), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    cursor: pointer;
-
-    &:hover { opacity: 0.85; }
-  }
-
-  .config-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
     gap: var(--space-md);
     margin-bottom: var(--space-lg);
   }
 
-  .config-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background: var(--color-bg-surface);
-    padding: var(--space-md);
-
-    & .config-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--space-sm);
-      margin-bottom: var(--space-sm);
-    }
-
-    & .config-name { font-weight: 600; }
-
-    & .config-provider {
-      font-size: var(--font-size-xs);
-      color: var(--color-text-muted);
-      text-transform: capitalize;
-    }
-
-    & .tier-rows {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      margin: var(--space-sm) 0;
-      font-size: var(--font-size-sm);
-    }
-
-    & .tier-row {
-      display: flex;
-      justify-content: space-between;
-      gap: var(--space-sm);
-
-      & .tier-label { color: var(--color-text-muted); }
-      & .tier-model { font-family: var(--font-mono); font-size: var(--font-size-xs); }
-    }
-
-    & .config-actions {
-      display: flex;
-      gap: var(--space-sm);
-      border-top: 1px solid var(--color-border);
-      padding-top: var(--space-sm);
-      margin-top: var(--space-sm);
-    }
-  }
-
-  .badge-default {
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    padding: 2px 10px;
-    border-radius: var(--r-6);
-    background: var(--bg-secondary-brand);
-    color: light-dark(var(--yellow-800), var(--yellow-200));
-  }
-
-  .link-btn {
+  .page-sub {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
-    cursor: pointer;
+    margin: var(--space-2xs) 0 0;
+    max-width: 70ch;
+  }
 
-    &:hover { color: var(--color-text-main); }
-    &.is-danger:hover { color: var(--fg-error); }
+  /* ── KPI strip — hairline-separated, Chivo Mono gold values ───────────── */
+  .kpi-strip {
+    display: flex;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-xl);
+  }
+
+  .kpi {
+    flex: 1;
+    padding: var(--space-md);
+    border-left: 1px solid var(--color-border);
+
+    &:first-child { border-left: none; padding-left: 0; }
+  }
+
+  .kpi-label {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-xs);
+  }
+
+  .kpi-value {
+    font-size: var(--font-size-xl);
+    font-weight: 500;
+    color: var(--color-text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .kpi-value.is-mono {
+    font-family: var(--font-mono);
+    color: var(--fg-brand);
+  }
+
+  /* ── Section headers ──────────────────────────────────────────────────── */
+  .section-head { margin-bottom: var(--space-md); }
+
+  .section-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    font-family: var(--font-sans);
+    margin: 0 0 var(--space-2xs);
+  }
+
+  .section-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0;
   }
 
   .divider {
     border: none;
     border-top: 1px solid var(--color-border);
-    margin: var(--space-lg) 0;
+    margin: var(--space-xl) 0;
   }
 
-  .section-label {
+  /* ── Config cards ─────────────────────────────────────────────────────── */
+  .config-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--space-md);
+  }
+
+  .config-card {
+    background: var(--bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    padding: var(--space-md);
+    transition: border-color var(--transition-fast);
+
+    &:hover { border-color: var(--color-border); }
+
+    & .config-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--space-sm);
+    }
+
+    & .config-name {
+      font-weight: 600;
+      font-size: var(--font-size-base);
+    }
+
+    & .config-tools {
+      display: flex;
+      gap: var(--space-2xs);
+      flex-shrink: 0;
+    }
+
+    & .config-meta {
+      display: flex;
+      gap: var(--space-xs);
+      margin: var(--space-xs) 0 var(--space-sm);
+    }
+
+    & .tier-rows {
+      display: flex;
+      flex-direction: column;
+      border-top: 1px solid var(--color-border);
+    }
+
+    & .tier-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: var(--space-sm);
+      padding: var(--space-xs) 0;
+      border-bottom: 1px solid var(--color-border);
+      font-size: var(--font-size-sm);
+    }
+
+    & .tier-label { color: var(--color-text-muted); }
+
+    & .tier-model {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      color: var(--color-text-main);
+    }
+
+    & .secret-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: var(--space-sm);
+      padding-top: var(--space-xs);
+      font-size: var(--font-size-sm);
+    }
+
+    & .secret-name {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      color: var(--color-text-muted);
+    }
+  }
+
+  /* Gold "Default" pill — brand tint on the shared .badge base */
+  .badge--brand {
+    color: light-dark(var(--yellow-800), var(--yellow-200));
+    background: var(--bg-secondary-brand);
+  }
+
+  .badge.is-mono { font-family: var(--font-mono); }
+
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--r-8);
+    color: var(--color-text-muted);
+    background: transparent;
+
+    &:hover:not(:disabled) {
+      background: var(--bg-surface-hover);
+      color: var(--color-text-main);
+    }
+  }
+
+  .star-btn.is-default {
+    color: var(--fg-brand);
+    opacity: 1;
+
+    & svg { fill: currentColor; }
+  }
+
+  .danger-btn:hover:not(:disabled) { color: var(--color-error); }
+
+  /* ── Empty state ──────────────────────────────────────────────────────── */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: var(--space-xl) var(--space-md);
+    background: var(--bg-surface);
+    border-radius: var(--r-8);
+  }
+
+  .empty-tile {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-md);
+  }
+
+  .empty-title {
+    font-family: var(--font-display);
+    font-size: var(--font-size-lg);
+    font-weight: 500;
+    margin-bottom: var(--space-2xs);
+  }
+
+  .empty-sub {
     font-size: var(--font-size-sm);
-    font-weight: 700;
+    color: var(--color-text-muted);
     margin: 0 0 var(--space-md);
   }
 
@@ -143,14 +238,19 @@ llm-router-page:not(:defined) {
   }
 
   .provider-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background: var(--color-bg-surface);
+    background: var(--bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
     padding: var(--space-md);
     cursor: pointer;
     transition: border-color var(--transition-fast);
 
-    &:hover { border-color: var(--border-hover); }
+    &:hover { border-color: var(--color-border); }
+
+    &:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: 2px;
+    }
 
     & .provider-head {
       display: flex;
@@ -162,44 +262,36 @@ llm-router-page:not(:defined) {
     & .provider-glyph {
       width: 30px;
       height: 30px;
-      border-radius: 50%;
-      border: 1px solid var(--color-border);
+      border-radius: var(--r-8);
+      background: var(--color-bg-surface);
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-weight: 700;
+      font-family: var(--font-mono);
+      font-weight: 500;
       font-size: var(--font-size-sm);
       text-transform: uppercase;
       flex-shrink: 0;
     }
 
     & .provider-name {
-      font-weight: 700;
+      font-weight: 600;
       text-transform: capitalize;
       flex: 1;
     }
 
     & .provider-add {
+      display: inline-flex;
       color: var(--color-text-muted);
-      font-size: var(--font-size-lg);
-      line-height: 1;
     }
+
+    &:hover .provider-add { color: var(--fg-brand); }
 
     & .provider-chips {
       display: flex;
-      gap: var(--space-sm);
+      gap: var(--space-xs);
       flex-wrap: wrap;
     }
-  }
-
-  .chip-outline {
-    font-size: var(--font-size-xs);
-    letter-spacing: 0.04em;
-    padding: 4px 12px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-40, 20px);
-    color: var(--color-text-muted);
-    white-space: nowrap;
   }
 
   /* ── Configure form view ──────────────────────────────────────────────── */
@@ -213,21 +305,13 @@ llm-router-page:not(:defined) {
   .back-btn {
     width: 36px;
     height: 36px;
-    border: 1px solid var(--color-border);
     border-radius: var(--r-8);
-    background: var(--color-bg-surface);
+    background: var(--bg-surface);
     color: var(--color-text-main);
     flex-shrink: 0;
 
-    &:hover { border-color: var(--border-hover); }
+    &:hover { background: var(--bg-surface-hover); }
     & svg { width: 16px; height: 16px; }
-  }
-
-  .form-title {
-    font-size: var(--font-size-xl);
-    font-weight: 600;
-    font-family: var(--font-sans);
-    margin: 0;
   }
 
   .config-form {
@@ -238,9 +322,9 @@ llm-router-page:not(:defined) {
   }
 
   .field label {
-    font-weight: 700;
-    font-size: var(--font-size-base);
-    margin-bottom: var(--space-sm);
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--space-xs);
   }
 
   .field .hint {
@@ -250,7 +334,7 @@ llm-router-page:not(:defined) {
   }
 
   .group-title {
-    font-weight: 700;
+    font-weight: 600;
     font-size: var(--font-size-base);
     margin: 0 0 var(--space-xs);
   }
@@ -269,12 +353,21 @@ llm-router-page:not(:defined) {
     font-size: var(--font-size-base);
 
     & input[type="radio"] { accent-color: var(--yellow-600); }
+    & label { margin: 0; font-weight: 400; }
   }
 
   .form-actions {
     display: flex;
     gap: var(--space-sm);
     align-items: center;
+  }
+
+  .link-btn {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover { color: var(--color-text-main); }
   }
 
   .checkbox-row {

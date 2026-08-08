@@ -5,13 +5,22 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STATUS_VARIANTS = { success: 'success', building: 'info', failed: 'error', queued: 'neutral', cancelled: 'warning' };
 
+const statusPill = (v) =>
+  v ? `<span class="badge badge--${STATUS_VARIANTS[v] || 'neutral'}"><span class="badge__dot"></span>${v}</span>` : '';
+
 class BuildsPage extends HTMLElement {
+  #initialized = false;
+
   connectedCallback() {
+    if (this.#initialized) return;
+    this.#initialized = true;
     this.innerHTML = `
-      <div class="page-header">
-        <h1 class="page-title">Builds</h1>
-        <p class="page-desc">Agent image build history and progress.</p>
-      </div>
+      <header class="page-head">
+        <div>
+          <h1 class="title-page">Builds</h1>
+          <p class="page-sub">Agent image build history and progress.</p>
+        </div>
+      </header>
       <smart-table
         id="builds-table"
         data-fn="fetchBuilds"
@@ -23,14 +32,14 @@ class BuildsPage extends HTMLElement {
 
     const table = this.querySelector('#builds-table');
     table.columns = [
-      { key: 'id', label: 'Build', width: '14%', render: (v) => `<a href="/build.html?id=${v}" style="color:var(--color-primary);text-decoration:none;font-family:var(--font-mono);font-size:var(--font-size-xs);">#${v ? v.slice(0, 8) : ''}</a>` },
-      { key: 'version_tag', label: 'Version', width: '14%', render: (v) => `<span style="font-weight:500;">${v || '—'}</span>` },
-      { key: 'image_reference', label: 'Image', width: '22%', render: (v) => v ? `<code style="font-size:var(--font-size-xs);background:var(--color-bg-base);padding:2px 6px;border-radius:var(--radius-sm);">${v}</code>` : '—' },
-      { key: 'status', label: 'Status', width: '12%', render: (v) => `<app-badge variant="${STATUS_VARIANTS[v] || 'neutral'}">${v || ''}</app-badge>` },
-      { key: 'github_url', label: 'Source', width: '18%', render: (v) => v ? `<a href="${v}" target="_blank" style="color:var(--color-primary);font-size:var(--font-size-xs);text-decoration:none;">repo</a>` : '—' },
-      { key: 'created_at', label: 'Started', width: '20%', render: (v) => v ? new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—' },
+      { key: 'id', label: 'Build', width: '12%', render: (v) => v ? `<a class="cell-id" href="/build.html?id=${v}">#${v.slice(0, 8)}</a>` : '' },
+      { key: 'version_tag', label: 'Version', width: '12%', render: (v) => v ? `<span class="cell-num">${v}</span>` : '—' },
+      { key: 'image_reference', label: 'Image', width: '26%', render: (v) => v ? `<span class="cell-image">${v}</span>` : '—' },
+      { key: 'status', label: 'Status', width: '13%', render: statusPill },
+      { key: 'github_url', label: 'Source', width: '13%', render: (v) => v ? `<a class="cell-action" href="${v}" target="_blank" rel="noopener">repo ↗</a>` : '—' },
+      { key: 'created_at', label: 'Started', width: '16%', render: (v) => v ? `<span class="cell-num">${new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>` : '—' },
+      { key: 'id', label: '', width: '8%', render: (v) => v ? `<a class="cell-action" href="/build.html?id=${v}">Logs →</a>` : '' },
     ];
-
   }
 }
 

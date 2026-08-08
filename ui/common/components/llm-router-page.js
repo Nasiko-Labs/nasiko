@@ -14,13 +14,17 @@
 import styles from './llm-router-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
+import '/common/components/app-button.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const TIERS = [
   { key: 'tier1_model', label: 'Advanced reasoning', hint: 'For coding, planning, and complex analysis.' },
   { key: 'tier2_model', label: 'Balanced', hint: 'For most everyday requests.' },
-  { key: 'tier3_model', label: 'Light', hint: 'For quick, simple lookups and formatting.' },
+  { key: 'tier3_model', label: 'Fast responses', hint: 'For quick, simple lookups and formatting.' },
 ];
+
+const IC_STAR = (cls = '') =>
+  `<svg class="${cls}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2.5 15 8.8 21.8 9.7 16.9 14.4 18.1 21.2 12 18 5.9 21.2 7.1 14.4 2.2 9.7 9 8.8 12 2.5"/></svg>`;
 
 class LlmRouterPage extends HTMLElement {
   #initialized = false;
@@ -38,7 +42,7 @@ class LlmRouterPage extends HTMLElement {
   }
 
   async #load() {
-    this.innerHTML = '<h1 class="page-title">LLM router</h1><p class="group-sub">Loading…</p>';
+    this.innerHTML = `${this.#headHtml()}<p class="group-sub">Loading…</p>`;
     try {
       const [configs, providers, secrets] = await Promise.all([
         window.fetchLlmConfigs(),
@@ -50,7 +54,7 @@ class LlmRouterPage extends HTMLElement {
       this.#secrets = Array.isArray(secrets) ? secrets : secrets?.data ?? [];
     } catch (e) {
       console.error('LLM router load failed:', e);
-      this.innerHTML = '<h1 class="page-title">LLM router</h1><p class="form-error">Failed to load router configuration</p>';
+      this.innerHTML = `${this.#headHtml()}<p class="form-error">Failed to load router configuration</p>`;
       return;
     }
     this.#view = 'list';
@@ -63,24 +67,66 @@ class LlmRouterPage extends HTMLElement {
 
   /* ── List view ─────────────────────────────────────────────────────────── */
 
+  #headHtml(withAction = false) {
+    return `
+      <header class="page-head">
+        <div>
+          <h1 class="title-page">LLM Router</h1>
+          <p class="page-sub">Connect providers, map a model to each reasoning level, and choose the config your agents follow by default.</p>
+        </div>
+        ${withAction ? '<app-button variant="primary" data-action="new-config">Setup new config</app-button>' : ''}
+      </header>
+    `;
+  }
+
   #listHtml() {
     return `
-      <h1 class="page-title">LLM router</h1>
+      ${this.#headHtml(this.#configs.length > 0)}
+      ${this.#kpiHtml()}
+      <div class="section-head">
+        <h2 class="section-title">Your configs</h2>
+        <p class="section-sub">Each config maps one model to every reasoning level. Agents follow the default unless they pin a model.</p>
+      </div>
       ${this.#configs.length ? this.#configCardsHtml() : this.#emptyHtml()}
       <hr class="divider" />
-      <h2 class="section-label">Available providers</h2>
+      <div class="section-head">
+        <h2 class="section-title">Available providers</h2>
+        <p class="section-sub">Pick a provider to start a new config from its model catalog.</p>
+      </div>
       <div class="provider-grid">
         ${this.#providers.map((p) => this.#providerCardHtml(p)).join('')}
       </div>
     `;
   }
 
+  #kpiHtml() {
+    const providersInUse = new Set(this.#configs.map((c) => c.provider).filter(Boolean)).size;
+    const defaultCfg = this.#configs.find((c) => c.is_default);
+    return `
+      <div class="kpi-strip">
+        <div class="kpi">
+          <div class="kpi-label">Router configs</div>
+          <div class="kpi-value is-mono">${this.#configs.length}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Providers connected</div>
+          <div class="kpi-value is-mono">${providersInUse}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Default config</div>
+          <div class="kpi-value is-mono">${defaultCfg ? this.#esc(defaultCfg.name) : '—'}</div>
+        </div>
+      </div>
+    `;
+  }
+
   #emptyHtml() {
     return `
-      <div class="empty-configs">
-        <div class="empty-title">No configs yet!</div>
-        <p class="empty-sub">Connect a provider to start configuring</p>
-        <button class="btn-dark" data-action="new-config" type="button">Setup new config</button>
+      <div class="empty-state">
+        <div class="empty-tile">${icons.activity('', 20)}</div>
+        <div class="empty-title">No configs yet</div>
+        <p class="empty-sub">Connect a provider to start configuring.</p>
+        <app-button variant="primary" data-action="new-config">Setup new config</app-button>
       </div>
     `;
   }
@@ -91,11 +137,19 @@ class LlmRouterPage extends HTMLElement {
         ${this.#configs.map((c) => `
           <div class="config-card">
             <div class="config-head">
-              <div>
-                <div class="config-name">${this.#esc(c.name)}</div>
-                <div class="config-provider">${this.#esc(c.provider)}</div>
+              <div class="config-name">${this.#esc(c.name)}</div>
+              <div class="config-tools">
+                <button class="icon-btn star-btn ${c.is_default ? 'is-default' : ''}"
+                  ${c.is_default ? 'disabled aria-label="Default config"' : `data-action="set-default" data-id="${c.id}" aria-label="Make default"`}
+                  title="${c.is_default ? 'Default config' : 'Make default'}" type="button">${IC_STAR()}</button>
+                <button class="icon-btn danger-btn" data-action="delete-config" data-id="${c.id}" aria-label="Delete config" title="Delete config" type="button">${icons.trash('', 15)}</button>
               </div>
-              ${c.is_default ? '<span class="badge-default">Default</span>' : ''}
+            </div>
+            <div class="config-meta">
+              ${c.is_default
+                ? '<span class="badge badge--brand"><span class="badge__dot"></span>Default</span>'
+                : '<span class="badge badge--success"><span class="badge__dot"></span>Active</span>'}
+              <span class="badge badge--muted">${this.#esc(this.#cap(c.provider))}</span>
             </div>
             <div class="tier-rows">
               ${TIERS.map((t) => `
@@ -104,13 +158,13 @@ class LlmRouterPage extends HTMLElement {
                   <span class="tier-model">${this.#esc(c[t.key] || c.model || '—')}</span>
                 </div>`).join('')}
             </div>
-            <div class="config-actions">
-              ${c.is_default ? '' : `<button class="link-btn" data-action="set-default" data-id="${c.id}" type="button">Make default</button>`}
-              <button class="link-btn is-danger" data-action="delete-config" data-id="${c.id}" type="button">Delete</button>
-            </div>
+            ${c.api_key_secret_name ? `
+              <div class="secret-row">
+                <span class="tier-label">Secret</span>
+                <span class="secret-name">${this.#esc(c.api_key_secret_name)}</span>
+              </div>` : ''}
           </div>`).join('')}
       </div>
-      <button class="btn-dark" data-action="new-config" type="button">Setup new config</button>
     `;
   }
 
@@ -122,11 +176,11 @@ class LlmRouterPage extends HTMLElement {
         <div class="provider-head">
           <span class="provider-glyph">${this.#esc((p.provider || '?')[0])}</span>
           <span class="provider-name">${this.#esc(p.provider)}</span>
-          <span class="provider-add">+</span>
+          <span class="provider-add">${icons.plus('', 15)}</span>
         </div>
         <div class="provider-chips">
-          <span class="chip-outline">REQUIRES API KEY</span>
-          <span class="chip-outline">+${count}</span>
+          <span class="badge badge--muted">Requires API key</span>
+          <span class="badge badge--muted is-mono">${count} models</span>
         </div>
       </div>
     `;
@@ -138,7 +192,7 @@ class LlmRouterPage extends HTMLElement {
     return `
       <div class="form-head">
         <button class="back-btn" data-action="back" type="button" aria-label="Back">${icons.arrowLeft('', 16)}</button>
-        <h1 class="form-title">Configure router</h1>
+        <h1 class="title-page">Configure router</h1>
       </div>
       <form class="config-form" id="config-form">
         <div class="field">
@@ -201,7 +255,7 @@ class LlmRouterPage extends HTMLElement {
         </div>
         <div class="form-error" id="form-error" hidden></div>
         <div class="form-actions">
-          <button class="btn-dark" type="submit">Save config</button>
+          <app-button variant="primary" type="submit">Save config</app-button>
           <button class="link-btn" data-action="back" type="button">Cancel</button>
         </div>
       </form>

@@ -3,17 +3,55 @@
     display: block;
     padding: var(--space-lg) var(--space-md);
   }
-  .page-header {
+
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
     margin-bottom: var(--space-lg);
   }
-  .page-title {
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    margin: 0 0 var(--space-xs);
-  }
-  .page-desc {
+
+  .page-sub {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
-    margin: 0;
+    margin: var(--space-2xs) 0 0;
   }
+
+  .cell-id {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--fg-brand);
+    text-decoration: none;
+
+    &:hover { color: var(--fg-brand-hover); }
+  }
+
+  .cell-num {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-main);
+  }
+
+  .cell-image {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .cell-action {
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-decoration: none;
+    white-space: nowrap;
+
+    &:hover { color: var(--fg-brand); }
+  }
+}
+
+/* Trailing row-action column has no sortable header — hide the stray icon */
+@scope (flows-page, builds-page) {
+  .thead .th:last-child .sort-icon { display: none; }
 }

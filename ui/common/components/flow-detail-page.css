@@ -3,107 +3,263 @@
     display: block;
     padding: var(--space-lg) var(--space-md);
   }
-  .page-toolbar {
+
+  .page-head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
+    gap: var(--space-md);
     margin-bottom: var(--space-lg);
   }
-  .page-toolbar h1 { font-size: var(--font-size-xl); font-weight: 600; margin: 0; }
+
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-2xs) 0 0;
+    max-width: 70ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .back-link {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-xs);
+    gap: var(--space-2xs);
     font-size: var(--font-size-sm);
-    color: var(--color-primary);
+    font-weight: 500;
+    color: var(--color-text-muted);
     text-decoration: none;
+    white-space: nowrap;
+
+    &:hover { color: var(--fg-brand); }
   }
-  .back-link:hover { text-decoration: underline; }
-  .summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: var(--space-md);
+
+  /* KPI strip — label over value, hairline separators (Settings language) */
+  .kpi-strip {
+    display: flex;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
     margin-bottom: var(--space-xl);
   }
-  .summary-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+
+  .kpi {
+    flex: 1;
     padding: var(--space-md);
-    background: var(--color-bg-surface);
+    border-left: 1px solid var(--color-border);
+
+    &:first-child { border-left: none; padding-left: 0; }
   }
-  .summary-card-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  .summary-card-value {
+
+  .kpi-label {
     font-size: var(--font-size-sm);
-    margin-top: var(--space-xs);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-xs);
   }
-  h2 { font-size: var(--font-size-lg); font-weight: 600; margin-bottom: var(--space-md); }
-  .trace {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
-    padding: var(--space-md);
-    overflow-x: auto;
+
+  .kpi-value {
+    font-size: var(--font-size-lg);
+    font-weight: 500;
+    color: var(--color-text-main);
   }
-  .trace-span {
+
+  .kpi-value.is-mono {
+    font-family: var(--font-mono);
+    color: var(--fg-brand);
+  }
+
+  .section-head { margin-bottom: var(--space-md); }
+
+  .section-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    font-family: var(--font-sans);
+    margin: 0 0 var(--space-2xs);
+  }
+
+  .section-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+
+  /* Step timeline — numbered rows on sand cards, expandable wells */
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .step {
+    background: var(--bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    padding: 0;
+    margin: 0;
+    transition: border-color var(--transition-fast);
+
+    &:hover { border-color: var(--color-border); }
+  }
+
+  .step-row {
     display: flex;
     align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-xs) 0;
-    border-bottom: 1px solid var(--color-border-subtle, rgba(0,0,0,0.05));
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    cursor: pointer;
+    list-style: none;
+
+    &::before { content: none; }
   }
-  .trace-span:last-child { border-bottom: none; }
-  .trace-agent {
+
+  .step-num {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--r-8);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .step-num.done   { background: var(--color-success-bg); color: var(--color-success); }
+  .step-num.active { background: var(--color-info-bg);    color: var(--color-info); }
+  .step-num.failed { background: var(--color-error-bg);   color: var(--color-error); }
+
+  .step-agent {
+    font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     font-weight: 500;
     min-width: 140px;
     flex-shrink: 0;
   }
-  .trace-bar-container {
+
+  .step-snippet {
     flex: 1;
-    height: 20px;
-    position: relative;
-    background: var(--color-bg-base);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-  }
-  .trace-bar {
-    position: absolute;
-    top: 2px;
-    bottom: 2px;
-    border-radius: var(--radius-sm);
-    min-width: 4px;
-  }
-  .trace-bar.completed { background: var(--color-primary); opacity: 0.8; }
-  .trace-bar.failed { background: var(--color-error); opacity: 0.8; }
-  .trace-bar.running { background: var(--color-primary); opacity: 0.5; }
-  .trace-duration {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .step-latency {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-main);
     min-width: 60px;
     text-align: right;
     flex-shrink: 0;
   }
-  .trace-status {
-    min-width: 24px;
+
+  .step-caret {
+    display: inline-flex;
+    color: var(--color-text-muted);
+    transition: transform var(--transition-fast);
     flex-shrink: 0;
   }
-  .trace-input {
+
+  .step[open] .step-caret { transform: rotate(180deg); }
+
+  .step-body {
+    padding: 0 var(--space-md) var(--space-md) calc(28px + var(--space-md) + var(--space-md));
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  /* Output well — white card on the sand step card */
+  .step-well {
+    background: var(--color-bg-surface);
+    border-radius: var(--r-8);
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .well-label {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-2xs);
+  }
+
+  .well-text {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .step-meta {
+    display: flex;
+    gap: var(--space-lg);
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    margin-top: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 300px;
   }
-  .no-steps {
+
+  .meta-item .is-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-main);
+  }
+
+  /* Relative timing track */
+  .step-track {
+    height: 8px;
+    position: relative;
+    background: var(--color-bg-surface);
+    border-radius: var(--r-4);
+    overflow: hidden;
+  }
+
+  .step-bar {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    border-radius: var(--r-4);
+    min-width: 4px;
+  }
+
+  .step-bar.is-done   { background: var(--fg-brand); opacity: 0.75; }
+  .step-bar.is-failed { background: var(--color-error); opacity: 0.75; }
+  .step-bar.is-active { background: var(--fg-brand); opacity: 0.4; }
+
+  /* Empty state — centered sand tile + Chivo Mono heading */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: var(--space-2xl) var(--space-md);
+  }
+
+  .empty-tile {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--r-8);
+    background: var(--bg-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--color-text-muted);
-    font-style: italic;
-    padding: var(--space-md);
+    margin-bottom: var(--space-md);
+  }
+
+  .empty-title {
+    font-family: var(--font-display);
+    font-size: var(--font-size-lg);
+    font-weight: 500;
+    margin-bottom: var(--space-2xs);
+  }
+
+  .empty-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0;
   }
 }

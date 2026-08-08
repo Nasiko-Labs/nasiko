@@ -40,3 +40,12 @@
   color: var(--color-text-muted);
   background: var(--color-bg-base);
 }
+
+/* Optional leading status dot inside a .badge pill */
+.badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}

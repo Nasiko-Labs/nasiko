@@ -1,79 +1,181 @@
 @scope (build-detail-page) {
-  :scope { display: block; }
-  .steps {
+  :scope {
+    display: block;
+    padding: var(--space-lg) var(--space-md);
+  }
+
+  .page-head {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+  }
+
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-2xs) 0 0;
+
+    & .is-mono { font-family: var(--font-mono); }
+  }
+
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-decoration: none;
+    white-space: nowrap;
+
+    &:hover { color: var(--fg-brand); }
+  }
+
+  /* KPI strip — label over value with hairline separators */
+  .kpi-strip {
+    display: flex;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
     margin-bottom: var(--space-xl);
   }
-  .step {
+
+  .kpi {
+    flex: 1;
+    padding: var(--space-md);
+    border-left: 1px solid var(--color-border);
+
+    &:first-child { border-left: none; padding-left: 0; }
+  }
+
+  .kpi-label {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-xs);
+  }
+
+  .kpi-value {
+    font-size: var(--font-size-lg);
+    font-weight: 500;
+    color: var(--color-text-main);
+  }
+
+  .kpi-value.is-mono {
+    font-family: var(--font-mono);
+    color: var(--fg-brand);
+  }
+
+  .section-head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
+    justify-content: space-between;
     gap: var(--space-md);
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
+    margin: var(--space-xl) 0 var(--space-md);
   }
-  .step-num {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+
+  .section-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    font-family: var(--font-sans);
+    margin: 0;
+  }
+
+  .section-head .section-title { margin: 0; }
+  h2.section-title { margin-bottom: var(--space-md); }
+
+  /* Key/value detail rows — sand card with hairline rows */
+  .detail-rows {
+    background: var(--bg-surface);
+    border-radius: var(--r-8);
+    padding: var(--space-2xs) var(--space-md);
+    margin-bottom: var(--space-lg);
+  }
+
+  .detail-row {
+    display: grid;
+    grid-template-columns: minmax(7rem, 18%) 1fr;
+    gap: var(--space-sm);
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--color-border);
+
+    &:last-child { border-bottom: none; }
+  }
+
+  .detail-key {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .detail-val {
+    font-family: var(--font-mono);
     font-size: var(--font-size-xs);
-    font-weight: 700;
-    flex-shrink: 0;
+    color: var(--color-text-main);
+    word-break: break-all;
+    align-self: center;
   }
-  .step-num.done { background: var(--color-success-bg); color: var(--color-success); }
-  .step-num.active { background: var(--color-primary); color: var(--color-on-primary); }
-  .step-num.pending { background: var(--color-bg-base); color: var(--color-text-muted); }
-  .step-num.failed { background: var(--color-error-bg); color: var(--color-error); }
-  .step-name { font-size: var(--font-size-sm); font-weight: 500; flex: 1; }
-  .step-duration { font-size: var(--font-size-xs); color: var(--color-text-muted); }
+
+  .detail-link {
+    color: var(--fg-brand);
+    text-decoration: none;
+    font-size: var(--font-size-sm);
+
+    &:hover { color: var(--fg-brand-hover); }
+  }
+
+  .detail-val .detail-link { font-size: var(--font-size-xs); }
+
+  /* Log viewer — dark ink code well, Chivo Mono */
   .log-viewer {
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    background: var(--sand-900);
+    border-radius: var(--r-8);
     padding: var(--space-md);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
     line-height: 1.8;
-    max-height: 400px;
+    max-height: 420px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-all;
-    color: var(--color-text-main);
+    color: var(--sand-100);
   }
+
   .log-line { display: block; }
-  .log-line .ts { color: var(--color-text-muted); margin-right: var(--space-sm); }
-  .log-line.is-error { color: var(--color-error); }
-  .summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: var(--space-md);
-    margin-bottom: var(--space-xl);
+  .log-line .ts { color: var(--sand-600); margin-right: var(--space-sm); }
+  .log-line.is-error { color: var(--red-400); }
+  .log-line.is-muted { color: var(--sand-600); font-style: italic; }
+
+  /* Empty state */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: var(--space-2xl) var(--space-md);
   }
-  .summary-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    padding: var(--space-md);
-    background: var(--color-bg-surface);
-  }
-  .summary-card-label {
-    font-size: var(--font-size-xs);
+
+  .empty-tile {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--r-8);
+    background: var(--bg-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--color-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    margin-bottom: var(--space-md);
   }
-  .summary-card-value {
+
+  .empty-title {
+    font-family: var(--font-display);
+    font-size: var(--font-size-lg);
+    font-weight: 500;
+    margin-bottom: var(--space-2xs);
+  }
+
+  .empty-sub {
     font-size: var(--font-size-sm);
-    margin-top: var(--space-xs);
+    color: var(--color-text-muted);
+    margin: 0;
   }
-  .summary-card-value code {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-  }
-  h2 { font-size: var(--font-size-lg); font-weight: 600; margin-bottom: var(--space-md); }
 }

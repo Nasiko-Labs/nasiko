@@ -26,13 +26,13 @@
     input.search {
       width: 100%;
       padding: var(--space-xs) var(--space-md) var(--space-xs) 34px;
-      background: var(--color-bg-surface);
+      background: var(--bg-input); /* NightOwl: flat sand well, no stroke */
       color: var(--color-text-main);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
+      border: 1px solid transparent;
+      border-radius: var(--r-8);
       font-size: var(--font-size-sm);
       font-family: inherit;
-      min-height: 40px;
+      min-height: var(--control-h-lg);
     }
     input.search::-webkit-search-decoration,
     input.search::-webkit-search-cancel-button { -webkit-appearance: none; }

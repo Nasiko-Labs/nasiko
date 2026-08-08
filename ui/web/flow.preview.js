@@ -24,4 +24,11 @@ export default {
   fetch: [
     [{ method: "GET", path: /^\/api\/flows\/[^/]+$/ }, flowDetail],
   ],
+  scenarios: {
+    "step-expanded": async (page) => {
+      await page.waitForSelector(".step");
+      await page.click(".step:nth-child(2) .step-row");
+      await page.waitForSelector(".step[open] .step-body");
+    },
+  },
 };

@@ -25,7 +25,11 @@ const providers = [
 export default {
   fetch: [
     ["GET /api/llm-configs", {
-      data: [],
+      data: [
+        { id: "cfg-001", name: "Anthropic Prod", provider: "anthropic", tier1_model: "claude-opus-4-1", tier2_model: "claude-sonnet-4-5", tier3_model: "claude-haiku-4-5", is_default: true, api_key_secret_name: "ANTHROPIC_API_KEY" },
+        { id: "cfg-002", name: "Translation Router", provider: "openai", tier1_model: "gpt-4.1", tier2_model: "gpt-4o", tier3_model: "gpt-4o-mini", is_default: false, api_key_secret_name: "OPENAI_API_KEY" },
+        { id: "cfg-003", name: "Gemini Sandbox", provider: "gemini", tier1_model: "gemini-2.5-pro", tier2_model: "gemini-2.5-flash", tier3_model: "gemini-2.0-flash", is_default: false, api_key_secret_name: "GEMINI_API_KEY" },
+      ],
       status_code: 200,
       message: "LLM configs retrieved successfully",
     }],
