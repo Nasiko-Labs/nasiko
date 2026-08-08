@@ -164,6 +164,11 @@ your-agents-page:not(:defined) {
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: var(--space-lg);
   }
+  /* Status-tab switches rebuild the grid — fresh children replay the fade */
+  .agents-grid > * { animation: panel-in var(--transition-base); }
+  @media (prefers-reduced-motion: reduce) {
+    .agents-grid > * { animation: none; }
+  }
   .empty-wrap {
     grid-column: 1 / -1;
   }

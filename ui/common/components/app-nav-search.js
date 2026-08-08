@@ -1,8 +1,13 @@
 /**
- * Search-as-you-type navigation lookup used inside `<app-header>`.
+ * Global ⌘F command palette used inside `<app-header>`: searches pages plus
+ * live control-plane data — agents (`window.fetchAgents`), MCP connectors
+ * (`window.fetchMcpConnectors`), and recent chat sessions
+ * (`window.fetchSessions`) — in labeled groups. Data loads once per open and
+ * filters client-side per keystroke; sources that fail (or don't exist on a
+ * deployment) simply omit their group.
  *
  * @element app-nav-search
- * @fires navigate - Item selected; `detail: { href, label }` — bubbles
+ * @fires navigate - Item selected; `detail: { url, newTab }` — bubbles
  */
 import { icons } from "../utils/icons.js";
 const styles = new CSSStyleSheet();
@@ -52,6 +57,15 @@ styles.replaceSync(`@scope (app-nav-search) {
       margin: 0;
       max-height: min(400px, 60vh);
       overflow-y: auto;
+      & .group-head {
+        padding: var(--space-sm) var(--space-lg) var(--space-2xs);
+        font-size: var(--font-size-xs);
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--color-text-muted);
+        user-select: none;
+      }
       &::-webkit-scrollbar { width: 6px; }
       &::-webkit-scrollbar-track { background: transparent; }
       &::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
@@ -116,7 +130,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
 
-/** Navigation search dialog for app-header. Emits `navigate` event. */
+/** Global search dialog for app-header. Emits `navigate` event. */
 export class AppNavSearch extends HTMLElement {
   #navLinks = [];
   #userPrefix = '';
@@ -126,6 +140,12 @@ export class AppNavSearch extends HTMLElement {
   #dialog;
   #input;
   #resultsList;
+  // Live control-plane data, loaded once per open (small lists; filtered
+  // client-side per keystroke). Missing/failed sources stay empty arrays.
+  #agents = [];
+  #connectors = [];
+  #sessions = [];
+  #loadToken = 0;
 
   set navLinks(v) { this.#navLinks = v; }
   set userPrefix(v) { this.#userPrefix = v; }
@@ -186,12 +206,42 @@ export class AppNavSearch extends HTMLElement {
 
   open() {
     if (!this.#dialog) return;
-    if (this.#input) this.#input.placeholder = `Search ${this.#navLinks.length} pages…`;
+    if (this.#input) this.#input.placeholder = 'Search pages, agents, MCPs, chats…';
     this.#results = this.#filter('');
     this.#selectedIndex = this.#results.length > 0 ? 0 : -1;
     this.#renderResults();
     this.#dialog.showModal();
     setTimeout(() => this.#input?.focus(), 50);
+    this.#loadSources();
+  }
+
+  /** Fetch agents / MCP connectors / recent chats; re-filter when they land. */
+  async #loadSources() {
+    const token = ++this.#loadToken;
+    const settle = (p, apply) => p.then(apply).catch(() => { /* source unavailable */ });
+    await Promise.all([
+      typeof window.fetchAgents === 'function'
+        ? settle(window.fetchAgents('', 1, 50), (r) => {
+            this.#agents = Array.isArray(r) ? r : r?.data || [];
+          })
+        : null,
+      typeof window.fetchMcpConnectors === 'function'
+        ? settle(window.fetchMcpConnectors(), (r) => {
+            const d = r?.data ?? r ?? {};
+            this.#connectors = [...(d.created_by_you || []), ...(d.shared_with_you || [])];
+          })
+        : null,
+      typeof window.fetchSessions === 'function'
+        ? settle(window.fetchSessions('', 1, 25), (r) => {
+            this.#sessions = Array.isArray(r) ? r : r?.data || [];
+          })
+        : null,
+    ]);
+    // Stale response of a previous open, or the dialog closed meanwhile.
+    if (token !== this.#loadToken || !this.#dialog?.open) return;
+    this.#results = this.#filter(this.#input?.value.trim() || '');
+    if (this.#selectedIndex === -1 && this.#results.length) this.#selectedIndex = 0;
+    this.#renderResults();
   }
 
   close() {
@@ -203,21 +253,52 @@ export class AppNavSearch extends HTMLElement {
   }
 
   #filter(query) {
-    const toItem = link => ({
-      label: link.title,
-      value: this.#userPrefix + link.url,
-      subtitle: link.description || link.url,
-    });
-    if (!query) return this.#navLinks.map(toItem);
-
     const q = query.toLowerCase();
-    return this.#navLinks
-      .filter(link =>
-        link.title.toLowerCase().includes(q) ||
-        (link.url && link.url.toLowerCase().includes(q)) ||
-        (link.description && link.description.toLowerCase().includes(q))
-      )
-      .map(toItem);
+    const matches = (...fields) =>
+      !q || fields.some((f) => (f || '').toLowerCase().includes(q));
+
+    const pages = this.#navLinks
+      .filter((l) => matches(l.title, l.url, l.description))
+      .map((l) => ({
+        group: 'Pages', icon: 'document',
+        label: l.title,
+        value: this.#userPrefix + l.url,
+        subtitle: l.description || l.url,
+      }));
+
+    const agents = this.#agents
+      .filter((a) => matches(a.display_name, a.name, a.description))
+      .slice(0, q ? 6 : 4)
+      .map((a) => ({
+        group: 'Agents', icon: 'bot',
+        label: a.display_name || a.name,
+        value: `${this.#userPrefix}/agent-card.html?id=${encodeURIComponent(a.id)}`,
+        subtitle: (a.description || a.name || '').slice(0, 90),
+      }));
+
+    const connectors = this.#connectors
+      .filter((c) => matches(c.display_name, c.name, c.url))
+      .slice(0, q ? 6 : 3)
+      .map((c) => ({
+        group: 'MCP connectors', icon: 'server',
+        label: c.display_name || c.name,
+        value: `${this.#userPrefix}/mcp.html`,
+        subtitle: c.url || c.name,
+      }));
+
+    const sessions = this.#sessions
+      .filter((s) => matches(s.agent_name, s.last_message, s.title))
+      .slice(0, q ? 6 : 4)
+      .map((s) => ({
+        group: 'Recent chats', icon: 'history',
+        label: (s.title || s.last_message || '').slice(0, 70) || s.session_id,
+        value: `${this.#userPrefix}/chat.html?session_id=${encodeURIComponent(s.session_id)}`
+          + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
+          + `&agent_name=${encodeURIComponent(s.agent_name || 'Orchestrator')}`,
+        subtitle: s.agent_name || 'Orchestrator',
+      }));
+
+    return [...pages, ...agents, ...connectors, ...sessions];
   }
 
   #normalize(p) {
@@ -231,23 +312,29 @@ export class AppNavSearch extends HTMLElement {
       this.#resultsList.innerHTML = `
         <li class="empty">
           ${icons.faceFrown('empty-icon')}
-          <span class="empty-text">No pages found</span>
+          <span class="empty-text">No matches found</span>
         </li>`;
       return;
     }
 
     const currentPath = this.#normalize(window.location.pathname);
+    let lastGroup = null;
     this.#resultsList.innerHTML = this.#results.map((item, i) => {
       const isCurrent = this.#normalize(item.value) === currentPath;
       const indicator = isCurrent
         ? `<span class="result-current-dot" aria-hidden="true"></span>
            <span class="sr-only">(current page)</span>`
         : `${icons.chevronRight('result-arrow')}`;
+      const header = item.group && item.group !== lastGroup
+        ? `<li class="group-head" role="presentation">${this.#esc(item.group)}</li>`
+        : '';
+      lastGroup = item.group;
+      const iconHtml = (icons[item.icon] || icons.document)('result-icon');
 
-      return `
+      return `${header}
         <li class="result${i === this.#selectedIndex ? ' is-active' : ''}${isCurrent ? ' is-current' : ''}"
           data-idx="${i}" role="option" aria-selected="${i === this.#selectedIndex}">
-          ${icons.document('result-icon')}
+          ${iconHtml}
           <div class="result-body">
             <div class="result-label">${this.#esc(item.label)}</div>
             ${item.subtitle ? `<div class="result-subtitle">${this.#esc(item.subtitle)}</div>` : ''}

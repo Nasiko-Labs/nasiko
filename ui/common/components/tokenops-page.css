@@ -205,6 +205,7 @@ tokenops-page:not(:defined) {
     width: 100%;
     border-collapse: collapse;
     font-size: var(--font-size-sm);
+    margin: 0; /* the bordered .cost-table-wrap owns the spacing */
   }
 
   thead th {

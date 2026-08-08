@@ -16,6 +16,15 @@ export default {
   ],
   scenarios: {
     "mobile-menu": async (page) => { await page.evaluate(() => document.querySelector("[data-mobile-menu]")?.click()); await new Promise(r => setTimeout(r, 400)); },
+    // ⌘F global palette: grouped Pages + Agents results (connector/chat
+    // sources aren't stubbed on this page and drop out gracefully).
+    "search-open": async (page) => {
+      await page.waitForSelector(".card-name");
+      await page.click("[data-search-trigger]");
+      await page.waitForSelector("[data-nav-dialog][open]");
+      await page.fill("[data-nav-input]", "agent");
+      await page.waitForTimeout(400);
+    },
     // Avatar menu with the Light/Dark/System theme switch (System default).
     "user-menu": async (page) => {
       await page.waitForSelector(".card-name");

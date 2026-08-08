@@ -124,6 +124,7 @@ mcp-page:not(:defined) {
     width: 100%;
     border-collapse: collapse;
     font-size: var(--font-size-sm);
+    margin: 0; /* the bordered .table-wrap owns the spacing, not the table */
   }
 
   thead th {
@@ -457,8 +458,33 @@ mcp-page:not(:defined) {
       font-weight: 600;
     }
     & .opt { font-weight: 400; color: var(--color-text-muted); }
-    & input, & select, & textarea { font-size: var(--font-size-sm); }
-    & textarea { resize: vertical; }
+
+    /* NightOwl form language: flat sand wells, no strokes, r8 */
+    & input, & select, & textarea {
+      width: 100%;
+      border: none;
+      border-radius: var(--r-8);
+      background: light-dark(var(--sand-50), var(--neutral-800));
+      color: var(--color-text-main);
+      font-size: var(--font-size-sm);
+      font-family: inherit;
+      font-weight: 400;
+
+      &::placeholder { color: var(--color-text-muted); }
+      &:focus-visible {
+        outline: 2px solid var(--color-primary);
+        outline-offset: 1px;
+      }
+    }
+    & input, & select {
+      height: var(--control-h-lg);
+      padding: 0 var(--s-12);
+    }
+    & textarea {
+      resize: vertical;
+      padding: var(--s-8) var(--s-12);
+      min-height: var(--control-h-lg);
+    }
   }
 
   .auth-fields {
@@ -601,7 +627,23 @@ mcp-page:not(:defined) {
     display: flex;
     gap: var(--space-sm);
 
-    & input { flex: 1; font-size: var(--font-size-sm); }
+    & input {
+      flex: 1;
+      height: var(--control-h-lg);
+      padding: 0 var(--s-12);
+      border: none;
+      border-radius: var(--r-8);
+      background: light-dark(var(--sand-50), var(--neutral-800));
+      color: var(--color-text-main);
+      font-size: var(--font-size-sm);
+      font-family: inherit;
+
+      &::placeholder { color: var(--color-text-muted); }
+      &:focus-visible {
+        outline: 2px solid var(--color-primary);
+        outline-offset: 1px;
+      }
+    }
     & button { flex-shrink: 0; }
   }
 }

@@ -203,7 +203,9 @@ orchestrator-page:not(:defined) {
     overflow: hidden;
   }
   .agent-card-skel {
-    height: 68px;
+    /* Mirrors a rendered suggestion card (name row + two description lines)
+       so the grid doesn't grow when real cards replace the skeletons. */
+    height: 96px;
     border-radius: var(--r-8);
     background: var(--color-bg-base);
     animation: orch-skel-pulse 1.5s ease-in-out infinite;

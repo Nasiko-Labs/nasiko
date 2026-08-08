@@ -142,6 +142,11 @@ agents-page:not(:defined) {
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: var(--space-md);
   }
+  /* Tab/search switches rebuild the grid — fresh children replay the fade */
+  .grid > :not(.skeleton-card) { animation: panel-in var(--transition-base); }
+  @media (prefers-reduced-motion: reduce) {
+    .grid > :not(.skeleton-card) { animation: none; }
+  }
   .empty-wrap {
     grid-column: 1 / -1;
   }
@@ -265,7 +270,9 @@ agents-page:not(:defined) {
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */
   .skeleton-card {
-    min-height: 165px; /* matches a rendered two-line card so the grid doesn't shift on load */
+    /* Matches a rendered card (name + tags + two-line description + the
+       Details/Chat action row) so the grid doesn't shift on load. */
+    min-height: 192px;
   }
   .skel-line {
     height: 0.85em;

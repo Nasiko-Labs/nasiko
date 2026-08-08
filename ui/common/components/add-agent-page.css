@@ -1,5 +1,5 @@
 /* Import new agent — NightOwl: centered icon tile + Chivo Mono title,
-   Set-up-CLI banner, 2×2 chooser cards, coming-soon footer. */
+   Set-up-CLI banner, 2×2 chooser cards. */
 add-agent-page:not(:defined) {
   display: block;
   padding: var(--space-2xl) var(--space-md);
@@ -171,9 +171,4 @@ add-agent-page:not(:defined) {
     cursor: not-allowed;
   }
 
-  .coming-soon {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin: var(--space-xl) 0 0;
-  }
 }

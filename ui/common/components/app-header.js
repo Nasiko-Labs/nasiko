@@ -166,6 +166,11 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       overflow-y: auto;
       overflow-x: hidden;
       scrollbar-width: none;
+      transition: width var(--transition-base);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .rail { transition: none; }
     }
   }
   .rail::-webkit-scrollbar { display: none; }
@@ -213,7 +218,18 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     background: var(--yellow-100);
     color: var(--sand-900);
   }
-  :scope.is-expanded .rail-item .rail-label { display: inline; }
+  :scope.is-expanded .rail-item .rail-label {
+    display: inline;
+    animation: panel-in var(--transition-base) 60ms backwards;
+  }
+  :scope.is-expanded .rail-identity .identity-name {
+    animation: panel-in var(--transition-base) 60ms backwards;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :scope.is-expanded .rail-item .rail-label,
+    :scope.is-expanded .rail-identity .identity-name { animation: none; }
+  }
 
   .rail-bottom {
     margin-top: auto;
@@ -227,7 +243,17 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     align-items: center;
     gap: var(--s-12);
   }
-  .rail-identity app-user-menu { flex-shrink: 0; }
+  .rail-identity app-user-menu {
+    flex-shrink: 0;
+    /* Match the 32px rail buttons: square avatar aligned to the icon column
+       instead of the default 36px circle; the inline name/chevron stay
+       hidden — the rail shows its own label when expanded. */
+    --user-btn-w: var(--control-h-md);
+    --user-btn-h: var(--control-h-md);
+    --user-avatar-size: 30px;
+    --user-avatar-radius: var(--r-6);
+    --user-name-display: none;
+  }
   .rail-identity .identity-name {
     display: none;
     font-size: 13px;

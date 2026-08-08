@@ -71,10 +71,10 @@ styles.replaceSync(`@scope (app-user-menu) {
       font-size: var(--font-size-sm);
 
       @media (min-width: 1024px) {
-        width: 34px;
-        height: 34px;
+        width: var(--user-avatar-size, 34px);
+        height: var(--user-avatar-size, 34px);
         flex-shrink: 0;
-        border-radius: var(--radius-full, 50%);
+        border-radius: var(--user-avatar-radius, var(--radius-full, 50%));
       }
     }
     .user-info {

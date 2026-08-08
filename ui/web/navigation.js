@@ -8,7 +8,7 @@ window.fetchNavigation = async () => [
   { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true },
   { title: "MCP gateway", url: "/mcp.html", icon: "server", rail: true },
   { title: "LLM router", url: "/llm-router.html", icon: "route", rail: true },
-  { title: "TokenOps", url: "/tokenops.html", icon: "coins", rail: true },
+  { title: "TokenOps", url: "/tokenops.html", icon: "banknote", rail: true },
   { title: "Your Agents", url: "/your-agents.html", icon: "user" },
   { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
   { title: "Set up CLI", url: "/setup-cli.html", icon: "terminal" },

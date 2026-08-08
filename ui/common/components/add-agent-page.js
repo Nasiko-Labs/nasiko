@@ -50,8 +50,6 @@ class AddAgentPage extends HTMLElement {
           <button class="method-btn" id="btn-oci">Connect Registry</button>
         </div>
       </div>
-
-      <p class="coming-soon">Coming soon... Import from AgentKit.</p>
     `;
 
     const fileInput = document.createElement('input');
