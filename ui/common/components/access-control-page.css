@@ -4,6 +4,7 @@
 @scope (access-control-page) {
   :scope {
     display: block;
+    padding: var(--space-lg) var(--space-xl);
   }
 
   /* ── Title row ─────────────────────────────────────────────────────── */
@@ -275,5 +276,12 @@
 /* Upgrade contract — reserve the head + band + tables footprint */
 access-control-page:not(:defined) {
   display: block;
+  padding: var(--space-lg) var(--space-xl);
   min-height: 640px;
 }
+
+/* Pre-upgrade geometry mirrors the app-module-nav host contract. */
+@media (min-width: 1024px) {
+  access-control-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+

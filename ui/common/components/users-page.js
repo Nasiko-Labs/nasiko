@@ -1,4 +1,5 @@
 import { apiFetch } from '/common/services/api.js';
+import '/common/components/app-module-nav.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
@@ -57,6 +58,7 @@ class UsersPage extends HTMLElement {
         const stats = await window.fetchUserStats();
         if (stats && stats.available === false) {
           this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
             <div class="users-unavailable">
               <app-empty-state
                 title="Not available for your role"
@@ -102,6 +104,7 @@ class UsersPage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Users</h1>
         <span class="count-chips" id="users-stats"></span>

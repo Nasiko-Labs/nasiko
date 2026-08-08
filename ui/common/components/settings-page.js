@@ -1,5 +1,6 @@
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
+import '/common/components/app-module-nav.js';
 
 import styles from './settings-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -19,12 +20,7 @@ class SettingsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <nav class="side-nav">
-        <div class="side-nav-title">Settings</div>
-        ${TABS.map(t =>
-          `<button class="side-nav-item${t.key === 'general' ? ' is-active' : ''}" type="button" data-tab="${t.key}">${t.label}</button>`
-        ).join('')}
-      </nav>
+      <app-module-nav module="settings"></app-module-nav>
 
       <div class="content">
         ${TABS.map(t => `
@@ -132,14 +128,13 @@ class SettingsPage extends HTMLElement {
       </div>
     `;
 
-    this.querySelector('.side-nav').addEventListener('click', (e) => {
-      const tab = e.target.closest('.side-nav-item');
-      if (!tab) return;
-      this.querySelectorAll('.side-nav-item').forEach(t => t.classList.toggle('is-active', t === tab));
+    this.addEventListener('module-nav-select', (e) => {
+      const key = e.detail.section;
+      if (!TABS.some(t => t.key === key)) return;
       this.querySelectorAll('.panel').forEach(p =>
-        p.classList.toggle('is-active', p.dataset.panel === tab.dataset.tab));
+        p.classList.toggle('is-active', p.dataset.panel === key));
       this.querySelectorAll('.panel-head').forEach(h =>
-        h.classList.toggle('is-active', h.dataset.panelHead === tab.dataset.tab));
+        h.classList.toggle('is-active', h.dataset.panelHead === key));
     });
 
     this.querySelector('#btn-save').addEventListener('click', () => this.#save());

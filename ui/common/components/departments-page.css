@@ -2,6 +2,7 @@
 @scope (departments-page) {
   :scope {
     display: block;
+    padding: var(--space-lg) var(--space-xl);
   }
 
   .page-head {
@@ -162,5 +163,12 @@
 /* Upgrade contract — reserve head + table footprint */
 departments-page:not(:defined) {
   display: block;
+  padding: var(--space-lg) var(--space-xl);
   min-height: 480px;
 }
+
+/* Pre-upgrade geometry mirrors the app-module-nav host contract. */
+@media (min-width: 1024px) {
+  departments-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+

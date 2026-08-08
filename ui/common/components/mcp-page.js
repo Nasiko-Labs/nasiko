@@ -14,6 +14,8 @@
 import styles from './mcp-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import './app-modal.js';
+import './app-skeleton.js';
+import './app-module-nav.js';
 import './autocomplete.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -39,6 +41,7 @@ class McpPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="mcp"></app-module-nav>
       <div class="page-head">
         <div>
           <h1 class="page-title">MCP gateway</h1>
@@ -59,7 +62,7 @@ class McpPage extends HTMLElement {
               <th>Tools</th><th>Status</th><th class="th-actions"></th>
             </tr></thead>
             <tbody id="connectors-tbody">
-              <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+              <tr class="skel-row" aria-hidden="true"><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td></tr><tr class="skel-row" aria-hidden="true"><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td></tr><tr class="skel-row" aria-hidden="true"><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td><td><app-skeleton height="0.9rem"></app-skeleton></td></tr>
             </tbody>
           </table>
         </div>
@@ -102,6 +105,18 @@ class McpPage extends HTMLElement {
         <div id="detail-body"></div>
       </app-modal>
     `;
+
+    // Module tree nav sections scroll to their page block ("My uploads" only
+    // renders once uploads exist — its row no-ops until then).
+    this.addEventListener('module-nav-select', (e) => {
+      const target = {
+        connectors: '#connectors-area',
+        uploads: '#uploads-section',
+        'agent-access': '.agent-access-card',
+      }[e.detail.section];
+      const el = target && this.querySelector(target);
+      if (el && !el.hidden) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
 
     this.querySelector('#register-btn').addEventListener('click', () => this.#openRegister());
     this.querySelector('#upload-btn').addEventListener('click', () => this.#openUpload());
@@ -637,7 +652,7 @@ class McpPage extends HTMLElement {
       body.innerHTML = `<div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its connector access</p></div>`;
       return;
     }
-    body.innerHTML = `<div class="detail-loading">Loading connector access…</div>`;
+    body.innerHTML = `<div class="detail-loading" aria-busy="true"><app-skeleton lines="3"></app-skeleton></div>`;
     try {
       const resp = await window.fetchAgentMcpConnectors(this.#selectedAgentId);
       this.#agentConnectors = resp?.data?.connectors || [];
@@ -705,7 +720,7 @@ class McpPage extends HTMLElement {
     const editor = this.querySelector(`.tools-editor[data-id="${CSS.escape(connectorId)}"]`);
     if (!editor) return;
     if (!this.#agentTools.has(connectorId)) {
-      editor.innerHTML = `<div class="detail-loading">Loading tools…</div>`;
+      editor.innerHTML = `<div class="detail-loading" aria-busy="true"><app-skeleton lines="3"></app-skeleton></div>`;
       try {
         const resp = await window.fetchAgentMcpConnectorTools(this.#selectedAgentId, connectorId);
         this.#agentTools.set(connectorId, resp?.data?.tools || []);

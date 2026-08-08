@@ -1,4 +1,5 @@
 import { apiFetch } from '/common/services/api.js';
+import '/common/components/app-module-nav.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-modal.js';
@@ -15,6 +16,7 @@ class DepartmentsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Departments</h1>
         <span class="count-chips" id="dept-stats"></span>

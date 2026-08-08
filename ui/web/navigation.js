@@ -18,6 +18,77 @@ window.fetchNavigation = async () => [
   { title: "Settings", url: "/settings.html", icon: "settings", rail: true },
 ];
 
+// In-card module tree navs (app-module-nav). Items are either page links
+// ({label, url}) or in-page sections ({label, section} → the page handles
+// the `module-nav-select` event). Only real pages/features appear here.
+const MODULE_NAVS = {
+  mcp: {
+    title: 'MCP gateway', icon: 'server',
+    groups: [
+      { label: 'MCP servers', items: [
+        { label: 'Connectors', section: 'connectors' },
+        { label: 'My uploads', section: 'uploads' },
+      ]},
+      { label: 'Access', items: [
+        { label: 'Agent access', section: 'agent-access' },
+      ]},
+    ],
+  },
+  agents: {
+    title: 'Agent registry', icon: 'bot',
+    groups: [
+      { label: 'Agent sources', items: [
+        { label: 'Agent hub', url: '/agents.html' },
+        { label: 'Your agents', url: '/your-agents.html' },
+        { label: 'Import agent', url: '/add-agent.html' },
+      ]},
+      { label: 'Builds', items: [
+        { label: 'All builds', url: '/builds.html' },
+      ]},
+    ],
+  },
+  observability: {
+    title: 'Observability', icon: 'activity',
+    groups: [
+      { label: 'Home', items: [
+        { label: 'Execution history', url: '/sessions.html' },
+        { label: 'Live flows', url: '/flows.html' },
+      ]},
+    ],
+  },
+  settings: {
+    title: 'Settings', icon: 'settings',
+    groups: [
+      { label: 'Workspace', items: [
+        { label: 'General', section: 'general' },
+        { label: 'Models', section: 'models' },
+        { label: 'Registry', section: 'registry' },
+      ]},
+      { label: 'Security', items: [
+        { label: 'Secrets', url: '/secrets.html' },
+      ]},
+    ],
+  },
+};
+
+window.fetchModuleNav = async (module) => {
+  const nav = MODULE_NAVS[module];
+  if (!nav) return null;
+  const resolved = { ...nav, groups: [...nav.groups] };
+  if (module === 'observability') {
+    try {
+      const res = await window.fetchObservabilitySessions();
+      const sessions = res?.data?.sessions || res?.sessions || [];
+      const items = sessions.slice(0, 5).map((s) => ({
+        label: (s.first_input || '').trim().slice(0, 48) || s.session_id,
+        url: `/observability-session.html?session_id=${encodeURIComponent(s.session_id)}`,
+      }));
+      if (items.length) resolved.groups.push({ label: 'Recent activity', items });
+    } catch { /* no recent activity while the API is unreachable */ }
+  }
+  return resolved;
+};
+
 window.fetchAgents = async (query, page, limit) => {
   const params = new URLSearchParams({ q: query || '', page, limit });
   const agents = await fetchApi(`/agents?${params}`);

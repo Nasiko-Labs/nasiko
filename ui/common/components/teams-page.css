@@ -1,6 +1,9 @@
 /* NightOwl "Access Manager" table language. */
 @scope (teams-page) {
-  :scope { display: block; }
+  :scope {
+    display: block;
+    padding: var(--space-lg) var(--space-xl);
+  }
 
   .page-head {
     display: flex;
@@ -142,5 +145,12 @@
 /* Upgrade contract — reserve head + table footprint */
 teams-page:not(:defined) {
   display: block;
+  padding: var(--space-lg) var(--space-xl);
   min-height: 480px;
 }
+
+/* Pre-upgrade geometry mirrors the app-module-nav host contract. */
+@media (min-width: 1024px) {
+  teams-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+

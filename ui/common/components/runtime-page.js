@@ -1,4 +1,5 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
 import { timeAgo } from '/common/utils/date-utils.js';
 import '/common/components/app-modal.js';
@@ -50,6 +51,11 @@ class RuntimePage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
+      <div class="page-head">
+        <h1 class="title-page">Agent runtime</h1>
+        <p class="page-sub">Kubernetes agent-runtime clusters provisioned by <code>nasiko-ee init</code>. Provisioning runs in the background on the control plane — watch status and live logs here.</p>
+      </div>
       <smart-table id="clusters-table" limit="15"></smart-table>
       <div id="clusters-empty" hidden>
         <app-empty-state

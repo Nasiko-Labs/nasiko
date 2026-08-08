@@ -3,6 +3,12 @@ sessions-page:not(:defined) {
   min-height: 200px;
 }
 
+/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
+   nav pins into the card's left padding on desktop). */
+@media (min-width: 1024px) {
+  sessions-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+
 @keyframes skeleton-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -67,6 +73,12 @@ sessions-page:not(:defined) {
 
   .session-list {
     display: block;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  @media (max-width: 760px) {
+    .sessions-table { min-width: 680px; }
   }
 
   /* ── Execution history table ─────────────────────────────────────────── */

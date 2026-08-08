@@ -4,6 +4,12 @@ agents-page:not(:defined) {
   min-height: 400px;
 }
 
+/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
+   nav pins into the card's left padding on desktop). */
+@media (min-width: 1024px) {
+  agents-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+
 @keyframes skel-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }

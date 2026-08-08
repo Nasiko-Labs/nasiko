@@ -1,4 +1,5 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-button.js';
 import '/common/components/app-skeleton.js';
@@ -55,6 +56,7 @@ class AccessControlPage extends HTMLElement {
   #setState(state, error) {
     if (state === 'loading') {
       this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
         <div class="page-head" style="min-height:var(--control-h-lg)">
           <app-skeleton lines="1" height="1.75rem" style="flex:1"></app-skeleton>
         </div>
@@ -70,6 +72,7 @@ class AccessControlPage extends HTMLElement {
       `;
     } else if (state === 'error') {
       this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
         <div class="error-message">${this.#esc(error || 'Failed to load data.')}</div>
       `;
     } else if (state === 'success') {
@@ -115,6 +118,7 @@ class AccessControlPage extends HTMLElement {
       `<span class="count-chip"><b>${this.#fmtNum(value)}</b> ${label}</span>`;
 
     this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Access control</h1>
         <div class="count-chips">

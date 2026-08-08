@@ -1,4 +1,5 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
@@ -26,8 +27,12 @@ class GroupMappingsPage extends HTMLElement {
       .join('');
 
     this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
       <div class="page-header">
-        <span></span>
+        <div>
+          <h1 class="title-page">Group mappings</h1>
+          <p class="page-sub">Maps an Entra Security Group Object ID to a role/team/department, applied automatically at OIDC login.</p>
+        </div>
         <app-button variant="secondary" size="sm" id="btn-sync-azure">${icons.refresh('', 14)} Sync Azure AD Directory</app-button>
         <app-button variant="dark" size="sm" id="btn-create">${icons.plus('', 14)} New Mapping</app-button>
       </div>

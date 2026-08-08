@@ -1,6 +1,15 @@
 @scope (runtime-page) {
   :scope {
     display: block;
+    padding: var(--space-lg) var(--space-xl);
+  }
+
+    .page-head { margin-bottom: var(--space-lg); }
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+    max-width: 72ch;
   }
 
   /* Table language: sand header band, hairline rows */
@@ -175,8 +184,15 @@
 /* Upgrade contract — reserve the clusters-table footprint */
 runtime-page:not(:defined) {
   display: block;
+  padding: var(--space-lg) var(--space-xl);
   min-height: 400px;
 }
+
+/* Pre-upgrade geometry mirrors the app-module-nav host contract. */
+@media (min-width: 1024px) {
+  runtime-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+
 
 @keyframes runtime-page-pulse {
   0%, 100% { opacity: 1; }

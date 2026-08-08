@@ -1,6 +1,7 @@
 import { icons } from "/common/utils/icons.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
+import "/common/components/app-module-nav.js";
 
 import styles from "./agents-page.css" with { type: "css" };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -23,6 +24,7 @@ class AgentsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="agents"></app-module-nav>
       <div class="page-top">
         <h1 class="title-page">Agent hub</h1>
         <p class="subtitle" id="agent-count">Discover and chat with the agents deployed on this cluster.</p>

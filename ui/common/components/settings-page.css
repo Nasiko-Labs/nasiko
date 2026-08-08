@@ -1,63 +1,21 @@
 /* Settings — NightOwl: left section nav + grouped setting rows on the white
    plane; sand input wells, hairline row separators, dark save button. */
 settings-page:not(:defined) {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: var(--space-2xl);
+  display: block;
   padding: var(--space-lg) var(--space-xl);
   min-height: 500px;
 }
 
+/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
+   nav pins into the card's left padding on desktop). */
+@media (min-width: 1024px) {
+  settings-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+
 @scope (settings-page) {
   :scope {
-    display: grid;
-    grid-template-columns: 220px 1fr;
-    gap: var(--space-2xl);
+    display: block;
     padding: var(--space-lg) var(--space-xl);
-    align-items: start;
-  }
-
-  @media (max-width: 760px) {
-    :scope { grid-template-columns: 1fr; gap: var(--space-lg); }
-  }
-
-  /* ── Section nav ─────────────────────────────────────────────────────── */
-  .side-nav {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-4);
-    position: sticky;
-    top: var(--space-lg);
-  }
-
-  .side-nav-title {
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    color: var(--color-text-main);
-    margin-bottom: var(--space-sm);
-  }
-
-  .side-nav-item {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    height: var(--control-h-md);
-    padding: 0 var(--s-12);
-    border-radius: var(--r-8);
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    text-align: left;
-    cursor: pointer;
-
-    &:hover { background: light-dark(var(--sand-50), var(--neutral-800)); color: var(--color-text-main); }
-    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-
-    &.is-active {
-      background: light-dark(var(--sand-100), var(--neutral-700));
-      color: var(--color-text-main);
-    }
   }
 
   /* ── Content ─────────────────────────────────────────────────────────── */
@@ -73,7 +31,12 @@ settings-page:not(:defined) {
   }
 
   .panel { display: none; }
-  .panel.is-active { display: block; }
+  .panel.is-active { display: block; animation: panel-in var(--transition-base); }
+  .panel-head.is-active { animation: panel-in var(--transition-base); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .panel.is-active, .panel-head.is-active { animation: none; }
+  }
 
   .setting-row {
     display: grid;

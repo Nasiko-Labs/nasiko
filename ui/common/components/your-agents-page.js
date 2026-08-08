@@ -3,6 +3,7 @@ import { icons } from "/common/utils/icons.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
 import "/common/components/app-modal.js";
+import "/common/components/app-module-nav.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 
@@ -33,6 +34,7 @@ class YourAgentsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="agents"></app-module-nav>
       <div class="page-header">
         <div class="page-header-top">
           <div>

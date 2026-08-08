@@ -5,6 +5,12 @@ mcp-page:not(:defined) {
   min-height: 400px;
 }
 
+/* Pre-upgrade geometry mirrors the app-module-nav host contract (the tree
+   nav pins into the card's left padding on desktop). */
+@media (min-width: 1024px) {
+  mcp-page:not(:defined) { padding-left: calc(224px + var(--space-xl)); }
+}
+
 @scope (mcp-page) {
   :scope {
     display: block;
@@ -105,6 +111,13 @@ mcp-page:not(:defined) {
     border: 1px solid var(--color-border);
     border-radius: var(--r-10);
     overflow: hidden;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  @media (max-width: 760px) {
+    .page-head { flex-direction: column; }
+    .table-wrap table { min-width: 640px; }
   }
 
   table {
