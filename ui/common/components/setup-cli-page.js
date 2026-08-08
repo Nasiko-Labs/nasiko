@@ -5,13 +5,16 @@
  * @element setup-cli-page
  * @note Static content, no API calls. Commands mirror `nasiko --help`
  *       (oss/cli/src/main.rs) and the OSS README quick start.
+ * @note Deployments may replace the guide wholesale by defining
+ *       `window.setupCliSteps` (same shape as STEPS) in navigation.js —
+ *       e.g. to install a prebuilt binary instead of building from source.
  */
 import { icons } from '../utils/icons.js';
 import './app-code-snippet.js';
 import styles from './setup-cli-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-const STEPS = [
+const DEFAULT_STEPS = [
   {
     key: 'install',
     label: 'Install',
@@ -66,6 +69,10 @@ class SetupCliPage extends HTMLElement {
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
+
+    const STEPS = Array.isArray(window.setupCliSteps) && window.setupCliSteps.length
+      ? window.setupCliSteps
+      : DEFAULT_STEPS;
 
     this.innerHTML = `
       <button class="close-btn" type="button" aria-label="Close">${icons.x('', 16)}</button>
