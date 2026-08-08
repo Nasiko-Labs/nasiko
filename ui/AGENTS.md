@@ -82,9 +82,9 @@ call `/api/*` still render fully offline.
 # Live-reload dev server while editing (open the printed URL in your browser)
 ui serve oss/ui/web --port 7777
 
-# EE preview with OSS fallback — mirrors the EE server's embed order
-# (ee/ui/web first, then oss/ui/web), so / and all OSS pages resolve too
-ui serve ee/ui/web oss/ui/web --port 7777
+# Overlay preview — extra roots are fallbacks (first dir wins), mirroring
+# how a downstream distribution embeds its page overrides over these pages
+ui serve <overlay-dir> oss/ui/web --port 7777
 
 # Or proxy real API calls to a running backend instead of using fixtures
 ui serve oss/ui/web --port 7777 --proxy http://localhost:8080
