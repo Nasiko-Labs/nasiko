@@ -95,19 +95,12 @@ const MODULE_NAVS = {
 window.fetchModuleNav = async (module) => {
   const nav = MODULE_NAVS[module];
   if (!nav) return null;
-  const resolved = { ...nav, groups: [...nav.groups] };
-  if (module === 'observability') {
-    try {
-      const res = await window.fetchObservabilitySessions();
-      const sessions = res?.data?.sessions || res?.sessions || [];
-      const items = sessions.slice(0, 5).map((s) => ({
-        label: (s.first_input || '').trim().slice(0, 48) || s.session_id,
-        url: `/observability-session.html?session_id=${encodeURIComponent(s.session_id)}`,
-      }));
-      if (items.length) resolved.groups.push({ label: 'Recent activity', items });
-    } catch { /* no recent activity while the API is unreachable */ }
-  }
-  return resolved;
+  // Observability used to append a dynamic "Recent activity" group listing the
+  // five newest sessions. Dropped: on sessions.html — the only page it appeared
+  // on — it restated the first five rows of the table beside it, and the table
+  // is filterable, sortable and complete. Truncated duplicates of the primary
+  // content are noise, and it cost an extra API call per page load.
+  return { ...nav, groups: [...nav.groups] };
 };
 
 window.fetchAgents = async (query, page, limit) => {
@@ -270,8 +263,11 @@ window.fetchUsageSummary = async () => {
 };
 
 // TokenOps dashboard — GET /api/observability/finops/dashboard
-window.fetchTokenopsDashboard = async (startTime) => {
-  const params = startTime ? `?${new URLSearchParams({ start_time: startTime })}` : '';
+window.fetchTokenopsDashboard = async (startTime, endTime) => {
+  const q = new URLSearchParams();
+  if (startTime) q.set('start_time', startTime);
+  if (endTime) q.set('end_time', endTime);
+  const params = q.size ? `?${q}` : '';
   return fetchApi(`/observability/finops/dashboard${params}`);
 };
 

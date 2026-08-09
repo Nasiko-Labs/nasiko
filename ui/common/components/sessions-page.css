@@ -59,10 +59,19 @@
     }
   }
 
+  /* Bordered container owns the outer radius and clips the header band, so
+     the table reads the same as TokenOps' rather than as a floating pill. */
   .session-list {
     display: block;
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
     overflow-x: auto;
     scrollbar-width: thin;
+  }
+  /* The empty/error state is a standalone card — no table chrome around it. */
+  .session-list:has(app-empty-state) {
+    border: none;
+    border-radius: 0;
   }
 
   @media (max-width: 760px) {
@@ -81,35 +90,34 @@
     margin: 0;
   }
 
+  /* Header band + row hairlines match tokenops-page.css; the container clips
+     the corners, so no per-cell radii here. */
   .sessions-table th {
     text-align: left;
-    font-size: var(--font-size-sm);
-    font-weight: 600;
+    font-size: var(--font-size-xs);
+    font-weight: 500;
     text-transform: none;
-    letter-spacing: normal;
-    color: var(--color-text-main);
-    background: light-dark(var(--sand-200), var(--neutral-800));
-    border-bottom: none;
+    letter-spacing: 0;
+    color: var(--color-text-muted);
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--color-border);
     padding: var(--space-sm) var(--space-md);
     white-space: nowrap;
   }
-  .sessions-table th:first-child { border-radius: var(--r-8) 0 0 var(--r-8); }
-  .sessions-table th:last-child { border-radius: 0 var(--r-8) var(--r-8) 0; }
 
   .sessions-table td {
     padding: var(--space-sm) var(--space-md);
     border-bottom: 1px solid var(--color-border);
     vertical-align: middle;
   }
+  .sessions-table tbody tr:last-child td { border-bottom: none; }
 
   .sessions-table tbody tr {
     cursor: pointer;
 
-    /* The hover fill is rounded on its outer corners so a row reads as the
-       same pill shape as the sand header band above it. */
-    &:hover td { background: var(--bg-surface-hover); }
-    &:hover td:first-child { border-radius: var(--r-8) 0 0 var(--r-8); }
-    &:hover td:last-child { border-radius: 0 var(--r-8) var(--r-8) 0; }
+    /* Full-bleed hover fill: the container clips it, so it lines up with the
+       header band instead of floating as a rounded pill inside the border. */
+    &:hover td { background: var(--bg-input); }
     &:hover .session-delete { opacity: 1; }
     &:focus-visible {
       outline: none;
@@ -208,6 +216,9 @@
   .sessions-table-skeleton {
     display: flex;
     flex-direction: column;
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    overflow: hidden;
     animation: skeleton-pulse 1.5s ease-in-out infinite;
 
     @media (prefers-reduced-motion: reduce) {
@@ -216,11 +227,12 @@
     }
   }
 
+  /* Mirrors the real header band (see .sessions-table th). */
   .skeleton-line--head {
     height: 42px;
     width: 100%;
-    border-radius: var(--r-8);
-    background: light-dark(var(--sand-200), var(--neutral-800));
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--color-border);
     margin-bottom: 0;
   }
 

@@ -1,14 +1,16 @@
 /**
-import '/common/components/app-skeleton.js';
  * TokenOps dashboard — token-first cost/usage analytics per agent.
  *
  * @element tokenops-page
- * @note Data source: `window.fetchTokenopsDashboard(startTime?)` →
+ * @note Data source: `window.fetchTokenopsDashboard(startTime?, endTime?)` →
  *       GET /api/observability/finops/dashboard (see /api/docs), which returns
  *       `{ data: { summary, agents, token_usage }, status_code, message }`.
  */
 import styles from './tokenops-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
+// Was "imported" from inside the docblock above, i.e. never — the loading rows
+// rendered as inert unknown elements.
+import '/common/components/app-skeleton.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const COLUMNS = [
@@ -38,6 +40,7 @@ const SORTS = [
 class TokenopsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
+  #tokenUsage = {};
   #query = '';
   #sort = 'total_tokens';
 
@@ -109,22 +112,28 @@ class TokenopsPage extends HTMLElement {
     `).join('');
   }
 
-  /** Current + previous 5 months, most recent first. */
+  /**
+   * Current + previous 5 months, most recent first. Each option carries both
+   * bounds: sending only a start made every past month mean "that month
+   * through today" instead of that month.
+   */
   #monthOptions() {
     const fmt = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' });
     const now = new Date();
     return Array.from({ length: 6 }, (_, i) => {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const value = d.toISOString();
-      return `<option value="${value}">${fmt.format(d)}</option>`;
+      const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      return `<option value="${d.toISOString()}" data-end="${end.toISOString()}">${fmt.format(d)}</option>`;
     }).join('');
   }
 
   async #load() {
-    const startTime = this.querySelector('#month-select').value;
+    const select = this.querySelector('#month-select');
+    const startTime = select.value;
+    const endTime = select.selectedOptions[0]?.dataset.end;
     let resp;
     try {
-      resp = await window.fetchTokenopsDashboard(startTime);
+      resp = await window.fetchTokenopsDashboard(startTime, endTime);
     } catch (e) {
       console.error('TokenOps dashboard fetch failed:', e);
       this.querySelector('#cost-tbody').innerHTML =
@@ -133,8 +142,9 @@ class TokenopsPage extends HTMLElement {
     }
     const data = resp?.data ?? resp ?? {};
     this.#agents = data.agents || [];
+    this.#tokenUsage = data.token_usage || {};
     this.#renderSummary(data.summary || {});
-    this.#renderTokenUsage(data.token_usage || {});
+    this.#renderTokenUsage(this.#tokenUsage);
     this.#renderTable();
   }
 
@@ -142,7 +152,7 @@ class TokenopsPage extends HTMLElement {
     this.querySelector('#kpi-strip').innerHTML = `
       ${this.#kpi('Total cost', this.#fmtCost(s.total_cost),
         `Based on ${(s.total_operations ?? 0).toLocaleString()} operations`)}
-      ${this.#kpi('Total tokens', this.#fmtTokens(this.#totalTokens()), 'Across all agents')}
+      ${this.#kpi('Total tokens', this.#fmtTokens(this.#tokenTotal), 'Across all agents')}
       ${this.#kpi('Total operations', (s.total_operations ?? 0).toLocaleString(),
         `${(s.operations_last_24h ?? 0).toLocaleString()} in the last 24 hours`)}
       ${this.#kpi('Active agents', `${s.active_agents ?? 0}`,
@@ -225,8 +235,12 @@ class TokenopsPage extends HTMLElement {
     URL.revokeObjectURL(a.href);
   }
 
-  #totalTokens() {
-    return this.#agents.reduce((sum, a) => sum + (a.total_tokens ?? 0), 0);
+  // The server's own fleet total, not a client-side sum of the agent rows:
+  // its comment notes that agents deleted inside the window count toward the
+  // fleet figures but can't appear as rows, so summing here would quietly
+  // under-report exactly when the two should differ.
+  get #tokenTotal() {
+    return this.#tokenUsage.total_tokens ?? 0;
   }
 
   #fmtTokens(n) {

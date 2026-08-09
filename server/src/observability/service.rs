@@ -1153,13 +1153,22 @@ impl ObservabilityService {
         _department_id: Option<&str>,
         _team_id: Option<&str>,
         start_time: Option<&str>,
+        end_time: Option<&str>,
     ) -> Result<FinopsDashboardResponse, ObservabilityError> {
         let agents = self.get_agent_names().await?;
         let total_agents = agents.len();
 
-        let now = Utc::now();
         let start = parse_iso_or_default(start_time, 30);
-        let last_24h = now - Duration::hours(24);
+        // `now` is the window end, so a bounded request (the TokenOps month
+        // picker) reports that month and not month-start-through-today.
+        // `last_24h` stays anchored to the real clock: "operations in the last
+        // 24 hours" is about right now, not about the tail of a past window.
+        let real_now = Utc::now();
+        let now = end_time
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or(real_now);
+        let last_24h = real_now - Duration::hours(24);
 
         // Container-hours for the same window, one batched query. Includes
         // agents that have since been deleted, so the summary total stays
