@@ -1,8 +1,8 @@
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Redirect},
+    http::{HeaderMap, StatusCode, header},
+    response::{AppendHeaders, IntoResponse, Redirect},
     routing::{delete, get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -236,6 +236,7 @@ struct CallbackQuery {
 
 async fn github_callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(params): Query<CallbackQuery>,
 ) -> impl IntoResponse {
     let Some(svc) = state.github_svc.as_ref() else {
@@ -289,7 +290,7 @@ async fn github_callback(
     // Dispatch on flow: "login" = SSO sign-in, anything else = connect existing account.
     let flow = oauth_claims.flow.as_deref().unwrap_or("connect");
     if flow == "login" {
-        return github_callback_login(state, token, github_user).await;
+        return github_callback_login(state, token, github_user, &headers).await;
     }
 
     // ── connect flow ─────────────────────────────────────────────────────────
@@ -363,6 +364,7 @@ async fn github_callback_login(
     state: AppState,
     token: nasiko_github::AccessToken,
     github_user: nasiko_github::GitHubUser,
+    headers: &HeaderMap,
 ) -> axum::response::Response {
     let provider_id = github_user.id.to_string();
 
@@ -444,6 +446,30 @@ async fn github_callback_login(
     .await
     {
         tracing::warn!(%e, %user_id, "GitHub SSO login: failed to store access token");
+    }
+
+    // Multi-tenant: the dashboard authenticates to this control plane by its
+    // host-only session cookie — `nasiko.dev` and `<sub>.nasiko.dev` are
+    // same-site, so the `SameSite=Strict` host-only cookie rides the dashboard's
+    // credentialed cross-origin fetch — NOT a URL token. Set the cookie on this
+    // CP-origin response (the browser is on `<sub>` here, having been 302'd by
+    // the fleet relay) and redirect to the BFF clean. Single-tenant keeps the
+    // `?token=` handoff below, which the embedded SPA captures from the URL.
+    if state.config.multi_tenant_mode {
+        let target = if state.config.app_base_url.is_empty() {
+            "/".to_string()
+        } else {
+            format!("{}/", state.config.app_base_url.trim_end_matches('/'))
+        };
+        let cookie = crate::auth::login::set_token_cookie(
+            &result.token,
+            crate::auth::login::request_is_https(headers),
+        );
+        return (
+            AppendHeaders([(header::SET_COOKIE, cookie)]),
+            Redirect::temporary(&target),
+        )
+            .into_response();
     }
 
     // Use reqwest::Url for query-param encoding (handles any chars in username safely).

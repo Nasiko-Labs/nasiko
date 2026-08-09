@@ -355,6 +355,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         embedding_model: "text-embedding-3-small".into(),
         router_agent_timeout_secs: 60,
         github_callback_url: None,
+        github_central_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
@@ -403,6 +404,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_toolcount_ttl_seconds: 3600,
         seed_toolkits: vec![],
         app_base_url: "".to_string(),
+        // Single-tenant test config — multi-tenant admission + CP-cookie paths off.
+        multi_tenant_mode: false,
+        allow_personal_emails: false,
+        nasiko_bff_url: None,
     }
 }
 
