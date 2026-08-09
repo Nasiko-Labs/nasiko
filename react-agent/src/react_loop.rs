@@ -712,7 +712,9 @@ async fn run_stream_inner(
                         })
                         .await;
 
+                    let started = std::time::Instant::now();
                     let result = toolset.call(name, args_str).await;
+                    let duration_ms = started.elapsed().as_millis() as u64;
 
                     match &result {
                         Ok(output) => {
@@ -725,6 +727,7 @@ async fn run_stream_inner(
                                     result: output.clone(),
                                     success: true,
                                     turn: turn_idx + 1,
+                                    duration_ms,
                                 })
                                 .await;
                             results_for_context.push(format!("[{}] Result: {}", name, output));
@@ -744,6 +747,7 @@ async fn run_stream_inner(
                                     result: err_str.clone(),
                                     success: false,
                                     turn: turn_idx + 1,
+                                    duration_ms,
                                 })
                                 .await;
                             results_for_context.push(format!("[{}] Error: {}", name, err_str));
@@ -905,7 +909,9 @@ async fn run_stream_inner(
                         })
                         .await;
 
+                    let started = std::time::Instant::now();
                     let result = toolset.call(name, args_str).await;
+                    let duration_ms = started.elapsed().as_millis() as u64;
 
                     match &result {
                         Ok(output) => {
@@ -918,6 +924,7 @@ async fn run_stream_inner(
                                     result: output.clone(),
                                     success: true,
                                     turn: turn_idx + 1,
+                                    duration_ms,
                                 })
                                 .await;
                             results_for_context.push(format!("[{}] Result: {}", name, output));
@@ -937,6 +944,7 @@ async fn run_stream_inner(
                                     result: err_str.clone(),
                                     success: false,
                                     turn: turn_idx + 1,
+                                    duration_ms,
                                 })
                                 .await;
                             results_for_context.push(format!("[{}] Error: {}", name, err_str));

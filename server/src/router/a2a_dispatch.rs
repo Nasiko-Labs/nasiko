@@ -192,12 +192,15 @@ pub async fn a2a_dispatch_handler(
     if is_orchestrator {
         orchestrator_stream(
             &state,
-            &query,
-            &text,
-            &task_id,
-            &context_id,
-            user_id,
-            claims.is_superuser,
+            OrchestratorTurn {
+                query: &query,
+                raw_text: &text,
+                task_id: &task_id,
+                context_id: &context_id,
+                user_id,
+                is_superuser: claims.is_superuser,
+                client_owns_transcript: session_id.is_some(),
+            },
         )
         .await
     } else {
@@ -222,15 +225,35 @@ pub async fn a2a_dispatch_handler(
 
 // ─── Orchestrator Path ───────────────────────────────────────────────────────
 
-async fn orchestrator_stream(
-    state: &AppState,
-    query: &str,
-    raw_text: &str,
-    task_id: &str,
-    context_id: &str,
+/// One orchestrator-routed turn. Grouped into a struct because the caller
+/// count crossed clippy's argument threshold, and these travel together.
+struct OrchestratorTurn<'a> {
+    /// The prompt actually sent downstream: history + `raw_text`.
+    query: &'a str,
+    /// What the caller typed, before history enrichment — this is what gets
+    /// persisted, so the next turn doesn't nest an already-glued blob.
+    raw_text: &'a str,
+    task_id: &'a str,
+    context_id: &'a str,
     user_id: Uuid,
     is_superuser: bool,
+    /// Caller persists its own turns (web UI) — the server must not also.
+    client_owns_transcript: bool,
+}
+
+async fn orchestrator_stream(
+    state: &AppState,
+    turn: OrchestratorTurn<'_>,
 ) -> Result<Response, A2aDispatchError> {
+    let OrchestratorTurn {
+        query,
+        raw_text,
+        task_id,
+        context_id,
+        user_id,
+        is_superuser,
+        client_owns_transcript,
+    } = turn;
     // Orchestrator-routed chats never had a `chat_sessions` row, unlike
     // `agent_proxy.rs`'s `ensure_chat_session` for direct agent chat — so
     // `nasiko sessions`/`history` couldn't find them and `--session-id`
@@ -244,7 +267,8 @@ async fn orchestrator_stream(
     // turn's fetch would read this already-history-laden row back out and
     // glue *another* copy of it in front of the next message, compounding
     // turn over turn instead of growing linearly with real conversation.
-    ensure_orchestrator_chat_session(state, context_id, user_id, raw_text).await;
+    ensure_orchestrator_chat_session(state, context_id, user_id, raw_text, client_owns_transcript)
+        .await;
 
     let all_agents = AgentSelector::fetch_active_agents(&state.db)
         .await
@@ -482,7 +506,7 @@ async fn orchestrator_stream(
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::ToolResult { agent, result, success, turn } => {
+                        OrchestratorEvent::ToolResult { agent, result, success, turn, duration_ms } => {
                             let status_str = if success { "completed" } else { "failed" };
                             let _ = sqlx::query(
                                 r#"UPDATE flow_steps SET status = $3, output_summary = $4,
@@ -503,6 +527,7 @@ async fn orchestrator_stream(
                                 "result": result,
                                 "success": success,
                                 "turn": turn,
+                                "duration_ms": duration_ms,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
@@ -724,6 +749,24 @@ async fn agent_stream(
     .bind(user_id)
     .bind(&agent.name)
     .bind(query)
+    .execute(&state.db)
+    .await;
+
+    // Index the session ↔ trace mapping, exactly as `orchestrator_stream` and
+    // `agent_proxy.rs` already do. Without it this branch — every "chat with
+    // this specific agent" request — had no DB record at all, so
+    // `/api/observability/session/{id}` could only resolve it through the
+    // Tempo `session.id` attribute and returned 404 the moment that lookup
+    // missed. `flow_id` doubles as the trace id (see the flow-origin note).
+    let _ = sqlx::query(
+        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (session_id, trace_id) DO NOTHING",
+    )
+    .bind(context_id)
+    .bind(&flow_id)
+    .bind(agent.id)
+    .bind(&agent.name)
     .execute(&state.db)
     .await;
 
@@ -1146,12 +1189,17 @@ pub async fn a2a_upload_handler(
     // or enrich `query` with in the first place.
     orchestrator_stream(
         &state,
-        &query,
-        &query,
-        &task_id,
-        &context_id,
-        user_id,
-        claims.is_superuser,
+        OrchestratorTurn {
+            query: &query,
+            raw_text: &query,
+            task_id: &task_id,
+            context_id: &context_id,
+            user_id,
+            is_superuser: claims.is_superuser,
+            // Fresh context id, minted here — no client-side session owns
+            // this transcript, so the server persists the turn.
+            client_owns_transcript: false,
+        },
     )
     .await
 }
@@ -1170,11 +1218,18 @@ fn to_sse(event: StreamResponse) -> Event {
 /// Fire-and-forget: session bookkeeping here is a nice-to-have for
 /// `sessions`/`history`/resume, not a security boundary like agent_proxy's
 /// version (which also authorizes access to an existing session).
+/// `client_owns_transcript` suppresses the message insert for callers that
+/// persist their own turns via `/api/chat/sessions/{id}/messages` (the web UI,
+/// identified by an explicit `metadata.session_id`). It used to be harmless
+/// only because the UI sent a throwaway random `contextId`, so the two writes
+/// landed in different sessions; now that contextId *is* the session id, doing
+/// both would store every user message twice.
 async fn ensure_orchestrator_chat_session(
     state: &AppState,
     context_id: &str,
     user_id: Uuid,
     query: &str,
+    client_owns_transcript: bool,
 ) {
     let title = {
         let t = query.trim();
@@ -1201,6 +1256,10 @@ async fn ensure_orchestrator_chat_session(
     .bind(&title)
     .execute(&state.db)
     .await;
+
+    if client_owns_transcript {
+        return;
+    }
 
     let _ = sqlx::query(
         "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)",

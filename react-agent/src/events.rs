@@ -15,15 +15,25 @@ pub enum OrchestratorEvent {
     },
 
     /// Agent returned a result.
+    ///
+    /// `duration_ms` is wall-clock for the whole A2A call, so the UI can show a
+    /// real per-agent timing instead of counting only the total round.
     ToolResult {
         agent: String,
         result: String,
         success: bool,
         turn: usize,
+        duration_ms: u64,
     },
 
     /// A sub-agent's own progress update (e.g. its internal tool activity),
     /// relayed live while it works on a call from the orchestrator.
+    ///
+    /// This is free-form prose, because it is whatever the sub-agent chose to
+    /// put in its WORKING status message. Agents that emit structured A2A data
+    /// parts instead (`{type, tool_name, arguments, result}`) reach the UI
+    /// directly through the stream's data-part channel and are rendered as
+    /// real tool rows; this variant is the fallback for everything else.
     SubStatus { agent: String, message: String },
 
     /// A chunk of a sub-agent's reply text as it generates, relayed live.
