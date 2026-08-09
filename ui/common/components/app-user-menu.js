@@ -17,22 +17,19 @@ styles.replaceSync(`@scope (app-user-menu) {
       width: var(--user-btn-w, 36px);
       height: var(--user-btn-h, 36px);
       padding: var(--user-btn-padding, 0);
-      border: 2px solid var(--color-border);
-      border-radius: var(--radius-md);
-      &:hover {
-        border-color: var(--color-primary);
-        box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 18%, transparent);
+      border: 1px solid transparent;
+      border-radius: var(--r-8);
+      /* DS: quiet fill on hover, gold ring on :focus-visible only — the old
+         gold glow rings on hover/active/open were this component's own
+         invention and read as a different system to everything around it. */
+      &:hover { background: var(--bg-surface-hover); }
+      &:active, &.is-open {
+        background: var(--bg-surface-hover);
+        border-color: var(--color-border);
       }
-      &:active {
-        border-color: var(--color-primary);
-        background: color-mix(in srgb, var(--color-primary) 15%, transparent);
-        box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 30%, transparent);
-      }
-      &:focus { box-shadow: 0 0 0 2px var(--color-primary-ring); }
-      &.is-open {
-        border-color: var(--color-primary);
-        box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 22%, transparent);
-        background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+      &:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 2px var(--color-primary-ring);
       }
       & svg:last-child { display: none; }
 
@@ -61,7 +58,7 @@ styles.replaceSync(`@scope (app-user-menu) {
     .user-avatar {
       width: 100%;
       height: 100%;
-      border-radius: calc(var(--radius-md) - 2px);
+      border-radius: var(--r-6);
       background: var(--color-primary);
       color: var(--color-on-primary);
       display: flex;
@@ -115,9 +112,14 @@ styles.replaceSync(`@scope (app-user-menu) {
       right: var(--user-dropdown-right, 0);
       left: var(--user-dropdown-left, unset);
       background: var(--color-bg-surface);
-      border: 1px solid color-mix(in srgb, var(--color-border) 100%, var(--color-text-muted) 40%);
-      border-radius: var(--radius-md);
-      box-shadow: var(--shadow-md), var(--shadow-xl);
+      /* Dark needs the stronger edge: the panel and the content plane are both
+         --color-bg-surface there, so the default hairline leaves the flyout
+         indistinguishable from the page behind it. */
+      border: 1px solid light-dark(var(--color-border), var(--neutral-700));
+      /* r12 + the single menu shadow token, like every other floating DS
+         surface; the doubled md+xl stack read as a heavier, foreign card. */
+      border-radius: var(--r-12);
+      box-shadow: var(--shadow-md);
       min-width: min(280px, calc(100vw - 2rem));
       max-width: 320px;
       max-height: min(400px, calc(100dvh - 6rem));
@@ -141,12 +143,12 @@ styles.replaceSync(`@scope (app-user-menu) {
         padding: var(--space-sm) var(--space-md);
       }
     }
+    /* Sentence case, no tracking — the reskin dropped uppercase micro-labels
+       everywhere else (table headers, module-nav group headings). */
     .dropdown-title {
       font-size: var(--font-size-xs);
-      font-weight: 500;
+      font-weight: 600;
       color: var(--color-text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
     }
     .user-list {
       padding: var(--space-xs);
@@ -160,25 +162,20 @@ styles.replaceSync(`@scope (app-user-menu) {
         max-height: min(22rem, calc(100dvh - 10rem));
       }
     }
+    /* Selected row = sand-100 fill at r8, the same active treatment the module
+       tree nav uses. The old 3px gold left-border + gold bold name was a
+       marker style used nowhere else in the product. */
     .user-item {
       color: var(--color-text-main);
       display: flex;
       align-items: center;
       gap: var(--space-sm);
       padding: var(--space-sm) var(--space-md);
-      border-radius: var(--radius-sm);
-      border-left: 3px solid transparent;
-      &:hover {
-        color: var(--color-text-main);
-        background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-        border-left-color: var(--color-primary);
-      }
-      &:active { background: color-mix(in srgb, var(--color-primary) 15%, transparent); }
+      border-radius: var(--r-8);
+      &:hover { color: var(--color-text-main); background: var(--bg-input); }
       &.is-active {
-        background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-        border-left-color: var(--color-primary);
-        & .user-item-name { color: var(--color-primary); font-weight: 700; }
-        & .user-item-email { color: var(--color-text-muted); }
+        background: var(--bg-surface-hover);
+        & .user-item-name { font-weight: 600; }
       }
     }
     .user-item-info { flex: 1; min-width: 0; }
@@ -195,23 +192,21 @@ styles.replaceSync(`@scope (app-user-menu) {
     }
     .theme-title {
       font-size: var(--font-size-xs);
-      font-weight: 500;
+      font-weight: 600;
       color: var(--color-text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
     }
     .theme-switch {
       display: inline-flex;
       gap: 2px;
       padding: 2px;
       border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      background: var(--color-bg-base);
+      border-radius: var(--r-8);
+      background: var(--bg-input);
     }
     .theme-option {
       width: 32px;
       height: 26px;
-      border-radius: calc(var(--radius-md) - 3px);
+      border-radius: var(--r-6);
       color: var(--color-text-muted);
       &:hover { color: var(--color-text-main); }
       &:focus-visible { box-shadow: 0 0 0 2px var(--color-primary-ring); }
@@ -224,14 +219,25 @@ styles.replaceSync(`@scope (app-user-menu) {
     .dropdown-footer { padding: var(--space-xs); border-top: 1px solid var(--color-border); }
     .dropdown-button {
       width: 100%;
+      /* justify-content + gap, not text-align: global.css's bare button reset
+         sets display:inline-flex with justify-content:center, so text-align
+         could never left-align these — the label sat centred and the icon
+         jammed against it with no gap. */
+      justify-content: flex-start;
+      gap: var(--space-sm);
       padding: var(--space-sm) var(--space-md);
-      border-radius: var(--radius-sm);
-      text-align: left;
+      border-radius: var(--r-8);
       font-size: var(--font-size-sm);
       color: var(--color-text-main);
-      &:hover { background: var(--color-bg-base); }
-      &.is-add { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 40%, transparent); margin-bottom: var(--space-xs); &:hover { background: color-mix(in srgb, var(--color-primary) 8%, transparent); } }
-      &.is-danger { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 30%, transparent); &:hover { background: color-mix(in srgb, var(--color-error) 10%, transparent); } }
+      &:hover { background: var(--bg-input); }
+      /* Both read as quiet menu rows matching the account rows above. "Add
+         Account" was gold text (weak contrast on the sand plane, and gold is
+         reserved for selection/accent, not for a routine action); only the
+         destructive action keeps a colour, on its own hover tint. */
+      &.is-danger {
+        color: var(--color-error);
+        &:hover { background: var(--color-error-bg); }
+      }
     }
     .btn-icon { flex-shrink: 0; width: 14px; height: 14px; }
   }
@@ -335,7 +341,7 @@ export class AppUserMenu extends HTMLElement {
           </div>
         </div>
         <div class="dropdown-footer">
-          <button class="dropdown-button is-add" data-add-account>
+          <button class="dropdown-button" data-add-account>
             ${icons.plus('btn-icon', 14)} Add Account
           </button>
           <button class="dropdown-button is-danger" data-logout>
