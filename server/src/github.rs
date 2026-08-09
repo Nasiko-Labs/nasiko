@@ -16,9 +16,8 @@ use std::collections::HashMap;
 
 use crate::agents::upload::BuildJobPayload;
 use crate::agents::utils::set_upload_status;
-use nasiko_secrets::SecretsCrypto;
-
 use crate::{auth::Claims, state::AppState};
+use nasiko_secrets::SecretsCrypto;
 
 /// Public routes — no auth required (GitHub redirects the browser here).
 /// Merged at the root level in `lib.rs` so the callback URL is reachable
@@ -367,9 +366,43 @@ async fn github_callback_login(
 ) -> axum::response::Response {
     let provider_id = github_user.id.to_string();
 
+    // Fetch the account's primary verified email so a GitHub login links to the
+    // same CP user as a Google login with that address (see
+    // AuthService::upsert_oauth_user). Best-effort: a failure here degrades to no
+    // linking rather than failing the login, and the unverified `/user` profile
+    // email is deliberately never used as a fallback.
+    let verified_email = match state.github_svc.as_ref() {
+        Some(svc) => svc
+            .primary_verified_email(&token.access_token)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(%e, github_login = %github_user.login, "GitHub SSO login: could not fetch verified email; proceeding without cross-provider linking");
+                None
+            }),
+        None => None,
+    };
+
+    // Corporate-only admission (multi-tenant mode), BEFORE any user is created,
+    // so a rejected personal login provisions nothing. GitHub has no
+    // hosted-domain claim, so the decision rests on the verified email's domain.
+    // Inert outside multi-tenant mode (single-tenant behavior is unchanged).
+    if crate::admission::check(
+        state.config.multi_tenant_mode,
+        state.config.allow_personal_emails,
+        verified_email.as_deref(),
+        None,
+    ) == crate::admission::Admission::RejectPersonal
+    {
+        tracing::info!(
+            github_login = %github_user.login,
+            "GitHub SSO login rejected: personal email not allowed in corporate-only mode"
+        );
+        return login_error_redirect(&state, "personal_email_not_allowed");
+    }
+
     let result = match state
         .auth
-        .upsert_oauth_user("github", &provider_id, &github_user.login)
+        .upsert_oauth_user("github", &provider_id, &github_user.login, verified_email.as_deref())
         .await
     {
         Ok(r) => r,
@@ -436,6 +469,25 @@ async fn github_callback_login(
     };
 
     Redirect::temporary(&redirect_target).into_response()
+}
+
+/// Redirect back to the app with an `error` query code, for a login rejected
+/// before any session is issued (e.g. the corporate-only admission gate).
+/// Mirrors the success redirect's `APP_BASE_URL` handling.
+fn login_error_redirect(state: &AppState, code: &str) -> axum::response::Response {
+    let base = if state.config.app_base_url.is_empty() {
+        "http://placeholder".to_string()
+    } else {
+        state.config.app_base_url.trim_end_matches('/').to_string()
+    };
+    let mut url = reqwest::Url::parse(&format!("{base}/")).expect("valid base URL");
+    url.query_pairs_mut().append_pair("error", code);
+    let target = if state.config.app_base_url.is_empty() {
+        format!("/?{}", url.query().unwrap_or_default())
+    } else {
+        url.to_string()
+    };
+    Redirect::temporary(&target).into_response()
 }
 
 async fn github_status(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {

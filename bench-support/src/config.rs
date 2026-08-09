@@ -60,6 +60,11 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         observability_enabled: false,
         tenant_id: None,
         app_base_url: String::new(),
+        // Bench is single-tenant: multi-tenant mode off, so the admission gate
+        // and headless redirect are both inert.
+        multi_tenant_mode: false,
+        allow_personal_emails: false,
+        nasiko_bff_url: None,
         composio_api_key: None,
         composio_base_url: "https://backend.composio.dev".into(),
         composio_webhook_secret: None,

@@ -39,6 +39,7 @@ pub trait AuthService: Send + Sync + 'static {
         provider: &str,
         provider_id: &str,
         username: &str,
+        verified_email: Option<&str>,
     ) -> Result<LoginResult, AuthError>;
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
     async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError>;
@@ -246,6 +247,7 @@ impl AuthService for SimpleJwtAuth {
         _provider: &str,
         _provider_id: &str,
         _username: &str,
+        _verified_email: Option<&str>,
     ) -> Result<LoginResult, AuthError> {
         Err(AuthError::Unsupported)
     }

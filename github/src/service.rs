@@ -11,7 +11,8 @@ use crate::config::GitHubConfig;
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
 use crate::models::{
-    AccessToken, CloneArchive, GitHubRepo, GitHubTokenResponse, GitHubUser, OAuthStateClaims,
+    AccessToken, CloneArchive, GitHubEmail, GitHubRepo, GitHubTokenResponse, GitHubUser,
+    OAuthStateClaims,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -301,6 +302,23 @@ impl GitHubService {
 
         info!(login = %user.login, "GitHub code exchange successful");
         Ok((token, user))
+    }
+
+    /// The account's primary, verified email from `GET /user/emails`.
+    ///
+    /// The `/user` profile `email` is the *public* address — frequently null and
+    /// carrying no verification guarantee — so it must never be used to identify
+    /// a person. This endpoint (scope `user:email`, already requested at
+    /// authorize) returns every address on the account; we take the one that is
+    /// both `primary` and `verified`. `Ok(None)` when there is no such address,
+    /// which the caller treats as "no verified email" (no cross-provider linking).
+    #[instrument(skip(self, token))]
+    pub async fn primary_verified_email(&self, token: &str) -> Result<Option<String>> {
+        let emails: Vec<GitHubEmail> = self.api_client.get_authed("/user/emails", token).await?;
+        Ok(emails
+            .into_iter()
+            .find(|e| e.primary && e.verified)
+            .map(|e| e.email))
     }
 
     // ── Token validation ─────────────────────────────────────────────────────

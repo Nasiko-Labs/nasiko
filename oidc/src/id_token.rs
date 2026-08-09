@@ -21,6 +21,20 @@ pub struct IdTokenClaims {
     pub tid: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
+    /// Whether the provider asserts this email is verified. We only trust
+    /// `email` for cross-provider account linking when this is `Some(true)`;
+    /// linking on an unverified address would let one user seize another's
+    /// account by claiming their email. Deserialized permissively (bool or the
+    /// string "true"/"false") because providers disagree on the wire type.
+    #[serde(default, deserialize_with = "bool_or_string_opt")]
+    pub email_verified: Option<bool>,
+    /// Google Workspace "hosted domain" — present only for an account in a
+    /// managed Workspace domain (and thus inherently domain-verified), absent
+    /// for a consumer @gmail.com account. This is the corporate-domain signal
+    /// the multi-tenant admission gate keys on; harmless `None` on any
+    /// non-Google provider.
+    #[serde(default)]
+    pub hd: Option<String>,
     #[serde(default)]
     pub preferred_username: Option<String>,
     #[serde(default)]
@@ -71,6 +85,28 @@ where
     )
 }
 
+/// Accepts `email_verified` as a real JSON bool or the string "true"/"false"
+/// some providers emit, normalizing to `Option<bool>`. Same defensive reason as
+/// `string_or_seq_opt`: a wire shape the plain type rejects would fail the whole
+/// login rather than just dropping one claim.
+fn bool_or_string_opt<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrString {
+        Bool(bool),
+        Str(String),
+    }
+
+    Ok(match Option::<BoolOrString>::deserialize(deserializer)? {
+        Some(BoolOrString::Bool(b)) => Some(b),
+        Some(BoolOrString::Str(s)) => Some(s.eq_ignore_ascii_case("true")),
+        None => None,
+    })
+}
+
 impl IdTokenClaims {
     /// The stable identifier to store as `user_identities.provider_id`.
     /// Prefers `oid` (Microsoft's documented stable-per-tenant identifier)
@@ -86,6 +122,15 @@ impl IdTokenClaims {
             .or(self.email.as_deref())
             .or(self.name.as_deref())
             .unwrap_or(&self.sub)
+    }
+
+    /// The email safe to use for cross-provider account linking: returned only
+    /// when the provider asserted it verified. A Google `hd` (managed Workspace
+    /// domain) also implies a verified address even if `email_verified` was
+    /// omitted from the token.
+    pub fn verified_email(&self) -> Option<&str> {
+        let trusted = self.email_verified == Some(true) || self.hd.is_some();
+        if trusted { self.email.as_deref() } else { None }
     }
 }
 

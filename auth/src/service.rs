@@ -215,6 +215,7 @@ impl AuthService for AuthServiceImpl {
         provider: &str,
         provider_id: &str,
         username: &str,
+        verified_email: Option<&str>,
     ) -> Result<LoginResult, AuthError> {
         let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_id = $2",
@@ -231,30 +232,60 @@ impl AuthService for AuthServiceImpl {
                 .await;
             uid
         } else {
-            let email = format!("{}@{}.users", username, provider);
-            let row: (uuid::Uuid,) = sqlx::query_as(
-                "INSERT INTO users (username, email, is_superuser, is_active, last_login) VALUES ($1, $2, false, true, now()) RETURNING id",
-            )
-            .bind(username)
-            .bind(&email)
-            .fetch_one(&self.db)
-            .await
-?;
+            // First time we've seen this (provider, provider_id). If the provider
+            // gave us a *verified* email that already belongs to a user, link this
+            // new identity to that existing user instead of creating a duplicate —
+            // this is how one person keeps a single CP user across Google + GitHub.
+            // Synthetic placeholders (`{username}@{provider}.users`) are never
+            // matched: callers only pass emails they have verified.
+            let linked: Option<(uuid::Uuid,)> = match verified_email {
+                Some(email) => {
+                    sqlx::query_as("SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL")
+                        .bind(email)
+                        .fetch_optional(&self.db)
+                        .await?
+                }
+                None => None,
+            };
 
+            let user_id = if let Some((uid,)) = linked {
+                let _ = sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
+                    .bind(uid)
+                    .execute(&self.db)
+                    .await;
+                uid
+            } else {
+                // Brand-new user. Persist the real verified email when present;
+                // otherwise fall back to the synthetic placeholder so the NOT NULL
+                // UNIQUE `email` column stays satisfied (single-tenant path, unchanged).
+                let email = verified_email
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("{}@{}.users", username, provider));
+                let row: (uuid::Uuid,) = sqlx::query_as(
+                    "INSERT INTO users (username, email, is_superuser, is_active, last_login) VALUES ($1, $2, false, true, now()) RETURNING id",
+                )
+                .bind(username)
+                .bind(&email)
+                .fetch_one(&self.db)
+                .await?;
+                row.0
+            };
+
+            // Link this provider identity to the user (new or existing). ON CONFLICT
+            // keeps it idempotent if two logins race.
             sqlx::query(
                 r#"INSERT INTO user_identities (user_id, provider, provider_id, provider_username)
                    VALUES ($1, $2, $3, $4)
                    ON CONFLICT (provider, provider_id) DO UPDATE SET provider_username = EXCLUDED.provider_username"#,
             )
-            .bind(row.0)
+            .bind(user_id)
             .bind(provider)
             .bind(provider_id)
             .bind(username)
             .execute(&self.db)
-            .await
-?;
+            .await?;
 
-            row.0
+            user_id
         };
 
         let identity = Identity {

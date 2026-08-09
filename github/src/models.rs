@@ -53,6 +53,21 @@ pub struct GitHubUser {
     pub avatar_url: Option<String>,
 }
 
+/// One entry from `GET https://api.github.com/user/emails`.
+///
+/// The `/user` profile `email` above is the user's *public* address — often
+/// null and never a verification signal. The account's real, confirmed address
+/// comes from this endpoint (scope `user:email`, already requested): the caller
+/// takes the one that is both `primary` and `verified`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubEmail {
+    pub email: String,
+    #[serde(default)]
+    pub primary: bool,
+    #[serde(default)]
+    pub verified: bool,
+}
+
 // ── Repository ────────────────────────────────────────────────────────────
 
 /// A single GitHub repository returned by `GET /user/repos`.

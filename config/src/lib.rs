@@ -86,6 +86,22 @@ pub struct Config {
     /// Stored as `user_identities.provider` for OIDC-authenticated users.
     /// Override if fronting a non-Entra OIDC provider.
     pub oidc_provider_label: String,
+    /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
+    /// multi-tenant BFF — it serves no UI (root 302s to the BFF) and enforces
+    /// the corporate-only admission gate below. Default off = ordinary
+    /// single-tenant behavior, unchanged.
+    pub multi_tenant_mode: bool,
+    /// Only consulted when `multi_tenant_mode` is on. Off (the default)
+    /// restricts logins to corporate identities (a Google `hd`, or a verified
+    /// email whose domain isn't a known personal provider). On also admits
+    /// personal emails, which may only ever *join* a workspace, never create
+    /// one. No effect outside multi-tenant mode.
+    pub allow_personal_emails: bool,
+    /// Base URL of the multi-tenant BFF/dashboard. Used only in
+    /// `multi_tenant_mode`: this headless control plane serves no UI, so browser
+    /// navigations are redirected here. `None` (the default) outside
+    /// multi-tenant mode.
+    pub nasiko_bff_url: Option<String>,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
     pub max_router_history_messages: usize,
@@ -226,14 +242,9 @@ impl Config {
             otel_headers: std::env::var("OTEL_EXPORTER_OTLP_HEADERS").ok(),
             otel_service_name: env_or("OTEL_SERVICE_NAME", "nasiko-cp"),
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
-            // Port 4317 (OTLP gRPC), not 4318 (OTLP HTTP), because this endpoint is
-            // injected into agents alongside `otel_protocol`, which defaults to
-            // "grpc" — the pairing has to agree or every agent's exporter speaks
-            // gRPC at an HTTP port and silently fails to export. 4317+grpc is also
-            // the conventional OTLP default pairing.
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://otel-collector:4317",
+                "http://otel-collector:4318",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
@@ -274,6 +285,15 @@ impl Config {
                 .collect(),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
+            multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            allow_personal_emails: std::env::var("ALLOW_PERSONAL_EMAILS")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            nasiko_bff_url: std::env::var("NASIKO_BFF_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
