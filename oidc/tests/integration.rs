@@ -16,8 +16,55 @@ fn test_config(issuer_url: String) -> OidcConfig {
         client_id: AUD.to_string(),
         client_secret: "test-client-secret".to_string(),
         redirect_uri: "https://app.example.com/api/auth/oidc/callback".to_string(),
+        central_callback_url: None,
         scopes: "openid profile email".to_string(),
     }
+}
+
+/// The fleet-relay override: when `central_callback_url` is set, it — not
+/// `redirect_uri` — is the `redirect_uri` advertised to the IdP (and, by the
+/// same helper, sent on token exchange). This is what lets many workspace CPs
+/// share one OIDC app whose single registered callback points at the relay.
+#[tokio::test]
+async fn central_callback_url_overrides_redirect_uri_in_authorize() {
+    let mut server = mockito::Server::new_async().await;
+    let issuer = server.url();
+    let _discovery = server
+        .mock("GET", "/.well-known/openid-configuration")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            support::discovery_json(
+                &issuer,
+                &format!("{issuer}/authorize"),
+                &format!("{issuer}/token"),
+                &format!("{issuer}/jwks"),
+            )
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let central = "https://nasiko.dev/auth/oidc/callback/11111111-1111-1111-1111-111111111111";
+    let mut config = test_config(issuer.clone());
+    config.central_callback_url = Some(central.to_string());
+    let client = OidcClient::new(config, reqwest::Client::new());
+
+    let url = client
+        .authorization_url("state-1", "nonce-1", "challenge-1")
+        .await
+        .expect("authorization_url should succeed");
+
+    let parsed = reqwest::Url::parse(&url).unwrap();
+    let redirect = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "redirect_uri")
+        .map(|(_, v)| v.to_string());
+    assert_eq!(
+        redirect.as_deref(),
+        Some(central),
+        "central_callback_url must be advertised as the redirect_uri"
+    );
 }
 
 #[tokio::test]

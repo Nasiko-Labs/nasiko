@@ -356,6 +356,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         router_agent_timeout_secs: 60,
         github_callback_url: None,
         github_central_callback_url: None,
+        oidc_central_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly

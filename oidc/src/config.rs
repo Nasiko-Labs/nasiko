@@ -10,6 +10,15 @@ pub struct OidcConfig {
     pub client_secret: String,
     /// Must exactly match the redirect URI registered with the IdP.
     pub redirect_uri: String,
+    /// Fleet-relay callback override. When set — a multi-tenant workspace CP
+    /// behind the shared fleet OAuth app — BOTH the authorization request and the
+    /// token exchange use this instead of [`Self::redirect_uri`]. It is a single
+    /// fixed callback registered once with the IdP (e.g.
+    /// `https://nasiko.dev/auth/oidc/callback/<tenant_id>`) that the BFF's OIDC
+    /// relay dispatches to the right CP by the tenant-id path segment — the OIDC
+    /// analogue of GitHub's `central_callback_url`. OIDC requires the
+    /// authorize/exchange redirect URIs to match, so it must feed both.
+    pub central_callback_url: Option<String>,
     /// Space-separated scopes, e.g. `"openid profile email"`.
     pub scopes: String,
 }

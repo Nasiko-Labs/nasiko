@@ -36,11 +36,6 @@ pub struct AppState {
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
     pub observability: Arc<dyn ObservabilityProvider>,
-    /// Point-in-time CPU/memory/disk usage for the control plane, the agents and
-    /// the supporting infra. Docker-backed in the Compose topology; the EE
-    /// composition root replaces it for Kubernetes, the same way it replaces
-    /// `routing_engine`.
-    pub resource_stats: Arc<dyn nasiko_runtime::ResourceStatsProvider>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
     /// Env-configured OIDC relying-party client (e.g. Microsoft Entra ID) —
@@ -96,8 +91,6 @@ impl AppState {
         oci_storage.ensure_bucket(false).await.ok();
 
         let usage_tracker = UsageTracker::new(db.clone());
-
-        let resource_stats = crate::observability::resources::build_provider(&config, db.clone());
 
         let http_client = reqwest::Client::builder()
             .pool_max_idle_per_host(20)
@@ -172,6 +165,7 @@ impl AppState {
                     client_id: client_id.clone(),
                     client_secret: client_secret.clone(),
                     redirect_uri: redirect_uri.clone(),
+                    central_callback_url: config.oidc_central_callback_url.clone(),
                     scopes: config.oidc_scopes.clone(),
                 };
                 Arc::new(nasiko_oidc::OidcClient::new(
@@ -215,7 +209,6 @@ impl AppState {
             redis,
             oci_storage,
             usage_tracker,
-            resource_stats,
             http_client,
             auth,
             mcp,
@@ -332,6 +325,7 @@ impl AppState {
             client_id: self.config.oidc_client_id.clone()?,
             client_secret: self.config.oidc_client_secret.clone()?,
             redirect_uri: self.config.oidc_redirect_uri.clone()?,
+            central_callback_url: self.config.oidc_central_callback_url.clone(),
             scopes: self.config.oidc_scopes.clone(),
         };
         Some((config, self.config.oidc_provider_label.clone()))
@@ -366,6 +360,9 @@ impl AppState {
             client_id: row.oidc_client_id?,
             client_secret: secret,
             redirect_uri: row.oidc_redirect_uri?,
+            // Fleet-level env override applies whether OIDC config came from the
+            // settings row or env — a workspace CP still relays through the BFF.
+            central_callback_url: self.config.oidc_central_callback_url.clone(),
             scopes: row
                 .oidc_scopes
                 .unwrap_or_else(|| "openid profile email".to_string()),
