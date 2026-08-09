@@ -59,7 +59,8 @@ ui/
 | Add Agent | `add-agent.html` | Deploy methods: upload, registry import, GitHub |
 | Chat | `chat.html?agent_id=X` | Direct chat with one agent via the A2A proxy |
 | Sessions | `sessions.html` | Chat session history (sidebar + messages) |
-| Session Trace | `session-trace.html` | Span tree for a trace (`/api/observability/trace/{id}`) |
+| Observability Session | `observability-session.html?session_id=X` | The single trace view: chat transcript │ span tree │ span detail (Info/Attributes). Optional `&trace_id=` preselects one turn's trace. Polls briefly on open, since agent spans batch in a few seconds after a reply |
+| Session Trace | `session-trace.html` | **Redirect stub.** Resolves `?trace_id=` → session via the trace's `project_session_id` and forwards to `observability-session.html`; kept so old links survive |
 | Flows | `flows.html` | Multi-agent flow list |
 | Flow Detail | `flow.html?id=X` | Summary cards + hop/step trace |
 | Builds | `builds.html` | Server-side build jobs with SSE live progress |

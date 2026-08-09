@@ -1,4 +1,13 @@
 // Session trace page fixtures.
+//
+// session-trace.html is now a redirect stub: it reads `project_session_id`
+// off the trace and hands off to /observability-session.html. Only that field
+// is load-bearing here; the span tree below is retained because the shape
+// still documents GET /api/observability/trace/{trace_id}. The session id
+// matches observability-session.preview.js so the redirect URL is realistic
+// (the harness does not carry fixtures across a page navigation, so the
+// landing page is covered by its own scenarios, not by this one).
+//
 // Shape mirrors GET /api/observability/trace/{trace_id} — the same endpoint
 // `nasiko observe trace` consumes: envelope {data:{trace}}, spans as a nested
 // tree with children embedded in each SpanNode (server: oss/server/src/observability/service.rs).
@@ -19,7 +28,7 @@ const span = (over) => ({
 
 const TRACE = {
   id: "8a880df26caf4c12a0e2d5f898f49420",
-  project_session_id: "ctx-42f1c9",
+  project_session_id: "ses_18a5801d3353463ca39ebc216887f385",
   num_spans: 6,
   latency_ms: 41000,
   cost_summary: {

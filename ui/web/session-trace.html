@@ -5,33 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko — Session Trace</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
-    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
-    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+    <!-- Inline and synchronous on purpose: both theme.js and app-header.js are deferred ES modules, so they apply the stored theme / rail width only after first paint —
+         the skeleton would flash the OS theme, and an expanded rail would collapse and re-expand on every MPA navigation. Must stay inline and non-module. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
     <script type="module" src="/common/components/app-header.js"></script>
+    <!--
+      Retired page, kept as a redirect stub so existing links and bookmarks
+      (?trace_id=…) keep working. The trace-scoped flat span list this used to
+      render showed strictly less than the Observability session view — no span
+      detail, no attributes, no transcript — for the same data. The stub
+      resolves trace → session via the trace payload's `project_session_id`
+      and hands off to /observability-session.html with the trace preselected.
+    -->
     <script type="module" src="/common/components/session-trace-page.js"></script>
   </head>
   <body>
     <app-header></app-header>
-    <session-trace-page trace-id="8a880df26caf4c12a0e2d5f898f49420">
-      <!-- Back pill + trace id, stat row, then span rows (full width). -->
+    <session-trace-page>
+      <!-- Interstitial only: this page redirects as soon as the trace resolves. -->
       <div style="display:flex;align-items:center;gap:var(--space-md);padding-bottom:var(--space-md);border-bottom:1px solid var(--color-border);margin-bottom:var(--space-md);">
         <div class="skel-card__btn" style="width:90px;height:36px;"></div>
         <div class="skel-card__line" style="height:24px;width:420px;max-width:50vw;"></div>
       </div>
-      <div style="display:flex;gap:var(--space-2xl,48px);padding-bottom:var(--space-md);border-bottom:1px solid var(--color-border);margin-bottom:var(--space-lg);">
-        <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:50px;"></div><div class="skel-card__line" style="height:20px;width:40px;"></div></div>
-        <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:70px;"></div><div class="skel-card__line" style="height:20px;width:60px;"></div></div>
-        <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:60px;"></div><div class="skel-card__line" style="height:20px;width:70px;"></div></div>
-        <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:40px;"></div><div class="skel-card__line" style="height:20px;width:60px;"></div></div>
-        <div style="display:flex;flex-direction:column;gap:var(--space-xs);"><div class="skel-card__line" style="width:60px;"></div><div class="skel-card__line" style="height:20px;width:90px;"></div></div>
-      </div>
       <div style="display:flex;flex-direction:column;gap:var(--space-sm);">
-        <div class="skel-block" style="height:52px;border-radius:var(--r-8);"></div>
-        <div class="skel-block" style="height:52px;border-radius:var(--r-8);"></div>
-        <div class="skel-block" style="height:52px;border-radius:var(--r-8);"></div>
         <div class="skel-block" style="height:52px;border-radius:var(--r-8);"></div>
         <div class="skel-block" style="height:52px;border-radius:var(--r-8);"></div>
         <div class="skel-block" style="height:52px;border-radius:var(--r-8);"></div>

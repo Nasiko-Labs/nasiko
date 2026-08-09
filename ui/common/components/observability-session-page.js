@@ -28,11 +28,16 @@ class ObservabilitySessionPage extends HTMLElement {
   #detailTab = 'info';
   #tracesState = 'loading';  // loading | ready | empty | error
   #chatState = 'loading';    // loading | ready | empty
+  #focusTraceId = '';        // ?trace_id= — preselect this trace's root span
+  #pollTimer = null;
+  #pollDeadline = 0;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
-    this.#sessionId = new URLSearchParams(window.location.search).get('session_id') || '';
+    const params = new URLSearchParams(window.location.search);
+    this.#sessionId = params.get('session_id') || '';
+    this.#focusTraceId = params.get('trace_id') || '';
 
     this.innerHTML = `
       <div class="page-head">
@@ -88,8 +93,41 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#load();
   }
 
+  disconnectedCallback() {
+    clearTimeout(this.#pollTimer);
+  }
+
   async #load() {
     await Promise.all([this.#loadSession(), this.#loadChat()]);
+    this.#startPolling();
+  }
+
+  /**
+   * Agents export spans through a batching OTel exporter, so a trace opened
+   * straight after a chat holds only the control plane's own `a2a.dispatch`
+   * span — the agent's `a2a.execute` and `ChatCompletion` spans land a few
+   * seconds later. Re-fetch until the tree stops growing (or the window
+   * closes) instead of showing that half-built trace and never updating.
+   */
+  #startPolling() {
+    const INTERVAL_MS = 2000;
+    const WINDOW_MS = 30_000;
+    const STABLE_TICKS = 3;
+
+    this.#pollDeadline = Date.now() + WINDOW_MS;
+    let lastCount = this.#spans.length;
+    let stable = 0;
+
+    const tick = async () => {
+      if (Date.now() > this.#pollDeadline) return;
+      await this.#loadSession();
+      const count = this.#spans.length;
+      stable = count === lastCount ? stable + 1 : 0;
+      lastCount = count;
+      if (stable >= STABLE_TICKS) return;
+      this.#pollTimer = setTimeout(tick, INTERVAL_MS);
+    };
+    this.#pollTimer = setTimeout(tick, INTERVAL_MS);
   }
 
   async #loadSession() {
@@ -164,7 +202,17 @@ class ObservabilitySessionPage extends HTMLElement {
     }
     this.#spans = flat;
     this.#renderTraces();
-    if (flat.length) this.#selectSpan(flat[0].traceId, flat[0].node.span_id);
+    if (!flat.length) return;
+    // Keep whatever the reader picked; only auto-select when nothing is
+    // selected yet or a poll dropped the selected span from the tree.
+    const stillThere = this.#selected
+      && flat.some((f) => f.traceId === this.#selected.traceId && f.node.span_id === this.#selected.spanId);
+    if (stillThere) return;
+    // ?trace_id= (from a chat's "Detailed trace") focuses that turn's trace.
+    const focused = this.#focusTraceId
+      && flat.find((f) => f.traceId === this.#focusTraceId);
+    const pick = focused || flat[0];
+    this.#selectSpan(pick.traceId, pick.node.span_id);
   }
 
   /**
