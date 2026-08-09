@@ -27,6 +27,17 @@ export async function apiFetch(path, opts = {}) {
   const withCreds = base ? { credentials: "include", ...opts } : opts;
   const res = await fetch(`${base}/api${path}`, withCreds);
   if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
+    // Remember where we were so the dashboard can return here after re-auth (the
+    // OAuth round-trip lands back on `/`; the BFF-injected restore snippet reads
+    // this and replaces to the deep link). sessionStorage survives the same-tab
+    // round-trip to the IdP and back. Timestamped so a stale value can't bounce a
+    // later deliberate visit to `/`.
+    try {
+      sessionStorage.setItem(
+        'nasiko:returnTo',
+        JSON.stringify({ p: location.pathname + location.search, t: Date.now() }),
+      );
+    } catch { /* storage disabled — skip return-to, still redirect */ }
     window.location.href = '/login.html';
     return new Promise(() => {}); // page is navigating away; never settle
   }
