@@ -142,6 +142,10 @@ class OrchestratorPage extends HTMLElement {
               messageId: (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)),
               role: 'ROLE_USER',
               parts: [{ text: content }],
+              // Same contract as chat-page: the server keys session_traces and
+              // the dispatch span's session.id on contextId, so it must be the
+              // CP session id or this turn's trace is unreachable by session.
+              contextId: sessionId || undefined,
             },
             metadata: sessionId ? { session_id: sessionId } : undefined,
           },
@@ -158,7 +162,9 @@ class OrchestratorPage extends HTMLElement {
 
         responseActions.style.display = '';
         if (traceId) {
-          responseTrace.href = `/session-trace.html?trace_id=${encodeURIComponent(traceId)}`;
+          const q = new URLSearchParams({ trace_id: traceId });
+          if (sessionId) q.set('session_id', sessionId);
+          responseTrace.href = `/observability-session.html?${q}`;
           responseTrace.style.display = '';
         }
         this.querySelector('#response-usage').innerHTML = usageChipsHtml(usage);
@@ -244,13 +250,11 @@ class OrchestratorPage extends HTMLElement {
       stepsEl.finish();
       show(renderMarkdown(text));
     });
-    const renderProgress = frameRenderer((text) => {
-      show(renderMarkdown(text), { progress: true });
-    });
-
     const out = await readA2aStream(res, {
       onReply: renderReply,
-      onProgress: renderProgress,
+      // See chat-page: working prose is tool activity and belongs in the
+      // timeline, not rendered into the response body and then replaced.
+      onActivity: (line) => stepsEl.onActivity(line),
       onData: (d) => stepsEl.onEvent(d),
       onError: (message) => {
         stepsEl.finish();

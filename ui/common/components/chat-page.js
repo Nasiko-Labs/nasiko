@@ -211,11 +211,15 @@ class ChatPage extends HTMLElement {
         );
       }
 
-      if (!this.#contextId) {
-        this.#contextId = crypto.randomUUID
-          ? crypto.randomUUID()
-          : Math.random().toString(36).slice(2) + Date.now().toString(36);
-      }
+      // Reuse the CP session id as the A2A contextId, the same convention the
+      // CLI follows (see a2a_dispatch.rs "the CLI reuses its CP session id as
+      // contextId"). A freshly minted random id here broke observability: the
+      // server keys `session_traces` and the dispatch span's `session.id` on
+      // contextId, so traces landed under a throwaway id while every link in
+      // the UI (and this page's URL) carries `session_id` — the session detail
+      // page then 404'd and showed no traces at all. It also cost multi-turn
+      // continuity, since a reloaded session got a brand-new contextId.
+      if (!this.#contextId) this.#contextId = this.#sessionId;
 
       this.#persistMessage(this.#sessionId, "user", content);
 
@@ -390,13 +394,17 @@ class ChatPage extends HTMLElement {
       stepsEl.finish();
       showContent(renderMarkdown(text));
     });
-    const renderProgress = frameRenderer((text) => {
-      showContent(renderMarkdown(text), { progress: true });
-    });
-
     const out = await readA2aStream(res, {
       onReply: renderReply,
-      onProgress: renderProgress,
+      // Working prose goes to the activity timeline, not into the message
+      // body: it is the agent's tool activity, and rendering it there as a
+      // growing blob only to overwrite it with the reply lost the sequence
+      // and read as a flicker. `out.progressText` still backs the
+      // no-reply fallback below.
+      onActivity: (line) => {
+        stepsEl.onActivity(line);
+        follow();
+      },
       onData: (d) => {
         stepsEl.onEvent(d);
         follow();
@@ -436,9 +444,15 @@ class ChatPage extends HTMLElement {
     return { text: fullText, traceId: out.traceId, usage: out.usage };
   }
 
+  // Opens the full Observability session view with this turn's trace
+  // preselected — the same page the sessions table links to. It used to point
+  // at session-trace.html, a flat span list with no span detail, no
+  // attributes and no transcript; that page is now a redirect stub.
   #traceLinkHtml(traceId) {
     if (!traceId) return '';
-    return `<a class="msg-action-trace" href="/session-trace.html?trace_id=${encodeURIComponent(traceId)}"
+    const q = new URLSearchParams({ trace_id: traceId });
+    if (this.#sessionId) q.set('session_id', this.#sessionId);
+    return `<a class="msg-action-trace" href="/observability-session.html?${q}"
       aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 

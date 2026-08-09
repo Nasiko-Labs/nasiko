@@ -18,6 +18,7 @@
  *
  *   const out = await readA2aStream(res, {
  *     onProgress(text)  {}  // cumulative working/progress prose
+ *     onActivity(line)  {}  // one new line of working prose (tool activity)
  *     onReply(text)     {}  // cumulative reply text (call renders it)
  *     onData(part)      {}  // data parts (agent-steps events)
  *     onTraceMeta(meta) {}  // { trace_id }
@@ -48,6 +49,9 @@ export async function readA2aStream(res, handlers = {}) {
     failed: false,
     errorMessage: null,
   };
+  // Tracked separately from out.progressText: activity is reported for the
+  // whole stream, progressText only until a reply exists.
+  let activitySeen = "";
   const emitReply = () => {
     if (out.text) handlers.onReply?.(out.text);
   };
@@ -109,8 +113,24 @@ export async function readA2aStream(res, handlers = {}) {
         emitReply();
       }
     } else if (state === "TASK_STATE_WORKING") {
-      // Progress prose, NOT the reply — never promote it to out.text here;
-      // it is only a fallback if the stream ends without a reply.
+      // Most agents relay tool activity here as plain text rather than as
+      // structured data parts — a real infra-agent stream carries exactly
+      // `dns_lookup: example.com` / `ip_info: 104.20.23.154` this way, and
+      // nothing else. Emit it ALWAYS: these frames interleave with reply
+      // tokens (the first artifactUpdate arrives before the first tool call),
+      // so gating on `!out.text` — as this branch used to — dropped every
+      // tool line the agent reported and left the activity view empty.
+      if (text) {
+        const previousActivity = activitySeen;
+        activitySeen = mergeProgress(previousActivity, text);
+        const delta = activitySeen.startsWith(previousActivity)
+          ? activitySeen.slice(previousActivity.length)
+          : text;
+        const line = delta.trim();
+        if (line) handlers.onActivity?.(line);
+      }
+      // `progressText` is a different job: the reply fallback when a stream
+      // ends without one. That one genuinely only applies before any reply.
       if (text && !out.text) {
         out.progressText = mergeProgress(out.progressText, text);
         handlers.onProgress?.(out.progressText);

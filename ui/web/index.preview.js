@@ -45,6 +45,51 @@ export default {
       await page.click("[data-user-toggle]");
       await page.waitForSelector(".user-dropdown.is-visible");
     },
+    // The timeline's full vocabulary in one shot, driven directly through
+    // onEvent() so it doesn't depend on stream timing: an agent whose tools
+    // arrive as STRUCTURED data parts (nested rows with JSON input/output),
+    // a second agent that only sends PROSE status (the seed-agent case, which
+    // renders as an activity log), a still-running tool, and a policy block.
+    "steps-vocabulary": async (page) => {
+      await page.evaluate(async () => {
+        // Mount inside the page's own content card — appending to <body> puts
+        // the timeline on the ink shell, where main-text rows go invisible.
+        const page_ = document.querySelector("orchestrator-page");
+        page_.replaceChildren();
+        const host = document.createElement("div");
+        host.style.cssText = "max-width:860px;margin:0 auto";
+        page_.appendChild(host);
+        await import("/common/components/agent-steps.js");
+        const steps = document.createElement("agent-steps");
+        host.appendChild(steps);
+
+        steps.onEvent({ type: "thinking", content: "The deploy is failing. I need the **container logs** first, then cluster capacity." });
+
+        steps.onEvent({ type: "tool_call", agent: "devops-agent", turn: 1, message: "Check the failing deployment logs for service `api`" });
+        steps.onEvent({ type: "tool_call_started", agent: "devops-agent", tool_name: "get_logs", id: "t1",
+          arguments: { service: "api", lines: 200, since: "15m" } });
+        steps.onEvent({ type: "tool_call_result", agent: "devops-agent", tool_name: "get_logs", id: "t1", duration_ms: 412,
+          result: "found 3 OOMKilled events\nmemory limit 128Mi too low for JVM workload" });
+        steps.onEvent({ type: "tool_call_started", agent: "devops-agent", tool_name: "web_search", id: "t2",
+          arguments: { query: "JVM container OOMKilled 128Mi heap sizing" } });
+        steps.onEvent({ type: "tool_call_result", agent: "devops-agent", tool_name: "web_search", id: "t2", duration_ms: 980,
+          result: { results: 12, top: "Set -XX:MaxRAMPercentage=75 and raise the limit to 512Mi" } });
+        steps.onEvent({ type: "tool_result", agent: "devops-agent", turn: 1, success: true, duration_ms: 2140,
+          result: "Root cause: memory limit 128Mi too low for the JVM workload.\n\nRecommend **512Mi**." });
+
+        // Prose-only agent: no structured parts, so the log is what it sent.
+        steps.onEvent({ type: "tool_call", agent: "coding-agent", turn: 2, message: "Patch the deployment manifest to 512Mi" });
+        steps.onEvent({ type: "sub_status", agent: "coding-agent", message: "reading k8s/api/deployment.yaml" });
+        steps.onEvent({ type: "sub_status", agent: "coding-agent", message: "editing resources.limits.memory" });
+        steps.onEvent({ type: "sub_content", agent: "coding-agent", content: "Updated `resources.limits.memory` to `512Mi`." });
+
+        // Still running, plus a policy rejection.
+        steps.onEvent({ type: "tool_call", agent: "qa-agent", turn: 3, message: "Re-run the deployment smoke tests" });
+        steps.onEvent({ type: "policy_rejected", agent: "billing-agent", turn: 4, reason: "MaxFanOutExceeded: flow already fanned out to 4 agents (limit 4)" });
+      });
+      await page.waitForSelector("agent-steps .step--tool");
+      await page.waitForTimeout(500);
+    },
     // Mid-stream: tool-call steps expanded and running.
     "streaming-steps": async (page) => {
       await page.fill("#textarea", "Why is my deployment failing?");

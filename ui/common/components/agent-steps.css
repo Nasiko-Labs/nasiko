@@ -1,4 +1,5 @@
-/* <agent-steps> — collapsible tool-call steps shown while an A2A response streams. */
+/* <agent-steps> — live activity timeline shown while an A2A response streams.
+   Rows: agent · tool (nested under its agent) · thinking · policy. */
 
 agent-steps {
   display: block;
@@ -6,13 +7,15 @@ agent-steps {
   font-size: var(--font-size-sm);
 }
 
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
 agent-steps .steps-header {
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
   padding: var(--space-2xs) var(--space-xs);
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--r-8);
   background: transparent;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
@@ -22,14 +25,14 @@ agent-steps .steps-header {
 }
 agent-steps .steps-header:hover {
   color: var(--color-text-main);
-  background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+  background: var(--bg-surface-hover);
 }
 agent-steps .steps-header:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--color-primary-ring);
 }
 
-/* Done: full-width sand summary bar — "Reasoned for Xs · N steps · routed to <agent>" */
+/* Done: full-width sand summary bar — "Reasoned for Xs · 2 agents · 3 tools" */
 agent-steps.is-done .steps-header {
   display: flex;
   width: 100%;
@@ -46,18 +49,23 @@ agent-steps.is-done .steps-header:hover {
   color: var(--color-text-muted);
 }
 agent-steps.is-done .steps-chevron { display: none; }
-agent-steps .steps-check {
-  color: var(--color-text-main);
-  flex-shrink: 0;
-}
+agent-steps .steps-check { color: var(--color-text-main); flex-shrink: 0; }
 agent-steps .steps-strong {
   color: var(--color-text-main);
   font-weight: 600;
   margin-right: var(--space-xs);
 }
-agent-steps .steps-meta {
+agent-steps .steps-meta { color: var(--color-text-muted); }
+
+/* Live elapsed clock, Chivo Mono so the digits don't jitter as they tick. */
+agent-steps .steps-elapsed {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
+
 agent-steps .steps-viewall { display: none; }
 agent-steps.is-done .steps-viewall {
   display: inline;
@@ -73,9 +81,7 @@ agent-steps .steps-chevron {
   transition: transform 0.15s ease;
   color: var(--color-text-muted);
 }
-agent-steps.is-expanded .steps-chevron {
-  transform: rotate(90deg);
-}
+agent-steps.is-expanded .steps-chevron { transform: rotate(90deg); }
 
 agent-steps .steps-label {
   overflow: hidden;
@@ -91,27 +97,27 @@ agent-steps .steps-pulse {
   flex-shrink: 0;
   animation: agent-steps-pulse 1.5s ease-in-out infinite;
 }
-agent-steps.is-done .steps-pulse {
-  animation: none;
-  background: var(--color-warning);
-}
 
-agent-steps.is-done .steps-list {
-  margin-top: var(--space-xs);
-}
+/* ── Timeline ───────────────────────────────────────────────────────────── */
+
 agent-steps .steps-list {
   display: none;
   margin-top: var(--space-2xs);
   padding-left: var(--space-sm);
   border-left: 2px solid var(--color-border);
 }
-agent-steps.is-expanded .steps-list {
-  display: block;
-}
+agent-steps.is-expanded .steps-list { display: block; }
+agent-steps.is-done .steps-list { margin-top: var(--space-xs); }
 
-agent-steps .step {
-  margin: 0 0 var(--space-2xs);
+agent-steps .step { margin: 0 0 2px; }
+
+/* Rows fade in as their event lands, so the timeline reads as it builds. */
+@keyframes agent-steps-row-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
 }
+agent-steps .step { animation: agent-steps-row-in 0.18s ease both; }
+
 agent-steps .step-summary {
   display: flex;
   align-items: center;
@@ -120,16 +126,14 @@ agent-steps .step-summary {
   width: 100%;
   padding: var(--space-2xs) var(--space-xs);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-6);
   background: transparent;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
   min-width: 0;
 }
-agent-steps .step-summary:hover {
-  background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
-}
+agent-steps .step-summary:hover { background: var(--bg-surface-hover); }
 agent-steps .step-summary:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--color-primary-ring);
@@ -138,9 +142,53 @@ agent-steps .step-summary:focus-visible {
 agent-steps .step-chevron {
   color: var(--color-text-muted);
   transition: transform 0.15s ease;
+  flex-shrink: 0;
 }
-agent-steps .step.is-open .step-chevron {
-  transform: rotate(90deg);
+agent-steps .step.is-open > .step-summary .step-chevron { transform: rotate(90deg); }
+
+/* Kind icon distinguishes an agent hop from a tool call at a glance. */
+agent-steps .step-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-6);
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  background: var(--bg-input);
+}
+agent-steps .step--agent .step-icon { color: var(--color-text-main); }
+agent-steps .step--tool .step-icon { color: var(--fg-brand, var(--color-text-main)); }
+agent-steps .step--policy .step-icon { color: var(--color-error); }
+agent-steps .step-icon svg { width: 13px; height: 13px; }
+
+agent-steps .step-title {
+  font-weight: 600;
+  color: var(--color-text-main);
+  font-size: var(--font-size-xs);
+  flex-shrink: 0;
+}
+/* Tool names are identifiers — mono reads them better than the UI face. */
+agent-steps .step--tool .step-title { font-family: var(--font-mono); }
+
+agent-steps .step-sub {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Right rail: duration then state, so both columns line up down the list. */
+agent-steps .step-time {
+  margin-left: auto;
+  padding-left: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 agent-steps .step-state {
@@ -150,15 +198,14 @@ agent-steps .step-state {
   flex-shrink: 0;
   position: relative;
 }
-/* running: spinner ring */
-agent-steps .step.is-running .step-state {
+agent-steps .step.is-running > .step-summary .step-state {
   border: 2px solid color-mix(in srgb, var(--color-primary) 25%, transparent);
   border-top-color: var(--color-primary);
   animation: agent-steps-spin 0.8s linear infinite;
 }
-/* done: check / fail: cross drawn with background + mask-free glyphs */
-agent-steps .step.is-ok .step-state::before,
-agent-steps .step.is-fail .step-state::before {
+agent-steps .step.is-ok > .step-summary .step-state::before,
+agent-steps .step.is-fail > .step-summary .step-state::before,
+agent-steps .step.is-blocked > .step-summary .step-state::before {
   position: absolute;
   inset: 0;
   display: grid;
@@ -167,31 +214,23 @@ agent-steps .step.is-fail .step-state::before {
   font-weight: 700;
   line-height: 1;
 }
-agent-steps .step.is-ok .step-state::before {
+agent-steps .step.is-ok > .step-summary .step-state::before {
   content: "✓";
   color: var(--color-success);
 }
-agent-steps .step.is-fail .step-state::before {
+agent-steps .step.is-fail > .step-summary .step-state::before {
   content: "✕";
   color: var(--color-error);
 }
+agent-steps .step.is-blocked > .step-summary .step-state::before {
+  content: "!";
+  color: var(--color-warning, var(--color-error));
+}
 
-agent-steps .step-title {
-  font-weight: 600;
-  color: var(--color-text-main);
-  font-size: var(--font-size-xs);
-  flex-shrink: 0;
-}
-agent-steps .step-sub {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ── Row body ───────────────────────────────────────────────────────────── */
 
 agent-steps .step-body {
-  margin: var(--space-2xs) 0 var(--space-sm) calc(12px + 14px + 2 * var(--space-xs));
+  margin: var(--space-2xs) 0 var(--space-sm) calc(12px + 20px + 2 * var(--space-xs));
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
@@ -212,21 +251,73 @@ agent-steps .step-v {
   margin: 0;
   padding: var(--space-xs) var(--space-sm);
   font-size: var(--font-size-xs);
-  font-family: monospace;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 200px;
-  overflow-y: auto;
   color: var(--color-text-main);
-  background: color-mix(in srgb, var(--color-text-muted) 5%, transparent);
-  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border-radius: var(--r-6);
+  overflow-wrap: anywhere;
 }
-agent-steps .step-live-line {
+/* JSON / raw payloads keep the mono face and preserved whitespace. */
+agent-steps pre.step-v {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+/* Markdown bodies drop their own outer margins inside the well. */
+agent-steps .step-v--md > :first-child { margin-top: 0; }
+agent-steps .step-v--md > :last-child { margin-bottom: 0; }
+
+/* Long payloads clamp instead of being cut with an ellipsis (see step-more). */
+agent-steps .step-v.is-clamped {
+  max-height: 14em;
+  overflow: hidden;
+}
+agent-steps .step-v.is-clamped.is-expanded {
+  max-height: none;
+  overflow: visible;
+}
+agent-steps .step-more {
+  margin-top: var(--space-2xs);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-brand, var(--color-text-muted));
   font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+agent-steps .step-more:hover { text-decoration: underline; }
+agent-steps .step-more:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-ring);
+  border-radius: var(--r-4);
+}
+
+/* Prose activity from agents that send no structured tool parts: an ordered
+   log, not a single overwritten line — the sequence is the story. */
+agent-steps .step-log {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   border-left: 2px solid var(--color-border);
   padding-left: var(--space-sm);
+}
+agent-steps .step-log-line {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+agent-steps .step-log-line::before {
+  content: "› ";
+  color: var(--color-text-muted);
+  opacity: 0.6;
+}
+
+/* Nested tool rows sit inside their agent's body. */
+agent-steps .step-children {
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--color-border);
+  padding-left: var(--space-xs);
 }
 
 @keyframes agent-steps-pulse {
@@ -241,7 +332,6 @@ agent-steps .step-live-line {
     0%, 100% { opacity: 0.6; }
     50% { opacity: 1; }
   }
-  agent-steps .step.is-running .step-state {
-    animation-duration: 2s;
-  }
+  agent-steps .step { animation: none; }
+  agent-steps .step.is-running > .step-summary .step-state { animation-duration: 2s; }
 }
