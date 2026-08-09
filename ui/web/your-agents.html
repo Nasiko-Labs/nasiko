@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
-    <!-- Inline and synchronous on purpose: theme.js is a deferred ES module, so it applies the stored theme after first paint and the pre-JS skeleton flashes the OS theme. -->
-    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+    <!-- Inline and synchronous on purpose: both theme.js and app-header.js are deferred ES modules, so they apply the stored theme / rail width only after first paint —
+         the skeleton would flash the OS theme, and an expanded rail would collapse and re-expand on every MPA navigation. Must stay inline and non-module. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <!-- The page component's own sheet, linked rather than imported by its
