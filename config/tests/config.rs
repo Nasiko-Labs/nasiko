@@ -48,7 +48,8 @@ fn unset_vars(keys: &[&str]) {
 fn from_env_succeeds_with_required_vars() {
     set_required_vars();
 
-    let cfg = Config::from_env().expect("Config::from_env() should succeed when required vars are set");
+    let cfg =
+        Config::from_env().expect("Config::from_env() should succeed when required vars are set");
 
     assert_eq!(cfg.database_url, "postgres://test:test@localhost/testdb");
     assert_eq!(cfg.redis_url, "redis://localhost:6379");
@@ -68,9 +69,15 @@ fn missing_database_url_returns_error() {
     unsafe { std::env::remove_var("DATABASE_URL") };
 
     let result = Config::from_env();
-    assert!(result.is_err(), "Expected error when DATABASE_URL is missing");
+    assert!(
+        result.is_err(),
+        "Expected error when DATABASE_URL is missing"
+    );
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("DATABASE_URL"), "Error message should name the missing var: {msg}");
+    assert!(
+        msg.contains("DATABASE_URL"),
+        "Error message should name the missing var: {msg}"
+    );
 
     unset_required_vars();
 }
@@ -109,7 +116,12 @@ fn missing_secrets_encryption_key_returns_error() {
 
     let result = Config::from_env();
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("SECRETS_ENCRYPTION_KEY"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("SECRETS_ENCRYPTION_KEY")
+    );
 
     unset_required_vars();
 }
@@ -207,10 +219,19 @@ fn optional_fields_use_defaults_when_not_set() {
     assert_eq!(cfg.otel_headers, None);
     assert_eq!(cfg.otel_service_name, "nasiko-cp");
     assert_eq!(cfg.otel_sample_ratio, "1.0");
-    assert_eq!(cfg.otel_collector_endpoint, "http://otel-collector:4318");
+    // Must stay on the gRPC port while `otel_protocol` defaults to grpc — the two
+    // are injected into agents as a pair.
+    assert_eq!(cfg.otel_collector_endpoint, "http://otel-collector:4317");
+    assert_eq!(cfg.otel_protocol, "grpc");
     assert!(cfg.otel_capture_content);
-    assert_eq!(cfg.tempo_url, "http://tempo.nasiko-infra.svc.cluster.local:3200");
-    assert_eq!(cfg.loki_url, "http://loki.nasiko-infra.svc.cluster.local:3100");
+    // Both default to empty, and that emptiness is load-bearing: `observability_enabled`
+    // is derived from `TEMPO_URL` being set and non-empty, so an in-cluster DNS default
+    // here would make every deployment claim a Tempo it may not have. The old
+    // svc.cluster.local defaults were dropped in 9022f1d3; this assertion had not
+    // caught up.
+    assert_eq!(cfg.tempo_url, "");
+    assert_eq!(cfg.loki_url, "");
+    assert!(!cfg.observability_enabled);
     assert_eq!(cfg.flow_max_depth, 5);
     assert_eq!(cfg.flow_max_fan_out, 20);
     assert_eq!(cfg.flow_max_tokens, 100_000);
@@ -229,9 +250,18 @@ fn optional_fields_use_defaults_when_not_set() {
     assert_eq!(cfg.admin_username, "admin");
 
     // git_clone_allowed_hosts has a hardcoded default
-    assert!(cfg.git_clone_allowed_hosts.contains(&"github.com".to_string()));
-    assert!(cfg.git_clone_allowed_hosts.contains(&"gitlab.com".to_string()));
-    assert!(cfg.git_clone_allowed_hosts.contains(&"bitbucket.org".to_string()));
+    assert!(
+        cfg.git_clone_allowed_hosts
+            .contains(&"github.com".to_string())
+    );
+    assert!(
+        cfg.git_clone_allowed_hosts
+            .contains(&"gitlab.com".to_string())
+    );
+    assert!(
+        cfg.git_clone_allowed_hosts
+            .contains(&"bitbucket.org".to_string())
+    );
 
     // registry_import_allowed_hosts defaults to empty
     assert!(cfg.registry_import_allowed_hosts.is_empty());
@@ -258,7 +288,12 @@ fn otel_capture_content_true_when_set_to_true() {
 #[serial]
 fn otel_capture_content_false_when_set_to_false() {
     set_required_vars();
-    unsafe { std::env::set_var("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "false") };
+    unsafe {
+        std::env::set_var(
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+            "false",
+        )
+    };
 
     let cfg = Config::from_env().unwrap();
     assert!(!cfg.otel_capture_content);
@@ -275,7 +310,10 @@ fn otel_capture_content_false_when_set_to_1() {
     unsafe { std::env::set_var("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "1") };
 
     let cfg = Config::from_env().unwrap();
-    assert!(!cfg.otel_capture_content, "\"1\" should not be treated as true by Config");
+    assert!(
+        !cfg.otel_capture_content,
+        "\"1\" should not be treated as true by Config"
+    );
 
     unsafe { std::env::remove_var("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT") };
     unset_required_vars();
@@ -371,7 +409,10 @@ fn seed_agents_is_read_from_env() {
     unsafe { std::env::set_var("SEED_AGENTS", "agent1:latest agent2:latest") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.seed_agents, Some("agent1:latest agent2:latest".to_string()));
+    assert_eq!(
+        cfg.seed_agents,
+        Some("agent1:latest agent2:latest".to_string())
+    );
 
     unsafe { std::env::remove_var("SEED_AGENTS") };
     unset_required_vars();
@@ -409,14 +450,22 @@ fn cp_domain_is_read_from_env() {
 #[serial]
 fn git_clone_allowed_hosts_parses_comma_separated_list() {
     set_required_vars();
-    unsafe { std::env::set_var("GIT_CLONE_ALLOWED_HOSTS", "github.com, internal.corp.dev , bitbucket.org") };
+    unsafe {
+        std::env::set_var(
+            "GIT_CLONE_ALLOWED_HOSTS",
+            "github.com, internal.corp.dev , bitbucket.org",
+        )
+    };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.git_clone_allowed_hosts, vec![
-        "github.com".to_string(),
-        "internal.corp.dev".to_string(),
-        "bitbucket.org".to_string(),
-    ]);
+    assert_eq!(
+        cfg.git_clone_allowed_hosts,
+        vec![
+            "github.com".to_string(),
+            "internal.corp.dev".to_string(),
+            "bitbucket.org".to_string(),
+        ]
+    );
 
     unsafe { std::env::remove_var("GIT_CLONE_ALLOWED_HOSTS") };
     unset_required_vars();
@@ -426,14 +475,22 @@ fn git_clone_allowed_hosts_parses_comma_separated_list() {
 #[serial]
 fn registry_import_allowed_hosts_parses_comma_separated_list() {
     set_required_vars();
-    unsafe { std::env::set_var("REGISTRY_IMPORT_ALLOWED_HOSTS", "ghcr.io,quay.io,registry.nasiko.dev") };
+    unsafe {
+        std::env::set_var(
+            "REGISTRY_IMPORT_ALLOWED_HOSTS",
+            "ghcr.io,quay.io,registry.nasiko.dev",
+        )
+    };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.registry_import_allowed_hosts, vec![
-        "ghcr.io".to_string(),
-        "quay.io".to_string(),
-        "registry.nasiko.dev".to_string(),
-    ]);
+    assert_eq!(
+        cfg.registry_import_allowed_hosts,
+        vec![
+            "ghcr.io".to_string(),
+            "quay.io".to_string(),
+            "registry.nasiko.dev".to_string(),
+        ]
+    );
 
     unsafe { std::env::remove_var("REGISTRY_IMPORT_ALLOWED_HOSTS") };
     unset_required_vars();
@@ -460,8 +517,10 @@ fn docker_agent_network_is_none_when_set_to_empty_string() {
     unsafe { std::env::set_var("DOCKER_AGENT_NETWORK", "") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.docker_agent_network, None,
-        "Empty DOCKER_AGENT_NETWORK should be treated as None");
+    assert_eq!(
+        cfg.docker_agent_network, None,
+        "Empty DOCKER_AGENT_NETWORK should be treated as None"
+    );
 
     unsafe { std::env::remove_var("DOCKER_AGENT_NETWORK") };
     unset_required_vars();
@@ -474,7 +533,10 @@ fn docker_agent_network_is_some_when_set_to_nonempty_string() {
     unsafe { std::env::set_var("DOCKER_AGENT_NETWORK", "nasiko-cloud-rs_default") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.docker_agent_network, Some("nasiko-cloud-rs_default".to_string()));
+    assert_eq!(
+        cfg.docker_agent_network,
+        Some("nasiko-cloud-rs_default".to_string())
+    );
 
     unsafe { std::env::remove_var("DOCKER_AGENT_NETWORK") };
     unset_required_vars();
@@ -487,8 +549,10 @@ fn kubeconfig_is_none_when_set_to_empty_string() {
     unsafe { std::env::set_var("KUBECONFIG", "") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.kubeconfig, None,
-        "Empty KUBECONFIG should be treated as None");
+    assert_eq!(
+        cfg.kubeconfig, None,
+        "Empty KUBECONFIG should be treated as None"
+    );
 
     unsafe { std::env::remove_var("KUBECONFIG") };
     unset_required_vars();

@@ -94,6 +94,13 @@ pub struct Config {
     pub embedding_model: String,
     pub router_agent_timeout_secs: u64,
     pub github_callback_url: Option<String>,
+    /// Central OAuth callback relay URL (multi-tenant deployments): used as the
+    /// GitHub `redirect_uri` for both authorize and token exchange instead of
+    /// `github_callback_url`, so many clusters can share one GitHub OAuth app
+    /// whose single registered callback points at the relay. Includes this
+    /// cluster's tenant-id path suffix. Unset (the default, and always for
+    /// standalone deployments) means GitHub calls this cluster back directly.
+    pub github_central_callback_url: Option<String>,
     /// Base URL to redirect to after a successful OAuth login. In production
     /// this is the same origin as the server. Override via `APP_BASE_URL` in
     /// dev when the server and app run on different ports.
@@ -219,9 +226,14 @@ impl Config {
             otel_headers: std::env::var("OTEL_EXPORTER_OTLP_HEADERS").ok(),
             otel_service_name: env_or("OTEL_SERVICE_NAME", "nasiko-cp"),
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
+            // Port 4317 (OTLP gRPC), not 4318 (OTLP HTTP), because this endpoint is
+            // injected into agents alongside `otel_protocol`, which defaults to
+            // "grpc" — the pairing has to agree or every agent's exporter speaks
+            // gRPC at an HTTP port and silently fails to export. 4317+grpc is also
+            // the conventional OTLP default pairing.
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://otel-collector:4318",
+                "http://otel-collector:4317",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
@@ -268,6 +280,9 @@ impl Config {
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
+            github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK")
                 .ok()
