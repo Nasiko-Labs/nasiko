@@ -55,56 +55,22 @@ const spanDetail = (spanId, name) => ({
       latency_ms: 2111,
       token_count_total: 1411,
       cost_summary: { total: { cost: 0.0004 } },
-      // The real wire shape, verified against the span-detail endpoint on a live
-      // deployment (cp.nasiko.dev, 2026-08-10): the server resolves the message
-      // content into `input.value`/`output.value` (a JSON *string* in the GenAI
-      // semconv `parts[]` form), and `attributes` is RE-NESTED from the dotted
-      // OTLP keys by unflatten_attrs (oss/server/src/observability/service.rs) —
-      // `attributes.gen_ai.input.messages`, never a flat
-      // `attributes["gen_ai.input.messages"]`. Two prior fixture shapes (nested
-      // `llm.input_messages` arrays, then flat dotted keys) each matched a UI
-      // build that worked in preview and broke against production. Keep this
-      // mirroring the endpoint, not the UI.
-      input: {
-        value: JSON.stringify([
-          { role: "system", parts: [{ type: "text", content: "You are the Nasiko orchestrator. Route user queries to the best agent." }] },
-          { role: "user", parts: [{ type: "text", content: "Hello, what can you do?" }] },
-        ]),
-        mime_type: "json",
-      },
-      output: {
-        value: JSON.stringify([
-          {
-            role: "assistant",
-            parts: [
-              { type: "text", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents:\n\n- Route coding questions to the coding agent\n- Answer research questions via the research agent\n- Manage deployments through the devops agent" },
-            ],
-          },
-        ]),
-        mime_type: "json",
-      },
+      input: { value: JSON.stringify({ messages: [{ role: "user", content: "Hello, what can you do?" }] }), mime_type: "application/json" },
+      output: { value: JSON.stringify({ messages: [{ role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents." }] }), mime_type: "application/json" },
       attributes: {
-        gen_ai: {
-          operation: { name: "chat" },
-          request: { model: "gpt-4o" },
-          usage: { input_tokens: "987", output_tokens: "424" },
-          input: {
-            messages: JSON.stringify([
-              { role: "system", parts: [{ type: "text", content: "You are the Nasiko orchestrator. Route user queries to the best agent." }] },
-              { role: "user", parts: [{ type: "text", content: "Hello, what can you do?" }] },
-            ]),
-          },
-          output: {
-            messages: JSON.stringify([
-              {
-                role: "assistant",
-                parts: [
-                  { type: "text", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents:\n\n- Route coding questions to the coding agent\n- Answer research questions via the research agent\n- Manage deployments through the devops agent" },
-                ],
-              },
-            ]),
-          },
+        llm: {
+          model_name: "gpt-4o",
+          input_messages: [
+            { message: { role: "system", content: "You are the Nasiko orchestrator. Route user queries to the best agent." } },
+            { message: { role: "user", content: "Hello, what can you do?" } },
+          ],
+          output_messages: [
+            { message: { role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents. Here's what I can do:\n\n- Route coding questions to the coding agent\n- Answer research questions via the research agent\n- Manage deployments through the devops agent" } },
+          ],
+          invocation_parameters: '{"temperature":0.2,"max_tokens":2048}',
+          token_count: { prompt: 987, completion: 424, total: 1411 },
         },
+        openinference: { span: { kind: "LLM" } },
       },
       events: [],
       span_annotations: [],

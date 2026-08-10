@@ -74,7 +74,6 @@ const MODULE_NAVS = {
       { label: 'Home', items: [
         { label: 'Execution history', url: '/sessions.html' },
         { label: 'Live flows', url: '/flows.html' },
-        { label: 'Resources', url: '/resources.html' },
       ]},
     ],
   },
@@ -217,16 +216,6 @@ window.fetchObservabilitySessions = async () => {
 
 window.fetchObservabilitySession = async (sessionId) => {
   return fetchApi(`/observability/session/${encodeURIComponent(sessionId)}`);
-};
-
-// Resource usage — host + per-container CPU/memory/IO (admin-only endpoint).
-window.fetchResourceStats = async () => {
-  return fetchApi('/observability/resources');
-};
-
-// Owner-scoped: usage for a single agent. Accepts a UUID or an agent name.
-window.fetchAgentResourceStats = async (agentRef) => {
-  return fetchApi(`/observability/agent/${encodeURIComponent(agentRef)}/resources`);
 };
 
 window.fetchObservabilityTrace = async (traceId) => {

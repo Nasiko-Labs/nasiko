@@ -133,7 +133,6 @@ class AgentCardPage extends HTMLElement {
       this.#wireTransferModal();
     }
     this.#loadStats();
-    this.#loadResourceUsage();
   }
 
   #visibleTabs() {
@@ -234,16 +233,6 @@ class AgentCardPage extends HTMLElement {
             <p class="acp-section-sub">Recent runtime metrics for this agent.</p>
             <div class="acp-stats-grid" id="acp-stats">
               <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
-              <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
-              <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
-              <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
-            </div>
-          </section>
-
-          <section class="acp-section">
-            <h2 class="acp-section-title">Resource usage</h2>
-            <p class="acp-section-sub">What this agent's container is consuming right now.</p>
-            <div class="acp-stats-grid" id="acp-resources">
               <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
               <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
               <div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>
@@ -1210,89 +1199,6 @@ class AgentCardPage extends HTMLElement {
     } catch {
       /* stats are optional — fail silently */
     }
-  }
-
-  /**
-   * Container CPU / memory / network for this agent.
-   *
-   * Owner-scoped endpoint (`/observability/agent/{ref}/resources`), ACL-checked
-   * server-side — deliberately not the admin whole-box endpoint, so this section
-   * works for an agent's owner without exposing the rest of the host.
-   */
-  async #loadResourceUsage() {
-    const el = this.querySelector('#acp-resources');
-    if (!el) return;
-
-    let usage;
-    let state = '';
-    try {
-      const resp = await window.fetchAgentResourceStats(this.#agentId);
-      usage = resp?.data?.usage ?? null;
-      state = resp?.data?.usage?.state ?? '';
-    } catch {
-      // 503 on a runtime that cannot report usage, or 403 if access was revoked
-      // mid-session. Either way there is nothing to show — say so rather than
-      // leaving skeletons spinning forever.
-      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
-        title="Usage unavailable"
-        description="Container resource usage could not be read for this agent."
-        icon="${this.#escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
-      return;
-    }
-
-    // `usage: null` is the normal answer for an agent with no container right now
-    // — scaled to zero or never deployed. Not an error.
-    if (!usage) {
-      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
-        title="Not running"
-        description="This agent has no running container, so there is nothing to measure."
-        icon="${this.#escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
-      return;
-    }
-
-    const fmtBytes = (n) => {
-      if (!n) return '0 B';
-      const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-      let v = n;
-      let i = 0;
-      while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1; }
-      return `${v >= 10 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${u[i]}`;
-    };
-    const meter = (pct) => {
-      if (pct == null || Number.isNaN(pct)) return '';
-      // Only the bar width is clamped — CPU legitimately exceeds 100% on
-      // multi-core containers, and the label and severity must report that
-      // rather than announce a capped 100%.
-      const width = Math.max(0, Math.min(100, pct));
-      const sev = pct >= 90 ? 'is-crit' : pct >= 70 ? 'is-warn' : 'is-ok';
-      const word = pct >= 90 ? 'critical' : pct >= 70 ? 'high' : 'normal';
-      return `<div class="acp-meter ${sev}" role="img" aria-label="${pct.toFixed(0)} percent, ${word}"><i style="width:${width.toFixed(1)}%"></i></div>`;
-    };
-
-    const cpuKnown = usage.cpu_percent != null;
-    const memPct = usage.mem_limit_bytes
-      ? (usage.mem_used_bytes / usage.mem_limit_bytes) * 100
-      : null;
-
-    el.innerHTML = `
-      <div class="acp-stat">
-        <div class="acp-stat-label">CPU</div>
-        <div class="acp-stat-value">${cpuKnown ? `${usage.cpu_percent >= 10 ? usage.cpu_percent.toFixed(0) : usage.cpu_percent.toFixed(1)}%` : '—'}</div>
-        ${cpuKnown ? meter(usage.cpu_percent) : '<div class="acp-stat-sub">not reporting</div>'}
-        ${cpuKnown ? '<div class="acp-stat-sub">of one core</div>' : ''}
-      </div>
-      <div class="acp-stat">
-        <div class="acp-stat-label">Memory</div>
-        <div class="acp-stat-value">${fmtBytes(usage.mem_used_bytes)}</div>
-        ${meter(memPct)}
-        ${usage.mem_limit_bytes ? `<div class="acp-stat-sub">of ${fmtBytes(usage.mem_limit_bytes)}</div>` : ''}
-      </div>
-      <div class="acp-stat">
-        <div class="acp-stat-label">Network</div>
-        <div class="acp-stat-value">${fmtBytes(usage.net_rx_bytes)}</div>
-        <div class="acp-stat-sub">in · ${fmtBytes(usage.net_tx_bytes)} out${state ? ` · ${this.#esc(state)}` : ''}</div>
-      </div>
-    `;
   }
 
   /* ── Logs tab ──────────────────────────────────────────────────────────── */

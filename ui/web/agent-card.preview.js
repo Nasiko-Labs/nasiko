@@ -53,29 +53,6 @@ const gotoAgent = async (page, id) => {
 
 export default {
   fetch: [
-    // Owner-scoped container usage → GET /api/observability/agent/{ref}/resources.
-    // Registered as a fetch fixture, not a window one: navigation.js loads after
-    // the fixtures and would clobber a window.fetchAgentResourceStats override.
-    [{ method: "GET", path: /^\/api\/observability\/agent\/[^/]+\/resources$/ }, {
-      data: {
-        agent_id: "a-001",
-        agent_name: "devops-cluster-lifecycle",
-        usage: {
-          name: "nasiko-agent-a-001",
-          display_name: "devops-cluster-lifecycle",
-          group: "agent_runtime",
-          state: "running",
-          cpu_percent: 42.6,
-          mem_used_bytes: 281018368,
-          mem_limit_bytes: 3972844748,
-          net_rx_bytes: 23068672,
-          net_tx_bytes: 14680064,
-          block_read_bytes: 0,
-          block_write_bytes: 0,
-        },
-        collected_at: "2026-08-09T11:20:00Z",
-      },
-    }],
     [{ method: "GET", path: /^\/api\/me$/ }, {
       sub: "u-owner-1", username: "akhil", is_superuser: false,
     }],
@@ -240,14 +217,6 @@ export default {
     ]],
   ],
   scenarios: {
-    // Container CPU / memory / network — sits below Quick performance, so scroll
-    // it into view or the capture stops at the fold.
-    "resource-usage": async (page) => {
-      await gotoAgent(page, 'a-001');
-      await page.waitForSelector('#acp-resources .acp-stat-value', { timeout: 5000 });
-      await page.$eval('#acp-resources', (el) => el.scrollIntoView({ block: 'center' }));
-      await page.waitForTimeout(300);
-    },
     "overview": async (page) => {
       await gotoAgent(page, 'a-001');
       await page.waitForSelector('.acp-stat-value', { timeout: 5000 });

@@ -51,7 +51,7 @@ class RuntimePage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
-      <app-module-nav module="observability"></app-module-nav>
+      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Agent runtime</h1>
         <p class="page-sub">Kubernetes agent-runtime clusters provisioned by <code>nasiko-ee init</code>. Provisioning runs in the background on the control plane — watch status and live logs here.</p>

@@ -347,33 +347,6 @@
     color: var(--color-text-main);
     margin-top: var(--space-xs);
   }
-  /* Secondary line under a stat value — the denominator a percentage is of, or
-     the per-core detail behind a normalised CPU figure. */
-  .acp-stat-sub {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin-top: var(--space-2xs);
-  }
-  /* Meter for a single ratio against a limit. Track is a lighter step of the
-     fill's own ramp so state reads across the whole bar. Colour is never the only
-     signal — the value sits directly above it. */
-  .acp-meter {
-    height: 6px;
-    border-radius: var(--r-4);
-    overflow: hidden;
-    margin-top: var(--space-xs);
-    background: var(--track, var(--color-border));
-  }
-  .acp-meter > i {
-    display: block;
-    height: 100%;
-    border-radius: var(--r-4);
-    background: var(--fill, var(--fg-secondary));
-  }
-  .acp-meter.is-ok { --track: var(--bg-success); --fill: var(--fg-success); }
-  .acp-meter.is-warn { --track: var(--bg-warning); --fill: var(--fg-warning); }
-  .acp-meter.is-crit { --track: var(--bg-error); --fill: var(--fg-error); }
-
   .acp-stats-empty {
     grid-column: 1 / -1;
   }
