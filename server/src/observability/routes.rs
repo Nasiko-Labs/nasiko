@@ -64,7 +64,7 @@ pub fn router() -> Router<AppState> {
 /// Protected observability router — mounted under /api/observability (auth required).
 ///
 /// Path params with `{agent_ref}` accept either a UUID or agent name.
-pub fn protected_router() -> Router<AppState> {
+pub fn protected_router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/session/list", get(handler::get_all_sessions))
         .route("/session/{session_id}", get(handler::get_session_details))
@@ -74,8 +74,24 @@ pub fn protected_router() -> Router<AppState> {
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
         .route("/finops/insights", post(handler::get_finops_insights))
         .route("/finops/agent-hours", get(handler::get_agent_hours))
+        // Owner-scoped: authenticated, then narrowed by the agent ACL inside the
+        // handler. Deliberately NOT admin-gated — an agent's owner may see their
+        // own agent's usage. Distinct path from `/agent/{id}/stats`, which is
+        // token/latency telemetry rather than container resources.
+        .route(
+            "/agent/{agent_ref}/resources",
+            get(super::resources::get_agent_resources),
+        )
         .route("/agents/{agent_ref}/logs", get(agent_logs))
         .route("/agents/{agent_ref}/logs/stream", get(agent_logs_stream))
+        // Admin-only: exposes deployment shape and host size, not per-user data.
+        .route(
+            "/resources",
+            get(super::resources::get_resources).layer(axum::middleware::from_fn_with_state(
+                state,
+                crate::auth::rbac::require_admin,
+            )),
+        )
 }
 
 // ---------------------------------------------------------------------------

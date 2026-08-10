@@ -1,3 +1,6 @@
+mod stats;
+pub use stats::DockerStatsProvider;
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -141,6 +144,63 @@ impl DockerRuntime {
         let stripped = name.strip_prefix('/').unwrap_or(name);
         stripped.strip_prefix("nasiko-agent-").map(ContainerId::new)
     }
+
+    /// Idempotently ensures a bridge network named `name` exists. Called once at
+    /// server startup for `MCP_SERVERS_NETWORK` — never per-deploy, to avoid a
+    /// create/create race between concurrent deploys. Inspect-then-create rather
+    /// than `check_duplicate` (Docker networks are keyed by random ID, not name,
+    /// so `check_duplicate` cannot fully guarantee no duplicates are created).
+    pub async fn ensure_network(&self, name: &str) -> Result<()> {
+        match self
+            .client
+            .inspect_network(
+                name,
+                None::<bollard::network::InspectNetworkOptions<String>>,
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(ref e) if is_not_found(e) => {
+                self.client
+                    .create_network(bollard::network::CreateNetworkOptions {
+                        name: name.to_owned(),
+                        driver: "bridge".to_owned(),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(map_bollard_err)?;
+                Ok(())
+            }
+            Err(e) => Err(map_bollard_err(e)),
+        }
+    }
+
+    /// Names of every Docker network `container_id`'s container is currently
+    /// attached to. Introspection helper (not part of `ContainerRuntime` — this
+    /// is Docker-specific, used to verify network-segmentation guarantees in
+    /// tests, e.g. that an uploaded MCP server's container is on
+    /// `mcp_servers_network` only, never the default network agents/DB/Redis
+    /// share).
+    pub async fn container_networks(&self, container_id: &ContainerId) -> Result<Vec<String>> {
+        container_id.validate()?;
+        let name = DockerRuntime::container_name(container_id);
+        let info = self
+            .client
+            .inspect_container(&name, None::<InspectContainerOptions>)
+            .await
+            .map_err(|e| {
+                if is_not_found(&e) {
+                    RuntimeError::ContainerNotFound(container_id.clone())
+                } else {
+                    map_bollard_err(e)
+                }
+            })?;
+        Ok(info
+            .network_settings
+            .and_then(|ns| ns.networks)
+            .map(|nets| nets.into_keys().collect())
+            .unwrap_or_default())
+    }
 }
 
 // ── Error mapping ──────────────────────────────────────────────────────────────
@@ -266,6 +326,40 @@ fn build_port_config(ports: &[u16], bind_host: &str) -> (PortBindingsMap, Expose
     }
 
     (port_bindings, exposed_ports)
+}
+
+/// Builds the `HostConfig` for a container, applying OS-level hardening
+/// (read-only rootfs, dropped capabilities, no-new-privileges) when
+/// `spec.harden` is set — see `DeploymentSpec::harden`'s doc comment. Pure and
+/// hermetically testable: no Docker client involved.
+fn build_host_config(spec: &DeploymentSpec, port_bindings: PortBindingsMap) -> HostConfig {
+    let lim = spec.resources.as_ref().cloned().unwrap_or_default();
+    let base = HostConfig {
+        port_bindings: Some(port_bindings),
+        memory: Some(parse_memory_bytes(&lim.memory)),
+        nano_cpus: Some(lim.cpu_milli as i64 * 1_000_000),
+        // Without this, Docker creates every container on the default "bridge"
+        // network first; `create_and_start`'s later `connect_network` call
+        // only ever ADDS the target network, it never removes "bridge" — so a
+        // network-segmented deploy (network_override) ended up dual-homed on
+        // both the isolated network and the default one, defeating the whole
+        // point of segmentation (RUN-11, found via a real isolation test, not
+        // theoretical). Only `network_override` deploys are re-homed this way;
+        // ordinary agent deploys (which never set it) are unaffected.
+        network_mode: spec.network_override.clone(),
+        ..Default::default()
+    };
+    if spec.harden {
+        HostConfig {
+            readonly_rootfs: Some(true),
+            tmpfs: Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())])),
+            cap_drop: Some(vec!["ALL".to_owned()]),
+            security_opt: Some(vec!["no-new-privileges:true".to_owned()]),
+            ..base
+        }
+    } else {
+        base
+    }
 }
 
 /// Extract the first bound host port from a `NetworkSettings.Ports` map.
@@ -425,13 +519,7 @@ async fn create_and_start(
 
     let (port_bindings, exposed_ports) = build_port_config(&spec.ports, bind_host);
 
-    let lim = spec.resources.as_ref().cloned().unwrap_or_default();
-    let host_config = HostConfig {
-        port_bindings: Some(port_bindings),
-        memory: Some(parse_memory_bytes(&lim.memory)),
-        nano_cpus: Some(lim.cpu_milli as i64 * 1_000_000),
-        ..Default::default()
-    };
+    let host_config = build_host_config(spec, port_bindings);
 
     // Record the env vars we actually asked for as a label (see ENV_VARS_LABEL) so a
     // later deploy() can detect changes without being confused by image-baked-in vars
@@ -439,12 +527,17 @@ async fn create_and_start(
     let env_json = serde_json::to_string(&spec.env_vars).unwrap_or_default();
     let labels = HashMap::from([(ENV_VARS_LABEL.to_owned(), env_json)]);
 
+    // Conventional "nobody" uid:gid — same value `ee/k8s-runtime` uses for its
+    // non-root pod security context, kept consistent across editions.
+    let user = spec.harden.then(|| "65534:65534".to_owned());
+
     let config = Config {
         image: Some(spec.image.clone()),
         env: Some(env_vec),
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
         labels: Some(labels),
+        user,
         ..Default::default()
     };
 
@@ -466,7 +559,15 @@ async fn create_and_start(
     .map_err(|_| RuntimeError::Timeout("start_container".to_owned()))?
     .map_err(map_bollard_err)?;
 
-    if let Some(net) = network {
+    // `network_override` deploys already got `net` as their sole `NetworkMode`
+    // at creation (see `build_host_config`) — connecting again here would just
+    // error "already attached". Only deploys that rely on the runtime's
+    // *default* network (agents, which never set `network_override`) still
+    // need this explicit post-start connect, since their `NetworkMode` at
+    // creation was Docker's own default ("bridge"), not `net`.
+    if let Some(net) = network
+        && spec.network_override.is_none()
+    {
         let connect_opts = ConnectNetworkOptions {
             container: name.as_str(),
             ..Default::default()
@@ -657,6 +758,12 @@ impl ContainerRuntime for DockerRuntime {
 
         let name = DockerRuntime::container_name(&spec.container_id);
         let timeout = self.config.operation_timeout;
+        // Only the MCP-server-upload build path sets `network_override` — every
+        // existing agent deploy falls through to the runtime's default network.
+        let network = spec
+            .network_override
+            .as_deref()
+            .or(self.config.network.as_deref());
 
         match tokio::time::timeout(
             timeout,
@@ -764,13 +871,7 @@ impl ContainerRuntime for DockerRuntime {
             }
         }
 
-        inspect_to_status(
-            &self.client,
-            &spec.container_id,
-            self.config.network.as_deref(),
-            timeout,
-        )
-        .await
+        inspect_to_status(&self.client, &spec.container_id, network, timeout).await
     }
 
     #[instrument(skip(self))]
@@ -1171,6 +1272,55 @@ impl ContainerRuntime for DockerRuntime {
         tokio::time::timeout(self.config.build_timeout, build_fut)
             .await
             .map_err(|_| RuntimeError::Timeout("image build".to_owned()))?
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    fn spec(harden: bool) -> DeploymentSpec {
+        DeploymentSpec {
+            container_id: ContainerId::new("test-hardening"),
+            name: "test-hardening".to_owned(),
+            image: "alpine:latest".to_owned(),
+            min_replicas: 1,
+            max_replicas: 1,
+            env_vars: HashMap::new(),
+            ports: vec![8080],
+            resources: None,
+            image_pull_secret_name: None,
+            image_pull_credential_seed: None,
+            harden,
+            network_override: None,
+            workload_kind: Default::default(),
+        }
+    }
+
+    #[test]
+    fn harden_true_sets_all_hardening_fields() {
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&spec(true), bindings);
+        assert_eq!(hc.readonly_rootfs, Some(true));
+        assert_eq!(
+            hc.tmpfs,
+            Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())]))
+        );
+        assert_eq!(hc.cap_drop, Some(vec!["ALL".to_owned()]));
+        assert_eq!(
+            hc.security_opt,
+            Some(vec!["no-new-privileges:true".to_owned()])
+        );
+    }
+
+    #[test]
+    fn harden_false_leaves_hardening_fields_unset() {
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&spec(false), bindings);
+        assert_eq!(hc.readonly_rootfs, None);
+        assert_eq!(hc.tmpfs, None);
+        assert_eq!(hc.cap_drop, None);
+        assert_eq!(hc.security_opt, None);
     }
 }
 

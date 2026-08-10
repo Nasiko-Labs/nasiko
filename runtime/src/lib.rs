@@ -1,4 +1,5 @@
 mod error;
+mod stats;
 mod types;
 
 #[cfg(feature = "docker")]
@@ -8,9 +9,14 @@ mod docker;
 mod simulated;
 
 pub use error::{Result, RuntimeError};
+pub use stats::{
+    AgentNameResolver, ContainerStats, DiskSource, HostStats, PlatformStats, ResourceStatsProvider,
+    StatsGroup, UnsupportedStatsProvider,
+};
 pub use types::validate_build_inputs;
 pub use types::{
     ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
+    WorkloadKind,
 };
 
 // ─── Legacy type aliases (used by server during transition from old orchestrator) ─────
@@ -41,7 +47,7 @@ pub struct NodeInfo {
 }
 
 #[cfg(feature = "docker")]
-pub use docker::{DockerRuntime, DockerRuntimeConfig};
+pub use docker::{DockerRuntime, DockerRuntimeConfig, DockerStatsProvider};
 
 #[cfg(feature = "simulated")]
 pub use simulated::SimulatedRuntime;

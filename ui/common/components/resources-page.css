@@ -1,0 +1,278 @@
+/* Resource usage page.
+   Host box geometry (display/padding/module-nav gutter) lives in
+   styles/page-layout.css and must NOT be re-declared here — a second copy wins
+   on proximity and the two drift. */
+@scope (resources-page) {
+  .page-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-lg);
+  }
+
+  .page-sub {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    margin: var(--space-2xs) 0 0;
+  }
+
+  .head-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+  }
+
+  /* ── KPI row of stat tiles ────────────────────────────────────────────────
+     Host headline numbers are a handful of single current values, so they are
+     stat tiles rather than a chart. Same hairline-bounded strip as the
+     observability session page so the two pages read as one system. */
+  .kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    border-block: 1px solid var(--color-border);
+    padding: var(--space-md) 0;
+    margin-bottom: var(--space-lg);
+    gap: var(--space-md);
+  }
+
+  .kpi {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding-left: var(--space-md);
+    border-left: 1px solid var(--color-border);
+    min-width: 0;
+  }
+
+  .kpi:first-child {
+    padding-left: 0;
+    border-left: none;
+  }
+
+  .kpi-label {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  /* Proportional figures on purpose: tabular-nums gives every digit the width
+     of a zero, which reads loose at stat-tile size. Tabular is reserved for the
+     table columns below, where digits must align vertically. */
+  .kpi-value {
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    color: var(--color-text-main);
+    line-height: 1.1;
+  }
+
+  .kpi-sub {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  /* ── Group cards ──────────────────────────────────────────────────────── */
+  .groups {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .pane {
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-12);
+    background: var(--color-bg-surface);
+    padding: var(--space-md);
+    min-width: 0;
+  }
+
+  .pane-title {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    margin: 0 0 var(--space-md);
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .pane-count {
+    font-size: var(--font-size-xs);
+    font-weight: 400;
+    color: var(--color-text-muted);
+  }
+
+  /* ── Container rows ───────────────────────────────────────────────────── */
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.9fr);
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+  }
+
+  .row-head {
+    background: none;
+    padding-block: 0 var(--space-2xs);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .cell-name {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .name-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+
+  /* Values sit in columns, so here tabular figures are correct. */
+  .metric {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .metric-value {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+
+  .metric-note {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  /* ── Meter ────────────────────────────────────────────────────────────────
+     A single ratio against a limit. The unfilled track is a lighter step of the
+     same ramp as the fill, so state reads across the whole bar rather than only
+     in the filled part. Colour is never the only signal — every meter is
+     accompanied by its numeric value in .metric-value, and severity also
+     appears as text in the row's state chip. */
+  .meter {
+    height: 6px;
+    border-radius: var(--r-4);
+    overflow: hidden;
+    background: var(--track, var(--color-border));
+  }
+
+  .meter-fill {
+    height: 100%;
+    border-radius: var(--r-4);
+    background: var(--fill, var(--fg-secondary));
+    transition: width 240ms ease;
+  }
+
+  .meter.is-ok {
+    --track: var(--bg-success);
+    --fill: var(--fg-success);
+  }
+
+  .meter.is-warn {
+    --track: var(--bg-warning);
+    --fill: var(--fg-warning);
+  }
+
+  .meter.is-crit {
+    --track: var(--bg-error);
+    --fill: var(--fg-error);
+  }
+
+  /* Unknown is not zero: a container that cannot report is not an idle one. */
+  .meter.is-unknown {
+    --track: var(--color-border);
+    --fill: transparent;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: 0 var(--space-xs);
+    height: 20px;
+    border-radius: var(--r-6);
+    font-size: var(--font-size-xs);
+    background: var(--color-bg-base);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+
+  .row .chip {
+    background: var(--color-bg-surface);
+  }
+
+  .chip.is-running {
+    color: var(--fg-success);
+    border-color: var(--border-success);
+  }
+
+  .chip.is-stopped {
+    color: var(--fg-error);
+    border-color: var(--border-error, var(--color-border));
+  }
+
+  .pane-empty {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    padding: var(--space-sm) 0;
+  }
+
+  /* Informational, so deliberately NOT the warning tokens: nothing is wrong,
+     the reading is simply narrower than it looks. Warning/error colours are
+     reserved for actual state, and in dark mode the warning surface reads as a
+     serious failure. */
+  .banner {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-base);
+    color: var(--color-text-muted);
+    border-radius: var(--r-8);
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--space-lg);
+  }
+
+  .banner svg {
+    flex: none;
+    margin-top: 2px;
+  }
+
+  @media (max-width: 760px) {
+    .kpi {
+      padding-left: 0;
+      border-left: none;
+    }
+
+    /* Four columns cannot survive a phone; stack and let each metric label
+       itself via .metric-note. */
+    .row {
+      grid-template-columns: 1fr;
+      gap: var(--space-sm);
+    }
+
+    .row-head {
+      display: none;
+    }
+  }
+}
