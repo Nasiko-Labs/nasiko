@@ -55,22 +55,34 @@ const spanDetail = (spanId, name) => ({
       latency_ms: 2111,
       token_count_total: 1411,
       cost_summary: { total: { cost: 0.0004 } },
-      input: { value: JSON.stringify({ messages: [{ role: "user", content: "Hello, what can you do?" }] }), mime_type: "application/json" },
-      output: { value: JSON.stringify({ messages: [{ role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents." }] }), mime_type: "application/json" },
+      // Field names per nasiko_observability::types::SpanDetail (input_content /
+      // output_content) — NOT `input.value`, which no endpoint ever returned.
+      input_content: "Hello, what can you do?",
+      output_content: "Hello! I'm an orchestrator that can help you with a variety of tasks.",
+      // The real wire shape, verified against Tempo on a live deployment:
+      // `attributes` is a FLAT map of raw dotted OTLP keys, and each value is the
+      // scalar OTLP value — so a message list arrives as a JSON *string* in the
+      // GenAI semconv `parts[]` form. The previous fixture used nested
+      // `attributes.llm.input_messages` arrays, a shape the server never emits;
+      // that mismatch is why the "no input message available" bug survived
+      // preview. Keep this mirroring production.
       attributes: {
-        llm: {
-          model_name: "gpt-4o",
-          input_messages: [
-            { message: { role: "system", content: "You are the Nasiko orchestrator. Route user queries to the best agent." } },
-            { message: { role: "user", content: "Hello, what can you do?" } },
-          ],
-          output_messages: [
-            { message: { role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents. Here's what I can do:\n\n- Route coding questions to the coding agent\n- Answer research questions via the research agent\n- Manage deployments through the devops agent" } },
-          ],
-          invocation_parameters: '{"temperature":0.2,"max_tokens":2048}',
-          token_count: { prompt: 987, completion: 424, total: 1411 },
-        },
-        openinference: { span: { kind: "LLM" } },
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.usage.input_tokens": "987",
+        "gen_ai.usage.output_tokens": "424",
+        "gen_ai.input.messages": JSON.stringify([
+          { role: "system", parts: [{ type: "text", content: "You are the Nasiko orchestrator. Route user queries to the best agent." }] },
+          { role: "user", parts: [{ type: "text", content: "Hello, what can you do?" }] },
+        ]),
+        "gen_ai.output.messages": JSON.stringify([
+          {
+            role: "assistant",
+            parts: [
+              { type: "text", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents:\n\n- Route coding questions to the coding agent\n- Answer research questions via the research agent\n- Manage deployments through the devops agent" },
+            ],
+          },
+        ]),
       },
       events: [],
       span_annotations: [],

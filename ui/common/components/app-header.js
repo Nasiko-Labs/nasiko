@@ -464,7 +464,7 @@ export class AppHeader extends HTMLElement {
     // Chrome icons (rail + topbar) render at 1px stroke per the NightOwl weight rule.
     // Rail glyphs: 1.25 stroke — the mockup's 1px chrome weight reads wispy at
     // 18px on the ink rail; topbar utility icons stay at 1.
-    const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.25) : icons.cube('', 18, 1.25);
+    const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.75) : icons.cube('', 18, 1.75);
     return `<a href="${this.#esc(href)}" class="rail-item${active ? " is-active" : ""}"
       title="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
   }

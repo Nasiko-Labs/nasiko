@@ -9,8 +9,10 @@
  *   `<span>${icons.x('', 16)}</span>`
  *   `<span>${icons.search('', 16, 1)}</span>`  // chrome weight (topbar/rail)
  *
- * NightOwl weight rule: chrome (ink topbar + rail) icons render at 1px
- * stroke, white-plane icons at the default 1.5px.
+ * NightOwl weight rule: topbar chrome renders at 1px stroke, white-plane icons
+ * at the default 1.5px. The module rail is the exception at 1.75 — at 18px a
+ * 1.25 stroke resolved to under a physical pixel and the rail read as washed
+ * out beside the page content it labels.
  *
  * `icons.google` is a static string (multicolour brand mark, fixed 18×18).
  */
@@ -128,7 +130,16 @@ export const icons = {
   moon:    s(`<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>`),
   monitor: s(`<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>`),
   // NightOwl "vision" eye — browed eye with pupil (mockup Observability glyph)
-  activity: s(`<path d="M12 9.6c-3.3 0-5.9 2.2-7.1 3.8a1.36 1.36 0 0 0 0 1.65C6.1 16.7 8.7 18.9 12 18.9s5.9-2.2 7.1-3.85a1.36 1.36 0 0 0 0-1.65C17.9 11.8 15.3 9.6 12 9.6z"/><circle cx="12" cy="14.25" r="2.05"/><path d="M8.7 5.3a9.6 9.6 0 0 0-4.3 3.1"/><path d="M15.3 5.3a9.6 9.6 0 0 1 4.3 3.1"/>`),
+  // An eye inside four corner brackets — the viewfinder/focus motif, i.e.
+  // "something is under observation". The brackets are the four rounded corners
+  // of a square, drawn as separate strokes so the frame reads as deliberate
+  // framing rather than a box.
+  //
+  // Two earlier attempts were worse and are worth not repeating: loose arcs
+  // floating above an off-centre eye read as unrelated strokes, and a dashed
+  // ring read as a *broken* circle at 18px, because the dash gaps land near a
+  // single physical pixel at rail size.
+  activity: s(`<path d="M3 8.5V6a3 3 0 0 1 3-3h2.5"/><path d="M15.5 3H18a3 3 0 0 1 3 3v2.5"/><path d="M21 15.5V18a3 3 0 0 1-3 3h-2.5"/><path d="M8.5 21H6a3 3 0 0 1-3-3v-2.5"/><path d="M6.6 12s2.2-3.05 5.4-3.05S17.4 12 17.4 12s-2.2 3.05-5.4 3.05S6.6 12 6.6 12z"/><circle cx="12" cy="12" r="1.5"/>`),
   user:    s(`<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>`),
   users:   s(`<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>`),
   externalLink: s(`<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>`),
@@ -162,11 +173,18 @@ export const icons = {
   github:  f(`<path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>`, '0 0 24 24'),
   upload:  s(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>`),
   layers:  s(`<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>`),
-  network: s(`<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>`),
+  // Three linked nodes. The previous shape was an org chart of squares, which
+  // read as "hierarchy" rather than "connected things".
+  network: s(`<circle cx="17.8" cy="5.8" r="2.7"/><circle cx="6.2" cy="12" r="2.7"/><circle cx="17.8" cy="18.2" r="2.7"/><path d="M8.6 10.7 15.4 7.1"/><path d="M8.6 13.3 15.4 16.9"/>`),
   // NightOwl module glyphs (drawn from the mockup's Hugeicons-style set:
   // Home06 / AiBrain01 / Vision / Puzzle / Money03 / Setting07)
-  bot: s(`<path d="M12 3.1 4.9 8.6c-.63.49-1 1.24-1 2.04v6.86A3.5 3.5 0 0 0 7.4 21h9.2a3.5 3.5 0 0 0 3.5-3.5v-6.86c0-.8-.37-1.55-1-2.04L12 3.1z"/><path d="M12 15.2v1.7"/>`),
-  server: s(`<path d="M9.9 6.3c-.3-.42-.5-.93-.5-1.45a2.6 2.6 0 0 1 5.2 0c0 .52-.2 1.03-.5 1.45h2.9a1.8 1.8 0 0 1 1.8 1.8v3.05c-.42-.3-.93-.5-1.45-.5a2.6 2.6 0 0 0 0 5.2c.52 0 1.03-.2 1.45-.5v2.75a1.8 1.8 0 0 1-1.8 1.8H7a1.8 1.8 0 0 1-1.8-1.8v-2.9c-.42.3-.93.5-1.45.5a2.6 2.6 0 0 1 0-5.2c.52 0 1.03.2 1.45.5V8.1A1.8 1.8 0 0 1 7 6.3h2.9z"/>`),
+  // A robot with an antenna and a face. The previous shape was a featureless
+  // rounded shell that read as a house or a shield at rail size — nothing in it
+  // said "agent".
+  bot: s(`<circle cx="12" cy="2.6" r="1.15"/><path d="M12 3.75v1.9"/><rect x="3.6" y="5.65" width="16.8" height="12.6" rx="4.2"/><circle cx="8.9" cy="11.1" r="1.05" fill="currentColor" stroke="none"/><circle cx="15.1" cy="11.1" r="1.05" fill="currentColor" stroke="none"/><path d="M9.3 14.35a3.5 3.5 0 0 0 5.4 0"/><path d="M1.9 10.6v2.7"/><path d="M22.1 10.6v2.7"/>`),
+  // Two stacked racks with status lights. The previous shape was a puzzle-piece
+  // blob — legible as "plugin", not as "server".
+  server: s(`<rect x="3.2" y="4.5" width="17.6" height="6.2" rx="2"/><rect x="3.2" y="13.3" width="17.6" height="6.2" rx="2"/><circle cx="7" cy="7.6" r=".95" fill="currentColor" stroke="none"/><circle cx="7" cy="16.4" r=".95" fill="currentColor" stroke="none"/><path d="M10.6 7.6h6.4"/><path d="M10.6 16.4h6.4"/>`),
   route: s(`<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>`),
   coins: s(`<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>`),
   banknote: s(`<path d="M2.75 8.1c1.9-1.5 4-1.5 6-.55 2.05.98 4.45.98 6.5 0 2-.95 4.1-.95 6 .55v7.8c-1.9-1.5-4-1.5-6-.55-2.05.98-4.45.98-6.5 0-2-.95-4.1-.95-6 .55V8.1z"/><circle cx="12" cy="11.95" r="2.15"/><path d="M6.4 12.85h.01"/><path d="M17.6 11.05h.01"/>`),
