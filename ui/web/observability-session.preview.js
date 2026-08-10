@@ -55,27 +55,25 @@ const spanDetail = (spanId, name) => ({
       latency_ms: 2111,
       token_count_total: 1411,
       cost_summary: { total: { cost: 0.0004 } },
-      // Field names per nasiko_observability::types::SpanDetail (input_content /
-      // output_content) — NOT `input.value`, which no endpoint ever returned.
-      input_content: "Hello, what can you do?",
-      output_content: "Hello! I'm an orchestrator that can help you with a variety of tasks.",
-      // The real wire shape, verified against Tempo on a live deployment:
-      // `attributes` is a FLAT map of raw dotted OTLP keys, and each value is the
-      // scalar OTLP value — so a message list arrives as a JSON *string* in the
-      // GenAI semconv `parts[]` form. The previous fixture used nested
-      // `attributes.llm.input_messages` arrays, a shape the server never emits;
-      // that mismatch is why the "no input message available" bug survived
-      // preview. Keep this mirroring production.
-      attributes: {
-        "gen_ai.operation.name": "chat",
-        "gen_ai.request.model": "gpt-4o",
-        "gen_ai.usage.input_tokens": "987",
-        "gen_ai.usage.output_tokens": "424",
-        "gen_ai.input.messages": JSON.stringify([
+      // The real wire shape, verified against the span-detail endpoint on a live
+      // deployment (cp.nasiko.dev, 2026-08-10): the server resolves the message
+      // content into `input.value`/`output.value` (a JSON *string* in the GenAI
+      // semconv `parts[]` form), and `attributes` is RE-NESTED from the dotted
+      // OTLP keys by unflatten_attrs (oss/server/src/observability/service.rs) —
+      // `attributes.gen_ai.input.messages`, never a flat
+      // `attributes["gen_ai.input.messages"]`. Two prior fixture shapes (nested
+      // `llm.input_messages` arrays, then flat dotted keys) each matched a UI
+      // build that worked in preview and broke against production. Keep this
+      // mirroring the endpoint, not the UI.
+      input: {
+        value: JSON.stringify([
           { role: "system", parts: [{ type: "text", content: "You are the Nasiko orchestrator. Route user queries to the best agent." }] },
           { role: "user", parts: [{ type: "text", content: "Hello, what can you do?" }] },
         ]),
-        "gen_ai.output.messages": JSON.stringify([
+        mime_type: "json",
+      },
+      output: {
+        value: JSON.stringify([
           {
             role: "assistant",
             parts: [
@@ -83,6 +81,30 @@ const spanDetail = (spanId, name) => ({
             ],
           },
         ]),
+        mime_type: "json",
+      },
+      attributes: {
+        gen_ai: {
+          operation: { name: "chat" },
+          request: { model: "gpt-4o" },
+          usage: { input_tokens: "987", output_tokens: "424" },
+          input: {
+            messages: JSON.stringify([
+              { role: "system", parts: [{ type: "text", content: "You are the Nasiko orchestrator. Route user queries to the best agent." }] },
+              { role: "user", parts: [{ type: "text", content: "Hello, what can you do?" }] },
+            ]),
+          },
+          output: {
+            messages: JSON.stringify([
+              {
+                role: "assistant",
+                parts: [
+                  { type: "text", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents:\n\n- Route coding questions to the coding agent\n- Answer research questions via the research agent\n- Manage deployments through the devops agent" },
+                ],
+              },
+            ]),
+          },
+        },
       },
       events: [],
       span_annotations: [],
