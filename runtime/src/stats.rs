@@ -7,10 +7,8 @@
 //! them would mean inventing `ContainerId`s for things that are not agents.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 
 use crate::Result;
 
@@ -160,66 +158,6 @@ impl ResourceStatsProvider for UnsupportedStatsProvider {
     }
 }
 
-/// Reuses one whole-box reading for a short TTL, and collapses concurrent
-/// callers onto a single sweep.
-///
-/// [`ResourceStatsProvider::platform_stats`] costs one Docker `stats` call per
-/// container, and each of those blocks about a second while the daemon takes the
-/// second CPU sample the delta needs. The Resources page polls every 5s, so
-/// without this each open admin tab keeps a full per-container fan-out in flight
-/// against the same socket the control plane deploys agents through.
-///
-/// Only `platform_stats` is wrapped. `agent_stats` samples exactly one container
-/// and is loaded once per agent-card view rather than polled, so keying a cache
-/// per agent would add bookkeeping for no measurable gain.
-pub struct CachedStatsProvider<P> {
-    inner: P,
-    ttl: Duration,
-    /// A `Mutex` rather than an `RwLock`, and deliberately held across the
-    /// refresh: that is what makes a burst of callers wait for one sweep instead
-    /// of each starting its own.
-    cached: Mutex<Option<(Instant, PlatformStats)>>,
-}
-
-impl<P> CachedStatsProvider<P> {
-    pub fn new(inner: P, ttl: Duration) -> Self {
-        Self {
-            inner,
-            ttl,
-            cached: Mutex::new(None),
-        }
-    }
-}
-
-impl<P> std::fmt::Debug for CachedStatsProvider<P> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CachedStatsProvider")
-            .field("ttl", &self.ttl)
-            .finish_non_exhaustive()
-    }
-}
-
-#[async_trait]
-impl<P: ResourceStatsProvider> ResourceStatsProvider for CachedStatsProvider<P> {
-    async fn platform_stats(&self) -> Result<PlatformStats> {
-        let mut slot = self.cached.lock().await;
-        if let Some((taken_at, stats)) = slot.as_ref()
-            && taken_at.elapsed() < self.ttl
-        {
-            return Ok(stats.clone());
-        }
-        // Failures are deliberately not cached: a daemon that was briefly
-        // unreachable must not read as unreachable for the whole TTL.
-        let fresh = self.inner.platform_stats().await?;
-        *slot = Some((Instant::now(), fresh.clone()));
-        Ok(fresh)
-    }
-
-    async fn agent_stats(&self, agent_id: &str) -> Result<Option<ContainerStats>> {
-        self.inner.agent_stats(agent_id).await
-    }
-}
-
 /// Classifies a container into a [`StatsGroup`].
 ///
 /// Agents are matched on the `nasiko-agent-` prefix because `DockerRuntime`
@@ -277,109 +215,6 @@ pub fn cpu_percent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// Counts sweeps so a test can assert how many reached the inner provider.
-    /// `delay` makes a sweep long enough for a second caller to arrive mid-flight.
-    struct FakeProvider {
-        calls: AtomicUsize,
-        fail_first: bool,
-        delay: Option<Duration>,
-    }
-
-    impl FakeProvider {
-        fn new() -> Self {
-            Self {
-                calls: AtomicUsize::new(0),
-                fail_first: false,
-                delay: None,
-            }
-        }
-
-        fn calls(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait]
-    impl ResourceStatsProvider for FakeProvider {
-        async fn platform_stats(&self) -> Result<PlatformStats> {
-            let nth = self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Some(d) = self.delay {
-                tokio::time::sleep(d).await;
-            }
-            if self.fail_first && nth == 0 {
-                return Err(crate::RuntimeError::BackendUnreachable("down".into()));
-            }
-            Ok(PlatformStats {
-                host: HostStats::default(),
-                containers: Vec::new(),
-                disk_source: DiskSource::Docker,
-            })
-        }
-
-        async fn agent_stats(&self, _agent_id: &str) -> Result<Option<ContainerStats>> {
-            Ok(None)
-        }
-    }
-
-    #[tokio::test]
-    async fn reading_is_reused_within_the_ttl() {
-        let cached = CachedStatsProvider::new(FakeProvider::new(), Duration::from_secs(60));
-        cached.platform_stats().await.expect("first sweep");
-        cached.platform_stats().await.expect("served from cache");
-        assert_eq!(cached.inner.calls(), 1);
-    }
-
-    #[tokio::test]
-    async fn zero_ttl_always_refreshes() {
-        // A zero TTL is the degenerate "no caching" case — every call must sweep,
-        // never serve a stale reading.
-        let cached = CachedStatsProvider::new(FakeProvider::new(), Duration::ZERO);
-        cached.platform_stats().await.expect("first sweep");
-        cached.platform_stats().await.expect("second sweep");
-        assert_eq!(cached.inner.calls(), 2);
-    }
-
-    #[tokio::test]
-    async fn concurrent_callers_collapse_onto_one_sweep() {
-        // The load amplification this type exists to prevent: three tabs polling
-        // at once must cost one per-container fan-out, not three.
-        let inner = FakeProvider {
-            delay: Some(Duration::from_millis(50)),
-            ..FakeProvider::new()
-        };
-        let cached = CachedStatsProvider::new(inner, Duration::from_secs(60));
-        let (a, b, c) = tokio::join!(
-            cached.platform_stats(),
-            cached.platform_stats(),
-            cached.platform_stats(),
-        );
-        assert!(a.is_ok() && b.is_ok() && c.is_ok());
-        assert_eq!(cached.inner.calls(), 1);
-    }
-
-    #[tokio::test]
-    async fn failures_are_not_cached() {
-        // A transient daemon failure must not stick for the whole TTL, so the
-        // next caller retries rather than being handed the error again.
-        let inner = FakeProvider {
-            fail_first: true,
-            ..FakeProvider::new()
-        };
-        let cached = CachedStatsProvider::new(inner, Duration::from_secs(60));
-        assert!(cached.platform_stats().await.is_err());
-        assert!(cached.platform_stats().await.is_ok());
-        assert_eq!(cached.inner.calls(), 2);
-    }
-
-    #[tokio::test]
-    async fn agent_stats_is_not_cached() {
-        let cached = CachedStatsProvider::new(FakeProvider::new(), Duration::from_secs(60));
-        assert!(cached.agent_stats("some-id").await.expect("ok").is_none());
-        // Passing through must not populate the whole-box slot.
-        assert_eq!(cached.inner.calls(), 0);
-    }
 
     #[test]
     fn classifies_agents_by_anchored_prefix() {

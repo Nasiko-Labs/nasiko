@@ -249,9 +249,14 @@ impl Config {
             otel_headers: std::env::var("OTEL_EXPORTER_OTLP_HEADERS").ok(),
             otel_service_name: env_or("OTEL_SERVICE_NAME", "nasiko-cp"),
             otel_sample_ratio: env_or("OTEL_TRACES_SAMPLER_ARG", "1.0"),
+            // Port 4317 (OTLP gRPC), not 4318 (OTLP HTTP), because this endpoint is
+            // injected into agents alongside `otel_protocol`, which defaults to
+            // "grpc" — the pairing has to agree or every agent's exporter speaks
+            // gRPC at an HTTP port and silently fails to export. 4317+grpc is also
+            // the conventional OTLP default pairing.
             otel_collector_endpoint: env_or(
                 "OTEL_COLLECTOR_ENDPOINT",
-                "http://otel-collector:4318",
+                "http://otel-collector:4317",
             ),
             otel_capture_content: std::env::var(
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",

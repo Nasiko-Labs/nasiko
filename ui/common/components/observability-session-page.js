@@ -333,8 +333,29 @@ class ObservabilitySessionPage extends HTMLElement {
 
   #infoTabHtml() {
     const s = this.#span;
-    const inputMsgs = this.#extractMessages(s.attributes?.llm?.input_messages, s.input?.value);
-    const outputMsgs = this.#extractMessages(s.attributes?.llm?.output_messages, s.output?.value);
+    // Span attributes arrive as a FLAT map keyed by the raw dotted OTLP key
+    // (oss/observability/src/tempo.rs builds `HashMap<String, Value>` straight
+    // from the OTLP attribute list). So these MUST be bracket lookups:
+    // `attributes.gen_ai.input.messages` evaluates `attributes.gen_ai`, which is
+    // always undefined — as was the previous `attributes.llm.input_messages`.
+    //
+    // `gen_ai.input/output.messages` is what the official GenAI instrumentation
+    // emits once OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental is set
+    // (the injector always sets it — see oss/observability/src/injector.rs). Its
+    // value is a JSON *string*, not an array, so it is passed as the `rawValue`
+    // argument: that branch JSON.parses and understands the semconv `parts[]`
+    // shape. `llm.*` is the older OpenInference convention, kept first for spans
+    // recorded before the opt-in — a fallback chain rather than a version check,
+    // matching how this repo handles A2A payload drift.
+    const attrs = s.attributes ?? {};
+    const inputMsgs = this.#extractMessages(
+      attrs['llm.input_messages'],
+      attrs['gen_ai.input.messages'] ?? attrs['input.value'] ?? s.input_content,
+    );
+    const outputMsgs = this.#extractMessages(
+      attrs['llm.output_messages'],
+      attrs['gen_ai.output.messages'] ?? attrs['output.value'] ?? s.output_content,
+    );
     const section = (title, msgs, emptyText) => `
       <div class="detail-section-title">${title}</div>
       ${msgs.length

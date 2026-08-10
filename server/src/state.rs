@@ -36,6 +36,11 @@ pub struct AppState {
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
     pub observability: Arc<dyn ObservabilityProvider>,
+    /// Point-in-time CPU/memory/disk usage for the control plane, the agents and
+    /// the supporting infra. Docker-backed in the Compose topology; the EE
+    /// composition root replaces it for Kubernetes, the same way it replaces
+    /// `routing_engine`.
+    pub resource_stats: Arc<dyn nasiko_runtime::ResourceStatsProvider>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
     /// Env-configured OIDC relying-party client (e.g. Microsoft Entra ID) —
@@ -91,6 +96,8 @@ impl AppState {
         oci_storage.ensure_bucket(false).await.ok();
 
         let usage_tracker = UsageTracker::new(db.clone());
+
+        let resource_stats = crate::observability::resources::build_provider(&config, db.clone());
 
         let http_client = reqwest::Client::builder()
             .pool_max_idle_per_host(20)
@@ -209,6 +216,7 @@ impl AppState {
             redis,
             oci_storage,
             usage_tracker,
+            resource_stats,
             http_client,
             auth,
             mcp,

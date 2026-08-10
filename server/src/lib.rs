@@ -258,7 +258,10 @@ where
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
-        .nest("/observability", observability::protected_router())
+        .nest(
+            "/observability",
+            observability::protected_router(state.clone()),
+        )
         .merge(agents::upload::status_router())
         .merge(github::router())
         .merge(auth::login::protected_router())

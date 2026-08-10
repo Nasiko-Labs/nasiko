@@ -172,15 +172,12 @@ class ResourcesPage extends HTMLElement {
           : '',
         pct: memOfHost,
       },
-      // Both figures, not just the total: a null `diskUsed` against a real total
-      // would render a confident-looking 0% — the engine-disk card is honest
-      // about what it covers, a wrong percentage is not.
-      diskUsed != null && diskTotal > 0
+      diskTotal
         ? {
             label: 'Disk in use',
-            value: `${((diskUsed / diskTotal) * 100).toFixed(0)}%`,
-            sub: `${this.#fmtBytes(diskUsed)} of ${this.#fmtBytes(diskTotal)}`,
-            pct: (diskUsed / diskTotal) * 100,
+            value: `${(((diskUsed || 0) / diskTotal) * 100).toFixed(0)}%`,
+            sub: `${this.#fmtBytes(diskUsed || 0)} of ${this.#fmtBytes(diskTotal)}`,
+            pct: ((diskUsed || 0) / diskTotal) * 100,
           }
         : {
             label: 'Engine disk',
@@ -278,15 +275,11 @@ class ResourcesPage extends HTMLElement {
     if (pct === null || pct === undefined || Number.isNaN(pct)) {
       return `<div class="meter is-unknown" role="img" aria-label="not reporting"></div>`;
     }
-    // Only the bar width is clamped. The summed "CPU in use" figure can exceed
-    // 100 (per-container samples are taken at slightly different instants), and
-    // cgroup memory accounting can report marginally over a limit — announcing a
-    // capped 100 in those cases tells a screen-reader user the wrong number.
-    const width = Math.max(0, Math.min(100, pct));
-    const sev = pct >= 90 ? 'is-crit' : pct >= 70 ? 'is-warn' : 'is-ok';
-    const state = pct >= 90 ? 'critical' : pct >= 70 ? 'high' : 'normal';
-    return `<div class="meter ${sev}" role="img" aria-label="${pct.toFixed(0)} percent, ${state}">
-      <div class="meter-fill" style="width:${width.toFixed(1)}%"></div>
+    const clamped = Math.max(0, Math.min(100, pct));
+    const sev = clamped >= 90 ? 'is-crit' : clamped >= 70 ? 'is-warn' : 'is-ok';
+    const state = clamped >= 90 ? 'critical' : clamped >= 70 ? 'high' : 'normal';
+    return `<div class="meter ${sev}" role="img" aria-label="${clamped.toFixed(0)} percent, ${state}">
+      <div class="meter-fill" style="width:${clamped.toFixed(1)}%"></div>
     </div>`;
   }
 
