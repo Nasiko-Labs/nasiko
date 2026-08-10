@@ -3,8 +3,8 @@ use uuid::Uuid;
 use crate::build::BuildStatus;
 
 /// Fetch the agent's card from its runtime endpoint and persist the fields
-/// clients depend on: description, skills, tags, capabilities, and
-/// `transport_path` (see [`nasiko_types::a2a::extract_transport_path`]).
+/// clients depend on: display_name, description, skills, tags, capabilities,
+/// and `transport_path` (see [`nasiko_types::a2a::extract_transport_path`]).
 ///
 /// Returns true if a card was fetched and applied. Every deploy path
 /// (seed / upload / update / rollback) must go through this so `nasiko ps`
@@ -42,17 +42,19 @@ pub(crate) async fn fetch_and_apply_agent_card(
         None => return false,
     };
 
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"UPDATE agents SET
-             description = COALESCE($2, description),
-             skills = COALESCE($3, skills),
-             tags = COALESCE($4, tags),
-             capabilities = COALESCE($5, capabilities),
-             transport_path = COALESCE($6, transport_path),
+             display_name = COALESCE($2, display_name),
+             description = COALESCE($3, description),
+             skills = COALESCE($4, skills),
+             tags = COALESCE($5, tags),
+             capabilities = COALESCE($6, capabilities),
+             transport_path = COALESCE($7, transport_path),
              updated_at = now()
            WHERE id = $1"#,
     )
     .bind(agent_id)
+    .bind(card.get("name").and_then(|v| v.as_str()))
     .bind(card.get("description").and_then(|v| v.as_str()))
     .bind(card.get("skills"))
     .bind({
@@ -81,7 +83,11 @@ pub(crate) async fn fetch_and_apply_agent_card(
     .bind(card.get("capabilities"))
     .bind(nasiko_types::a2a::extract_transport_path(&card))
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::error!(%agent_id, %e, "failed to apply agent card fields to DB");
+        return false;
+    }
 
     if let Some(skills_json) = card.get("skills") {
         crate::catalog::skills::sync_agent_skills_json(db, agent_id, skills_json).await;

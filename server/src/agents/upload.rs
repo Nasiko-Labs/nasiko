@@ -350,7 +350,6 @@ pub(crate) async fn upload_and_deploy(
         Some(n) if !n.is_empty() => n,
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
-    let version_tag = version_tag.unwrap_or_else(|| "latest".to_string());
     // Accept only the supported SDK formats; anything else falls back to openai.
     let inbound_format = match inbound_format.as_deref() {
         Some("anthropic") => "anthropic",
@@ -358,15 +357,9 @@ pub(crate) async fn upload_and_deploy(
         _ => "openai",
     };
 
-    // Validate name + version_tag charset (RUN-10): both flow into the OCI image
-    // reference `{name}:{tag}`; unvalidated values allow push-target redirection
-    // (e.g. `/` or `@` smuggling a different registry/digest) when no registry
-    // prefix is configured.
+    // Validate name charset (RUN-10): flows into the OCI image reference.
     if let Err(e) = crate::build::routes::validate_version_tag(&name) {
         return (StatusCode::BAD_REQUEST, format!("invalid name: {e}")).into_response();
-    }
-    if let Err(e) = crate::build::routes::validate_version_tag(&version_tag) {
-        return (StatusCode::BAD_REQUEST, e).into_response();
     }
     let zip_path = match zip_path {
         Some(p) => p,
@@ -395,8 +388,8 @@ pub(crate) async fn upload_and_deploy(
     // Clean up validation dir regardless of outcome
     let _ = tokio::fs::remove_dir_all(&validation_dir).await;
 
-    match validation_result {
-        Ok(Ok(())) => {}
+    let zip_meta = match validation_result {
+        Ok(Ok(meta)) => meta,
         Ok(Err(msg)) => {
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
             return (StatusCode::BAD_REQUEST, msg).into_response();
@@ -406,6 +399,14 @@ pub(crate) async fn upload_and_deploy(
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
+    };
+
+    // Version priority: explicit multipart field → extracted from zip → "latest".
+    let version_tag = version_tag
+        .or(zip_meta.version)
+        .unwrap_or_else(|| "latest".to_string());
+    if let Err(e) = crate::build::routes::validate_version_tag(&version_tag) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
     }
 
     let image_tag =
@@ -577,7 +578,16 @@ pub(crate) async fn upload_and_deploy(
 }
 
 /// Validate the agent zip structure synchronously (blocking, run in spawn_blocking).
-fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+/// Metadata extracted from the zip during validation.
+struct ZipMeta {
+    /// Version from AgentCard.json / pyproject.toml / Cargo.toml (if found).
+    version: Option<String>,
+}
+
+fn validate_agent_zip(
+    zip_path: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<ZipMeta, String> {
     extract_zip_from_file(zip_path, dest)?;
 
     // Dockerfile must exist in root and have at least one FROM line
@@ -607,7 +617,79 @@ fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Res
         );
     }
 
-    Ok(())
+    // ── Extract version from project files ───────────────────────────────────
+    // Resolution order mirrors the CLI: AgentCard.json → pyproject.toml → Cargo.toml.
+    let version = detect_version_from_dir(dest);
+
+    Ok(ZipMeta { version })
+}
+
+/// Read a version string from common project files in a directory.
+///
+/// Resolution order:
+///   1. AgentCard.json → `version`
+///   2. pyproject.toml → `[project] version` or `[tool.poetry] version`
+///   3. Cargo.toml     → `[package] version`
+fn detect_version_from_dir(dir: &std::path::Path) -> Option<String> {
+    // 1. AgentCard.json
+    let card_path = dir.join("AgentCard.json");
+    if card_path.exists() {
+        if let Ok(s) = std::fs::read_to_string(&card_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                if let Some(ver) = v.get("version").and_then(|v| v.as_str()) {
+                    return Some(ver.strip_prefix('v').unwrap_or(ver).to_string());
+                }
+            }
+        }
+    }
+
+    // 2. pyproject.toml — [project] version or [tool.poetry] version
+    let pyproject_path = dir.join("pyproject.toml");
+    if pyproject_path.exists() {
+        if let Ok(s) = std::fs::read_to_string(&pyproject_path) {
+            if let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"]) {
+                return Some(ver);
+            }
+        }
+    }
+
+    // 3. Cargo.toml — [package] version
+    let cargo_path = dir.join("Cargo.toml");
+    if cargo_path.exists() {
+        if let Ok(s) = std::fs::read_to_string(&cargo_path) {
+            if let Some(ver) = parse_toml_version(&s, &["package"]) {
+                return Some(ver);
+            }
+        }
+    }
+
+    None
+}
+
+/// Minimal TOML version extractor: scans for `version = "..."` under any of the
+/// given section headers. No TOML parser dependency.
+fn parse_toml_version(content: &str, sections: &[&str]) -> Option<String> {
+    let mut in_section = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            let header = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
+            in_section = sections.contains(&header);
+            continue;
+        }
+        if in_section {
+            if let Some(rest) = trimmed.strip_prefix("version") {
+                let rest = rest.trim();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let ver = rest.trim().trim_matches('"').trim_matches('\'');
+                    if !ver.is_empty() {
+                        return Some(ver.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Execute the full upload-and-deploy pipeline: extract, OTel patch, docker build, deploy.
