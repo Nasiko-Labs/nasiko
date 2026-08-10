@@ -274,6 +274,19 @@ async fn github_callback(
             return (StatusCode::BAD_REQUEST, "oauth state already used").into_response();
         }
         Err(e) => {
+            // Fail CLOSED in multi-tenant mode (docs/MULTITENANT.md §4.3): a
+            // captured valid `state` must not become replayable just because
+            // Redis is unavailable. Single-tenant keeps the fail-open behavior
+            // (availability over strict replay protection — the HMAC signature +
+            // expiry still hold), so its login is unaffected by a Redis blip.
+            if state.config.multi_tenant_mode {
+                warn!(%e, user_id = %user_id, "GitHub OAuth state single-use check failed (redis error) — rejecting (multi-tenant fail-closed)");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "login temporarily unavailable, please retry",
+                )
+                    .into_response();
+            }
             warn!(%e, user_id = %user_id, "oauth state single-use check failed (redis error) — proceeding without replay protection");
         }
     }
