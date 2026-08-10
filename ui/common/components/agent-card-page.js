@@ -1260,10 +1260,13 @@ class AgentCardPage extends HTMLElement {
     };
     const meter = (pct) => {
       if (pct == null || Number.isNaN(pct)) return '';
-      const c = Math.max(0, Math.min(100, pct));
-      const sev = c >= 90 ? 'is-crit' : c >= 70 ? 'is-warn' : 'is-ok';
-      const word = c >= 90 ? 'critical' : c >= 70 ? 'high' : 'normal';
-      return `<div class="acp-meter ${sev}" role="img" aria-label="${c.toFixed(0)} percent, ${word}"><i style="width:${c.toFixed(1)}%"></i></div>`;
+      // Only the bar width is clamped — CPU legitimately exceeds 100% on
+      // multi-core containers, and the label and severity must report that
+      // rather than announce a capped 100%.
+      const width = Math.max(0, Math.min(100, pct));
+      const sev = pct >= 90 ? 'is-crit' : pct >= 70 ? 'is-warn' : 'is-ok';
+      const word = pct >= 90 ? 'critical' : pct >= 70 ? 'high' : 'normal';
+      return `<div class="acp-meter ${sev}" role="img" aria-label="${pct.toFixed(0)} percent, ${word}"><i style="width:${width.toFixed(1)}%"></i></div>`;
     };
 
     const cpuKnown = usage.cpu_percent != null;
