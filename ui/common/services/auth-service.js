@@ -70,6 +70,13 @@ class AuthService {
   // navigation cancelling them) BEFORE navigating, and _cachedUser is cleared,
   // so the old broken race — navigate first, get silently re-authenticated by a
   // still-valid cookie — can't happen.
+  //
+  // V1 scope: this is a FULL sign-out (both identities). docs/MULTITENANT.md §10E
+  // describes a current-workspace-only default plus a distinct "Sign out of
+  // Nasiko" — but that split is a multi-workspace affordance: with V1's single
+  // domain-derived workspace, a workspace-only sign-out would just land you on a
+  // dashboard that immediately re-enters via /api/enter. Deferred with
+  // multi-workspace; full sign-out is the correct single-workspace behavior.
   async logout() {
     _cachedUser = null;
     const base = window.nasikoConfig?.apiBase || '';
