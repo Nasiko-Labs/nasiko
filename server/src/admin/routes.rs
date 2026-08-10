@@ -153,6 +153,24 @@ async fn deploy(
                         .await;
                 let image = spec.image.clone();
                 let owner_id = claims.user_uuid().ok();
+
+                // Probe the agent's card and persist `transport_path` (plus
+                // description/skills/tags/capabilities) — the same probe the
+                // seed / upload / update / restart deploy paths already run.
+                // Without it, an agent that mounts A2A at a non-root path (Go
+                // `a2a-go` agents serve `/a2a`) keeps an empty `transport_path`,
+                // so the orchestrator/proxy POSTs to `/` and every routed call
+                // 404s; and its description/skills stay empty, starving the
+                // routing engine of any signal but the bare name. This ad-hoc
+                // `nasiko deploy` (`POST /containers`) path was the only deploy
+                // path that skipped the probe.
+                tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
+                    state.db.clone(),
+                    state.http_client.clone(),
+                    agent_id,
+                    endpoint.clone(),
+                ));
+
                 tokio::spawn(async move {
                     // Write the live endpoint URL + running status + image back to
                     // the catalog, so restart (which needs `image` to redeploy) works
@@ -532,16 +550,26 @@ async fn logs(
 /// copying the UUID `nasiko ps` itself prints into `stop`/`start`/`restart`/
 /// `scale` (all of which route through this) 404'd, even though the identical
 /// UUID works for `nasiko rm`.
+///
+/// Excludes soft-deleted agents in both branches — the `(owner_id, name)`
+/// uniqueness constraint (`agents_owner_name_active_uniq`,
+/// oss/migrations/0001_schema.sql) is scoped to `deleted_at IS NULL`, so a
+/// deleted agent's name is meant to be free for a fresh row. Without this
+/// filter, `deploy()`'s ad-hoc image path found the old deleted row, updated
+/// it in place instead of treating the name as unclaimed, and left the
+/// resulting running container permanently invisible to `nasiko ps`/`rm`.
 async fn resolve_agent_id_by_name(state: &AppState, name_or_id: &str) -> Option<Uuid> {
     if let Ok(id) = name_or_id.parse::<Uuid>() {
-        return sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+        return sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM agents WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
     }
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL")
         .bind(name_or_id)
         .fetch_optional(&state.db)
         .await
