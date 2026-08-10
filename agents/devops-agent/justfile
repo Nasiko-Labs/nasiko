@@ -1,10 +1,35 @@
 user := env("DOCKERHUB_USER", "akhilfolium")
 docker := env("DOCKER", if path_exists("/usr/bin/podman") == "true" { "podman" } else { "docker" })
 
-build:
+# Cross-compile both linux targets on the host and stage them where the
+# Dockerfile expects them. Needs cargo-zigbuild + zig, the same toolchain the
+# repo-root justfile uses for the server images.
+stage:
+    cargo zigbuild --release --target x86_64-unknown-linux-musl
+    cargo zigbuild --release --target aarch64-unknown-linux-musl
+    mkdir -p dist/linux/amd64 dist/linux/arm64
+    cp target/x86_64-unknown-linux-musl/release/nasiko-devops-agent dist/linux/amd64/
+    cp target/aarch64-unknown-linux-musl/release/nasiko-devops-agent dist/linux/arm64/
+
+# Single-arch image for the host platform — for iterating locally.
+build: stage
     {{docker}} build -t {{user}}/devops-agent .
 
+# Push whatever `build` produced. Single-arch: see the warning on `release`.
 push:
     {{docker}} push {{user}}/devops-agent
 
-release: build push
+# Build + push BOTH architectures as one manifest list. This is the recipe to use
+# for anything a deployment will pull.
+#
+# It MUST be multi-arch: control-plane VMs are amd64 while dev machines are arm64
+# Apple Silicon, and a single-arch tag leaves the other side unable to pull at
+# all — `no matching manifest for linux/amd64`. A plain `docker build && push`
+# from an Apple Silicon machine publishes arm64 only, which is exactly how the
+# deployed agents became unpullable on the amd64 control plane.
+#
+# `buildx --push` rather than build-then-push: a multi-platform result cannot be
+# loaded into the local image store, so it has to go straight to the registry.
+release tag="latest": stage
+    {{docker}} buildx build --platform linux/amd64,linux/arm64 \
+        -t {{user}}/devops-agent:{{tag}} --push .

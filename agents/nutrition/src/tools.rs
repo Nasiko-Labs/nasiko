@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use serde_json::json;
 
 pub fn definitions() -> Vec<serde_json::Value> {
@@ -17,7 +19,7 @@ pub fn definitions() -> Vec<serde_json::Value> {
                         "data_type": {
                             "type": "string",
                             "enum": ["Foundation", "SR Legacy", "Branded", "Survey"],
-                            "description": "Filter by data type. 'Foundation' and 'SR Legacy' are whole/unbranded foods. 'Branded' is packaged foods."
+                            "description": "Optional — leave UNSET for ordinary foods and ingredients; the search already covers whole foods (Foundation + SR Legacy) by default. Set 'Branded' only for a specific packaged supermarket product. Never re-run the same query with a different value."
                         }
                     },
                     "required": ["query"]
@@ -94,29 +96,68 @@ pub async fn execute(name: &str, arguments: &str) -> String {
     }
 }
 
-const USDA_API_KEY: &str = "DEMO_KEY";
+/// USDA FoodData Central API key.
+///
+/// `DEMO_KEY` is api.data.gov's shared demo key — rate-limited per IP and shared
+/// with the entire internet, so it throttles constantly in practice. Inject a real
+/// key via the platform's per-agent secrets (`USDA_API_KEY`); the demo key stays as
+/// a fallback so the agent still runs unconfigured.
+static USDA_API_KEY: LazyLock<String> =
+    LazyLock::new(|| std::env::var("USDA_API_KEY").unwrap_or_else(|_| "DEMO_KEY".to_owned()));
+
+/// GETs `url` and parses JSON, distinguishing an HTTP failure from an empty result.
+///
+/// The callers used to `.json()` straight off the response, so a 429/403 body
+/// (which has no `foods`/`foodNutrients` key) surfaced to the model as
+/// `Error: no results` — indistinguishable from a bad query. The model reacted by
+/// retrying with another data type or another tool, turning one throttled request
+/// into several. The message on the throttle path is written *for the model*: it
+/// tells it explicitly not to retry.
+async fn fetch_json(url: &str) -> Result<serde_json::Value, String> {
+    let resp = reqwest::get(url)
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let status = resp.status();
+    if status.as_u16() == 429 || status.as_u16() == 403 {
+        return Err(
+            "USDA rate limit reached. Do NOT retry and do NOT try another data type or tool — \
+             answer from data already gathered and tell the user the lookup was throttled."
+                .to_owned(),
+        );
+    }
+    if !status.is_success() {
+        return Err(format!(
+            "USDA request failed with HTTP {}. Do NOT retry.",
+            status.as_u16()
+        ));
+    }
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("parse failed: {e}"))
+}
 
 async fn search_food(arguments: &str) -> Result<String, String> {
     let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
     let query = args["query"].as_str().ok_or("missing 'query'")?;
     let data_type = args["data_type"].as_str();
 
+    // pageSize 4, not 8: the model tended to fetch full detail for several hits,
+    // so a wider result set directly multiplied the follow-up calls.
     let mut url = format!(
-        "https://api.nal.usda.gov/fdc/v1/foods/search?api_key={}&query={}&pageSize=8",
-        USDA_API_KEY,
+        "https://api.nal.usda.gov/fdc/v1/foods/search?api_key={}&query={}&pageSize=4",
+        *USDA_API_KEY,
         urlencode(query),
     );
 
-    if let Some(dt) = data_type {
-        url.push_str(&format!("&dataType={}", urlencode(dt)));
-    }
+    // Default to whole foods. An unfiltered FDC search is dominated by Branded
+    // packaged records, so asking for "protein in chicken breast" returned eight
+    // supermarket products — and the model then re-searched with Foundation, then
+    // SR Legacy, one extra round trip each, to find the plain ingredient. Defaulting
+    // here is what removes that fan-out.
+    let data_type = data_type.unwrap_or("Foundation,SR Legacy");
+    url.push_str(&format!("&dataType={}", urlencode(data_type)));
 
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
+    let resp = fetch_json(&url).await?;
 
     let foods = resp["foods"].as_array().ok_or("no results")?;
 
@@ -144,7 +185,20 @@ async fn search_food(arguments: &str) -> Result<String, String> {
                     let name = n["nutrientName"].as_str().unwrap_or("");
                     let val = n["value"].as_f64().unwrap_or(0.0);
                     match name {
-                        "Energy" => kcal = format!("{val:.0}"),
+                        // FDC reports Energy twice for Foundation/SR Legacy foods —
+                        // once in kcal (nutrient 1008) and once in kJ (1062). This
+                        // loop assigns on every match, so without the unit check the
+                        // kJ figure won and was printed as "kcal", ~4.18x too high.
+                        // An implausible calorie count made the model re-verify via
+                        // get_nutrition. Falls back to an unlabelled first value so
+                        // responses without unitName still show something.
+                        "Energy" => {
+                            let unit = n["unitName"].as_str().unwrap_or("");
+                            if unit.eq_ignore_ascii_case("kcal") || (kcal == "?" && unit.is_empty())
+                            {
+                                kcal = format!("{val:.0}");
+                            }
+                        }
                         "Protein" => protein = format!("{val:.1}"),
                         "Total lipid (fat)" => fat = format!("{val:.1}"),
                         "Carbohydrate, by difference" => carbs = format!("{val:.1}"),
@@ -173,15 +227,10 @@ async fn get_nutrition(arguments: &str) -> Result<String, String> {
 
     let url = format!(
         "https://api.nal.usda.gov/fdc/v1/food/{}?api_key={}",
-        fdc_id, USDA_API_KEY,
+        fdc_id, *USDA_API_KEY,
     );
 
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
+    let resp = fetch_json(&url).await?;
 
     let desc = resp["description"].as_str().unwrap_or("Unknown food");
     let nutrients = resp["foodNutrients"].as_array().ok_or("no nutrient data")?;
@@ -261,12 +310,7 @@ async fn open_food_facts(arguments: &str) -> Result<String, String> {
         )
     };
 
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
+    let resp = fetch_json(&url).await?;
 
     // Single product (barcode lookup)
     if let Some(product) = resp.get("product") {
@@ -316,15 +360,12 @@ async fn compare_foods(arguments: &str) -> Result<String, String> {
     for id in &fdc_ids {
         let url = format!(
             "https://api.nal.usda.gov/fdc/v1/food/{}?api_key={}",
-            id, USDA_API_KEY,
+            id, *USDA_API_KEY,
         );
 
-        let resp = reqwest::get(&url)
+        let resp = fetch_json(&url)
             .await
-            .map_err(|e| format!("request failed for {id}: {e}"))?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| format!("parse failed for {id}: {e}"))?;
+            .map_err(|e| format!("{e} (while comparing {id})"))?;
 
         let desc = resp["description"].as_str().unwrap_or("?").to_string();
         let nutrients = resp["foodNutrients"].as_array();

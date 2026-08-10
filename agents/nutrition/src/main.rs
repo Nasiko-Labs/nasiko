@@ -52,7 +52,9 @@ impl NutritionAgent {
         if capture {
             tracing::Span::current().record(
                 "gen_ai.input.messages",
-                telemetry::genai_input_messages(messages).to_string().as_str(),
+                telemetry::genai_input_messages(messages)
+                    .to_string()
+                    .as_str(),
             );
         }
         let mut body = serde_json::json!({
@@ -100,7 +102,11 @@ impl NutritionAgent {
             let msg = &response["choices"][0]["message"];
             let text = msg["content"].as_str().unwrap_or("");
             let tool_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
-            let finish_reason = if tool_calls.is_empty() { "stop" } else { "tool_call" };
+            let finish_reason = if tool_calls.is_empty() {
+                "stop"
+            } else {
+                "tool_call"
+            };
             tracing::Span::current().record(
                 "gen_ai.output.messages",
                 telemetry::genai_output_message(text, &tool_calls, finish_reason)
@@ -150,8 +156,8 @@ impl AgentExecutor for NutritionAgent {
         // invocation, so record it as invoke_agent with the exchanged messages
         // (content gated by the platform capture flag). `session.id` lets the
         // control plane find this trace by A2A contextId directly in Tempo.
-        let agent_name = std::env::var("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
+        let agent_name =
+            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
         let span = tracing::info_span!(
             "a2a.execute",
             otel.kind = "server",
@@ -197,12 +203,26 @@ impl AgentExecutor for NutritionAgent {
         - compare_foods — side-by-side comparison table (needs 2-5 FDC IDs)\n\n\
         Rules:\n\
         - ALWAYS call at least one tool before answering\n\
-        - For whole foods: search_food first, then get_nutrition for detail\n\
+        - Be economical: use the FEWEST tool calls that answer the question. One \
+        search_food call is usually enough.\n\
+        - search_food already returns calories and macros per 100g. When the numbers \
+        you need are present there, answer straight from them — do NOT follow up with \
+        get_nutrition.\n\
+        - Call get_nutrition ONLY when (a) a value you need shows as '?' in the search \
+        result (some USDA Foundation entries omit calories), or (b) the question needs \
+        vitamins, minerals or a fat breakdown. Either way, fetch it for the SINGLE \
+        best-matching FDC ID only — never for several results.\n\
+        - search_food already covers whole foods by default. Do NOT set data_type to \
+        retry a query, and do NOT re-run a search with a different data_type.\n\
+        - NEVER call a tool twice with the same arguments. Stop calling tools as soon \
+        as you have data for the food asked about.\n\
+        - If a tool reports a rate limit or an HTTP error, do NOT retry it and do NOT \
+        substitute another tool — answer from what you have and say the lookup failed.\n\
         - For packaged products: use open_food_facts\n\
         - For comparisons: search both foods first to get FDC IDs, then compare_foods\n\
         - Always state whether data is per 100g or per serving\n\
         - Include practical context (% daily value for key nutrients)\n\
-        - All numbers must come from tool output, never from memory";
+        - Numbers must come from tool output, never from memory";
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
