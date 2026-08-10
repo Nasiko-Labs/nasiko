@@ -408,12 +408,22 @@ class McpPage extends HTMLElement {
     }
   }
 
-  /** Connected → refresh; OAuth URL → popup, refresh when focus returns. */
+  /** Connected → refresh; OAuth URL → popup, poll until it closes then reload. */
   #applyConnectOutcome(d) {
     const url = d?.oauth_url || d?.authorization_url;
     if (url) {
-      window.open(url, 'mcp-oauth', 'width=600,height=720');
-      window.addEventListener('focus', () => this.#load(), { once: true });
+      const popup = window.open(url, 'mcp-oauth', 'width=600,height=720');
+      if (popup) {
+        const poll = setInterval(() => {
+          if (popup.closed) {
+            clearInterval(poll);
+            this.#load();
+          }
+        }, 500);
+      } else {
+        // Popup blocked — fall back to focus listener
+        window.addEventListener('focus', () => this.#load(), { once: true });
+      }
       return;
     }
     this.#load();

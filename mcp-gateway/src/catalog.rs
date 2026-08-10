@@ -33,7 +33,7 @@ fn auth_flow_for(connector: &repo::McpConnector) -> &'static str {
 /// The single key format for a connector's cached tool count — shared with
 /// `permissions::sync_connector_tools`, which invalidates this same key
 /// whenever it actually resyncs `mcp_connector_tools`. Keep both in sync.
-pub(crate) fn toolcount_cache_key(connector_id: Uuid) -> String {
+pub fn toolcount_cache_key(connector_id: Uuid) -> String {
     format!("mcp:toolcount:{connector_id}")
 }
 

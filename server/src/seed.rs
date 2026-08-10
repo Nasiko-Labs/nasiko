@@ -407,7 +407,14 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
             .map(|t| (t.name.clone(), t.description.clone()))
             .collect();
         match nasiko_mcp_gateway::repo::upsert_connector_tools(&state.db, *cid, &parsed).await {
-            Ok(()) => info!(toolkit = %toolkit, count = parsed.len(), "synced toolkit tools to DB"),
+            Ok(()) => {
+                info!(toolkit = %toolkit, count = parsed.len(), "synced toolkit tools to DB");
+                nasiko_mcp_gateway::cache::delete(
+                    &state.mcp.redis,
+                    &nasiko_mcp_gateway::catalog::toolcount_cache_key(*cid),
+                )
+                .await;
+            }
             Err(e) => warn!(toolkit = %toolkit, %e, "failed to sync tools"),
         }
     }
