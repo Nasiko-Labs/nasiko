@@ -1,1 +1,0 @@
-# AWS EKS Terraform module

@@ -1,3 +1,0 @@
-FROM ./arch-function-f16.gguf
-
-PARAMETER num_ctx 8096

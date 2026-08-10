@@ -1,1 +1,0 @@
-# Groups module for CLI command organization
