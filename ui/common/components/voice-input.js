@@ -191,7 +191,9 @@ export class VoiceInputForm extends HTMLElement {
         await this.voiceRecorder.startRecording();
         this.setState("recording");
       } catch (err) {
-        showToast("Could not start recording: " + err.message);
+        // startRecording's messages already name the cause (insecure origin,
+        // denied permission, no device) — don't bury them behind a prefix.
+        showToast(err.message);
       }
     }
   }

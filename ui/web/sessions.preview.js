@@ -20,7 +20,14 @@ export default {
         ],
       },
     }],
-    [{ method: "GET", path: /^\/api\/chat\/sessions/ }, { data: sessionsData, total: sessionsData.length }],
+    // Cursor-paginated shape, matching CursorPage from oss/server/src/chat/routes.rs.
+    // `next_cursor` is set so the pager's "Load more" state is exercised.
+    [{ method: "GET", path: /^\/api\/chat\/sessions/ }, {
+      data: sessionsData,
+      has_more: true,
+      next_cursor: "preview-cursor-page-2",
+      prev_cursor: null,
+    }],
     [{ method: "DELETE", path: /^\/api\/chat\/sessions\// }, { ok: true }],
   ],
   window: {

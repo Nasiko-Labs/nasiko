@@ -164,6 +164,18 @@ export class AppButton extends HTMLElement {
   connectedCallback() { this.render(); }
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
+  /// Replace the button's text.
+  ///
+  /// Assigning to `element.textContent` directly would wipe the rendered
+  /// `<button>` wrapper and leave a bare text node — the button keeps its box
+  /// in the layout but loses all of its styling. Callers that relabel a button
+  /// (e.g. a Create/Save-changes modal) should use this instead.
+  set label(text) {
+    const content = this.querySelector('.content');
+    if (content) content.textContent = text;
+    else this.textContent = text; // not rendered yet; render() picks this up
+  }
+
   render() {
     const variant  = this.getAttribute('variant') || 'primary';
     const size     = this.getAttribute('size') || '';

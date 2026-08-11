@@ -270,4 +270,19 @@
     width: 90px;
     flex-shrink: 0;
   }
+
+  /* ── Pager ─────────────────────────────────────────────────────────────── */
+  .sessions-more {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    justify-content: center;
+    margin-top: var(--space-md);
+
+    &[hidden] { display: none; }
+  }
+  .sessions-count {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
 }

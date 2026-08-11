@@ -239,13 +239,38 @@ export class AppModuleNav extends HTMLElement {
       this.#render();
       return;
     }
-    this.#renderSkeleton();
+
+    // Per-tab cache, same reasoning as app-header's: this is an MPA, so
+    // without it every navigation shows a skeleton and then swaps in an
+    // identical tree. Role-gated trees are dropped on logout by
+    // `clearShellCache`.
+    const cacheKey = `app-module-nav:${module}`;
+    let cached = null;
+    try {
+      const raw = sessionStorage.getItem(cacheKey);
+      if (raw) cached = JSON.parse(raw);
+    } catch { /* ignore bad cache */ }
+
+    if (cached) {
+      this.#nav = cached;
+      this.#render();
+    } else {
+      this.#renderSkeleton();
+    }
+
     try {
       this.#nav = await window.fetchModuleNav(module);
+      try {
+        sessionStorage.setItem(cacheKey, JSON.stringify(this.#nav));
+      } catch { /* quota exceeded */ }
     } catch (e) {
       console.warn("fetchModuleNav failed:", e);
-      this.#nav = null;
+      this.#nav = cached ?? null;
+      if (cached) return; // already on screen, and it's still our best answer
     }
+
+    // Skip the repaint when the freshly fetched tree matches what's rendered.
+    if (cached && JSON.stringify(cached) === JSON.stringify(this.#nav)) return;
     this.#render();
   }
 

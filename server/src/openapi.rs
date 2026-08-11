@@ -58,6 +58,7 @@ use crate::state::AppState;
         crate::llm_configs::update,
         crate::llm_configs::delete_config,
         crate::llm_configs::set_default,
+        crate::llm_configs::clear_default,
         crate::llm_router::providers::list_providers,
         crate::llm_router::model_registry::list_mappings,
         crate::llm_router::model_registry::upsert_mapping,

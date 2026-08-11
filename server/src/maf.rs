@@ -415,19 +415,26 @@ async fn create_maf(
                 user_id,
                 file_parts: vec![],
             };
-            match state.routing_engine.route(route_req, &state.db).await {
-                Ok(result) => {
-                    let endpoint = result.agent.url.unwrap_or_default();
-                    if endpoint.is_empty() {
-                        return bad_request(&format!(
-                            "step {idx}: auto-assigned agent '{}' has no endpoint",
-                            result.agent.name
-                        ));
+            // A routed agent is only usable if it actually has an endpoint. An
+            // agent row with an empty `url` (registered but never deployed, or
+            // a seed whose URL was never backfilled) used to hard-fail the
+            // whole request with a 400, which is what made *every* workflow
+            // uncreatable on such a fleet. Treat it exactly like a routing
+            // failure and fall through to the catalog fallback below.
+            let routed = match state.routing_engine.route(route_req, &state.db).await {
+                Ok(result) => match result.agent.url {
+                    Some(endpoint) if !endpoint.is_empty() => {
+                        Some((result.agent.id, result.agent.name, endpoint))
                     }
-                    (result.agent.id, result.agent.name, endpoint)
-                }
-                Err(_) => {
-                    // Routing engine only queries status='running' agents.
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+
+            match routed {
+                Some(agent) => agent,
+                None => {
+                    // The routing engine only considers status='running' agents.
                     // Fall back to any agent registered by this user that has a valid URL,
                     // picking the one whose name/description best matches the task description.
                     let catalog = match fetch_user_agents(&state.db, user_id).await {
@@ -451,8 +458,9 @@ async fn create_maf(
                         Some(a) => (a.id, a.name, a.url.unwrap_or_default()),
                         None => {
                             return bad_request(&format!(
-                                "step {idx}: no agents available. Register at least one agent \
-                             in the Agents page before creating a workflow."
+                                "step {idx}: no deployed agent is available to run this step. \
+                                 Deploy at least one agent (a registered agent with no running \
+                                 container has no endpoint to call) before creating a workflow."
                             ));
                         }
                     }

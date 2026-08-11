@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
@@ -53,24 +53,24 @@ pub fn router() -> Router<AppState> {
 /// site (bare table name or a query alias) and must resolve unambiguously from
 /// within the correlated `EXISTS` subquery.
 ///
-/// EDITION-AWARE GAP: `EeAuthService::can_access_agent` (ee/auth/src/lib.rs)
-/// additionally grants access via team/department membership, joining on
+/// `org_bind` carries the ids of agents reachable through an org-hierarchy grant
+/// (`team`/`department`/`organization`), as resolved by
+/// `AuthService::org_granted_agent_ids`. `EeAuthService::can_access_agent`
+/// (ee/auth/src/lib.rs) grants access via team/department membership by joining on
 /// `users.team_id` / `users.department_id` — columns that only exist after the EE
 /// `1002_org_hierarchy` migration. This file is compiled into and shared by both
 /// the OSS and EE server binaries (`ee/server` wraps this crate's router rather
 /// than forking it — see `nasiko_server::build_app_with_user_router`), so a single
-/// static SQL string here cannot reference those EE-only columns without breaking
-/// at runtime against an OSS-only-migrated database. Expressing the full
-/// edition-aware predicate would require extending the `AuthService` trait
-/// (oss/auth) with a listing-scoped method the EE impl can override, which is out
-/// of scope for this file. Left as a known, intentional gap: under EE, an agent
-/// granted to the caller only via team/department membership (not a direct
-/// user-grant) still will not appear in `list`/`by_skill`/`search`, even though
-/// `get_one`'s `can_access_agent` call allows fetching it directly by id.
-fn agent_access_predicate(user_bind: &str, table_ref: &str) -> String {
+/// static SQL string here cannot reference those EE-only columns; the trait
+/// resolves them per edition and hands back plain ids instead, which is what
+/// closes the gap this comment used to describe. OSS returns an empty list, so
+/// the extra disjunct never matches there.
+fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
     format!(
-        r#"({table_ref}.owner_id = {user_bind}
+        r#"({user_bind}::uuid IS NULL
+             OR {table_ref}.owner_id = {user_bind}
              OR {table_ref}.is_public = TRUE
+             OR {table_ref}.id::text = ANY({org_bind})
              OR EXISTS (
                  SELECT 1 FROM agent_grants ag
                  WHERE ag.agent_id = {table_ref}.id
@@ -78,6 +78,35 @@ fn agent_access_predicate(user_bind: &str, table_ref: &str) -> String {
                      OR (ag.grant_type = 'user'   AND ag.grantee_id = {user_bind}::text))
              ))"#
     )
+}
+
+/// The caller's id for scoping purposes, and the agents an org grant opens up.
+///
+/// `None` is the superuser bypass — [`agent_access_predicate`] short-circuits on
+/// it, which is what the helper has always documented but never actually did:
+/// every call site passed `Some(user_id)` unconditionally, so an admin saw
+/// exactly what a `member` saw.
+async fn listing_scope(state: &AppState, claims: &Claims) -> Result<ListingScope, Response> {
+    if claims.is_superuser {
+        return Ok(ListingScope {
+            user: None,
+            org_granted: Vec::new(),
+        });
+    }
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return Err(e.into_response()),
+    };
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    Ok(ListingScope {
+        user: Some(user_id),
+        org_granted: state.auth.org_granted_agent_ids(&identity).await,
+    })
+}
+
+struct ListingScope {
+    user: Option<Uuid>,
+    org_granted: Vec<String>,
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -116,9 +145,9 @@ pub(crate) async fn by_skill(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let owner_filter: Option<Uuid> = match claims.user_uuid() {
-        Ok(id) => Some(id),
-        Err(e) => return e.into_response(),
+    let scope = match listing_scope(&state, &claims).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
     };
 
     // Normalise to lowercase before the GIN containment check.  Tags are
@@ -137,14 +166,15 @@ pub(crate) async fn by_skill(
              )
            ORDER BY a.created_at DESC
            LIMIT $2 OFFSET $3"#,
-        access = agent_access_predicate("$4", "a")
+        access = agent_access_predicate("$4", "$5", "a")
     );
 
     let result = sqlx::query_as::<_, AgentSummary>(&sql)
         .bind(&tag_lower)
         .bind(limit)
         .bind(offset)
-        .bind(owner_filter)
+        .bind(scope.user)
+        .bind(&scope.org_granted)
         .fetch_all(&state.db)
         .await;
 
@@ -320,9 +350,9 @@ pub(crate) async fn list(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let owner_filter: Option<Uuid> = match claims.user_uuid() {
-        Ok(id) => Some(id),
-        Err(e) => return e.into_response(),
+    let scope = match listing_scope(&state, &claims).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
     };
 
     let sql = format!(
@@ -333,15 +363,16 @@ pub(crate) async fn list(
              AND ($2::text IS NULL OR status = $2)
            ORDER BY created_at DESC
            LIMIT $4 OFFSET $5"#,
-        access = agent_access_predicate("$3", "agents")
+        access = agent_access_predicate("$3", "$6", "agents")
     );
 
     let agents = sqlx::query_as::<_, Agent>(&sql)
         .bind(q.owner)
         .bind(&q.status)
-        .bind(owner_filter)
+        .bind(scope.user)
         .bind(limit)
         .bind(offset)
+        .bind(&scope.org_granted)
         .fetch_all(&state.db)
         .await;
 
@@ -1046,9 +1077,9 @@ pub(crate) async fn search(
         return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
     }
 
-    let owner_filter: Option<Uuid> = match claims.user_uuid() {
-        Ok(id) => Some(id),
-        Err(e) => return e.into_response(),
+    let scope = match listing_scope(&state, &claims).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
     };
 
     // `COUNT(*) OVER()` yields the total match count (post-filter, pre-LIMIT) so
@@ -1064,13 +1095,14 @@ pub(crate) async fn search(
            WHERE _score > 0
            ORDER BY _score DESC, name ASC
            LIMIT $2"#,
-        access = agent_access_predicate("$3", "agents")
+        access = agent_access_predicate("$3", "$4", "agents")
     );
 
     let result = sqlx::query_as::<_, AgentSearchResult>(&sql)
         .bind(escape_like(&q))
         .bind(sq.limit.clamp(1, 50))
-        .bind(owner_filter)
+        .bind(scope.user)
+        .bind(&scope.org_granted)
         .fetch_all(&state.db)
         .await;
 

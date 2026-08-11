@@ -54,6 +54,11 @@ class WorkflowDetailPage extends HTMLElement {
         </div>`;
       return;
     }
+    // Set by the create screen's "Save & run" when the save succeeded but the
+    // run request didn't — otherwise the workflow just silently sits unrun.
+    const runError = params.get('run_error');
+    if (runError) showToast(`Saved, but the run didn't start: ${runError}`);
+
     this.#load(params.get('exec'));
   }
 

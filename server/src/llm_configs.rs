@@ -46,7 +46,10 @@ pub fn router() -> Router<AppState> {
             "/llm-configs/{id}",
             get(get_one).patch(update).delete(delete_config),
         )
-        .route("/llm-configs/{id}/default", post(set_default))
+        .route(
+            "/llm-configs/{id}/default",
+            post(set_default).delete(clear_default),
+        )
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -651,6 +654,62 @@ pub(crate) async fn set_default(
     }
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => ApiResponse::ok(cfg, "LLM config set as default successfully").into_response(),
+        None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
+    }
+}
+
+// ─── DELETE /llm-configs/{id}/default ────────────────────────────────────────
+
+/// Clear the default flag on one of the caller's configs, leaving them with no
+/// default. The counterpart to [`set_default`]: without it, once a config was
+/// marked default the flag could only ever move to a *different* config, never
+/// be removed — so "make this not the default" was unreachable, and with a
+/// single config there was no way out at all.
+///
+/// Agents that were falling back to this default resolve to `source: "none"`
+/// afterwards and use the platform key path (see `resolve_agent_config`).
+#[utoipa::path(
+    delete,
+    path = "/api/llm-configs/{id}/default",
+    tag = "llm-router",
+    params(
+        ("id" = Uuid, Path, description = "LLM config id"),
+    ),
+    responses(
+        (status = 200, description = "`data` is the config object, now with `is_default: false`", body = crate::mcp::openapi::McpEnvelope),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 404, description = "Unknown id, or not owned by the caller"),
+    ),
+)]
+pub(crate) async fn clear_default(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    if fetch_config(&state.db, id, user_id).await.is_none() {
+        return (StatusCode::NOT_FOUND, "llm config not found").into_response();
+    }
+    // Single statement — no transaction needed, unlike `set_default`, which has
+    // to clear the old default and set the new one atomically.
+    if let Err(e) = sqlx::query(
+        "UPDATE llm_configs SET is_default = false, updated_at = now() \
+         WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    {
+        return db_error("clear default", e);
+    }
+    match fetch_config(&state.db, id, user_id).await {
+        Some(cfg) => {
+            ApiResponse::ok(cfg, "LLM config default cleared successfully").into_response()
+        }
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
     }
 }

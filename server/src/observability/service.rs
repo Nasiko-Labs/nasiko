@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use futures::stream::{self, StreamExt};
 use nasiko_config::Config;
 use nasiko_observability::{
     AgentFinOps, ObservabilityError, ObservabilityProvider, extract_token_attrs,
@@ -20,6 +21,17 @@ use sqlx::PgPool;
 use utoipa::ToSchema;
 
 use crate::agents::hours_meter;
+
+// ─── Session listing tuning ───────────────────────────────────────────────────
+
+/// Sessions per page when the caller doesn't ask for a size. Every row costs a
+/// trace-store lookup, so this is a work bound, not just a display preference.
+const DEFAULT_SESSION_PAGE: i64 = 25;
+
+/// How many trace-store lookups may be in flight while enriching one page.
+/// High enough that a full page resolves in a couple of round-trips, low enough
+/// not to stampede Tempo when several users load the page at once.
+const SESSION_ENRICH_CONCURRENCY: usize = 8;
 
 // ─── Presentation helpers ─────────────────────────────────────────────────────
 
@@ -681,6 +693,80 @@ impl ObservabilityService {
 
     // ── 1. session/list ──────────────────────────────────────────────────────
 
+    /// Row for a session the trace store knows about: token counts, latency and
+    /// cost come from its traces.
+    fn session_summary_from_traces(
+        session_id: String,
+        agent_name: String,
+        details: &nasiko_observability::SessionDetails,
+    ) -> SessionSummary {
+        let total_tokens = details.input_tokens + details.output_tokens;
+        let started_at = details.traces.iter().map(|t| t.root_span.started_at).min();
+        let ended_at = details
+            .traces
+            .iter()
+            .filter_map(|t| t.root_span.ended_at)
+            .max();
+        let duration_ms = started_at
+            .zip(ended_at)
+            .map(|(s, e)| (e - s).num_milliseconds().max(0) as u64);
+
+        SessionSummary {
+            id: session_id.clone(),
+            session_id,
+            agent_id: agent_name,
+            num_traces: Some(details.traces.len() as u32),
+            start_time: started_at.map(fmt_ts),
+            // Flutter's DateTime.parse requires a non-empty string — fall back
+            // to start_time when no end time is known.
+            end_time: ended_at.or(started_at).map(fmt_ts),
+            duration_ms,
+            first_input: details.traces.first().and_then(|t| t.input_content.clone()),
+            last_output: details.traces.last().and_then(|t| t.output_content.clone()),
+            token_usage: TokenUsageSummary {
+                total: (total_tokens > 0).then_some(total_tokens),
+            },
+            trace_latency_ms_p50: details.latency_ms_p50,
+            trace_latency_ms_p99: None,
+            cost_summary: SimpleCostSummary {
+                total: CostEntry {
+                    cost: (details.cost.total_usd > 0.0).then_some(details.cost.total_usd),
+                },
+            },
+            session_annotations: vec![],
+            session_annotation_summaries: vec![],
+        }
+    }
+
+    /// Row for a session with no traces — the agent isn't OTel-instrumented, or
+    /// the trace store is unavailable. Everything the DB knows, nothing invented.
+    fn session_summary_from_db(
+        session_id: String,
+        agent_name: String,
+        created_at: DateTime<Utc>,
+    ) -> SessionSummary {
+        SessionSummary {
+            id: session_id.clone(),
+            session_id,
+            agent_id: agent_name,
+            num_traces: None,
+            start_time: Some(fmt_ts(created_at)),
+            end_time: Some(fmt_ts(created_at)),
+            duration_ms: None,
+            first_input: None,
+            last_output: None,
+            token_usage: TokenUsageSummary { total: None },
+            trace_latency_ms_p50: None,
+            trace_latency_ms_p99: None,
+            cost_summary: SimpleCostSummary {
+                total: CostEntry { cost: None },
+            },
+            session_annotations: vec![],
+            session_annotation_summaries: vec![],
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn get_all_sessions(
         &self,
         user_id: &str,
@@ -689,21 +775,35 @@ impl ObservabilityService {
         _team_id: Option<&str>,
         start_time: Option<&str>,
         is_superuser: bool,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> Result<SessionListResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 7);
         let end = Utc::now();
 
+        // Each row costs a trace-store round-trip, so the page size is the real
+        // cost driver here. This used to load a flat 500 rows and enrich them
+        // one at a time — up to 500 serial Tempo requests per page view, which
+        // is why Execution history took so long to appear.
+        let limit = limit.unwrap_or(DEFAULT_SESSION_PAGE).clamp(1, 100);
+        let offset = offset.unwrap_or(0).max(0);
+        // One extra row answers "is there a next page?" without a COUNT query.
+        let fetch = limit + 1;
+
         // 1. Query chat_sessions as the authoritative source — every session
         //    shows up here regardless of whether the agent is OTel-instrumented.
         //    Non-superusers only see their own sessions.
-        let db_sessions: Vec<(String, Option<uuid::Uuid>, DateTime<Utc>)> = if is_superuser {
+        let mut db_sessions: Vec<(String, Option<uuid::Uuid>, DateTime<Utc>)> = if is_superuser {
             sqlx::query_as(
                 "SELECT session_id, agent_id, created_at \
                  FROM chat_sessions \
                  WHERE deleted_at IS NULL AND created_at >= $1 \
-                 ORDER BY created_at DESC LIMIT 500",
+                 ORDER BY created_at DESC, session_id DESC \
+                 LIMIT $2 OFFSET $3",
             )
             .bind(start)
+            .bind(fetch)
+            .bind(offset)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?
@@ -715,14 +815,22 @@ impl ObservabilityService {
                 "SELECT session_id, agent_id, created_at \
                  FROM chat_sessions \
                  WHERE user_id = $1 AND deleted_at IS NULL AND created_at >= $2 \
-                 ORDER BY created_at DESC LIMIT 500",
+                 ORDER BY created_at DESC, session_id DESC \
+                 LIMIT $3 OFFSET $4",
             )
             .bind(caller_uuid)
             .bind(start)
+            .bind(fetch)
+            .bind(offset)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?
         };
+
+        let has_next_page = db_sessions.len() > limit as usize;
+        if has_next_page {
+            db_sessions.pop();
+        }
 
         // 2. Build agent_id → name lookup for the agent_id column.
         let agents = self.get_agent_names().await.unwrap_or_default();
@@ -732,87 +840,45 @@ impl ObservabilityService {
             .map(|(id, name, _display, _version)| (id, name))
             .collect();
 
-        // 3. Enrich each DB session from Tempo (by session_id). For agents
-        //    without OTel, Tempo returns NotFound and we fall back to a minimal
-        //    summary built from the DB row — the session still appears in the UI.
-        let mut all_sessions: Vec<SessionSummary> = Vec::new();
-        let mut successful = 0usize;
-
-        for (session_id, agent_id_opt, created_at) in db_sessions {
-            let agent_name = agent_id_opt
-                .and_then(|id| agent_name_by_id.get(&id))
-                .cloned()
-                .unwrap_or_default();
-
-            match self.provider.get_session(&session_id, start, end).await {
-                Ok(details) => {
-                    let total_tokens = details.input_tokens + details.output_tokens;
-                    let started_at = details.traces.iter().map(|t| t.root_span.started_at).min();
-                    let ended_at = details
-                        .traces
-                        .iter()
-                        .filter_map(|t| t.root_span.ended_at)
-                        .max();
-                    let duration_ms = started_at
-                        .zip(ended_at)
-                        .map(|(s, e)| (e - s).num_milliseconds().max(0) as u64);
-                    all_sessions.push(SessionSummary {
-                        id: session_id.clone(),
-                        session_id,
-                        agent_id: agent_name,
-                        num_traces: Some(details.traces.len() as u32),
-                        start_time: started_at.map(fmt_ts),
-                        // Flutter's DateTime.parse requires a non-empty string —
-                        // fall back to start_time when no end time is known.
-                        end_time: ended_at.or(started_at).map(fmt_ts),
-                        duration_ms,
-                        first_input: details.traces.first().and_then(|t| t.input_content.clone()),
-                        last_output: details.traces.last().and_then(|t| t.output_content.clone()),
-                        token_usage: TokenUsageSummary {
-                            total: (total_tokens > 0).then_some(total_tokens),
-                        },
-                        trace_latency_ms_p50: details.latency_ms_p50,
-                        trace_latency_ms_p99: None,
-                        cost_summary: SimpleCostSummary {
-                            total: CostEntry {
-                                cost: (details.cost.total_usd > 0.0)
-                                    .then_some(details.cost.total_usd),
-                            },
-                        },
-                        session_annotations: vec![],
-                        session_annotation_summaries: vec![],
-                    });
-                    successful += 1;
-                }
-                Err(e) => {
-                    // Not found in Tempo (agent not OTel-instrumented) or a
-                    // transient error — surface the session from DB metadata so
-                    // it still appears in the execution history.
-                    if !matches!(e, ObservabilityError::NotFound(_)) {
-                        tracing::warn!(session_id, error = %e, "tempo lookup failed for session");
+        // 3. Enrich each session from the trace store, concurrently. For agents
+        //    without OTel the provider returns NotFound and we fall back to a
+        //    minimal summary built from the DB row — the session still appears
+        //    in the execution history.
+        //
+        //    Bounded fan-out rather than a serial loop: latency is now roughly
+        //    one round-trip per batch instead of one per session, while the cap
+        //    keeps a large page from stampeding the trace store.
+        let enriched: Vec<SessionSummary> = stream::iter(db_sessions.into_iter().map(
+            |(session_id, agent_id_opt, created_at)| {
+                let agent_name = agent_id_opt
+                    .and_then(|id| agent_name_by_id.get(&id))
+                    .cloned()
+                    .unwrap_or_default();
+                async move {
+                    match self.provider.get_session(&session_id, start, end).await {
+                        Ok(details) => Self::session_summary_from_traces(
+                            session_id,
+                            agent_name,
+                            &details,
+                        ),
+                        Err(e) => {
+                            if !matches!(e, ObservabilityError::NotFound(_)) {
+                                tracing::warn!(%session_id, error = %e, "trace lookup failed for session");
+                            }
+                            Self::session_summary_from_db(session_id, agent_name, created_at)
+                        }
                     }
-                    all_sessions.push(SessionSummary {
-                        id: session_id.clone(),
-                        session_id,
-                        agent_id: agent_name,
-                        num_traces: None,
-                        start_time: Some(fmt_ts(created_at)),
-                        end_time: Some(fmt_ts(created_at)),
-                        duration_ms: None,
-                        first_input: None,
-                        last_output: None,
-                        token_usage: TokenUsageSummary { total: None },
-                        trace_latency_ms_p50: None,
-                        trace_latency_ms_p99: None,
-                        cost_summary: SimpleCostSummary {
-                            total: CostEntry { cost: None },
-                        },
-                        session_annotations: vec![],
-                        session_annotation_summaries: vec![],
-                    });
                 }
-            }
-        }
+            },
+        ))
+        .buffered(SESSION_ENRICH_CONCURRENCY)
+        .collect()
+        .await;
+
+        // `num_traces` is Some only on the trace-store path, so it doubles as
+        // "this session was found in the trace store".
+        let successful = enriched.iter().filter(|s| s.num_traces.is_some()).count();
+        let all_sessions = enriched;
 
         Ok(SessionListResponse {
             data: SessionListData {
@@ -820,8 +886,9 @@ impl ObservabilityService {
                 total_agents: total,
                 successful_agents: successful,
                 pagination: Pagination {
-                    end_cursor: None,
-                    has_next_page: false,
+                    // Offset paging: the next page starts where this one ended.
+                    end_cursor: has_next_page.then(|| (offset + limit).to_string()),
+                    has_next_page,
                 },
             },
         })

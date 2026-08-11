@@ -3,17 +3,11 @@ import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
+import { transcribeBlob } from '/common/utils/voice-utils.js';
 import '/common/components/voice-input.js';
 import '/common/components/agent-steps.js';
 
-window.transcribeAudio = async (blob) => {
-  const form = new FormData();
-  form.append('file', blob, 'audio.webm');
-  const res = await apiFetch('/transcribe', { method: 'POST', body: form });
-  if (!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  return data.text;
-};
+window.transcribeAudio = transcribeBlob;
 
 import styles from './orchestrator-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
