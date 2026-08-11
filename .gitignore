@@ -28,8 +28,10 @@ uv.lock
 *.swo
 .envrc
 
+
 # Local MCP config — contains a registry credential, do not commit
 .mcp.json
+values.json
 
 # Local-only MCP planning/research docs — not pushed to remote
 /mcp_upload_flow_docs/
