@@ -196,25 +196,17 @@ impl ResourceStatsProvider for DockerStatsProvider {
             .await
             .map_err(|e| RuntimeError::BackendUnreachable(e.to_string()))?;
 
-        // Sample concurrently. Serially this is one round trip each, and a dozen
-        // containers would push the handler into whole seconds.
-        //
-        // Only *running* containers are sampled. The listing is `all: true` so
-        // the UI can still show stopped containers, but a stopped one has no
-        // meaningful CPU/memory delta to report, and `to_container_stats` already
-        // renders a `None` sample as "no reading" — so sampling it buys nothing
-        // and costs a round trip on a socket the control plane also uses. On a
-        // dev box, where exited containers pile up, this is most of the fan-out.
+        // Sample every container concurrently. Serially this is one round trip
+        // each, and a dozen containers would push the handler into whole seconds.
         let samples = futures_util::future::join_all(containers.iter().map(|c| {
             let name = c.names.as_ref().and_then(|n| n.first()).cloned();
-            let running = c.state.as_deref() == Some("running");
             async move {
                 match name {
-                    Some(n) if running => {
+                    Some(n) => {
                         let bare = n.strip_prefix('/').unwrap_or(&n).to_owned();
                         self.sample(&bare).await
                     }
-                    _ => None,
+                    None => None,
                 }
             }
         }))

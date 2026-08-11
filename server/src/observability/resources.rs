@@ -64,18 +64,13 @@ impl AgentNameResolver for DbAgentNames {
     }
 }
 
-/// How long one whole-box reading is served before a refresh is triggered
-/// behind it.
+/// How long one whole-box reading is reused.
 ///
-/// Deliberately *below* the Resources page's poll interval (`POLL_INTERVAL_MS`,
-/// 5s, in `oss/ui/common/components/resources-page.js`) so each poll finds a
-/// reading already refreshed by the previous one. When this equalled the poll
-/// interval every poll landed just after expiry and paid the full per-container
-/// sweep — the cache existed but effectively never hit.
-///
-/// `CachedStatsProvider` serves stale readings rather than blocking on the
-/// sweep, so this bounds how old a reading can be, not how long a request takes.
-const STATS_CACHE_TTL: Duration = Duration::from_secs(3);
+/// Matches the Resources page's poll interval
+/// (`POLL_INTERVAL_MS` in `oss/ui/common/components/resources-page.js`): the page
+/// polls every 5s, and this is what makes that cadence cost one per-container
+/// sweep across all open tabs rather than one sweep each.
+const STATS_CACHE_TTL: Duration = Duration::from_secs(5);
 
 /// Builds the provider for the configured runtime.
 ///

@@ -755,18 +755,6 @@
     border-radius: 999px;
   }
   #acp-access-table { overflow-x: auto; }
-  /* Versions tab: title block on the left, Re-upload action on the right. */
-  .acp-versions-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-md);
-    margin-bottom: var(--space-md);
-  }
-  .acp-versions-head .acp-section-title,
-  .acp-versions-head .acp-section-sub { margin-bottom: 0; }
-  /* Long image tags must scroll inside the table, never widen the page. */
-  #acp-versions-body { overflow-x: auto; }
   .acp-table {
     width: 100%;
     border-collapse: collapse;

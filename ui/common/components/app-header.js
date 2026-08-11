@@ -15,7 +15,6 @@
  */
 import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
-import { confirmDialog } from "../utils/confirm-dialog.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
 
@@ -393,27 +392,13 @@ export class AppHeader extends HTMLElement {
     if (cached) {
       try { this.navItems = JSON.parse(cached); } catch { /* ignore bad cache */ }
     }
-    // Identity comes from a per-tab cache too, so a warm shell renders
-    // complete on the first pass — see auth-service.
-    const hadUser = authService.isAuthenticated();
-    const renderedFromCache = Boolean(this.navItems?.length);
-    if (renderedFromCache) {
+    if (this.navItems?.length) {
       this.render();
     } else {
       this.#renderSkeleton();
     }
-
-    const before = renderedFromCache ? JSON.stringify(this.navItems) : null;
     await Promise.all([this.loadNavigation(), authService.fetchCurrentUser()]);
-
-    // Re-rendering an identical shell is what made the sidebar visibly rebuild
-    // on every MPA navigation (losing hover/focus and flashing). Only repaint
-    // when the nav or the identity actually changed.
-    const navChanged = before !== JSON.stringify(this.navItems);
-    const userArrived = !hadUser && authService.isAuthenticated();
-    if (!renderedFromCache || navChanged || userArrived) {
-      this.render();
-    }
+    this.render();
     document.addEventListener("keydown", this.#handleKeyDown);
   }
 
@@ -515,9 +500,7 @@ export class AppHeader extends HTMLElement {
     this.innerHTML = `
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
       <header class="topbar" role="banner">
-        ${window.nasikoChrome?.workspaceSwitcher
-          ? `<workspace-switcher></workspace-switcher>`
-          : `<span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>`}
+        <span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>
         <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
           ${icons.panelLeft("", 16, 1)}
         </button>
@@ -578,14 +561,8 @@ export class AppHeader extends HTMLElement {
     }
   }
 
-  async #removeUser(username) {
-    const confirmed = await confirmDialog({
-      title: 'Remove account',
-      message: `Remove the saved session for <strong>${username}</strong>?`,
-      confirmLabel: 'Remove',
-      danger: true,
-    });
-    if (confirmed) {
+  #removeUser(username) {
+    if (confirm(`Remove account for ${username}?`)) {
       authService.removeUserSession(username);
       const userMenu = this.querySelector("app-user-menu");
       if (userMenu) userMenu.users = authService.getUsers();
@@ -598,17 +575,16 @@ export class AppHeader extends HTMLElement {
       encodeURIComponent(window.location.pathname);
   }
 
-  async #logout() {
+  #logout() {
     const currentUser = authService.getCurrentUser();
-    if (currentUser) {
-      const confirmed = await confirmDialog({
-        title: 'Sign out',
-        message: 'Are you sure you want to sign out?',
-        confirmLabel: 'Sign out',
-      });
-      if (!confirmed) return;
+    if (currentUser && confirm(`Sign out from ${currentUser}?`)) {
+      authService.removeUserSession(currentUser);
+      const remaining = authService.getUsers();
+      window.location.href =
+        remaining.length > 0
+          ? `/u/${remaining[0].username}/`
+          : "/login/index.html";
     }
-    authService.logout();
   }
 }
 
