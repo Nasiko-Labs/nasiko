@@ -350,18 +350,10 @@ pub(crate) async fn upload_and_deploy(
         Some(n) if !n.is_empty() => n,
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
-    // No default here (used to be "latest", which broke version history) —
-    // the caller must pass a real x.y.z version.
-    let version_tag = match version_tag {
-        Some(v) if super::versions::parse_plain_version(&v).is_some() => v,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "version_tag is required and must be in x.y.z format (e.g. 1.2.3)",
-            )
-                .into_response();
-        }
-    };
+    // `version_tag` isn't resolved here — it may still come from the zip's
+    // AgentCard.json/pyproject.toml/Cargo.toml, discovered during validation
+    // below. Resolved and validated as a plain x.y.z once that's known (no
+    // default to `"latest"` — that's the whole bug this PR exists to prevent).
     // Accept only the supported SDK formats; anything else falls back to openai.
     let inbound_format = match inbound_format.as_deref() {
         Some("anthropic") => "anthropic",
@@ -369,15 +361,9 @@ pub(crate) async fn upload_and_deploy(
         _ => "openai",
     };
 
-    // Validate name + version_tag charset (RUN-10): both flow into the OCI image
-    // reference `{name}:{tag}`; unvalidated values allow push-target redirection
-    // (e.g. `/` or `@` smuggling a different registry/digest) when no registry
-    // prefix is configured.
+    // Validate name charset (RUN-10): flows into the OCI image reference.
     if let Err(e) = crate::build::routes::validate_version_tag(&name) {
         return (StatusCode::BAD_REQUEST, format!("invalid name: {e}")).into_response();
-    }
-    if let Err(e) = crate::build::routes::validate_version_tag(&version_tag) {
-        return (StatusCode::BAD_REQUEST, e).into_response();
     }
     let zip_path = match zip_path {
         Some(p) => p,
@@ -406,8 +392,8 @@ pub(crate) async fn upload_and_deploy(
     // Clean up validation dir regardless of outcome
     let _ = tokio::fs::remove_dir_all(&validation_dir).await;
 
-    match validation_result {
-        Ok(Ok(())) => {}
+    let zip_meta = match validation_result {
+        Ok(Ok(meta)) => meta,
         Ok(Err(msg)) => {
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
             return (StatusCode::BAD_REQUEST, msg).into_response();
@@ -417,7 +403,23 @@ pub(crate) async fn upload_and_deploy(
             let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
-    }
+    };
+
+    // Version priority: explicit multipart field → extracted from the zip's
+    // AgentCard.json/pyproject.toml/Cargo.toml. No default here (used to be
+    // "latest", which broke version history) — the caller must end up with a
+    // real x.y.z version, whether they typed it or the zip declared it.
+    let version_tag = match version_tag.or(zip_meta.version) {
+        Some(v) if super::versions::parse_plain_version(&v).is_some() => v,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "version_tag is required and must be in x.y.z format (e.g. 1.2.3) — pass it \
+                 explicitly or declare a \"version\" in AgentCard.json/pyproject.toml/Cargo.toml",
+            )
+                .into_response();
+        }
+    };
 
     let image_tag =
         crate::agents::build_image_tag(&state.config.agent_image_registry, &name, &version_tag);
@@ -618,7 +620,16 @@ pub(crate) async fn upload_and_deploy(
 }
 
 /// Validate the agent zip structure synchronously (blocking, run in spawn_blocking).
-fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+/// Metadata extracted from the zip during validation.
+struct ZipMeta {
+    /// Version from AgentCard.json / pyproject.toml / Cargo.toml (if found).
+    version: Option<String>,
+}
+
+fn validate_agent_zip(
+    zip_path: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<ZipMeta, String> {
     extract_zip_from_file(zip_path, dest)?;
 
     // Dockerfile must exist in root and have at least one FROM line
@@ -648,7 +659,73 @@ fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Res
         );
     }
 
-    Ok(())
+    // ── Extract version from project files ───────────────────────────────────
+    // Resolution order mirrors the CLI: AgentCard.json → pyproject.toml → Cargo.toml.
+    let version = detect_version_from_dir(dest);
+
+    Ok(ZipMeta { version })
+}
+
+/// Read a version string from common project files in a directory.
+///
+/// Resolution order:
+///   1. AgentCard.json → `version`
+///   2. pyproject.toml → `[project] version` or `[tool.poetry] version`
+///   3. Cargo.toml     → `[package] version`
+fn detect_version_from_dir(dir: &std::path::Path) -> Option<String> {
+    // 1. AgentCard.json
+    let card_path = dir.join("AgentCard.json");
+    if card_path.exists()
+        && let Ok(s) = std::fs::read_to_string(&card_path)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+        && let Some(ver) = v.get("version").and_then(|v| v.as_str())
+    {
+        return Some(ver.strip_prefix('v').unwrap_or(ver).to_string());
+    }
+
+    // 2. pyproject.toml — [project] version or [tool.poetry] version
+    let pyproject_path = dir.join("pyproject.toml");
+    if pyproject_path.exists()
+        && let Ok(s) = std::fs::read_to_string(&pyproject_path)
+        && let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"])
+    {
+        return Some(ver);
+    }
+
+    // 3. Cargo.toml — [package] version
+    let cargo_path = dir.join("Cargo.toml");
+    if cargo_path.exists()
+        && let Ok(s) = std::fs::read_to_string(&cargo_path)
+        && let Some(ver) = parse_toml_version(&s, &["package"])
+    {
+        return Some(ver);
+    }
+
+    None
+}
+
+/// Minimal TOML version extractor: scans for `version = "..."` under any of the
+/// given section headers. No TOML parser dependency.
+fn parse_toml_version(content: &str, sections: &[&str]) -> Option<String> {
+    let mut in_section = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            let header = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
+            in_section = sections.contains(&header);
+            continue;
+        }
+        if in_section
+            && let Some(rest) = trimmed.strip_prefix("version")
+            && let Some(rest) = rest.trim().strip_prefix('=')
+        {
+            let ver = rest.trim().trim_matches('"').trim_matches('\'');
+            if !ver.is_empty() {
+                return Some(ver.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Records a just-deployed build's version in history through the shared
@@ -1640,47 +1717,27 @@ pub(crate) async fn list_upload_agents(
 
     // Join with agents to pull live metadata (tags, description, icon_url, version, status).
     // DISTINCT ON keeps the most recent upload row per agent.
-    let rows: Result<Vec<UploadAgentRow>, _> = if claims.is_superuser {
-        sqlx::query_as(
-            r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
-                   us.agent_id,
-                   us.agent_name,
-                   us.upload_id,
-                   us.error_message,
-                   a.description,
-                   COALESCE(a.tags, '{}') AS tags,
-                   a.icon_url,
-                   a.version,
-                   a.status AS agent_status
-               FROM upload_status us
-               JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
-               ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
-               LIMIT 50"#,
-        )
-        .fetch_all(&state.db)
-        .await
-    } else {
-        sqlx::query_as(
-            r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
-                   us.agent_id,
-                   us.agent_name,
-                   us.upload_id,
-                   us.error_message,
-                   a.description,
-                   COALESCE(a.tags, '{}') AS tags,
-                   a.icon_url,
-                   a.version,
-                   a.status AS agent_status
-               FROM upload_status us
-               JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
-               WHERE us.owner_id = $1
-               ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
-               LIMIT 50"#,
-        )
-        .bind(user_id)
-        .fetch_all(&state.db)
-        .await
-    };
+    // Always filter by owner_id — even admins should only see their own uploads.
+    let rows: Result<Vec<UploadAgentRow>, _> = sqlx::query_as(
+        r#"SELECT DISTINCT ON (COALESCE(us.agent_id::text, us.upload_id))
+               us.agent_id,
+               us.agent_name,
+               us.upload_id,
+               us.error_message,
+               a.description,
+               COALESCE(a.tags, '{}') AS tags,
+               a.icon_url,
+               a.version,
+               a.status AS agent_status
+           FROM upload_status us
+           JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
+           WHERE us.owner_id = $1
+           ORDER BY COALESCE(us.agent_id::text, us.upload_id), us.created_at DESC
+           LIMIT 50"#,
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await;
 
     match rows {
         Ok(rows) => {

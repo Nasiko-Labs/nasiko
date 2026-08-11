@@ -1,5 +1,4 @@
 import { icons } from '/common/utils/icons.js';
-import { connectSSE } from '/common/services/sse.js';
 import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
 import { timeAgo } from '/common/utils/date-utils.js';
@@ -263,15 +262,11 @@ class RuntimePage extends HTMLElement {
     this.#closeLogs();
     const viewer = this.querySelector('#detail-log');
     viewer.innerHTML = '';
-    // connectSSE (not raw EventSource) so the multi-tenant dashboard streams from
-    // the workspace control plane via apiBase. #appendLog already tolerates both
-    // the plain-text lines the server sends and JSON-unwrapped strings.
-    const es = connectSSE(`/infra/clusters/${id}/logs`, {
-      onMessage: (data) => this.#appendLog(viewer, data),
-      // The stream ends when the provisioning job finishes (or immediately with
-      // a one-shot status line when no job is active) — don't auto-reconnect.
-      onError: () => es.close(),
-    });
+    const es = new EventSource(`/api/infra/clusters/${id}/logs`);
+    es.onmessage = (e) => this.#appendLog(viewer, e.data);
+    // The stream ends when the provisioning job finishes (or immediately with
+    // a one-shot status line when no job is active) — don't auto-reconnect.
+    es.onerror = () => es.close();
     this.#eventSource = es;
   }
 

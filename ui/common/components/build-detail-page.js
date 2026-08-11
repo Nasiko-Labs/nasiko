@@ -6,7 +6,6 @@
  *       while the build is in flight; raw logs are linked via logs_url.
  */
 import { apiFetch } from '/common/services/api.js';
-import { connectSSE } from '/common/services/sse.js';
 import { icons } from '/common/utils/icons.js';
 
 import styles from './build-detail-page.css' with { type: 'css' };
@@ -129,23 +128,22 @@ class BuildDetailPage extends HTMLElement {
 
   #connectSSE() {
     const viewer = this.querySelector('#log-viewer');
-    // connectSSE (not raw EventSource) so the multi-tenant dashboard streams from
-    // the workspace control plane via apiBase; it also JSON-parses each event.
-    this.#evtSource = connectSSE(`/builds/${this.#buildId}/progress`, {
-      onMessage: (update) => {
-        const status = update && update.status;
-        if (!status) return;
-        const cls = status === 'failed' ? ' is-error' : '';
-        viewer.innerHTML += `\n<span class="log-line${cls}"><span class="ts">${this.#esc(new Date().toLocaleTimeString(undefined, { hour12: false }))}</span>status: ${this.#esc(status)}</span>`;
-        viewer.scrollTop = viewer.scrollHeight;
-        if (status === 'success' || status === 'failed' || status === 'not_found') {
-          this.#evtSource?.close();
-          this.#evtSource = null;
-          if (status !== 'not_found') this.#load();
-        }
-      },
-      onError: () => { this.#evtSource?.close(); this.#evtSource = null; },
-    });
+    this.#evtSource = new EventSource(`/api/builds/${this.#buildId}/progress`);
+    this.#evtSource.onmessage = (e) => {
+      let update;
+      try { update = JSON.parse(e.data); } catch { return; }
+      const status = update.status;
+      if (!status) return;
+      const cls = status === 'failed' ? ' is-error' : '';
+      viewer.innerHTML += `\n<span class="log-line${cls}"><span class="ts">${this.#esc(new Date().toLocaleTimeString(undefined, { hour12: false }))}</span>status: ${this.#esc(status)}</span>`;
+      viewer.scrollTop = viewer.scrollHeight;
+      if (status === 'success' || status === 'failed' || status === 'not_found') {
+        this.#evtSource?.close();
+        this.#evtSource = null;
+        if (status !== 'not_found') this.#load();
+      }
+    };
+    this.#evtSource.onerror = () => { this.#evtSource?.close(); this.#evtSource = null; };
   }
 
   #esc(s) {

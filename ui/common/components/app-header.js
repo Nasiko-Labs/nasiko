@@ -500,9 +500,7 @@ export class AppHeader extends HTMLElement {
     this.innerHTML = `
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
       <header class="topbar" role="banner">
-        ${window.nasikoChrome?.workspaceSwitcher
-          ? `<workspace-switcher></workspace-switcher>`
-          : `<span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>`}
+        <span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>
         <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
           ${icons.panelLeft("", 16, 1)}
         </button>
@@ -579,12 +577,14 @@ export class AppHeader extends HTMLElement {
 
   #logout() {
     const currentUser = authService.getCurrentUser();
-    if (currentUser && !confirm(`Sign out from ${currentUser}?`)) return;
-    // authService.logout() clears both the management and workspace-CP sessions
-    // and navigates to /login.html once they're cleared. The old code navigated
-    // to /u/{user}/ first, which cancelled the logout and re-authenticated the
-    // user off the still-valid cookie.
-    authService.logout();
+    if (currentUser && confirm(`Sign out from ${currentUser}?`)) {
+      authService.removeUserSession(currentUser);
+      const remaining = authService.getUsers();
+      window.location.href =
+        remaining.length > 0
+          ? `/u/${remaining[0].username}/`
+          : "/login/index.html";
+    }
   }
 }
 

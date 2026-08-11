@@ -69,8 +69,7 @@ pub fn router() -> Router<AppState> {
 /// `get_one`'s `can_access_agent` call allows fetching it directly by id.
 fn agent_access_predicate(user_bind: &str, table_ref: &str) -> String {
     format!(
-        r#"({user_bind}::uuid IS NULL
-             OR {table_ref}.owner_id = {user_bind}
+        r#"({table_ref}.owner_id = {user_bind}
              OR {table_ref}.is_public = TRUE
              OR EXISTS (
                  SELECT 1 FROM agent_grants ag
@@ -117,13 +116,9 @@ pub(crate) async fn by_skill(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let owner_filter: Option<Uuid> = if claims.is_superuser {
-        None
-    } else {
-        match claims.user_uuid() {
-            Ok(id) => Some(id),
-            Err(e) => return e.into_response(),
-        }
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     // Normalise to lowercase before the GIN containment check.  Tags are
@@ -333,13 +328,9 @@ pub(crate) async fn list(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let owner_filter: Option<Uuid> = if claims.is_superuser {
-        None
-    } else {
-        match claims.user_uuid() {
-            Ok(id) => Some(id),
-            Err(e) => return e.into_response(),
-        }
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     let sql = format!(
@@ -405,6 +396,17 @@ async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
 pub(crate) struct AgentDetailResponse {
     id: Uuid,
     name: String,
+    #[serde(rename = "display_name")]
+    display_name: Option<String>,
+    /// Owner's user UUID — lets the UI label the owner row in grant lists.
+    #[serde(rename = "owner_id")]
+    owner_id: Uuid,
+    /// True when the caller may manage this agent (owner or superuser) —
+    /// computed with the same predicate the mutating routes enforce
+    /// (`crate::acl::can_manage_agent`), so the UI can gate its management
+    /// tabs without guessing.
+    #[serde(rename = "can_manage")]
+    can_manage: bool,
     status: String,
     version: String,
     description: String,
@@ -497,6 +499,8 @@ pub(crate) async fn get_one(
         return StatusCode::FORBIDDEN.into_response();
     }
 
+    let can_manage = crate::acl::can_manage_agent(&state, &claims, agent.id).await;
+
     let skills: Vec<serde_json::Value> = agent
         .skills
         .0
@@ -507,6 +511,9 @@ pub(crate) async fn get_one(
     let data = AgentDetailResponse {
         id: agent.id,
         name: agent.name.clone(),
+        display_name: agent.display_name.clone(),
+        owner_id: agent.owner_id,
+        can_manage,
         status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),
@@ -1140,13 +1147,9 @@ pub(crate) async fn search(
         return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
     }
 
-    let owner_filter: Option<Uuid> = if claims.is_superuser {
-        None
-    } else {
-        match claims.user_uuid() {
-            Ok(id) => Some(id),
-            Err(e) => return e.into_response(),
-        }
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     // `COUNT(*) OVER()` yields the total match count (post-filter, pre-LIMIT) so
@@ -1365,50 +1368,33 @@ pub(crate) async fn registry_user_agents(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let agents = if claims.is_superuser {
-        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents
-               WHERE deleted_at IS NULL
-                 AND ($1::text IS NULL OR (name ILIKE $1 OR description ILIKE $1))
-                 AND ($2::text IS NULL OR status = $2)
-               ORDER BY created_at DESC
-               LIMIT $3 OFFSET $4"#,
-        )
-        .bind(&pattern)
-        .bind(&q.status)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-    } else {
-        let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
-        sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents
-               WHERE deleted_at IS NULL
-                 AND (
-                   owner_id = $1
-                   OR is_public = true
-                   OR EXISTS (
-                       SELECT 1 FROM agent_grants ag
-                       WHERE ag.agent_id = agents.id
-                         AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
-                           OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text))
-                   )
+    // All users (including admins) see: owned + public + explicitly granted agents.
+    let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
+    let agents = sqlx::query_as::<_, Agent>(
+        r#"SELECT * FROM agents
+           WHERE deleted_at IS NULL
+             AND (
+               owner_id = $1
+               OR is_public = true
+               OR EXISTS (
+                   SELECT 1 FROM agent_grants ag
+                   WHERE ag.agent_id = agents.id
+                     AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
+                       OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text))
                )
-                 AND ($2::text IS NULL OR (name ILIKE $2 OR description ILIKE $2))
-                 AND ($3::text IS NULL OR status = $3)
-               ORDER BY created_at DESC
-               LIMIT $4 OFFSET $5"#,
-        )
-        .bind(user_id)
-        .bind(&pattern)
-        .bind(&q.status)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-    };
+           )
+             AND ($2::text IS NULL OR (name ILIKE $2 OR description ILIKE $2))
+             AND ($3::text IS NULL OR status = $3)
+           ORDER BY created_at DESC
+           LIMIT $4 OFFSET $5"#,
+    )
+    .bind(user_id)
+    .bind(&pattern)
+    .bind(&q.status)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await;
 
     match agents {
         Ok(list) => {

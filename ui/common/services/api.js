@@ -27,38 +27,7 @@ export async function apiFetch(path, opts = {}) {
   const withCreds = base ? { credentials: "include", ...opts } : opts;
   const res = await fetch(`${base}/api${path}`, withCreds);
   if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
-    // A 401 from the workspace control plane means its session cookie is missing
-    // or expired. Bootstrap it via redirect-and-return (docs/MULTITENANT.md §4.4):
-    // hand the browser to the BFF's /api/enter, which sends it into the
-    // workspace's own SSO (silent — the IdP session is live), the CP sets its
-    // host-only cookie, and we land back here.
-    //
-    // Same-origin (single-tenant, apiBase empty) has no separate CP to bootstrap,
-    // so it just re-auths at /login.html as before.
-    let restart = '/login.html';
-    if (base) {
-      // Remember the deep link: OIDC returns straight to it via /api/enter's
-      // redirect param; GitHub returns to `/`, where the injected restore
-      // snippet reads this and replaces to the deep link.
-      try {
-        sessionStorage.setItem(
-          'nasiko:returnTo',
-          JSON.stringify({ p: location.pathname + location.search, t: Date.now() }),
-        );
-      } catch { /* storage disabled — still redirect */ }
-      // Loop guard: if an entry attempt just happened and we're STILL 401 (e.g.
-      // admission rejected the account), fall back to a full BFF re-auth instead
-      // of bouncing through /api/enter forever.
-      let lastEnter = 0;
-      try { lastEnter = +(sessionStorage.getItem('nasiko:enterAt') || 0); } catch { /* ignore */ }
-      if (Date.now() - lastEnter < 15000) {
-        try { sessionStorage.removeItem('nasiko:enterAt'); } catch { /* ignore */ }
-      } else {
-        try { sessionStorage.setItem('nasiko:enterAt', String(Date.now())); } catch { /* ignore */ }
-        restart = '/api/enter?return_to=' + encodeURIComponent(location.pathname + location.search);
-      }
-    }
-    window.location.href = restart;
+    window.location.href = '/login.html';
     return new Promise(() => {}); // page is navigating away; never settle
   }
   return res;
