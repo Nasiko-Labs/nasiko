@@ -58,8 +58,8 @@ just infra   # Postgres, Redis, MinIO (S3-compatible)
 ### 2. Configure environment
 
 ```sh
-cp server/.env.example server/.env
-# Edit server/.env — at minimum set OPENAI_API_KEY and SECRETS_ENCRYPTION_KEY
+cp oss/server/.env.example oss/server/.env
+# Edit oss/server/.env — at minimum set OPENAI_API_KEY and SECRETS_ENCRYPTION_KEY
 ```
 
 ### 3. Run the platform
@@ -67,11 +67,11 @@ cp server/.env.example server/.env
 ```sh
 just run-stack   # infra + OSS server in one shot
 # or, with infra already running:
-just run
+just run-oss
 ```
 
 The server is the **sole ingress** — it terminates TLS, authenticates every request, proxies all
-agent traffic, and serves the embedded UI, all from one process on `:8080`.
+agent traffic, and serves the embedded UI, all from one process on `:9090`.
 
 ### 4. Install the CLI and deploy an agent
 
@@ -79,7 +79,7 @@ agent traffic, and serves the embedded UI, all from one process on `:8080`.
 cargo build --release -p nasiko
 sudo cp target/release/nasiko /usr/local/bin/
 
-nasiko connect http://localhost:8080
+nasiko connect http://localhost:9090
 nasiko login
 nasiko new openai my-agent && cd my-agent
 nasiko deploy .
@@ -176,7 +176,7 @@ fail fast at startup. Highlights:
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Bootstrap admin account | required |
 | `CORS_ALLOWED_ORIGINS` | CORS allowlist (empty is fine — UI is same-origin) | optional |
 
-See `server/.env.example` for the full list.
+See `oss/server/.env.example` for the full list.
 
 ## Building & Testing
 

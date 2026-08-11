@@ -65,10 +65,12 @@ class AddAgentPage extends HTMLElement {
     fileInput.addEventListener('change', async () => {
       const file = fileInput.files[0];
       if (!file) return;
+      const name = file.name.replace(/\.zip$/i, '');
       const formData = new FormData();
-      formData.append('package', file);
+      formData.append('name', name);
+      formData.append('file', file);
       try {
-        const res = await apiFetch('/import/upload', { method: 'POST', body: formData });
+        const res = await apiFetch('/agents/upload', { method: 'POST', body: formData });
         if (!res.ok) throw new Error(await res.text());
         window.location.href = '/your-agents.html';
       } catch (err) {

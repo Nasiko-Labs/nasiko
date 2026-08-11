@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::{
@@ -63,19 +64,35 @@ impl AgentNameResolver for DbAgentNames {
     }
 }
 
+/// How long one whole-box reading is reused.
+///
+/// Matches the Resources page's poll interval
+/// (`POLL_INTERVAL_MS` in `oss/ui/common/components/resources-page.js`): the page
+/// polls every 5s, and this is what makes that cadence cost one per-container
+/// sweep across all open tabs rather than one sweep each.
+const STATS_CACHE_TTL: Duration = Duration::from_secs(5);
+
 /// Builds the provider for the configured runtime.
 ///
 /// Docker is the default for the Compose topology (the `_` arm mirrors the
 /// runtime selection in the composition roots). `kubernetes` and `simulated` get
 /// a provider that reports honestly that it cannot read usage — EE replaces the
 /// Kubernetes case with its own.
+///
+/// The Docker provider is wrapped in `CachedStatsProvider` because a sweep is one
+/// `stats` call per container and each blocks about a second on the daemon; the
+/// `Unsupported` arms are not, since they fail immediately and caching a failure
+/// would only delay recovery.
 pub fn build_provider(config: &Config, db: PgPool) -> Arc<dyn ResourceStatsProvider> {
     match config.agent_runtime.as_str() {
         "kubernetes" | "k8s" | "simulated" => Arc::new(nasiko_runtime::UnsupportedStatsProvider {
             runtime: config.agent_runtime.clone(),
         }),
         other => match nasiko_runtime::DockerStatsProvider::connect() {
-            Ok(p) => Arc::new(p.with_agent_names(Arc::new(DbAgentNames { db }))),
+            Ok(p) => Arc::new(nasiko_runtime::CachedStatsProvider::new(
+                p.with_agent_names(Arc::new(DbAgentNames { db })),
+                STATS_CACHE_TTL,
+            )),
             Err(e) => {
                 tracing::warn!(error = %e, "resource stats unavailable: cannot reach Docker");
                 Arc::new(nasiko_runtime::UnsupportedStatsProvider {

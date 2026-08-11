@@ -10,8 +10,8 @@ mod simulated;
 
 pub use error::{Result, RuntimeError};
 pub use stats::{
-    AgentNameResolver, ContainerStats, DiskSource, HostStats, PlatformStats, ResourceStatsProvider,
-    StatsGroup, UnsupportedStatsProvider,
+    AgentNameResolver, CachedStatsProvider, ContainerStats, DiskSource, HostStats, PlatformStats,
+    ResourceStatsProvider, StatsGroup, UnsupportedStatsProvider,
 };
 pub use types::validate_build_inputs;
 pub use types::{

@@ -333,11 +333,13 @@ class ObservabilitySessionPage extends HTMLElement {
 
   #infoTabHtml() {
     const s = this.#span;
-    // Span attributes arrive as a FLAT map keyed by the raw dotted OTLP key
-    // (oss/observability/src/tempo.rs builds `HashMap<String, Value>` straight
-    // from the OTLP attribute list). So these MUST be bracket lookups:
-    // `attributes.gen_ai.input.messages` evaluates `attributes.gen_ai`, which is
-    // always undefined — as was the previous `attributes.llm.input_messages`.
+    // tempo.rs builds a flat dotted-key attribute map, but the span-detail API
+    // re-nests it before serializing (`unflatten_attrs` in
+    // oss/server/src/observability/service.rs), so the wire shape is
+    // `attributes.gen_ai.input.messages` — a flat `attrs['gen_ai.input.messages']`
+    // lookup can never match. The server also resolves the raw content into
+    // `input.value`/`output.value` (preferring the `input.value` attribute, then
+    // `gen_ai.input.messages`), so that field is the primary source here.
     //
     // `gen_ai.input/output.messages` is what the official GenAI instrumentation
     // emits once OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental is set
@@ -346,15 +348,16 @@ class ObservabilitySessionPage extends HTMLElement {
     // argument: that branch JSON.parses and understands the semconv `parts[]`
     // shape. `llm.*` is the older OpenInference convention, kept first for spans
     // recorded before the opt-in — a fallback chain rather than a version check,
-    // matching how this repo handles A2A payload drift.
+    // matching how this repo handles A2A payload drift. `||` not `??`: the
+    // server serializes "no content" as an empty string, which must fall through.
     const attrs = s.attributes ?? {};
     const inputMsgs = this.#extractMessages(
-      attrs['llm.input_messages'],
-      attrs['gen_ai.input.messages'] ?? attrs['input.value'] ?? s.input_content,
+      attrs.llm?.input_messages,
+      s.input?.value || attrs.gen_ai?.input?.messages || s.input_content,
     );
     const outputMsgs = this.#extractMessages(
-      attrs['llm.output_messages'],
-      attrs['gen_ai.output.messages'] ?? attrs['output.value'] ?? s.output_content,
+      attrs.llm?.output_messages,
+      s.output?.value || attrs.gen_ai?.output?.messages || s.output_content,
     );
     const section = (title, msgs, emptyText) => `
       <div class="detail-section-title">${title}</div>
