@@ -385,6 +385,26 @@ pub struct DeploymentStatus {
     pub restart_count: u32,
 }
 
+/// One live container instance (Docker container / Kubernetes pod) of an agent.
+///
+/// Consumed by the container-hours meter: `(instance_key, started_at)` uniquely
+/// identifies one physical run, so a backend that reuses instance identities
+/// across restarts (Docker restarts keep the container ID but reset
+/// `StartedAt`) still yields one entry per run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceInfo {
+    /// Agent identifier this instance belongs to (same value `deploy()` received).
+    pub container_id: ContainerId,
+    /// Per-run identity within the backend: Docker container ID (64-hex),
+    /// Kubernetes pod UID.
+    pub instance_key: String,
+    /// True start time reported by the runtime. `None` when the backend cannot
+    /// report one — callers fall back to first-observation time.
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether the instance is ready/serving (K8s readiness; Docker: running).
+    pub ready: bool,
+}
+
 /// Validate inputs to [`ContainerRuntime::build`] before any backend call.
 ///
 /// Called at the top of every backend's `build()` implementation, matching
