@@ -86,6 +86,22 @@ pub struct Config {
     /// Stored as `user_identities.provider` for OIDC-authenticated users.
     /// Override if fronting a non-Entra OIDC provider.
     pub oidc_provider_label: String,
+    /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
+    /// multi-tenant BFF — it serves no UI (root 302s to the BFF) and enforces
+    /// the corporate-only admission gate below. Default off = ordinary
+    /// single-tenant behavior, unchanged.
+    pub multi_tenant_mode: bool,
+    /// Only consulted when `multi_tenant_mode` is on. Off (the default)
+    /// restricts logins to corporate identities (a Google `hd`, or a verified
+    /// email whose domain isn't a known personal provider). On also admits
+    /// personal emails, which may only ever *join* a workspace, never create
+    /// one. No effect outside multi-tenant mode.
+    pub allow_personal_emails: bool,
+    /// Base URL of the multi-tenant BFF/dashboard. Used only in
+    /// `multi_tenant_mode`: this headless control plane serves no UI, so browser
+    /// navigations are redirected here. `None` (the default) outside
+    /// multi-tenant mode.
+    pub nasiko_bff_url: Option<String>,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
     pub max_router_history_messages: usize,
@@ -101,6 +117,13 @@ pub struct Config {
     /// cluster's tenant-id path suffix. Unset (the default, and always for
     /// standalone deployments) means GitHub calls this cluster back directly.
     pub github_central_callback_url: Option<String>,
+    /// The OIDC analogue of [`Self::github_central_callback_url`]: the fleet
+    /// relay callback used as the OIDC `redirect_uri` for both authorize and
+    /// token exchange (multi-tenant workspace CPs), so many clusters share one
+    /// Google/OIDC app whose single registered callback points at the relay.
+    /// Includes this cluster's tenant-id path suffix. Unset (default, and always
+    /// standalone) means the IdP calls this cluster back directly.
+    pub oidc_central_callback_url: Option<String>,
     /// Base URL to redirect to after a successful OAuth login. In production
     /// this is the same origin as the server. Override via `APP_BASE_URL` in
     /// dev when the server and app run on different ports.
@@ -274,6 +297,15 @@ impl Config {
                 .collect(),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
+            multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            allow_personal_emails: std::env::var("ALLOW_PERSONAL_EMAILS")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            nasiko_bff_url: std::env::var("NASIKO_BFF_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
@@ -281,6 +313,9 @@ impl Config {
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_central_callback_url: std::env::var("OIDC_CENTRAL_CALLBACK_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),

@@ -51,7 +51,7 @@ async fn central_callback_url_overrides_redirect_uri_in_authorize() {
     let client = OidcClient::new(config, reqwest::Client::new());
 
     let url = client
-        .authorization_url("state-1", "nonce-1", "challenge-1", None)
+        .authorization_url("state-1", "nonce-1", "challenge-1")
         .await
         .expect("authorization_url should succeed");
 
@@ -102,7 +102,7 @@ async fn discovery_and_jwks_are_cached_across_repeated_calls() {
 
     // First call triggers a discovery fetch.
     client
-        .authorization_url("state-1", "nonce-1", "challenge-1", None)
+        .authorization_url("state-1", "nonce-1", "challenge-1")
         .await
         .expect("authorization_url should succeed");
 
@@ -120,7 +120,7 @@ async fn discovery_and_jwks_are_cached_across_repeated_calls() {
         .await
         .expect("second verify should succeed");
     client
-        .authorization_url("state-2", "nonce-2", "challenge-2", None)
+        .authorization_url("state-2", "nonce-2", "challenge-2")
         .await
         .expect("second authorization_url should succeed");
 
@@ -152,7 +152,7 @@ async fn discovery_issuer_mismatched_with_config_is_rejected() {
         .await;
 
     let client = OidcClient::new(test_config(issuer), reqwest::Client::new());
-    let err = client.authorization_url("s", "n", "c", None).await.unwrap_err();
+    let err = client.authorization_url("s", "n", "c").await.unwrap_err();
     assert!(
         err.to_string().contains("does not match configured"),
         "unexpected error: {err}"
@@ -236,7 +236,7 @@ async fn authorization_url_contains_pkce_state_and_nonce() {
 
     let client = OidcClient::new(test_config(issuer.clone()), reqwest::Client::new());
     let url = client
-        .authorization_url("my-state", "my-nonce", "my-challenge", None)
+        .authorization_url("my-state", "my-nonce", "my-challenge")
         .await
         .expect("should build url");
 

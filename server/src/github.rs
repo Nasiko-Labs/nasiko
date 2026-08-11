@@ -490,26 +490,29 @@ async fn github_callback_login(
             .into_response();
     }
 
-    // Set the session cookie so the browser is authenticated on arrival —
-    // previously the token was only passed as a query param, but no frontend
-    // code consumed it, so the user landed on `/` without a session.
-    let cookie = crate::auth::login::set_token_cookie(
-        &result.token,
-        crate::auth::login::request_is_https(headers),
-    );
-
-    // Redirect to the app root (APP_BASE_URL override for split-origin dev).
-    let redirect_target = if state.config.app_base_url.is_empty() {
-        "/".to_string()
+    // Use reqwest::Url for query-param encoding (handles any chars in username safely).
+    // APP_BASE_URL overrides the redirect base — useful when the server and the app
+    // run on different origins in dev. In prod both share the same base URL.
+    let base = if state.config.app_base_url.is_empty() {
+        "http://placeholder".to_string()
     } else {
-        format!("{}/", state.config.app_base_url.trim_end_matches('/'))
+        state.config.app_base_url.trim_end_matches('/').to_string()
+    };
+    let mut redirect = reqwest::Url::parse(&format!("{base}/")).expect("valid base URL");
+    {
+        let mut q = redirect.query_pairs_mut();
+        q.append_pair("token", &result.token);
+        q.append_pair("token_type", "bearer");
+        q.append_pair("username", &result.username);
+        q.append_pair("is_super_user", &result.is_superuser.to_string());
+    }
+    let redirect_target = if state.config.app_base_url.is_empty() {
+        format!("/?{}", redirect.query().unwrap_or_default())
+    } else {
+        redirect.to_string()
     };
 
-    (
-        AppendHeaders([(header::SET_COOKIE, cookie)]),
-        Redirect::temporary(&redirect_target),
-    )
-        .into_response()
+    Redirect::temporary(&redirect_target).into_response()
 }
 
 /// Redirect back to the app with an `error` query code, for a login rejected
@@ -820,14 +823,6 @@ async fn github_clone(
         Some(agent_id),
         None,
     )
-    .await;
-
-    // Tag this upload as a GitHub clone so the UI can show the source type.
-    let _ = sqlx::query(
-        "UPDATE upload_status SET metadata = jsonb_set(metadata, '{upload_type}', '\"github\"') WHERE upload_id = $1",
-    )
-    .bind(&upload_id)
-    .execute(&state.db)
     .await;
 
     tracing::info!(%build_id, %agent_id, agent_name = %agent_name, "github clone-and-deploy queued");
