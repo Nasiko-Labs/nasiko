@@ -6,6 +6,7 @@ import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import '/common/components/voice-input.js';
 import '/common/components/agent-steps.js';
+import '/common/components/app-module-nav.js';
 
 window.transcribeAudio = transcribeBlob;
 
@@ -20,6 +21,7 @@ class OrchestratorPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="orchestrator"></app-module-nav>
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
       <h1 class="title">Orchestrate a task</h1>
       <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it.</p>
