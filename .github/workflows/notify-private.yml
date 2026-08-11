@@ -19,7 +19,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/Nasiko-Labs/nasiko-cloud-rs/dispatches" \
             -d '{
-              "event_type": "oss-pr-${{ github.event.action == '\''opened'\'' && '\''opened'\'' || '\''synchronized'\'' }}",
+              "event_type": "oss-pr-${{ github.event.action == 'opened' && 'opened' || 'synchronized' }}",
               "client_payload": {
                 "pr_number": ${{ github.event.pull_request.number }},
                 "head_ref": "${{ github.event.pull_request.head.ref }}",
