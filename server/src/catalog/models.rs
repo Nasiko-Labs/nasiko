@@ -91,6 +91,7 @@ pub struct CreateAgent {
     pub skills: Option<Vec<Skill>>,
     pub tags: Option<Vec<String>>,
     pub metadata: Option<serde_json::Value>,
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

@@ -18,6 +18,13 @@ pub enum FlowEvent {
         success: bool,
         latency_ms: u64,
     },
+    /// An MCP tool call needs human approval (ask-stance permission, -32001)
+    /// before it can proceed. Surfaced to the chat UI as an approval prompt.
+    ToolApprovalRequired {
+        agent_id: String,
+        server: String,
+        tool: String,
+    },
 }
 
 /// In-memory broadcast bus for flow events, keyed by flow_id.

@@ -11,8 +11,6 @@ pub struct Claims {
     pub username: String,
     #[serde(default)]
     pub is_superuser: bool,
-    #[serde(default)]
-    pub is_agent: bool,
 }
 
 impl Claims {
@@ -36,7 +34,6 @@ impl From<nasiko_auth::Identity> for Claims {
             sub: c.user_id,
             username: c.username,
             is_superuser: c.is_superuser,
-            is_agent: c.is_agent,
         }
     }
 }
@@ -47,7 +44,6 @@ impl From<Claims> for nasiko_auth::Identity {
             user_id: c.sub,
             username: c.username,
             is_superuser: c.is_superuser,
-            is_agent: c.is_agent,
         }
     }
 }

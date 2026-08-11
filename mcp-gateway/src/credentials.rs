@@ -15,7 +15,9 @@ use uuid::Uuid;
 
 use crate::error::{McpError, Result};
 use crate::oauth;
-use crate::repo::{self, McpConnector};
+use crate::provider::GenericMcpProvider;
+use crate::provider::generic::LIST_TIMEOUT;
+use crate::repo::{self, McpConnector, McpUserConnection};
 use crate::state::McpState;
 use crate::types::{MCPServerConfig, ServerType};
 
@@ -40,73 +42,154 @@ pub async fn build_generic_servers(
     let mut result = Vec::with_capacity(connectors.len());
 
     for connector in &connectors {
-        let Some(base_url) = connector.url.clone().filter(|u| !u.is_empty()) else {
-            continue;
-        };
-        let auth_type = connector.auth_type.as_deref().unwrap_or("none");
-        let mut headers = parse_headers(&connector.headers);
-        let mut url = base_url;
         let conn = conn_by_connector.get(&connector.id);
-
-        match auth_type {
-            "none" => {}
-
-            "bearer" | "basic" => match conn.and_then(|c| c.encrypted_credential.as_deref()) {
-                Some(enc) => {
-                    let Some(value) = decrypt_or_skip(&crypto, enc, connector) else {
-                        continue;
-                    };
-                    headers.insert(credential_header(connector), value);
-                }
-                // No per-user credential: rely on static headers, else skip.
-                None if headers.is_empty() => continue,
-                None => {}
-            },
-
-            "url_param" => {
-                let Some(param) = connector.url_param_name.as_deref() else {
-                    tracing::warn!(connector = %connector.name, "url_param connector missing url_param_name — skipping");
-                    continue;
-                };
-                let Some(enc) = conn.and_then(|c| c.encrypted_credential.as_deref()) else {
-                    continue;
-                };
-                let Some(value) = decrypt_or_skip(&crypto, enc, connector) else {
-                    continue;
-                };
-                url = inject_url_param(&url, param, &value)?;
-            }
-
-            "oauth2" => {
-                let Some(conn) = conn else { continue };
-                match oauth::access_token_for(state, &crypto, user_id, connector, conn).await? {
-                    Some(access) => {
-                        headers.insert("Authorization".to_string(), format!("Bearer {access}"));
-                    }
-                    None => continue,
-                }
-            }
-
-            other => {
-                tracing::warn!(connector = %connector.name, auth_type = other, "unknown auth_type — skipping");
-                continue;
-            }
+        if let Some(cfg) = build_server_config(state, &crypto, user_id, connector, conn).await? {
+            result.push(cfg);
         }
-
-        result.push(MCPServerConfig {
-            connector_id: connector.id,
-            kind: ServerType::Mcp,
-            name: connector.name.clone(),
-            url,
-            headers,
-            transport: connector
-                .transport
-                .clone()
-                .unwrap_or_else(|| "streamable_http".to_string()),
-        });
     }
 
     Ok(result)
+}
+
+/// Build one connector's `MCPServerConfig`, injecting whatever per-user
+/// credential/OAuth token applies for its `auth_type` — `Ok(None)` means
+/// "not currently usable" (no credential yet, decrypt failure, etc.), not an
+/// error. The single source of truth both `build_generic_servers` (the live
+/// list for a user's session) and `verify_connector_live` (proving a
+/// just-configured credential actually works) route through, so verification
+/// can never drift from what a real tool call would actually send.
+async fn build_server_config(
+    state: &McpState,
+    crypto: &SecretsCrypto,
+    user_id: Uuid,
+    connector: &McpConnector,
+    conn: Option<&McpUserConnection>,
+) -> Result<Option<MCPServerConfig>> {
+    let Some(base_url) = connector.url.clone().filter(|u| !u.is_empty()) else {
+        return Ok(None);
+    };
+    let auth_type = connector.auth_type.as_deref().unwrap_or("none");
+    let mut headers = parse_headers(&connector.headers);
+    let mut url = base_url;
+
+    match auth_type {
+        "none" => {}
+
+        "bearer" | "basic" => match conn.and_then(|c| c.encrypted_credential.as_deref()) {
+            Some(enc) => {
+                let Some(value) = decrypt_or_skip(crypto, enc, connector) else {
+                    return Ok(None);
+                };
+                headers.insert(credential_header(connector), value);
+            }
+            // No per-user credential: rely on static headers, else skip.
+            None if headers.is_empty() => return Ok(None),
+            None => {}
+        },
+
+        "url_param" => {
+            let Some(param) = connector.url_param_name.as_deref() else {
+                tracing::warn!(connector = %connector.name, "url_param connector missing url_param_name — skipping");
+                return Ok(None);
+            };
+            let Some(enc) = conn.and_then(|c| c.encrypted_credential.as_deref()) else {
+                return Ok(None);
+            };
+            let Some(value) = decrypt_or_skip(crypto, enc, connector) else {
+                return Ok(None);
+            };
+            url = inject_url_param(&url, param, &value)?;
+        }
+
+        "oauth2" => {
+            let Some(conn) = conn else { return Ok(None) };
+            match oauth::access_token_for(state, crypto, user_id, connector, conn).await? {
+                Some(access) => {
+                    headers.insert("Authorization".to_string(), format!("Bearer {access}"));
+                }
+                None => return Ok(None),
+            }
+        }
+
+        other => {
+            tracing::warn!(connector = %connector.name, auth_type = other, "unknown auth_type — skipping");
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(MCPServerConfig {
+        connector_id: connector.id,
+        kind: ServerType::Mcp,
+        name: connector.name.clone(),
+        url,
+        headers,
+        transport: connector
+            .transport
+            .clone()
+            .unwrap_or_else(|| "streamable_http".to_string()),
+        // The ONLY place `trusted` is ever computed — see MCPServerConfig's
+        // doc comment. Read straight off the already-joined connector row,
+        // no new query.
+        trusted: connector.source_kind == repo::SourceKind::UploadedBuild,
+    }))
+}
+
+/// Outcome of actually calling the connector, not just submitting config for it.
+pub struct VerifyOutcome {
+    pub verified: bool,
+    pub error: Option<String>,
+}
+
+/// Prove a connector's currently-configured auth actually works: a real,
+/// authenticated `tools/list` against the real server — the actual
+/// correctness gate, not another local guess. `user_id`'s own credential/OAuth
+/// token is used, same as any real tool call would use.
+pub async fn verify_connector_live(
+    state: &McpState,
+    user_id: Uuid,
+    connector: &McpConnector,
+) -> VerifyOutcome {
+    let crypto = SecretsCrypto::for_user(user_id);
+    let conn = match repo::get_user_connection(&state.db, user_id, connector.id).await {
+        Ok(c) => c,
+        Err(e) => {
+            return VerifyOutcome {
+                verified: false,
+                error: Some(format!("failed to load credential: {e}")),
+            };
+        }
+    };
+
+    let cfg = match build_server_config(state, &crypto, user_id, connector, conn.as_ref()).await {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => {
+            return VerifyOutcome {
+                verified: false,
+                error: Some(
+                    "no usable credential is configured for this connector yet".to_string(),
+                ),
+            };
+        }
+        Err(e) => {
+            return VerifyOutcome {
+                verified: false,
+                error: Some(format!("failed to prepare request: {e}")),
+            };
+        }
+    };
+
+    let provider =
+        GenericMcpProvider::new(state.guarded_http_client.clone(), state.http_client.clone());
+    match provider.list_tools(&cfg, LIST_TIMEOUT, None).await {
+        Ok(_) => VerifyOutcome {
+            verified: true,
+            error: None,
+        },
+        Err(e) => VerifyOutcome {
+            verified: false,
+            error: Some(e.to_string()),
+        },
+    }
 }
 
 /// The header a bearer/basic credential is injected into (default `Authorization`).
@@ -198,13 +281,18 @@ pub fn normalize_for(connector: &McpConnector, raw: &str) -> String {
     }
 }
 
-/// Store the caller's credential for `connector` (bearer/basic/url_param).
+/// Store the caller's credential for `connector` (bearer/basic/url_param), then
+/// prove it actually works with a real call before marking it `active` — a
+/// submitted value is not the same as a working one (see `verify_connector_live`).
+/// The credential is kept either way: a wrong value is something the user can
+/// see and fix via this same endpoint, not something that should force a
+/// delete-and-restart.
 pub async fn register_credential(
     state: &McpState,
     user_id: Uuid,
     connector: &McpConnector,
     credential_value: &str,
-) -> Result<()> {
+) -> Result<VerifyOutcome> {
     let auth_type = connector.auth_type.as_deref().unwrap_or("none");
     if !matches!(auth_type, "bearer" | "basic" | "url_param") {
         return Err(McpError::BadRequest(format!(
@@ -212,13 +300,20 @@ pub async fn register_credential(
         )));
     }
     let value = normalize_for(connector, credential_value);
-    let encrypted = SecretsCrypto::for_user(user_id)
-        .encrypt(&value)
-        .map_err(|e| McpError::Internal(format!("encrypt credential: {e}")))?;
+    let encrypted = SecretsCrypto::for_user(user_id).encrypt(&value);
     repo::upsert_connection_credential(&state.db, user_id, connector.id, &encrypted).await?;
+
+    let outcome = verify_connector_live(state, user_id, connector).await;
+    let (status, error) = if outcome.verified {
+        ("active", None)
+    } else {
+        ("failed", outcome.error.as_deref())
+    };
+    repo::set_connector_setup_status(&state.db, connector.id, status, error).await?;
+
     crate::session::invalidate_session_cache(state, user_id).await;
-    tracing::info!(connector = %connector.name, %user_id, "registered user credential");
-    Ok(())
+    tracing::info!(connector = %connector.name, %user_id, verified = outcome.verified, "registered user credential");
+    Ok(outcome)
 }
 
 /// The caller's credential status for `connector` (never the value): the auth
@@ -286,6 +381,11 @@ mod tests {
             oauth_token_endpoint: None,
             oauth_client_id: None,
             oauth_client_secret: None,
+            source_kind: crate::repo::SourceKind::ExternalUrl,
+            build_status: None,
+            container_image_tag: None,
+            setup_status: None,
+            setup_error: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

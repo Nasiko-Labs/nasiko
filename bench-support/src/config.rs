@@ -120,6 +120,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         embedding_model: "mock-embedding".into(),
         router_agent_timeout_secs: 60,
         github_callback_url: None,
+        github_central_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
         git_clone_allowed_hosts: vec![],
