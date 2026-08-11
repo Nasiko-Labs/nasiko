@@ -58,7 +58,7 @@
   }
   :scope.has-response .subtitle { display: none; }
   .input-wrap {
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     min-height: 88px;
     transition: margin-bottom 0.3s;
     contain: layout style;
@@ -68,7 +68,7 @@
     height: 88px;
   }
   .response-area {
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     margin-top: var(--space-md);
     display: none;
   }
@@ -183,7 +183,7 @@
   .continue-link:hover { text-decoration: underline; }
 
   .recent-agents {
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     margin-bottom: var(--space-md);
   }
   :scope.has-response .recent-agents { display: none; }
@@ -250,7 +250,7 @@
     display: flex;
     align-items: center;
     gap: var(--s-16);
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     margin-top: var(--space-xl);
     padding: var(--s-20);
     border-radius: var(--r-8);
