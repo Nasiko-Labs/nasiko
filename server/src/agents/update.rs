@@ -202,12 +202,16 @@ pub(crate) async fn update_agent(
             bump_major_version(&current_version)
         }
         Some(v) => {
-            let new_sv = match semver::Version::parse(v) {
-                Ok(sv) => sv,
-                Err(_) => {
+            // Must be a plain `x.y.z` — the same rule `record_version_change` enforces
+            // below. Accepting a fuller SemVer here (e.g. a prerelease like `1.2.3-beta`)
+            // would let the deploy go through while history-recording later rejects it,
+            // leaving the running agent on a version with no history row.
+            let new_sv = match super::versions::parse_plain_version(v) {
+                Some(sv) => sv,
+                None => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        "version must be valid semver (e.g. 1.2.3) or a strategy keyword: auto, patch, minor, major",
+                        "version must be in x.y.z format (e.g. 1.2.3) or a strategy keyword: auto, patch, minor, major",
                     )
                         .into_response()
                 }
@@ -554,8 +558,7 @@ pub async fn execute_agent_update(
         Ok((deploy_status, spec_ports)) => {
             // Record the new version (archives the old one, enables rollback).
             // No overwrite here — a reused version was already rejected earlier.
-            if let Err(e) = super::versions::record_version_change(
-                db,
+            super::versions::record_version_change_with_retry(db, || {
                 super::versions::VersionChange {
                     agent_id,
                     build_id: Some(build_id),
@@ -563,12 +566,9 @@ pub async fn execute_agent_update(
                     image_tag: &image_tag,
                     changelog: changelog.as_deref(),
                     allow_overwrite: false,
-                },
-            )
-            .await
-            {
-                tracing::error!(%e, %agent_id, "update: record version change failed");
-            }
+                }
+            })
+            .await;
 
             let agent_url = crate::agents::resolve_agent_url(
                 &state.runtime,

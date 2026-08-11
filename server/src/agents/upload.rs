@@ -470,6 +470,36 @@ pub(crate) async fn upload_and_deploy(
         }
     };
 
+    // Reject a version already recorded in this agent's history — otherwise the
+    // post-build write (below) silently overwrites that row via `ON CONFLICT`,
+    // the same collapse this PR fixes. Checked here (before the build even
+    // starts) rather than after, so a doomed upload fails fast.
+    let version_already_used: bool = match sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agent_versions WHERE agent_id = $1 AND version = $2)",
+    )
+    .bind(agent_id)
+    .bind(&version_tag)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(exists) => exists,
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "upload: version history check db error");
+            let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    if version_already_used {
+        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "version {version_tag} already exists in this agent's history — choose a new version"
+            ),
+        )
+            .into_response();
+    }
+
     // ── Persist build record ──────────────────────────────────────────────────
     let build_id = match sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
@@ -621,6 +651,47 @@ fn validate_agent_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Res
     Ok(())
 }
 
+/// Records a just-deployed build's version in history through the shared
+/// recorder — activates it, archiving whatever was running before and
+/// marking it rollback-eligible. Shared by `execute_upload_and_deploy` and
+/// `execute_clone_and_deploy`, whose build pipelines are otherwise
+/// identical from this point on.
+///
+/// `agent_builds.version_tag` (not the `image_tag` parameter callers already
+/// have) is the actual `x.y.z` version string `record_version_change` needs.
+async fn record_uploaded_version(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+    build_id: Uuid,
+    image_tag: &str,
+) {
+    let version_tag: Option<String> =
+        sqlx::query_scalar("SELECT version_tag FROM agent_builds WHERE id = $1")
+            .bind(build_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
+    let Some(version_tag) = version_tag else {
+        tracing::error!(
+            %agent_id, %build_id,
+            "upload: no version_tag found for build — version not recorded in history"
+        );
+        return;
+    };
+
+    super::versions::record_version_change_with_retry(db, || super::versions::VersionChange {
+        agent_id,
+        build_id: Some(build_id),
+        version: &version_tag,
+        image_tag,
+        changelog: None,
+        allow_overwrite: false,
+    })
+    .await;
+}
+
 /// Execute the full upload-and-deploy pipeline: extract, OTel patch, docker build, deploy.
 /// Called by the build worker.
 #[allow(clippy::too_many_arguments)]
@@ -747,51 +818,10 @@ pub async fn execute_upload_and_deploy(
             )
             .await;
             // `upload` upserts by (owner_id, name) — a second `upload` against an
-            // already-deployed agent must land here too. Fetch the currently active
-            // version first: it becomes this new version's `previous_version` and,
-            // once archived, gets marked `can_rollback = true` — mirroring
-            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
-            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
-            // first upload (nothing to archive or roll back to yet).
-            let prev_version: Option<String> = sqlx::query_scalar(
-                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
-            let _ = sqlx::query(
-                "UPDATE agent_versions SET is_active = false, status = 'archived' \
-                 WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .execute(&db)
-            .await;
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions \
-                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
-                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
-                 FROM agent_builds WHERE id = $1 \
-                 ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
-                       is_active = true, status = 'active', \
-                       previous_version = EXCLUDED.previous_version",
-            )
-            .bind(build_id)
-            .bind(&prev_version)
-            .execute(&db)
-            .await;
-            if let Some(ref pv) = prev_version {
-                let _ = sqlx::query(
-                    "UPDATE agent_versions SET can_rollback = true \
-                     WHERE agent_id = $1 AND version = $2",
-                )
-                .bind(agent_id)
-                .bind(pv)
-                .execute(&db)
-                .await;
-            }
+            // already-deployed agent must land here too, which this activates and
+            // archives whatever was previously running for (mirroring `update.rs`'s
+            // redeploy path). A genuinely first upload has nothing to archive yet.
+            record_uploaded_version(&db, agent_id, build_id, &image_tag).await;
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -977,51 +1007,10 @@ pub async fn execute_clone_and_deploy(
             )
             .await;
             // `upload` upserts by (owner_id, name) — a second `upload` against an
-            // already-deployed agent must land here too. Fetch the currently active
-            // version first: it becomes this new version's `previous_version` and,
-            // once archived, gets marked `can_rollback = true` — mirroring
-            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
-            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
-            // first upload (nothing to archive or roll back to yet).
-            let prev_version: Option<String> = sqlx::query_scalar(
-                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
-            let _ = sqlx::query(
-                "UPDATE agent_versions SET is_active = false, status = 'archived' \
-                 WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .execute(&db)
-            .await;
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions \
-                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
-                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
-                 FROM agent_builds WHERE id = $1 \
-                 ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
-                       is_active = true, status = 'active', \
-                       previous_version = EXCLUDED.previous_version",
-            )
-            .bind(build_id)
-            .bind(&prev_version)
-            .execute(&db)
-            .await;
-            if let Some(ref pv) = prev_version {
-                let _ = sqlx::query(
-                    "UPDATE agent_versions SET can_rollback = true \
-                     WHERE agent_id = $1 AND version = $2",
-                )
-                .bind(agent_id)
-                .bind(pv)
-                .execute(&db)
-                .await;
-            }
+            // already-deployed agent must land here too, which this activates and
+            // archives whatever was previously running for (mirroring `update.rs`'s
+            // redeploy path). A genuinely first upload has nothing to archive yet.
+            record_uploaded_version(&db, agent_id, build_id, &image_tag).await;
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,

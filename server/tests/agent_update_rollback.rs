@@ -278,6 +278,35 @@ async fn update_explicit_version_equal_to_current_returns_409() {
 
 #[tokio::test]
 #[serial]
+async fn update_explicit_prerelease_version_returns_400() {
+    // A pre-release like "1.2.3-beta" passes generic SemVer parsing (and is
+    // greater than "1.0.0"), but `record_version_change` only ever accepts a
+    // plain `x.y.z`. Before this was validated up front, a prerelease would
+    // sail through this check, the build/deploy would proceed, and only the
+    // version-history write afterward would silently fail — leaving the
+    // agent running a version with no matching row in `agent_versions`.
+    // It must now be rejected here, before any build starts.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let agent = create_agent(&server, uid, "prerelease-agent", "1.0.0").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let zip = common::make_zip(&[NO_DOCKERFILE]);
+
+    let res = do_update(&server, uid, agent_id, Some("1.2.3-beta"), Some(zip)).await;
+    assert_eq!(res.status(), 400);
+    let text = res.text().await.unwrap();
+    assert!(
+        text.contains("x.y.z"),
+        "expected plain x.y.z format error, got: {text}"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn update_duplicate_version_in_agent_versions_returns_409() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

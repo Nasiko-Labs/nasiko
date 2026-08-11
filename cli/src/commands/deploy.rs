@@ -58,17 +58,23 @@ pub fn deploy_with_version_flags(
 /// Gets the currently-deployed version and full version history from an
 /// already-looked-up agent. Both come back empty for a brand-new agent.
 /// Shared by `deploy_from_directory` and `deploy_from_image`.
+///
+/// Propagates a history-fetch failure instead of treating it as "no
+/// history" — failing open there would let a duplicate/already-used version
+/// through the check in `resolve_deploy_version` and push/deploy over that
+/// version's content before the server gets a chance to reject the update.
 fn used_version_context<'a>(
     client: &Client,
     existing: Option<&'a (String, serde_json::Value)>,
-) -> (Option<&'a str>, Vec<String>) {
+) -> Result<(Option<&'a str>, Vec<String>)> {
     let current_deployed_version = existing
         .and_then(|(_, current)| current.get("version"))
         .and_then(|v| v.as_str());
-    let used_versions = existing
-        .map(|(id, _)| client.used_versions(id))
-        .unwrap_or_default();
-    (current_deployed_version, used_versions)
+    let used_versions = match existing {
+        Some((id, _)) => client.used_versions(id)?,
+        None => Vec::new(),
+    };
+    Ok((current_deployed_version, used_versions))
 }
 
 /// Finds the existing agent for a directory deploy: first checks the local
@@ -155,7 +161,8 @@ fn deploy_from_directory(
     let agent_file = root.join(AGENT_FILE);
     let existing = find_existing_agent_binding(client, &agent_file, &agent_name)?;
 
-    let (current_deployed_version, used_versions) = used_version_context(client, existing.as_ref());
+    let (current_deployed_version, used_versions) =
+        used_version_context(client, existing.as_ref())?;
     let card_version = card.get("version").and_then(|v| v.as_str());
     let context = VersionContext {
         card_version,
@@ -188,6 +195,23 @@ fn deploy_from_directory(
             } else {
                 println!("  Updating: {current_version} → {version}");
             }
+            save_agent_id(&agent_file, &id, &agent_name)?;
+
+            // Deploy the container BEFORE activating the new version in the
+            // catalog — activating first would archive the version that's
+            // genuinely still running and mark it a rollback target even
+            // though the deploy below hasn't happened yet, so a failed
+            // deploy would leave history claiming a version is live when
+            // it never actually ran.
+            println!("Deploying container...");
+            let spec = DeploySpec {
+                image: image_ref.clone(),
+                name: agent_name.clone(),
+                ports: vec![port],
+                env: env.clone(),
+            };
+            let status: ContainerStatus = client.post_json("/containers", &spec)?;
+            println!("  {} → {}", agent_name, status.state);
 
             let update = serde_json::json!({
                 "version": version,
@@ -198,11 +222,12 @@ fn deploy_from_directory(
                 "allow_overwrite": decision.overwrite,
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
-            save_agent_id(&agent_file, &id, &agent_name)?;
-            id
+            println!("\n✓ Deployed {agent_name}:{version} (id: {id})");
+            return Ok(());
         }
         None => {
-            // Create new agent
+            // Create new agent — nothing was running before, so there's no
+            // prior version to falsely archive; register then deploy as before.
             println!("  Registering new agent: {agent_name}");
             let create = serde_json::json!({
                 "name": agent_name,
@@ -260,7 +285,8 @@ fn deploy_from_image(
             .to_string();
         (id, agent)
     });
-    let (current_deployed_version, used_versions) = used_version_context(client, existing.as_ref());
+    let (current_deployed_version, used_versions) =
+        used_version_context(client, existing.as_ref())?;
     // Only trust the tag if the user actually wrote one (`image:tag`) — a
     // bare `image` implicitly means Docker's "latest", not a real choice.
     let card_version =
@@ -289,24 +315,40 @@ fn deploy_from_image(
         } else {
             println!("  Updating agent: {agent_name}");
         }
+
+        // Deploy the container BEFORE activating the new version in the
+        // catalog — see the matching comment in `deploy_from_directory`.
+        println!("Deploying container...");
+        let spec = DeploySpec {
+            image: image_ref.clone(),
+            name: agent_name.clone(),
+            ports: vec![port],
+            env: env.clone(),
+        };
+        let status: ContainerStatus = client.post_json("/containers", &spec)?;
+        println!("  {} → {}", agent_name, status.state);
+
         let update = serde_json::json!({
             "version": version,
             "image": image_ref,
             "allow_overwrite": decision.overwrite,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
-    } else {
-        println!("  Registering agent: {agent_name}");
-        let create = serde_json::json!({
-            "name": agent_name,
-            "display_name": agent_name,
-            "version": version,
-            "image": image_ref,
-        });
-        let _: serde_json::Value = client.post_json("/agents", &create)?;
+        println!("\n✓ Deployed {agent_name}:{version}");
+        return Ok(());
     }
 
-    // Deploy container
+    println!("  Registering agent: {agent_name}");
+    let create = serde_json::json!({
+        "name": agent_name,
+        "display_name": agent_name,
+        "version": version,
+        "image": image_ref,
+    });
+    let _: serde_json::Value = client.post_json("/agents", &create)?;
+
+    // Deploy container — nothing was running before, so there's no prior
+    // version to falsely archive; register then deploy as before.
     println!("Deploying container...");
     let spec = DeploySpec {
         image: image_ref,
@@ -339,3 +381,9 @@ fn save_agent_id(path: &Path, agent_id: &str, name: &str) -> Result<()> {
     fs::write(path, serde_json::to_string_pretty(&data)?)?;
     Ok(())
 }
+
+// Kept in a separate file (`tests/deploy_tests.rs`) instead of an inline
+// `mod tests { ... }` block — see the matching comment in `push.rs`.
+#[cfg(test)]
+#[path = "tests/deploy_tests.rs"]
+mod tests;

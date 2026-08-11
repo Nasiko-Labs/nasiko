@@ -271,15 +271,23 @@ pub(crate) async fn create(
     // separately (`agents/upload.rs`, `build/routes.rs`) once the build
     // completes; this covers the `push`/`deploy` path, which registers
     // before any build job exists.
-    if let Err(e) = sqlx::query(
-        "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, status) \
-         VALUES ($1, $2, $3, true, 'active')",
-    )
-    .bind(agent.id)
-    .bind(&agent.version)
-    .bind(agent.image.clone().unwrap_or_default())
-    .execute(&mut *tx)
-    .await
+    //
+    // Skipped when the version isn't a plain `x.y.z` — the `agents.version`
+    // column itself stays free-form (some callers rely on creating an agent
+    // with a legacy/non-semver version and then getting a clear error from a
+    // later explicit-version-required update, rather than being blocked at
+    // creation), but `agent_versions` history must never carry that free-form
+    // text, which is the actual bug this seeding step must not reintroduce.
+    if crate::agents::versions::parse_plain_version(&agent.version).is_some()
+        && let Err(e) = sqlx::query(
+            "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, status) \
+             VALUES ($1, $2, $3, true, 'active')",
+        )
+        .bind(agent.id)
+        .bind(&agent.version)
+        .bind(agent.image.clone().unwrap_or_default())
+        .execute(&mut *tx)
+        .await
     {
         tracing::error!(%e, agent_id = %agent.id, "create agent: seed initial version failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
@@ -534,23 +542,33 @@ pub(crate) async fn get_one(
 /// `nasiko deploy`/`push` call on every redeploy, so version history and
 /// rollback depend on it running here.
 ///
+/// Runs inside the caller's transaction (`tx`) so the version-history write
+/// and the catalog `agents` row update below either both commit or both roll
+/// back — otherwise a later failure in the same request (e.g. the skills
+/// sync, or the commit itself) would leave a new version active in
+/// `agent_versions` while the `agents` row never changed to match.
+///
 /// Returns `Some(response)` to reject the request (bad/reused version, or a
 /// DB error) — the caller should return that immediately. Returns `None` to
 /// continue as normal.
 async fn record_version_change_if_needed(
-    db: &sqlx::PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     agent_id: Uuid,
     body: &UpdateAgent,
 ) -> Option<axum::response::Response> {
     let new_version = body.version.as_ref()?;
 
-    let current_version: Option<String> =
-        sqlx::query_scalar("SELECT version FROM agents WHERE id = $1")
+    let current: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT version, image FROM agents WHERE id = $1")
             .bind(agent_id)
-            .fetch_optional(db)
+            .fetch_optional(&mut **tx)
             .await
             .ok()
             .flatten();
+    let (current_version, current_image) = match current {
+        Some((v, img)) => (Some(v), img),
+        None => (None, None),
+    };
 
     // Skip if the version hasn't changed — unless overwriting is allowed,
     // which means "refresh this version's content in place".
@@ -558,20 +576,30 @@ async fn record_version_change_if_needed(
         return None;
     }
 
-    let image_tag = body.image.as_deref().unwrap_or_default();
-    match crate::agents::versions::record_version_change(
-        db,
-        crate::agents::versions::VersionChange {
-            agent_id,
-            build_id: None,
-            version: new_version,
-            image_tag,
-            changelog: None,
-            allow_overwrite: body.allow_overwrite,
-        },
-    )
-    .await
-    {
+    // A version-only update (no `image`) must keep the agent's current image —
+    // an empty image_tag here would leave this history row's rollback target
+    // pointing at no image at all.
+    let image_tag = match body.image.as_deref() {
+        Some(img) => img,
+        None => current_image.as_deref().unwrap_or_default(),
+    };
+    let version_change = crate::agents::versions::VersionChange {
+        agent_id,
+        build_id: None,
+        version: new_version,
+        image_tag,
+        changelog: None,
+        allow_overwrite: body.allow_overwrite,
+    };
+    // `nasiko deploy`/`update` activate the version (default); `nasiko push`
+    // sets `activate_version: false` — it only registers an image, so it
+    // must not claim to be live or archive whatever's genuinely running.
+    let result = if body.activate_version {
+        crate::agents::versions::record_version_change_in_tx(tx, version_change).await
+    } else {
+        crate::agents::versions::record_pushed_version_in_tx(tx, version_change).await
+    };
+    match result {
         Ok(()) => None,
         Err(crate::agents::versions::VersionChangeError::VersionAlreadyExists(v)) => Some(
             (
@@ -616,7 +644,15 @@ pub(crate) async fn update(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    if let Some(resp) = record_version_change_if_needed(&state.db, id, &body).await {
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(%e, "update agent: begin tx");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
+    };
+
+    if let Some(resp) = record_version_change_if_needed(&mut tx, id, &body).await {
         return resp;
     }
 
@@ -650,12 +686,13 @@ pub(crate) async fn update(
             .map(|ts| ts.iter().map(|t| t.to_lowercase()).collect())
     };
 
-    let mut tx = match state.db.begin().await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(%e, "update agent: begin tx");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
-        }
+    // `push` (activate_version = false) must not move `agents.version`/`image` —
+    // those columns mean "what's currently deployed", and push never deploys
+    // anything. Only a real deploy/update advances them.
+    let (agent_version, agent_image) = if body.activate_version {
+        (body.version.clone(), body.image.clone())
+    } else {
+        (None, None)
     };
 
     let result = sqlx::query_as::<_, Agent>(
@@ -681,7 +718,7 @@ pub(crate) async fn update(
     .bind(&body.description)
     .bind(&body.url)
     .bind(&body.icon_url)
-    .bind(&body.version)
+    .bind(&agent_version)
     .bind(&body.documentation_url)
     .bind(&body.capabilities)
     .bind(
@@ -692,7 +729,7 @@ pub(crate) async fn update(
     .bind(&merged_tags)
     .bind(&body.metadata)
     .bind(&body.status)
-    .bind(&body.image)
+    .bind(&agent_image)
     .fetch_optional(&mut *tx)
     .await;
 

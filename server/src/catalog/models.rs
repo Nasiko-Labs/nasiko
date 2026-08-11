@@ -115,6 +115,17 @@ pub struct UpdateAgent {
     /// Only set when the user explicitly confirms or passes `--overwrite`.
     #[serde(default)]
     pub allow_overwrite: bool,
+    /// `true` (the default) for a real deploy — the new version becomes
+    /// active, archiving whatever was running before. `nasiko push` sets
+    /// this `false`: it only makes an image available in the registry
+    /// without deploying it, so it must not claim the new version is now
+    /// active or archive the version that's genuinely still running.
+    #[serde(default = "default_activate_version")]
+    pub activate_version: bool,
+}
+
+fn default_activate_version() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, FromRow)]

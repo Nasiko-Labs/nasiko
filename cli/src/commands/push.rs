@@ -45,8 +45,8 @@ fn push_from_directory(
         .map(String::from)
         .or_else(|| card.get("name").and_then(|n| n.as_str()).map(String::from))
         .unwrap_or_else(|| "agent".into());
-    let existing = lookup_existing(client, &agent_name);
-    let (current_deployed_version, used_versions) = used_version_context(client, &existing);
+    let existing = lookup_existing(client, &agent_name)?;
+    let (current_deployed_version, used_versions) = used_version_context(client, &existing)?;
     let card_version = card.get("version").and_then(|v| v.as_str());
     let context = VersionContext {
         card_version,
@@ -93,8 +93,8 @@ fn push_from_image(
     let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
 
-    let existing = lookup_existing(client, &agent_name);
-    let (current_deployed_version, used_versions) = used_version_context(client, &existing);
+    let existing = lookup_existing(client, &agent_name)?;
+    let (current_deployed_version, used_versions) = used_version_context(client, &existing)?;
     // Only trust the tag if the user actually wrote one (`image:tag`) — a
     // bare `image` implicitly means Docker's "latest", not a real choice.
     let card_version =
@@ -131,28 +131,41 @@ fn push_from_image(
 /// Gets the currently-deployed version and full version history from
 /// [`lookup_existing`]'s result. Both come back empty for a brand-new
 /// agent. Shared by `push_from_directory` and `push_from_image`.
+///
+/// Propagates a history-fetch failure instead of treating it as "no
+/// history" — failing open there would let a duplicate/already-used version
+/// through the check in `resolve_deploy_version` and overwrite that
+/// version's content in the registry before the server gets a chance to
+/// reject the catalog update.
 fn used_version_context(
     client: &Client,
     existing: &Option<(String, Option<String>)>,
-) -> (Option<String>, Vec<String>) {
+) -> Result<(Option<String>, Vec<String>)> {
     let current_deployed_version = existing.as_ref().and_then(|(_, v)| v.clone());
-    let used_versions = existing
-        .as_ref()
-        .map(|(id, _)| client.used_versions(id))
-        .unwrap_or_default();
-    (current_deployed_version, used_versions)
+    let used_versions = match existing {
+        Some((id, _)) => client.used_versions(id)?,
+        None => Vec::new(),
+    };
+    Ok((current_deployed_version, used_versions))
 }
 
-/// Looks up an existing agent's id and version by name. `None` if it
-/// doesn't exist yet (or the lookup fails — treated the same as "new").
-fn lookup_existing(client: &Client, name: &str) -> Option<(String, Option<String>)> {
-    let agent = client.get_agent(name).ok().flatten()?;
-    let id = agent.get("id").and_then(|v| v.as_str())?.to_string();
+/// Looks up an existing agent's id and version by name. `Ok(None)` if it
+/// doesn't exist yet (a real 404). A network/auth failure is propagated as
+/// `Err` instead of being treated as "new agent" — otherwise a transient
+/// lookup failure would push and register a fresh agent row on top of one
+/// that already exists, silently colliding with (or overwriting) its history.
+fn lookup_existing(client: &Client, name: &str) -> Result<Option<(String, Option<String>)>> {
+    let Some(agent) = client.get_agent(name)? else {
+        return Ok(None);
+    };
+    let Some(id) = agent.get("id").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
     let version = agent
         .get("version")
         .and_then(|v| v.as_str())
         .map(String::from);
-    Some((id, version))
+    Ok(Some((id.to_string(), version)))
 }
 
 fn register_agent(
@@ -168,10 +181,14 @@ fn register_agent(
     if let Some(existing) = existing {
         let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if allow_overwrite {
-            println!("  Overwriting in catalog: {name} @ {version}");
+            println!("  Overwriting pushed version in catalog: {name} @ {version}");
         } else {
-            println!("  Updating in catalog: {name}");
+            println!("  Registering pushed version in catalog: {name} @ {version} (not deployed)");
         }
+        // `push` never deploys — `activate_version: false` records this version
+        // in history without marking it active or archiving whatever agent
+        // version is actually still running (see
+        // `versions::record_pushed_version_in_tx` on the server).
         let update = serde_json::json!({
             "version": version,
             "image": image_ref,
@@ -179,6 +196,7 @@ fn register_agent(
             "skills": card.get("skills"),
             "capabilities": card.get("capabilities"),
             "allow_overwrite": allow_overwrite,
+            "activate_version": false,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         return Ok(());
@@ -197,3 +215,11 @@ fn register_agent(
     let _: serde_json::Value = client.post_json("/agents", &create)?;
     Ok(())
 }
+
+// Kept in a separate file (`tests/push_tests.rs`) instead of an inline
+// `mod tests { ... }` block so this already-sizable command module doesn't
+// keep growing every time coverage is added — `#[path]` still makes it a
+// child of this module, so it can call the private helpers above directly.
+#[cfg(test)]
+#[path = "tests/push_tests.rs"]
+mod tests;

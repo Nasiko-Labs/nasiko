@@ -4,7 +4,7 @@
 /// agent version history. Shared by the CLI and server so the rule stays
 /// the same on both sides.
 pub fn parse_plain_version(v: &str) -> Option<semver::Version> {
-    let parsed = semver::Version::parse(v.trim()).ok()?;
+    let parsed = semver::Version::parse(v).ok()?;
     if parsed.pre.is_empty() && parsed.build.is_empty() {
         Some(parsed)
     } else {
@@ -32,5 +32,12 @@ mod tests {
         assert!(parse_plain_version("1.2.3+build.5").is_none());
         // Valid full SemVer, but not a plain x.y.z version.
         assert!(parse_plain_version("0.10238.2893-let").is_none());
+    }
+
+    #[test]
+    fn rejects_surrounding_whitespace() {
+        assert!(parse_plain_version(" 1.2.3").is_none());
+        assert!(parse_plain_version("1.2.3 ").is_none());
+        assert!(parse_plain_version(" 1.2.3 ").is_none());
     }
 }

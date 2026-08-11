@@ -77,7 +77,6 @@ async fn get_build(
     .unwrap()
 }
 
-#[allow(dead_code)]
 /// Poll the build record until its status is terminal, or panic on timeout.
 async fn wait_for_terminal_status(
     server: &common::TestServer,
@@ -124,7 +123,13 @@ async fn upload_requires_name() {
     let uid = admin["user_id"].as_str().unwrap();
 
     let zip = common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
-    let res = upload(&server, uid, vec![("version_tag", "v1".into())], Some(zip)).await;
+    let res = upload(
+        &server,
+        uid,
+        vec![("version_tag", "1.0.0".into())],
+        Some(zip),
+    )
+    .await;
 
     assert_eq!(res.status(), 400);
     server.cleanup().await;
@@ -153,7 +158,7 @@ async fn upload_without_identity_returns_401() {
     let zip = common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY]);
     let form = reqwest::multipart::Form::new()
         .text("name", "demo")
-        .text("version_tag", "v1")
+        .text("version_tag", "1.0.0")
         .part(
             "source",
             reqwest::multipart::Part::bytes(zip).file_name("agent.zip"),
@@ -183,7 +188,10 @@ async fn upload_persists_agent_and_build_record() {
     let res = upload(
         &server,
         uid,
-        vec![("name", "demo-agent".into()), ("version_tag", "v1".into())],
+        vec![
+            ("name", "demo-agent".into()),
+            ("version_tag", "1.0.0".into()),
+        ],
         Some(zip),
     )
     .await;
@@ -247,7 +255,7 @@ async fn upload_persists_build_job_atomically_with_agent_and_build() {
         uid,
         vec![
             ("name", "atomic-agent".into()),
-            ("version_tag", "v1".into()),
+            ("version_tag", "1.0.0".into()),
         ],
         Some(zip),
     )
@@ -281,7 +289,7 @@ async fn upload_reuses_agent_on_repeat_name() {
     let first: Value = upload(
         &server,
         uid,
-        vec![("name", "repeat".into()), ("version_tag", "v1".into())],
+        vec![("name", "repeat".into()), ("version_tag", "1.0.0".into())],
         Some(make_valid_structure_zip()),
     )
     .await
@@ -292,7 +300,7 @@ async fn upload_reuses_agent_on_repeat_name() {
     let second: Value = upload(
         &server,
         uid,
-        vec![("name", "repeat".into()), ("version_tag", "v2".into())],
+        vec![("name", "repeat".into()), ("version_tag", "1.0.1".into())],
         Some(make_valid_structure_zip()),
     )
     .await
@@ -305,6 +313,161 @@ async fn upload_reuses_agent_on_repeat_name() {
     assert_eq!(first["data"]["agent_id"], second["data"]["agent_id"]);
     assert_ne!(first["data"]["build_id"], second["data"]["build_id"]);
     assert!(first["data"]["agent_id"].is_string());
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn upload_rejects_reused_version_before_build() {
+    // Re-uploading a version already in this agent's history must be rejected
+    // synchronously, before a build is even queued — otherwise the post-build
+    // write silently overwrites that history row (the exact collapse this
+    // feature fixes). Create the agent via the catalog directly so its
+    // initial version ("1.0.0") is seeded in `agent_versions` without needing
+    // a real build to complete first.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let agent: Value =
+        common::as_superuser(server.client.post(server.url("/api/agents")), uid, "admin")
+            .json(&json!({"name": "dup-upload-agent", "version": "1.0.0"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    let agent_id: uuid::Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+
+    let res = upload(
+        &server,
+        uid,
+        vec![
+            ("name", "dup-upload-agent".into()),
+            ("version_tag", "1.0.0".into()),
+        ],
+        Some(make_valid_structure_zip()),
+    )
+    .await;
+
+    assert_eq!(res.status(), 409, "re-using an existing version must 409");
+    let text = res.text().await.unwrap();
+    assert!(
+        text.contains("already exists"),
+        "expected 'already exists' message, got: {text}"
+    );
+
+    // No build was queued for the rejected upload.
+    let job_count: i64 = sqlx::query_scalar("SELECT count(*) FROM build_jobs WHERE agent_id = $1")
+        .bind(agent_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        job_count, 0,
+        "a rejected duplicate-version upload must not queue a build"
+    );
+
+    server.cleanup().await;
+}
+
+async fn list_versions(server: &common::TestServer, uid: &str, agent_id: &str) -> Vec<Value> {
+    let res = common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}/versions"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200, "list_versions should succeed");
+    let body: Value = res.json().await.unwrap();
+    body["data"].as_array().unwrap().clone()
+}
+
+fn find_version<'a>(versions: &'a [Value], version: &str) -> &'a Value {
+    versions
+        .iter()
+        .find(|v| v["version"] == version)
+        .unwrap_or_else(|| panic!("version {version} not found in {versions:?}"))
+}
+
+#[tokio::test]
+#[serial]
+async fn upload_activates_version_in_history_once_build_completes() {
+    // Regression coverage for routing `execute_upload_and_deploy`'s post-build
+    // write through the shared `record_version_change` recorder instead of its
+    // own raw SQL: confirms the real end-to-end effect (not just the 202
+    // response) — the completed build's version ends up active in history,
+    // and a second upload correctly archives the first and marks it
+    // rollback-eligible.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let first: Value = upload(
+        &server,
+        uid,
+        vec![
+            ("name", "activation-agent".into()),
+            ("version_tag", "1.0.0".into()),
+        ],
+        Some(make_valid_structure_zip()),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let agent_id = first["data"]["agent_id"].as_str().unwrap().to_string();
+    let first_build_id = first["data"]["build_id"].as_str().unwrap();
+    assert_eq!(
+        wait_for_terminal_status(&server, uid, first_build_id).await,
+        "success"
+    );
+
+    let versions = list_versions(&server, uid, &agent_id).await;
+    assert_eq!(versions.len(), 1);
+    let v1 = find_version(&versions, "1.0.0");
+    assert_eq!(v1["is_active"], true);
+    assert_eq!(v1["status"], "active");
+    assert_eq!(v1["can_rollback"], false);
+
+    let second: Value = upload(
+        &server,
+        uid,
+        vec![
+            ("name", "activation-agent".into()),
+            ("version_tag", "1.1.0".into()),
+        ],
+        Some(make_valid_structure_zip()),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let second_build_id = second["data"]["build_id"].as_str().unwrap();
+    assert_eq!(
+        wait_for_terminal_status(&server, uid, second_build_id).await,
+        "success"
+    );
+
+    let versions = list_versions(&server, uid, &agent_id).await;
+    assert_eq!(versions.len(), 2);
+    let v1 = find_version(&versions, "1.0.0");
+    assert_eq!(v1["is_active"], false);
+    assert_eq!(v1["status"], "archived");
+    assert_eq!(
+        v1["can_rollback"], true,
+        "the version genuinely running before must become rollback-eligible"
+    );
+    let v2 = find_version(&versions, "1.1.0");
+    assert_eq!(v2["is_active"], true);
+    assert_eq!(v2["status"], "active");
+    assert_eq!(v2["previous_version"], "1.0.0");
 
     server.cleanup().await;
 }
@@ -326,7 +489,7 @@ async fn upload_marks_build_failed_without_dockerfile() {
         uid,
         vec![
             ("name", "nodockerfile".into()),
-            ("version_tag", "v1".into()),
+            ("version_tag", "1.0.0".into()),
         ],
         Some(common::make_zip(&[NO_DOCKERFILE_ZIP_ENTRY])),
     )
