@@ -417,7 +417,12 @@ async fn github_callback_login(
 
     let result = match state
         .auth
-        .upsert_oauth_user("github", &provider_id, &github_user.login, verified_email.as_deref())
+        .upsert_oauth_user(
+            "github",
+            &provider_id,
+            &github_user.login,
+            verified_email.as_deref(),
+        )
         .await
     {
         Ok(r) => r,
@@ -485,29 +490,26 @@ async fn github_callback_login(
             .into_response();
     }
 
-    // Use reqwest::Url for query-param encoding (handles any chars in username safely).
-    // APP_BASE_URL overrides the redirect base — useful when the server and the app
-    // run on different origins in dev. In prod both share the same base URL.
-    let base = if state.config.app_base_url.is_empty() {
-        "http://placeholder".to_string()
-    } else {
-        state.config.app_base_url.trim_end_matches('/').to_string()
-    };
-    let mut redirect = reqwest::Url::parse(&format!("{base}/")).expect("valid base URL");
-    {
-        let mut q = redirect.query_pairs_mut();
-        q.append_pair("token", &result.token);
-        q.append_pair("token_type", "bearer");
-        q.append_pair("username", &result.username);
-        q.append_pair("is_super_user", &result.is_superuser.to_string());
-    }
+    // Set the session cookie so the browser is authenticated on arrival —
+    // previously the token was only passed as a query param, but no frontend
+    // code consumed it, so the user landed on `/` without a session.
+    let cookie = crate::auth::login::set_token_cookie(
+        &result.token,
+        crate::auth::login::request_is_https(headers),
+    );
+
+    // Redirect to the app root (APP_BASE_URL override for split-origin dev).
     let redirect_target = if state.config.app_base_url.is_empty() {
-        format!("/?{}", redirect.query().unwrap_or_default())
+        "/".to_string()
     } else {
-        redirect.to_string()
+        format!("{}/", state.config.app_base_url.trim_end_matches('/'))
     };
 
-    Redirect::temporary(&redirect_target).into_response()
+    (
+        AppendHeaders([(header::SET_COOKIE, cookie)]),
+        Redirect::temporary(&redirect_target),
+    )
+        .into_response()
 }
 
 /// Redirect back to the app with an `error` query code, for a login rejected
