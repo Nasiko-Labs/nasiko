@@ -212,6 +212,8 @@ fn minimal_spec() -> DeploymentSpec {
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable: false,
+        owner_id: uuid::Uuid::nil(),
     }
 }
 
@@ -251,6 +253,8 @@ fn deployment_spec_with_all_fields() {
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable: true,
+        owner_id: uuid::Uuid::nil(),
     };
 
     assert_eq!(spec.min_replicas, 2);
@@ -258,6 +262,7 @@ fn deployment_spec_with_all_fields() {
     assert_eq!(spec.ports.len(), 2);
     assert_eq!(spec.env_vars.get("FOO").map(|s| s.as_str()), Some("bar"));
     assert!(spec.resources.is_some());
+    assert!(spec.writable);
 }
 
 #[test]

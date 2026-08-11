@@ -7,7 +7,6 @@ pub mod llm_config;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
-pub mod versions;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -153,6 +152,7 @@ pub(crate) fn qualify_deploy_image(registry: &str, image: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_agent_spec(
     agent_id: Uuid,
     name: &str,
@@ -161,6 +161,8 @@ pub(crate) fn build_agent_spec(
     env: HashMap<String, String>,
     resources: Option<ResourceLimits>,
     max_replicas: u32,
+    writable: bool,
+    owner_id: Uuid,
 ) -> DeploymentSpec {
     DeploymentSpec {
         container_id: ContainerId::from_uuid(agent_id),
@@ -180,6 +182,8 @@ pub(crate) fn build_agent_spec(
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable,
+        owner_id,
     }
 }
 
@@ -219,7 +223,17 @@ mod spec_tests {
         let id = Uuid::new_v4();
         // Same agent_id → same ContainerId regardless of the display name, so every
         // deploy path converges on one workload.
-        let a = build_agent_spec(id, "My.Agent", "img:1", vec![], HashMap::new(), None, 1);
+        let a = build_agent_spec(
+            id,
+            "My.Agent",
+            "img:1",
+            vec![],
+            HashMap::new(),
+            None,
+            1,
+            false,
+            Uuid::nil(),
+        );
         let b = build_agent_spec(
             id,
             "totally-different-name",
@@ -228,6 +242,8 @@ mod spec_tests {
             HashMap::new(),
             None,
             1,
+            false,
+            Uuid::nil(),
         );
         assert_eq!(a.container_id, ContainerId::from_uuid(id));
         assert_eq!(a.container_id, b.container_id);
@@ -238,14 +254,34 @@ mod spec_tests {
     #[test]
     fn preserves_explicit_ports() {
         let id = Uuid::new_v4();
-        let s = build_agent_spec(id, "a", "img:1", vec![9091], HashMap::new(), None, 1);
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![9091],
+            HashMap::new(),
+            None,
+            1,
+            false,
+            Uuid::nil(),
+        );
         assert_eq!(s.ports, vec![9091]);
     }
 
     #[test]
     fn spec_max_replicas_comes_from_parameter() {
         let id = Uuid::new_v4();
-        let s = build_agent_spec(id, "a", "img:1", vec![], HashMap::new(), None, 5);
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![],
+            HashMap::new(),
+            None,
+            5,
+            false,
+            Uuid::nil(),
+        );
         assert_eq!(
             s.max_replicas, 5,
             "max_replicas must match the parameter, not be hardcoded"

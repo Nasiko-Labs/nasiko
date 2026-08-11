@@ -281,6 +281,39 @@ pub struct DeploymentSpec {
     /// (A2A hairpin); MCP connectors, which only receive inbound tool calls,
     /// do not. Defaults to `Agent` for backward compatibility.
     pub workload_kind: WorkloadKind,
+    /// Mounts a **persistent**, private-per-agent directory at `/workspace`.
+    /// Both backends implement this as one platform-wide shared volume with a
+    /// per-agent subdirectory, keyed by `{owner_id}/{container_id}` — never a
+    /// fresh/ephemeral mount: the same agent redeployed (image bump, secret
+    /// rotation, restart) sees the same `/workspace` contents it left behind. No
+    /// other agent can see into another agent's subdirectory (private by
+    /// default; there is currently no way to opt into a shared view across
+    /// agents). The `owner_id` path segment is an organizational aid (so a raw
+    /// volume listing groups files by owning user) — it is **not** an access
+    /// control boundary: anyone with direct Docker-daemon or PVC access can read
+    /// every agent's subdirectory regardless of nesting. Per-user encryption at
+    /// rest, if ever needed, is a separate, unbuilt feature.
+    ///
+    /// - `DockerRuntime`: a single named Docker volume, mounted via
+    ///   `volume-subpath=<owner_id>/<container_id>` (Docker Engine API v1.45+,
+    ///   exposed by `bollard::models::MountVolumeOptions::subpath`) — the Docker
+    ///   analogue of a Kubernetes `subPath`. Docker does not auto-create that
+    ///   subdirectory (Kubernetes does), so the backend pre-creates it via a
+    ///   short-lived helper container before every deploy.
+    /// - `KubeRuntime`: a single namespace-wide `PersistentVolumeClaim`, mounted
+    ///   with `subPath: <owner_id>/<container_id>` on the pod's `workspace`
+    ///   volume — the directory is created automatically by the kubelet.
+    ///   Requires the cluster's storage class to support the configured access
+    ///   mode across every node an agent pod might land on (default
+    ///   `ReadWriteMany` — see `KubeRuntimeConfig::agent_memory_access_mode`'s
+    ///   doc comment for what that requires of the cluster).
+    ///
+    /// Defaults to `false` for every existing agent deploy.
+    pub writable: bool,
+    /// The agent's owning user (`agents.owner_id`). Used only to namespace the
+    /// `writable` subdirectory path (`{owner_id}/{container_id}`) — see
+    /// `writable`'s doc comment. Not read at all when `writable` is `false`.
+    pub owner_id: uuid::Uuid,
 }
 
 /// Distinguishes agent deployments from MCP connector deployments so that

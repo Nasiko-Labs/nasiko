@@ -21,6 +21,8 @@ fn docker_runtime_config_default_values() {
     assert_eq!(cfg.operation_timeout, Duration::from_secs(30));
     assert_eq!(cfg.build_timeout, Duration::from_secs(30 * 60));
     assert!(cfg.registry_host.is_none());
+    assert_eq!(cfg.agent_memory_volume, "nasiko-agent-memory");
+    assert_eq!(cfg.agent_memory_init_image, "alpine:3.21");
 }
 
 #[test]
@@ -31,11 +33,15 @@ fn docker_runtime_config_custom_construction() {
         operation_timeout: Duration::from_secs(10),
         build_timeout: Duration::from_secs(600),
         registry_host: Some("localhost:5000".to_owned()),
+        agent_memory_volume: "custom-memory-volume".to_owned(),
+        agent_memory_init_image: "busybox:1.36".to_owned(),
     };
     assert_eq!(cfg.bind_host, "0.0.0.0");
     assert_eq!(cfg.network.as_deref(), Some("my-net"));
     assert_eq!(cfg.operation_timeout, Duration::from_secs(10));
     assert_eq!(cfg.registry_host.as_deref(), Some("localhost:5000"));
+    assert_eq!(cfg.agent_memory_volume, "custom-memory-volume");
+    assert_eq!(cfg.agent_memory_init_image, "busybox:1.36");
 }
 
 #[test]
@@ -67,6 +73,8 @@ fn test_spec() -> DeploymentSpec {
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable: false,
+        owner_id: uuid::Uuid::nil(),
     }
 }
 
@@ -224,6 +232,8 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable: false,
+        owner_id: uuid::Uuid::nil(),
     };
 
     // Deploy
@@ -290,6 +300,8 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable: false,
+        owner_id: uuid::Uuid::nil(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -346,6 +358,8 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable: false,
+        owner_id: uuid::Uuid::nil(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -363,4 +377,98 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
     );
 
     runtime.destroy(&id).await.expect("cleanup");
+}
+
+// ─── writable: persistent, private-per-agent /workspace ──────────────────────
+
+fn docker_exec(container_name: &str, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("docker")
+        .args(["exec", container_name])
+        .args(args)
+        .output()
+        .expect("docker exec should run")
+}
+
+#[tokio::test]
+#[ignore]
+async fn docker_runtime_writable_persists_across_redeploy_and_is_private_per_agent() {
+    use nasiko_runtime::ContainerRuntime;
+
+    let cfg = DockerRuntimeConfig::default();
+    let runtime = DockerRuntime::new(cfg)
+        .await
+        .expect("Docker must be running");
+
+    let id_a = ContainerId::new("test-writable-agent-a");
+    let id_b = ContainerId::new("test-writable-agent-b");
+    let _ = runtime.destroy(&id_a).await;
+    let _ = runtime.destroy(&id_b).await;
+
+    fn writable_spec(id: ContainerId, port: u16) -> DeploymentSpec {
+        let name = id.as_str().to_owned();
+        DeploymentSpec {
+            container_id: id,
+            name,
+            // DeploymentSpec has no way to override the image's default CMD —
+            // alpine's (`/bin/sh`, no tty) exits almost immediately once
+            // created, too fast to reliably `docker exec` into. redis-alpine's
+            // default CMD (`redis-server`) stays up on its own, and it's a
+            // standard Alpine base, so `sh`/`cat` are on PATH the same way.
+            image: "redis:7-alpine".to_owned(),
+            min_replicas: 1,
+            max_replicas: 1,
+            env_vars: HashMap::new(),
+            ports: vec![port],
+            resources: None,
+            image_pull_secret_name: None,
+            image_pull_credential_seed: None,
+            harden: false,
+            network_override: None,
+            workload_kind: Default::default(),
+            writable: true,
+            owner_id: uuid::Uuid::nil(),
+        }
+    }
+
+    let spec_a = writable_spec(id_a.clone(), 9996);
+    runtime.deploy(&spec_a).await.expect("deploy agent A");
+    let container_a = "nasiko-agent-test-writable-agent-a";
+
+    let write = docker_exec(
+        container_a,
+        &["sh", "-c", "echo hello-from-a > /workspace/note.txt"],
+    );
+    assert!(
+        write.status.success(),
+        "write into /workspace should succeed: {}",
+        String::from_utf8_lossy(&write.stderr)
+    );
+
+    // A second agent mounting the SAME shared volume must not see A's file —
+    // private by default (subPath isolation), not a shared pool.
+    let spec_b = writable_spec(id_b.clone(), 9995);
+    runtime.deploy(&spec_b).await.expect("deploy agent B");
+    let container_b = "nasiko-agent-test-writable-agent-b";
+    let b_sees_a = docker_exec(container_b, &["cat", "/workspace/note.txt"]);
+    assert!(
+        !b_sees_a.status.success(),
+        "agent B must not see agent A's /workspace contents"
+    );
+
+    // Destroying and redeploying A must not lose what was written — the data
+    // lives in the volume, not the container.
+    runtime.destroy(&id_a).await.expect("destroy agent A");
+    runtime.deploy(&spec_a).await.expect("redeploy agent A");
+    let read_back = docker_exec(container_a, &["cat", "/workspace/note.txt"]);
+    assert!(
+        read_back.status.success(),
+        "redeployed agent A should still have its old /workspace contents"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&read_back.stdout).trim(),
+        "hello-from-a"
+    );
+
+    runtime.destroy(&id_a).await.expect("cleanup A");
+    runtime.destroy(&id_b).await.expect("cleanup B");
 }

@@ -80,7 +80,12 @@ struct AgentDeployInfo {
     image: String,
     agent_id: Uuid,
     build_id: Option<Uuid>,
-    owner_id: Option<Uuid>,
+    /// The agent's real current owner (`agents.owner_id`, never null) — not
+    /// `agent_deployments.owner_id`, which is a nullable audit column that can
+    /// go stale/null (`ON DELETE SET NULL`) independent of who owns the agent
+    /// today. Used both for the new `agent_deployments` row below and to
+    /// namespace the `--writable` memory subpath (`DeploymentSpec::owner_id`).
+    owner_id: Uuid,
     /// DB-recorded deployment status — used to guard restart against already-live agents.
     status: String,
     /// Stored ports from migration 013 — None for agents deployed before the migration.
@@ -89,6 +94,9 @@ struct AgentDeployInfo {
     spec_image: Option<String>,
     /// K8s deployment name when running on Kubernetes. None for Docker agents.
     k8s_deployment_name: Option<String>,
+    /// `agents.writable` — carried forward so a restart doesn't drop the agent's
+    /// persistent-storage mount (same reasoning as update/rollback).
+    writable: bool,
 }
 
 // ─── GET /deployments ────────────────────────────────────────────────────────
@@ -266,8 +274,8 @@ pub(crate) async fn restart_deployment(
 
     // Fetch deployment and agent info together, including stored spec columns.
     let info = match sqlx::query_as::<_, AgentDeployInfo>(
-        "SELECT a.name, a.image, a.id as agent_id,
-                d.build_id, d.owner_id, d.status::text as status,
+        "SELECT a.name, a.image, a.id as agent_id, a.writable, a.owner_id,
+                d.build_id, d.status::text as status,
                 d.spec_ports, d.spec_image, d.k8s_deployment_name
          FROM agent_deployments d
          JOIN agents a ON a.id = d.agent_id
@@ -289,13 +297,8 @@ pub(crate) async fn restart_deployment(
     // any deployer-role user can READ a public agent, but only the owner (or a
     // superuser/admin) may restart it — restarting causes destroy + recreate which
     // is a denial-of-service if granted too broadly.
-    // Orphaned agents (owner_id = NULL, set by ON DELETE SET NULL) must be handled
-    // by a superuser; non-superusers always receive 403 for them.
-    if !claims.is_superuser {
-        let is_owner = info.owner_id.map(|o| o == user_id).unwrap_or(false);
-        if !is_owner {
-            return StatusCode::FORBIDDEN.into_response();
-        }
+    if !claims.is_superuser && info.owner_id != user_id {
+        return StatusCode::FORBIDDEN.into_response();
     }
 
     // Atomic mark-starting BEFORE touching the runtime: two concurrent restart
@@ -344,7 +347,7 @@ pub(crate) async fn restart_deployment(
         &state.db,
         &mut secrets,
         info.agent_id,
-        info.owner_id,
+        Some(info.owner_id),
     )
     .await;
 
@@ -403,6 +406,8 @@ pub(crate) async fn restart_deployment(
             harden: false,
             network_override: None,
             workload_kind: Default::default(),
+            writable: info.writable,
+            owner_id: info.owner_id,
         };
 
         match state.runtime.deploy(&spec).await {

@@ -16,6 +16,7 @@ use crate::api::Client;
 /// 2. Read name/version from AgentCard.json if not provided via flags
 /// 3. POST multipart to /api/agents/upload → 202 Accepted + build_id
 /// 4. Stream build status via SSE until success or failure
+#[allow(clippy::too_many_arguments)]
 pub fn upload(
     source: &str,
     name: Option<&str>,
@@ -23,6 +24,7 @@ pub fn upload(
     port: u16,
     env_file: Option<&str>,
     env_args: &[String],
+    writable: bool,
 ) -> Result<()> {
     let source_path = Path::new(source);
 
@@ -72,7 +74,14 @@ pub fn upload(
         resolved_version
     );
 
-    let result = client.upload_agent(&zip_path, &resolved_name, &resolved_version, &[port], &env);
+    let result = client.upload_agent(
+        &zip_path,
+        &resolved_name,
+        &resolved_version,
+        &[port],
+        &env,
+        writable,
+    );
 
     if is_temp {
         let _ = fs::remove_file(&zip_path);

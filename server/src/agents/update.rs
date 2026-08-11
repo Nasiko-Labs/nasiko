@@ -107,21 +107,25 @@ pub(crate) async fn update_agent(
     };
 
     // Fetch agent — verify it exists and capture state we need for the update.
-    // Include `image` so we can roll it back if the build fails.
-    let agent: Option<(String, String, Option<String>, Uuid)> =
-        match sqlx::query_as("SELECT name, version, image, owner_id FROM agents WHERE id = $1")
-            .bind(agent_id)
-            .fetch_optional(&state.db)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(%e, %agent_id, "update_agent: db error fetching agent");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
+    // Include `image` so we can roll it back if the build fails. Include `writable`
+    // so an in-place code update doesn't silently drop the agent's persistent
+    // storage mount — there is no `--writable` flag on this endpoint; it only ever
+    // carries forward whatever the agent's most recent upload/deploy set.
+    let agent: Option<(String, String, Option<String>, Uuid, bool)> = match sqlx::query_as(
+        "SELECT name, version, image, owner_id, writable FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "update_agent: db error fetching agent");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
-    let (agent_name, current_version, prev_image, agent_owner_id) = match agent {
+    let (agent_name, current_version, prev_image, agent_owner_id, writable) = match agent {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -202,16 +206,12 @@ pub(crate) async fn update_agent(
             bump_major_version(&current_version)
         }
         Some(v) => {
-            // Must be a plain `x.y.z` — the same rule `record_version_change` enforces
-            // below. Accepting a fuller SemVer here (e.g. a prerelease like `1.2.3-beta`)
-            // would let the deploy go through while history-recording later rejects it,
-            // leaving the running agent on a version with no history row.
-            let new_sv = match super::versions::parse_plain_version(v) {
-                Some(sv) => sv,
-                None => {
+            let new_sv = match semver::Version::parse(v) {
+                Ok(sv) => sv,
+                Err(_) => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        "version must be in x.y.z format (e.g. 1.2.3) or a strategy keyword: auto, patch, minor, major",
+                        "version must be valid semver (e.g. 1.2.3) or a strategy keyword: auto, patch, minor, major",
                     )
                         .into_response()
                 }
@@ -314,6 +314,7 @@ pub(crate) async fn update_agent(
         prev_version: current_version.clone(),
         prev_image,
         changelog,
+        writable,
     };
     if let Err(e) =
         sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
@@ -423,6 +424,7 @@ pub async fn execute_agent_update(
     prev_version: String,
     prev_image: Option<String>,
     changelog: Option<String>,
+    writable: bool,
 ) {
     let db = &state.db;
     let upload_id = build_id.to_string();
@@ -520,6 +522,8 @@ pub async fn execute_agent_update(
             env,
             None,
             state.config.agent_max_replicas,
+            writable,
+            agent_owner_id,
         );
         crate::agents::attach_pull_credential(
             &state.db,
@@ -556,18 +560,40 @@ pub async fn execute_agent_update(
 
     match result {
         Ok((deploy_status, spec_ports)) => {
-            // Record the new version (archives the old one, enables rollback).
-            // No overwrite here — a reused version was already rejected earlier.
-            super::versions::record_version_change_with_retry(db, || {
-                super::versions::VersionChange {
-                    agent_id,
-                    build_id: Some(build_id),
-                    version: &new_version,
-                    image_tag: &image_tag,
-                    changelog: changelog.as_deref(),
-                    allow_overwrite: false,
-                }
-            })
+            // Archive the previously active version, insert the new one, mark old as rollback-eligible.
+            let _ = sqlx::query(
+                "UPDATE agent_versions SET is_active = false, status = 'archived' \
+                 WHERE agent_id = $1 AND is_active = true",
+            )
+            .bind(agent_id)
+            .execute(db)
+            .await;
+
+            let _ = sqlx::query(
+                "INSERT INTO agent_versions \
+                   (agent_id, build_id, version, image_tag, changelog, is_active, can_rollback, previous_version, status) \
+                 VALUES ($1, $2, $3, $4, $5, true, false, $6, 'active') \
+                 ON CONFLICT (agent_id, version) DO UPDATE \
+                   SET build_id = EXCLUDED.build_id, is_active = true, status = 'active', \
+                       can_rollback = false, previous_version = EXCLUDED.previous_version",
+            )
+            .bind(agent_id)
+            .bind(build_id)
+            .bind(&new_version)
+            .bind(&image_tag)
+            .bind(&changelog)
+            .bind(&prev_version)
+            .execute(db)
+            .await;
+
+            // Allow rolling back to the previous version.
+            let _ = sqlx::query(
+                "UPDATE agent_versions SET can_rollback = true \
+                 WHERE agent_id = $1 AND version = $2",
+            )
+            .bind(agent_id)
+            .bind(&prev_version)
+            .execute(db)
             .await;
 
             let agent_url = crate::agents::resolve_agent_url(
@@ -707,9 +733,10 @@ pub(crate) async fn rollback_agent(
         }
     };
 
-    // Fetch agent — verify exists.
-    let agent: Option<(String, String, Uuid)> =
-        match sqlx::query_as("SELECT name, version, owner_id FROM agents WHERE id = $1")
+    // Fetch agent — verify exists. Include `writable` so a rollback carries forward
+    // the agent's persistent-storage mount (same reasoning as update_agent above).
+    let agent: Option<(String, String, Uuid, bool)> =
+        match sqlx::query_as("SELECT name, version, owner_id, writable FROM agents WHERE id = $1")
             .bind(agent_id)
             .fetch_optional(&state.db)
             .await
@@ -721,7 +748,7 @@ pub(crate) async fn rollback_agent(
             }
         };
 
-    let (agent_name, current_version, agent_owner_id) = match agent {
+    let (agent_name, current_version, agent_owner_id, writable) = match agent {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -826,6 +853,7 @@ pub(crate) async fn rollback_agent(
         target_version: target.version,
         target_image_tag: target.image_tag,
         reason,
+        writable,
     };
     if let Err(e) =
         sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
@@ -863,6 +891,7 @@ pub async fn execute_agent_rollback(
     agent_name: String,
     target: AgentVersionRow,
     reason: Option<String>,
+    writable: bool,
 ) {
     let db = &state.db;
 
@@ -910,6 +939,8 @@ pub async fn execute_agent_rollback(
         env,
         None,
         state.config.agent_max_replicas,
+        writable,
+        agent_owner_id,
     );
     crate::agents::attach_pull_credential(
         &state.db,

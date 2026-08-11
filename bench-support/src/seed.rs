@@ -116,6 +116,8 @@ pub async fn seed(
             harden: false,
             network_override: None,
             workload_kind: Default::default(),
+            writable: false,
+            owner_id,
         };
         runtime
             .deploy(&spec)

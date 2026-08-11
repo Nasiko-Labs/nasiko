@@ -704,6 +704,7 @@ impl RegistryClient {
 
 impl Client {
     /// Upload a zip file to `POST /api/agents/upload` and return the queued build info.
+    #[allow(clippy::too_many_arguments)]
     pub fn upload_agent(
         &self,
         zip_path: &std::path::Path,
@@ -711,6 +712,7 @@ impl Client {
         version_tag: &str,
         ports: &[u16],
         env: &std::collections::HashMap<String, String>,
+        writable: bool,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -745,6 +747,12 @@ impl Client {
             let env_json = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"env\"\r\n\r\n{env_json}\r\n").as_bytes(),
+            );
+        }
+        // writable
+        if writable {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable\"\r\n\r\ntrue\r\n").as_bytes(),
             );
         }
         // file (the zip file)
@@ -1201,42 +1209,6 @@ pub struct AgentVersion {
     pub created_at: String,
 }
 
-impl Client {
-    /// Fetches every version ever recorded for an agent — active and
-    /// archived. Used to check a chosen version against the full history,
-    /// not just what's currently live.
-    pub fn version_history(&self, agent_id: &str) -> Result<Vec<AgentVersion>> {
-        let raw: serde_json::Value = self.get_json(&format!("/agents/{agent_id}/versions"))?;
-        unwrap_data(raw)
-    }
-
-    /// Like [`Client::version_history`], but just the version strings that
-    /// were actually deployed at some point (excludes `status = "pushed"` —
-    /// an image `nasiko push` made available but never deployed isn't a real
-    /// reuse yet, so `deploy`/`push` must still be able to claim it as a
-    /// first deploy without needing `--overwrite`).
-    ///
-    /// Propagates a fetch failure rather than falling back to an empty list —
-    /// callers use this to reject reusing an already-used version, so failing
-    /// open here would treat every version as unused and let a duplicate
-    /// slip through (see `push`/`deploy`'s `used_version_context`).
-    pub fn used_versions(&self, agent_id: &str) -> Result<Vec<String>> {
-        Ok(self
-            .version_history(agent_id)?
-            .into_iter()
-            .filter(|v| v.status != "pushed")
-            .map(|v| v.version)
-            .collect())
-    }
-
-    /// Looks up an agent by UUID or name. `None` if it doesn't exist yet.
-    pub fn get_agent(&self, id_or_name: &str) -> Result<Option<serde_json::Value>> {
-        Ok(self
-            .get_json_optional::<serde_json::Value>(&format!("/agents/{id_or_name}"))?
-            .map(|raw| raw.get("data").cloned().unwrap_or(raw)))
-    }
-}
-
 #[derive(Debug, Serialize)]
 pub struct DeploySpec {
     pub image: String,
@@ -1245,6 +1217,8 @@ pub struct DeploySpec {
     pub ports: Vec<u16>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub env: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub writable: bool,
 }
 
 #[cfg(test)]
@@ -1300,45 +1274,6 @@ mod tests {
         let client = Client::for_test(&srv.url(), None);
         let out: Result<Option<serde_json::Value>> = client.get_json_optional("/agents/boom");
         assert!(out.is_err());
-    }
-
-    // ─── used_versions: excludes "pushed" rows, propagates fetch failures ───────
-
-    #[test]
-    fn used_versions_excludes_pushed_status_rows() {
-        // A version `nasiko push` registered but never deployed (`status:
-        // "pushed"`) isn't a real reuse yet — `deploy`/`push` must be able to
-        // claim it as a first deploy without needing `--overwrite`.
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data": [
-                    {"version": "1.0.0", "status": "active", "is_active": true,
-                     "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"},
-                    {"version": "2.0.0", "status": "pushed", "is_active": false,
-                     "can_rollback": false, "created_at": "2024-01-02T00:00:00Z"}
-                ]}"#,
-            )
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        let used = client.used_versions("a1").unwrap();
-        assert_eq!(used, vec!["1.0.0".to_string()]);
-    }
-
-    #[test]
-    fn used_versions_propagates_fetch_failure_instead_of_failing_open() {
-        // A network/auth failure must abort the caller, not silently report
-        // "no history" — that would let a duplicate version slip through the
-        // check in `resolve_deploy_version`.
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(500)
-            .with_body("boom")
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        assert!(client.used_versions("a1").is_err());
     }
 
     #[test]

@@ -656,6 +656,11 @@ fn build_mcp_server_spec(
         harden: true,
         network_override: Some(network),
         workload_kind: nasiko_runtime::WorkloadKind::McpConnector,
+        // MCP connectors never set `writable`, so `owner_id` is never actually
+        // read (see DeploymentSpec::owner_id's doc comment) — no need to thread
+        // a real owner through for a value that stays inert.
+        writable: false,
+        owner_id: Uuid::nil(),
     }
 }
 

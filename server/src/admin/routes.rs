@@ -45,6 +45,8 @@ struct DeployRequest {
     env: std::collections::HashMap<String, String>,
     #[serde(default)]
     replicas: Option<u32>,
+    #[serde(default)]
+    writable: bool,
 }
 
 async fn deploy(
@@ -54,6 +56,15 @@ async fn deploy(
 ) -> impl IntoResponse {
     // Start with env from request (inline -e flags)
     let mut env = req.env;
+
+    // Used both for secret resolution below (when this name maps to an existing
+    // catalog agent) and to namespace the `--writable` memory subpath (see
+    // DeploymentSpec::owner_id) — the caller is the closest thing to an "owner"
+    // an ad-hoc, possibly-unclaimed image deploy has.
+    let owner_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
 
     // Resolve the catalog agent (if any) once — used for both secret resolution and
     // UUID-keying so this ad-hoc deploy converges with the upload/update/import paths.
@@ -75,10 +86,6 @@ async fn deploy(
 
     // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
     if let Some(agent_id) = resolved_agent_id {
-        let owner_id = match claims.user_uuid() {
-            Ok(id) => id,
-            Err(e) => return e.into_response(),
-        };
         let resolved = resolve_full_env(&state, owner_id, agent_id).await;
         // resolved secrets are base; request env overrides
         for (k, v) in resolved {
@@ -124,6 +131,8 @@ async fn deploy(
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
+        writable: req.writable,
+        owner_id,
     };
     // Only a name that already maps to a registered catalog agent has an
     // `agents` row to scope a pull credential to (see pull_credentials'
@@ -153,24 +162,6 @@ async fn deploy(
                         .await;
                 let image = spec.image.clone();
                 let owner_id = claims.user_uuid().ok();
-
-                // Probe the agent's card and persist `transport_path` (plus
-                // description/skills/tags/capabilities) — the same probe the
-                // seed / upload / update / restart deploy paths already run.
-                // Without it, an agent that mounts A2A at a non-root path (Go
-                // `a2a-go` agents serve `/a2a`) keeps an empty `transport_path`,
-                // so the orchestrator/proxy POSTs to `/` and every routed call
-                // 404s; and its description/skills stay empty, starving the
-                // routing engine of any signal but the bare name. This ad-hoc
-                // `nasiko deploy` (`POST /containers`) path was the only deploy
-                // path that skipped the probe.
-                tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
-                    state.db.clone(),
-                    state.http_client.clone(),
-                    agent_id,
-                    endpoint.clone(),
-                ));
-
                 tokio::spawn(async move {
                     // Write the live endpoint URL + running status + image back to
                     // the catalog, so restart (which needs `image` to redeploy) works
@@ -371,15 +362,15 @@ async fn restart(
     // (which the sibling stop/start/scale/logs ops use) — without this, copying
     // the UUID `nasiko ps` prints into `nasiko restart <uuid>` 404'd even though
     // the identical UUID worked for `nasiko rm`.
-    let agent: Option<(Uuid, Uuid, Option<String>)> = if let Ok(id) = name.parse::<Uuid>() {
-        sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE id = $1")
+    let agent: Option<(Uuid, Uuid, Option<String>, bool)> = if let Ok(id) = name.parse::<Uuid>() {
+        sqlx::query_as("SELECT id, owner_id, image, writable FROM agents WHERE id = $1")
             .bind(id)
             .fetch_optional(&state.db)
             .await
             .ok()
             .flatten()
     } else {
-        sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE name = $1")
+        sqlx::query_as("SELECT id, owner_id, image, writable FROM agents WHERE name = $1")
             .bind(&name)
             .fetch_optional(&state.db)
             .await
@@ -387,7 +378,7 @@ async fn restart(
             .flatten()
     };
 
-    let Some((agent_id, owner_id, image)) = agent else {
+    let Some((agent_id, owner_id, image, writable)) = agent else {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     };
 
@@ -449,6 +440,8 @@ async fn restart(
         env,
         None,
         state.config.agent_max_replicas,
+        writable,
+        owner_id,
     );
     crate::agents::attach_pull_credential(
         &state.db,

@@ -10,10 +10,14 @@ use bollard::container::LogsOptions;
 use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
     RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
+    WaitContainerOptions,
 };
 use bollard::image::{BuildImageOptions, CreateImageOptions, ImportImageOptions};
-use bollard::models::{ContainerStateStatusEnum, HostConfig, PortBinding};
+use bollard::models::{
+    ContainerStateStatusEnum, HostConfig, Mount, MountTypeEnum, MountVolumeOptions, PortBinding,
+};
 use bollard::network::ConnectNetworkOptions;
+use bollard::volume::CreateVolumeOptions;
 use futures_util::StreamExt;
 use std::sync::Arc;
 use tracing::{info, instrument, warn};
@@ -52,6 +56,18 @@ pub struct DockerRuntimeConfig {
     /// When set, images that don't already include a registry host are pulled from here first.
     /// Default: `None` (use Docker's local cache / Docker Hub).
     pub registry_host: Option<String>,
+    /// Name of the single named Docker volume every `--writable` agent shares
+    /// (each mounted at a different `volume-subpath`, keyed by `container_id` —
+    /// see [`DeploymentSpec::writable`](crate::types::DeploymentSpec::writable)).
+    /// Created on first use if it doesn't already exist. Default: `"nasiko-agent-memory"`.
+    pub agent_memory_volume: String,
+    /// Image used by the short-lived helper container that pre-creates a
+    /// `--writable` agent's subdirectory inside `agent_memory_volume` (Docker,
+    /// unlike Kubernetes' `subPath`, does not create it automatically). Must
+    /// have `mkdir` on its `PATH`. Default: `"alpine:3.21"` — override for
+    /// air-gapped or internal mirror setups (mirrors `ee/k8s-runtime`'s
+    /// `build_init_image` config, same rationale).
+    pub agent_memory_init_image: String,
 }
 
 impl Default for DockerRuntimeConfig {
@@ -62,6 +78,8 @@ impl Default for DockerRuntimeConfig {
             operation_timeout: Duration::from_secs(30),
             build_timeout: Duration::from_secs(30 * 60),
             registry_host: None,
+            agent_memory_volume: "nasiko-agent-memory".to_owned(),
+            agent_memory_init_image: "alpine:3.21".to_owned(),
         }
     }
 }
@@ -173,26 +191,6 @@ impl DockerRuntime {
             }
             Err(e) => Err(map_bollard_err(e)),
         }
-    }
-
-    /// Connect an arbitrary container (by name or ID) to a Docker network.
-    /// Used at startup to attach the server's own container to the MCP servers
-    /// network when it runs inside Docker.
-    pub async fn connect_container_to_network(
-        &self,
-        container: &str,
-        network: &str,
-    ) -> Result<()> {
-        self.client
-            .connect_network(
-                network,
-                bollard::network::ConnectNetworkOptions {
-                    container,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(map_bollard_err)
     }
 
     /// Names of every Docker network `container_id`'s container is currently
@@ -348,12 +346,40 @@ fn build_port_config(ports: &[u16], bind_host: &str) -> (PortBindingsMap, Expose
     (port_bindings, exposed_ports)
 }
 
+/// The `--writable` agent-memory subdirectory path for `spec`, namespaced by
+/// owning user — see `DeploymentSpec::writable`'s doc comment. An
+/// organizational aid only, not an access-control boundary.
+fn agent_memory_subpath(spec: &DeploymentSpec) -> String {
+    format!("{}/{}", spec.owner_id, spec.container_id.as_str())
+}
+
 /// Builds the `HostConfig` for a container, applying OS-level hardening
 /// (read-only rootfs, dropped capabilities, no-new-privileges) when
 /// `spec.harden` is set — see `DeploymentSpec::harden`'s doc comment. Pure and
 /// hermetically testable: no Docker client involved.
-fn build_host_config(spec: &DeploymentSpec, port_bindings: PortBindingsMap) -> HostConfig {
+fn build_host_config(
+    spec: &DeploymentSpec,
+    port_bindings: PortBindingsMap,
+    agent_memory_volume: &str,
+) -> HostConfig {
     let lim = spec.resources.as_ref().cloned().unwrap_or_default();
+    // `--writable`: mount the shared agent-memory volume at /workspace, scoped to
+    // this agent's own subdirectory via `volume-subpath` (Docker's analogue of a
+    // Kubernetes subPath — see DeploymentSpec::writable's doc comment). The
+    // subdirectory itself is pre-created by `ensure_agent_memory_subdir` before
+    // this container is created; Docker (unlike Kubernetes) does not create it.
+    let mounts = spec.writable.then(|| {
+        vec![Mount {
+            target: Some("/workspace".to_owned()),
+            source: Some(agent_memory_volume.to_owned()),
+            typ: Some(MountTypeEnum::VOLUME),
+            volume_options: Some(MountVolumeOptions {
+                subpath: Some(agent_memory_subpath(spec)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]
+    });
     let base = HostConfig {
         port_bindings: Some(port_bindings),
         memory: Some(parse_memory_bytes(&lim.memory)),
@@ -367,6 +393,7 @@ fn build_host_config(spec: &DeploymentSpec, port_bindings: PortBindingsMap) -> H
         // theoretical). Only `network_override` deploys are re-homed this way;
         // ordinary agent deploys (which never set it) are unaffected.
         network_mode: spec.network_override.clone(),
+        mounts,
         ..Default::default()
     };
     if spec.harden {
@@ -483,35 +510,6 @@ fn extract_endpoint(
         }
     }
 
-    // Try any network the container is actually on (covers network_override
-    // containers whose network differs from the runtime's default).
-    if network.is_some() && let Some(nets) = ns.networks.as_ref() {
-        for ep_net in nets.values() {
-            let ip = ep_net
-                .ip_address
-                .as_deref()
-                .filter(|ip| !ip.is_empty());
-            if let Some(ip) = ip {
-                if let Some(ports) = ns.ports.as_ref() {
-                    let mut keys: Vec<&String> = ports.keys().collect();
-                    keys.sort_by_key(|k| {
-                        k.split('/')
-                            .next()
-                            .and_then(|p| p.parse::<u16>().ok())
-                            .unwrap_or(0)
-                    });
-                    for key in &keys {
-                        if let Some(container_port) =
-                            key.split('/').next().and_then(|p| p.parse::<u16>().ok())
-                        {
-                            return Some(format!("http://{ip}:{container_port}"));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // Fall back to host-mapped port
     ns.ports
         .as_ref()
@@ -547,6 +545,7 @@ fn stored_env_vars(
 /// Create and start a container from a `DeploymentSpec`.
 /// If `network` is `Some`, the container is also connected to that Docker network
 /// after starting so that server-side code running inside Docker can reach it.
+#[allow(clippy::too_many_arguments)]
 async fn create_and_start(
     client: &Docker,
     spec: &DeploymentSpec,
@@ -555,10 +554,23 @@ async fn create_and_start(
     timeout: Duration,
     registry_host: Option<&str>,
     image_source: Option<&dyn ImageSource>,
+    agent_memory_volume: &str,
+    agent_memory_init_image: &str,
 ) -> Result<()> {
     let name = DockerRuntime::container_name(&spec.container_id);
 
     ensure_image_present(client, &spec.image, registry_host, image_source).await?;
+
+    if spec.writable {
+        ensure_agent_memory_subdir(
+            client,
+            timeout,
+            agent_memory_volume,
+            agent_memory_init_image,
+            &agent_memory_subpath(spec),
+        )
+        .await?;
+    }
 
     let env_vec: Vec<String> = spec
         .env_vars
@@ -568,7 +580,7 @@ async fn create_and_start(
 
     let (port_bindings, exposed_ports) = build_port_config(&spec.ports, bind_host);
 
-    let host_config = build_host_config(spec, port_bindings);
+    let host_config = build_host_config(spec, port_bindings, agent_memory_volume);
 
     // Record the env vars we actually asked for as a label (see ENV_VARS_LABEL) so a
     // later deploy() can detect changes without being confused by image-baked-in vars
@@ -628,6 +640,140 @@ async fn create_and_start(
     }
 
     Ok(())
+}
+
+/// Ensures `volume` exists and already contains a `subdir` directory, so a
+/// `--writable` agent's real container can mount it via `volume-subpath`
+/// immediately after. Unlike Kubernetes' `subPath`, Docker's `volume-subpath`
+/// does not create the target directory itself — attempting to mount a
+/// not-yet-existing one fails outright (verified against a real daemon).
+///
+/// Runs a short-lived helper container (`init_image`, must have `mkdir` on
+/// `PATH`) that mounts the *whole* volume (no subpath) and creates `subdir`
+/// inside it. `create_volume` is idempotent — safe to call on every deploy.
+async fn ensure_agent_memory_subdir(
+    client: &Docker,
+    timeout: Duration,
+    volume: &str,
+    init_image: &str,
+    subdir: &str,
+) -> Result<()> {
+    tokio::time::timeout(
+        timeout,
+        client.create_volume(CreateVolumeOptions {
+            name: volume.to_owned(),
+            ..Default::default()
+        }),
+    )
+    .await
+    .map_err(|_| RuntimeError::Timeout("create_volume".to_owned()))?
+    .map_err(map_bollard_err)?;
+
+    if client.inspect_image(init_image).await.is_err() {
+        pull_image(client, init_image, None).await?;
+    }
+
+    // Named per-agent (not a fixed name) so two different agents' first
+    // `--writable` deploy can't race each other creating this helper — each
+    // only ever contends with a *previous* attempt for the *same* agent.
+    // `subdir` is `{owner_id}/{container_id}` — Docker container names can't
+    // contain `/`, so sanitize just for the name (the real nested path below,
+    // used for `mkdir -p` and the mount, is untouched).
+    let helper_name = format!("nasiko-memory-init-{}", subdir.replace('/', "-"));
+
+    // Remove any leftover from a previous, interrupted attempt for this same
+    // agent — container names are unique daemon-wide, so a stale one here
+    // would make create_container below fail with a 409 conflict.
+    remove_memory_init_helper(client, &helper_name).await;
+
+    let config = Config {
+        image: Some(init_image.to_owned()),
+        cmd: Some(vec![
+            "mkdir".to_owned(),
+            "-p".to_owned(),
+            format!("/data/{subdir}"),
+        ]),
+        host_config: Some(HostConfig {
+            mounts: Some(vec![Mount {
+                target: Some("/data".to_owned()),
+                source: Some(volume.to_owned()),
+                typ: Some(MountTypeEnum::VOLUME),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let create_result = tokio::time::timeout(
+        timeout,
+        client.create_container(
+            Some(CreateContainerOptions {
+                name: helper_name.as_str(),
+                platform: None,
+            }),
+            config,
+        ),
+    )
+    .await
+    .map_err(|_| RuntimeError::Timeout("create_container (agent-memory init)".to_owned()))?
+    .map_err(map_bollard_err);
+
+    if let Err(e) = create_result {
+        remove_memory_init_helper(client, &helper_name).await;
+        return Err(e);
+    }
+
+    let start_result = tokio::time::timeout(
+        timeout,
+        client.start_container(&helper_name, None::<StartContainerOptions<String>>),
+    )
+    .await
+    .map_err(|_| RuntimeError::Timeout("start_container (agent-memory init)".to_owned()))?
+    .map_err(map_bollard_err);
+
+    if let Err(e) = start_result {
+        remove_memory_init_helper(client, &helper_name).await;
+        return Err(e);
+    }
+
+    let wait_result = tokio::time::timeout(
+        timeout,
+        client
+            .wait_container(&helper_name, None::<WaitContainerOptions<String>>)
+            .next(),
+    )
+    .await
+    .map_err(|_| RuntimeError::Timeout("wait_container (agent-memory init)".to_owned()));
+
+    remove_memory_init_helper(client, &helper_name).await;
+
+    match wait_result? {
+        Some(Ok(res)) if res.status_code == 0 => Ok(()),
+        Some(Ok(res)) => Err(RuntimeError::Internal(format!(
+            "agent-memory init container exited with status {}",
+            res.status_code
+        ))),
+        Some(Err(e)) => Err(map_bollard_err(e)),
+        None => Err(RuntimeError::Internal(
+            "agent-memory init container: wait stream ended with no result".to_owned(),
+        )),
+    }
+}
+
+/// Force-removes the agent-memory init helper container, ignoring any error
+/// (it may never have been created, or already be gone) — best-effort cleanup,
+/// never itself a reason to fail the deploy.
+async fn remove_memory_init_helper(client: &Docker, name: &str) {
+    let _ = client
+        .remove_container(
+            name,
+            Some(RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            }),
+        )
+        .await;
 }
 
 /// Make `image` available in the daemon's local cache: a no-op when already
@@ -832,6 +978,8 @@ impl ContainerRuntime for DockerRuntime {
                     timeout,
                     self.config.registry_host.as_deref(),
                     self.image_source.as_deref(),
+                    &self.config.agent_memory_volume,
+                    &self.config.agent_memory_init_image,
                 )
                 .await?;
             }
@@ -914,6 +1062,8 @@ impl ContainerRuntime for DockerRuntime {
                         timeout,
                         self.config.registry_host.as_deref(),
                         self.image_source.as_deref(),
+                        &self.config.agent_memory_volume,
+                        &self.config.agent_memory_init_image,
                     )
                     .await?;
                 }
@@ -1343,13 +1493,15 @@ mod hardening_tests {
             harden,
             network_override: None,
             workload_kind: Default::default(),
+            writable: false,
+            owner_id: uuid::Uuid::nil(),
         }
     }
 
     #[test]
     fn harden_true_sets_all_hardening_fields() {
         let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
-        let hc = build_host_config(&spec(true), bindings);
+        let hc = build_host_config(&spec(true), bindings, "nasiko-agent-memory");
         assert_eq!(hc.readonly_rootfs, Some(true));
         assert_eq!(
             hc.tmpfs,
@@ -1365,11 +1517,75 @@ mod hardening_tests {
     #[test]
     fn harden_false_leaves_hardening_fields_unset() {
         let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
-        let hc = build_host_config(&spec(false), bindings);
+        let hc = build_host_config(&spec(false), bindings, "nasiko-agent-memory");
         assert_eq!(hc.readonly_rootfs, None);
         assert_eq!(hc.tmpfs, None);
         assert_eq!(hc.cap_drop, None);
         assert_eq!(hc.security_opt, None);
+    }
+}
+
+#[cfg(test)]
+mod writable_tests {
+    use super::*;
+
+    const TEST_OWNER: uuid::Uuid = uuid::Uuid::from_u128(0x42);
+
+    fn spec(writable: bool) -> DeploymentSpec {
+        DeploymentSpec {
+            container_id: ContainerId::new("test-agent-42"),
+            name: "test-agent".to_owned(),
+            image: "alpine:latest".to_owned(),
+            min_replicas: 1,
+            max_replicas: 1,
+            env_vars: HashMap::new(),
+            ports: vec![8080],
+            resources: None,
+            image_pull_secret_name: None,
+            image_pull_credential_seed: None,
+            harden: false,
+            network_override: None,
+            workload_kind: Default::default(),
+            writable,
+            owner_id: TEST_OWNER,
+        }
+    }
+
+    #[test]
+    fn writable_mounts_shared_volume_at_workspace_with_owner_scoped_subpath() {
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&spec(true), bindings, "nasiko-agent-memory");
+        let mounts = hc.mounts.expect("writable spec must set a mount");
+        assert_eq!(mounts.len(), 1);
+        let m = &mounts[0];
+        assert_eq!(m.target.as_deref(), Some("/workspace"));
+        assert_eq!(m.source.as_deref(), Some("nasiko-agent-memory"));
+        assert_eq!(m.typ, Some(MountTypeEnum::VOLUME));
+        let vol_opts = m
+            .volume_options
+            .as_ref()
+            .expect("volume_options must be set");
+        assert_eq!(
+            vol_opts.subpath.as_deref(),
+            Some(format!("{TEST_OWNER}/test-agent-42").as_str())
+        );
+    }
+
+    #[test]
+    fn not_writable_sets_no_mounts() {
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&spec(false), bindings, "nasiko-agent-memory");
+        assert_eq!(hc.mounts, None);
+    }
+
+    #[test]
+    fn writable_and_harden_compose_without_losing_either() {
+        let mut s = spec(true);
+        s.harden = true;
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&s, bindings, "nasiko-agent-memory");
+        assert_eq!(hc.readonly_rootfs, Some(true));
+        assert!(hc.mounts.is_some());
     }
 }
 
