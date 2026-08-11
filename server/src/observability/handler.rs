@@ -67,6 +67,11 @@ fn observability_unconfigured() -> Response {
 pub struct SessionListParams {
     /// ISO-8601 window start (default: 7 days ago).
     pub start_time: Option<String>,
+    /// Page size (default 25, max 100). Each row costs one trace-store lookup,
+    /// so this bounds the request's real work — it is not just a display limit.
+    pub limit: Option<i64>,
+    /// Rows to skip, for offset paging (default 0).
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -124,6 +129,8 @@ pub async fn get_all_sessions(
             None,
             params.start_time.as_deref(),
             claims.is_superuser,
+            params.limit,
+            params.offset,
         )
         .await
     {

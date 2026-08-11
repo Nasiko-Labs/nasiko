@@ -1,7 +1,36 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
+import '/common/components/app-modal.js';
 import styles from './add-agent-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
+
+/// Mirrors the server's `validate_version_tag` (oss/server/src/build/routes.rs),
+/// which every uploaded agent name must satisfy because it becomes part of an
+/// OCI image reference.
+const AGENT_NAME_RE = /^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$/;
+
+/// Best-effort coercion of arbitrary text into a valid agent name. Returns ''
+/// when nothing usable survives, so the caller still asks the user.
+function sanitizeAgentName(raw) {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')  // spaces, parens, slashes → separator
+    .replace(/^[^a-zA-Z0-9_]+/, '')     // leading . or - is rejected by the server
+    .replace(/-{2,}/g, '-')
+    .replace(/-+$/, '')
+    .slice(0, 128);
+  return AGENT_NAME_RE.test(cleaned) ? cleaned : '';
+}
+
+/// Null when `name` is acceptable, otherwise the reason to show the user.
+function agentNameError(name) {
+  if (!name) return 'An agent name is required.';
+  if (AGENT_NAME_RE.test(name)) return null;
+  if (name.length > 128) return 'Agent name must be 128 characters or fewer.';
+  if (!/^[a-zA-Z0-9_]/.test(name)) return 'Agent name must start with a letter, digit or underscore.';
+  return 'Agent name may only contain letters, digits, dots, underscores and hyphens.';
+}
 
 class AddAgentPage extends HTMLElement {
   connectedCallback() {
@@ -50,34 +79,33 @@ class AddAgentPage extends HTMLElement {
           <button class="method-btn" id="btn-oci">Connect Registry</button>
         </div>
       </div>
-    `;
 
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.accept = '.zip';
+      <app-modal id="upload-modal" heading="Upload agent package">
+        <div class="upload-form">
+          <label class="field">
+            <span class="field-label">Source archive (.zip)</span>
+            <input type="file" id="upload-file" accept=".zip,application/zip" required />
+          </label>
+          <label class="field">
+            <span class="field-label">Agent name</span>
+            <input type="text" id="upload-name" autocomplete="off" placeholder="my-agent" />
+            <span class="field-hint">Letters, digits, dots, underscores and hyphens; must start with
+              a letter, digit or underscore. Pre-filled from the file name.</span>
+          </label>
+          <p class="form-error" id="upload-error" hidden></p>
+        </div>
+        <div data-slot="footer">
+          <button type="button" class="btn-outline" id="upload-cancel">Cancel</button>
+          <button type="button" class="btn-dark" id="upload-submit">Upload and deploy</button>
+        </div>
+      </app-modal>
+    `;
 
     this.querySelector('#btn-github')?.addEventListener('click', () => {
       window.location.href = '/add-agent-github.html';
     });
 
-    this.querySelector('#btn-upload')?.addEventListener('click', () => fileInput.click());
-
-    fileInput.addEventListener('change', async () => {
-      const file = fileInput.files[0];
-      if (!file) return;
-      const name = file.name.replace(/\.zip$/i, '');
-      const formData = new FormData();
-      formData.append('name', name);
-      formData.append('file', file);
-      try {
-        const res = await apiFetch('/agents/upload', { method: 'POST', body: formData });
-        if (!res.ok) throw new Error(await res.text());
-        window.location.href = '/your-agents.html';
-      } catch (err) {
-        const { showToast } = await import('/common/utils/toast.js');
-        showToast(`Upload failed: ${err.message}`);
-      }
-    });
+    this.#wireUploadModal();
 
     this.querySelector('#btn-oci')?.addEventListener('click', async () => {
       const reference = prompt('Enter artifact reference (e.g. nasiko/my-agent:v1.0):');
@@ -95,6 +123,73 @@ class AddAgentPage extends HTMLElement {
         showToast(`Import failed: ${err.message}`);
       }
     });
+  }
+
+  /// The agent name becomes part of an OCI image reference, so the server
+  /// enforces `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}` on it (`validate_version_tag`).
+  /// A raw file name routinely violates that ("My Agent.zip", "agent (1).zip"),
+  /// which used to surface as an unexplained 400 with no way to correct it —
+  /// hence a real form: sanitized suggestion, editable, validated before send.
+  #wireUploadModal() {
+    const modal = this.querySelector('#upload-modal');
+    const fileEl = this.querySelector('#upload-file');
+    const nameEl = this.querySelector('#upload-name');
+    const errorEl = this.querySelector('#upload-error');
+    const submitEl = this.querySelector('#upload-submit');
+
+    this.querySelector('#btn-upload')?.addEventListener('click', () => {
+      fileEl.value = '';
+      nameEl.value = '';
+      errorEl.hidden = true;
+      modal.open();
+    });
+
+    this.querySelector('#upload-cancel').addEventListener('click', () => modal.close());
+
+    // Suggest a name from the chosen file, but never overwrite one the user
+    // has already typed.
+    fileEl.addEventListener('change', () => {
+      const file = fileEl.files[0];
+      if (!file || nameEl.value.trim()) return;
+      nameEl.value = sanitizeAgentName(file.name.replace(/\.zip$/i, ''));
+    });
+
+    submitEl.addEventListener('click', async () => {
+      const file = fileEl.files[0];
+      const name = nameEl.value.trim();
+      errorEl.hidden = true;
+
+      if (!file) {
+        this.#showUploadError('Choose a .zip archive to upload.');
+        return;
+      }
+      const invalid = agentNameError(name);
+      if (invalid) {
+        this.#showUploadError(invalid);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('name', name);
+      formData.append('file', file);
+
+      submitEl.disabled = true;
+      try {
+        const res = await apiFetch('/agents/upload', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+        window.location.href = '/your-agents.html';
+      } catch (err) {
+        this.#showUploadError(`Upload failed: ${err.message}`);
+      } finally {
+        submitEl.disabled = false;
+      }
+    });
+  }
+
+  #showUploadError(message) {
+    const el = this.querySelector('#upload-error');
+    el.textContent = message;
+    el.hidden = false;
   }
 }
 

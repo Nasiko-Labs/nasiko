@@ -673,10 +673,9 @@ fn validate_agent_zip(
 ///   2. pyproject.toml → `[project] version` or `[tool.poetry] version`
 ///   3. Cargo.toml     → `[package] version`
 fn detect_version_from_dir(dir: &std::path::Path) -> Option<String> {
-    // 1. AgentCard.json
-    let card_path = dir.join("AgentCard.json");
-    if card_path.exists()
-        && let Ok(s) = std::fs::read_to_string(&card_path)
+    // 1. AgentCard.json. No `exists()` pre-check on any of the three: a missing
+    // file already reads as `Err`, and the extra stat just adds a TOCTOU gap.
+    if let Ok(s) = std::fs::read_to_string(dir.join("AgentCard.json"))
         && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
         && let Some(ver) = v.get("version").and_then(|v| v.as_str())
     {
@@ -684,18 +683,14 @@ fn detect_version_from_dir(dir: &std::path::Path) -> Option<String> {
     }
 
     // 2. pyproject.toml — [project] version or [tool.poetry] version
-    let pyproject_path = dir.join("pyproject.toml");
-    if pyproject_path.exists()
-        && let Ok(s) = std::fs::read_to_string(&pyproject_path)
+    if let Ok(s) = std::fs::read_to_string(dir.join("pyproject.toml"))
         && let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"])
     {
         return Some(ver);
     }
 
     // 3. Cargo.toml — [package] version
-    let cargo_path = dir.join("Cargo.toml");
-    if cargo_path.exists()
-        && let Ok(s) = std::fs::read_to_string(&cargo_path)
+    if let Ok(s) = std::fs::read_to_string(dir.join("Cargo.toml"))
         && let Some(ver) = parse_toml_version(&s, &["package"])
     {
         return Some(ver);

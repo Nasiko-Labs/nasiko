@@ -7,6 +7,8 @@
 //! them would mean inventing `ContainerId`s for things that are not agents.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -160,63 +162,122 @@ impl ResourceStatsProvider for UnsupportedStatsProvider {
     }
 }
 
-/// Reuses one whole-box reading for a short TTL, and collapses concurrent
-/// callers onto a single sweep.
+/// Serves one whole-box reading from cache, refreshing it in the background
+/// rather than making a caller wait for the sweep.
 ///
 /// [`ResourceStatsProvider::platform_stats`] costs one Docker `stats` call per
 /// container, and each of those blocks about a second while the daemon takes the
-/// second CPU sample the delta needs. The Resources page polls every 5s, so
-/// without this each open admin tab keeps a full per-container fan-out in flight
-/// against the same socket the control plane deploys agents through.
+/// second CPU sample the delta needs — so a sweep costs ~1-2s no matter how much
+/// of it runs concurrently.
+///
+/// A plain read-through TTL cache does not help a page that polls: with the TTL
+/// equal to the poll interval, every poll arrives just after the entry expired
+/// and pays the full sweep, which is exactly the "Resources takes seconds"
+/// symptom. So a stale reading is served immediately and a refresh is kicked off
+/// behind it: only the very first request after startup waits for Docker, and
+/// every later one is answered from memory with data at most one poll old.
+///
+/// Refreshes are single-flight — a burst of pollers triggers one sweep, not one
+/// each, which matters because they contend for the same Docker socket the
+/// control plane deploys agents through.
 ///
 /// Only `platform_stats` is wrapped. `agent_stats` samples exactly one container
 /// and is loaded once per agent-card view rather than polled, so keying a cache
 /// per agent would add bookkeeping for no measurable gain.
 pub struct CachedStatsProvider<P> {
+    shared: Arc<CacheShared<P>>,
+}
+
+struct CacheShared<P> {
     inner: P,
+    /// How long a reading is served without triggering a refresh behind it.
     ttl: Duration,
-    /// A `Mutex` rather than an `RwLock`, and deliberately held across the
-    /// refresh: that is what makes a burst of callers wait for one sweep instead
-    /// of each starting its own.
     cached: Mutex<Option<(Instant, PlatformStats)>>,
+    /// Set while a background refresh is in flight, so concurrent callers don't
+    /// each spawn their own sweep.
+    refreshing: AtomicBool,
 }
 
 impl<P> CachedStatsProvider<P> {
     pub fn new(inner: P, ttl: Duration) -> Self {
         Self {
-            inner,
-            ttl,
-            cached: Mutex::new(None),
+            shared: Arc::new(CacheShared {
+                inner,
+                ttl,
+                cached: Mutex::new(None),
+                refreshing: AtomicBool::new(false),
+            }),
         }
+    }
+}
+
+impl<P: ResourceStatsProvider + 'static> CachedStatsProvider<P> {
+    /// Starts one background sweep, unless one is already running.
+    ///
+    /// The `swap` is the single-flight gate: only the caller that flips the flag
+    /// from false to true owns the refresh, so a burst of pollers triggers one
+    /// sweep rather than one each.
+    fn spawn_refresh(&self) {
+        if self.shared.refreshing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let shared = Arc::clone(&self.shared);
+        tokio::spawn(async move {
+            match shared.inner.platform_stats().await {
+                Ok(fresh) => *shared.cached.lock().await = Some((Instant::now(), fresh)),
+                // Leave the previous reading in place and let the next poll try
+                // again — a brief daemon hiccup shouldn't blank the page.
+                Err(e) => tracing::debug!(error = %e, "background resource-stats refresh failed"),
+            }
+            shared.refreshing.store(false, Ordering::Release);
+        });
     }
 }
 
 impl<P> std::fmt::Debug for CachedStatsProvider<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CachedStatsProvider")
-            .field("ttl", &self.ttl)
+            .field("ttl", &self.shared.ttl)
             .finish_non_exhaustive()
     }
 }
 
 #[async_trait]
-impl<P: ResourceStatsProvider> ResourceStatsProvider for CachedStatsProvider<P> {
+impl<P: ResourceStatsProvider + 'static> ResourceStatsProvider for CachedStatsProvider<P> {
     async fn platform_stats(&self) -> Result<PlatformStats> {
-        let mut slot = self.cached.lock().await;
-        if let Some((taken_at, stats)) = slot.as_ref()
-            && taken_at.elapsed() < self.ttl
+        // Warm path: answer from memory, and if the reading has aged past the TTL
+        // start a refresh behind the response rather than in front of it.
         {
+            let slot = self.shared.cached.lock().await;
+            if let Some((taken_at, stats)) = slot.as_ref() {
+                let stats = stats.clone();
+                let stale = taken_at.elapsed() >= self.shared.ttl;
+                drop(slot);
+                if stale {
+                    self.spawn_refresh();
+                }
+                return Ok(stats);
+            }
+        }
+
+        // Cold: there is nothing to serve, so this caller does wait for the
+        // sweep. The lock is held across it — as it always was — so a burst of
+        // callers arriving on an empty cache collapses onto one sweep instead of
+        // each starting its own.
+        let mut slot = self.shared.cached.lock().await;
+        if let Some((_, stats)) = slot.as_ref() {
+            // Another caller filled the slot while this one waited for the lock.
             return Ok(stats.clone());
         }
         // Failures are deliberately not cached: a daemon that was briefly
         // unreachable must not read as unreachable for the whole TTL.
-        let fresh = self.inner.platform_stats().await?;
+        let fresh = self.shared.inner.platform_stats().await?;
         *slot = Some((Instant::now(), fresh.clone()));
         Ok(fresh)
     }
 
     async fn agent_stats(&self, agent_id: &str) -> Result<Option<ContainerStats>> {
-        self.inner.agent_stats(agent_id).await
+        self.shared.inner.agent_stats(agent_id).await
     }
 }
 
@@ -328,17 +389,70 @@ mod tests {
         let cached = CachedStatsProvider::new(FakeProvider::new(), Duration::from_secs(60));
         cached.platform_stats().await.expect("first sweep");
         cached.platform_stats().await.expect("served from cache");
-        assert_eq!(cached.inner.calls(), 1);
+        assert_eq!(cached.shared.inner.calls(), 1);
     }
 
     #[tokio::test]
-    async fn zero_ttl_always_refreshes() {
-        // A zero TTL is the degenerate "no caching" case — every call must sweep,
-        // never serve a stale reading.
+    async fn stale_reading_is_served_without_waiting_for_the_sweep() {
+        // The property the Resources page depends on: once there is any reading,
+        // a caller is answered from memory even when it has expired. Previously
+        // an expired entry made the caller wait for a full per-container sweep,
+        // and with the TTL equal to the poll interval that was every poll.
+        let inner = FakeProvider {
+            delay: Some(Duration::from_millis(300)),
+            ..FakeProvider::new()
+        };
+        let cached = CachedStatsProvider::new(inner, Duration::ZERO);
+        cached.platform_stats().await.expect("first sweep");
+
+        let started = Instant::now();
+        cached.platform_stats().await.expect("served stale");
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "expired reading should be served from memory, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_read_refreshes_in_the_background() {
+        // Serving stale is only correct if the reading actually gets renewed.
         let cached = CachedStatsProvider::new(FakeProvider::new(), Duration::ZERO);
         cached.platform_stats().await.expect("first sweep");
-        cached.platform_stats().await.expect("second sweep");
-        assert_eq!(cached.inner.calls(), 2);
+        assert_eq!(cached.shared.inner.calls(), 1);
+
+        cached.platform_stats().await.expect("served stale");
+        // The refresh is spawned, so yield until it lands rather than asserting
+        // on a sleep.
+        for _ in 0..50 {
+            if cached.shared.inner.calls() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(cached.shared.inner.calls(), 2, "refresh did not run");
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_stale_reads_triggers_one_refresh() {
+        // Single-flight on the background path too: many pollers hitting an
+        // expired reading must not each start a sweep against the Docker socket.
+        let inner = FakeProvider {
+            delay: Some(Duration::from_millis(100)),
+            ..FakeProvider::new()
+        };
+        let cached = CachedStatsProvider::new(inner, Duration::ZERO);
+        cached.platform_stats().await.expect("first sweep");
+
+        for _ in 0..5 {
+            cached.platform_stats().await.expect("served stale");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            cached.shared.inner.calls(),
+            2,
+            "five stale reads should share one refresh"
+        );
     }
 
     #[tokio::test]
@@ -356,7 +470,7 @@ mod tests {
             cached.platform_stats(),
         );
         assert!(a.is_ok() && b.is_ok() && c.is_ok());
-        assert_eq!(cached.inner.calls(), 1);
+        assert_eq!(cached.shared.inner.calls(), 1);
     }
 
     #[tokio::test]
@@ -370,7 +484,7 @@ mod tests {
         let cached = CachedStatsProvider::new(inner, Duration::from_secs(60));
         assert!(cached.platform_stats().await.is_err());
         assert!(cached.platform_stats().await.is_ok());
-        assert_eq!(cached.inner.calls(), 2);
+        assert_eq!(cached.shared.inner.calls(), 2);
     }
 
     #[tokio::test]
@@ -378,7 +492,7 @@ mod tests {
         let cached = CachedStatsProvider::new(FakeProvider::new(), Duration::from_secs(60));
         assert!(cached.agent_stats("some-id").await.expect("ok").is_none());
         // Passing through must not populate the whole-box slot.
-        assert_eq!(cached.inner.calls(), 0);
+        assert_eq!(cached.shared.inner.calls(), 0);
     }
 
     #[test]

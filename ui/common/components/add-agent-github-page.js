@@ -61,16 +61,26 @@ class AddAgentGithubPage extends HTMLElement {
     this.#loadRepos();
   }
 
+  // `/github/repositories` is the real route (there is no /auth/github/repos),
+  // and it answers `{repositories, total}` — not a bare array. Getting either
+  // wrong is why this list came up empty.
   async #loadRepos() {
     const repoList = this.querySelector('.repo-list');
     try {
-      const res = await apiFetch('/auth/github/repos');
+      const res = await apiFetch('/github/repositories');
+      // 403 = no stored token for this user; 401 = no session at all.
       if (res.status === 401 || res.status === 403) {
         this.#showConnectGithub();
         return;
       }
-      if (!res.ok) throw new Error(res.statusText);
-      this.#allRepos = await res.json();
+      // 404 = GITHUB_CLIENT_ID/SECRET unset on this deployment. Nothing the
+      // user can fix by reconnecting, so say what's actually wrong.
+      if (res.status === 404) {
+        throw new Error('GitHub integration is not configured on this deployment.');
+      }
+      if (!res.ok) throw new Error((await res.text()) || res.statusText);
+      const body = await res.json();
+      this.#allRepos = Array.isArray(body) ? body : (body?.repositories || []);
       this.#renderRepos(this.#allRepos);
     } catch (err) {
       repoList.innerHTML = `<p style="color:var(--color-error);">Failed to load repos: ${err.message}</p>`;

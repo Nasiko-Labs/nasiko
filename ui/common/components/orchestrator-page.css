@@ -12,6 +12,14 @@
 @scope (orchestrator-page) {
   /* Host box (display + padding): common/styles/page-layout.css — linked, so
      it is in effect at first paint. */
+
+  /* Unlike the other module-nav pages this host is a centered flex column, so
+     the mobile disclosure bar would shrink to its content instead of spanning
+     the page. Desktop needs nothing: there the nav is absolutely positioned
+     into the host's left padding gutter, outside this flex flow. */
+  @media (max-width: 1023.98px) {
+    app-module-nav { align-self: stretch; }
+  }
   :scope.has-response {
     min-height: auto;
     padding-top: var(--space-md);
@@ -50,7 +58,7 @@
   }
   :scope.has-response .subtitle { display: none; }
   .input-wrap {
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     min-height: 88px;
     transition: margin-bottom 0.3s;
     contain: layout style;
@@ -60,7 +68,7 @@
     height: 88px;
   }
   .response-area {
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     margin-top: var(--space-md);
     display: none;
   }
@@ -175,7 +183,7 @@
   .continue-link:hover { text-decoration: underline; }
 
   .recent-agents {
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     margin-bottom: var(--space-md);
   }
   :scope.has-response .recent-agents { display: none; }
@@ -242,7 +250,7 @@
     display: flex;
     align-items: center;
     gap: var(--s-16);
-    width: min(100%, 820px);
+    width: min(100%, var(--orch-column-w));
     margin-top: var(--space-xl);
     padding: var(--s-20);
     border-radius: var(--r-8);

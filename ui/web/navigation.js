@@ -4,7 +4,9 @@ window.fetchNavigation = async () => [
   // rail: true → shown as a rail module icon; everything else is reachable
   // through the module tree navs and the ⌘F nav search.
   { title: "Orchestrator", url: "/index.html", icon: "brain", rail: true },
-  { title: "Workflows", url: "/workflows.html", icon: "workflow" },
+  // On the rail: without it the only route to the workflow list was to open
+  // "Create workflow" and back out of it.
+  { title: "Workflows", url: "/workflows.html", icon: "workflow", rail: true },
   { title: "Executions", url: "/executions.html", icon: "play" },
   { title: "Agents", url: "/agents.html", icon: "bot", rail: true },
   { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true },
@@ -83,10 +85,11 @@ const MODULE_NAVS = {
     groups: [
       { label: 'Workspace', items: [
         { label: 'General', section: 'general' },
-        { label: 'Models', section: 'models' },
+        { label: 'Flow limits', section: 'limits' },
         { label: 'Registry', section: 'registry' },
       ]},
       { label: 'Security', items: [
+        { label: 'Single sign-on', section: 'sso' },
         { label: 'Secrets', url: '/secrets.html' },
       ]},
     ],
@@ -110,8 +113,11 @@ window.fetchAgents = async (query, page, limit) => {
   return { data: Array.isArray(agents) ? agents : agents.data || [], total: agents.total || agents.length };
 };
 
-window.fetchSessions = async (_query, _page, limit) => {
+// `/chat/sessions` is keyset-paginated: pass the `next_cursor` from the previous
+// response to get the following page. Returns {data, has_more, next_cursor}.
+window.fetchSessions = async (_query, limit = 25, cursor = null) => {
   const params = new URLSearchParams({ limit });
+  if (cursor) params.set('cursor', cursor);
   return fetchApi(`/chat/sessions?${params}`);
 };
 
@@ -211,8 +217,11 @@ window.fetchTraceDetail = async (traceId) => {
 };
 
 // Observability — execution history + per-session traces (see /api/docs)
-window.fetchObservabilitySessions = async () => {
-  return fetchApi('/observability/session/list');
+// Paged: every row costs the server one trace-store lookup, so asking for the
+// whole history is what made Execution history slow to appear.
+window.fetchObservabilitySessions = async (limit = 25, offset = 0) => {
+  const params = new URLSearchParams({ limit, offset });
+  return fetchApi(`/observability/session/list?${params}`);
 };
 
 window.fetchObservabilitySession = async (sessionId) => {
@@ -261,6 +270,10 @@ window.deleteLlmConfig = async (id) => {
 
 window.setDefaultLlmConfig = async (id) => {
   return fetchApi(`/llm-configs/${encodeURIComponent(id)}/default`, { method: 'POST' });
+};
+
+window.clearDefaultLlmConfig = async (id) => {
+  return fetchApi(`/llm-configs/${encodeURIComponent(id)}/default`, { method: 'DELETE' });
 };
 
 window.fetchLlmProviders = async () => {

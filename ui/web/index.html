@@ -19,8 +19,11 @@
     <orchestrator-page>
       <!-- Mirrors the loaded route screen: 72px hero icon, title + subtitle,
            recent-agents grid (96px cards), 88px composer, workflow banner —
-           all in the page's centered min(100%, 820px) column. -->
-      <div style="display:flex;flex-direction:column;align-items:center;gap:0;width:min(100%,820px);">
+           all in the page's centered --orch-column-w column. -->
+      <!-- Below 1024px the module nav is a disclosure bar above the content;
+           reserve it so the hero doesn't jump when the real nav arrives. -->
+      <div class="pre-modnav" style="align-self:stretch;"></div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:0;width:min(100%,var(--orch-column-w));">
         <div class="skel-block" style="width:72px;height:72px;border-radius:var(--r-12);margin-bottom:var(--space-lg);"></div>
         <div class="skel-block" style="height:2rem;width:240px;margin-bottom:var(--space-xs);"></div>
         <div class="skel-block" style="height:1rem;width:420px;max-width:90%;margin-bottom:var(--space-xl);"></div>

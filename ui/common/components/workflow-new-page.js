@@ -201,7 +201,12 @@ class WorkflowNewPage extends HTMLElement {
         try {
           const started = await window.runWorkflow(workflow.id);
           target += `&exec=${encodeURIComponent(started.execution_id)}`;
-        } catch { /* saved fine — land on the review screen instead */ }
+        } catch (runErr) {
+          // The workflow IS saved, so still land on the review screen — but say
+          // why it didn't start. Swallowing this silently made a failed run
+          // indistinguishable from a successful one.
+          target += `&run_error=${encodeURIComponent(runErr.message || 'unknown error')}`;
+        }
       }
       window.location.href = target;
     } catch (err) {

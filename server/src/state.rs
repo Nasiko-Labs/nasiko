@@ -172,6 +172,7 @@ impl AppState {
                     client_id: client_id.clone(),
                     client_secret: client_secret.clone(),
                     redirect_uri: redirect_uri.clone(),
+                    central_callback_url: config.oidc_central_callback_url.clone(),
                     scopes: config.oidc_scopes.clone(),
                 };
                 Arc::new(nasiko_oidc::OidcClient::new(
@@ -332,6 +333,7 @@ impl AppState {
             client_id: self.config.oidc_client_id.clone()?,
             client_secret: self.config.oidc_client_secret.clone()?,
             redirect_uri: self.config.oidc_redirect_uri.clone()?,
+            central_callback_url: self.config.oidc_central_callback_url.clone(),
             scopes: self.config.oidc_scopes.clone(),
         };
         Some((config, self.config.oidc_provider_label.clone()))
@@ -366,6 +368,9 @@ impl AppState {
             client_id: row.oidc_client_id?,
             client_secret: secret,
             redirect_uri: row.oidc_redirect_uri?,
+            // Fleet-level env override applies whether OIDC config came from the
+            // settings row or env — a workspace CP still relays through the BFF.
+            central_callback_url: self.config.oidc_central_callback_url.clone(),
             scopes: row
                 .oidc_scopes
                 .unwrap_or_else(|| "openid profile email".to_string()),

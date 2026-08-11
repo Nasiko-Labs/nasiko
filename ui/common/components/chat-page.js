@@ -5,16 +5,10 @@ import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml, usageFromMessage } from '/common/utils/usage-chips.js';
+import { transcribeBlob } from '/common/utils/voice-utils.js';
 
 if (!window.transcribeAudio) {
-  window.transcribeAudio = async (blob) => {
-    const form = new FormData();
-    form.append('file', blob, 'audio.webm');
-    const res = await apiFetch('/transcribe', { method: 'POST', body: form });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    return data.text;
-  };
+  window.transcribeAudio = transcribeBlob;
 }
 
 import styles from './chat-page.css' with { type: 'css' };

@@ -392,13 +392,27 @@ export class AppHeader extends HTMLElement {
     if (cached) {
       try { this.navItems = JSON.parse(cached); } catch { /* ignore bad cache */ }
     }
-    if (this.navItems?.length) {
+    // Identity comes from a per-tab cache too, so a warm shell renders
+    // complete on the first pass — see auth-service.
+    const hadUser = authService.isAuthenticated();
+    const renderedFromCache = Boolean(this.navItems?.length);
+    if (renderedFromCache) {
       this.render();
     } else {
       this.#renderSkeleton();
     }
+
+    const before = renderedFromCache ? JSON.stringify(this.navItems) : null;
     await Promise.all([this.loadNavigation(), authService.fetchCurrentUser()]);
-    this.render();
+
+    // Re-rendering an identical shell is what made the sidebar visibly rebuild
+    // on every MPA navigation (losing hover/focus and flashing). Only repaint
+    // when the nav or the identity actually changed.
+    const navChanged = before !== JSON.stringify(this.navItems);
+    const userArrived = !hadUser && authService.isAuthenticated();
+    if (!renderedFromCache || navChanged || userArrived) {
+      this.render();
+    }
     document.addEventListener("keydown", this.#handleKeyDown);
   }
 
@@ -500,7 +514,9 @@ export class AppHeader extends HTMLElement {
     this.innerHTML = `
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
       <header class="topbar" role="banner">
-        <span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>
+        ${window.nasikoChrome?.workspaceSwitcher
+          ? `<workspace-switcher></workspace-switcher>`
+          : `<span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>`}
         <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
           ${icons.panelLeft("", 16, 1)}
         </button>
@@ -577,14 +593,12 @@ export class AppHeader extends HTMLElement {
 
   #logout() {
     const currentUser = authService.getCurrentUser();
-    if (currentUser && confirm(`Sign out from ${currentUser}?`)) {
-      authService.removeUserSession(currentUser);
-      const remaining = authService.getUsers();
-      window.location.href =
-        remaining.length > 0
-          ? `/u/${remaining[0].username}/`
-          : "/login/index.html";
-    }
+    if (currentUser && !confirm(`Sign out from ${currentUser}?`)) return;
+    // authService.logout() clears both the management and workspace-CP sessions
+    // and navigates to /login.html once they're cleared. The old code navigated
+    // to /u/{user}/ first, which cancelled the logout and re-authenticated the
+    // user off the still-valid cookie.
+    authService.logout();
   }
 }
 
