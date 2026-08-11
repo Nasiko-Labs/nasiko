@@ -211,6 +211,7 @@ fn composio_config(
         url,
         headers,
         transport: "streamable_http".to_string(),
+        trusted: false,
     }
 }
 

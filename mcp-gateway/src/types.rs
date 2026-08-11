@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
@@ -220,6 +221,32 @@ impl GrantType {
 /// Sentinel `grantee_id` for a public ("everyone") grant.
 pub const PUBLIC_GRANTEE: &str = "*";
 
+/// `"owner" | "direct" | "public" | "team" | "department"` — the last two are
+/// EE-only (`via_label` carries the team/department name in that case).
+/// Someone reachable through more than one path is still listed once, with
+/// the most specific reason (owner > direct > team/department > public).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessReason {
+    pub user_id: Uuid,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub via: String,
+    pub via_label: Option<String>,
+}
+
+/// A team or department with a direct grant on a connector — the entity
+/// itself, not exploded per member (contrast [`AccessReason`], which lists
+/// the individual people reachable through that grant). Feeds the
+/// consumers view's Teams/Departments tables. OSS has no team/department
+/// concept, so this is always empty outside EE.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgGrantConsumer {
+    pub id: Uuid,
+    pub name: String,
+    pub granted_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A resolved backend the gateway will fan out to. The Composio session (when
 /// present) is entry `[0]` with `kind = Composio`; generic servers follow with
 /// per-user credentials already injected into `headers` / `url`. `connector_id`
@@ -237,6 +264,14 @@ pub struct MCPServerConfig {
     pub headers: HashMap<String, String>,
     #[serde(default = "default_transport")]
     pub transport: String,
+    /// True only for `source_kind = UploadedBuild` connectors, whose `url` was
+    /// resolved by `ContainerRuntime::endpoint()` and never typed by a user —
+    /// the SSRF guard (`net.rs`) exists specifically to stop a *user* pointing
+    /// the gateway at an internal address, so it doesn't apply here. Set
+    /// exactly once, in `credentials::build_generic_servers` — never derived or
+    /// overridden anywhere else, and never accepted from external input.
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 fn default_transport() -> String {

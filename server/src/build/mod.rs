@@ -27,6 +27,10 @@ pub fn router() -> Router<AppState> {
     routes::router()
 }
 
+pub fn degradable_router() -> Router<AppState> {
+    routes::degradable_router()
+}
+
 /// Create a tar archive from a directory (for passing to ContainerRuntime::build).
 pub fn tar_directory(dir: &std::path::Path) -> Result<Vec<u8>, String> {
     use tar::Builder;

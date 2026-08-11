@@ -99,6 +99,28 @@ impl SecretsCrypto {
         Self::try_derive(user_id.as_bytes())
     }
 
+    /// Derive a connector-scoped key from the master key. Use for every read/write
+    /// to `mcp_connectors.build_secrets_env` — the connector-identity analog of
+    /// `agents.secrets_env`. Panics if the master key is missing/invalid.
+    pub fn for_connector(connector_id: Uuid) -> Self {
+        Self::derive(connector_id.as_bytes())
+    }
+
+    /// Derive a tenant-scoped key from the master key. Used by `ee/multi-tenant`
+    /// to encrypt a tenant cluster's FinOps-poller service-account credential at
+    /// rest. Panics if the master key is missing/invalid; use
+    /// [`try_for_tenant`](Self::try_for_tenant) on the request path.
+    pub fn for_tenant(tenant_id: Uuid) -> Self {
+        Self::derive(tenant_id.as_bytes())
+    }
+
+    /// Fallible [`for_tenant`](Self::for_tenant) — surfaces a missing/invalid
+    /// master key as [`SecretsError`] instead of panicking. For request-path
+    /// callers.
+    pub fn try_for_tenant(tenant_id: Uuid) -> Result<Self, SecretsError> {
+        Self::try_derive(tenant_id.as_bytes())
+    }
+
     /// Derive a platform/system-scoped key from the master key. Use for secrets that
     /// belong to the platform itself rather than a specific user or agent (e.g. encrypted
     /// infra provisioning outputs). The scope label is distinct from any UUID scope, so

@@ -2,6 +2,7 @@ pub mod agent_client;
 mod agent_registry;
 pub mod engine;
 pub mod error;
+pub mod maf;
 pub mod models;
 pub mod providers;
 pub mod reranker;

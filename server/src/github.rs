@@ -16,7 +16,9 @@ use std::collections::HashMap;
 
 use crate::agents::upload::BuildJobPayload;
 use crate::agents::utils::set_upload_status;
-use crate::{auth::Claims, secrets::crypto::SecretsCrypto, state::AppState};
+use nasiko_secrets::SecretsCrypto;
+
+use crate::{auth::Claims, state::AppState};
 
 /// Public routes — no auth required (GitHub redirects the browser here).
 /// Merged at the root level in `lib.rs` so the callback URL is reachable

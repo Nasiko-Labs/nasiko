@@ -5,6 +5,7 @@ pub mod card;
 pub mod chat;
 pub mod cluster;
 pub mod deploy;
+pub mod deployments;
 pub mod dev;
 pub mod github;
 pub mod llm_config;
