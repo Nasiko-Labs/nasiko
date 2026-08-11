@@ -417,7 +417,12 @@ async fn github_callback_login(
 
     let result = match state
         .auth
-        .upsert_oauth_user("github", &provider_id, &github_user.login, verified_email.as_deref())
+        .upsert_oauth_user(
+            "github",
+            &provider_id,
+            &github_user.login,
+            verified_email.as_deref(),
+        )
         .await
     {
         Ok(r) => r,
