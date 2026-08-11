@@ -3,12 +3,17 @@ import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
-import { transcribeBlob } from '/common/utils/voice-utils.js';
 import '/common/components/voice-input.js';
 import '/common/components/agent-steps.js';
-import '/common/components/app-module-nav.js';
 
-window.transcribeAudio = transcribeBlob;
+window.transcribeAudio = async (blob) => {
+  const form = new FormData();
+  form.append('file', blob, 'audio.webm');
+  const res = await apiFetch('/transcribe', { method: 'POST', body: form });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return data.text;
+};
 
 import styles from './orchestrator-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -21,7 +26,6 @@ class OrchestratorPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <app-module-nav module="orchestrator"></app-module-nav>
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
       <h1 class="title">Orchestrate a task</h1>
       <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it.</p>

@@ -139,31 +139,7 @@
     gap: var(--space-sm);
     margin-top: var(--space-sm);
   }
-
-  /* ── Row actions (edit / delete) ───────────────────────────────────────── */
-  .row-actions {
-    display: inline-flex;
-    gap: var(--space-xs);
-    justify-content: flex-end;
-    width: 100%;
-  }
-  .row-btn {
-    padding: 2px var(--space-sm);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: transparent;
-    color: var(--color-text-main);
-    font-family: inherit;
-    font-size: var(--font-size-xs);
-    cursor: pointer;
-  }
-  .row-btn:hover { background: var(--bg-surface-hover); }
-  .row-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  .row-btn--danger { color: var(--color-error); }
-  .row-btn--danger:hover { border-color: var(--color-error); }
-
-  .form-error {
-    color: var(--color-error);
-    font-size: var(--font-size-xs);
-  }
 }
+
+/* Upgrade contract — reserve head + table footprint */
+

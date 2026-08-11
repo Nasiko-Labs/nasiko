@@ -89,21 +89,6 @@ pub trait AuthService: Send + Sync + 'static {
         let _ = identity;
         None
     }
-
-    /// Agents `identity` can see through an org-hierarchy grant — i.e. an
-    /// `agent_grants` row of type `team`, `department` or `organization` that
-    /// resolves via the caller's placement in the org chart.
-    ///
-    /// Listing endpoints union this with the ownership/public/user-grant
-    /// predicate they compute in SQL. It exists as a seam for the same reason
-    /// as [`Self::org_visible_user_ids`]: resolving a team or department grant
-    /// needs the EE-only `users.team_id`/`users.department_id` columns, which a
-    /// shared query must never reference. OSS has no org chart, so the default
-    /// adds nothing.
-    async fn org_granted_agent_ids(&self, identity: &Identity) -> Vec<String> {
-        let _ = identity;
-        Vec::new()
-    }
 }
 
 #[derive(Debug, thiserror::Error)]

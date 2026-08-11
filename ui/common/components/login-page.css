@@ -123,9 +123,4 @@
   }
   .btn-oauth:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-oauth svg { width: 18px; height: 18px; flex-shrink: 0; }
-  /* The GitHub entry is a <button> (its route returns JSON to follow, not a
-     redirect), so it needs the two things a <button> won't inherit. */
-  .btn-oauth { font-family: inherit; }
-  .btn-oauth:disabled { opacity: 0.6; cursor: default; }
-  #oauth-error { margin-top: var(--space-sm); }
 }

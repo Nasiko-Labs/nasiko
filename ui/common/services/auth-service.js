@@ -1,42 +1,7 @@
 // Auth service — server handles authentication via HttpOnly cookie.
 // Frontend fetches user info from /api/me.
 
-// Per-tab cache of the /api/me answer. This is an MPA: without it every
-// navigation starts with no identity, so the shell renders once without the
-// user and again once the fetch lands — the visible sidebar rebuild. Cleared
-// on logout and on any 401, and it holds nothing the page couldn't already
-// read from /api/me.
-const CACHE_KEY = 'nasiko-current-user';
-
-function readCache() {
-  try {
-    const raw = sessionStorage.getItem(CACHE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeCache(user) {
-  try {
-    if (user) sessionStorage.setItem(CACHE_KEY, JSON.stringify(user));
-    else sessionStorage.removeItem(CACHE_KEY);
-  } catch { /* private mode / quota — in-memory cache still applies */ }
-}
-
-/// Drops every per-tab shell cache. The nav trees are role-derived, so they
-/// must not survive a sign-out into the next user's session.
-export function clearShellCache() {
-  try {
-    sessionStorage.removeItem(CACHE_KEY);
-    sessionStorage.removeItem('app-header-nav');
-    Object.keys(sessionStorage)
-      .filter((k) => k.startsWith('app-module-nav:'))
-      .forEach((k) => sessionStorage.removeItem(k));
-  } catch { /* nothing to clear */ }
-}
-
-let _cachedUser = readCache();
+let _cachedUser = null;
 
 class AuthService {
   getCurrentUser() {
@@ -70,9 +35,6 @@ class AuthService {
       const res = await fetch('/api/me');
       if (res.status === 401 || res.status === 403) {
         // Token is invalid/expired — clear it and redirect to login
-        _cachedUser = null;
-        writeCache(null);
-        clearShellCache();
         await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
         if (!window.location.pathname.startsWith('/login')) {
           window.location.href = '/login.html';
@@ -87,7 +49,6 @@ class AuthService {
         email: claims.email || '',
         is_superuser: claims.is_superuser === true,
       };
-      writeCache(_cachedUser);
       return _cachedUser;
     } catch {
       return null;
@@ -118,9 +79,6 @@ class AuthService {
   // multi-workspace; full sign-out is the correct single-workspace behavior.
   async logout() {
     _cachedUser = null;
-    // The per-tab shell caches (identity + role-derived nav trees) must not
-    // survive a sign-out into the next user's session.
-    clearShellCache();
     const base = window.nasikoConfig?.apiBase || '';
     const calls = [
       fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin', keepalive: true }).catch(() => {}),

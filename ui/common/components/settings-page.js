@@ -5,18 +5,10 @@ import '/common/components/app-module-nav.js';
 import styles from './settings-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-// Every field below must exist in the server's `SettingsUpdate`
-// (oss/server/src/settings.rs). Serde drops unknown keys silently, so a field
-// the server doesn't know still returns 200 and still toasts "saved" while
-// persisting nothing — this page previously shipped seven such fields
-// (instance_name, default_model, max_tokens, anthropic_api_key, openai_api_key,
-// registry_username, registry_password) and hid four that the server does
-// support. Adding a control here means adding it there too.
 const TABS = [
-  { key: 'general', label: 'General', sub: 'Routing defaults and platform behaviour.' },
-  { key: 'limits', label: 'Flow limits', sub: 'Cascade guards applied to every inter-agent call.' },
+  { key: 'general', label: 'General', sub: 'Instance identity, defaults, and platform behaviour.' },
+  { key: 'models', label: 'Models', sub: 'Provider API keys used for model routing. Stored encrypted.' },
   { key: 'registry', label: 'Registry', sub: 'External OCI registry used for agent images.' },
-  { key: 'sso', label: 'Single sign-on', sub: 'OIDC provider used for "Continue with Microsoft".' },
 ];
 
 class SettingsPage extends HTMLElement {
@@ -41,24 +33,33 @@ class SettingsPage extends HTMLElement {
         <div class="panel is-active" data-panel="general">
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-router-model">Router model</label>
-              <div class="hint">Model the routing engine uses to pick an agent for each query (<code>ROUTER_MODEL</code>).</div>
+              <label for="s-instance-name">Instance name</label>
+              <div class="hint">Shown in the shell and used to identify this control plane.</div>
             </div>
             <div class="setting-control">
-              <input type="text" id="s-router-model" data-field="router_model" placeholder="e.g. gpt-4o" />
+              <input type="text" id="s-instance-name" data-field="instance_name" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-default-provider">Default provider</label>
-              <div class="hint">Provider used when an agent has no LLM config of its own.</div>
+              <label for="s-default-model">Default model</label>
+              <div class="hint">Applied to new agents and sessions unless overridden.</div>
             </div>
             <div class="setting-control">
-              <select id="s-default-provider" data-field="default_provider">
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="gemini">Gemini</option>
+              <select id="s-default-model" data-field="default_model">
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                <option value="claude-opus-4-6">Claude Opus 4.6</option>
               </select>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="s-max-tokens">Max tokens per request</label>
+              <div class="hint">Maximum output tokens allowed per API request.</div>
+            </div>
+            <div class="setting-control">
+              <input type="number" id="s-max-tokens" data-field="max_tokens" min="1" max="200000" />
             </div>
           </div>
           <div class="setting-row">
@@ -70,52 +71,25 @@ class SettingsPage extends HTMLElement {
               <input type="text" id="s-catalog-tabs" data-field="catalog_tabs" data-allow-empty placeholder="e.g. devops, finance, support" />
             </div>
           </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label>Provider API keys</label>
-              <div class="hint">Keys aren't stored here — each routing config references one of your
-                encrypted secrets. Manage them on the
-                <a href="/llm-router.html">LLM router</a> and <a href="/secrets.html">Secrets</a> pages.</div>
-            </div>
-            <div class="setting-control"></div>
-          </div>
         </div>
 
-        <div class="panel" data-panel="limits">
+        <div class="panel" data-panel="models">
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-flow-depth">Max call depth</label>
-              <div class="hint">How many agent-to-agent hops one flow may chain before it's rejected.</div>
+              <label for="s-anthropic-key">Anthropic API key</label>
+              <div class="hint">Used for Claude model routing. Stored encrypted.</div>
             </div>
             <div class="setting-control">
-              <input type="number" id="s-flow-depth" data-field="max_flow_depth" min="1" />
+              <input type="password" id="s-anthropic-key" data-field="anthropic_api_key" placeholder="sk-ant-..." />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-flow-fanout">Max fan-out</label>
-              <div class="hint">Maximum agents a single flow may call in total.</div>
+              <label for="s-openai-key">OpenAI API key</label>
+              <div class="hint">Optional — enables OpenAI model routing.</div>
             </div>
             <div class="setting-control">
-              <input type="number" id="s-flow-fanout" data-field="max_flow_fan_out" min="1" />
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-flow-tokens">Token budget per flow</label>
-              <div class="hint">Combined prompt + completion tokens a flow may spend.</div>
-            </div>
-            <div class="setting-control">
-              <input type="number" id="s-flow-tokens" data-field="max_flow_tokens" min="1" />
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-flow-timeout">Flow timeout (seconds)</label>
-              <div class="hint">Wall-clock limit for a whole flow.</div>
-            </div>
-            <div class="setting-control">
-              <input type="number" id="s-flow-timeout" data-field="flow_timeout_secs" min="1" />
+              <input type="password" id="s-openai-key" data-field="openai_api_key" placeholder="sk-..." />
             </div>
           </div>
         </div>
@@ -127,75 +101,23 @@ class SettingsPage extends HTMLElement {
               <div class="hint">Where imported agent images are pulled from.</div>
             </div>
             <div class="setting-control">
-              <input type="url" id="s-registry-url" data-field="registry_url" data-allow-empty placeholder="https://registry.example.com" />
+              <input type="url" id="s-registry-url" data-field="registry_url" placeholder="https://registry.example.com" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label>Registry credentials</label>
-              <div class="hint">Per-agent pull credentials are issued by the platform, and the
-                cluster-wide build credential comes from <code>BUILD_PUSH_TOKEN</code> — neither is
-                configured from this page.</div>
-            </div>
-            <div class="setting-control"></div>
-          </div>
-        </div>
-
-        <div class="panel" data-panel="sso">
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-oidc-issuer">Issuer URL</label>
-              <div class="hint">Your IdP's discovery base URL, e.g. <code>https://login.microsoftonline.com/&lt;tenant&gt;/v2.0</code>.</div>
+              <label for="s-registry-user">Registry username</label>
             </div>
             <div class="setting-control">
-              <input type="url" id="s-oidc-issuer" data-field="oidc_issuer_url" data-allow-empty />
+              <input type="text" id="s-registry-user" data-field="registry_username" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-client-id">Client ID</label>
+              <label for="s-registry-pass">Registry password</label>
             </div>
             <div class="setting-control">
-              <input type="text" id="s-oidc-client-id" data-field="oidc_client_id" data-allow-empty />
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-oidc-client-secret">Client secret</label>
-              <!-- No data-allow-empty: the server treats an empty string as
-                   "clear the secret" and an absent field as "leave it alone",
-                   so a blank box must not be submitted. -->
-              <div class="hint" id="s-oidc-secret-state">Write-only — leave blank to keep the stored secret.</div>
-            </div>
-            <div class="setting-control">
-              <input type="password" id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" />
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-oidc-redirect">Redirect URI</label>
-              <div class="hint">Must match the IdP registration exactly.</div>
-            </div>
-            <div class="setting-control">
-              <input type="url" id="s-oidc-redirect" data-field="oidc_redirect_uri" data-allow-empty />
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-oidc-scopes">Scopes</label>
-              <div class="hint">Space-separated. Defaults to <code>openid profile email</code>.</div>
-            </div>
-            <div class="setting-control">
-              <input type="text" id="s-oidc-scopes" data-field="oidc_scopes" data-allow-empty placeholder="openid profile email" />
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-oidc-label">Button label</label>
-              <div class="hint">Overrides the sign-in button text.</div>
-            </div>
-            <div class="setting-control">
-              <input type="text" id="s-oidc-label" data-field="oidc_provider_label" data-allow-empty placeholder="Microsoft" />
+              <input type="password" id="s-registry-pass" data-field="registry_password" />
             </div>
           </div>
         </div>
@@ -226,23 +148,12 @@ class SettingsPage extends HTMLElement {
     this.querySelectorAll('[data-field]').forEach(el => {
       if (s[el.dataset.field] != null) el.value = s[el.dataset.field];
     });
-
-    // The secret itself is never returned — only whether one is stored.
-    const secretState = this.querySelector('#s-oidc-secret-state');
-    if (secretState) {
-      secretState.textContent = s.oidc_client_secret_configured
-        ? 'A secret is stored. Leave blank to keep it, or enter a new one to replace it.'
-        : 'No secret stored yet — SSO stays disabled until one is set.';
-    }
   }
 
   #save() {
     const btn = this.querySelector('#btn-save');
     withLoading(btn, 'Saving…', async () => {
       const updated = { ...this.#settings };
-      // Read-only on the wire: sending it back is harmless (serde ignores it)
-      // but dropping it keeps the payload honest about what it's asking to set.
-      delete updated.oidc_client_secret_configured;
       this.querySelectorAll('[data-field]').forEach(el => {
         const v = el.value.trim();
         // data-allow-empty fields round-trip '' so they can be cleared.

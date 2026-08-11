@@ -146,10 +146,8 @@ class LlmRouterPage extends HTMLElement {
               <div class="config-name">${this.#esc(c.name)}</div>
               <div class="config-tools">
                 <button class="icon-btn star-btn ${c.is_default ? 'is-default' : ''}"
-                  data-action="${c.is_default ? 'clear-default' : 'set-default'}" data-id="${c.id}"
-                  aria-pressed="${c.is_default ? 'true' : 'false'}"
-                  aria-label="${c.is_default ? 'Remove default' : 'Make default'}"
-                  title="${c.is_default ? 'Remove default' : 'Make default'}" type="button">${IC_STAR()}</button>
+                  ${c.is_default ? 'disabled aria-label="Default config"' : `data-action="set-default" data-id="${c.id}" aria-label="Make default"`}
+                  title="${c.is_default ? 'Default config' : 'Make default'}" type="button">${IC_STAR()}</button>
                 <button class="icon-btn danger-btn" data-action="delete-config" data-id="${c.id}" aria-label="Delete config" title="Delete config" type="button">${icons.trash('', 15)}</button>
               </div>
             </div>
@@ -294,8 +292,6 @@ class LlmRouterPage extends HTMLElement {
       this.#deleteConfig(el.dataset.id);
     } else if (action === 'set-default') {
       this.#setDefault(el.dataset.id);
-    } else if (action === 'clear-default') {
-      this.#clearDefault(el.dataset.id);
     }
   }
 
@@ -364,20 +360,6 @@ class LlmRouterPage extends HTMLElement {
       showToast(err?.message || 'Failed to set default');
       return;
     }
-    this.#load();
-  }
-
-  /// The star is a toggle, not a one-way switch. Previously the default config's
-  /// star was rendered `disabled`, so the flag could only ever be moved to
-  /// another config — with one config there was no way to unset it at all.
-  async #clearDefault(id) {
-    try {
-      await window.clearDefaultLlmConfig(id);
-    } catch (err) {
-      showToast(err?.message || 'Failed to remove default');
-      return;
-    }
-    showToast('Default cleared — agents now fall back to the platform key');
     this.#load();
   }
 

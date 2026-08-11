@@ -392,27 +392,13 @@ export class AppHeader extends HTMLElement {
     if (cached) {
       try { this.navItems = JSON.parse(cached); } catch { /* ignore bad cache */ }
     }
-    // Identity comes from a per-tab cache too, so a warm shell renders
-    // complete on the first pass — see auth-service.
-    const hadUser = authService.isAuthenticated();
-    const renderedFromCache = Boolean(this.navItems?.length);
-    if (renderedFromCache) {
+    if (this.navItems?.length) {
       this.render();
     } else {
       this.#renderSkeleton();
     }
-
-    const before = renderedFromCache ? JSON.stringify(this.navItems) : null;
     await Promise.all([this.loadNavigation(), authService.fetchCurrentUser()]);
-
-    // Re-rendering an identical shell is what made the sidebar visibly rebuild
-    // on every MPA navigation (losing hover/focus and flashing). Only repaint
-    // when the nav or the identity actually changed.
-    const navChanged = before !== JSON.stringify(this.navItems);
-    const userArrived = !hadUser && authService.isAuthenticated();
-    if (!renderedFromCache || navChanged || userArrived) {
-      this.render();
-    }
+    this.render();
     document.addEventListener("keydown", this.#handleKeyDown);
   }
 

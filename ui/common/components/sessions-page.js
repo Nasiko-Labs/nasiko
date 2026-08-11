@@ -4,21 +4,10 @@ import './app-button.js';
 import './app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-/// Rows requested per page. `/api/chat/sessions` is keyset-paginated and the
-/// observability list charges one trace-store lookup per row, so paging is what
-/// keeps this page fast — it previously asked for 50 sessions in one shot and
-/// had no way to reach the 51st.
-const PAGE_SIZE = 25;
-
 class SessionsPage extends HTMLElement {
   #initialized = false;
-  /// Every session loaded so far, across pages.
   #sessions = [];
   #obsStats = new Map();
-  /// Opaque keyset cursor for the next page; null once the list is exhausted.
-  #nextCursor = null;
-  #loadingMore = false;
-  #filter = '';
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -44,10 +33,6 @@ class SessionsPage extends HTMLElement {
       <div class="session-list" id="session-list">
         ${this.#renderSkeletons()}
       </div>
-      <div class="sessions-more" id="sessions-more" hidden>
-        <app-button variant="secondary" size="sm" id="btn-more">Load more</app-button>
-        <span class="sessions-count" id="sessions-count"></span>
-      </div>
     `;
 
     this.querySelector('#btn-new')?.addEventListener('click', () => {
@@ -57,11 +42,8 @@ class SessionsPage extends HTMLElement {
     });
 
     this.querySelector('.sessions-search')?.addEventListener('input', (e) => {
-      this.#filter = e.target.value;
-      this.#applyFilter();
+      this.#filterSessions(e.target.value);
     });
-
-    this.querySelector('#btn-more')?.addEventListener('click', () => this.#load({ more: true }));
   }
 
   #renderSkeletons() {
@@ -78,29 +60,20 @@ class SessionsPage extends HTMLElement {
     </div>`;
   }
 
-  /// Loads one page. `more: true` appends the next page instead of replacing.
-  async #load({ more = false } = {}) {
+  async #load() {
     const list = this.querySelector('#session-list');
-    const moreBtn = this.querySelector('#btn-more');
-    if (more && (this.#loadingMore || !this.#nextCursor)) return;
-    this.#loadingMore = more;
-    if (more) moreBtn?.setAttribute('loading', '');
-
     try {
       // Chat sessions are the primary source; observability stats (traces,
       // tokens, latency) are joined in by session id — best-effort, the page
-      // works without them. Both are asked for the same window so the stats
-      // request only does work for rows that are about to be shown.
-      const offset = more ? this.#sessions.length : 0;
+      // works without them.
       const [chatRes, obsRes] = await Promise.allSettled([
-        window.fetchSessions('', PAGE_SIZE, more ? this.#nextCursor : null),
-        window.fetchObservabilitySessions?.(PAGE_SIZE, offset) ?? Promise.reject(),
+        window.fetchSessions('', 1, 50),
+        window.fetchObservabilitySessions?.() ?? Promise.reject(),
       ]);
       if (chatRes.status === 'rejected') throw chatRes.reason;
+      const sessions = chatRes.value?.data || [];
 
-      const page = chatRes.value?.data || [];
-      this.#nextCursor = chatRes.value?.next_cursor || null;
-
+      this.#obsStats = new Map();
       if (obsRes.status === 'fulfilled') {
         const obsSessions = obsRes.value?.data?.sessions || obsRes.value?.sessions || [];
         for (const o of obsSessions) {
@@ -109,15 +82,9 @@ class SessionsPage extends HTMLElement {
         }
       }
 
-      this.#sessions = more ? [...this.#sessions, ...page] : page;
-      this.#applyFilter();
+      this.#sessions = sessions;
+      this.#renderSessions(sessions);
     } catch {
-      // A failed "load more" must not discard the pages already on screen.
-      if (more) {
-        const { showToast } = await import('/common/utils/toast.js');
-        showToast('Could not load more sessions.');
-        return;
-      }
       list.innerHTML = `<app-empty-state
         title="Failed to load sessions"
         description="Something went wrong while loading your chat sessions."
@@ -128,42 +95,21 @@ class SessionsPage extends HTMLElement {
         list.innerHTML = this.#renderSkeletons();
         this.#load();
       });
-    } finally {
-      this.#loadingMore = false;
-      moreBtn?.removeAttribute('loading');
-      this.#renderPager();
     }
   }
 
-  /// The search box filters the pages already loaded — it is not a server-side
-  /// query, so say so in the footer rather than implying the whole history was
-  /// searched.
-  #applyFilter() {
-    const q = this.#filter.toLowerCase().trim();
-    const visible = !q ? this.#sessions : this.#sessions.filter(s => {
+  #filterSessions(query) {
+    const q = (query || '').toLowerCase().trim();
+    if (!q) {
+      this.#renderSessions(this.#sessions);
+      return;
+    }
+    const filtered = this.#sessions.filter(s => {
       const agent = (s.agent_name || 'Orchestrator').toLowerCase();
       const msg = (s.last_message || '').toLowerCase();
       return agent.includes(q) || msg.includes(q);
     });
-    this.#renderSessions(visible);
-    this.#renderPager();
-  }
-
-  #renderPager() {
-    const wrap = this.querySelector('#sessions-more');
-    const count = this.querySelector('#sessions-count');
-    if (!wrap || !count) return;
-
-    const loaded = this.#sessions.length;
-    if (!loaded) {
-      wrap.hidden = true;
-      return;
-    }
-    wrap.hidden = false;
-    this.querySelector('#btn-more').hidden = !this.#nextCursor;
-    count.textContent = this.#nextCursor
-      ? `Showing ${loaded} sessions`
-      : `Showing all ${loaded} session${loaded === 1 ? '' : 's'}`;
+    this.#renderSessions(filtered);
   }
 
   #renderSessions(sessions) {
@@ -291,8 +237,8 @@ class SessionsPage extends HTMLElement {
         await window.deleteSession(sessionId);
       }
       this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
-      this.#obsStats.delete(sessionId);
-      this.#applyFilter();
+      const query = this.querySelector('.sessions-search')?.value || '';
+      this.#filterSessions(query);
     } catch {
       if (card) card.style.opacity = '1';
     }

@@ -63,22 +63,11 @@ styles.replaceSync(`@scope (agent-llm-config) {
   .btn-save:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--color-primary-ring); }
   .msg { color: var(--color-text-muted); font-style: italic; }
   .msg.error { color: var(--color-error); font-style: normal; }
-  .source-note {
-    margin-bottom: var(--space-md);
-    font-size: var(--font-size-xs);
-    font-style: normal;
-  }
-  .source-note code { font-style: normal; }
 }`);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class AgentLlmConfig extends HTMLElement {
   #agentId = null;
-  // Which `llm_configs` row backs this agent, and how we got it:
-  // 'attached' (this agent points at it), 'owner-default' (the owner's default,
-  // shared by every unattached agent) or 'none'.
-  #configId = null;
-  #configSource = 'none';
 
   connectedCallback() {
     this.#agentId = this.getAttribute('agent-id');
@@ -106,13 +95,7 @@ class AgentLlmConfig extends HTMLElement {
     }
     // GET /api/secrets answers with the ApiResponse envelope ({data:[…]});
     // tolerate a bare array too so older servers keep working.
-    // The llm-config GET is enveloped the same way — reading it off the top
-    // level (as this did) yields undefined for every field, which is why the
-    // form always came up blank even for an agent with a config attached.
-    const payload = config?.data ?? config;
-    this.#configId = payload?.llm_config_id ?? null;
-    this.#configSource = payload?.source ?? 'none';
-    this.#render(payload, Array.isArray(secrets) ? secrets : (secrets?.data ?? []));
+    this.#render(config, Array.isArray(secrets) ? secrets : (secrets?.data ?? []));
   }
 
   #render(config, secrets) {
@@ -131,22 +114,11 @@ class AgentLlmConfig extends HTMLElement {
       `<option value="">— Platform default key —</option>`,
       ...secrets.map((s) => {
         const name = s.name ?? s.key ?? '';
-        const safe = this.#esc(name);
-        return `<option value="${safe}"${name === secretName ? ' selected' : ''}>${safe}</option>`;
+        return `<option value="${name}"${name === secretName ? ' selected' : ''}>${name}</option>`;
       }),
     ].join('');
 
-    // Be explicit about what a save will touch — "owner-default" means these
-    // values come from a config shared with every other unattached agent, and
-    // saving will fork a dedicated one rather than edit that.
-    const sourceNote = {
-      attached: `Editing <code>${this.#esc(llm.name || 'this agent’s config')}</code>, attached to this agent.`,
-      'owner-default': `Showing your default config <code>${this.#esc(llm.name || '')}</code>. Saving creates a dedicated config for this agent and leaves the default alone.`,
-      none: 'No config yet — saving creates one dedicated to this agent.',
-    }[this.#configSource] || '';
-
     this.innerHTML = `
-      ${sourceNote ? `<p class="msg source-note">${sourceNote}</p>` : ''}
       <div class="grid-2">
         <div class="row">
           <label>Provider</label>
@@ -155,7 +127,7 @@ class AgentLlmConfig extends HTMLElement {
         </div>
         <div class="row">
           <label>Model</label>
-          <input id="model" type="text" value="${this.#esc(model)}" placeholder="e.g. gpt-4o-mini" />
+          <input id="model" type="text" value="${model}" placeholder="e.g. gpt-4o-mini" />
           <div class="hint">Provider-native model id. The request's model is ignored.</div>
         </div>
       </div>
@@ -179,7 +151,7 @@ class AgentLlmConfig extends HTMLElement {
 
       <div class="row">
         <label>Fallback models</label>
-        <input id="fallback_models" type="text" value="${this.#esc(fallbacks)}" placeholder="provider/model, provider/model" />
+        <input id="fallback_models" type="text" value="${fallbacks}" placeholder="provider/model, provider/model" />
         <div class="hint">Comma-separated, tried in order on failure (e.g. <code>openai/gpt-4o-mini</code>).</div>
       </div>
 
@@ -198,13 +170,6 @@ class AgentLlmConfig extends HTMLElement {
     saveBtn.addEventListener('click', withLoading(saveBtn, 'Saving…', () => this.#save()));
   }
 
-  /// Provider/model/temperature/max_tokens/fallbacks/api-key all live on an
-  /// `llm_configs` row — `PATCH /agents/{id}/llm-config` only understands
-  /// `llm_config_id`, `inbound_format` and `pinned_model`, so sending them
-  /// there (as this used to) was accepted with a 200 and silently discarded.
-  ///
-  /// So: write the model fields to the backing config, and send only
-  /// `inbound_format` to the agent.
   async #save() {
     const val = (id) => this.querySelector(`#${id}`).value.trim();
     const provider = val('provider');
@@ -217,80 +182,25 @@ class AgentLlmConfig extends HTMLElement {
       const v = val(id);
       return v === '' ? null : Number(v);
     };
-    const configBody = {
+    const body = {
       provider,
       model,
+      inbound_format: val('inbound_format'),
       temperature: num('temperature'),
       max_tokens: num('max_tokens'),
       fallback_models: val('fallback_models').split(',').map((s) => s.trim()).filter(Boolean),
       api_key_secret_name: val('api_key_secret_name') || null,
     };
-    const inboundFormat = val('inbound_format');
 
     try {
-      // Editing the owner's default in place would silently re-point every
-      // other agent that falls back to it, so anything not already attached to
-      // THIS agent gets its own config instead.
-      if (this.#configSource === 'attached' && this.#configId) {
-        await this.#patchConfig(this.#configId, configBody);
-      } else {
-        this.#configId = await this.#createDedicatedConfig(configBody);
-        this.#configSource = 'attached';
-      }
-
       await fetchApi(`/agents/${this.#agentId}/llm-config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          llm_config_id: this.#configId,
-          inbound_format: inboundFormat,
-        }),
+        body: JSON.stringify(body),
       });
       showToast('LLM config saved');
     } catch (e) {
       showToast(`Failed: ${e.message}`);
-    }
-  }
-
-  #esc(str) {
-    if (str == null) return '';
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-    })[m]);
-  }
-
-  #patchConfig(id, body) {
-    return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  }
-
-  /// Creates (or reuses) a config named for this agent and returns its id.
-  /// The name is derived from the agent id so the call is idempotent — a retry
-  /// after a partial save updates the same row instead of piling up configs.
-  async #createDedicatedConfig(body) {
-    const name = `agent-${this.#agentId}`;
-    try {
-      const created = await fetchApi('/llm-configs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ...body }),
-      });
-      const id = (created?.data ?? created)?.id;
-      if (!id) throw new Error('server did not return a config id');
-      return id;
-    } catch (e) {
-      // 409 — we already made this agent's config on an earlier save. Find it
-      // and update it rather than failing the save.
-      if (!/already exists|409/i.test(e.message)) throw e;
-      const list = await fetchApi('/llm-configs');
-      const rows = Array.isArray(list) ? list : (list?.data ?? []);
-      const existing = rows.find((c) => c.name === name);
-      if (!existing) throw e;
-      await this.#patchConfig(existing.id, body);
-      return existing.id;
     }
   }
 }
