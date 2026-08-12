@@ -33,6 +33,15 @@ pub struct ChatSessionView {
     pub updated_at: DateTime<Utc>,
     pub agent_name: Option<String>,
     pub last_message: Option<String>,
+    // Per-session rollups computed in the list query itself, so the sessions
+    // page renders its stats columns without a trace-store round-trip.
+    // `total_tokens` covers **platform-paid** spend only (migration 041), so a
+    // NULL means "nothing billed here", not "no data" — BYO-key agent spend is
+    // visible on the session detail page, which reads Tempo.
+    pub message_count: Option<i64>,
+    pub trace_count: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub latency_p50_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

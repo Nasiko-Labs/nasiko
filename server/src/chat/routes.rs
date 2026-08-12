@@ -75,6 +75,45 @@ fn default_session_limit() -> i64 {
     50
 }
 
+/// `SELECT`/`FROM` prefix shared by the four keyset variants below; each appends
+/// its own `WHERE`/`ORDER BY`/`LIMIT`. No user input is interpolated — the
+/// variants differ only in fixed predicates and bind-parameter numbering.
+///
+/// The second `LATERAL` is what keeps the sessions page off the trace store:
+/// message/trace counts, billed tokens and p50 latency all come from
+/// `chat_messages` columns (migration 041), covered by
+/// `idx_messages_session(session_id, timestamp)`.
+const SESSION_LIST_SELECT: &str = r#"
+    SELECT cs.*,
+           a.name AS agent_name,
+           lm.content AS last_message,
+           agg.message_count,
+           agg.trace_count,
+           agg.total_tokens,
+           agg.latency_p50_ms
+    FROM chat_sessions cs
+    LEFT JOIN agents a ON a.id = cs.agent_id
+    LEFT JOIN LATERAL (
+        SELECT content FROM chat_messages
+        WHERE session_id = cs.session_id
+        ORDER BY timestamp DESC LIMIT 1
+    ) lm ON true
+    LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS message_count,
+               COUNT(DISTINCT m.trace_id) AS trace_count,
+               -- NULL rather than 0 when nothing was platform-paid, so the UI
+               -- shows "—" (not billed) instead of a misleading zero.
+               NULLIF(SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)), 0)
+                   AS total_tokens,
+               -- percentile_cont ignores NULL inputs, so messages written
+               -- before migration 041 are skipped rather than counted as 0ms.
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY m.duration_ms)
+                   AS latency_p50_ms
+        FROM chat_messages m
+        WHERE m.session_id = cs.session_id
+    ) agg ON true
+"#;
+
 async fn list_sessions(
     State(state): State<AppState>,
     claims: Claims,
@@ -93,21 +132,12 @@ async fn list_sessions(
 
     let query_result: Result<Vec<ChatSessionView>, _> = match (cursor_anchor, params.agent_id) {
         (None, None) => {
-            sqlx::query_as::<_, ChatSessionView>(
-                r#"SELECT cs.*,
-                      a.name as agent_name,
-                      lm.content as last_message
-               FROM chat_sessions cs
-               LEFT JOIN agents a ON a.id = cs.agent_id
-               LEFT JOIN LATERAL (
-                   SELECT content FROM chat_messages
-                   WHERE session_id = cs.session_id
-                   ORDER BY timestamp DESC LIMIT 1
-               ) lm ON true
-               WHERE cs.user_id = $1
-               ORDER BY cs.updated_at DESC, cs.session_id DESC
-               LIMIT $2"#,
-            )
+            sqlx::query_as::<_, ChatSessionView>(&format!(
+                "{SESSION_LIST_SELECT}
+                 WHERE cs.user_id = $1
+                 ORDER BY cs.updated_at DESC, cs.session_id DESC
+                 LIMIT $2"
+            ))
             .bind(user_id)
             .bind(fetch)
             .fetch_all(&state.db)
@@ -115,21 +145,12 @@ async fn list_sessions(
         }
 
         (None, Some(agent_id)) => {
-            sqlx::query_as::<_, ChatSessionView>(
-                r#"SELECT cs.*,
-                      a.name as agent_name,
-                      lm.content as last_message
-               FROM chat_sessions cs
-               LEFT JOIN agents a ON a.id = cs.agent_id
-               LEFT JOIN LATERAL (
-                   SELECT content FROM chat_messages
-                   WHERE session_id = cs.session_id
-                   ORDER BY timestamp DESC LIMIT 1
-               ) lm ON true
-               WHERE cs.user_id = $1 AND cs.agent_id = $2
-               ORDER BY cs.updated_at DESC, cs.session_id DESC
-               LIMIT $3"#,
-            )
+            sqlx::query_as::<_, ChatSessionView>(&format!(
+                "{SESSION_LIST_SELECT}
+                 WHERE cs.user_id = $1 AND cs.agent_id = $2
+                 ORDER BY cs.updated_at DESC, cs.session_id DESC
+                 LIMIT $3"
+            ))
             .bind(user_id)
             .bind(agent_id)
             .bind(fetch)
@@ -138,22 +159,13 @@ async fn list_sessions(
         }
 
         (Some((cursor_ts, cursor_sid)), None) => {
-            sqlx::query_as::<_, ChatSessionView>(
-                r#"SELECT cs.*,
-                      a.name as agent_name,
-                      lm.content as last_message
-               FROM chat_sessions cs
-               LEFT JOIN agents a ON a.id = cs.agent_id
-               LEFT JOIN LATERAL (
-                   SELECT content FROM chat_messages
-                   WHERE session_id = cs.session_id
-                   ORDER BY timestamp DESC LIMIT 1
-               ) lm ON true
-               WHERE cs.user_id = $1
-                 AND (cs.updated_at < $2 OR (cs.updated_at = $2 AND cs.session_id < $3))
-               ORDER BY cs.updated_at DESC, cs.session_id DESC
-               LIMIT $4"#,
-            )
+            sqlx::query_as::<_, ChatSessionView>(&format!(
+                "{SESSION_LIST_SELECT}
+                 WHERE cs.user_id = $1
+                   AND (cs.updated_at < $2 OR (cs.updated_at = $2 AND cs.session_id < $3))
+                 ORDER BY cs.updated_at DESC, cs.session_id DESC
+                 LIMIT $4"
+            ))
             .bind(user_id)
             .bind(cursor_ts)
             .bind(cursor_sid)
@@ -163,22 +175,13 @@ async fn list_sessions(
         }
 
         (Some((cursor_ts, cursor_sid)), Some(agent_id)) => {
-            sqlx::query_as::<_, ChatSessionView>(
-                r#"SELECT cs.*,
-                      a.name as agent_name,
-                      lm.content as last_message
-               FROM chat_sessions cs
-               LEFT JOIN agents a ON a.id = cs.agent_id
-               LEFT JOIN LATERAL (
-                   SELECT content FROM chat_messages
-                   WHERE session_id = cs.session_id
-                   ORDER BY timestamp DESC LIMIT 1
-               ) lm ON true
-               WHERE cs.user_id = $1 AND cs.agent_id = $2
-                 AND (cs.updated_at < $3 OR (cs.updated_at = $3 AND cs.session_id < $4))
-               ORDER BY cs.updated_at DESC, cs.session_id DESC
-               LIMIT $5"#,
-            )
+            sqlx::query_as::<_, ChatSessionView>(&format!(
+                "{SESSION_LIST_SELECT}
+                 WHERE cs.user_id = $1 AND cs.agent_id = $2
+                   AND (cs.updated_at < $3 OR (cs.updated_at = $3 AND cs.session_id < $4))
+                 ORDER BY cs.updated_at DESC, cs.session_id DESC
+                 LIMIT $5"
+            ))
             .bind(user_id)
             .bind(agent_id)
             .bind(cursor_ts)

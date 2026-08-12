@@ -4,17 +4,15 @@ import './app-button.js';
 import './app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-/// Rows requested per page. `/api/chat/sessions` is keyset-paginated and the
-/// observability list charges one trace-store lookup per row, so paging is what
-/// keeps this page fast — it previously asked for 50 sessions in one shot and
-/// had no way to reach the 51st.
+/// Rows requested per page. `/api/chat/sessions` is keyset-paginated — it
+/// previously asked for 50 sessions in one shot and had no way to reach the
+/// 51st.
 const PAGE_SIZE = 25;
 
 class SessionsPage extends HTMLElement {
   #initialized = false;
   /// Every session loaded so far, across pages.
   #sessions = [];
-  #obsStats = new Map();
   /// Opaque keyset cursor for the next page; null once the list is exhausted.
   #nextCursor = null;
   #loadingMore = false;
@@ -87,27 +85,14 @@ class SessionsPage extends HTMLElement {
     if (more) moreBtn?.setAttribute('loading', '');
 
     try {
-      // Chat sessions are the primary source; observability stats (traces,
-      // tokens, latency) are joined in by session id — best-effort, the page
-      // works without them. Both are asked for the same window so the stats
-      // request only does work for rows that are about to be shown.
-      const offset = more ? this.#sessions.length : 0;
-      const [chatRes, obsRes] = await Promise.allSettled([
-        window.fetchSessions('', PAGE_SIZE, more ? this.#nextCursor : null),
-        window.fetchObservabilitySessions?.(PAGE_SIZE, offset) ?? Promise.reject(),
-      ]);
-      if (chatRes.status === 'rejected') throw chatRes.reason;
+      // One request for the whole page. The stats columns used to come from
+      // `/api/observability/session/list`, which costs a trace-store lookup per
+      // row and gated the render on the slowest one; they now ride along on the
+      // session rows themselves, aggregated in the same SQL query.
+      const res = await window.fetchSessions('', PAGE_SIZE, more ? this.#nextCursor : null);
 
-      const page = chatRes.value?.data || [];
-      this.#nextCursor = chatRes.value?.next_cursor || null;
-
-      if (obsRes.status === 'fulfilled') {
-        const obsSessions = obsRes.value?.data?.sessions || obsRes.value?.sessions || [];
-        for (const o of obsSessions) {
-          const id = o.session_id || o.id;
-          if (id) this.#obsStats.set(id, o);
-        }
-      }
+      const page = res?.data || [];
+      this.#nextCursor = res?.next_cursor || null;
 
       this.#sessions = more ? [...this.#sessions, ...page] : page;
       this.#applyFilter();
@@ -193,7 +178,7 @@ class SessionsPage extends HTMLElement {
           <tr>
             <th>Sessions</th>
             <th>Traces count</th>
-            <th>Tokens</th>
+            <th title="Platform-paid tokens. Agents using their own API key are not metered here — see the session's traces.">Tokens (billed)</th>
             <th>Latency P50</th>
             <th>Date</th>
             <th class="col-actions">Actions</th>
@@ -233,10 +218,12 @@ class SessionsPage extends HTMLElement {
     const sessionId = s.session_id;
     const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
-    const o = this.#obsStats.get(sessionId);
-    const traces = o?.num_traces ?? '—';
-    const tokens = o?.token_usage?.total ? this.#fmtCount(o.token_usage.total) : '—';
-    const p50 = o?.trace_latency_ms_p50 ? this.#fmtMs(o.trace_latency_ms_p50) : '—';
+    // `total_tokens` is null when nothing in the session was platform-paid
+    // (a BYO-key agent), which reads as "—" — the same as no data. The header
+    // says "Tokens (billed)" so the blank isn't mistaken for zero usage.
+    const traces = s.trace_count ?? '—';
+    const tokens = s.total_tokens ? this.#fmtCount(s.total_tokens) : '—';
+    const p50 = s.latency_p50_ms ? this.#fmtMs(s.latency_p50_ms) : '—';
 
     return `<tr data-href="${href}" tabindex="0">
       <td class="col-session">
@@ -291,7 +278,6 @@ class SessionsPage extends HTMLElement {
         await window.deleteSession(sessionId);
       }
       this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
-      this.#obsStats.delete(sessionId);
       this.#applyFilter();
     } catch {
       if (card) card.style.opacity = '1';
