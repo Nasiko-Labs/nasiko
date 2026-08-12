@@ -155,7 +155,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             image.to_string(),
             vec![AGENT_PORT],
             env,
-            None,
+            &state.config.agent_default_memory,
             state.config.agent_max_replicas,
             // SEED_AGENTS has no --writable equivalent yet.
             false,

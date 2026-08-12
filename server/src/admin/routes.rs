@@ -438,7 +438,7 @@ async fn restart(
         image,
         vec![],
         env,
-        None,
+        &state.config.agent_default_memory,
         state.config.agent_max_replicas,
         writable,
         owner_id,

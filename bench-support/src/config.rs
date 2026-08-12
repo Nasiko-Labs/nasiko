@@ -81,6 +81,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         mcp_servers_network: "nasiko-mcp-servers-net".into(),
         mcp_upload_max_replicas: 1,
         agent_max_replicas: 1,
+        agent_default_memory: "512Mi".into(),
         k8s_namespace: "nasiko-bench".into(),
         kubeconfig: None,
         s3_endpoint: s3_ep,

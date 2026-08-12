@@ -402,6 +402,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         mcp_upload_max_replicas: 1,
         agent_max_replicas: 1,
+        agent_default_memory: "512Mi".to_string(),
         mcp_toolcount_ttl_seconds: 3600,
         seed_toolkits: vec![],
         app_base_url: "".to_string(),

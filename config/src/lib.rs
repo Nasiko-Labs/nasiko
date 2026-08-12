@@ -208,6 +208,16 @@ pub struct Config {
     /// MCP connectors. AGENT_MAX_REPLICAS, default 1 (no autoscaling unless
     /// explicitly raised). Ignored by DockerRuntime.
     pub agent_max_replicas: u32,
+    /// Default memory limit for every agent container, Kubernetes notation
+    /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
+    /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
+    /// itself still defaults to `"512Mi"` (its own hermetic fallback for
+    /// callers outside the server, e.g. tests) — this is the value the server
+    /// actually uses for every agent deploy unless a future per-agent
+    /// override is added. Raised from the runtime crate's original 512Mi
+    /// after opencode (3 concurrent Node/Bun processes) was repeatedly
+    /// OOM-killed under real chat load at that limit.
+    pub agent_default_memory: String,
     /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
     /// unconnected catalog cards — changes rarely, so a much longer TTL than
     /// the permission/session caches.
@@ -371,6 +381,7 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
+            agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
             mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
             seed_toolkits: std::env::var("SEED_TOOLKITS")
                 .unwrap_or_default()
@@ -391,22 +402,6 @@ impl Config {
     pub fn validate_secrets_key(&self) -> Result<(), String> {
         validate_secrets_key_format(&self.secrets_encryption_key)
     }
-}
-
-/// Strips a trailing `/v1` (and any trailing slashes) from an OpenAI-compatible
-/// base URL, for callers that append their own `/v1/...` path segment.
-///
-/// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.nasiko.dev` and `ee/server/.env` have it — so appending `/v1/whatever`
-/// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
-///
-/// Deliberately a free function rather than normalization applied to
-/// [`Config::openai_base_url`] itself: `ee/artifact-registry` uses the opposite
-/// convention (base URL *includes* `/v1`, it appends bare `/embeddings`), so
-/// the stored value has to stay verbatim.
-pub fn openai_base_url_without_v1(base_url: &str) -> &str {
-    let trimmed = base_url.trim_end_matches('/');
-    trimmed.strip_suffix("/v1").unwrap_or(trimmed)
 }
 
 fn validate_secrets_key_format(key: &str) -> Result<(), String> {
@@ -450,44 +445,5 @@ mod tests {
     #[test]
     fn invalid_base64_fails() {
         assert!(validate_secrets_key_format("not base64 at all!!!").is_err());
-    }
-
-    #[test]
-    fn base_url_written_with_v1_is_stripped() {
-        // The cp.nasiko.dev form — appending `/v1/audio/transcriptions` to the
-        // raw value produced `.../v1/v1/audio/transcriptions` and 404'd.
-        assert_eq!(
-            openai_base_url_without_v1("https://api.openai.com/v1"),
-            "https://api.openai.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("https://api.openai.com/v1/"),
-            "https://api.openai.com"
-        );
-    }
-
-    #[test]
-    fn base_url_written_without_v1_is_unchanged() {
-        assert_eq!(
-            openai_base_url_without_v1("https://api.deepseek.com"),
-            "https://api.deepseek.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("http://localhost:11434/"),
-            "http://localhost:11434"
-        );
-    }
-
-    #[test]
-    fn only_a_trailing_v1_segment_is_stripped() {
-        // A host or path that merely contains "v1" must survive intact.
-        assert_eq!(
-            openai_base_url_without_v1("https://v1.example.com"),
-            "https://v1.example.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("https://example.com/openai/v1/proxy"),
-            "https://example.com/openai/v1/proxy"
-        );
     }
 }

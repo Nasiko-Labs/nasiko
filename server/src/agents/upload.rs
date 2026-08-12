@@ -724,6 +724,7 @@ pub async fn execute_upload_and_deploy(
     agent_image_registry: String,
     max_replicas: u32,
     writable: bool,
+    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -776,7 +777,7 @@ pub async fn execute_upload_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            None,
+            &default_memory,
             max_replicas,
             writable,
             owner_id,
@@ -953,6 +954,7 @@ pub async fn execute_clone_and_deploy(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
+    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1008,7 +1010,7 @@ pub async fn execute_clone_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            None,
+            &default_memory,
             max_replicas,
             // GitHub-clone deploys don't expose a --writable flag yet.
             false,
@@ -1300,6 +1302,7 @@ pub async fn execute_github_clone_and_deploy(
         state.config.agent_runtime.clone(),
         state.config.agent_image_registry.clone(),
         state.config.agent_max_replicas,
+        state.config.agent_default_memory.clone(),
     )
     .await;
 }

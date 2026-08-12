@@ -272,6 +272,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.agent_image_registry.clone(),
                 state.config.agent_max_replicas,
                 writable,
+                state.config.agent_default_memory.clone(),
             )
             .await;
         }
@@ -386,6 +387,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.agent_runtime.clone(),
                 state.config.agent_image_registry.clone(),
                 state.config.agent_max_replicas,
+                state.config.agent_default_memory.clone(),
             )
             .await;
         }

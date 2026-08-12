@@ -159,7 +159,7 @@ pub(crate) fn build_agent_spec(
     image: impl Into<String>,
     ports: Vec<u16>,
     env: HashMap<String, String>,
-    resources: Option<ResourceLimits>,
+    default_memory: &str,
     max_replicas: u32,
     writable: bool,
     owner_id: Uuid,
@@ -176,7 +176,15 @@ pub(crate) fn build_agent_spec(
         env_vars: env,
         min_replicas: 1,
         max_replicas,
-        resources,
+        // No per-agent override exists yet — every caller wants the
+        // platform's configured default (AGENT_DEFAULT_MEMORY, see
+        // Config::agent_default_memory's doc comment). cpu_milli is
+        // unaffected by this change: the OOM issue this fixes is specific to
+        // memory, and 500m has never been observed to be insufficient.
+        resources: Some(ResourceLimits {
+            memory: default_memory.to_owned(),
+            cpu_milli: 500,
+        }),
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
         harden: false,
@@ -229,7 +237,7 @@ mod spec_tests {
             "img:1",
             vec![],
             HashMap::new(),
-            None,
+            "512Mi",
             1,
             false,
             Uuid::nil(),
@@ -240,7 +248,7 @@ mod spec_tests {
             "img:2",
             vec![],
             HashMap::new(),
-            None,
+            "512Mi",
             1,
             false,
             Uuid::nil(),
@@ -260,7 +268,7 @@ mod spec_tests {
             "img:1",
             vec![9091],
             HashMap::new(),
-            None,
+            "512Mi",
             1,
             false,
             Uuid::nil(),
@@ -277,7 +285,7 @@ mod spec_tests {
             "img:1",
             vec![],
             HashMap::new(),
-            None,
+            "512Mi",
             5,
             false,
             Uuid::nil(),
@@ -287,6 +295,28 @@ mod spec_tests {
             "max_replicas must match the parameter, not be hardcoded"
         );
         assert_eq!(s.min_replicas, 1);
+    }
+
+    #[test]
+    fn spec_memory_comes_from_default_memory_parameter() {
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![],
+            HashMap::new(),
+            "2Gi",
+            1,
+            false,
+            Uuid::nil(),
+        );
+        assert_eq!(
+            s.resources.expect("resources must always be set").memory,
+            "2Gi",
+            "memory must match the default_memory parameter (AGENT_DEFAULT_MEMORY), not a \
+             hardcoded value"
+        );
     }
 
     #[test]
