@@ -218,6 +218,17 @@ pub struct Config {
     /// after opencode (3 concurrent Node/Bun processes) was repeatedly
     /// OOM-killed under real chat load at that limit.
     pub agent_default_memory: String,
+    /// Name of the single named Docker volume every `--writable` agent shares
+    /// (each mounted at its own `volume-subpath`) — see
+    /// `nasiko_runtime::DockerRuntimeConfig::agent_memory_volume`.
+    /// AGENT_MEMORY_VOLUME, default `"nasiko-agent-memory"`.
+    pub agent_memory_volume: String,
+    /// Image for the short-lived helper container that pre-creates a
+    /// `--writable` agent's subdirectory inside `agent_memory_volume` — see
+    /// `nasiko_runtime::DockerRuntimeConfig::agent_memory_init_image`.
+    /// AGENT_MEMORY_INIT_IMAGE, default `"alpine:3.21"` (override for
+    /// air-gapped or internal-mirror setups).
+    pub agent_memory_init_image: String,
     /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
     /// unconnected catalog cards — changes rarely, so a much longer TTL than
     /// the permission/session caches.
@@ -382,6 +393,8 @@ impl Config {
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
+            agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
+            agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),
             mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
             seed_toolkits: std::env::var("SEED_TOOLKITS")
                 .unwrap_or_default()

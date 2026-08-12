@@ -65,6 +65,8 @@ pub async fn build_docker_runtime(
     let docker = DockerRuntime::new(DockerRuntimeConfig {
         network: config.docker_agent_network.clone(),
         registry_host: config.oci_registry_host.clone(),
+        agent_memory_volume: config.agent_memory_volume.clone(),
+        agent_memory_init_image: config.agent_memory_init_image.clone(),
         ..DockerRuntimeConfig::default()
     })
     .await?
@@ -78,32 +80,6 @@ pub async fn build_docker_runtime(
             network = %config.mcp_servers_network,
             "failed to ensure MCP servers network exists at startup"
         );
-    }
-
-    // When the server itself runs inside Docker (e.g. docker compose), it must
-    // also be on the MCP servers network so it can reach MCP connector containers
-    // for readiness checks. The hostname inside a container is the short
-    // container ID by default.
-    if let Ok(hostname) = std::env::var("HOSTNAME") {
-        match docker
-            .connect_container_to_network(&hostname, &config.mcp_servers_network)
-            .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    network = %config.mcp_servers_network,
-                    "attached server container to MCP servers network"
-                );
-            }
-            Err(e) => {
-                // "already connected" or not running in Docker — both fine.
-                tracing::debug!(
-                    error = %e,
-                    network = %config.mcp_servers_network,
-                    "could not attach server to MCP servers network (expected when not running in Docker)"
-                );
-            }
-        }
     }
     Ok(instrument(docker, config))
 }
