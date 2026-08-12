@@ -741,12 +741,13 @@ async fn agent_stream(
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
     let _ = sqlx::query(
-        r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, 'running', '{}'::jsonb)
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
            ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&flow_id)
     .bind(user_id)
+    .bind(agent.id)
     .bind(&agent.name)
     .bind(query)
     .execute(&state.db)

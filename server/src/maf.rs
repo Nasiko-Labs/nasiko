@@ -1159,3 +1159,4 @@ async fn fetch_user_agents(
     .fetch_all(db)
     .await
 }
+
