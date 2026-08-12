@@ -7,6 +7,7 @@ pub mod llm_config;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
+pub mod versions;
 
 use std::collections::HashMap;
 use std::sync::Arc;

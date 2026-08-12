@@ -4,6 +4,7 @@ pub mod config;
 pub mod oci;
 pub mod skill;
 pub mod util;
+pub mod version_prompt;
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -31,6 +32,12 @@ pub enum AgentDevCommands {
         /// Target platform (e.g., linux/amd64)
         #[arg(long)]
         platform: Option<String>,
+        /// Explicit version, skipping AgentCard.json and any version prompt
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+        /// Non-interactive: auto-accept the suggested version instead of prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Build + run agent locally
     Run {
@@ -90,6 +97,16 @@ pub enum AgentOpsCommands {
         /// docs/WRITABLE_STORAGE_FLAG.md)
         #[arg(long)]
         writable: bool,
+        /// Explicit version, skipping AgentCard.json and any version prompt
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+        /// Non-interactive: auto-accept the suggested version instead of prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Explicit consent to replace an already-used version's content in place
+        /// (only takes effect together with --version; interactive runs are asked instead)
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -98,6 +115,16 @@ pub enum AgentOpsCommands {
         /// Agent name (defaults to image name)
         #[arg(long)]
         name: Option<String>,
+        /// Explicit version, skipping AgentCard.json and any version prompt
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+        /// Non-interactive: auto-accept the suggested version instead of prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Explicit consent to replace an already-used version's content in place
+        /// (only takes effect together with --version; interactive runs are asked instead)
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
     #[command(
@@ -110,7 +137,7 @@ pub enum AgentOpsCommands {
         /// Agent name (defaults to 'name' in AgentCard.json, then directory name)
         #[arg(long, short = 'n')]
         name: Option<String>,
-        /// Version tag (defaults to 'version' in AgentCard.json, then 'latest')
+        /// Version tag (defaults to 'version' in AgentCard.json, then 0.1.0)
         #[arg(long, short = 'v')]
         version: Option<String>,
         /// Container port
@@ -860,7 +887,18 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
             directory,
             tag,
             platform,
-        } => commands::build::build(&directory, tag.as_deref(), platform.as_deref()),
+            version,
+            yes,
+        } => commands::build::build_with_version_flags(
+            &directory,
+            tag.as_deref(),
+            platform.as_deref(),
+            version_prompt::VersionFlags {
+                version: version.as_deref(),
+                overwrite: false,
+                yes,
+            },
+        ),
         AgentDevCommands::Run { path, port } => commands::dev::run(&path, port),
         AgentDevCommands::Validate { directory } => commands::validate::validate(&directory),
         AgentDevCommands::Card { description, dir } => {
@@ -887,15 +925,37 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             env_file,
             env,
             writable,
-        } => commands::deploy::deploy(
+            version,
+            yes,
+            overwrite,
+        } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
             port,
             env_file.as_deref(),
             &env,
+            version_prompt::VersionFlags {
+                version: version.as_deref(),
+                overwrite,
+                yes,
+            },
             writable,
         ),
-        AgentOpsCommands::Push { image, name } => commands::push::push(&image, name.as_deref()),
+        AgentOpsCommands::Push {
+            image,
+            name,
+            version,
+            yes,
+            overwrite,
+        } => commands::push::push_with_version_flags(
+            &image,
+            name.as_deref(),
+            version_prompt::VersionFlags {
+                version: version.as_deref(),
+                overwrite,
+                yes,
+            },
+        ),
         AgentOpsCommands::Upload {
             source,
             name,
