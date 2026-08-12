@@ -286,7 +286,7 @@ pub async fn resolve(
 
     // Mirrors resolve_api_key: a secret name + non-empty owner uses the owner's key
     // (or errors) — everything else is the platform key.
-    let platform_paid = !(secret_name.is_some() && !owner_id.is_empty());
+    let platform_paid = secret_name.is_none() || owner_id.is_empty();
     let resolved = ResolvedConfig {
         litellm_model: format!("{}/{}", plan.provider, plan.model),
         provider: plan.provider,
