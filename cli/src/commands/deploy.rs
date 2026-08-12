@@ -222,6 +222,9 @@ fn deploy_from_directory(
                 "allow_overwrite": decision.overwrite,
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
+            if let Err(e) = crate::util::sync_card_version(&card_path, &card, &version) {
+                eprintln!("  ! Deployed, but failed to update AgentCard.json's version: {e}");
+            }
             println!("\n✓ Deployed {agent_name}:{version} (id: {id})");
             return Ok(());
         }
@@ -260,6 +263,9 @@ fn deploy_from_directory(
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
     println!("  {} → {}", agent_name, status.state);
+    if let Err(e) = crate::util::sync_card_version(&card_path, &card, &version) {
+        eprintln!("  ! Deployed, but failed to update AgentCard.json's version: {e}");
+    }
     println!("\n✓ Deployed {agent_name}:{version} (id: {agent_id})");
     Ok(())
 }

@@ -187,6 +187,21 @@ pub fn parse_toml_version(content: &str, sections: &[&str]) -> Option<String> {
     None
 }
 
+/// Writes the resolved deploy/push version back into `AgentCard.json` so the
+/// file reflects what's actually running instead of going stale the moment a
+/// prompt or `--version` picks something different from what's on disk. A
+/// no-op if the file already has this version — avoids reformatting the file
+/// (and thus a spurious diff) on every deploy/push that didn't change it.
+pub fn sync_card_version(card_path: &Path, card: &serde_json::Value, version: &str) -> Result<()> {
+    if card.get("version").and_then(|v| v.as_str()) == Some(version) {
+        return Ok(());
+    }
+    let mut updated = card.clone();
+    updated["version"] = serde_json::Value::String(version.to_string());
+    fs::write(card_path, serde_json::to_string_pretty(&updated)?)?;
+    Ok(())
+}
+
 pub fn title_case(s: &str) -> String {
     s.split_whitespace()
         .map(|w| {
@@ -198,4 +213,38 @@ pub fn title_case(s: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_card_version_updates_a_changed_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentCard.json");
+        let card = serde_json::json!({"name": "books", "version": "1.0.0", "skills": ["a"]});
+
+        sync_card_version(&path, &card, "1.0.1").unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["version"], "1.0.1");
+        assert_eq!(written["name"], "books");
+        assert_eq!(written["skills"], serde_json::json!(["a"]));
+    }
+
+    #[test]
+    fn sync_card_version_is_a_noop_when_version_already_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentCard.json");
+        let card = serde_json::json!({"version": "1.0.0"});
+
+        sync_card_version(&path, &card, "1.0.0").unwrap();
+
+        assert!(
+            !path.exists(),
+            "should not write the file when nothing changed"
+        );
+    }
 }
